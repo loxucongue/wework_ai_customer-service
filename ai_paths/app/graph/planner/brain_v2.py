@@ -53,7 +53,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
 - 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；该工具只按经纬度直线距离排序，客户可见不要输出公里、分钟、车程或路线。
 - 当前普通流程只登记到店日期和时间意向，不调用 available_time/create_order_plan；没有既有正式预约事实不能承诺已安排或已留位。
-- 效果、怕没效果、怕反黑、要效果图、质疑只是淡化或担心一次可能没效果时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。效果定义与次数疑虑统一先明确“我们是做斑点改善的，绝大多数顾客一次就有很好的改善效果”，再说明完成线上活动登记后可到门店免费做皮肤检测并由门店结合具体情况讲解，最后交付真实案例图；当前轮禁止报价、活动规则和预约金卡。
+- 效果、怕没效果、怕反黑、要效果图或担心一次可能没效果时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。一次效果先明确“当前淡斑效果活动价就是268元、绝大多数客户都是一次就好”，再用真实案例建立信任；完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解。
 - 客户说不做了、不要了或算了但同句给出效果、次数、价格、距离、时间或信任等具体原因时，按可挽回异议针对原因处理一次，不得直接 terminal/close。只有明确要求停止联系、投诉退款、当前风险，或近期已处理同一异议后再次强拒绝才停止推进。
 - 客户已经发送皮肤图片时直接使用 `image_info`；需要效果证据只查 case_studies。当前没有询问门店且近聊已有门店锚点时，不得因图片 URL 或合并消息调用门店工具；案例后必须推进一个未完成主线动作。
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
@@ -67,9 +67,6 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 只有省份时补问城市和区县。客户明确给出城市、区县、乡镇、村、道路、地标或定位卡时，先调用 customer_store_lookup；若工具得到唯一且内部一致的解析结果，可在同一轮自然带一句解析地区并直接匹配门店卡，不需要等客户再确认一次。只有同名多地域、多个同级城市冲突、解析失败或错别字/简称修正候选时，才等待客户确认。客户确认了你上一轮提出的地区后，工具调用可设置 `confirmed_by_customer=true`。例如“武汉市东湖高新区”可直接查店；“广州惠州”包含两个城市，必须先确认客户指广州还是惠州。
 - 若 `store_binding_decision` 已接受最近真实门店，当前客户没有提出新位置或换店，就沿用该门店并推进当前主线，不再查门店；若客户确实改了位置，先把门店决策改为 `exploring/ambiguous`，再按当前位置查询，不能同时“已接受旧店”和“查询无关新地址”。
 - `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
-- `sop_delivery_manifest` 只是 Gate 候选。当前轮确实完整发送该包才选 `deliver_now`；先处理其他问题或工具动作选 `defer`；候选包与当前轮冲突选 `suppress`。不要让代码猜测业务语义。
-- 当前问题正是询问活动、价格或参加方式，且候选活动包能够完整回答时选 `deliver_now`；当前轮先查门店、补位置或完成其他工具动作时才 `defer`。不能自己输出缩略活动文本却延后候选包中的图片。
-- 紧邻助手正在谈活动或项目介绍时，客户说“介绍一下/说一下/具体呢”就是要求介绍紧邻对象；Gate 选中活动包时必须用具体 `deliver_value + source_pack_id + deliver_now`，不能说稍后由 Reply 决定，Reply 无权替 Planner 选择交付动作。
 
 # Output JSON Schema
 只输出 JSON：
@@ -87,10 +84,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "store_binding_decision": {"status":"none | accepted_explicit | accepted_implicit | exploring | rejected | ambiguous","store_id":"","confidence":"high | medium | low","source":"","basis":[]},
   "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
-  "current_turn_resolution": {"required":true,"customer_question":"","resolution_goal":"","required_facts":[],"explicit_questions":[{"question_id":"question_1","question":"","resolution_goal":""}]},
-  "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | effect_proof | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[],"required_message_types":["text"],"source_pack_ids":[],"asset_ids":[],"reason":""},
-  "sop_delivery_decision": {"action":"deliver_now | defer | suppress","sop_pack_id":"","reason":""},
-  "reply_contract": {"locked_facts":[],"forbidden_claims":[],"known_fields_not_to_request":[],"required_deliveries":[{"message_type":"text","asset_id":"","source_pack_id":""}]},
+  "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[]},
   "closing_move": {"action":"none | ask_city | ask_spot_history | send_case | introduce_offer | ask_store_choice | send_payment | manual_transfer | ask_party_size | ask_registration | ask_visit_intent | resolve_risk | close","mainline_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","reason":"","required_slot":"","must_not_repeat":[]},
   "reply_messages": [],
   "tool_calls": [],
@@ -127,20 +121,20 @@ def planner_v2_repair_messages_for_model(
     violations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     payload = {
-        **_compact_timeout_retry_payload_for_model(state, previous_error="planner_contract_violation"),
+        **_planner_payload_for_model(state),
         "original_plan": _compact_plan_for_repair(original_plan),
         "tool_policy_violations": _compact_violations_for_repair(violations),
     }
-    payload["timeout_recovery"] = {
-        "goal": "repair_only_the_reported_contract_violations",
-        "must_preserve": "current_question_scene_sales_rhythm_and_valid_facts",
-    }
     return [
-        {"role": "system", "content": PLANNER_TIMEOUT_RECOVERY_PROMPT},
+        {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_STORE_LOCATION_LOOKUP_CONTRACT},
-        {"role": "system", "content": "# Current Repair Business Rules\n" + planner_recovery_business_rules_prompt_section()},
+        {"role": "system", "content": PLANNER_PRECISION_QA_CONTRACT},
+        {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
+        {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
+        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+        {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
     ]
 
 
@@ -191,7 +185,7 @@ async def run_planner_brain_v2(
             tier=tier,
             deadline_monotonic=primary_deadline,
         )
-        plan = _build_planner_plan_with_governance_shadow(planner_state, payload)
+        plan = build_planner_plan_v2(planner_state, payload)
         initial_usage = model_usage_snapshot(model_client)
     except Exception as exc:
         initial_error = f"{type(exc).__name__}: {exc}"
@@ -243,7 +237,7 @@ async def run_planner_brain_v2(
                 tier="fast",
                 deadline_monotonic=recovery_deadline,
             )
-            plan = _build_planner_plan_with_governance_shadow(planner_state, payload)
+            plan = build_planner_plan_v2(planner_state, payload)
             retry_call["raw_json_output"] = payload
             retry_call["output"] = _planner_call_output(plan)
             retry_call["usage"] = model_usage_snapshot(model_client)
@@ -277,7 +271,7 @@ async def run_planner_brain_v2(
             }
             return plan, model_call
         nested_calls.append(retry_call)
-    for repair_attempt in range(1, 3):
+    for repair_attempt in range(1, 2):
         violations = list(plan.get("tool_policy_violations", []))
         if not violations:
             break
@@ -323,7 +317,7 @@ async def run_planner_brain_v2(
                 tier=repair_tier,
                 deadline_monotonic=repair_deadline,
             )
-            repaired_plan = _build_planner_plan_with_governance_shadow(planner_state, repaired_payload)
+            repaired_plan = build_planner_plan_v2(planner_state, repaired_payload)
             plan = repaired_plan
             repair_call["raw_json_output"] = repaired_payload
             repair_call["output"] = _planner_call_output(plan)
@@ -332,8 +326,6 @@ async def run_planner_brain_v2(
             repair_call["error"] = f"{type(exc).__name__}: {exc}"
             repair_call["usage"] = model_usage_snapshot(model_client)
             nested_calls.append(repair_call)
-            if repair_attempt < 2:
-                continue
             break
         nested_calls.append(repair_call)
     model_call = {
@@ -443,8 +435,6 @@ def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:
         "order_decision": plan.get("order_decision", {}),
         "appointment_decision": plan.get("appointment_decision", {}),
         "sales_progression": plan.get("sales_progression", {}),
-        "current_turn_resolution": plan.get("current_turn_resolution", {}),
-        "reply_contract": plan.get("reply_contract", {}),
         "closing_move": plan.get("closing_move", {}),
         "reply_messages": len(plan.get("planner_reply_messages", [])),
         "tool_calls": len(plan.get("planner_tool_calls", [])),
@@ -492,11 +482,8 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
             location_hints=_store_scope_location_hints(state, current_known_store, store_candidate),
         ),
         "sent_message_summary": sent_message_summary,
-        "conversation_state": state.get("conversation_state") or {},
         "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
         "sop_gate_decision": gate_decision,
-        "sop_gate_candidate_messages": state.get("sop_gate_candidate_messages") or [],
-        "sop_delivery_manifest": state.get("sop_delivery_manifest") or {},
         "precision_qa_playbook": precision_qa_context_for_planner(
             selected_scene_id,
             include_answer_details_in_index=False,
@@ -521,7 +508,6 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "image_info": base.get("image_info"),
         "category_id": base.get("category_id"),
         "transaction_facts": base.get("transaction_facts"),
-        "conversation_state": base.get("conversation_state"),
         "current_known_store": base.get("current_known_store"),
         "store_candidate": base.get("store_candidate"),
         "turn_evidence": base.get("turn_evidence"),
@@ -530,8 +516,6 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "sent_message_summary": base.get("sent_message_summary"),
         "sop_progress_evidence": base.get("sop_progress_evidence"),
         "sop_gate_decision": base.get("sop_gate_decision"),
-        "sop_gate_candidate_messages": base.get("sop_gate_candidate_messages"),
-        "sop_delivery_manifest": base.get("sop_delivery_manifest"),
         "precision_qa_playbook": _compact_precision_qa_for_timeout(
             base.get("precision_qa_playbook"),
             base.get("sop_gate_decision"),
@@ -885,8 +869,7 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
             "need_ai_reply": raw.get("need_ai_reply"),
             "coverage": raw.get("coverage"),
             "reason": raw.get("reason"),
-            "scene_decision": raw.get("scene_decision") if isinstance(raw.get("scene_decision"), dict) else {},
-            "task": _compact_gate_task(raw.get("task") or raw.get("active_task")),
+            "task": _compact_gate_task(raw.get("active_task")),
             "priority_question_id": raw.get("priority_question_id"),
             "selected_scene_id": raw.get("selected_scene_id") or raw.get("priority_question_id"),
             "resume_stage": raw.get("resume_stage"),
@@ -1242,81 +1225,6 @@ def _store_scope_location_hints(
         store_candidate.get("district"),
     ]
     return [str(value).strip() for value in values if str(value or "").strip()]
-
-
-def _build_planner_plan_with_governance_shadow(
-    state: AgentState,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    baseline = build_planner_plan_v2(state, payload)
-    governance = state.get("reply_governance") if isinstance(state.get("reply_governance"), dict) else {}
-    configured = governance.get("configured") if isinstance(governance.get("configured"), dict) else {}
-    shadow_flags = {
-        key: bool(configured.get(key))
-        for key in ("semantic_contract_enabled", "model_payment_sequencing_enabled")
-    }
-    if not governance.get("shadow_mode") or not any(shadow_flags.values()):
-        return baseline
-    candidate_state = {
-        **state,
-        "reply_governance": {
-            **governance,
-            **shadow_flags,
-            "shadow_mode": False,
-        },
-    }
-    try:
-        candidate = build_planner_plan_v2(candidate_state, payload)
-        baseline["reply_governance_shadow"] = _planner_shadow_comparison(baseline, candidate)
-    except Exception as exc:  # noqa: BLE001 - shadow normalization cannot affect the live plan
-        baseline["reply_governance_shadow"] = {
-            "status": "failed",
-            "applied": "baseline",
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-    return baseline
-
-
-def _planner_shadow_comparison(
-    baseline: dict[str, Any],
-    candidate: dict[str, Any],
-) -> dict[str, Any]:
-    def summary(plan: dict[str, Any]) -> dict[str, Any]:
-        progression = plan.get("sales_progression") if isinstance(plan.get("sales_progression"), dict) else {}
-        payment = plan.get("payment_decision") if isinstance(plan.get("payment_decision"), dict) else {}
-        contract = plan.get("reply_contract") if isinstance(plan.get("reply_contract"), dict) else {}
-        return {
-            "planner_decision": str(plan.get("planner_decision") or ""),
-            "main_blocker": str(plan.get("main_blocker") or ""),
-            "next_step": str(plan.get("next_step") or ""),
-            "sales_target_stage": str(progression.get("target_stage") or ""),
-            "sales_action": str(progression.get("action") or ""),
-            "payment_action": str(payment.get("action") or ""),
-            "required_fact_ids": list(contract.get("required_fact_ids") or []),
-            "required_message_types": [
-                str(item.get("message_type") if isinstance(item, dict) else item)
-                for item in contract.get("required_deliveries") or []
-            ],
-            "violations": [
-                str(item.get("missing") or "")
-                for item in plan.get("tool_policy_violations") or []
-                if isinstance(item, dict) and str(item.get("missing") or "")
-            ],
-        }
-
-    baseline_summary = summary(baseline)
-    candidate_summary = summary(candidate)
-    changed_fields = [
-        key for key in baseline_summary if baseline_summary.get(key) != candidate_summary.get(key)
-    ]
-    return {
-        "status": "compared",
-        "applied": "baseline",
-        "baseline": baseline_summary,
-        "candidate": candidate_summary,
-        "changed": bool(changed_fields),
-        "changed_fields": changed_fields,
-    }
 
 
 def _drop_empty(value: Any) -> Any:

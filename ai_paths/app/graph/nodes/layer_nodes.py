@@ -11,7 +11,6 @@ from app.graph.nodes.common import (
     repair_mojibake_text,
 )
 from app.graph.nodes.conversation_history_fetch import ConversationFetcher, fetch_platform_conversation_history
-from app.graph.nodes.conversation_state import build_conversation_state
 from app.graph.nodes.image_info import build_vision_prompt, fallback_image_info, validated_image_info
 from app.graph.nodes.location_card import append_location_card_to_content
 from app.graph.state import AgentState
@@ -43,7 +42,6 @@ def create_input_normalization_layer(
                 normalized = "[图片]"
             normalized, encoding_repair = repair_mojibake_text(normalized)
             request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
-            request_context = _context_with_merged_structured_event_facts(request_context)
             normalized, location_card = append_location_card_to_content(normalized, request_context)
             errors = list(state.get("errors", []))
             if looks_bad_text(normalized):
@@ -56,11 +54,8 @@ def create_input_normalization_layer(
             if looks_suspected_short_mojibake(normalized):
                 input_quality_flags.append("suspected_short_mojibake")
             temp_state = dict(state)
-            temp_state["request_context"] = request_context
             temp_state["normalized_content"] = normalized
             platform_transfer_info = _platform_unknown_transfer_image_info(normalized)
-            if platform_transfer_info is None and bool(request_context.get("merged_unknown_transfer_event")):
-                platform_transfer_info = _platform_unknown_transfer_image_info("【未知消息类型】")
             if platform_transfer_info is not None:
                 normalized = "客户发送了转账消息"
                 image_info, model_calls = platform_transfer_info, []
@@ -82,69 +77,6 @@ def create_input_normalization_layer(
             return output
 
     return input_normalization_layer
-
-
-def _context_with_merged_structured_event_facts(request_context: dict[str, Any]) -> dict[str, Any]:
-    """Restore structured facts from superseded platform inputs before model nodes run."""
-
-    context = dict(request_context or {})
-    events = [event for event in context.get("merged_input_events") or [] if isinstance(event, dict)]
-    if not events:
-        return context
-
-    latest_location = next(
-        (
-            event
-            for event in reversed(events)
-            if str(event.get("msgtype") or "").strip().lower() == "location"
-            and any(
-                str(event.get(key) or "").strip()
-                for key in ("location", "location_title", "location_address", "location_zoom")
-            )
-        ),
-        None,
-    )
-    if latest_location:
-        for key in ("location", "location_title", "location_address", "location_zoom"):
-            value = str(latest_location.get(key) or "").strip()
-            if value:
-                context[key] = value
-        context["msgtype"] = "location"
-        context["merged_location_card_event"] = {
-            key: latest_location.get(key)
-            for key in ("msgid", "msgtime", "location", "location_title", "location_address", "location_zoom")
-            if latest_location.get(key) not in ("", None)
-        }
-
-    if not context.get("merged_image_urls"):
-        image_urls = [
-            str(event.get("file_image") or "").strip()
-            for event in events
-            if str(event.get("file_image") or "").strip()
-        ]
-        if image_urls:
-            context["merged_image_urls"] = _dedupe_strings(image_urls)[-3:]
-
-    if any(_event_is_unknown_transfer(event) for event in events):
-        context["merged_unknown_transfer_event"] = True
-    return context
-
-
-def _event_is_unknown_transfer(event: dict[str, Any]) -> bool:
-    text = "".join(str(event.get("content") or "").split())
-    return text in UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS
-
-
-def _dedupe_strings(values: list[str]) -> list[str]:
-    output: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        normalized = str(value or "").strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        output.append(normalized)
-    return output
 
 
 def _platform_unknown_transfer_image_info(content: str) -> dict[str, Any] | None:
@@ -521,7 +453,6 @@ def create_background_context_layer(
                 ),
                 "trace": state.get("trace", []),
             }
-            output["conversation_state"] = build_conversation_state({**state, **output})
             span["output_snapshot"] = _background_output_snapshot(output)
             return output
 

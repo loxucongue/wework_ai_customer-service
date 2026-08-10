@@ -207,33 +207,11 @@ def _deterministic_customer_state_updates(
     mobile_result = tool_results.get("add_customer_mobile") if isinstance(tool_results.get("add_customer_mobile"), dict) else {}
     plan_result = tool_results.get("create_order_plan") if isinstance(tool_results.get("create_order_plan"), dict) else {}
     model_basic = model_update.get("basic_info") if isinstance(model_update.get("basic_info"), dict) else {}
-    conversation_state = state.get("conversation_state") if isinstance(state.get("conversation_state"), dict) else {}
-    customer_fields = (
-        conversation_state.get("customer_fields")
-        if isinstance(conversation_state.get("customer_fields"), dict)
-        else {}
-    )
-    name_fact = customer_fields.get("name") if isinstance(customer_fields.get("name"), dict) else {}
-    mobile_fact = customer_fields.get("mobile") if isinstance(customer_fields.get("mobile"), dict) else {}
-    customer_name = str(
-        model_basic.get("customer_name")
-        or (name_fact.get("value") if name_fact.get("status") == "known" else "")
-        or existing_basic.get("customer_name")
-        or ""
-    ).strip()
-    phone = str(
-        model_basic.get("phone")
-        or (mobile_fact.get("value") if mobile_fact.get("status") == "known" else "")
-        or existing_basic.get("phone")
-        or ""
-    ).strip()
+    customer_name = str(model_basic.get("customer_name") or existing_basic.get("customer_name") or "").strip()
+    phone = str(model_basic.get("phone") or existing_basic.get("phone") or "").strip()
 
     basic_info: dict[str, Any] = {}
     events: list[dict[str, Any]] = []
-    if customer_name:
-        basic_info["customer_name"] = customer_name
-    if phone:
-        basic_info["phone"] = phone
     if payment:
         basic_info["deposit_state"] = {
             "status": payment.get("deposit_state"),

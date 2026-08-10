@@ -74,27 +74,7 @@ class Settings(BaseSettings):
     sop_event_model_retry_delay_seconds: float = Field(default=1.0, alias="SOP_EVENT_MODEL_RETRY_DELAY_SECONDS")
     sop_event_model_attempt_timeout_seconds: float = Field(default=45.0, alias="SOP_EVENT_MODEL_ATTEMPT_TIMEOUT_SECONDS")
     sop_event_model_total_timeout_seconds: float = Field(default=60.0, alias="SOP_EVENT_MODEL_TOTAL_TIMEOUT_SECONDS")
-    sop_chat_gate_total_timeout_seconds: float = Field(default=25.0, alias="SOP_CHAT_GATE_TOTAL_TIMEOUT_SECONDS")
-    reply_model_semantic_routing_enabled: bool = Field(
-        default=False,
-        alias="REPLY_MODEL_SEMANTIC_ROUTING_ENABLED",
-    )
-    reply_semantic_contract_enabled: bool = Field(
-        default=False,
-        alias="REPLY_SEMANTIC_CONTRACT_ENABLED",
-    )
-    reply_model_payment_sequencing_enabled: bool = Field(
-        default=False,
-        alias="REPLY_MODEL_PAYMENT_SEQUENCING_ENABLED",
-    )
-    sop_event_schema_only_normalizer_enabled: bool = Field(
-        default=False,
-        alias="SOP_EVENT_SCHEMA_ONLY_NORMALIZER_ENABLED",
-    )
-    reply_governance_shadow_mode: bool = Field(
-        default=True,
-        alias="REPLY_GOVERNANCE_SHADOW_MODE",
-    )
+    sop_chat_gate_total_timeout_seconds: float = Field(default=15.0, alias="SOP_CHAT_GATE_TOTAL_TIMEOUT_SECONDS")
     sop_event_model_max_concurrency: int = Field(default=20, alias="SOP_EVENT_MODEL_MAX_CONCURRENCY")
     sop_event_persistent_retry_attempts: int = Field(default=4, alias="SOP_EVENT_PERSISTENT_RETRY_ATTEMPTS")
     sop_event_persistent_retry_base_delay_seconds: float = Field(

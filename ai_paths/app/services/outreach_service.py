@@ -142,9 +142,6 @@ FIRST_DAY_PRECEDENCE_ROWS = {
     "freeform",
 }
 FIRST_DAY_SOP_SCENE_BY_CATEGORY = {
-    "s10_need_and_case": "effect_proof",
-    "s10_activity_intro": "activity_intro",
-    "s10_objection_resolution": "objection_resolution",
     "store_prompt": "store_area_request",
     "effect_case": "effect_proof",
     "activity_intro": "activity_intro",
@@ -178,22 +175,14 @@ FIRST_DAY_SCENE_ALIASES = {
     "health": "health_hold",
 }
 FIRST_DAY_SOP_CATEGORY_ORDER = {
-    "s10_need_and_case": 20,
+    "store_prompt": 10,
     "effect_case": 20,
-    "s10_activity_intro": 30,
     "activity_intro": 30,
     "price_quote": 30,
-    "store_prompt": 35,
-    "s10_objection_resolution": 40,
-    "deposit_push": 50,
+    "deposit_push": 40,
     "payment_followup": 50,
     "operation_video": 60,
     "final_close": 70,
-}
-FIRST_DAY_ACTIVITY_SOP_CATEGORIES = {
-    "s10_activity_intro",
-    "activity_intro",
-    "price_quote",
 }
 FIRST_DAY_REPEAT_SIMILARITY_LIMIT = 0.85
 FIRST_DAY_GENDERED_TERMS = (
@@ -724,12 +713,14 @@ def _first_day_normalize_selected_source_ids(
         selected[key] = list(dict.fromkeys(normalized_ids))
 
 
-def _first_day_sop_pack_for_step(
+def _first_day_sop_pack_messages_for_step(
     source_snapshot: dict[str, Any],
     *,
     step_index: int,
     scene: str,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
+    if scene not in {"effect_proof", "activity_intro", "deposit_close"}:
+        return []
     workflow = source_snapshot.get("first_day_workflow")
     scene_analysis = workflow.get("scene_analysis") if isinstance(workflow, dict) else {}
     selected_ids = {
@@ -738,7 +729,7 @@ def _first_day_sop_pack_for_step(
         if _string(source_id)
     }
     if not selected_ids:
-        return {}
+        return []
     for pack in source_snapshot.get("first_day_sop_sequence") or []:
         if not isinstance(pack, dict):
             continue
@@ -746,93 +737,14 @@ def _first_day_sop_pack_for_step(
             continue
         if _string(pack.get("mapped_scene")) != scene:
             continue
-        return dict(pack)
-    return {}
-
-
-def _first_day_sop_pack_messages_for_step(
-    source_snapshot: dict[str, Any],
-    *,
-    step_index: int,
-    scene: str,
-) -> list[dict[str, Any]]:
-    pack = _first_day_sop_pack_for_step(
-        source_snapshot,
-        step_index=step_index,
-        scene=scene,
-    )
-    messages = [
-        dict(message)
-        for message in pack.get("reply_messages") or []
-        if isinstance(message, dict)
-    ]
-    return messages
-
-
-def _first_day_activity_sop_payment_step(
-    scene_analysis: dict[str, Any],
-    source_snapshot: dict[str, Any] | None,
-) -> int:
-    snapshot = source_snapshot or {}
-    selected = scene_analysis.get("selected_source_ids") or {}
-    packs_by_source = {
-        _string(pack.get("source_id")): pack
-        for pack in snapshot.get("first_day_sop_sequence") or []
-        if isinstance(pack, dict) and _string(pack.get("source_id"))
-    }
-    for step_index, scene in enumerate(
-        (_string(scene_analysis.get("step1_scene")), _string(scene_analysis.get("step2_scene"))),
-        start=1,
-    ):
-        if scene != "activity_intro":
-            continue
-        for source_id in selected.get(f"step{step_index}") or []:
-            pack = packs_by_source.get(_string(source_id)) or {}
-            if _string(pack.get("sop_category")) not in FIRST_DAY_ACTIVITY_SOP_CATEGORIES:
-                continue
-            if any(
-                _string(message.get("type")) == "payment_collection"
-                for message in pack.get("reply_messages") or []
-                if isinstance(message, dict)
-            ):
-                return step_index
-    return 0
-
-
-def _first_day_materialized_sop_messages(
-    messages: list[dict[str, Any]],
-    *,
-    allow_payment_collection: bool,
-    sent_urls: set[str] | None = None,
-    used_urls: set[str] | None = None,
-) -> list[dict[str, Any]]:
-    output: list[dict[str, Any]] = []
-    sent = sent_urls or set()
-    used = used_urls if used_urls is not None else set()
-    for message in sorted(messages, key=lambda item: _int(item.get("order"), 9999)):
-        message_type = _string(message.get("type"))
-        if message_type == "text":
-            text = _string(message.get("text"))
-            if text:
-                output.append({"type": "text", "content": {"text": text}})
-        elif message_type in {"image", "video"}:
-            url = _string(message.get("url"))
-            if url and url not in sent and url not in used:
-                output.append({"type": message_type, "content": {"url": url}})
-                used.add(url)
-        elif message_type == "payment_collection" and allow_payment_collection:
-            output.append(
-                {
-                    "type": "payment_collection",
-                    "content": {
-                        "amount": _int(message.get("amount"), 10),
-                        "remark": "",
-                    },
-                }
-            )
-    for order, message in enumerate(output, start=1):
-        message["order"] = order
-    return output
+        messages = [
+            dict(message)
+            for message in pack.get("reply_messages") or []
+            if isinstance(message, dict)
+        ]
+        if messages:
+            return messages
+    return []
 
 
 def _first_day_sop_pack_texts(messages: list[dict[str, Any]]) -> list[str]:
@@ -1029,58 +941,12 @@ def _latest_real_customer_message_time(messages: list[Any]) -> str:
     return max(candidates) if candidates else ""
 
 
-def _first_day_configured_assets_for_step(
-    source_snapshot: dict[str, Any],
-    *,
-    step_index: int,
-    asset_catalog: list[dict[str, Any]],
-    recent_media: dict[str, list[str]],
-) -> list[dict[str, Any]]:
-    workflow = source_snapshot.get("first_day_workflow")
-    scene_analysis = workflow.get("scene_analysis") if isinstance(workflow, dict) else {}
-    selected_ids = [
-        _string(source_id)
-        for source_id in (scene_analysis.get("selected_source_ids") or {}).get(f"step{step_index}") or []
-        if _string(source_id)
-    ]
-    configured_main_sources = [
-        source_id
-        for source_id in selected_ids
-        if (
-            source_id.startswith("appointment-blocker:")
-            and source_id.count(":") == 1
-        )
-        or source_id in _first_day_sop_source_ids(source_snapshot)
-    ]
-    explicit_asset_ids = set(selected_ids)
-    sent_urls = set(recent_media.get("urls") or [])
-    output: list[dict[str, Any]] = []
-    for asset in asset_catalog:
-        if not isinstance(asset, dict):
-            continue
-        asset_id = _string(asset.get("asset_id"))
-        selected = asset_id in explicit_asset_ids or any(
-            asset_id.startswith(f"{source_id}:") for source_id in configured_main_sources
-        )
-        if not selected:
-            continue
-        resolved = resolve_configured_asset(
-            asset_catalog,
-            asset_id,
-            sent_urls=sent_urls,
-        )
-        if resolved:
-            output.append(resolved)
-    return output
-
-
 def _task_content_sources(
     raw_sources: Any,
     *,
     should_send_payment_collection: bool,
     task_metadata: dict[str, Any],
     resolved_asset: dict[str, Any],
-    resolved_assets: list[dict[str, Any]] | None = None,
 ) -> list[Any]:
     sources = _list_strings(raw_sources) or ["s10_offer"]
     sources.extend(
@@ -1088,7 +954,6 @@ def _task_content_sources(
             {"should_send_payment_collection": bool(should_send_payment_collection)},
             {"outreach_task_metadata": task_metadata},
             {"resolved_asset": resolved_asset},
-            {"resolved_assets": [dict(asset) for asset in resolved_assets or [] if isinstance(asset, dict)]},
         ]
     )
     return sources
@@ -1098,30 +963,17 @@ def _compose_outreach_messages(
     texts: str | list[str],
     *,
     resolved_asset: dict[str, Any] | None = None,
-    resolved_assets: list[dict[str, Any]] | None = None,
     should_send_payment_collection: bool = False,
-    text_limit: int | None = 2,
 ) -> list[dict[str, Any]]:
     normalized_texts = [_string(item) for item in ([texts] if isinstance(texts, str) else texts)]
-    visible_texts = normalized_texts if text_limit is None else normalized_texts[: max(0, text_limit)]
     output = [
         {"type": "text", "order": index, "content": {"text": text}}
-        for index, text in enumerate(visible_texts, start=1)
+        for index, text in enumerate(normalized_texts[:2], start=1)
         if text
     ]
-    assets = [dict(asset) for asset in resolved_assets or [] if isinstance(asset, dict)]
-    if not assets and resolved_asset:
-        assets = [dict(resolved_asset)]
-    seen_assets: set[str] = set()
-    for asset in assets:
-        identity = _string(asset.get("document_id") or asset.get("url") or asset.get("asset_id"))
-        if identity and identity in seen_assets:
-            continue
-        if identity:
-            seen_assets.add(identity)
-        asset_message = asset_reply_message(asset, order=len(output) + 1)
-        if asset_message:
-            output.append(asset_message)
+    asset_message = asset_reply_message(resolved_asset or {}, order=len(output) + 1)
+    if asset_message:
+        output.append(asset_message)
     if should_send_payment_collection:
         output.append(
             {
@@ -1291,34 +1143,13 @@ def _task_metadata(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def _task_resolved_asset(task: dict[str, Any]) -> dict[str, Any]:
-    assets = _task_resolved_assets(task)
-    return assets[0] if assets else {}
-
-
-def _task_resolved_assets(task: dict[str, Any]) -> list[dict[str, Any]]:
     items = task.get("content_source_metadata")
     if not isinstance(items, list):
         items = [item for item in task.get("content_sources", []) if isinstance(item, dict)]
-    output: list[dict[str, Any]] = []
     for item in items:
-        if isinstance(item, dict) and isinstance(item.get("resolved_assets"), list):
-            output.extend(
-                dict(asset)
-                for asset in item["resolved_assets"]
-                if isinstance(asset, dict)
-            )
         if isinstance(item, dict) and isinstance(item.get("resolved_asset"), dict):
-            output.append(dict(item["resolved_asset"]))
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for asset in output:
-        identity = _string(asset.get("document_id") or asset.get("url") or asset.get("asset_id"))
-        if identity and identity in seen:
-            continue
-        if identity:
-            seen.add(identity)
-        deduped.append(asset)
-    return deduped
+            return dict(item["resolved_asset"])
+    return {}
 
 
 def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
@@ -1462,7 +1293,7 @@ def _outreach_plan_context_error(
                 continue
             if allow_first_day_internal_activity_quote and _first_day_internal_activity_quote_evidence(
                 steps,
-                before_step_index=index + 1,
+                before_step_index=index,
             ):
                 continue
             return "activity quote is incomplete; payment_collection must be disabled"
@@ -1627,28 +1458,6 @@ def _first_day_scene_analysis_error(
         for item in source_snapshot.get("first_day_sop_sequence") or []
         if isinstance(item, dict) and _string(item.get("source_id"))
     )
-    available_asset_ids = {
-        _string(item.get("asset_id"))
-        for item in source_snapshot.get("asset_catalog") or []
-        if isinstance(item, dict) and _string(item.get("asset_id"))
-    }
-    available_main_source_ids = {
-        _string(source_id)
-        for item in source_snapshot.get("appointment_blocker_scene_index") or []
-        if isinstance(item, dict)
-        for source_id in item.get("source_ids") or []
-        if _string(source_id)
-    }
-    available_main_source_ids.update(
-        _string(item.get("source_id"))
-        for item in source_snapshot.get("first_day_sop_sequence") or []
-        if isinstance(item, dict) and _string(item.get("source_id"))
-    )
-    sop_scene_by_source = {
-        _string(item.get("source_id")): _string(item.get("mapped_scene"))
-        for item in source_snapshot.get("first_day_sop_sequence") or []
-        if isinstance(item, dict) and _string(item.get("source_id"))
-    }
     for key in ("step1", "step2"):
         source_ids = selected_source_ids.get(key)
         if not isinstance(source_ids, list) or any(
@@ -1656,41 +1465,6 @@ def _first_day_scene_analysis_error(
             for source_id in source_ids
         ):
             return f"scene analysis selected_source_ids.{key} contains unavailable source"
-        selected_main_sources = [
-            _string(source_id)
-            for source_id in source_ids
-            if _string(source_id) in available_main_source_ids
-        ]
-        if eligible and available_main_source_ids and len(set(selected_main_sources)) != 1:
-            return (
-                f"scene analysis selected_source_ids.{key} must select exactly one "
-                "main SOP or appointment-blocker source"
-            )
-        if eligible and selected_main_sources:
-            main_source = selected_main_sources[0]
-            if (
-                _string(precedence_decision.get("row_id")) == "no_blocker_sop_progression"
-                and not main_source.startswith("sop-pack:")
-            ):
-                return (
-                    f"scene analysis selected_source_ids.{key} must use a main SOP source "
-                    "when precedence_decision is no_blocker_sop_progression"
-                )
-            selected_sop_scene = sop_scene_by_source.get(main_source)
-            if selected_sop_scene and selected_sop_scene != _string(response.get(f"{key}_scene")):
-                return (
-                    f"scene analysis selected_source_ids.{key} SOP source does not match "
-                    "the locked step scene"
-                )
-            if any(
-                _string(source_id) in available_asset_ids
-                and not _string(source_id).startswith(f"{main_source}:")
-                for source_id in source_ids
-            ):
-                return (
-                    f"scene analysis selected_source_ids.{key} contains media outside "
-                    "the selected main source"
-                )
     if any(
         not isinstance(index, int) or not 0 <= index < message_count
         for index in hard_boundary_indexes
@@ -1733,13 +1507,6 @@ def _first_day_scene_analysis_error(
         return "scene analysis step2_scene is invalid"
     if step1_scene == step2_scene:
         return "first-day scene analysis must select two different scenes"
-    for step_key, scene in (("step1", step1_scene), ("step2", step2_scene)):
-        completion_status = _string((completion_matrix.get(scene) or {}).get("status"))
-        if completion_status in {"completed", "not_applicable"}:
-            return (
-                f"scene analysis {step_key}_scene cannot select a scene whose completion "
-                f"status is {completion_status}"
-            )
     if not _string(response.get("step1_objective")) or not _string(response.get("step2_objective")):
         return "scene analysis requires both step objectives"
     required_assets = response.get("required_assets")
@@ -1757,11 +1524,6 @@ def _first_day_scene_analysis_error(
         strategy = _string(asset.get("strategy")) or "none"
         if strategy not in OUTREACH_ASSET_STRATEGIES:
             return f"scene analysis required_assets.{key}.strategy is invalid"
-        if strategy == "case_search":
-            return (
-                f"scene analysis required_assets.{key}.strategy must use media from the "
-                "selected SOP or appointment-blocker source"
-            )
         asset_id = _string(asset.get("asset_id"))
         if strategy in {"configured_image", "operation_video"} and (
             not asset_id or asset_id not in available_asset_ids
@@ -1776,14 +1538,18 @@ def _first_day_scene_analysis_error(
     payment_allowed = _bool(payment_action.get("allowed"))
     if payment_allowed != (payment_step in {1, 2}):
         return "scene analysis payment_action allowed and step disagree"
-    payment_gate = source_snapshot.get("payment_collection_gate") or {}
-    expected_payment_step = (
-        _first_day_activity_sop_payment_step(response, source_snapshot)
-        if _bool(payment_gate.get("eligible"))
-        else 0
-    )
-    if payment_step != expected_payment_step:
-        return "scene analysis payment action is only allowed for the activity quote SOP pack"
+    deposit_steps = [
+        index
+        for index, scene in enumerate((step1_scene, step2_scene), start=1)
+        if scene == "deposit_close"
+    ]
+    if deposit_steps != ([payment_step] if payment_step else []):
+        return "scene analysis deposit scene must exactly match payment_action.step"
+    if payment_allowed:
+        payment_gate = source_snapshot.get("payment_collection_gate") or {}
+        expected_scene = step1_scene if payment_step == 1 else step2_scene
+        if not _bool(payment_gate.get("eligible")) or expected_scene != "deposit_close":
+            return "scene analysis payment action violates payment gate or scene lock"
     for evidence in response.get("evidence") or []:
         if not isinstance(evidence, dict):
             return "scene analysis evidence items must be objects"
@@ -1810,19 +1576,24 @@ def _normalize_first_day_scene_analysis(
         scene = _normalize_scene_name(response.get(key))
         if scene:
             response[key] = scene
-    _first_day_normalize_selected_source_ids(response, source_snapshot)
     payment_action = response.get("payment_action")
     if not isinstance(payment_action, dict):
         payment_action = {"step": 0, "allowed": False, "reason": "未选择预约金卡动作"}
         response["payment_action"] = payment_action
+    deposit_steps = [
+        index
+        for index, scene in enumerate(
+            (_string(response.get("step1_scene")), _string(response.get("step2_scene"))),
+            start=1,
+        )
+        if scene == "deposit_close"
+    ]
     payment_gate = (source_snapshot or {}).get("payment_collection_gate") or {}
-    payment_step = (
-        _first_day_activity_sop_payment_step(response, source_snapshot)
-        if _bool(payment_gate.get("eligible"))
-        else 0
-    )
-    payment_action["step"] = payment_step
-    payment_action["allowed"] = bool(payment_step)
+    if len(deposit_steps) == 1 and _bool(payment_gate.get("eligible")):
+        payment_action["step"] = deposit_steps[0]
+        payment_action["allowed"] = True
+    elif not _bool(payment_action.get("allowed")):
+        payment_action["step"] = 0
     if message_count <= 0:
         return response
     conversation_activity = (source_snapshot or {}).get("conversation_activity") or {}
@@ -1966,19 +1737,26 @@ def _normalize_first_day_scene_analysis(
         step1_scene = _string(response.get("step1_scene"))
         if step1_scene in FIRST_DAY_SCENES:
             response["current_scene"] = step1_scene
-    _first_day_normalize_selected_source_ids(response, source_snapshot)
     payment_action = response.get("payment_action")
     if not isinstance(payment_action, dict):
         payment_action = {"step": 0, "allowed": False, "reason": "未选择预约金卡动作"}
         response["payment_action"] = payment_action
-    payment_gate = (source_snapshot or {}).get("payment_collection_gate") or {}
-    payment_step = (
-        _first_day_activity_sop_payment_step(response, source_snapshot)
-        if _bool(payment_gate.get("eligible"))
-        else 0
-    )
-    payment_action["step"] = payment_step
-    payment_action["allowed"] = bool(payment_step)
+    if isinstance(payment_action, dict):
+        deposit_steps = [
+            index
+            for index, scene in enumerate(
+                (_string(response.get("step1_scene")), _string(response.get("step2_scene"))),
+                start=1,
+            )
+            if scene == "deposit_close"
+        ]
+        payment_gate = (source_snapshot or {}).get("payment_collection_gate") or {}
+        if len(deposit_steps) == 1 and _bool(payment_gate.get("eligible")):
+            payment_action["step"] = deposit_steps[0]
+            payment_action["allowed"] = True
+        elif not _bool(payment_action.get("allowed")):
+            payment_action["step"] = 0
+    _first_day_normalize_selected_source_ids(response, source_snapshot)
     available_assets = {
         _string(item.get("asset_id")): item
         for item in (source_snapshot or {}).get("asset_catalog") or []
@@ -3009,7 +2787,7 @@ class OutreachService:
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
         appointment_playbook = self._appointment_blocker_playbook()
         appointment_material_catalog = appointment_blocker_materials(appointment_playbook)
-        first_day_sop_sequence = self._first_day_sop_sequence(required=first_day_trigger)
+        first_day_sop_sequence = self._first_day_sop_sequence()
         asset_catalog = (
             build_appointment_blocker_asset_catalog(appointment_playbook)
             + self._first_day_sop_asset_catalog(first_day_sop_sequence)
@@ -3456,7 +3234,7 @@ class OutreachService:
             raise RuntimeError(f"outreach_plan_model_invalid_structure: {structure_error}")
         raw_steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:2 if first_day_trigger else 3]
 
-        primary_resolved_assets = await asyncio.gather(
+        resolved_assets = await asyncio.gather(
             *[
                 self._resolve_outreach_asset(
                     step,
@@ -3466,20 +3244,18 @@ class OutreachService:
                 for step in raw_steps
             ]
         )
+        used_asset_keys: set[str] = set()
+        for asset_index, asset in enumerate(resolved_assets):
+            key = _string(asset.get("document_id") or asset.get("url"))
+            if key and key in used_asset_keys:
+                resolved_assets[asset_index] = {}
+                continue
+            if key:
+                used_asset_keys.add(key)
 
         now = utc_now_iso()
         tasks = []
         payment_collection_added = False
-        used_asset_keys: set[str] = set()
-        used_media_urls: set[str] = set()
-        activity_sop_payment_step = (
-            _first_day_activity_sop_payment_step(
-                (source_snapshot.get("first_day_workflow") or {}).get("scene_analysis") or {},
-                source_snapshot,
-            )
-            if first_day_trigger and bool(payment_collection_gate.get("eligible"))
-            else 0
-        )
         normalized_schedule = (
             _normalize_first_day_outreach_schedule(now, raw_steps)
             if first_day_trigger
@@ -3499,123 +3275,29 @@ class OutreachService:
                 )
             )
             should_send_payment_collection = (
-                index == activity_sop_payment_step and not payment_collection_added
-                if first_day_trigger
-                else (
-                    _bool(step.get("should_send_payment_collection"))
-                    and index == len(raw_steps)
-                    and content_mode == "transaction"
-                    and payment_collection_basis == "model_selected_after_quote"
-                    and not payment_collection_added
-                    and activity_quote_ready
-                    and bool(payment_collection_gate.get("eligible"))
-                )
+                _bool(step.get("should_send_payment_collection"))
+                and (first_day_trigger or index == len(raw_steps))
+                and content_mode == "transaction"
+                and payment_collection_basis == "model_selected_after_quote"
+                and not payment_collection_added
+                and activity_quote_ready
+                and bool(payment_collection_gate.get("eligible"))
             )
             payment_collection_added = payment_collection_added or should_send_payment_collection
-            sop_pack = (
-                _first_day_sop_pack_for_step(
+            sop_pack_messages = (
+                _first_day_sop_pack_messages_for_step(
                     source_snapshot,
                     step_index=index,
                     scene=_string(step.get("scene")),
                 )
                 if first_day_trigger
-                else {}
+                else []
             )
-            sop_pack_messages = [
-                dict(message)
-                for message in sop_pack.get("reply_messages") or []
-                if isinstance(message, dict)
-            ]
             sop_pack_texts = _first_day_sop_pack_texts(sop_pack_messages)
-            sop_pack_policy_error = ""
-            if first_day_trigger and sop_pack_texts:
-                sop_pack_policy_error, _ = _first_day_message_policy_error(
-                    sop_pack_texts,
-                    step_index=index,
-                    plan={"source_snapshot": source_snapshot},
-                    context={},
-                )
-            preserve_sop_pack_messages = bool(sop_pack_messages and not sop_pack_policy_error)
-            draft_texts = (
-                sop_pack_texts
-                if preserve_sop_pack_messages
-                else _plan_step_texts(step)
-            )
+            draft_texts = sop_pack_texts or _plan_step_texts(step)
             if not draft_texts:
                 continue
-            resolved_assets_for_step: list[dict[str, Any]] = []
-            if first_day_trigger and preserve_sop_pack_messages:
-                reply_messages = _first_day_materialized_sop_messages(
-                    sop_pack_messages,
-                    allow_payment_collection=should_send_payment_collection,
-                    sent_urls=set(recent_media.get("urls") or []),
-                    used_urls=used_media_urls,
-                )
-                delivered_urls = {
-                    _string((message.get("content") or {}).get("url"))
-                    for message in reply_messages
-                    if isinstance(message, dict) and isinstance(message.get("content"), dict)
-                    and _string((message.get("content") or {}).get("url"))
-                }
-                resolved_assets_for_step = [
-                    dict(asset)
-                    for asset in asset_catalog
-                    if isinstance(asset, dict) and _string(asset.get("url")) in delivered_urls
-                ]
-                for asset in resolved_assets_for_step:
-                    asset_key = _string(
-                        asset.get("document_id") or asset.get("url") or asset.get("asset_id")
-                    )
-                    if asset_key:
-                        used_asset_keys.add(asset_key)
-            else:
-                candidate_assets = (
-                    _first_day_configured_assets_for_step(
-                        source_snapshot,
-                        step_index=index,
-                        asset_catalog=asset_catalog,
-                        recent_media=recent_media,
-                    )
-                    if first_day_trigger
-                    else []
-                )
-                primary_asset = primary_resolved_assets[index - 1]
-                if primary_asset:
-                    candidate_assets.append(primary_asset)
-                for asset in candidate_assets:
-                    asset_key = _string(
-                        asset.get("document_id") or asset.get("url") or asset.get("asset_id")
-                    )
-                    asset_url = _string(asset.get("url"))
-                    if (asset_key and asset_key in used_asset_keys) or (
-                        asset_url and asset_url in used_media_urls
-                    ):
-                        continue
-                    if asset_key:
-                        used_asset_keys.add(asset_key)
-                    if asset_url:
-                        used_media_urls.add(asset_url)
-                    resolved_assets_for_step.append(dict(asset))
-                reply_messages = _compose_outreach_messages(
-                    draft_texts,
-                    resolved_assets=resolved_assets_for_step,
-                    should_send_payment_collection=should_send_payment_collection,
-                    text_limit=None if sop_pack else 2,
-                )
-            resolved_asset = resolved_assets_for_step[0] if resolved_assets_for_step else {}
-            selected_source_ids = _list_strings(
-                (((source_snapshot.get("first_day_workflow") or {}).get("scene_analysis") or {}).get(
-                    "selected_source_ids"
-                ) or {}).get(f"step{index}")
-            )
-            main_source_id = _string(sop_pack.get("source_id")) or next(
-                (
-                    source_id
-                    for source_id in selected_source_ids
-                    if source_id.startswith("appointment-blocker:") and source_id.count(":") == 1
-                ),
-                "",
-            )
+            resolved_asset = resolved_assets[index - 1]
             task_metadata = {
                 "scene": _string(step.get("scene")),
                 "content_mode": content_mode,
@@ -3633,21 +3315,14 @@ class OutreachService:
                 "case_query": _string(step.get("case_query")),
                 "cta": _string(step.get("cta")),
                 "plan_arc": _string(response.get("plan_arc")),
-                "source_kind": (
-                    "mainline_sop"
-                    if sop_pack
-                    else "appointment_blocker"
-                    if main_source_id.startswith("appointment-blocker:")
-                    else ""
-                ),
-                "source_id": main_source_id,
-                "sop_pack_id": _string(sop_pack.get("pack_id")),
-                "sop_category": _string(sop_pack.get("sop_category")),
-                "preserve_sop_pack_messages": preserve_sop_pack_messages,
-                "sop_pack_rewrite_reason": sop_pack_policy_error,
+                "preserve_sop_pack_messages": bool(sop_pack_texts),
                 "sop_pack_reply_messages": sop_pack_messages,
-                "resolved_assets": resolved_assets_for_step,
             }
+            reply_messages = _compose_outreach_messages(
+                draft_texts,
+                resolved_asset=resolved_asset,
+                should_send_payment_collection=should_send_payment_collection,
+            )
             tasks.append(
                 {
                     "step_index": int(step.get("step") or index),
@@ -3659,7 +3334,6 @@ class OutreachService:
                         should_send_payment_collection=should_send_payment_collection,
                         task_metadata=task_metadata,
                         resolved_asset=resolved_asset,
-                        resolved_assets=resolved_assets_for_step,
                     ),
                     "should_send_payment_collection": should_send_payment_collection,
                     "before_send_check": bool(step.get("before_send_check", True)),
@@ -3783,23 +3457,18 @@ class OutreachService:
     def _outreach_asset_catalog(self) -> list[dict[str, Any]]:
         return build_appointment_blocker_asset_catalog(self._appointment_blocker_playbook())
 
-    def _first_day_sop_sequence(self, *, required: bool = False) -> list[dict[str, Any]]:
+    def _first_day_sop_sequence(self) -> list[dict[str, Any]]:
         if self.sop_reply_pack_service is None:
             return []
         try:
             config = self.sop_reply_pack_service.load()
-        except Exception as exc:
-            if required:
-                raise RuntimeError(
-                    f"first_day_sop_context_load_failed: {type(exc).__name__}: {exc}"
-                ) from exc
+        except Exception:
             return []
         packs = config.get("packs") if isinstance(config.get("packs"), list) else []
         output: list[dict[str, Any]] = []
         for pack in packs:
             if not isinstance(pack, dict) or not _bool(pack.get("enabled")):
                 continue
-            pack_id = _string(pack.get("id"))
             raw_scopes = pack.get("scopes")
             scopes = [
                 _string(item)
@@ -3807,9 +3476,7 @@ class OutreachService:
                 if _string(item)
             ] if isinstance(raw_scopes, list) else []
             scope = _string(pack.get("scope"))
-            if "chat_gate" not in set(scopes + ([scope] if scope else [])):
-                continue
-            if pack_id == "s10_new_customer_opening":
+            if "event_first_add" not in set(scopes + ([scope] if scope else [])):
                 continue
             day_stage = _string(pack.get("day_stage"))
             if day_stage and not day_stage.startswith("day1"):
@@ -3825,6 +3492,7 @@ class OutreachService:
             mapped_scene = FIRST_DAY_SOP_SCENE_BY_CATEGORY.get(category, "")
             if not mapped_scene:
                 continue
+            pack_id = _string(pack.get("id"))
             media_asset_ids: list[str] = []
             compact_messages: list[dict[str, Any]] = []
             for order, message in enumerate(messages, start=1):
@@ -3877,23 +3545,11 @@ class OutreachService:
             )
         output.sort(
             key=lambda item: (
-                _int(item.get("order"), 9999),
                 FIRST_DAY_SOP_CATEGORY_ORDER.get(_string(item.get("sop_category")), 999),
+                _int(item.get("order"), 9999),
                 _string(item.get("pack_id")),
             )
         )
-        if required:
-            available_scenes = {
-                _string(item.get("mapped_scene"))
-                for item in output
-                if isinstance(item, dict) and _string(item.get("mapped_scene"))
-            }
-            missing_scenes = sorted({"effect_proof", "activity_intro"} - available_scenes)
-            if missing_scenes:
-                raise RuntimeError(
-                    "first_day_sop_context_incomplete: missing_scenes="
-                    + ",".join(missing_scenes)
-                )
         return output
 
     @staticmethod
@@ -5636,8 +5292,7 @@ class OutreachService:
             wechat=str(task.get("wechat") or plan.get("wechat") or ""),
             external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
         )
-        resolved_assets = _task_resolved_assets(task)
-        resolved_asset = resolved_assets[0] if resolved_assets else {}
+        resolved_asset = _task_resolved_asset(task)
         task_metadata = _task_metadata(task)
         source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
         trigger_context = (
@@ -5648,14 +5303,6 @@ class OutreachService:
         first_day_opened_silence = (
             _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
         )
-        should_send_payment_collection = bool(task.get("should_send_payment_collection"))
-        if first_day_opened_silence:
-            should_send_payment_collection = bool(
-                should_send_payment_collection
-                and _string(task_metadata.get("source_kind")) == "mainline_sop"
-                and _string(task_metadata.get("sop_category"))
-                in FIRST_DAY_ACTIVITY_SOP_CATEGORIES
-            )
         step_index = _int(task.get("step_index"), 0)
         if first_day_opened_silence and _bool(task_metadata.get("preserve_sop_pack_messages")):
             texts = _reply_texts(task.get("reply_messages"))
@@ -5667,18 +5314,7 @@ class OutreachService:
             )
             if policy_error:
                 raise OutreachMessagePolicyError(policy_error or evidence)
-            preserved_messages = [
-                dict(message)
-                for message in task.get("reply_messages") or []
-                if isinstance(message, dict)
-                and (
-                    _string(message.get("type")) != "payment_collection"
-                    or should_send_payment_collection
-                )
-            ]
-            for order, message in enumerate(preserved_messages, start=1):
-                message["order"] = order
-            return preserved_messages
+            return [dict(message) for message in task.get("reply_messages") or [] if isinstance(message, dict)]
         payload = {
             "task": {
                 "step_index": step_index,
@@ -5687,7 +5323,7 @@ class OutreachService:
                 "message_goal": task.get("message_goal"),
                 "draft_text": _first_reply_text(task.get("reply_messages")),
                 "draft_texts": _reply_texts(task.get("reply_messages")),
-                "should_send_payment_collection": should_send_payment_collection,
+                "should_send_payment_collection": bool(task.get("should_send_payment_collection")),
             },
             "task_metadata": task_metadata,
             "resolved_asset": {
@@ -5705,24 +5341,6 @@ class OutreachService:
                 )
                 if resolved_asset.get(key)
             },
-            "resolved_assets": [
-                {
-                    key: asset.get(key)
-                    for key in (
-                        "asset_id",
-                        "type",
-                        "source",
-                        "name",
-                        "annotation",
-                        "use_cases",
-                        "avoid_when",
-                        "tags",
-                        "description",
-                    )
-                    if asset.get(key)
-                }
-                for asset in resolved_assets
-            ],
             "plan": {
                 "customer_stage": plan.get("customer_stage"),
                 "stall_reason": plan.get("stall_reason"),
@@ -5750,14 +5368,8 @@ class OutreachService:
             if not first_day_opened_silence:
                 return _compose_outreach_messages(
                     texts,
-                    resolved_assets=resolved_assets,
-                    should_send_payment_collection=should_send_payment_collection,
-                    text_limit=(
-                        None
-                        if first_day_opened_silence
-                        and _string(task_metadata.get("source_kind")) == "mainline_sop"
-                        else 2
-                    ),
+                    resolved_asset=resolved_asset,
+                    should_send_payment_collection=bool(task.get("should_send_payment_collection")),
                 )
             last_error, last_evidence = _first_day_message_policy_error(
                 texts,
@@ -5768,13 +5380,8 @@ class OutreachService:
             if not last_error:
                 return _compose_outreach_messages(
                     texts,
-                    resolved_assets=resolved_assets,
-                    should_send_payment_collection=should_send_payment_collection,
-                    text_limit=(
-                        None
-                        if _string(task_metadata.get("source_kind")) == "mainline_sop"
-                        else 2
-                    ),
+                    resolved_asset=resolved_asset,
+                    should_send_payment_collection=bool(task.get("should_send_payment_collection")),
                 )
             if attempt == 0:
                 model_messages.extend(

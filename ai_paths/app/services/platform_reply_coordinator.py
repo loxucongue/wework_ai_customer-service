@@ -20,7 +20,6 @@ class PlatformReplyRecord:
     original_content: str
     merged_customer_messages: list[str]
     image_urls: list[str]
-    merged_input_events: list[dict[str, Any]]
     started_at: datetime
     message_id: str = ""
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -40,7 +39,6 @@ class PlatformReplyDecision:
     effective_request_context: dict[str, Any] = field(default_factory=dict)
     merged_customer_messages: list[str] = field(default_factory=list)
     image_urls: list[str] = field(default_factory=list)
-    merged_input_events: list[dict[str, Any]] = field(default_factory=list)
     superseded_request_id: str = ""
     superseded_by_message_id: str = ""
     filter_hit: dict[str, Any] = field(default_factory=dict)
@@ -60,7 +58,6 @@ class PlatformReplyCoordinator:
     async def begin(self, request: ChatRequest, *, request_id: str, request_context: dict[str, Any]) -> PlatformReplyDecision:
         customer_key = _customer_key(request, request_context)
         if str(request_context.get("platform_input_batch_role") or "") == "superseded":
-            input_events = list(request_context.get("merged_input_events") or [])
             return PlatformReplyDecision(
                 mode="input_batch_superseded",
                 request_id=request_id,
@@ -69,7 +66,6 @@ class PlatformReplyCoordinator:
                 effective_content=request.content,
                 effective_request_context=dict(request_context),
                 merged_customer_messages=list(request_context.get("merged_customer_messages") or []),
-                merged_input_events=input_events,
                 superseded_by_message_id=str(
                     request_context.get("platform_input_batch_owner_msgid") or ""
                 ),
@@ -89,14 +85,12 @@ class PlatformReplyCoordinator:
         generation_id = str(uuid4())
         original_content = _mergeable_content(request)
         current_image_urls = _request_image_urls(request)
-        current_input_events = _request_input_events(request, request_context)
         message_id = _message_id(request, request_context)
         async with self._lock:
             self._cleanup_locked()
             previous = self._inflight.get(customer_key)
             previous_messages: list[str] = []
             previous_image_urls: list[str] = []
-            previous_input_events: list[dict[str, Any]] = []
             superseded_request_id = ""
             if previous and previous.status == "running" and message_id:
                 previous.status = "superseded"
@@ -105,12 +99,10 @@ class PlatformReplyCoordinator:
                 previous.cancel_event.set()
                 previous_messages = list(previous.merged_customer_messages or [previous.original_content])
                 previous_image_urls = list(previous.image_urls)
-                previous_input_events = list(previous.merged_input_events)
                 superseded_request_id = previous.request_id
 
             merged_messages = [message for message in [*previous_messages, original_content] if message]
             image_urls = _dedupe_strings([*previous_image_urls, *current_image_urls])[-3:]
-            merged_input_events = _dedupe_events([*previous_input_events, *current_input_events])[-10:]
             record = PlatformReplyRecord(
                 request_id=request_id,
                 customer_key=customer_key,
@@ -118,7 +110,6 @@ class PlatformReplyCoordinator:
                 original_content=original_content,
                 merged_customer_messages=merged_messages,
                 image_urls=image_urls,
-                merged_input_events=merged_input_events,
                 started_at=datetime.now(timezone.utc),
                 message_id=message_id,
             )
@@ -128,7 +119,6 @@ class PlatformReplyCoordinator:
         effective_context = dict(request_context)
         if mode == "merged_latest":
             effective_context["merged_customer_messages"] = merged_messages
-            effective_context["merged_input_events"] = merged_input_events
             effective_context["superseded_request_id"] = superseded_request_id
         if image_urls:
             effective_context["merged_image_urls"] = image_urls
@@ -142,7 +132,6 @@ class PlatformReplyCoordinator:
             effective_request_context=effective_context,
             merged_customer_messages=merged_messages,
             image_urls=image_urls,
-            merged_input_events=merged_input_events,
             superseded_request_id=superseded_request_id,
         )
 
@@ -172,7 +161,6 @@ class PlatformReplyCoordinator:
             superseded_by_message_id=decision.superseded_by_message_id,
             merged_customer_messages=decision.merged_customer_messages,
             image_urls=decision.image_urls,
-            merged_input_events=decision.merged_input_events,
             filter_hit=decision.filter_hit,
         )
 
@@ -186,7 +174,6 @@ class PlatformReplyCoordinator:
             superseded_by_message_id=record.superseded_by_message_id,
             merged_customer_messages=record.merged_customer_messages,
             image_urls=record.image_urls,
-            merged_input_events=record.merged_input_events,
         )
 
     async def is_superseded(self, record: PlatformReplyRecord | None) -> bool:
@@ -267,35 +254,6 @@ def _request_image_urls(request: ChatRequest) -> list[str]:
     return [image_url] if image_url else []
 
 
-def _request_input_events(request: ChatRequest, request_context: dict[str, Any]) -> list[dict[str, Any]]:
-    existing = request_context.get("merged_input_events")
-    if isinstance(existing, list) and existing:
-        return [_compact_event(item) for item in existing if isinstance(item, dict)]
-
-    raw = request_context.get("raw_workflow_payload")
-    parameters = raw.get("parameters") if isinstance(raw, dict) and isinstance(raw.get("parameters"), dict) else {}
-    content_obj = parameters.get("content") if isinstance(parameters.get("content"), dict) else {}
-    event: dict[str, Any] = {
-        "msgid": _message_id(request, request_context),
-        "msgtime": str(request_context.get("msgtime") or content_obj.get("msgtime") or "").strip(),
-        "msgtype": str(request_context.get("msgtype") or content_obj.get("msgtype") or "text").strip().lower() or "text",
-        "content": _mergeable_content(request),
-        "file_image": str(request.file_image or "").strip(),
-        "location": str(request_context.get("location") or content_obj.get("location") or "").strip(),
-        "location_title": str(request_context.get("location_title") or content_obj.get("location_title") or "").strip(),
-        "location_address": str(request_context.get("location_address") or content_obj.get("location_address") or "").strip(),
-        "location_zoom": str(request_context.get("location_zoom") or content_obj.get("location_zoom") or "").strip(),
-    }
-    voice = request_context.get("voice_transcription")
-    if isinstance(voice, dict):
-        event["voice_transcription"] = {
-            key: voice.get(key)
-            for key in ("status", "output_preview", "attempt_count", "cache_hit", "error")
-            if voice.get(key) not in ("", None)
-        }
-    return [_compact_event(event)]
-
-
 def _mergeable_content(request: ChatRequest) -> str:
     content = str(request.content or "").strip()
     image_url = str(request.file_image or "").strip()
@@ -304,37 +262,6 @@ def _mergeable_content(request: ChatRequest) -> str:
     if not content or content == image_url:
         return "[图片]"
     return content.replace(image_url, "[图片]")
-
-
-def _compact_event(event: dict[str, Any]) -> dict[str, Any]:
-    output: dict[str, Any] = {}
-    for key, value in event.items():
-        if value in ("", None, {}, []):
-            continue
-        if isinstance(value, dict):
-            nested = _compact_event(value)
-            if nested:
-                output[key] = nested
-            continue
-        output[key] = value
-    return output
-
-
-def _dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    output: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for event in events:
-        compact = _compact_event(event)
-        if not compact:
-            continue
-        key = str(compact.get("msgid") or "").strip()
-        if not key:
-            key = json.dumps(compact, ensure_ascii=False, sort_keys=True)
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(compact)
-    return output
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:
@@ -360,7 +287,6 @@ def _base_control(
     superseded_by_message_id: str = "",
     merged_customer_messages: list[str] | None = None,
     image_urls: list[str] | None = None,
-    merged_input_events: list[dict[str, Any]] | None = None,
     filter_hit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -373,7 +299,6 @@ def _base_control(
         "superseded_by_message_id": superseded_by_message_id,
         "merged_customer_messages": list(merged_customer_messages or []),
         "merged_image_urls": list(image_urls or []),
-        "merged_input_events": list(merged_input_events or []),
         "filter_hit": filter_hit or {"matched": False},
         "sync_return": {},
         "async_final": {},

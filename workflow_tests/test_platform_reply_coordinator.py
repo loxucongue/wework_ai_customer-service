@@ -105,58 +105,6 @@ class PlatformReplyCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.effective_request_context["merged_image_urls"], second.image_urls)
         self.assertNotIn("https://media.example", second.effective_content)
 
-    async def test_location_card_superseded_by_text_preserves_structured_event_fields(self) -> None:
-        settings = _settings_with_filter(self, {"enabled": True, "match_mode": "contains", "words": []})
-        coordinator = PlatformReplyCoordinator(settings)
-
-        first = await coordinator.begin(
-            _request("定位卡片：龙岗区美域蓝湾(官塘横街南50米)"),
-            request_id="req-location",
-            request_context={
-                "corp_id": "corp",
-                "external_userid": "ext",
-                "msgid": "msg-location",
-                "msgtime": "1786170440778",
-                "msgtype": "location",
-                "location": "22.711181641,114.211708069",
-                "location_title": "龙岗区美域蓝湾(官塘横街南50米)",
-                "location_address": "龙岗区官塘横街",
-            },
-        )
-        second = await coordinator.begin(
-            _request("这附近有门店吗"),
-            request_id="req-text",
-            request_context={"corp_id": "corp", "external_userid": "ext", "msgid": "msg-text", "msgtype": "text"},
-        )
-
-        self.assertEqual(first.mode, "normal")
-        self.assertEqual(second.mode, "merged_latest")
-        events = second.effective_request_context["merged_input_events"]
-        self.assertEqual([event["msgid"] for event in events], ["msg-location", "msg-text"])
-        self.assertEqual(events[0]["msgtype"], "location")
-        self.assertEqual(events[0]["location"], "22.711181641,114.211708069")
-        self.assertEqual(events[0]["location_title"], "龙岗区美域蓝湾(官塘横街南50米)")
-        self.assertEqual(events[0]["location_address"], "龙岗区官塘横街")
-
-    async def test_unknown_transfer_superseded_by_text_preserves_event_fact(self) -> None:
-        settings = _settings_with_filter(self, {"enabled": True, "match_mode": "contains", "words": []})
-        coordinator = PlatformReplyCoordinator(settings)
-
-        await coordinator.begin(
-            _request("【未知消息类型】"),
-            request_id="req-transfer",
-            request_context={"corp_id": "corp", "external_userid": "ext", "msgid": "msg-transfer", "msgtype": "unknown"},
-        )
-        second = await coordinator.begin(
-            _request("我刚转了"),
-            request_id="req-text",
-            request_context={"corp_id": "corp", "external_userid": "ext", "msgid": "msg-text", "msgtype": "text"},
-        )
-
-        events = second.effective_request_context["merged_input_events"]
-        self.assertEqual(events[0]["content"], "【未知消息类型】")
-        self.assertEqual(events[1]["content"], "我刚转了")
-
     async def test_request_without_new_message_id_does_not_cancel_running_request(self) -> None:
         settings = _settings_with_filter(self, {"enabled": True, "match_mode": "contains", "words": []})
         coordinator = PlatformReplyCoordinator(settings)

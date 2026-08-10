@@ -312,10 +312,6 @@ def _build_batch_result(batch: _VoiceBatch, items: list[_VoiceBatchItem]) -> _Vo
         _transcription_summary(item)
         for item in ordered
     ]
-    context["merged_input_events"] = [
-        _voice_input_event(item)
-        for item in ordered
-    ]
     context["platform_input_batch"] = {
         "batch_id": batch.batch_id,
         "message_count": len(ordered),
@@ -336,25 +332,6 @@ def _build_batch_result(batch: _VoiceBatch, items: list[_VoiceBatchItem]) -> _Vo
         success_count=len(successful),
         failure_count=failed_count,
     )
-
-
-def _voice_input_event(item: _VoiceBatchItem) -> dict[str, Any]:
-    request = item.normalized_request or item.request
-    context = request.request_context if isinstance(request.request_context, dict) else {}
-    voice = context.get("voice_transcription") if isinstance(context.get("voice_transcription"), dict) else {}
-    output: dict[str, Any] = {
-        "msgid": item.message_id,
-        "msgtime": str(item.message_time or ""),
-        "msgtype": "voice",
-        "content": str(request.content or "").strip(),
-    }
-    if voice:
-        output["voice_transcription"] = {
-            key: voice.get(key)
-            for key in ("status", "output_preview", "attempt_count", "cache_hit", "error")
-            if voice.get(key) not in ("", None)
-        }
-    return {key: value for key, value in output.items() if value not in ("", None, {}, [])}
 
 
 def _superseded_request(request: ChatRequest, *, batch_result: _VoiceBatchResult) -> ChatRequest:

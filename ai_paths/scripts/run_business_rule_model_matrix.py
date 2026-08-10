@@ -11,20 +11,13 @@ from typing import Any
 
 from app.config import Settings
 from app.graph.nodes.reply_context import reply_user_payload_for_model
-from app.graph.nodes.reply_delivery_manifest import build_sop_delivery_manifest
-from app.graph.nodes.reply_nodes import _apply_runtime_delivery_availability, _reply_retry_messages
+from app.graph.nodes.reply_nodes import _reply_retry_messages
 from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
 from app.graph.planner.brain_v2 import run_planner_brain_v2
 from app.policies.sales_flow import precision_qa_index_for_gate, sales_mainline_for_model
 from app.prompts.reply_synthesizer import build_reply_messages
-from app.prompts.sop_chat_gate import (
-    build_sop_chat_gate_mainline_review_messages,
-    build_sop_chat_gate_messages,
-    build_sop_chat_gate_repair_messages,
-    should_review_sop_chat_gate_mainline,
-)
+from app.prompts.sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
 from app.services.model_client import ModelClient
-from app.services.reply_governance import reply_governance_flags
 from app.services.runtime_budget import build_runtime_budget
 from app.services.sop_execution_service import _chat_gate_output_violations, _sop_summary
 from app.services.sop_reply_pack_service import SopReplyPackService
@@ -214,43 +207,22 @@ def _base_state(settings: Settings, message: str, history: list[str]) -> dict[st
         "corp_id": "test-corp",
         "wechat": "TEST001",
         "runtime_budget": build_runtime_budget(settings),
-        "reply_governance": reply_governance_flags(settings),
     }
 
 
 def _normalize_state_patch(patch: dict[str, Any]) -> dict[str, Any]:
     output = deepcopy(patch)
-    gate = output.get("sop_gate_decision") if isinstance(output.get("sop_gate_decision"), dict) else {}
-    candidates = (
-        output.get("sop_gate_candidate_messages")
-        if isinstance(output.get("sop_gate_candidate_messages"), list)
-        else []
-    )
-    if candidates:
-        output["sop_delivery_manifest"] = build_sop_delivery_manifest(
-            {
-                **gate,
-                "send_sop": str(gate.get("route") or "") in {"sop_only", "ai_then_sop"},
-                "reply_messages": candidates,
-            }
-        )
     summary = output.pop("sent_message_summary", None)
     if isinstance(summary, dict) and isinstance(summary.get("case_image_delivery"), dict):
         delivery = summary["case_image_delivery"]
-        has_delivery_evidence = bool(
-            delivery.get("last_sent_at")
-            or delivery.get("recently_sent")
-            or int(delivery.get("total_events") or delivery.get("count") or 0) > 0
+        output.setdefault("history_events", []).append(
+            {
+                "event_id": "fixture-case-image",
+                "event_type": "case_image_sent",
+                "created_at": delivery.get("last_sent_at") or "2026-07-22T10:00:00+08:00",
+                "facts": {"image_urls": ["https://test.by4dev.4ba.cn/cases/spot-01.jpg"]},
+            }
         )
-        if has_delivery_evidence:
-            output.setdefault("history_events", []).append(
-                {
-                    "event_id": "fixture-case-image",
-                    "event_type": "case_image_sent",
-                    "created_at": delivery.get("last_sent_at") or "2026-07-22T10:00:00+08:00",
-                    "facts": {"image_urls": ["https://test.by4dev.4ba.cn/cases/spot-01.jpg"]},
-                }
-            )
     return output
 
 
@@ -302,10 +274,6 @@ async def _run_reply_case(
             reply_state = {**state, **plan}
             if _planner_requested_tools(plan) and isinstance(case.get("reply_fact_envelope"), dict):
                 reply_state["fact_envelope"] = deepcopy(case["reply_fact_envelope"])
-            reply_state, runtime_delivery_adjusted = _apply_runtime_delivery_availability(reply_state)
-            if runtime_delivery_adjusted:
-                for key in ("reply_contract", "sales_progression", "reply_strategy"):
-                    plan[key] = deepcopy(reply_state.get(key) or {})
             reply_payload = reply_user_payload_for_model(reply_state)
             started = time.perf_counter()
             try:
@@ -322,51 +290,31 @@ async def _run_reply_case(
                     attempts=attempts,
                     timeout_seconds=timeout_seconds,
                 )
-                current_messages = model_messages
-                current_error: Exception | None = None
-                for repair_index in range(0, 3):
-                    try:
-                        reply_messages = validated_model_messages(raw_reply, state=reply_state)
-                        validate_reply_consistency(reply_messages, reply_state)
-                        reply_attempts.append(
-                            {
-                                "raw_json_output": raw_reply,
-                                "status": "accepted" if repair_index == 0 else "repair_accepted",
-                                "repair_index": repair_index,
-                            }
-                        )
-                        current_error = None
-                        break
-                    except Exception as validation_exc:  # noqa: BLE001 - mirror production reply repair
-                        current_error = validation_exc
-                        reply_attempts.append(
-                            {
-                                "raw_json_output": raw_reply,
-                                "status": "validation_failed",
-                                "repair_index": repair_index,
-                                "error": f"{type(validation_exc).__name__}: {validation_exc}",
-                            }
-                        )
-                        if repair_index >= 2:
-                            break
-                        retry_messages = _reply_retry_messages(
-                            current_messages,
-                            validation_exc,
-                            attempt=repair_index + 1,
-                            max_attempts=2,
-                        )
-                        raw_reply = await _call_with_transient_retry(
-                            lambda retry_messages=retry_messages: client.chat_json(
-                                retry_messages,
-                                tier="reply",
-                                temperature=0.45,
-                            ),
-                            attempts=attempts,
-                            timeout_seconds=timeout_seconds,
-                        )
-                        current_messages = retry_messages
-                if current_error is not None:
-                    raise current_error
+                try:
+                    reply_messages = validated_model_messages(raw_reply, state=reply_state)
+                    validate_reply_consistency(reply_messages, reply_state)
+                    reply_attempts.append({"raw_json_output": raw_reply, "status": "accepted"})
+                except Exception as validation_exc:  # noqa: BLE001 - mirror production reply repair
+                    reply_attempts.append(
+                        {
+                            "raw_json_output": raw_reply,
+                            "status": "validation_failed",
+                            "error": f"{type(validation_exc).__name__}: {validation_exc}",
+                        }
+                    )
+                    retry_messages = _reply_retry_messages(model_messages, validation_exc)
+                    raw_reply = await _call_with_transient_retry(
+                        lambda: client.chat_json(
+                            retry_messages,
+                            tier="reply",
+                            temperature=0.45,
+                        ),
+                        attempts=attempts,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    reply_messages = validated_model_messages(raw_reply, state=reply_state)
+                    validate_reply_consistency(reply_messages, reply_state)
+                    reply_attempts.append({"raw_json_output": raw_reply, "status": "repair_accepted"})
                 reply_ms = int((time.perf_counter() - started) * 1000)
                 errors.extend(_reply_checks(reply_messages, case.get("expected_reply") or {}))
             except Exception as exc:  # noqa: BLE001
@@ -446,24 +394,11 @@ def _gate_selector_input(
     case: dict[str, Any],
     message: str,
     packs_by_id: dict[str, dict[str, Any]],
-    governance: dict[str, Any],
 ) -> dict[str, Any]:
     candidates = [packs_by_id[pack_id] for pack_id in case.get("candidates") or [] if pack_id in packs_by_id]
-    conversation_evidence = [
-        {
-            "message_ref": f"chat_{index}",
-            "direction": "unknown",
-            "content": str(content),
-        }
-        for index, content in enumerate(case.get("history") or [], start=1)
-    ]
-    conversation_evidence.append(
-        {"message_ref": "current_message", "direction": "customer", "content": message}
-    )
-    selector_input = {
+    return {
         "current_message": message,
         "recent_conversation": case.get("history") or [],
-        "conversation_evidence": conversation_evidence,
         "mainline": sales_mainline_for_model(),
         "mainline_progress": {
             "completed_pack_ids": case.get("completed_ids") or [],
@@ -472,20 +407,6 @@ def _gate_selector_input(
         "precision_qa_index": precision_qa_index_for_gate(),
         "unfinished_sops": [_sop_summary(pack, customer_memory={}, customer_context={}) for pack in candidates],
     }
-    if governance.get("model_semantic_routing_enabled"):
-        selector_input["decision_ownership"] = {
-            "safety": "safety_gate_model_with_evidence",
-            "scene_and_sales_rhythm": "model",
-            "code": "schema_evidence_facts_and_sending_only",
-        }
-        selector_input["evidence_contract"] = {
-            "allowed_message_refs": [item["message_ref"] for item in conversation_evidence],
-            "rule": (
-                "safety_decision.evidence_refs and scene_decision.evidence_refs must use only exact values from "
-                "allowed_message_refs; never emit recent_conversation indexes or free-form citations"
-            ),
-        }
-    return selector_input
 
 
 def _gate_checks(output: dict[str, Any], case: dict[str, Any], selector_input: dict[str, Any]) -> list[str]:
@@ -498,10 +419,9 @@ def _gate_checks(output: dict[str, Any], case: dict[str, Any], selector_input: d
     if expected_pack and str(output.get("sop_pack_id") or "") != expected_pack:
         errors.append(f"gate.pack expected={expected_pack} actual={output.get('sop_pack_id')}")
     expected_priority = str(case.get("expected_priority") or "")
-    actual_priority = str(output.get("selected_scene_id") or output.get("priority_question_id") or "")
-    if expected_priority and actual_priority != expected_priority:
+    if expected_priority and str(output.get("priority_question_id") or "") != expected_priority:
         errors.append(
-            f"gate.priority expected={expected_priority} actual={actual_priority or None}"
+            f"gate.priority expected={expected_priority} actual={output.get('priority_question_id')}"
         )
     return errors
 
@@ -516,15 +436,9 @@ async def _run_gate_case(
     semaphore: asyncio.Semaphore,
     attempts: int,
     timeout_seconds: float,
-    governance: dict[str, Any],
 ) -> dict[str, Any]:
     async with semaphore:
-        selector_input = _gate_selector_input(
-            case=case,
-            message=message,
-            packs_by_id=packs_by_id,
-            governance=governance,
-        )
+        selector_input = _gate_selector_input(case=case, message=message, packs_by_id=packs_by_id)
         started = time.perf_counter()
         output: dict[str, Any] = {}
         errors: list[str] = []
@@ -539,23 +453,6 @@ async def _run_gate_case(
             )
             output = raw if isinstance(raw, dict) else {}
             violations = _chat_gate_output_violations(output, selector_input)
-            if not violations and should_review_sop_chat_gate_mainline(selector_input, output):
-                reviewed_raw = await _call_with_transient_retry(
-                    lambda: client.chat_json(
-                        build_sop_chat_gate_mainline_review_messages(selector_input, output),
-                        tier="reply",
-                        temperature=0,
-                    ),
-                    attempts=attempts,
-                    timeout_seconds=timeout_seconds,
-                )
-                reviewed_output = reviewed_raw if isinstance(reviewed_raw, dict) else {}
-                reviewed_violations = _chat_gate_output_violations(reviewed_output, selector_input)
-                if not reviewed_violations:
-                    reviewed_output["mainline_review_applied"] = True
-                    reviewed_output["initial_output"] = output
-                    output = reviewed_output
-                    violations = []
             if violations:
                 repaired_raw = await _call_with_transient_retry(
                     lambda: client.chat_json(
@@ -599,11 +496,6 @@ def _review_messages(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "precision_qa_decision": row.get("planner_plan", {}).get("precision_qa_decision"),
             },
             "reply_messages": row.get("reply_messages") or [],
-            "authorized_sop_delivery_manifest": row.get("planner_plan", {}).get(
-                "authorized_sop_delivery_manifest"
-            )
-            or {},
-            "reply_contract": row.get("planner_plan", {}).get("reply_contract") or {},
             "tool_facts": (row.get("reply_payload") or {}).get("tool_facts") or {},
             "transaction_facts": (row.get("reply_payload") or {}).get("transaction_facts") or {},
             "business_rules": (row.get("reply_payload") or {}).get("business_rules") or {},
@@ -615,15 +507,13 @@ def _review_messages(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     system = """
 你是独立的中文微信销售回复质检模型。按每个 case 的 semantic_goal 和完整历史评估最终回复，不做关键词命中评分。
 事实依据包括 tool_facts、transaction_facts、当前 business_rules，以及 precision_qa_playbook.selected_question 中的精准回复业务边界；这些字段中的当前价格、项目范围、年龄边界、预约金与退款政策是已提供事实，不能因为聊天历史未逐字出现就判成编造。
-reply_messages 是最终结构化消息数组；如果数组里有 {"type":"image"}，并且该图片来自 authorized_sop_delivery_manifest、reply_contract 或 tool_facts，就代表本轮确实交付了已授权真实图片，不能再判定“没有交付图片”或“缺少案例依据”。如果数组里有 {"type":"payment_collection"}，就代表本轮确实发了收款卡，不要再说“文本提到卡片但没有可验证卡片”。如果数组里有 {"type":"store_address"}，就代表本轮确实发了真实门店卡，但仍要检查文本是否承诺了未经工具证明的“最近/更方便/本地有店”。
-当前批准的效果信任口径是“我们是做斑点改善的，绝大多数顾客一次就有很好的改善效果”。这是 business_rules 中的权威业务事实，不是“所有客户一次完全去除、根治或永久不再出现”的绝对承诺，不得仅因这句话把 business_accuracy 或 fact_safety 判到3分以下。效果信任场景还必须说明“完成线上活动登记后可到门店免费做皮肤检测，并由门店结合具体情况讲解”；这是本轮必需的低风险事实交付，不是偏离到活动营销主线。
-首次完整活动介绍必须把套餐、268元、每位10元到店抵扣、做的话再付258元、未做或不满意可退且按付款记录核对、线上名额和到店时间规则讲完整。Planner未授权预约金时，只禁止输出 payment_collection 结构卡片，不禁止活动介绍文本说明10元、258元和退款规则；不得把完整活动文本误判成越权收款或营销堆叠。
+reply_messages 是最终结构化消息数组；如果数组里有 {"type":"payment_collection"}，就代表本轮确实发了收款卡，不要再说“文本提到卡片但没有可验证卡片”。如果数组里有 {"type":"store_address"}，就代表本轮确实发了真实门店卡，但仍要检查文本是否承诺了未经工具证明的“最近/更方便/本地有店”。
 客户口头说“付款成功/付好了”不是权威已付事实；回复不能说到账、核实成功或支付已确认。但如果回复只是顺着客户声明继续收姓名电话/到店意向，同时没有重复发卡、没有说已正式排期，可以按事实安全通过，最多扣表达分。
 痘印、痘坑属于当前线上淡斑活动可改善范围，应给出正向承接并回到案例、活动或预约主线；除皱、祛眼袋、黑眼圈、水光等不属于当前线上可预约范围，必须先明确拒绝该项目预约，不能发 payment_collection；若同时用封闭式问题询问客户是否也有斑点/色素/痘印痘坑改善需求，可视为合适的轻主线承接，不应因没有强成交闭环而直接判失败。
 门店场景不要强迫销售话术主动说“这不代表最近/距离未知”这类负面免责声明；只要回复没有承诺最近、更近、方便、车程、公里或分钟，并且真实发出 store_address，就不能因未声明负面边界扣到 3 分以下。若评论判断“整体可上线/基本合格”，各项分数应至少为 4。
 每项1到5分：current_question、history_continuity、business_accuracy、sales_progression、human_tone、fact_safety。
 4分表示可以上线，5分表示优秀。任何事实编造、金额/卡片错误、空回复、答非所问、违反明确禁止项，都必须 overall_pass=false。
-只输出 JSON。合格示例中的分数必须与 `overall_pass=true` 一致：{"evaluations":[{"run_id":"...","current_question":5,"history_continuity":5,"business_accuracy":5,"sales_progression":5,"human_tone":5,"fact_safety":5,"overall_pass":true,"issues":[],"comment":"..."}]}
+只输出 JSON：{"evaluations":[{"run_id":"...","current_question":1,"history_continuity":1,"business_accuracy":1,"sales_progression":1,"human_tone":1,"fact_safety":1,"overall_pass":false,"issues":["..."],"comment":"..."}]}
 """.strip()
     return [
         {"role": "system", "content": system},
@@ -684,7 +574,6 @@ async def _run(args: argparse.Namespace) -> int:
             }
         )
     client = ModelClient(settings)
-    governance = reply_governance_flags(settings)
     reviewer_settings = settings.model_copy(
         update={"model_balanced": args.reviewer_model, "model_balanced_fallbacks": "gpt-5.4-mini"}
     )
@@ -739,7 +628,6 @@ async def _run(args: argparse.Namespace) -> int:
                     semaphore=semaphore,
                     attempts=effective_attempts,
                     timeout_seconds=args.call_timeout_seconds,
-                    governance=governance,
                 )
             )
             if args.limit and len(gate_jobs) >= args.limit:
@@ -838,8 +726,7 @@ async def _run(args: argparse.Namespace) -> int:
         "acceptance_ready": bool(
             reply_rows
             and reply_semantic_reviewed == len(reply_rows)
-            and reply_hard_passed == len(reply_rows)
-            and (reply_passed / reply_semantic_reviewed) >= 0.9
+            and reply_passed == len(reply_rows)
             and gate_passed == len(gate_rows)
         ),
     }
@@ -849,10 +736,7 @@ async def _run(args: argparse.Namespace) -> int:
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     hard_failed = reply_hard_passed != len(reply_rows) or gate_passed != len(gate_rows)
-    semantic_failed = (
-        reply_semantic_reviewed != len(reply_rows)
-        or (reply_semantic_reviewed > 0 and reply_passed / reply_semantic_reviewed < 0.9)
-    )
+    semantic_failed = reply_semantic_reviewed > 0 and reply_passed != reply_semantic_reviewed
     return 1 if hard_failed or semantic_failed else 0
 
 

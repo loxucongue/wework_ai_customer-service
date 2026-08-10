@@ -13,7 +13,6 @@ from app.graph.planner.brain_v2 import (
 )
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import (
-    PLANNER_REPAIR_PROMPT,
     PLANNER_RISK_PATCH_PROMPT,
     PLANNER_SYSTEM_PROMPT,
     PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT,
@@ -87,11 +86,11 @@ def test_one_session_effect_reasoned_refusal_contract_is_present() -> None:
     evidence = rules["customer_visible_evidence_policy"]
 
     assert "完成线上活动登记后" in offer["registration_skin_test"]
-    assert "绝大多数顾客一次就有很好的改善效果" in evidence["effect_confidence"]
+    assert "绝大多数客户都是一次就好" in evidence["effect_confidence"]
     assert "带原因的可挽回异议" in str(rules["conversion_psychology"])
     assert "不能按“不做了/不要了/算了”几个字直接终止" in PLANNER_SYSTEM_PROMPT
     assert "不得输出 `terminal/close/no_action`" in PLANNER_SYSTEM_PROMPT
-    assert "绝大多数顾客一次就有很好的改善效果" in PLANNER_SYSTEM_PROMPT
+    assert "绝大多数客户都是一次就好" in PLANNER_SYSTEM_PROMPT
     assert "最终结果必须是 `decision=need_tools`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "`closing_move.must_not_repeat` 也不得写 `case_image`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "视为语义冲突" in REPLY_SYSTEM_PROMPT
@@ -135,11 +134,11 @@ def test_timeout_and_recovery_prompts_keep_platform_transfer_as_authoritative_pa
     from app.graph.planner.brain_v2 import PLANNER_TIMEOUT_RECOVERY_PROMPT
 
     assert "deposit_state=paid_by_platform_transfer_event" in PLANNER_TIMEOUT_RECOVERY_PROMPT
-    assert "绝大多数顾客一次就有很好的改善效果" in PLANNER_TIMEOUT_RECOVERY_PROMPT
+    assert "绝大多数客户都是一次就好" in PLANNER_TIMEOUT_RECOVERY_PROMPT
     assert "按可挽回异议针对原因处理一次" in PLANNER_TIMEOUT_RECOVERY_PROMPT
     assert "paid_by_platform_transfer_event 是权威已付" in REPLY_RECOVERY_SYSTEM_PROMPT
     assert "带原因的效果异议" in REPLY_RECOVERY_SYSTEM_PROMPT
-    assert "绝大多数顾客一次就有很好的改善效果" in REPLY_RECOVERY_SYSTEM_PROMPT
+    assert "绝大多数客户都是一次就好" in REPLY_RECOVERY_SYSTEM_PROMPT
 
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
@@ -234,26 +233,16 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert "不得在草稿中复述健康、过敏、检测或适配提醒" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
 
 
-def test_planner_gate_error_still_answers_activity_before_store_capture() -> None:
-    assert "sop_gate_decision.route=error" in PLANNER_SYSTEM_PROMPT
-    assert "门店和城市不是解释或登记活动的前置条件" in PLANNER_SYSTEM_PROMPT
-    assert "不能只问城市" in PLANNER_SYSTEM_PROMPT
-    assert Settings.model_fields["sop_chat_gate_total_timeout_seconds"].default >= 25.0
-
-
 def test_store_location_prompts_do_not_expose_local_no_store_wording() -> None:
     rules = load_business_rules()
     rules_text = json.dumps(rules, ensure_ascii=False)
     planner_facts = json.dumps(planner_business_rules_prompt_section(), ensure_ascii=False)
 
-    assert "当前给您匹配到/可去的是这家或这几家" in rules_text
-    assert "平时常去哪个城市" in rules_text
+    assert "status=no_valid_candidate时，才如实说明客户已确认的地区目前暂时没有门店" in rules_text
     assert "温州龙湾" in PLANNER_SYSTEM_PROMPT
-    assert "平时常去哪个城市" in PLANNER_SYSTEM_PROMPT
     assert "POI 推断出的上级行政区必须先确认" in planner_facts
     assert "也不要说“XX没有门店/当地暂无门店/本地没有门店”" in REPLY_SYSTEM_PROMPT
-    assert "当前给您匹配到/可去的是这家或这几家" in REPLY_SYSTEM_PROMPT
-    assert "平时常去哪个城市" in REPLY_SYSTEM_PROMPT
+    assert "询问客户平时常去哪个城市" in REPLY_SYSTEM_PROMPT
     assert "我不乱发、不乱指、不瞎推荐、不敢乱说" in REPLY_SYSTEM_PROMPT
     assert "不得主动猜测或列举权威门店事实中没有出现的城市" in REPLY_SYSTEM_PROMPT
 
@@ -366,23 +355,17 @@ def test_planner_actual_messages_include_risk_transaction_and_rule_contracts() -
     initial = planner_v2_messages_for_model(state)
     repair = planner_v2_repair_messages_for_model(
         state,
-        original_plan={"planner_decision": "direct_reply", "planner_reply_messages": []},
-        violations=[{"missing": "empty_direct_reply", "note": "需要客户可见回复"}],
+        original_plan={"decision": "direct_reply", "reply_messages": []},
+        violations=[{"code": "empty_direct_reply"}],
     )
-    initial_joined = "\n".join(str(item.get("content") or "") for item in initial)
-    assert PLANNER_RISK_PATCH_PROMPT in initial_joined
-    assert PLANNER_TRANSACTION_PATCH_PROMPT in initial_joined
-    assert '"scene_catalog"' in initial_joined
-    assert '"conversion_psychology"' in initial_joined
-    assert '"transaction_policy"' in initial_joined
-    assert "真实结构素材的当轮交付同时算“回答当前问题”和本轮主线推进" in initial_joined
-
-    repair_joined = "\n".join(str(item.get("content") or "") for item in repair)
-    assert PLANNER_REPAIR_PROMPT in repair_joined
-    assert "Current Repair Business Rules" in repair_joined
-    repair_payload = json.loads(repair[-1]["content"])
-    assert repair_payload["original_plan"]
-    assert repair_payload["tool_policy_violations"]
+    for messages in (initial, repair):
+        joined = "\n".join(str(item.get("content") or "") for item in messages)
+        assert PLANNER_RISK_PATCH_PROMPT in joined
+        assert PLANNER_TRANSACTION_PATCH_PROMPT in joined
+        assert '"scene_catalog"' in joined
+        assert '"conversion_psychology"' in joined
+        assert '"transaction_policy"' in joined
+        assert "`closing_move` 禁止再次选择 `send_case`" in joined
 
 
 def test_chat_gate_actual_messages_keep_sop_precision_and_ai_boundaries() -> None:
@@ -416,30 +399,6 @@ def test_chat_gate_actual_messages_keep_sop_precision_and_ai_boundaries() -> Non
         "不能用宽泛项目介绍或案例包抢答",
     ]:
         assert marker in joined
-
-
-def test_chat_gate_prompt_keeps_activity_sop_when_location_and_price_are_merged() -> None:
-    messages = build_sop_chat_gate_messages(
-        {
-            "current_message": "客户连续发送了多条未回复消息：深圳市龙岗区中心城；怎么收费",
-            "unfinished_sops": [
-                {
-                    "id": "s10_activity_intro",
-                    "mainline_stage": "activity_and_price",
-                    "reply_messages": [{"type": "text", "content": {"text": "活动介绍"}}],
-                }
-            ],
-        }
-    )
-    joined = "\n".join(str(item.get("content") or "") for item in messages)
-
-    assert "Highest Priority Combined-Intent Contract" in joined
-    assert "必须选择 `ai_then_sop`" in joined
-    assert "门店事实需要 Planner 调用工具，但这不构成活动介绍的前置条件" in joined
-    assert '"route":"ai_then_sop"' in joined
-    assert '"type":"store_lookup"' in joined
-    assert "深圳市龙岗区中心城" in joined
-    assert "怎么收费" in joined
 
 
 def test_reply_actual_messages_keep_precision_rules_and_stage_business_rules() -> None:
@@ -506,42 +465,6 @@ def test_planner_and_reply_prompts_close_need_inquiry_after_first_answer() -> No
         assert marker in joined
 
 
-def test_case_delivery_can_satisfy_this_turns_progression_without_overloading() -> None:
-    joined = "\n".join([PLANNER_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT])
-
-    for marker in [
-        "真实结构素材的当轮交付同时算“回答当前问题”和本轮主线推进",
-        "素材交付本身就是本轮推进",
-        "客户追问“什么方向”",
-        "查询 `kb_search(case_studies)`",
-        "不再追加完整活动报价、预约金",
-    ]:
-        assert marker in joined
-
-
-def test_reply_prompt_prefers_unified_store_resolution_contract() -> None:
-    for marker in [
-        "tool_facts.store_resolution",
-        "输入位置、解析结果、候选策略、可发送门店 ID 和安全边界",
-        "旧字段 `store_resolution_fact/store_facts/recommended_store/store_lookup_status` 只作详情补充",
-    ]:
-        assert marker in REPLY_SYSTEM_PROMPT
-
-
-def test_sop_chat_gate_never_direct_sends_payment_collection_packs() -> None:
-    source = "\n".join([
-        SOP_CHAT_GATE_SYSTEM_PROMPT,
-        (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8"),
-    ])
-
-    for marker in [
-        "含 `payment_collection` 的 SOP 包不得选择 `sop_only` 直接结束",
-        "gate_payment_conflict:payment_collection_pack_cannot_sop_only",
-        "检测收费吗、是不是三百多全包、有没有隐形消费",
-    ]:
-        assert marker in source
-
-
 def test_planner_timeout_recovery_keeps_current_scene_and_flat_tool_contracts() -> None:
     messages = planner_v2_timeout_retry_messages_for_model(
         {"normalized_content": "洪湖市有门店吗", "conversation_history": []},
@@ -586,7 +509,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
 
     for business_rule in [
         "客户已是斑点改善意向人群",
-        "绝大多数顾客一次就有很好的改善效果",
+        "这类大多数客户可以做、改善反馈不错",
         "不要让客户发照片做线上诊断",
         "未做或不满意可退",
         "实际按付款记录核对",
@@ -1084,8 +1007,7 @@ def test_effect_concern_without_case_tool_remains_a_model_decision() -> None:
     assert not any(item.get("subtype") == "kb_search" for item in plan["tool_policy_violations"])
     assert "sent_message_summary.case_image_delivery" in PLANNER_SYSTEM_PROMPT
     assert "SOP完成、画像总结和文字承诺不能单独证明客户近期看过图" in PLANNER_SYSTEM_PROMPT
-    assert "上一轮确实刚发图后的评价续问可以不重复发送同一张图" in PLANNER_SYSTEM_PROMPT
-    assert "仍应先查询是否有另一张未发同类图" in PLANNER_SYSTEM_PROMPT
+    assert "上一轮确实刚发图后的评价续问可以不重复查询" in PLANNER_SYSTEM_PROMPT
     assert "改天" in REPLY_SYSTEM_PROMPT
 
 

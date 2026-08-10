@@ -18,16 +18,10 @@ from app.policies.sales_flow import (
     sales_mainline_for_model,
 )
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
-from app.prompts.sop_chat_gate import (
-    build_sop_chat_gate_mainline_review_messages,
-    build_sop_chat_gate_messages,
-    build_sop_chat_gate_repair_messages,
-    should_review_sop_chat_gate_mainline,
-)
+from app.prompts.sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
 from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
-from app.services.customer_relation import customer_relation_is_deleted, normalize_customer_relation
 from app.services.model_client import ModelClient
 from app.services.sop_event_decision import normalize_event_decision, selected_candidate_packs
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
@@ -228,7 +222,6 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 只输出 JSON：
 {{
   "decision": "send | merge | send_ai_touch | handoff_or_safety_notice | skip | defer | handoff_to_ai_reply",
-  "safety_decision": {{"block_send": false, "reason_type": "none | severe_complaint | stop_contact | health_risk | paid_conflict | customer_deleted | realtime_conversation | unreliable_identity", "evidence_refs": [], "reason": ""}},
   "strategy": "continue_mainline | recover_backlog | soft_touch | safety_notice | conflict_guard | frequency_guard | realtime_handoff",
   "selected_pack_ids": ["first_add_flow 时来自 candidate_sops；send 只能1个，merge 必须是相邻2个"],
   "merge_pack_ids": [],
@@ -244,17 +237,6 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   "message_operations": [{{"op": "insert_text_after", "after_order": 1, "text": "只新增一句无新事实的承接 text"}}]
 }}
 """.strip()
-
-_SOP_EVENT_SAFETY_OUTPUT_FIELD = (
-    '  "safety_decision": {"block_send": false, "reason_type": "none | severe_complaint | stop_contact | health_risk | '
-    'paid_conflict | customer_deleted | realtime_conversation | unreliable_identity", "evidence_refs": [], "reason": ""},\n'
-)
-
-
-def _sop_event_system_prompt(*, schema_only: bool) -> str:
-    if schema_only:
-        return SOP_EVENT_SYSTEM_PROMPT
-    return SOP_EVENT_SYSTEM_PROMPT.replace(_SOP_EVENT_SAFETY_OUTPUT_FIELD, "")
 
 SOP_EVENT_SYSTEM_PROMPT += """
 
@@ -299,9 +281,6 @@ class SopExecutionService:
         event_model_total_timeout_seconds: float = 60.0,
         chat_gate_total_timeout_seconds: float = 15.0,
         event_model_max_concurrency: int = 2,
-        model_semantic_routing_enabled: bool = False,
-        event_schema_only_normalizer_enabled: bool = False,
-        governance_shadow_mode: bool = False,
     ) -> None:
         self.repository = repository
         self.sop_reply_pack_service = sop_reply_pack_service
@@ -313,11 +292,6 @@ class SopExecutionService:
         self.event_model_attempt_timeout_seconds = max(1.0, float(event_model_attempt_timeout_seconds or 45.0))
         self.event_model_total_timeout_seconds = max(1.0, float(event_model_total_timeout_seconds or 60.0))
         self.chat_gate_total_timeout_seconds = max(1.0, float(chat_gate_total_timeout_seconds or 15.0))
-        shadow_mode = bool(governance_shadow_mode)
-        self.model_semantic_routing_enabled = bool(model_semantic_routing_enabled) and not shadow_mode
-        self.model_semantic_routing_shadow_enabled = bool(model_semantic_routing_enabled) and shadow_mode
-        self.event_schema_only_normalizer_enabled = bool(event_schema_only_normalizer_enabled) and not shadow_mode
-        self.event_schema_only_normalizer_shadow_enabled = bool(event_schema_only_normalizer_enabled) and shadow_mode
         self._event_model_semaphore = asyncio.Semaphore(max(1, int(event_model_max_concurrency or 1)))
 
     async def evaluate_chat_gate(
@@ -364,16 +338,15 @@ class SopExecutionService:
                         }
                     )
                     return _finish(result, started)
-                relation = normalize_customer_relation(request_context)
-                if customer_relation_is_deleted(relation):
-                    result.update(
-                        {
-                            "mode": "platform_auto_opening_customer_deleted",
-                            "send_sop": False,
-                            "need_ai_reply": False,
-                            "reason": "customer_deleted",
-                        }
-                    )
+                customer_memory = self._load_chat_customer_memory(identity)
+                order_gate = self._load_chat_order_gate(
+                    request=request,
+                    request_context=request_context,
+                    identity=identity,
+                    customer_memory=customer_memory,
+                )
+                result["order_gate"] = order_gate.get("summary", {})
+                if _apply_chat_order_gate_block(result, order_gate):
                     return _finish(result, started)
                 self._handle_platform_auto_opening(
                     result=result,
@@ -402,23 +375,6 @@ class SopExecutionService:
                         "send_sop": False,
                         "need_ai_reply": True,
                         "reason": "wechat_required_for_sop_scope",
-                    }
-                )
-                return _finish(result, started)
-            customer_memory = self._load_chat_customer_memory(identity)
-            if self.model_semantic_routing_enabled and _has_persisted_stop_contact(customer_memory):
-                result.update(
-                    {
-                        "mode": "safety_stop_contact",
-                        "send_sop": False,
-                        "need_ai_reply": False,
-                        "reason": "persisted_stop_contact",
-                        "safety_decision": {
-                            "status": "stop",
-                            "reason_type": "stop_contact",
-                            "evidence_refs": [],
-                            "reason": "persisted_stop_contact",
-                        },
                     }
                 )
                 return _finish(result, started)
@@ -470,6 +426,7 @@ class SopExecutionService:
                 result.update({"mode": "complete", "reason": "all_sop_packs_completed"})
                 return _finish(result, started)
 
+            customer_memory = self._load_chat_customer_memory(identity)
             order_gate = self._load_chat_order_gate(
                 request=request,
                 request_context=request_context,
@@ -488,43 +445,11 @@ class SopExecutionService:
                 customer_memory=customer_memory,
                 customer_context=order_gate.get("customer_context", {}),
             )
-            if self.model_semantic_routing_enabled:
-                selector_input.pop("customer_stance_evidence", None)
-                selector_input["decision_ownership"] = {
-                    "safety": "model_with_message_evidence",
-                    "scene_and_sales_rhythm": "model",
-                    "facts_schema_tools_and_delivery": "code",
-                }
-                selector_input["evidence_contract"] = _chat_gate_evidence_contract(selector_input)
             result["selector_input"] = compact(selector_input, max_chars=9000)
-            gate_deadline = time.monotonic() + self.chat_gate_total_timeout_seconds
             selector_output = await self._select_chat_sop(
                 selector_input,
-                deadline_monotonic=gate_deadline,
+                deadline_monotonic=time.monotonic() + self.chat_gate_total_timeout_seconds,
             )
-            if self.model_semantic_routing_shadow_enabled:
-                shadow_input = dict(selector_input)
-                shadow_input.pop("customer_stance_evidence", None)
-                shadow_input["decision_ownership"] = {
-                    "safety": "model_with_message_evidence",
-                    "scene_and_sales_rhythm": "model",
-                    "facts_schema_tools_and_delivery": "code",
-                }
-                shadow_input["evidence_contract"] = _chat_gate_evidence_contract(shadow_input)
-                try:
-                    shadow_output = await self._select_chat_sop(
-                        shadow_input,
-                        deadline_monotonic=gate_deadline,
-                    )
-                    result["governance_shadow"] = _chat_gate_shadow_comparison(
-                        selector_output,
-                        shadow_output,
-                    )
-                except Exception as exc:  # noqa: BLE001 - shadow evaluation never changes delivery
-                    result["governance_shadow"] = {
-                        "status": "failed",
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
             result["selector_output"] = selector_output
             result["decision"] = _string(selector_output.get("decision"))
             result["selected_pack_ids"] = [
@@ -544,29 +469,6 @@ class SopExecutionService:
             result["priority_question_id"] = selected_scene_id
             result["resume_stage"] = _string(selector_output.get("resume_stage"))
             result["active_task"] = _chat_gate_active_task(selector_output.get("active_task"))
-            result["safety_decision"] = _chat_gate_safety_decision(selector_output.get("safety_decision"))
-            result["scene_decision"] = _chat_gate_scene_decision(selector_output.get("scene_decision"))
-            if self.model_semantic_routing_enabled and result["safety_decision"].get("status") == "stop":
-                safety = result["safety_decision"]
-                if safety.get("reason_type") == "stop_contact" and self.memory_store:
-                    scope = customer_scope_from_identity(identity)
-                    if scope.persistence_allowed:
-                        result["stop_contact_persistence"] = self.memory_store.record_stop_contact(
-                            scope.sales_contact_key,
-                            request_id=request_id,
-                            evidence_refs=list(safety.get("evidence_refs") or []),
-                            reason=_string(safety.get("reason")),
-                        )
-                result.update(
-                    {
-                        "mode": "safety_stop_no_reply",
-                        "send_sop": False,
-                        "need_ai_reply": False,
-                        "reason": _string(safety.get("reason_type")) or "safety_stop",
-                        "reply_messages": [],
-                    }
-                )
-                return _finish(result, started)
             result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
             result["message_operations"] = _message_operations(selector_output.get("message_operations"))
             selected = _selected_pack(selector_output, unfinished)
@@ -628,9 +530,9 @@ class SopExecutionService:
                 identity=identity,
                 pack=selected,
                 reply_messages=messages,
-                mark_sent=False,
+                mark_sent=route != "ai_then_sop",
             )
-            expected_task_status = "pending"
+            expected_task_status = "pending" if route == "ai_then_sop" else "sent"
             if task.get("status") != expected_task_status:
                 result.update(
                     {
@@ -796,7 +698,6 @@ class SopExecutionService:
             result.update(
                 {
                     "mode": "platform_auto_opening_sop",
-                    "delivery_mode": "configured_passthrough",
                     "send_sop": True,
                     "sop_pack_id": str(pack.get("id") or ""),
                     "sop_pack_name": str(pack.get("name") or ""),
@@ -833,21 +734,6 @@ class SopExecutionService:
         output = data if isinstance(data, dict) else {}
         violations = _chat_gate_output_violations(output, selector_input)
         if not violations:
-            if should_review_sop_chat_gate_mainline(selector_input, output):
-                try:
-                    reviewed = await self.model_client.chat_json(
-                        build_sop_chat_gate_mainline_review_messages(selector_input, output),
-                        tier="reply",
-                        temperature=0,
-                        deadline_monotonic=deadline_monotonic,
-                    )
-                except Exception:  # noqa: BLE001 - a valid initial route remains usable
-                    reviewed = {}
-                reviewed_output = reviewed if isinstance(reviewed, dict) else {}
-                if reviewed_output and not _chat_gate_output_violations(reviewed_output, selector_input):
-                    reviewed_output["mainline_review_applied"] = True
-                    reviewed_output["initial_output"] = output
-                    return reviewed_output
             return output
         repaired = await self.model_client.chat_json(
             build_sop_chat_gate_repair_messages(selector_input, output, violations),
@@ -948,15 +834,11 @@ class SopExecutionService:
             selector_output, model_attempts, model_error = await self._judge_event_sop_with_retries(selector_input)
             result["model_attempts"] = model_attempts
             if model_error:
-                fallback_output = (
-                    {}
-                    if self.event_schema_only_normalizer_enabled
-                    else _model_error_event_fallback(
-                        selector_input,
-                        event_type=event_type,
-                        actions_reply_messages=actions_reply_messages,
-                        model_error=model_error,
-                    )
+                fallback_output = _model_error_event_fallback(
+                    selector_input,
+                    event_type=event_type,
+                    actions_reply_messages=actions_reply_messages,
+                    model_error=model_error,
                 )
                 if fallback_output:
                     selector_output = fallback_output
@@ -986,11 +868,7 @@ class SopExecutionService:
                         "send_sop": False,
                         "need_ai_reply": False,
                         "error": model_error,
-                        "reason": (
-                            "model_decision_failed_no_send"
-                            if self.event_schema_only_normalizer_enabled
-                            else "event_sop_model_retries_exhausted"
-                        ),
+                        "reason": "event_sop_model_retries_exhausted",
                     }
                 )
                 return _finish(result, started)
@@ -1100,8 +978,6 @@ class SopExecutionService:
             try:
                 async with self._event_model_semaphore:
                     output = await self._judge_event_sop(selector_input, deadline_monotonic=deadline)
-                if self.event_schema_only_normalizer_enabled and _string(output.get("error")):
-                    raise ValueError(_string(output.get("error")))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1149,9 +1025,7 @@ class SopExecutionService:
         messages = [
             {
                 "role": "system",
-                "content": _sop_event_system_prompt(
-                    schema_only=self.event_schema_only_normalizer_enabled,
-                ),
+                "content": SOP_EVENT_SYSTEM_PROMPT,
             },
             {
                 "role": "user",
@@ -1167,32 +1041,11 @@ class SopExecutionService:
             temperature=0,
             deadline_monotonic=deadline_monotonic,
         )
-        normalized, violations = normalize_event_decision(
-            data if isinstance(data, dict) else {},
-            selector_input,
-            schema_only=self.event_schema_only_normalizer_enabled,
-        )
-        if self.event_schema_only_normalizer_shadow_enabled:
-            shadow_output, shadow_violations = normalize_event_decision(
-                data if isinstance(data, dict) else {},
-                selector_input,
-                schema_only=True,
-            )
-            normalized["governance_shadow"] = _event_normalizer_shadow_comparison(
-                normalized,
-                violations,
-                shadow_output,
-                shadow_violations,
-            )
+        normalized, violations = normalize_event_decision(data if isinstance(data, dict) else {}, selector_input)
         if not violations:
             return normalized
         repair_messages = [
-            {
-                "role": "system",
-                "content": _sop_event_system_prompt(
-                    schema_only=self.event_schema_only_normalizer_enabled,
-                ),
-            },
+            {"role": "system", "content": SOP_EVENT_SYSTEM_PROMPT},
             {
                 "role": "system",
                 "content": (
@@ -1202,9 +1055,6 @@ class SopExecutionService:
                     "若候选的 payment_collection_gate 是 paid_skip_card，"
                     "且该阶段仍应触达，保留候选包并用 remove_message 删除每一张受限收款卡，同时改写相关 text；"
                     "activity_intro_required 不能靠删卡绕过，必须选择合法前序候选或拒发。"
-                    "如果 violations 包含 platform_no_send_requires_safety_evidence，说明平台任务有可发送内容，"
-                    "但 no_send 没有严重客诉、停止联系、当前健康风险、已付冲突、客户删除、实时聊天或身份不可靠的消息证据；"
-                    "应重新判断并发送，只有真实硬边界才能保留 skip/defer，且 safety_decision 必须引用输入消息编号。"
                     "如果 violations 包含 repeated_candidates_should_use_ai_touch，说明候选包已重复但没有客户立场、风险或频率硬阻断；"
                     "此时必须改成 decision=send_ai_touch，输出一条简短自然的 ai_touch_messages，引导客户继续开口或接上活动流程，"
                     "不要继续 skip/defer，也不要选择重复候选包。"
@@ -1235,25 +1085,12 @@ class SopExecutionService:
         repaired_output, repaired_violations = normalize_event_decision(
             repaired if isinstance(repaired, dict) else {},
             selector_input,
-            schema_only=self.event_schema_only_normalizer_enabled,
         )
-        if self.event_schema_only_normalizer_shadow_enabled:
-            shadow_output, shadow_violations = normalize_event_decision(
-                repaired if isinstance(repaired, dict) else {},
-                selector_input,
-                schema_only=True,
-            )
-            repaired_output["governance_shadow"] = _event_normalizer_shadow_comparison(
-                repaired_output,
-                repaired_violations,
-                shadow_output,
-                shadow_violations,
-            )
         if not repaired_violations:
             repaired_output["repair_applied"] = True
             repaired_output["initial_violations"] = violations
             return repaired_output
-        if not self.event_schema_only_normalizer_enabled and "completed_activity_with_deposit_candidate_should_continue" in set(violations + repaired_violations):
+        if "completed_activity_with_deposit_candidate_should_continue" in set(violations + repaired_violations):
             fallback = _completed_activity_deposit_fallback(
                 selector_input,
                 initial_violations=violations,
@@ -1261,7 +1098,7 @@ class SopExecutionService:
             )
             if fallback:
                 return fallback
-        if not self.event_schema_only_normalizer_enabled and "backlog_should_use_mainline_candidate" in set(violations + repaired_violations):
+        if "backlog_should_use_mainline_candidate" in set(violations + repaired_violations):
             fallback = _backlog_mainline_candidate_fallback(
                 selector_input,
                 initial_violations=violations,
@@ -1269,7 +1106,7 @@ class SopExecutionService:
             )
             if fallback:
                 return fallback
-        if not self.event_schema_only_normalizer_enabled and "repeated_candidates_should_use_ai_touch" in set(violations + repaired_violations):
+        if "repeated_candidates_should_use_ai_touch" in set(violations + repaired_violations):
             return _repeated_candidate_ai_touch_fallback(
                 initial_violations=violations,
                 repair_violations=repaired_violations,
@@ -1281,17 +1118,8 @@ class SopExecutionService:
             "selected_pack_ids": [],
             "merge_pack_ids": [],
             "need_ai_reply": False,
-            "reason": (
-                "model_decision_failed_no_send"
-                if self.event_schema_only_normalizer_enabled
-                else "event_decision_invalid_after_repair"
-            ),
-            "error": (
-                "model_decision_failed_no_send:"
-                if self.event_schema_only_normalizer_enabled
-                else "event_decision_invalid_after_repair:"
-            )
-            + ",".join(repaired_violations),
+            "reason": "event_decision_invalid_after_repair",
+            "error": "event_decision_invalid_after_repair:" + ",".join(repaired_violations),
             "text_adjustments": [],
             "message_operations": [],
             "initial_violations": violations,
@@ -3123,12 +2951,6 @@ def _chat_gate_output_violations(
         if isinstance(item, dict) and _string(item.get("scene_id"))
     }
     violations: list[str] = []
-    governed = isinstance(selector_input.get("decision_ownership"), dict)
-    if governed:
-        violations.extend(_chat_gate_safety_decision_violations(selector_output, selector_input))
-        safety = _chat_gate_safety_decision(selector_output.get("safety_decision"))
-        if _string(safety.get("status")) != "stop":
-            violations.extend(_chat_gate_scene_decision_violations(selector_output, selector_input))
     expected_coverage = {
         "sop_only": "exact",
         "ai_then_sop": "partial",
@@ -3139,9 +2961,6 @@ def _chat_gate_output_violations(
     hard_rule = precision_qa_for_id(selected_scene_id)
     if selected_scene_id and selected_scene_id not in scene_ids and not hard_rule.get("hard_rule"):
         violations.append("unknown_selected_scene_id")
-    expected_route = _string(hard_rule.get("gate_route"))
-    if governed and expected_route and route != expected_route:
-        violations.append(f"selected_scene_route_mismatch:{selected_scene_id}:{expected_route}")
     if active_task.get("type") == "location_confirmation":
         if active_task.get("required_tool") != "customer_store_lookup" or not active_task.get("query"):
             violations.append("location_confirmation_requires_store_lookup_task")
@@ -3152,7 +2971,6 @@ def _chat_gate_output_violations(
             violations.append("resume_stage_must_match_selected_pack")
         if pack_id in packs:
             violations.extend(_chat_gate_party_size_violations(selector_output, selector_input, packs[pack_id]))
-            violations.extend(_chat_gate_payment_direct_send_violations(route, packs[pack_id]))
             violations.extend(_chat_gate_pressure_violations(selector_input, packs[pack_id]))
     else:
         if pack_id:
@@ -3166,121 +2984,10 @@ def _chat_gate_output_violations(
     return violations
 
 
-def _chat_gate_scene_decision_violations(
-    selector_output: dict[str, Any],
-    selector_input: dict[str, Any],
-) -> list[str]:
-    scene = selector_output.get("scene_decision")
-    if not isinstance(scene, dict):
-        return ["scene_decision_missing"]
-    violations: list[str] = []
-    if not _string(scene.get("current_question")):
-        violations.append("scene_decision_current_question_required")
-    questions = scene.get("explicit_questions") if isinstance(scene.get("explicit_questions"), list) else []
-    if not questions:
-        violations.append("scene_decision_explicit_questions_required")
-    elif any(
-        not isinstance(item, dict)
-        or not _string(item.get("question_id"))
-        or not _string(item.get("question"))
-        or not _string(item.get("resolution_goal"))
-        for item in questions
-    ):
-        violations.append("scene_decision_explicit_question_invalid")
-    if _string(scene.get("blocker")) not in {"effect", "price", "distance", "time", "trust", "payment", "none"}:
-        violations.append("scene_decision_blocker_invalid")
-    evidence = {
-        _string(item.get("message_ref"))
-        for item in selector_input.get("conversation_evidence") or []
-        if isinstance(item, dict) and _string(item.get("message_ref"))
-    }
-    refs = [_string(item) for item in scene.get("evidence_refs") or [] if _string(item)]
-    if not refs:
-        violations.append("scene_decision_requires_evidence")
-    elif any(ref not in evidence for ref in refs):
-        violations.append("scene_decision_evidence_ref_invalid")
-    return violations
-
-
-def _chat_gate_evidence_contract(selector_input: dict[str, Any]) -> dict[str, Any]:
-    allowed_refs = [
-        _string(item.get("message_ref"))
-        for item in selector_input.get("conversation_evidence") or []
-        if isinstance(item, dict) and _string(item.get("message_ref"))
-    ]
-    return {
-        "allowed_message_refs": allowed_refs,
-        "rule": (
-            "safety_decision.evidence_refs and scene_decision.evidence_refs must use only exact values from "
-            "allowed_message_refs; never emit recent_conversation indexes or free-form citations"
-        ),
-    }
-
-
-def _chat_gate_safety_decision_violations(
-    selector_output: dict[str, Any],
-    selector_input: dict[str, Any],
-) -> list[str]:
-    safety = _chat_gate_safety_decision(selector_output.get("safety_decision"))
-    status = _string(safety.get("status"))
-    reason_type = _string(safety.get("reason_type"))
-    if status not in {"continue", "stop"}:
-        return ["safety_decision_status_invalid"]
-    if status == "continue":
-        return [] if reason_type in {"", "none"} else ["safety_continue_reason_must_be_none"]
-
-    allowed = {
-        "stop_contact",
-        "severe_complaint",
-        "health_risk",
-        "manual_takeover",
-        "deleted_relation",
-        "unreliable_identity",
-    }
-    violations: list[str] = []
-    if reason_type not in allowed:
-        violations.append("safety_stop_reason_invalid")
-    evidence = {
-        _string(item.get("message_ref")): item
-        for item in selector_input.get("conversation_evidence") or []
-        if isinstance(item, dict) and _string(item.get("message_ref"))
-    }
-    refs = [_string(item) for item in safety.get("evidence_refs") or [] if _string(item)]
-    if not refs:
-        violations.append("safety_stop_requires_evidence")
-    elif any(ref not in evidence for ref in refs):
-        violations.append("safety_stop_evidence_ref_invalid")
-    elif reason_type in {"stop_contact", "severe_complaint", "health_risk"} and any(
-        _string(evidence[ref].get("direction")) != "customer" for ref in refs
-    ):
-        violations.append("safety_stop_requires_customer_evidence")
-    if _chat_gate_route(selector_output) != "ai_only" or _string(selector_output.get("sop_pack_id")):
-        violations.append("safety_stop_must_not_select_sop")
-    return violations
-
-
-def _chat_gate_payment_direct_send_violations(route: str, selected_pack: dict[str, Any]) -> list[str]:
-    if route != "sop_only":
-        return []
-    gate = selected_pack.get("payment_collection_gate") if isinstance(selected_pack.get("payment_collection_gate"), dict) else {}
-    has_payment = bool(gate.get("has_payment_collection"))
-    if not has_payment:
-        has_payment = any(
-            isinstance(message, dict) and _string(message.get("type")) == "payment_collection"
-            for message in selected_pack.get("reply_messages") or []
-        )
-    if has_payment:
-        return ["gate_payment_conflict:payment_collection_pack_cannot_sop_only"]
-    return []
-
-
 def _chat_gate_pressure_violations(
     selector_input: dict[str, Any],
     selected_pack: dict[str, Any],
 ) -> list[str]:
-    ownership = selector_input.get("decision_ownership")
-    if isinstance(ownership, dict) and ownership.get("scene_and_sales_rhythm") == "model":
-        return []
     stance = (
         selector_input.get("customer_stance_evidence")
         if isinstance(selector_input.get("customer_stance_evidence"), dict)
@@ -3372,89 +3079,6 @@ def _chat_gate_active_task(value: Any) -> dict[str, str]:
             "assistant_evidence_ref": _string(value.get("assistant_evidence_ref"))[:120],
         }.items()
         if item
-    }
-
-
-def _chat_gate_safety_decision(value: Any) -> dict[str, Any]:
-    raw = value if isinstance(value, dict) else {}
-    return {
-        "status": _string(raw.get("status")) or "continue",
-        "reason_type": _string(raw.get("reason_type")) or "none",
-        "evidence_refs": [_string(item) for item in raw.get("evidence_refs") or [] if _string(item)],
-        "reason": _string(raw.get("reason")),
-    }
-
-
-def _has_persisted_stop_contact(memory: dict[str, Any]) -> bool:
-    events = memory.get("history_events") if isinstance(memory, dict) else []
-    return any(
-        isinstance(item, dict) and _string(item.get("event_type")) == "stop_contact_confirmed"
-        for item in (events if isinstance(events, list) else [])
-    )
-
-
-def _chat_gate_shadow_comparison(
-    baseline: dict[str, Any],
-    candidate: dict[str, Any],
-) -> dict[str, Any]:
-    baseline_summary = {
-        "route": _chat_gate_route(baseline),
-        "sop_pack_id": _string(baseline.get("sop_pack_id")),
-        "selected_scene_id": _string(
-            baseline.get("selected_scene_id") or baseline.get("priority_question_id")
-        ),
-    }
-    candidate_summary = {
-        "route": _chat_gate_route(candidate),
-        "sop_pack_id": _string(candidate.get("sop_pack_id")),
-        "selected_scene_id": _string(
-            candidate.get("selected_scene_id") or candidate.get("priority_question_id")
-        ),
-        "safety_decision": _chat_gate_safety_decision(candidate.get("safety_decision")),
-        "scene_decision": _chat_gate_scene_decision(candidate.get("scene_decision")),
-    }
-    changed_fields = [
-        key
-        for key in ("route", "sop_pack_id", "selected_scene_id")
-        if baseline_summary.get(key) != candidate_summary.get(key)
-    ]
-    return {
-        "status": "compared",
-        "applied": "baseline",
-        "baseline": baseline_summary,
-        "candidate": candidate_summary,
-        "changed": bool(changed_fields),
-        "changed_fields": changed_fields,
-    }
-
-
-def _event_normalizer_shadow_comparison(
-    baseline: dict[str, Any],
-    baseline_violations: list[str],
-    candidate: dict[str, Any],
-    candidate_violations: list[str],
-) -> dict[str, Any]:
-    fields = ("decision", "send_sop", "sop_pack_id", "selected_pack_ids", "merge_pack_ids")
-    changed_fields = [key for key in fields if baseline.get(key) != candidate.get(key)]
-    return {
-        "status": "compared",
-        "applied": "baseline",
-        "baseline": {key: baseline.get(key) for key in fields},
-        "candidate": {key: candidate.get(key) for key in fields},
-        "baseline_violations": list(baseline_violations),
-        "candidate_violations": list(candidate_violations),
-        "changed": bool(changed_fields or baseline_violations != candidate_violations),
-        "changed_fields": changed_fields,
-    }
-
-
-def _chat_gate_scene_decision(value: Any) -> dict[str, Any]:
-    raw = value if isinstance(value, dict) else {}
-    return {
-        "current_question": _string(raw.get("current_question")),
-        "blocker": _string(raw.get("blocker")) or "none",
-        "resume_stage": _string(raw.get("resume_stage")),
-        "evidence_refs": [_string(item) for item in raw.get("evidence_refs") or [] if _string(item)],
     }
 
 

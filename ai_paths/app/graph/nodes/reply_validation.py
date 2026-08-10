@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import html
 import re
-from collections import Counter
 from typing import Any
 
 from app.graph.nodes.common import renumber_messages
-from app.graph.nodes.conversation_state import conversation_state_for_guard, payment_card_cooldown_active
-from app.graph.nodes.reply_delivery_manifest import EFFECT_TRUST_SCENE_IDS, manifest_image_urls
-from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import (
     build_store_scope_summary,
     region_mentioned_in_text,
@@ -23,7 +19,6 @@ from app.services.payment_collection import (
 )
 from app.services.customer_payment_state import is_paid_deposit_state
 from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
-from app.services.reply_governance import governance_enabled
 from app.services.store_fact_integrity import store_fact_is_valid
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
@@ -153,7 +148,11 @@ def _requested_district_regions(state: dict[str, Any]) -> list[set[str]]:
 def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
     output = list(_requested_district_regions(state))
     structured = _structured_facts(state)
-    resolution = _store_resolution_contract(structured)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
     if str(resolution.get("status") or "") == "send_multiple" or str(
         resolution.get("delivery_mode") or ""
     ) == "send_all_candidates":
@@ -244,12 +243,6 @@ def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[
 
 
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    _validate_reply_delivery_contract(messages, state)
-    _validate_sop_delivery_manifest(messages, state)
-    _validate_effect_trust_contract(messages, state)
-    _validate_no_empty_delivery_promises(messages)
-    _validate_known_customer_fields_not_requested(messages, state)
-    _validate_adjacent_payment_card_cooldown(messages, state)
     _validate_handoff_notice_text(messages)
     _validate_deposit_refund_policy(messages)
     _validate_unverified_refund_execution_claims(messages)
@@ -278,316 +271,6 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_fact_boundaries(messages, state)
     _validate_store_address_card_consistency(messages, state)
     _validate_store_delivery_text_matches_cards(messages, state)
-
-
-def validate_semantic_contract_evidence(
-    payload: dict[str, Any],
-    messages: list[dict[str, Any]],
-    state: dict[str, Any],
-) -> None:
-    """Validate model-declared fact coverage without encoding sales wording in Python."""
-
-    if not governance_enabled(state, "semantic_contract_enabled"):
-        return
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    required_fact_ids = [
-        str(item).strip()
-        for item in contract.get("required_fact_ids") or []
-        if str(item).strip()
-    ]
-    if not required_fact_ids:
-        return
-    raw_evidence = payload.get("contract_evidence") if isinstance(payload, dict) else []
-    evidence = {
-        str(item.get("fact_id") or "").strip(): item
-        for item in raw_evidence or []
-        if isinstance(item, dict) and str(item.get("fact_id") or "").strip()
-    }
-    missing = [fact_id for fact_id in required_fact_ids if fact_id not in evidence]
-    if missing:
-        raise ValueError("semantic_contract_evidence_missing:" + ",".join(missing))
-
-    text_by_order = {
-        int(item.get("order") or index): message_content_text(item.get("content"))
-        for index, item in enumerate(messages, start=1)
-        if isinstance(item, dict) and str(item.get("type") or "") == "text"
-    }
-    invalid: list[str] = []
-    for fact_id in required_fact_ids:
-        item = evidence[fact_id]
-        quote = re.sub(r"\s+", "", str(item.get("evidence") or ""))
-        try:
-            order = int(item.get("message_order") or 0)
-        except (TypeError, ValueError):
-            order = 0
-        target = re.sub(r"\s+", "", text_by_order.get(order, ""))
-        if not quote or not target or quote not in target:
-            invalid.append(fact_id)
-    if invalid:
-        raise ValueError("semantic_contract_evidence_invalid:" + ",".join(invalid))
-
-
-def _validate_reply_delivery_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    required = contract.get("required_deliveries") if isinstance(contract.get("required_deliveries"), list) else []
-    required_types = [
-        str(item.get("message_type") or item.get("type") or "").strip()
-        if isinstance(item, dict)
-        else str(item or "").strip()
-        for item in required
-    ]
-    required_types = [item for item in required_types if item]
-    emitted_types = [
-        str(item.get("type") or "").strip()
-        for item in messages
-        if isinstance(item, dict) and str(item.get("type") or "").strip()
-    ]
-    required_counts = Counter(required_types)
-    emitted_counts = Counter(emitted_types)
-    if _effect_image_may_reference_recent_delivery(state):
-        required_counts.pop("image", None)
-    missing = sorted(
-        f"{message_type}x{count - emitted_counts.get(message_type, 0)}"
-        for message_type, count in required_counts.items()
-        if emitted_counts.get(message_type, 0) < count
-    )
-    if missing:
-        raise ValueError("reply_contract_required_deliveries_missing:" + ",".join(missing))
-
-
-def _validate_sop_delivery_manifest(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    manifest = (
-        state.get("authorized_sop_delivery_manifest")
-        if isinstance(state.get("authorized_sop_delivery_manifest"), dict)
-        else {}
-    )
-    if not manifest.get("active"):
-        return
-    required = [item for item in manifest.get("messages") or [] if isinstance(item, dict) and item.get("required")]
-    required_types = [str(item.get("message_type") or "").strip() for item in required]
-    emitted_types = [
-        str(item.get("type") or "").strip()
-        for item in messages
-        if isinstance(item, dict) and str(item.get("type") or "").strip() in VISIBLE_MESSAGE_TYPES
-    ]
-    if not _is_ordered_subsequence(required_types, emitted_types):
-        raise ValueError("sop_delivery_manifest_order_or_type_mismatch")
-
-    required_image_urls = manifest_image_urls(manifest)
-    if required_image_urls:
-        emitted_image_urls = {
-            message_content_text(item.get("content"))
-            for item in messages
-            if isinstance(item, dict) and str(item.get("type") or "") == "image"
-        }
-        if not required_image_urls.issubset(emitted_image_urls):
-            raise ValueError("sop_delivery_manifest_required_asset_missing")
-    if (
-        str(manifest.get("core_fact_contract") or "") == "activity_intro_v1"
-        and not governance_enabled(state, "semantic_contract_enabled")
-    ):
-        _validate_activity_intro_core_facts(_combined_text(messages))
-
-
-def _validate_activity_intro_core_facts(text: str) -> None:
-    compact = re.sub(r"\s+", "", str(text or ""))
-    # Preserve the fact contract while accepting natural WeChat variants such as
-    # "到了门店直接抵扣". These phrases all state the same redemption fact.
-    compact = re.sub(
-        r"到(?:了)?(?:门)?店(?:以后|之后|后|时)?(?:可以|可)?(?:直接)?抵扣",
-        "到店抵扣",
-        compact,
-    )
-    store_redemption = re.search(
-        r"(?:到店|门店)[^。；！？]{0,50}抵扣|抵扣[^。；！？]{0,50}(?:到店|门店)",
-        compact,
-    )
-    if store_redemption and not re.search(r"(?:不|不能|不可)抵扣", store_redemption.group(0)):
-        compact += "到店抵扣"
-    required_groups = (
-        ("268",),
-        ("30名", "30个"),
-        ("淡斑",),
-        ("检测",),
-        ("清洁",),
-        ("补水",),
-        ("10元", "10块"),
-        ("到店抵扣", "到店可以抵扣", "到店可抵扣"),
-        ("258元", "258块"),
-        ("未做",),
-        ("不满意",),
-        ("可退", "可以退"),
-        ("付款记录",),
-        ("线上",),
-        ("名额",),
-        ("到店时间", "时间按您方便", "时间按你方便"),
-    )
-    missing = ["/".join(group) for group in required_groups if not any(term in compact for term in group)]
-    if missing:
-        raise ValueError("activity_intro_core_facts_missing:" + ",".join(missing))
-
-
-def _validate_effect_trust_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    if governance_enabled(state, "semantic_contract_enabled"):
-        _validate_effect_trust_structural_boundaries(messages, state)
-        return
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    scene_id = str(contract.get("effect_trust_scene_id") or "").strip()
-    if scene_id not in EFFECT_TRUST_SCENE_IDS:
-        return
-    visible = [
-        item
-        for item in messages
-        if isinstance(item, dict) and str(item.get("type") or "") in VISIBLE_MESSAGE_TYPES
-    ]
-    message_types = [str(item.get("type") or "") for item in visible]
-    case_urls = _case_image_urls(state)
-    allow_recent_reference = not case_urls and _effect_image_may_reference_recent_delivery(state)
-    expected = ["text", "text"] if allow_recent_reference else ["text", "text", "image"]
-    if message_types != expected:
-        raise ValueError("effect_trust_delivery_sequence_mismatch")
-
-    text_messages = [message_content_text(item.get("content")) for item in visible if item.get("type") == "text"]
-    first = re.sub(r"\s+", "", text_messages[0] if text_messages else "")
-    second = re.sub(r"\s+", "", text_messages[1] if len(text_messages) > 1 else "")
-    combined = first + second
-    if not (
-        "斑点改善" in first
-        and "绝大多数" in first
-        and "一次" in first
-        and any(term in first for term in ("很好", "明显", "直观"))
-    ):
-        raise ValueError("effect_trust_positive_answer_missing")
-    if not (
-        "线上活动登记" in second
-        and "免费" in second
-        and "皮肤检测" in second
-        and any(term in second for term in ("具体情况", "皮肤状态", "结合您的", "结合你的"))
-    ):
-        raise ValueError("effect_trust_registered_free_detection_missing")
-    if any(term in combined for term in ("268", "258", "10元", "10块", "预约金", "活动价")):
-        raise ValueError("effect_trust_price_or_deposit_not_allowed")
-    forbidden = (
-        "一次通常不能去干净",
-        "通常不能去干净",
-        "一般需要多次",
-        "可能需要多次",
-        "只能轻微淡化",
-        "不一定有效",
-        "淡斑不是祛斑",
-    )
-    if any(term in combined for term in forbidden):
-        raise ValueError("effect_trust_conflicting_wording")
-    absolute = ("根治", "永久不再", "百分百去掉", "100%去掉", "所有人一次完全")
-    if any(term in combined for term in absolute):
-        raise ValueError("effect_trust_absolute_claim")
-    if allow_recent_reference and not _references_recently_delivered_case_image(combined):
-        raise ValueError("effect_trust_recent_case_reference_missing")
-    if any(str(item.get("type") or "") == "payment_collection" for item in visible):
-        raise ValueError("effect_trust_payment_collection_not_allowed")
-    if case_urls:
-        emitted_url = message_content_text(visible[-1].get("content"))
-        if _normalized_image_url(emitted_url) not in case_urls:
-            raise ValueError("effect_trust_real_case_image_required")
-
-
-def _validate_effect_trust_structural_boundaries(
-    messages: list[dict[str, Any]],
-    state: dict[str, Any],
-) -> None:
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    if str(contract.get("effect_trust_scene_id") or "") not in EFFECT_TRUST_SCENE_IDS:
-        return
-    visible = [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") in VISIBLE_MESSAGE_TYPES]
-    if any(str(item.get("type") or "") == "payment_collection" for item in visible):
-        raise ValueError("effect_trust_payment_collection_not_allowed")
-    if _effect_image_may_reference_recent_delivery(state) and any(
-        str(item.get("type") or "") == "image" for item in visible
-    ):
-        raise ValueError("effect_trust_repeated_case_image_not_allowed")
-    required_deliveries = (
-        contract.get("required_deliveries") if isinstance(contract.get("required_deliveries"), list) else []
-    )
-    required_types = [
-        str(item.get("message_type") or "").strip()
-        for item in required_deliveries
-        if isinstance(item, dict) and str(item.get("message_type") or "").strip() in VISIBLE_MESSAGE_TYPES
-    ]
-    visible_types = [str(item.get("type") or "").strip() for item in visible]
-    if required_types and visible_types != required_types:
-        raise ValueError("effect_trust_delivery_sequence_mismatch")
-    compact = re.sub(r"\s+", "", _combined_text(visible))
-    if re.search(r"(?:268|258|10)元|预约金|活动价", compact):
-        raise ValueError("effect_trust_price_or_deposit_not_allowed")
-
-
-def _effect_image_may_reference_recent_delivery(state: dict[str, Any]) -> bool:
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    if str(contract.get("effect_trust_scene_id") or "") not in EFFECT_TRUST_SCENE_IDS:
-        return False
-    if _case_image_urls(state):
-        return False
-    structured = _structured_facts(state)
-    case_facts = structured.get("case_facts") if isinstance(structured.get("case_facts"), list) else []
-    no_new = any(isinstance(item, dict) and item.get("status") == "no_new_case_image" for item in case_facts)
-    return no_new and _has_recent_case_image_evidence(state)
-
-
-def _validate_no_empty_delivery_promises(messages: list[dict[str, Any]]) -> None:
-    compact = re.sub(r"\s+", "", _combined_text(messages))
-    empty_promises = (
-        "我接着给您说清楚",
-        "我接着给你说清楚",
-        "接着给您说清楚",
-        "接着给你说清楚",
-        "我先按改善方向给您接上",
-        "我先按改善方向给你接上",
-        "确定了我再接着帮您往下接",
-        "确定了我再接着帮你往下接",
-        "您要的话我再发",
-        "你要的话我再发",
-    )
-    if any(term in compact for term in empty_promises):
-        raise ValueError("empty_delivery_promise_not_allowed")
-
-
-def _is_ordered_subsequence(required: list[str], emitted: list[str]) -> bool:
-    if not required:
-        return True
-    index = 0
-    for item in emitted:
-        if item == required[index]:
-            index += 1
-            if index == len(required):
-                return True
-    return False
-
-
-def _validate_known_customer_fields_not_requested(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    known = {str(item or "").strip() for item in contract.get("known_fields_not_to_request") or []}
-    if not known:
-        return
-    compact = re.sub(r"\s+", "", _combined_text(messages))
-    combined_fields = r"(?:姓名|名字)(?:和|及|、|\+|加)?(?:手机号|电话)"
-    asks_name = bool(
-        re.search(
-            rf"(?:请|麻烦|需要您|您(?:再)?)(?:把|提供|发|留|填写|登记)?(?:一下)?{combined_fields}",
-            compact,
-        )
-        or re.search(rf"{combined_fields}(?:再发|发我|发一下|提供一下|留一下|填写一下)", compact)
-    )
-    asks_mobile = any(term in compact for term in ("手机号再发", "电话再发", "发下手机号", "发一下手机号", "手机号发我", "电话发我"))
-    asks_name_only = any(term in compact for term in ("姓名再发", "名字再发", "姓名发我", "名字发我"))
-    if ("name" in known and (asks_name or asks_name_only)) or ("mobile" in known and (asks_name or asks_mobile)):
-        raise ValueError("known_customer_field_requested_again")
-
-
-def _validate_adjacent_payment_card_cooldown(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    if not payment_card_cooldown_active(conversation_state_for_guard(state)):
-        return
-    if any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict)):
-        raise ValueError("adjacent_payment_collection_not_allowed")
 
 
 def _validate_handoff_notice_text(messages: list[dict[str, Any]]) -> None:
@@ -693,19 +376,12 @@ def _references_recently_delivered_case_image(text: str) -> bool:
             "前面发你的",
             "上面发您的",
             "上面发你的",
-            "刚才看到的",
-            "刚刚看到的",
-            "前面看到的",
-            "刚发的这张",
-            "前面这张",
         )
     )
 
 
 def _has_recent_case_image_evidence(state: dict[str, Any]) -> bool:
     summary = state.get("sent_message_summary") if isinstance(state.get("sent_message_summary"), dict) else {}
-    if not summary:
-        summary = sent_message_summary_for_model(state)
     delivery = summary.get("case_image_delivery") if isinstance(summary.get("case_image_delivery"), dict) else {}
     if int(delivery.get("last_image_count") or 0) > 0:
         return True
@@ -808,7 +484,7 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         or str(state.get("conversion_stage") or "") == "deposit_push"
         or str(state.get("next_step") or "") == "send_deposit"
         or _promises_payment_entry(text)
-    ) and not governance_enabled(state, "model_payment_sequencing_enabled") and not activity_intro_completed_for_payment(state):
+    ) and not activity_intro_completed_for_payment(state):
         raise ValueError("payment_collection_requires_activity_intro")
     payment_context = payment_collection_context(state=state, messages=messages)
     needs_payment = False
@@ -1022,7 +698,11 @@ def _validate_store_resolution_delivery_mode(messages: list[dict[str, Any]], sta
     """A structured clarification result cannot be turned into guessed store cards."""
 
     structured = _structured_facts(state)
-    resolution = _store_resolution_contract(structured)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
     delivery_mode = str(resolution.get("delivery_mode") or "")
     if delivery_mode not in {"clarify_location", "clarify_service_area"}:
         return
@@ -1034,7 +714,11 @@ def _validate_store_resolution_delivery_mode(messages: list[dict[str, Any]], sta
 
 def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     structured = _structured_facts(state)
-    resolution = _store_resolution_contract(structured)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
     status = str(resolution.get("status") or "")
     if not status:
         return
@@ -1061,47 +745,21 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
     if status == "send_single":
         if emitted and (len(delivery_ids) != 1 or emitted != delivery_ids):
             raise ValueError("store_resolution_send_single_contract_violation")
-        if _store_resolution_requires_delivery_cards(resolution, state) and emitted != delivery_ids:
-            if bool(resolution.get("location_card_is_authoritative")):
-                raise ValueError("location_card_store_candidates_missing_cards")
-            raise ValueError("store_resolution_required_store_cards_missing")
         return
     if status == "send_multiple":
         if emitted and (not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids):
             raise ValueError("store_resolution_send_multiple_contract_violation")
-        if _store_resolution_requires_delivery_cards(resolution, state) and emitted != delivery_ids:
-            if bool(resolution.get("location_card_is_authoritative")):
-                raise ValueError("location_card_store_candidates_missing_cards")
-            raise ValueError("store_resolution_required_store_cards_missing")
-
-
-def _store_resolution_requires_delivery_cards(resolution: dict[str, Any], state: dict[str, Any]) -> bool:
-    status = str(resolution.get("status") or "")
-    if status not in {"send_single", "send_multiple"}:
-        return False
-    delivery_ids = [
-        str(item or "").strip()
-        for item in resolution.get("delivery_store_ids") or []
-        if str(item or "").strip()
-    ]
-    if not 1 <= len(delivery_ids) <= 3:
-        return False
-    if resolution.get("candidate_search_complete") is False:
-        return False
-    has_current_turn_context = bool(
-        str(state.get("normalized_content") or state.get("content") or "").strip()
-        or isinstance(state.get("location_card"), dict)
-    )
-    if not has_current_turn_context:
-        return False
-    return bool(resolution.get("should_send_all_visible_candidates_when_1_to_3"))
 
 
 def _validate_incomplete_store_scope_reply(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     """Do not turn an incomplete store snapshot into invented location options."""
 
     structured = _structured_facts(state)
-    resolution = _store_resolution_contract(structured)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
     if str(resolution.get("status") or "") != "no_valid_candidate":
         return
     if bool(resolution.get("candidate_search_complete")):
@@ -1128,7 +786,11 @@ def _current_scope_is_province_only(state: dict[str, Any]) -> bool:
     if not current_text:
         return False
     structured = _structured_facts(state)
-    resolution = _store_resolution_contract(structured)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
     if str(resolution.get("resolved_admin_level") or "") in {
         "city",
         "district",
@@ -1195,7 +857,11 @@ def _current_scope_is_province_only(state: dict[str, Any]) -> bool:
 
 def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
     structured = _structured_facts(state)
-    resolution = _store_resolution_contract(structured)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
     resolution_status = str(resolution.get("status") or "")
     if resolution_status and resolution_status != "send_multiple":
         return set()
@@ -1370,24 +1036,6 @@ def _validate_appointment_confirmation_facts(messages: list[dict[str, Any]], sta
         for item in messages
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     ]
-    visit_context = (
-        (state.get("conversation_state") or {}).get("visit_context")
-        if isinstance(state.get("conversation_state"), dict)
-        else {}
-    )
-    if isinstance(visit_context, dict) and str(visit_context.get("state") or "") == "tentative":
-        compact = re.sub(r"\s+", "", " ".join(text_items))
-        if any(
-            marker in compact
-            for marker in (
-                "这个时间可以",
-                "这个时间目前可以",
-                "确认要改到",
-                "到时候直接过来",
-                "方便了直接过来",
-            )
-        ):
-            raise ValueError("appointment_confirmation_fact_required")
     if not any(text and _asserts_appointment_confirmed(text) for text in text_items):
         return
     appointment_decision = state.get("appointment_decision") if isinstance(state.get("appointment_decision"), dict) else {}
@@ -1546,55 +1194,6 @@ def _structured_facts(state: dict[str, Any]) -> dict[str, Any]:
     return structured if isinstance(structured, dict) else {}
 
 
-def _store_resolution_contract(structured: dict[str, Any]) -> dict[str, Any]:
-    """Prefer the unified v1 store contract while preserving legacy fields."""
-
-    legacy = (
-        structured.get("store_resolution_fact")
-        if isinstance(structured.get("store_resolution_fact"), dict)
-        else {}
-    )
-    unified = structured.get("store_resolution") if isinstance(structured.get("store_resolution"), dict) else {}
-    policy = unified.get("candidate_policy") if isinstance(unified.get("candidate_policy"), dict) else {}
-    parse = unified.get("parse") if isinstance(unified.get("parse"), dict) else {}
-    facts = unified.get("facts") if isinstance(unified.get("facts"), dict) else {}
-    if not unified:
-        return dict(legacy)
-
-    output = dict(legacy)
-    output.update(
-        {
-            "status": policy.get("status") or legacy.get("status"),
-            "delivery_store_ids": policy.get("delivery_store_ids") or legacy.get("delivery_store_ids") or [],
-            "visible_candidate_ids": policy.get("visible_candidate_ids")
-            or legacy.get("visible_candidate_ids")
-            or [],
-            "visible_candidate_count": policy.get("visible_candidate_count")
-            if policy.get("visible_candidate_count") is not None
-            else legacy.get("visible_candidate_count"),
-            "candidate_search_complete": policy.get("candidate_search_complete")
-            if policy.get("candidate_search_complete") is not None
-            else legacy.get("candidate_search_complete"),
-            "should_send_all_visible_candidates_when_1_to_3": policy.get("should_send_all_visible_candidates_when_1_to_3")
-            if policy.get("should_send_all_visible_candidates_when_1_to_3") is not None
-            else legacy.get("should_send_all_visible_candidates_when_1_to_3"),
-            "location_card_is_authoritative": policy.get("location_card_is_authoritative")
-            if policy.get("location_card_is_authoritative") is not None
-            else legacy.get("location_card_is_authoritative"),
-            "needs_more_location_only_when": policy.get("needs_more_location_only_when")
-            or legacy.get("needs_more_location_only_when"),
-            "resolved_admin_level": parse.get("resolved_admin_level") or legacy.get("resolved_admin_level"),
-            "province": parse.get("province") or legacy.get("province"),
-            "city": parse.get("city") or legacy.get("city"),
-            "district": parse.get("district") or legacy.get("district"),
-            "township": parse.get("township") or legacy.get("township"),
-            "recommended_store_id": facts.get("recommended_store_id") or legacy.get("recommended_store_id"),
-            "ranking_method": facts.get("ranking_basis") or legacy.get("ranking_method"),
-        }
-    )
-    return output
-
-
 def _has_distance_ranking_fact(structured: dict[str, Any]) -> bool:
     recommended_store = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
     store_lookup_status = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
@@ -1603,7 +1202,7 @@ def _has_distance_ranking_fact(structured: dict[str, Any]) -> bool:
         comparable_candidate_count = int(store_lookup_status.get("comparable_candidate_count") or 0)
     except (TypeError, ValueError):
         comparable_candidate_count = 0
-    resolution = _store_resolution_contract(structured)
+    resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
     return (
         recommended_store.get("reason") in {"distance_calculate_rank_1", "haversine_rank_1"}
         and store_lookup_status.get("source") == "distance_calculate"
@@ -2155,29 +1754,13 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             "排客成功",
             "预约好了",
             "准时等您",
-            "暂定上",
         )
     )
     if matched:
         return True
-    if re.search(rf"{time_token}.{{0,18}}(?:过去|到店|过来|来店)(?:也)?(?:可以|没问题|就行)", compact):
+    if re.search(rf"{time_token}.{{0,8}}(?:过去|到店|过来|来店)(?:也)?(?:可以|没问题|就行)", compact):
         return True
-    hold_terms = (
-        "先留着",
-        "帮你留着",
-        "帮您留着",
-        "给你留着",
-        "给您留着",
-        "留好",
-        "预留",
-        "帮你记上",
-        "帮您记上",
-        "给你记上",
-        "给您记上",
-        "先给你记上",
-        "先给您记上",
-        "先记上",
-    )
+    hold_terms = ("先留着", "帮你留着", "帮您留着", "给你留着", "给您留着", "留好", "预留", "帮你记上", "帮您记上", "先记上")
     if any(term in compact for term in hold_terms) and (
         re.search(time_token, compact) or any(term in compact for term in ("时段", "档期", "到店时间"))
     ):
@@ -2264,12 +1847,6 @@ def _has_appointment_confirmation_fact(state: dict[str, Any]) -> bool:
 
 def _promises_payment_entry(text: str) -> bool:
     compact = "".join(str(text or "").split())
-    compact = re.sub(
-        r"(?:不用|不会|不再|无需|不需要|不能|不要)(?:给[您你])?(?:重新|重复|再)?(?:发送|发)"
-        r"(?:付款|收款|支付|预约金|报名)?(?:卡片|卡|入口)",
-        "",
-        compact,
-    )
     return any(
         term in compact
         for term in (

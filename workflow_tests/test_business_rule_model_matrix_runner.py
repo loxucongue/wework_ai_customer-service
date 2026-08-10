@@ -6,7 +6,6 @@ from scripts.run_business_rule_model_matrix import (
     _call_with_transient_retry,
     _planner_requested_tools,
     _planner_result_has_transient_recovery_failure,
-    _normalize_state_patch,
     _review_messages,
 )
 
@@ -54,18 +53,6 @@ def test_matrix_runner_only_injects_tool_facts_after_planner_requests_tools() ->
             "planner_tool_calls": [{"name": "customer_store_lookup"}],
         }
     )
-
-
-def test_matrix_fixture_does_not_invent_case_delivery_from_zero_summary() -> None:
-    state = _normalize_state_patch(
-        {
-            "sent_message_summary": {
-                "case_image_delivery": {"recently_sent": False, "count": 0}
-            }
-        }
-    )
-
-    assert state.get("history_events") in (None, [])
 
 
 def test_matrix_runner_retries_planner_when_transient_recovery_leaves_violations() -> None:

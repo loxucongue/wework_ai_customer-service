@@ -7,13 +7,7 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
-from app.graph.nodes.reply_delivery_manifest import EFFECT_TRUST_SCENE_IDS, manifest_image_urls
-from app.graph.nodes.reply_validation import (
-    _effect_image_may_reference_recent_delivery,
-    _paid_deposit_context,
-    validate_reply_consistency,
-    validate_semantic_contract_evidence,
-)
+from app.graph.nodes.reply_validation import _paid_deposit_context, validate_reply_consistency
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.services.payment_collection import (
     normalize_payment_amount_text,
@@ -30,9 +24,7 @@ from app.services.trace_logger import TraceLogger
 REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售回复模型。完整 Reply 已超时或未通过硬事实校验，请根据去重后的完整业务事实重新生成客户可见回复。精简只删除重复字段，不代表可以忽略业务规则、最近历史或结构事实。
 
 要求：
-- 只输出 JSON 对象：{\"reply_messages\":[{\"type\":\"text\",\"order\":1,\"content\":\"...\"}],\"contract_evidence\":[]}。
-- 预约卡点参考话术只提供处理思路；其中旧价格、旧项目、性别称谓或冲突退款文案必须按当前业务事实改写，禁止输出199元，当前活动价格使用268元。
-- `reply_contract.required_fact_ids` 非空时，contract_evidence 必须逐项覆盖，并引用最终 text 中逐字存在的证据片段。
+- 只输出 JSON 对象：{\"reply_messages\":[{\"type\":\"text\",\"order\":1,\"content\":\"...\"}]}。
 - 当前消息优先，结合最近12条原序历史。先直接解决本轮问题，再自然承接一个销售动作；“人呢/在吗”等短催促直接续最近未完动作，不列选项重问意图；不要复读整套规则，不要说“继续处理、安排下一步、温馨提醒、尊敬的客户”。
 - 像真人微信聊天：短句、口语、具体，不暴露“事实、排序、工具、系统、流程、状态”等内部表达。客户只回“好/嗯”时，确认并轻推下一步，不重播上一轮顾虑、案例、价格和预约金全套内容。
 - 只能使用输入中的工具、门店、订单、支付、图片和档期事实；没有事实就不要编。
@@ -40,7 +32,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 人数按到店总人数理解：“我朋友也一起”通常是本人+1位朋友=2位；“我带两个朋友”是本人+2位朋友=3位。卡片金额必须服从 Planner 的人数和金额决策。
 - 客户明确要入口/预约时，不要因为缺订单或开单失败暴露“入口没对上/不能发卡”，也不能再反问“如果你要我再发”；活动报价已铺垫且无硬阻断时按当前结构事实发卡，否则只补最小必要信息。
 - 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
-- 客户因担心一次没效果或可能需要多次而说不做时，这是带原因的效果异议，不按“不做了”字面送客。先明确“我们是做斑点改善的，绝大多数顾客一次就有很好的改善效果”，再说明完成线上活动登记后可到门店免费做皮肤检测并由门店结合具体情况讲解，有真实 case_facts 时同轮发图；当前轮不得报价、发预约金卡，也不得说因人而异、可能需要多次、单次单部位或以后再来找我。明确要求停止联系或近期已处理同一异议后再次强拒绝时才收口。
+- 客户因担心一次没效果或可能需要多次而说不做时，这是带原因的效果异议，不按“不做了”字面送客。先明确“当前淡斑效果活动价就是268元、绝大多数客户都是一次就好”，有真实 case_facts 时同轮发图，再说明完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解；不得说因人而异、可能需要多次、单次单部位或以后再来找我。明确要求停止联系或近期已处理同一异议后再次强拒绝时才收口。
 - `store_resolution_fact.status=no_valid_candidate` 且 `candidate_search_complete=true` 表示客户位置已经确认，完整查询后该省范围当前没有可发送的合法门店。不要承诺发卡；要如实、简短地说“您这个地区目前暂时没有门店”，然后只问客户平时常去哪个城市，例如：“亲，您这个地区目前暂时没有门店，您平时更常去哪个城市？我再按您常去的城市帮您看。”不要继续问当前地区的商圈，也不要用“我不乱发、不乱指、不瞎推荐、不敢乱说”这类系统免责表达。若 `candidate_search_complete=false`，这是门店事实加载不完整，不能对客户断言没有门店，也不能主动猜测或列举权威门店事实中没有出现的城市供客户选择。
 - 退款、扣款异常只能先核对门店、时间、金额、项目或截图；不能说已经同意/正在办理退款，也不能承诺自动退回、原路到账或处理时效。
 - 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
@@ -50,9 +42,8 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 
 REPLY_TARGETED_REPAIR_SYSTEM_PROMPT = """你是企业微信淡斑活动的最终回复修复模型。上一版回复已经通过了大部分业务理解，但没有通过结构或事实校验。你的任务不是重新规划业务，而是在保留当前问题回答和销售节奏的前提下，按给定违规做最小修复。
 要求：
-- 只输出严格 JSON 对象，顶层必须包含非空 `reply_messages` 数组；输入要求语义事实证据时同时输出 `contract_evidence`。
+- 只输出严格 JSON 对象，顶层必须包含非空 `reply_messages` 数组。
 - 只修复给定 `violation` 和 `repair_hint`，不要改业务场景，不要改门店、价格、支付、图片等已给定事实。
-- `authorized_sop_delivery_manifest.active=true` 时，必须逐条保留清单中的必需文本、图片、顺序和核心事实；局部措辞违规只能最小修改对应句子，不能重写或删减整套交付。
 - 如果违规是“承诺发地址/导航但没有 store_address”，只能二选一：要么补合法 `store_address`，要么删掉这类承诺并改成收区县、片区或门店名。
 - 如果违规是“承诺发预约金入口但没有 payment_collection”，只能二选一：要么补合法 `payment_collection`，要么删掉发入口承诺并改成自然承接。
 - 如果违规是“承诺发效果图/案例图但没有 image”，只能二选一：要么补合法 image，要么删掉发图承诺并改成文字承接。
@@ -70,7 +61,6 @@ def create_synthesize_reply_node(
     schedule_background_task: Callable[[AgentState], Any] | None = None,
 ):
     async def synthesize_reply(state: AgentState) -> dict[str, Any]:
-        state, runtime_delivery_adjusted = _apply_runtime_delivery_availability(state)
         with trace_logger.node(
             state,
             "synthesize_reply",
@@ -78,21 +68,6 @@ def create_synthesize_reply_node(
         ) as span:
             errors = list(state.get("errors", []))
             warnings = list(state.get("warnings", []))
-            if runtime_delivery_adjusted:
-                warnings.append(
-                    {
-                        "node": "synthesize_reply",
-                        "message": "required_delivery_adjusted_to_runtime_tool_availability",
-                        "detail": ",".join(
-                            str(item)
-                            for item in (
-                                state.get("reply_strategy", {}).get("runtime_delivery_adjustments", [])
-                                if isinstance(state.get("reply_strategy"), dict)
-                                else []
-                            )
-                        ),
-                    }
-                )
             messages: list[dict[str, Any]] = []
             planner_messages: list[dict[str, Any]] = []
             reply_source = "main_model"
@@ -115,9 +90,6 @@ def create_synthesize_reply_node(
                     )
                 except Exception as exc:
                     primary_error = f"{type(exc).__name__}: {exc}"
-                    attached_model_call = getattr(exc, "reply_model_call", None)
-                    if isinstance(attached_model_call, dict):
-                        model_call = attached_model_call
                     model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                     model_call["error"] = primary_error
                     if planner_direct_valid:
@@ -155,80 +127,33 @@ def create_synthesize_reply_node(
                 if model_call:
                     model_call["stale_handoff_notice_removed"] = True
             fallback_source = ""
-            reply_blocked = False
-            review_violations: list[dict[str, Any]] = []
             if not messages and errors:
-                failure_detail = "; ".join(
-                    str(item.get("detail") if isinstance(item, dict) else item)
-                    for item in errors
+                messages = _neutral_final_fallback_messages()
+                reply_source = "deterministic_neutral_final_fallback"
+                fallback_source = reply_source
+                recovered_error = errors.pop() if errors else None
+                if recovered_error:
+                    warnings.append(
+                        {
+                            "node": "synthesize_reply",
+                            "message": "final_reply_recovered_by_neutral_fallback",
+                            "detail": str(recovered_error.get("detail") if isinstance(recovered_error, dict) else recovered_error),
+                        }
+                    )
+                warnings.append(
+                    {
+                        "node": "synthesize_reply",
+                        "message": "neutral_final_fallback_used",
+                    }
                 )
-                manifest_fallback = _validated_manifest_fallback_messages(state, warnings)
-                if manifest_fallback:
-                    messages = manifest_fallback
-                    reply_source = "deterministic_authorized_sop_manifest_fallback"
-                    fallback_source = reply_source
-                    warnings.append(
-                        {
-                            "node": "synthesize_reply",
-                            "message": "authorized_sop_manifest_used_after_reply_failure",
-                            "detail": failure_detail[:1000],
-                        }
-                    )
+                if model_call:
+                    model_call["fallback"] = {"strategy": reply_source}
+                    model_call["output"] = {"messages": len(messages)}
+                messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
+                if handoff_notice_appended_after_fallback:
+                    warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
                     if model_call:
-                        model_call["fallback"] = {"strategy": reply_source, "reason": failure_detail[:1000]}
-                        model_call["output"] = {"messages": len(messages)}
-                elif _is_recoverable_delivery_contract_failure(failure_detail):
-                    messages = _neutral_final_fallback_messages()
-                    reply_source = "deterministic_neutral_final_fallback"
-                    fallback_source = reply_source
-                    warnings.append(
-                        {
-                            "node": "synthesize_reply",
-                            "message": "delivery_contract_failure_recovered_by_neutral_fallback",
-                            "detail": failure_detail[:1000],
-                        }
-                    )
-                    if model_call:
-                        model_call["fallback"] = {"strategy": reply_source, "reason": failure_detail[:1000]}
-                        model_call["output"] = {"messages": len(messages)}
-                elif _is_hard_reply_contract_failure(failure_detail):
-                    reply_blocked = True
-                    reply_source = "reply_contract_blocked"
-                    review_violations.append(
-                        {
-                            "code": _reply_contract_failure_code(failure_detail),
-                            "field": "reply_messages",
-                            "evidence": failure_detail[:1000],
-                            "repair_instruction": "两次受约束修复仍未通过，禁止发送并保留完整审计。",
-                        }
-                    )
-                    if model_call:
-                        model_call["contract_review"] = {
-                            "decision": "block",
-                            "violations": review_violations,
-                        }
-                else:
-                    messages = _neutral_final_fallback_messages()
-                    reply_source = "deterministic_neutral_final_fallback"
-                    fallback_source = reply_source
-                    recovered_error = errors.pop() if errors else None
-                    if recovered_error:
-                        warnings.append(
-                            {
-                                "node": "synthesize_reply",
-                                "message": "final_reply_recovered_by_neutral_fallback",
-                                "detail": str(recovered_error.get("detail") if isinstance(recovered_error, dict) else recovered_error),
-                            }
-                        )
-                    warnings.append({"node": "synthesize_reply", "message": "neutral_final_fallback_used"})
-                    if model_call:
-                        model_call["fallback"] = {"strategy": reply_source}
-                        model_call["output"] = {"messages": len(messages)}
-                    messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
-                    if handoff_notice_appended_after_fallback:
-                        warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
-                        if model_call:
-                            model_call["handoff_notice_appended"] = True
+                        model_call["handoff_notice_appended"] = True
             if messages:
                 warnings.extend(collect_reply_soft_warnings(messages, state))
             if model_call:
@@ -248,12 +173,6 @@ def create_synthesize_reply_node(
             output = {
                 "reply_messages": messages,
                 "reply_source": reply_source,
-                "reply_blocked": reply_blocked,
-                "reply_review": {
-                    "decision": "block" if reply_blocked else "pass",
-                    "violations": review_violations,
-                    "repair_attempts": _reply_repair_attempt_count(model_call),
-                },
                 "postprocess_changed": False,
                 "postprocess_reasons": [],
                 "errors": errors,
@@ -281,196 +200,6 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
-
-
-def _apply_runtime_delivery_availability(state: AgentState) -> tuple[AgentState, bool]:
-    """Reconcile Planner delivery requirements with facts returned by later tool calls."""
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    progression = state.get("sales_progression") if isinstance(state.get("sales_progression"), dict) else {}
-    deliveries = contract.get("required_deliveries") if isinstance(contract.get("required_deliveries"), list) else []
-    required_types = (
-        progression.get("required_message_types")
-        if isinstance(progression.get("required_message_types"), list)
-        else []
-    )
-    unavailable_types: set[str] = set()
-    adjustment_reasons: list[str] = []
-    effect_scene_id = str(contract.get("effect_trust_scene_id") or "").strip()
-    case_image_available = bool(_tool_case_image_urls(state))
-    if _effect_image_may_reference_recent_delivery(state):
-        unavailable_types.add("image")
-        adjustment_reasons.append("no_new_case_image_reference_recent_delivery")
-    if _store_card_unavailable_after_lookup(state):
-        unavailable_types.add("store_address")
-        adjustment_reasons.append("store_lookup_has_no_deliverable_candidate")
-    add_effect_image = (
-        effect_scene_id in EFFECT_TRUST_SCENE_IDS
-        and case_image_available
-        and not any(
-            isinstance(item, dict) and str(item.get("message_type") or "").strip() == "image"
-            for item in deliveries
-        )
-    )
-    if not unavailable_types and not add_effect_image:
-        return state, False
-
-    adjusted_deliveries = [
-        item
-        for item in deliveries
-        if not (
-            isinstance(item, dict)
-            and str(item.get("message_type") or "").strip() in unavailable_types
-        )
-    ]
-    adjusted_types = [item for item in required_types if str(item or "").strip() not in unavailable_types]
-    if add_effect_image:
-        adjusted_deliveries.append(
-            {
-                "message_type": "image",
-                "delivery_role": "real_case_image",
-                "source_order": len(adjusted_deliveries) + 1,
-                "required": True,
-            }
-        )
-        if "image" not in adjusted_types:
-            adjusted_types.append("image")
-        adjustment_reasons.append("new_case_image_available_after_tool")
-    if (
-        len(adjusted_deliveries) == len(deliveries)
-        and len(adjusted_types) == len(required_types)
-        and not adjustment_reasons
-    ):
-        return state, False
-
-    adjusted: AgentState = dict(state)
-    adjusted["reply_contract"] = {**contract, "required_deliveries": adjusted_deliveries}
-    adjusted["sales_progression"] = {**progression, "required_message_types": adjusted_types}
-    reply_strategy = {
-        **(state.get("reply_strategy") if isinstance(state.get("reply_strategy"), dict) else {}),
-        "runtime_delivery_adjustments": adjustment_reasons,
-    }
-    if "image" in unavailable_types:
-        reply_strategy["case_image_delivery"] = "reference_recent_no_new_image"
-    adjusted["reply_strategy"] = reply_strategy
-    return adjusted, True
-
-
-def _store_card_unavailable_after_lookup(state: AgentState) -> bool:
-    facts = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
-    structured = facts.get("structured_facts") if isinstance(facts.get("structured_facts"), dict) else {}
-    unified = structured.get("store_resolution") if isinstance(structured.get("store_resolution"), dict) else {}
-    candidate_policy = (
-        unified.get("candidate_policy")
-        if isinstance(unified.get("candidate_policy"), dict)
-        else {}
-    )
-    legacy = (
-        structured.get("store_resolution_fact")
-        if isinstance(structured.get("store_resolution_fact"), dict)
-        else {}
-    )
-    status = str(candidate_policy.get("status") or legacy.get("status") or "").strip()
-    delivery_ids = [
-        str(item).strip()
-        for item in candidate_policy.get("delivery_store_ids") or legacy.get("delivery_store_ids") or []
-        if str(item).strip()
-    ]
-    if delivery_ids or status in {"send_single", "send_multiple", "reuse_confirmed_store"}:
-        return False
-    return status in {
-        "need_location",
-        "need_location_confirmation",
-        "ambiguous_location",
-        "no_valid_candidate",
-    }
-
-
-def _is_hard_reply_contract_failure(error: str) -> bool:
-    return any(
-        marker in str(error or "")
-        for marker in (
-            "appointment_confirmation_fact_required",
-            "registration_confirmation_fact_required",
-            "reply_contract_required_deliveries_missing",
-            "known_customer_field_requested_again",
-            "adjacent_payment_collection_not_allowed",
-            "case_image_structure_required_when_reply_promises_delivery",
-            "case_image_required_for_effect_turn",
-            "reply_too_similar_to_previous_assistant_message",
-            "sop_delivery_manifest_",
-            "activity_intro_core_facts_missing",
-            "effect_trust_",
-            "semantic_contract_",
-            "empty_delivery_promise_not_allowed",
-            "unsupported_store_address_message",
-            "payment_confirmation_fact_required",
-        )
-    )
-
-
-def _is_recoverable_delivery_contract_failure(error: str) -> bool:
-    detail = str(error or "")
-    recoverable_markers = (
-        "reply_contract_required_deliveries_missing",
-        "sop_delivery_manifest_",
-        "activity_intro_core_facts_missing",
-        "case_image_structure_required_when_reply_promises_delivery",
-        "case_image_required_for_effect_turn",
-    )
-    hard_fact_markers = (
-        "appointment_confirmation_fact_required",
-        "registration_confirmation_fact_required",
-        "known_customer_field_requested_again",
-        "adjacent_payment_collection_not_allowed",
-        "reply_too_similar_to_previous_assistant_message",
-        "effect_trust_",
-        "semantic_contract_",
-        "unsupported_store_address_message",
-        "payment_confirmation_fact_required",
-    )
-    return any(marker in detail for marker in recoverable_markers) and not any(
-        marker in detail for marker in hard_fact_markers
-    )
-
-
-def _reply_contract_failure_code(error: str) -> str:
-    for marker in (
-        "appointment_confirmation_fact_required",
-        "registration_confirmation_fact_required",
-        "reply_contract_required_deliveries_missing",
-        "known_customer_field_requested_again",
-        "adjacent_payment_collection_not_allowed",
-        "case_image_structure_required_when_reply_promises_delivery",
-        "case_image_required_for_effect_turn",
-        "reply_too_similar_to_previous_assistant_message",
-        "sop_delivery_manifest_",
-        "activity_intro_core_facts_missing",
-        "effect_trust_",
-        "semantic_contract_",
-        "empty_delivery_promise_not_allowed",
-        "unsupported_store_address_message",
-        "payment_confirmation_fact_required",
-    ):
-        if marker in str(error or ""):
-            return marker
-    return "reply_contract_failed"
-
-
-def _reply_repair_attempt_count(model_call: dict[str, Any] | None) -> int:
-    if not isinstance(model_call, dict):
-        return 0
-    retries = model_call.get("repair_retries")
-    if isinstance(retries, list):
-        return len(retries)
-    return 1 if isinstance(model_call.get("retry"), dict) else 0
-
-
-def _attach_reply_model_call(exc: Exception, model_call: dict[str, Any]) -> Exception:
-    try:
-        setattr(exc, "reply_model_call", model_call)
-    except Exception:
-        pass
-    return exc
 
 
 def _planner_direct_reply_is_valid(
@@ -560,7 +289,6 @@ async def _run_reply_model_pipeline(
                 messages = validated_model_messages(payload, state)
                 messages = _prepare_structural_messages(messages, state, warnings)
                 validate_reply_consistency(messages, state)
-                validate_semantic_contract_evidence(payload, messages, state)
                 _raise_repairable_reply_quality_issues(messages, state)
             except Exception as validation_exc:
                 repair_logs: list[dict[str, Any]] = []
@@ -606,7 +334,6 @@ async def _run_reply_model_pipeline(
                         messages = validated_model_messages(retry_payload, state)
                         messages = _prepare_structural_messages(messages, state, warnings)
                         validate_reply_consistency(messages, state)
-                        validate_semantic_contract_evidence(retry_payload, messages, state)
                         _raise_repairable_reply_quality_issues(messages, state)
                         break
                     except Exception as retry_validation_exc:
@@ -628,14 +355,6 @@ async def _run_reply_model_pipeline(
             primary_error = exc
             model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
 
-    if primary_error is not None and _is_hard_reply_contract_failure(str(primary_error)):
-        model_call["recovery"] = {
-            "status": "skipped_after_contract_repairs_exhausted",
-            "reason": f"{type(primary_error).__name__}: {primary_error}",
-        }
-        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise _attach_reply_model_call(primary_error, model_call)
-
     recovery_messages = _reply_recovery_messages(state)
     if not can_start_model_retry(state, tier=tier):
         model_call["recovery"] = {
@@ -643,8 +362,7 @@ async def _run_reply_model_pipeline(
             "runtime_budget": runtime_budget_snapshot(state, tier=tier),
         }
         model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        failure = RuntimeError(f"reply primary failed: {type(primary_error).__name__}: {primary_error}")
-        raise _attach_reply_model_call(failure, model_call) from primary_error
+        raise RuntimeError(f"reply primary failed: {type(primary_error).__name__}: {primary_error}") from primary_error
     recovery_deadline = _capped_deadline(
         time.monotonic() + recovery_budget,
         model_deadline_monotonic(state, tier=tier),
@@ -666,18 +384,16 @@ async def _run_reply_model_pipeline(
         messages = validated_model_messages(recovery_payload, state)
         messages = _prepare_structural_messages(messages, state, warnings)
         validate_reply_consistency(messages, state)
-        validate_semantic_contract_evidence(recovery_payload, messages, state)
         _raise_repairable_reply_quality_issues(messages, state)
     except Exception as recovery_exc:
         recovery_call["error"] = f"{type(recovery_exc).__name__}: {recovery_exc}"
         recovery_call["usage"] = model_usage_snapshot(model_client)
         model_call["recovery"] = recovery_call
         model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        failure = RuntimeError(
+        raise RuntimeError(
             f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
             f"compact recovery failed: {type(recovery_exc).__name__}: {recovery_exc}"
-        )
-        raise _attach_reply_model_call(failure, model_call) from recovery_exc
+        ) from recovery_exc
 
     model_call["recovery"] = recovery_call
     model_call["draft_messages"] = debug_message_contents(messages)
@@ -690,7 +406,6 @@ def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state
     repairable_details = {
         "nearby_store_claim_without_location_fact",
         "precision_reply_missing_mainline_action",
-        "reply_too_similar_to_previous_assistant_message",
     }
     for warning in collect_reply_soft_warnings(messages, state):
         detail = str(warning.get("detail") or "")
@@ -837,17 +552,10 @@ def _should_use_targeted_reply_repair(error: str) -> bool:
     return any(
         marker in error
         for marker in (
-            "store_resolution_required_store_cards_missing",
-            "location_card_store_candidates_missing_cards",
             "store_address_message_required_when_reply_promises_location_card",
             "payment_collection_required_when_reply_promises_payment_entry",
             "case_image_structure_required_when_reply_promises_delivery",
             "case_image_required_for_effect_turn",
-            "reply_contract_required_deliveries_missing",
-            "known_customer_field_requested_again",
-            "adjacent_payment_collection_not_allowed",
-            "nearby_store_claim_without_location_fact",
-            "semantic_contract_",
         )
     )
 
@@ -881,57 +589,6 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
     return [{"type": "text", "order": 1, "content": "您稍等一下"}]
-
-
-def _validated_manifest_fallback_messages(
-    state: AgentState,
-    warnings: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    manifest = (
-        state.get("authorized_sop_delivery_manifest")
-        if isinstance(state.get("authorized_sop_delivery_manifest"), dict)
-        else {}
-    )
-    if not manifest.get("active"):
-        return []
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    if any(str(item).startswith("turn_") for item in contract.get("required_fact_ids") or []):
-        # A static pack cannot prove that every independent customer question
-        # was answered. Let the constrained model repair handle those runs.
-        return []
-    ordered = sorted(
-        (item for item in manifest.get("messages") or [] if isinstance(item, dict) and item.get("required")),
-        key=lambda item: int(item.get("source_order") or 0),
-    )
-    messages: list[dict[str, Any]] = []
-    for item in ordered:
-        message_type = str(item.get("message_type") or "").strip()
-        if not message_type:
-            continue
-        content = item.get("content")
-        if message_type == "text" and isinstance(content, dict):
-            content = content.get("text") or content.get("content") or ""
-        messages.append(
-            {
-                "type": message_type,
-                "order": len(messages) + 1,
-                "content": content,
-            }
-        )
-    if not messages:
-        return []
-    try:
-        validate_reply_consistency(messages, state)
-    except Exception as exc:
-        warnings.append(
-            {
-                "node": "synthesize_reply",
-                "message": "authorized_sop_manifest_fallback_invalid",
-                "detail": f"{type(exc).__name__}: {exc}",
-            }
-        )
-        return []
-    return messages
 
 
 def _maybe_build_required_payment_collection_fallback(
@@ -1137,46 +794,12 @@ def _compact_text(value: Any) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
-    if "semantic_contract_evidence_missing" in error or "semantic_contract_evidence_invalid" in error:
-        return (
-            "保持 Planner 锁定场景和消息类型不变。根据 reply_contract.fact_definitions 补齐对应事实，"
-            "并在 contract_evidence 中为每个 required_fact_id 提供最终 text 内逐字存在的短证据及 message_order；"
-            "不得虚构事实、改场景或追加未授权卡片。"
-        )
-    if "sop_delivery_manifest_order_or_type_mismatch" in error:
-        return "严格按 authorized_sop_delivery_manifest.messages 的 source_order 输出全部必需文本、图片和已授权卡片；可以把文本短聊化，但不能调整消息顺序、删掉消息或把直接交付改成稍后再说。"
-    if "sop_delivery_manifest_required_asset_missing" in error:
-        return "保留 authorized_sop_delivery_manifest 中指定的真实图片 URL，并放在清单要求的位置；不能换成活动外图片、承诺稍后发送或删除图片。"
-    if "activity_intro_core_facts_missing" in error:
-        return "本轮是首次完整活动介绍。必须保留：前30名、268元、淡斑/检测/基础清洁/肌肤补水、10元到店抵扣、做的话再付258元、未做或不满意可退且按付款记录核对、线上名额与到店时间可按客户方便安排；不主动写原价金额。"
-    if "effect_trust_delivery_sequence_mismatch" in error or "effect_trust_real_case_image_required" in error:
-        return "当前效果信任场景通常只输出两条短 text 后紧跟一张 tool_facts.case_facts 的真实 image。若 tool_facts.case_facts 明确是 no_new_case_image 且近期刚发过真实效果图，则只输出两条 text，不发 image，并在第一条明确承接刚才/前面发的那张图。第一条正面回答效果，第二条说明完成线上活动登记后可免费检测；不得插入报价、活动包、门店卡或预约金卡。"
-    if "effect_trust_positive_answer_missing" in error:
-        return "第一条必须正面说明：我们是做斑点改善的，绝大多数顾客一次就有很好的改善效果。先建立信心，再说明个体情况由门店结合皮肤状态讲解。"
-    if "effect_trust_registered_free_detection_missing" in error:
-        return "第二条必须明确带条件说明：完成线上活动登记后，可以到门店免费做皮肤检测，门店会结合客户具体情况或皮肤状态讲解。"
-    if "effect_trust_price_or_deposit_not_allowed" in error or "effect_trust_payment_collection_not_allowed" in error:
-        return "当前轮只解决效果信任，删除268、10、258、活动价、预约金及 payment_collection；客户认可效果后才能恢复成交推进。"
-    if "effect_trust_conflicting_wording" in error:
-        return "删除‘一次通常不能去干净、一般/可能需要多次、只能轻微淡化、不一定有效、淡斑不是祛斑’等削弱信任的表述；保留积极效果口径和非绝对承诺边界。"
-    if "effect_trust_absolute_claim" in error:
-        return "保留积极效果信心，但删除根治、永久不再、100%去掉、所有人一次完全去除等绝对承诺。"
-    if "effect_trust_recent_case_reference_missing" in error:
-        return "工具已确认没有新的未发送案例图，且上一轮刚发过真实效果图。本轮不要再发 image；第一条明确说‘您刚才/前面看到的这张就是同类真实改善参考’，围绕这张图回答效果信任，同时保留批准的正向效果口径。"
-    if "empty_delivery_promise_not_allowed" in error:
-        return "删除‘我接着给您说清楚、给您接上、您要的话我再发、确定了再往下接’等没有当轮交付的空话，直接输出 Planner 锁定的内容或结构消息。"
-    if "reply_contract_required_deliveries_missing" in error:
-        return "严格保留 Planner 的场景和交付合同，把缺少的 required_deliveries 结构消息补齐；如果要求 image，只能使用输入中真实可用的图片 URL，不能改成询问客户是否要看。"
-    if "known_customer_field_requested_again" in error:
-        return "conversation_state 已证明客户姓名或手机号已提供。删除让客户重发姓名、电话的句子，改为明确说已经收到，并继续当前到店意向或主线动作。"
-    if "adjacent_payment_collection_not_allowed" in error:
-        return "上一轮回复已经发送预约金卡，本轮删除 payment_collection。可以用文字说明上一张卡仍可使用，或在客户愿意时说明也可以转账，让客户决定；不要连续发卡。"
     if "precision_reply_passive_mainline_closure" in error:
         return "精准支线问题已经回答到点，但收尾不能等待客户许可。请删除“如果您想/如果您愿意/我可以继续/要不要/是否需要”等表达，直接落一个主线动作：问城市或区域、主动接活动、发案例、推进预约金或登记。没有真实图片或门店卡事实时，直接问城市/区或接活动，不要承诺稍后发。"
     if "precision_reply_missing_mainline_action" in error:
         return "精准支线问题不能只答疑后停住。请保留当前问题的正面回答，再补一条明确主线动作句：问城市或区域、主动接活动名额、发案例、推进预约金或登记到店时间。动作句要具体、像微信销售，不要写“继续处理/安排下一步/如果您想”。"
     if "precision_reply_weak_one_session_confidence" in error:
-        return "客户问只能淡或一次效果时，先明确说我们是做斑点改善的、绝大多数顾客一次就有很好的改善效果；有真实 case_facts 时同轮发效果图，再说明完成线上活动登记后可到门店免费做皮肤检测并由门店结合具体情况讲解。本轮不报价、不发预约金卡，不要以因人而异、可能需要多次、需要看深浅和时间开头。"
+        return "客户问只能淡或一次效果时，先明确说当前淡斑效果活动价就是268元、绝大多数客户都是一次就好；有真实 case_facts 时同轮发效果图，再说明完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解。不要以因人而异、可能需要多次、需要看深浅和时间开头，不主动说单次单部位，也不要直接送客。"
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:
@@ -1204,7 +827,7 @@ def _reply_repair_hint(error: str) -> str:
     if "case_image_required_for_effect_turn" in error:
         return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须先用 text 肯定效果方向，再追加 1 条 case_facts.image_url 的 image。"
     if "effect_reply_confidence_order_required" in error:
-        return "效果疑问要先明确我们是做斑点改善的、绝大多数顾客一次就有很好的改善效果，并用真实案例建立信任；完成线上活动登记后可到门店免费做皮肤检测并听取具体情况讲解。本轮不报价、不发预约金卡，不要第一句就说因人而异、可能需要多次、不保证或具体看个人情况。"
+        return "效果疑问要先明确当前淡斑效果活动价268元、绝大多数客户都是一次就好，并用真实案例建立信任；完成线上活动登记后可到门店免费做皮肤检测并听取具体情况讲解。不要第一句就说因人而异、可能需要多次、不保证或具体看个人情况。"
     if "effect_absolute_safety_claim" in error:
         return "效果和安全顾虑可以积极承接，允许‘一般不会反黑’和‘多数客户反馈都比较正常’这类信心表达；只避免明确的绝对、保证或100%安全承诺，再自然接到店检测或当前主线。"
     if "reply_too_similar" in error:
@@ -1229,10 +852,6 @@ def _reply_repair_hint(error: str) -> str:
         return "本轮 store_resolution_fact 要求 clarify_location，说明客户只给了省份、候选超过3家或地点仍有歧义。删除所有 store_address，只问一个最小必要字段：具体城市、区县或定位。"
     if "store_cards_not_allowed_for_province_only_scope" in error:
         return "客户当前只给了省份，且没有可靠的城市、区县或定位事实。删除所有 store_address，不按省中心猜门店；只自然追问具体城市、区县或请客户发定位。"
-    if "location_card_store_candidates_missing_cards" in error:
-        return "客户本轮已经发了定位卡，定位卡的坐标、标题或地址是权威位置事实；门店工具已返回 1-3 家可发送候选。请不要再让客户发定位、补区县或重新确认位置，必须按 store_resolution.candidate_policy.delivery_store_ids 输出对应 store_address，并在卡片后用一句话回到斑点、案例或活动主线。"
-    if "store_resolution_required_store_cards_missing" in error:
-        return "本轮门店工具已完成查询，并且 store_resolution.candidate_policy.status=send_single/send_multiple、delivery_store_ids 为 1-3 家可发送候选。请按 delivery_store_ids 输出对应 store_address：send_single 发 1 张，send_multiple 发齐 2-3 张；不要再追问定位、区县或商圈。卡片前后用自然短文本承接，并在最后回到一个主线动作。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
         return "你在文本里承诺了发送地址或位置卡，但本轮没有对应门店卡。只有 store_resolution_fact.status=send_single/send_multiple 时，才按 delivery_store_ids 追加对应 store_address；其他状态必须删除发卡承诺，并按状态补问地区、确认解析结果或询问客户常去的市区/商圈。"
     if "store_cards_not_allowed_when_service_area_clarification_required" in error:
@@ -1244,11 +863,11 @@ def _reply_repair_hint(error: str) -> str:
     if "distance_fact_required" in error:
         return "没有 store_resolution_fact.ranking_method=haversine 和 customer_claim_level=relative_near 时，不要输出最近、离您最近、较近、就近或交通方便等排序表达。只使用已有门店事实，并按当前主线自然承接。"
     if "nearby_store_claim_without_location_fact" in error:
-        return "必须完整保留 authorized_sop_delivery_manifest 的全部必需文本、图片、顺序和核心事实，只最小修改违规收尾。没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”；可改成询问客户所在城市或区域后再看门店，不要编距离感。"
+        return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
     if "available_time_fact_required" in error:
-        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“正面说明斑点改善效果 + 发送 case_facts.image_url + 完成线上活动登记后可到门店免费检测并听取具体情况讲解”。"
+        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“当前淡斑效果活动价268元、绝大多数客户一次就好 + 发送 case_facts.image_url + 登记后可到门店免费检测并听取具体情况讲解”。"
     if "appointment_confirmation_fact_required" in error:
-        return "先核对输入中的 conversation_state.visit_context 和权威 appointment_facts。若只是 tentative 到店意向、没有真实旧预约，只能说“先按后天这个到店意向”，再问上午还是下午方便；不得说这个时间可以、改到、记上、暂定上、直接过来、留位、安排或预约成功。只有存在真实旧预约且 Planner 明确是改约动作时，才可问客户是否确认改到新时间；available_time 本身也不代表已改约成功。"
+        return "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。普通预约可问“这个时间方便吗”；已有旧预约的改约场景只输出一条：“这个时间目前可以，您确认要改到这个时间吗？”。删除其他“继续核对/先按这个时间/帮您改过去/帮您留/锁定/安排/记上/预约成功”表达。"
     if "too_many_appointment_time_options" in error:
         return "档期回复最多只能给 1 个推荐时间和 1 个备选时间。请基于 recommended_slot 和 backup_slots 重写，不要列完整时间表。"
     if "unfinished_appointment_lookup_promise" in error:
@@ -1301,18 +920,7 @@ def _case_image_urls(state: AgentState) -> set[str]:
     activity_url = activity_intro_image_url(state)
     if activity_url:
         urls.add(activity_url)
-    urls.update(manifest_image_urls(state.get("authorized_sop_delivery_manifest")))
     return urls
-
-
-def _tool_case_image_urls(state: AgentState) -> set[str]:
-    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
-    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
-    return {
-        str(item.get("image_url") or "").strip()
-        for item in structured.get("case_facts") or []
-        if isinstance(item, dict) and str(item.get("image_url") or "").strip()
-    }
 
 
 def _message_url(content: Any) -> str:

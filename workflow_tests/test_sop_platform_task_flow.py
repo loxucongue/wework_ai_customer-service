@@ -213,7 +213,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["knowledge_base"]["items"][0]["knowledgeName"], "价格疑问")
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("自然承接")])
 
-    async def test_non_ai_copy_send_uses_platform_original_messages(self) -> None:
+    async def test_platform_original_copy_is_ignored_and_model_messages_are_sent(self) -> None:
         model = _Model(
             [
                 {
@@ -224,25 +224,13 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         service, repo, platform, system = _service(model=model)
-        task = _task(
-            use_ai_copy=False,
-            message_content=[
-                {"type": "text", "content": "平台原文"},
-                {"type": "image", "content": "https://cdn.example/platform-original.jpg"},
-            ],
-        )
+        task = _task(use_ai_copy=False, message_content=[{"type": "text", "content": "平台原文"}])
 
         result = await service.process_task(task)
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(
-            system.send_calls[0]["reply_messages"],
-            [
-                _text("平台原文"),
-                {"type": "image", "order": 2, "content": {"url": "https://cdn.example/platform-original.jpg"}},
-            ],
-        )
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型擅自改写")])
         self.assertEqual(system.send_calls[0]["plan_id"], "platform-sop-101")
         self.assertEqual(system.send_calls[0]["task_id"], "platform-sop-send-101")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
@@ -274,7 +262,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30), ("102", 20), ("102", 30)])
         self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型擅自改写")])
         second_payload = repo.tasks["platform-sop:102"]["send_payload"]
         self.assertEqual(second_payload["decision"]["reason"], "duplicate_platform_task_content")
         self.assertEqual(repo.events["platform_sop_task:102"]["status"], "platform_completed")
@@ -300,7 +288,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(system.conversation_calls, 2)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型擅自改写")])
 
     async def test_manual_resend_pre_cutover_task_sends_original_without_reclaiming_platform(self) -> None:
         model = _Model(
@@ -453,40 +441,6 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             payload["context"]["first_day_platform_sop_route"]["route_reason"],
             "first_add_unopened_original_platform_content",
         )
-
-    async def test_first_day_original_media_still_obeys_media_deduplication(self) -> None:
-        media_url = "https://cdn.example/first-day.jpg"
-        model = _Model([])
-        service, repo, platform, system = _service(model=model)
-        repo.list_platform_sop_task_records = lambda **_kwargs: [  # type: ignore[attr-defined]
-            _sent_platform_record(task_id="100", messages=[_image(media_url)])
-        ]
-        task = _task(
-            use_ai_copy=True,
-            message_content=[
-                {"type": "text", "content": "平台首日原文"},
-                {"type": "image", "content": media_url},
-            ],
-        )
-        task["triggerEvent"] = "add_wecom"
-        task["operateTime"] = datetime.now(timezone.utc).isoformat()
-        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
-        system.conversation_payload["data"]["messages"] = [
-            {
-                "direction": "customer",
-                "content": "我已经添加了你，现在我们可以开始聊天了。",
-                "msgtime": int(time.time() * 1000),
-            }
-        ]
-
-        result = await service.process_task(task)
-
-        self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(model.calls, [])
-        self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        stored = next(iter(repo.tasks.values()))
-        self.assertEqual(stored["send_payload"]["decision"]["reason"], "duplicate_media_delivery")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
     async def test_first_day_payment_card_marker_becomes_payment_collection(self) -> None:
@@ -567,7 +521,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("轻触达效果")])
         self.assertEqual(len(model.calls), 1)
 
     async def test_second_day_model_can_preserve_payment_collection_marker(self) -> None:
@@ -833,7 +787,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(len(model.calls), 2)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("修复后发送")])
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         stored = next(iter(repo.tasks.values()))
         self.assertEqual(stored["send_payload"]["decision"]["reason"], "repair to send")
@@ -1078,180 +1032,6 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["status"], "completed_without_send")
         self.assertEqual(stored["send_payload"]["decision"]["reason"], "near_duplicate_platform_delivery")
         self.assertTrue(stored["send_payload"]["context"]["near_duplicate_delivery"]["found"])
-
-    async def test_non_ai_copy_signed_image_duplicate_is_consumed_without_send(self) -> None:
-        old_url = "https://oss.example/media/effect.png?OSSAccessKeyId=old&Expires=1&Signature=old"
-        new_url = "https://oss.example/media/effect.png?Signature=new&Expires=2&OSSAccessKeyId=new"
-        model = _Model(
-            [{"decision": "send", "reason": "ok", "reply_messages": [_text("模型候选")]}]
-        )
-        service, repo, platform, system = _service(model=model)
-        repo.list_platform_sop_task_records = lambda **_kwargs: [  # type: ignore[attr-defined]
-            _sent_platform_record(task_id="100", messages=[_image(old_url)])
-        ]
-        task = _task(
-            use_ai_copy=False,
-            message_content=[
-                {"type": "text", "content": "短文案"},
-                {"type": "image", "content": new_url},
-            ],
-        )
-
-        result = await service.process_task(task)
-
-        self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        stored = next(iter(repo.tasks.values()))
-        self.assertEqual(stored["send_payload"]["decision"]["reason"], "duplicate_media_delivery")
-        duplicate = stored["send_payload"]["context"]["near_duplicate_delivery"]
-        self.assertEqual(duplicate["match_type"], "duplicate_media")
-        self.assertEqual(duplicate["duplicate_task_id"], "100")
-
-    async def test_ai_copy_duplicate_image_retries_once_and_sends_new_media(self) -> None:
-        duplicate_url = "https://cdn.example/effect-a.png"
-        replacement_url = "https://cdn.example/effect-b.png"
-        model = _Model(
-            [
-                {
-                    "decision": "send",
-                    "reason": "initial",
-                    "reply_messages": [_text("效果参考"), _image(duplicate_url, order=2)],
-                },
-                {
-                    "decision": "send",
-                    "reason": "repaired",
-                    "reply_messages": [_text("换一组效果参考"), _image(replacement_url, order=2)],
-                },
-            ]
-        )
-        service, repo, platform, system = _service(model=model)
-        repo.list_platform_sop_task_records = lambda **_kwargs: [  # type: ignore[attr-defined]
-            _sent_platform_record(task_id="100", messages=[_image(duplicate_url)])
-        ]
-
-        result = await service.process_task(_task(use_ai_copy=True))
-
-        self.assertEqual(result["status"], "sent")
-        self.assertEqual(len(model.calls), 2)
-        self.assertEqual(system.send_calls[0]["reply_messages"][-1], _image(replacement_url, order=2))
-        first_model_input = json.loads(model.calls[0][-1]["content"])
-        self.assertEqual(len(first_model_input["latest_context"]["recent_sent_media"]), 1)
-        self.assertEqual(
-            first_model_input["latest_context"]["recent_sent_media"][0]["canonical_url"],
-            duplicate_url,
-        )
-        stored = next(iter(repo.tasks.values()))
-        repair = stored["send_payload"]["context"]["duplicate_media_repair"]
-        self.assertTrue(repair["attempted"])
-        self.assertTrue(repair["succeeded"])
-        self.assertFalse(repair["verification"]["found"])
-
-    async def test_ai_copy_duplicate_image_after_retry_is_consumed_without_send(self) -> None:
-        duplicate_url = "https://cdn.example/effect-a.png"
-        repeated_with_signature = "https://cdn.example/effect-a.png?x-expires=2&x-signature=again"
-        model = _Model(
-            [
-                {
-                    "decision": "send",
-                    "reason": "initial",
-                    "reply_messages": [_text("效果参考"), _image(duplicate_url, order=2)],
-                },
-                {
-                    "decision": "send",
-                    "reason": "still duplicated",
-                    "reply_messages": [_text("另一句效果参考"), _image(repeated_with_signature, order=2)],
-                },
-            ]
-        )
-        service, repo, platform, system = _service(model=model)
-        repo.list_platform_sop_task_records = lambda **_kwargs: [  # type: ignore[attr-defined]
-            _sent_platform_record(task_id="100", messages=[_image(duplicate_url)])
-        ]
-
-        result = await service.process_task(_task(use_ai_copy=True))
-
-        self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(len(model.calls), 2)
-        self.assertEqual(system.send_calls, [])
-        stored = next(iter(repo.tasks.values()))
-        self.assertEqual(stored["send_payload"]["decision"]["reason"], "duplicate_media_exhausted")
-
-    async def test_duplicate_video_is_isolated_by_receiving_wechat(self) -> None:
-        video_url = "https://cdn.example/case.mp4?x-oss-process=video/snapshot"
-        model = _Model(
-            [{"decision": "send", "reason": "ok", "reply_messages": [_text("模型候选")]}]
-        )
-        service, repo, _platform, system = _service(model=model)
-        other_wechat = _sent_platform_record(task_id="100", messages=[_video(video_url)])
-        other_wechat["wechat"] = "OTHER"
-        repo.list_platform_sop_task_records = lambda **_kwargs: [other_wechat]  # type: ignore[attr-defined]
-        task = _task(
-            use_ai_copy=False,
-            message_content=[{"type": "video", "content": "https://cdn.example/case.mp4"}],
-        )
-
-        result = await service.process_task(task)
-
-        self.assertEqual(result["status"], "sent")
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_video("https://cdn.example/case.mp4")])
-
-    async def test_same_contact_concurrent_tasks_cannot_send_the_same_media_twice(self) -> None:
-        media_url = "https://cdn.example/shared-effect.png"
-        model = _Model(
-            [
-                {"decision": "send", "reason": "first", "reply_messages": [_text("first model copy")]},
-                {"decision": "send", "reason": "second", "reply_messages": [_text("second model copy")]},
-            ]
-        )
-        service, repo, _platform, system = _service(model=model)
-
-        def list_records(**_kwargs):
-            records = []
-            for task in repo.tasks.values():
-                event = repo.events[task["event_id"]]
-                platform_task = event["raw_payload"]["platform_task"]
-                records.append(
-                    {
-                        "event_id": task["event_id"],
-                        "platform_task": platform_task,
-                        "customer_id": task["customer_id"],
-                        "external_userid": task["external_userid"],
-                        "corp_id": task["corp_id"],
-                        "wechat": task["wechat"],
-                        "task_status": task["status"],
-                        "sent_at": task.get("sent_at") or "",
-                        "reply_messages": task.get("reply_messages") or [],
-                        "send_payload": task.get("send_payload") or {},
-                    }
-                )
-            return records
-
-        repo.list_platform_sop_task_records = list_records  # type: ignore[attr-defined]
-        first = _task(
-            use_ai_copy=False,
-            message_content=[
-                {"type": "text", "content": "第一条短文案"},
-                {"type": "image", "content": media_url},
-            ],
-        )
-        second = _task(
-            use_ai_copy=False,
-            message_content=[
-                {"type": "text", "content": "第二条不同短文案"},
-                {"type": "image", "content": media_url},
-            ],
-        )
-        second["task_id"] = 102
-
-        results = await asyncio.gather(service.process_task(first), service.process_task(second))
-
-        self.assertEqual([result["status"] for result in results], ["sent", "completed_without_send"])
-        self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(
-            repo.tasks["platform-sop:102"]["send_payload"]["decision"]["reason"],
-            "duplicate_media_delivery",
-        )
 
     async def test_rule_data_failure_does_not_retry_after_customer_message_sent(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
@@ -1729,29 +1509,6 @@ def _task(*, use_ai_copy: bool = True, message_content: list[dict[str, Any]] | N
 
 def _text(value: str, order: int = 1):
     return {"type": "text", "order": order, "content": {"text": value}}
-
-
-def _image(url: str, order: int = 1):
-    return {"type": "image", "order": order, "content": {"url": url}}
-
-
-def _video(url: str, order: int = 1):
-    return {"type": "video", "order": order, "content": {"url": url}}
-
-
-def _sent_platform_record(*, task_id: str, messages: list[dict[str, Any]]):
-    return {
-        "event_id": f"platform_sop_task:{task_id}",
-        "platform_task": {**_task(), "task_id": int(task_id)},
-        "customer_id": "22000001",
-        "external_userid": "wm_external",
-        "corp_id": "ww_corp",
-        "wechat": "DY258",
-        "task_status": "sent",
-        "sent_at": "2026-08-09T01:55:43+00:00",
-        "reply_messages": messages,
-        "send_payload": {"request": {"reply_messages": messages}},
-    }
 
 
 class _Repo:

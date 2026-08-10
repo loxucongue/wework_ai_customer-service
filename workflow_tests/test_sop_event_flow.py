@@ -15,10 +15,10 @@ from app.services.sop_event_decision import (
 )
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import (
+    SOP_EVENT_SYSTEM_PROMPT,
     SopExecutionService,
     _event_selector_input,
     _chat_gate_output_violations,
-    _sop_event_system_prompt,
     first_add_candidate_packs,
     is_platform_auto_opening_message,
 )
@@ -190,48 +190,6 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "gate_pressure_conflict:first_soft_refusal_must_not_send_payment_card",
             _chat_gate_output_violations(payment_output, selector_input),
-        )
-
-    def test_chat_gate_payment_collection_pack_cannot_sop_only(self) -> None:
-        selector_input = {
-            "mainline": {"stages": [{"id": "deposit_decision"}]},
-            "precision_qa_index": [],
-            "conversation_evidence": [
-                {"message_ref": "current_message", "direction": "customer", "content": "检测收费吗，是三百多全包。"},
-            ],
-            "unfinished_sops": [
-                {
-                    "id": "charge_pack",
-                    "mainline_stage": "deposit_decision",
-                    "sop_category": "deposit_push",
-                    "payment_collection_gate": {"has_payment_collection": True, "status": "supported", "amounts": [10]},
-                    "reply_messages": [
-                        {"type": "text", "order": 1, "content": {"text": "明码标价"}},
-                        {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
-                    ],
-                },
-            ],
-        }
-        sop_only_output = {
-            "route": "sop_only",
-            "coverage": "exact",
-            "sop_pack_id": "charge_pack",
-            "resume_stage": "deposit_decision",
-        }
-        ai_then_sop_output = {
-            "route": "ai_then_sop",
-            "coverage": "partial",
-            "sop_pack_id": "charge_pack",
-            "resume_stage": "deposit_decision",
-        }
-
-        self.assertIn(
-            "gate_payment_conflict:payment_collection_pack_cannot_sop_only",
-            _chat_gate_output_violations(sop_only_output, selector_input),
-        )
-        self.assertNotIn(
-            "gate_payment_conflict:payment_collection_pack_cannot_sop_only",
-            _chat_gate_output_violations(ai_then_sop_output, selector_input),
         )
 
     def test_chat_gate_first_soft_refusal_blocks_activity_when_not_asking_activity(self) -> None:
@@ -3578,7 +3536,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["text_adjustments"], [{"order": 1, "text": "更自然的效果铺垫"}])
         system_prompt = str(model.messages[0]["content"])
         user_prompt = str(model.messages[1]["content"])
-        self.assertEqual(system_prompt, _sop_event_system_prompt(schema_only=False))
+        self.assertEqual(system_prompt, SOP_EVENT_SYSTEM_PROMPT)
         self.assertIn(GLOBAL_STRUCTURED_NODE_CONTRACT, system_prompt)
         self.assertIn(GLOBAL_BUSINESS_RHYTHM_CONTRACT, system_prompt)
         self.assertIn("先做拒发审查", system_prompt)
@@ -3753,59 +3711,6 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reason"], "event_model_error_candidate_fallback")
         self.assertIn("TimeoutError", result["error"])
 
-    async def test_schema_only_platform_exhaustion_consumes_without_business_fallback(self) -> None:
-        model = _SequenceModel([TimeoutError("timeout 1"), TimeoutError("timeout 2")])
-        service = SopExecutionService(
-            repository=_Repo(),
-            sop_reply_pack_service=_PackService(),
-            model_client=model,
-            event_model_retry_attempts=2,
-            event_model_retry_delay_seconds=0,
-            event_schema_only_normalizer_enabled=True,
-        )
-
-        result = await service.evaluate_event_suggestion(
-            payload={"event_type": "sop_platform_task"},
-            customer={},
-            identity={"customer_id": "customer", "external_userid": "external"},
-            event_type="sop_platform_task",
-            conversation_messages=[],
-            actions_reply_messages=[{"type": "text", "order": 1, "content": {"text": "平台触达内容"}}],
-        )
-
-        self.assertEqual(result["mode"], "event_model_error")
-        self.assertFalse(result["send_sop"])
-        self.assertEqual(result["reason"], "model_decision_failed_no_send")
-        self.assertEqual(len(result["model_attempts"]), 2)
-
-    async def test_schema_only_first_add_exhaustion_does_not_choose_pack_in_python(self) -> None:
-        model = _SequenceModel([TimeoutError("timeout 1"), TimeoutError("timeout 2")])
-        service = SopExecutionService(
-            repository=_Repo(),
-            sop_reply_pack_service=_PackService(),
-            model_client=model,
-            event_model_retry_attempts=2,
-            event_model_retry_delay_seconds=0,
-            event_schema_only_normalizer_enabled=True,
-        )
-
-        result = await service.evaluate_event_suggestion(
-            payload={"event_type": "sop_friend_added_schedule_batch"},
-            customer={},
-            identity={"customer_id": "customer", "external_userid": "external"},
-            event_type="sop_friend_added_schedule_batch",
-            conversation_messages=[],
-            candidate_packs=[
-                {"id": "effect", "name": "效果", "sop_category": "effect_case", "order": 120},
-                {"id": "activity", "name": "活动", "sop_category": "activity_intro", "order": 140},
-            ],
-            event_policy_evidence={},
-        )
-
-        self.assertEqual(result["mode"], "event_model_error")
-        self.assertFalse(result["send_sop"])
-        self.assertEqual(result["reason"], "model_decision_failed_no_send")
-
     async def test_event_judge_keeps_selector_contract_for_direct_prompt_inspection(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "effect_followup", "need_ai_reply": False, "reason": "ok"})
         service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
@@ -3870,7 +3775,6 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["send_sop"])
         self.assertFalse(result["need_ai_reply"])
         self.assertEqual(result["reason"], "platform_auto_opening_first_add_sop")
-        self.assertEqual(result["delivery_mode"], "configured_passthrough")
         self.assertEqual(result["sop_pack_id"], "s10_new_customer_opening")
         self.assertEqual(result["reply_messages"][0]["content"]["text"], "新客破冰话术")
         self.assertEqual(result["task"]["trigger_source"], "platform_auto_opening")
@@ -3880,41 +3784,6 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(duplicate["mode"], "platform_auto_opening_duplicate")
         self.assertFalse(duplicate["send_sop"])
         self.assertEqual(len(repository.tasks), 2)
-
-    async def test_chat_gate_blocks_configured_opening_for_deleted_customer_relation(self) -> None:
-        model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening"})
-        repository = _Repo()
-        service = SopExecutionService(
-            repository=repository,
-            sop_reply_pack_service=_DualScopeOpeningPackService(),
-            model_client=model,
-        )
-        request = ChatRequest(
-            content="我已经添加了你，现在我们可以开始聊天了。",
-            customer_id="customer",
-            corp_id="corp",
-            wechat="CS001",
-            external_userid="ext",
-        )
-
-        result = await service.evaluate_chat_gate(
-            request,
-            request_id="req_auto_opening_deleted",
-            request_context={
-                "customer_relation": {
-                    "available": True,
-                    "status": "deleted",
-                    "is_deleted": True,
-                }
-            },
-        )
-
-        self.assertEqual(result["mode"], "platform_auto_opening_customer_deleted")
-        self.assertFalse(result["send_sop"])
-        self.assertFalse(result["need_ai_reply"])
-        self.assertEqual(result["reason"], "customer_deleted")
-        self.assertEqual(model.messages, [])
-        self.assertEqual(repository.tasks, [])
 
     async def test_chat_gate_hands_workflow_customer_message_to_ai(self) -> None:
         class _PackService:
@@ -3972,80 +3841,6 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["need_ai_reply"])
         self.assertNotEqual(model.messages, [])
         self.assertEqual(result["sop_progress_evidence"]["unfinished_sops"][0]["id"], "static_pack")
-
-    async def test_semantic_safety_gate_persists_stop_contact_and_blocks_later_turns(self) -> None:
-        class _ChatPackService:
-            def load(self) -> dict[str, Any]:
-                return {
-                    "packs": [
-                        {
-                            "id": "static_pack",
-                            "enabled": True,
-                            "scope": "chat_gate",
-                            "sop_category": "effect_case",
-                            "name": "效果参考",
-                            "purpose": "发送效果参考",
-                            "order": 10,
-                            "reply_messages": [
-                                {"type": "text", "order": 1, "content": {"text": "效果参考"}}
-                            ],
-                        }
-                    ]
-                }
-
-        model = _SequenceModel(
-            [
-                {
-                    "route": "ai_only",
-                    "coverage": "none",
-                    "selected_scene_id": "",
-                    "sop_pack_id": "",
-                    "resume_stage": "",
-                    "reason": "客户明确要求停止联系",
-                    "safety_decision": {
-                        "status": "stop",
-                        "reason_type": "stop_contact",
-                        "evidence_refs": ["current_message"],
-                        "reason": "客户明确要求停止联系",
-                    },
-                    "scene_decision": {
-                        "current_question": "",
-                        "blocker": "none",
-                        "resume_stage": "",
-                        "evidence_refs": ["current_message"],
-                    },
-                }
-            ]
-        )
-        with TemporaryDirectory() as directory:
-            memory_store = CustomerMemoryStore(SimpleNamespace(memory_dir=Path(directory)))
-            service = SopExecutionService(
-                repository=_Repo(),
-                sop_reply_pack_service=_ChatPackService(),
-                model_client=model,
-                memory_store=memory_store,
-                model_semantic_routing_enabled=True,
-            )
-            request = ChatRequest(
-                content="请不要再联系我",
-                customer_id="customer",
-                corp_id="corp",
-                external_userid="external",
-                wechat="CS001",
-            )
-
-            first = await service.evaluate_chat_gate(request, request_id="req_stop", request_context={})
-            calls_after_first = len(model.calls)
-            second = await service.evaluate_chat_gate(
-                request.model_copy(update={"content": "好的"}),
-                request_id="req_after_stop",
-                request_context={},
-            )
-
-        self.assertEqual(first["mode"], "safety_stop_no_reply")
-        self.assertEqual(first["stop_contact_persistence"]["status"], "recorded")
-        self.assertEqual(second["mode"], "safety_stop_contact")
-        self.assertEqual(len(model.calls), calls_after_first)
 
     async def test_chat_gate_bypasses_non_text_messages_to_ai_tools(self) -> None:
         class _PackService:
@@ -4154,7 +3949,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mainline", selector_input)
         self.assertIn("precision_qa_index", selector_input)
 
-    async def test_chat_gate_platform_auto_opening_does_not_wait_for_order_lookup(self) -> None:
+    async def test_chat_gate_skips_platform_auto_opening_when_deposit_is_paid(self) -> None:
         repository = _Repo()
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening"})
         service = SopExecutionService(
@@ -4188,10 +3983,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.evaluate_chat_gate(request, request_id="req_auto_paid", request_context={})
 
-        self.assertEqual(result["mode"], "platform_auto_opening_sop")
-        self.assertTrue(result["send_sop"])
-        self.assertEqual(result["delivery_mode"], "configured_passthrough")
-        self.assertEqual(len(repository.tasks), 1)
+        self.assertEqual(result["mode"], "skipped_deposit_paid")
+        self.assertFalse(result["send_sop"])
+        self.assertEqual(repository.tasks, [])
         self.assertEqual(model.messages, [])
 
     async def test_chat_gate_applies_contextual_text_adjustment_without_changing_pack_structure(self) -> None:
@@ -4427,8 +4221,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         missing = await missing_service.evaluate_chat_gate(request, request_id="req_payment_missing", request_context={})
 
-        self.assertFalse(missing["send_sop"])
-        self.assertEqual(missing["mode"], "ai_only")
+        self.assertTrue(missing["send_sop"])
+        self.assertEqual([item["type"] for item in missing["reply_messages"]], ["text", "payment_collection"])
 
         valid_service = SopExecutionService(
             repository=_Repo(),
@@ -4454,8 +4248,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         valid = await valid_service.evaluate_chat_gate(request, request_id="req_payment_valid", request_context={})
 
-        self.assertFalse(valid["send_sop"])
-        self.assertEqual(valid["mode"], "ai_only")
+        self.assertTrue(valid["send_sop"])
+        self.assertEqual([item["type"] for item in valid["reply_messages"]], ["text", "payment_collection"])
 
     async def test_chat_gate_exposes_authoritative_sop_progress_without_message_bodies(self) -> None:
         class _ProgressPackService:
@@ -4780,9 +4574,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             request_context={"source_protocol": "workflow-compatible"},
         )
 
-        self.assertEqual(result["mode"], "ai_only")
-        self.assertFalse(result.get("send_sop"))
-        user_prompt = "\n".join(str(message.get("content") or "") for message in model.messages)
+        self.assertEqual(result["mode"], "sop_only")
+        self.assertEqual(result["sop_pack_id"], "s10_activity_intro")
+        user_prompt = model.messages[1]["content"]
         self.assertIn("s10_activity_intro", user_prompt)
         self.assertIn("活动怎么参加", user_prompt)
 

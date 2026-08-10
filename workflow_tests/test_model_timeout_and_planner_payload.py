@@ -15,7 +15,6 @@ from app.graph.planner.brain_v2 import (
     PLANNER_GRAPH_RETURN_GUARD_SECONDS,
     _planner_payload_for_model,
     _primary_deadline_preserving_recovery,
-    planner_v2_repair_messages_for_model,
     run_planner_brain_v2,
 )
 from app.services.model_client import ModelClient
@@ -34,37 +33,6 @@ def _settings(**overrides: Any) -> Settings:
 
 
 class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
-    def test_planner_contract_repair_uses_compact_context(self) -> None:
-        messages = planner_v2_repair_messages_for_model(
-            {
-                "normalized_content": "介绍一下活动",
-                "conversation_history": [f"用户: 历史消息{i}" for i in range(30)],
-                "sop_gate_decision": {
-                    "route": "ai_then_sop",
-                    "sop_pack_id": "s10_activity_intro",
-                },
-            },
-            original_plan={
-                "planner_decision": "direct_reply",
-                "sales_progression": {"status": "continue", "target_stage": "activity", "action": "none"},
-            },
-            violations=[
-                {
-                    "missing": "continued_progression_requires_concrete_action",
-                    "note": "Reply 无权选择动作",
-                }
-            ],
-        )
-
-        payload = json.loads(messages[-1]["content"])
-        self.assertLessEqual(len(payload["conversation_history"]), 8)
-        self.assertEqual(payload["original_plan"]["sales_progression"]["target_stage"], "activity")
-        self.assertEqual(
-            payload["tool_policy_violations"][0]["missing"],
-            "continued_progression_requires_concrete_action",
-        )
-        self.assertEqual(len(messages), 5)
-
     def test_short_mojibake_detection_preserves_normal_confirmation(self) -> None:
         self.assertFalse(looks_suspected_short_mojibake("行"))
         self.assertFalse(looks_suspected_short_mojibake("好的"))

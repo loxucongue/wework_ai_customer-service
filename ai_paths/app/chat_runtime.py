@@ -12,11 +12,6 @@ from app.chat_runtime_helpers import failed_state_from_exception, safe_repositor
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
 from app.config import Settings
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
-from app.graph.nodes.conversation_history_fetch import (
-    conversation_fetch_params,
-    newer_conversation_activity_after_trigger,
-)
-from app.graph.nodes.reply_delivery_manifest import build_sop_delivery_manifest
 from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
@@ -24,7 +19,6 @@ from app.services.customer_scope import customer_scope_from_state
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
-from app.services.reply_governance import reply_governance_flags
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository
@@ -167,13 +161,6 @@ class ChatRuntime:
         initial_state["sop_gate_decision"] = {
             "route": str(sop_gate.get("route") or sop_gate.get("mode") or ""),
             "coverage": str(sop_gate.get("coverage") or ""),
-            "reason": str(sop_gate.get("reason") or ""),
-            "scene_decision": dict(sop_gate.get("scene_decision") or {})
-            if isinstance(sop_gate.get("scene_decision"), dict)
-            else {},
-            "task": dict(sop_gate.get("active_task") or {})
-            if isinstance(sop_gate.get("active_task"), dict)
-            else {},
             "priority_question_id": str(sop_gate.get("priority_question_id") or ""),
             "selected_scene_id": str(
                 sop_gate.get("selected_scene_id") or sop_gate.get("priority_question_id") or ""
@@ -191,21 +178,42 @@ class ChatRuntime:
                 if isinstance(message, dict) and str(message.get("type") or "") == "image"
             ),
             "source": "chat_sop_gate_model",
-            "safety_decision": dict(sop_gate.get("safety_decision") or {})
-            if isinstance(sop_gate.get("safety_decision"), dict)
-            else {},
-            "scene_decision": dict(sop_gate.get("scene_decision") or {})
-            if isinstance(sop_gate.get("scene_decision"), dict)
-            else {},
         }
         initial_state["sop_progress_evidence"] = dict(sop_gate.get("sop_progress_evidence") or {})
-        initial_state["sop_gate_candidate_messages"] = [
-            dict(message)
-            for message in (sop_gate.get("reply_messages") or [])
-            if isinstance(message, dict)
-        ]
-        initial_state["sop_delivery_manifest"] = build_sop_delivery_manifest(sop_gate)
         _append_sop_gate_trace(initial_state, sop_gate)
+        if sop_gate.get("send_sop"):
+            sop_state = self._sop_reply_state(initial_state, sop_gate)
+            if sop_gate.get("need_ai_reply"):
+                final_state = await self._run_sop_ai_reply_sync(
+                    request=effective_request,
+                    conversation_id=conversation_id,
+                    initial_state=initial_state,
+                    sop_state=sop_state,
+                    control_record=control_record,
+                )
+                return self._persist_and_build_response(
+                    request=request,
+                    request_id=request_id,
+                    conversation_id=conversation_id,
+                    final_state=final_state,
+                    allow_empty_reply=False,
+                )
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            self._schedule_background_profile_update(
+                conversation_id=conversation_id,
+                state=sop_state,
+                background_tasks=background_tasks,
+                reason="sop_gate_sync_reply",
+            )
+            response = self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=sop_state,
+                allow_empty_reply=True,
+            )
+            return response
         if _sop_gate_terminal_no_reply(sop_gate):
             terminal_state = dict(initial_state)
             terminal_state["reply_messages"] = []
@@ -229,24 +237,6 @@ class ChatRuntime:
                 final_state=terminal_state,
                 allow_empty_reply=True,
             )
-
-        if _sop_gate_direct_reply(sop_gate):
-            direct_state = self._sop_reply_state(initial_state, sop_gate)
-            direct_state = await self._apply_platform_freshness_guard(
-                request=effective_request,
-                state=direct_state,
-                control_record=control_record,
-            )
-            response = self._persist_and_build_response(
-                request=request,
-                request_id=request_id,
-                conversation_id=conversation_id,
-                final_state=direct_state,
-                allow_empty_reply=False,
-            )
-            if self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-            return response
 
         try:
             planner_state = await self._run_planner_graph_with_preemption(initial_state, control_record)
@@ -294,11 +284,6 @@ class ChatRuntime:
             "status": "not_required",
         }
         _set_async_final_control(planner_state, planner_state["async_final_reply"])
-        planner_state = await self._apply_platform_freshness_guard(
-            request=request,
-            state=planner_state,
-            control_record=control_record,
-        )
         response = self._persist_and_build_response(
             request=request,
             request_id=request_id,
@@ -414,15 +399,7 @@ class ChatRuntime:
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
                 return state
-            final_state = await self._apply_platform_freshness_guard(
-                request=request,
-                state=final_state,
-                control_record=control_record,
-            )
-            if _final_state_superseded(final_state):
-                return final_state
-            messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-            if not messages and not bool(final_state.get("reply_blocked")):
+            if not messages:
                 messages = _deterministic_final_fallback_messages(final_state)
                 final_state["reply_messages"] = messages
                 final_state["reply_source"] = "deterministic_sync_empty_reply_fallback"
@@ -431,8 +408,8 @@ class ChatRuntime:
                 )
             result = {
                 "scheduled": False,
-                "status": "blocked" if final_state.get("reply_blocked") else "completed_sync",
-                "reason": "reply_contract_blocked" if final_state.get("reply_blocked") else "platform_sync_final_reply",
+                "status": "completed_sync",
+                "reason": "platform_sync_final_reply",
                 "reply_messages": messages,
             }
             final_state["async_final_reply"] = result
@@ -460,78 +437,6 @@ class ChatRuntime:
         finally:
             if self._platform_reply_coordinator:
                 await self._platform_reply_coordinator.complete(control_record)
-
-    async def _apply_platform_freshness_guard(
-        self,
-        *,
-        request: ChatRequest,
-        state: AgentState,
-        control_record: PlatformReplyRecord | None,
-    ) -> AgentState:
-        """Drop a completed reply when the platform conversation already moved on."""
-
-        if not control_record or not self._outreach_send_client:
-            return state
-        if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
-            return self._superseded_state(state, control_record)
-
-        params = conversation_fetch_params(
-            state,
-            request_context=state.get("request_context") if isinstance(state.get("request_context"), dict) else {},
-            limit=50,
-        )
-        started_at = time.perf_counter()
-        try:
-            result = await self._outreach_send_client.fetch_conversation(**params)
-        except Exception as exc:
-            result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-        messages = result.get("messages") if isinstance(result, dict) and isinstance(result.get("messages"), list) else []
-        comparison = newer_conversation_activity_after_trigger(
-            messages,
-            trigger_message_id=control_record.message_id,
-            trigger_events=control_record.merged_input_events,
-        )
-        fetch_status = str(result.get("status") or "failed") if isinstance(result, dict) else "failed"
-        freshness = {
-            "status": "checked" if fetch_status == "ok" and comparison.get("status") != "unavailable" else "unavailable",
-            "fetch_status": fetch_status,
-            "trigger_message_id": control_record.message_id,
-            "newer_customer_message": bool(comparison.get("newer_customer_message")),
-            "newer_assistant_message": bool(comparison.get("newer_assistant_message")),
-            "newer_message_refs": list(comparison.get("newer_customer_message_refs") or []),
-            "newer_assistant_message_refs": list(comparison.get("newer_assistant_message_refs") or []),
-            "reason": str(comparison.get("reason") or result.get("reason") or result.get("error") or "")[:500],
-            "duration_ms": int((time.perf_counter() - started_at) * 1000),
-        }
-        state["reply_freshness_check"] = freshness
-        _append_platform_freshness_trace(state, freshness)
-        if fetch_status == "ok" and (
-            comparison.get("newer_customer_message") or comparison.get("newer_assistant_message")
-        ):
-            stale_state = self._superseded_state(state, control_record)
-            stale_state["trace"] = list(state.get("trace") or [])
-            stale_state["errors"] = list(state.get("errors") or [])
-            stale_state["warnings"] = list(state.get("warnings") or [])
-            stale_state["reply_freshness_check"] = {
-                **freshness,
-                "status": "superseded",
-                "reason": (
-                    "newer_customer_message_detected_after_trigger"
-                    if comparison.get("newer_customer_message")
-                    else "newer_assistant_message_detected_after_trigger"
-                ),
-            }
-            stale_state["reply_source"] = "platform_superseded"
-            return stale_state
-        if freshness["status"] == "unavailable":
-            state.setdefault("warnings", []).append(
-                {
-                    "node": "platform_reply_freshness",
-                    "message": "freshness_check_unavailable",
-                    "detail": freshness,
-                }
-            )
-        return state
 
     async def _run_sop_ai_reply_sync(
         self,
@@ -566,31 +471,23 @@ class ChatRuntime:
                     await self._platform_reply_coordinator.complete(control_record)
                 return state
             ai_reply_usable = _ai_reply_usable_before_sop(final_state, ai_messages)
-            authorized_sop_messages = _payment_authorized_reply_messages(
-                sop_messages,
-                payment_decision=final_state.get("payment_decision"),
-            )
             if ai_reply_usable:
-                messages = _merge_ai_then_sop_reply_messages(
-                    ai_messages,
-                    authorized_sop_messages,
-                    payment_decision=final_state.get("payment_decision"),
-                )
+                messages = _merge_ai_then_sop_reply_messages(ai_messages, sop_messages)
                 _confirm_deferred_chat_sop_task(
                     self._sop_execution_service,
                     sop_state,
                     request_id=str(final_state.get("request_id") or initial_state.get("request_id") or ""),
-                    reply_messages=authorized_sop_messages,
+                    reply_messages=sop_messages,
                 )
                 result_reason = "ai_reply_then_sop_returned_with_response"
-            elif authorized_sop_messages:
-                messages = list(authorized_sop_messages)
+            elif sop_messages:
+                messages = list(sop_messages)
                 final_state["reply_source"] = "sop_gate_sync_sop_fallback_after_ai_unavailable"
                 _confirm_deferred_chat_sop_task(
                     self._sop_execution_service,
                     sop_state,
                     request_id=str(final_state.get("request_id") or initial_state.get("request_id") or ""),
-                    reply_messages=authorized_sop_messages,
+                    reply_messages=sop_messages,
                 )
                 final_state.setdefault("warnings", []).append(
                     {"node": "sop_gate_sync_ai_reply", "message": "sop_sent_after_ai_reply_unavailable"}
@@ -1023,7 +920,6 @@ class ChatRuntime:
             "test_isolated": test_isolated,
             "memory_persist_allowed": bool(request_context.get("memory_persist_allowed")),
             "runtime_budget": build_runtime_budget(self._settings),
-            "reply_governance": reply_governance_flags(self._settings),
             "trace": [],
             "errors": [],
         }
@@ -1058,48 +954,6 @@ class ChatRuntime:
             _set_sync_return(final_state, "empty", [])
             allow_empty_reply = True
         raw_reply_messages = final_state.get("reply_messages") or []
-        gate = final_state.get("sop_gate") if isinstance(final_state.get("sop_gate"), dict) else {}
-        gate_task = gate.get("task") if isinstance(gate.get("task"), dict) else {}
-        if str(gate_task.get("status") or "") == "pending":
-            reply_source = str(final_state.get("reply_source") or "")
-            authorized_manifest = (
-                final_state.get("authorized_sop_delivery_manifest")
-                if isinstance(final_state.get("authorized_sop_delivery_manifest"), dict)
-                else {}
-            )
-            if (
-                bool(final_state.get("reply_blocked"))
-                or final_state.get("errors")
-                or reply_source.startswith("deterministic_")
-            ):
-                _fail_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    final_state,
-                    error=str(final_state.get("recovery_reason") or reply_source or "unified_reply_chain_failed"),
-                )
-            elif raw_reply_messages and authorized_manifest.get("active"):
-                _confirm_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    final_state,
-                    request_id=request_id,
-                    reply_messages=[item for item in raw_reply_messages if isinstance(item, dict)],
-                )
-            else:
-                delivery_decision = (
-                    authorized_manifest.get("delivery_decision")
-                    if isinstance(authorized_manifest.get("delivery_decision"), dict)
-                    else {}
-                )
-                _fail_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    final_state,
-                    error=(
-                        "planner_"
-                        + str(delivery_decision.get("action") or authorized_manifest.get("reason") or "sop_not_delivered")
-                    ),
-                )
-        if bool(final_state.get("reply_blocked")):
-            allow_empty_reply = True
         if not raw_reply_messages and not allow_empty_reply:
             final_state.setdefault("errors", []).append(
                 {
@@ -1195,7 +1049,6 @@ class ChatRuntime:
                 "async_final_reply": final_state.get("async_final_reply", {}),
                 "reply_control": final_state.get("reply_control", {}),
                 "sop_gate": final_state.get("sop_gate", {}),
-                "reply_governance": final_state.get("reply_governance", {}),
                 "conversation_id": conversation_id,
             },
         )
@@ -1311,21 +1164,9 @@ def _platform_reply_source(state: AgentState) -> str:
 
 def _sop_gate_terminal_no_reply(sop_gate: dict[str, Any]) -> bool:
     return (
-        str(sop_gate.get("mode") or "")
-        in {"ignored_platform_auto_message", "safety_stop_no_reply", "safety_stop_contact"}
+        str(sop_gate.get("mode") or "") == "ignored_platform_auto_message"
         and not sop_gate.get("send_sop")
         and not sop_gate.get("need_ai_reply")
-    )
-
-
-def _sop_gate_direct_reply(sop_gate: dict[str, Any]) -> bool:
-    return (
-        str(sop_gate.get("mode") or "") == "platform_auto_opening_sop"
-        and str(sop_gate.get("delivery_mode") or "") == "configured_passthrough"
-        and bool(sop_gate.get("send_sop"))
-        and not bool(sop_gate.get("need_ai_reply"))
-        and isinstance(sop_gate.get("reply_messages"), list)
-        and bool(sop_gate.get("reply_messages"))
     )
 
 
@@ -1515,25 +1356,6 @@ def _append_sync_final_trace(state: AgentState, result: dict[str, Any]) -> None:
     state.setdefault("trace", []).append(entry)
 
 
-def _append_platform_freshness_trace(state: AgentState, result: dict[str, Any]) -> None:
-    entry = {
-        "node": "platform_reply_freshness",
-        "started_at": utc_now_iso(),
-        "input_snapshot": compact(
-            {
-                "request_id": state.get("request_id", ""),
-                "trigger_message_id": result.get("trigger_message_id", ""),
-            }
-        ),
-        "tool_calls": [{"name": "ai_outreach_conversation", "output": compact(result)}],
-        "error": result.get("reason") if result.get("status") == "unavailable" else None,
-        "output_snapshot": compact(result),
-    }
-    entry["finished_at"] = utc_now_iso()
-    entry["duration_ms"] = int(result.get("duration_ms") or 0)
-    state.setdefault("trace", []).append(entry)
-
-
 def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     for group in groups:
@@ -1546,14 +1368,7 @@ def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str,
     return messages
 
 
-def _merge_ai_then_sop_reply_messages(
-    ai_messages: list[dict[str, Any]],
-    sop_messages: list[dict[str, Any]],
-    *,
-    payment_decision: Any = None,
-) -> list[dict[str, Any]]:
-    ai_messages = _payment_authorized_reply_messages(ai_messages, payment_decision=payment_decision)
-    sop_messages = _payment_authorized_reply_messages(sop_messages, payment_decision=payment_decision)
+def _merge_ai_then_sop_reply_messages(ai_messages: list[dict[str, Any]], sop_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not any(_message_type(message) == "text" and _message_text(message) for message in ai_messages):
         return _merge_reply_message_groups(ai_messages, sop_messages)
 
@@ -1596,25 +1411,6 @@ def _merge_ai_then_sop_reply_messages(
         copied["order"] = len(merged) + 1
         merged.append(copied)
     return merged
-
-
-def _payment_authorized_reply_messages(
-    messages: list[dict[str, Any]],
-    *,
-    payment_decision: Any,
-) -> list[dict[str, Any]]:
-    # Keep the helper's legacy behavior for isolated callers that do not pass a
-    # planner decision. Runtime callers always pass the structured authority.
-    if payment_decision is None:
-        return list(messages)
-    decision = payment_decision if isinstance(payment_decision, dict) else {}
-    if str(decision.get("action") or "").strip() in {"send_now", "resend"}:
-        return list(messages)
-    return [
-        message
-        for message in messages
-        if isinstance(message, dict) and _message_type(message) != "payment_collection"
-    ]
 
 
 def _message_type(message: dict[str, Any]) -> str:
