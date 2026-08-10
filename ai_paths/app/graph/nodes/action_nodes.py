@@ -2152,7 +2152,11 @@ def _location_query_fragments(query: str) -> list[str]:
     pieces = re.split(r"[，,、;/；|]+", str(query or ""))
     output: list[str] = []
     for piece in pieces:
-        text = re.sub(r"^(?:我在|人在|位置在|定位在|地址在|住在|目前在|现在在)", "", piece.strip())
+        text = re.sub(
+            r"^(?:我在|人在|位置在|定位在|地址在|住在|目前在|现在在|靠近|临近|附近(?:是|在)?|周边(?:是|在)?)",
+            "",
+            piece.strip(),
+        )
         compact = _compact_text(text)
         if len(compact) < 2 or compact in output:
             continue

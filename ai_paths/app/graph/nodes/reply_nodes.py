@@ -83,7 +83,14 @@ def create_synthesize_reply_node(
                     {
                         "node": "synthesize_reply",
                         "message": "required_delivery_adjusted_to_runtime_tool_availability",
-                        "detail": "no_new_case_image_reference_recent_delivery",
+                        "detail": ",".join(
+                            str(item)
+                            for item in (
+                                state.get("reply_strategy", {}).get("runtime_delivery_adjustments", [])
+                                if isinstance(state.get("reply_strategy"), dict)
+                                else []
+                            )
+                        ),
                     }
                 )
             messages: list[dict[str, Any]] = []
@@ -278,9 +285,6 @@ def create_synthesize_reply_node(
 
 def _apply_runtime_delivery_availability(state: AgentState) -> tuple[AgentState, bool]:
     """Reconcile Planner delivery requirements with facts returned by later tool calls."""
-    if not _effect_image_may_reference_recent_delivery(state):
-        return state, False
-
     contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
     progression = state.get("sales_progression") if isinstance(state.get("sales_progression"), dict) else {}
     deliveries = contract.get("required_deliveries") if isinstance(contract.get("required_deliveries"), list) else []
@@ -289,23 +293,70 @@ def _apply_runtime_delivery_availability(state: AgentState) -> tuple[AgentState,
         if isinstance(progression.get("required_message_types"), list)
         else []
     )
+    unavailable_types: set[str] = set()
+    adjustment_reasons: list[str] = []
+    if _effect_image_may_reference_recent_delivery(state):
+        unavailable_types.add("image")
+        adjustment_reasons.append("no_new_case_image_reference_recent_delivery")
+    if _store_card_unavailable_after_lookup(state):
+        unavailable_types.add("store_address")
+        adjustment_reasons.append("store_lookup_has_no_deliverable_candidate")
+    if not unavailable_types:
+        return state, False
+
     adjusted_deliveries = [
         item
         for item in deliveries
-        if not (isinstance(item, dict) and str(item.get("message_type") or "").strip() == "image")
+        if not (
+            isinstance(item, dict)
+            and str(item.get("message_type") or "").strip() in unavailable_types
+        )
     ]
-    adjusted_types = [item for item in required_types if str(item or "").strip() != "image"]
+    adjusted_types = [item for item in required_types if str(item or "").strip() not in unavailable_types]
     if len(adjusted_deliveries) == len(deliveries) and len(adjusted_types) == len(required_types):
         return state, False
 
     adjusted: AgentState = dict(state)
     adjusted["reply_contract"] = {**contract, "required_deliveries": adjusted_deliveries}
     adjusted["sales_progression"] = {**progression, "required_message_types": adjusted_types}
-    adjusted["reply_strategy"] = {
+    reply_strategy = {
         **(state.get("reply_strategy") if isinstance(state.get("reply_strategy"), dict) else {}),
-        "case_image_delivery": "reference_recent_no_new_image",
+        "runtime_delivery_adjustments": adjustment_reasons,
     }
+    if "image" in unavailable_types:
+        reply_strategy["case_image_delivery"] = "reference_recent_no_new_image"
+    adjusted["reply_strategy"] = reply_strategy
     return adjusted, True
+
+
+def _store_card_unavailable_after_lookup(state: AgentState) -> bool:
+    facts = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = facts.get("structured_facts") if isinstance(facts.get("structured_facts"), dict) else {}
+    unified = structured.get("store_resolution") if isinstance(structured.get("store_resolution"), dict) else {}
+    candidate_policy = (
+        unified.get("candidate_policy")
+        if isinstance(unified.get("candidate_policy"), dict)
+        else {}
+    )
+    legacy = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    status = str(candidate_policy.get("status") or legacy.get("status") or "").strip()
+    delivery_ids = [
+        str(item).strip()
+        for item in candidate_policy.get("delivery_store_ids") or legacy.get("delivery_store_ids") or []
+        if str(item).strip()
+    ]
+    if delivery_ids or status in {"send_single", "send_multiple", "reuse_confirmed_store"}:
+        return False
+    return status in {
+        "need_location",
+        "need_location_confirmation",
+        "ambiguous_location",
+        "no_valid_candidate",
+    }
 
 
 def _is_hard_reply_contract_failure(error: str) -> bool:
