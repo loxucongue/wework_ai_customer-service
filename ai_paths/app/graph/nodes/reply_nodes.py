@@ -7,7 +7,7 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
-from app.graph.nodes.reply_delivery_manifest import manifest_image_urls
+from app.graph.nodes.reply_delivery_manifest import EFFECT_TRUST_SCENE_IDS, manifest_image_urls
 from app.graph.nodes.reply_validation import (
     _effect_image_may_reference_recent_delivery,
     _paid_deposit_context,
@@ -295,13 +295,23 @@ def _apply_runtime_delivery_availability(state: AgentState) -> tuple[AgentState,
     )
     unavailable_types: set[str] = set()
     adjustment_reasons: list[str] = []
+    effect_scene_id = str(contract.get("effect_trust_scene_id") or "").strip()
+    case_image_available = bool(_tool_case_image_urls(state))
     if _effect_image_may_reference_recent_delivery(state):
         unavailable_types.add("image")
         adjustment_reasons.append("no_new_case_image_reference_recent_delivery")
     if _store_card_unavailable_after_lookup(state):
         unavailable_types.add("store_address")
         adjustment_reasons.append("store_lookup_has_no_deliverable_candidate")
-    if not unavailable_types:
+    add_effect_image = (
+        effect_scene_id in EFFECT_TRUST_SCENE_IDS
+        and case_image_available
+        and not any(
+            isinstance(item, dict) and str(item.get("message_type") or "").strip() == "image"
+            for item in deliveries
+        )
+    )
+    if not unavailable_types and not add_effect_image:
         return state, False
 
     adjusted_deliveries = [
@@ -313,7 +323,23 @@ def _apply_runtime_delivery_availability(state: AgentState) -> tuple[AgentState,
         )
     ]
     adjusted_types = [item for item in required_types if str(item or "").strip() not in unavailable_types]
-    if len(adjusted_deliveries) == len(deliveries) and len(adjusted_types) == len(required_types):
+    if add_effect_image:
+        adjusted_deliveries.append(
+            {
+                "message_type": "image",
+                "delivery_role": "real_case_image",
+                "source_order": len(adjusted_deliveries) + 1,
+                "required": True,
+            }
+        )
+        if "image" not in adjusted_types:
+            adjusted_types.append("image")
+        adjustment_reasons.append("new_case_image_available_after_tool")
+    if (
+        len(adjusted_deliveries) == len(deliveries)
+        and len(adjusted_types) == len(required_types)
+        and not adjustment_reasons
+    ):
         return state, False
 
     adjusted: AgentState = dict(state)
@@ -1277,6 +1303,16 @@ def _case_image_urls(state: AgentState) -> set[str]:
         urls.add(activity_url)
     urls.update(manifest_image_urls(state.get("authorized_sop_delivery_manifest")))
     return urls
+
+
+def _tool_case_image_urls(state: AgentState) -> set[str]:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    return {
+        str(item.get("image_url") or "").strip()
+        for item in structured.get("case_facts") or []
+        if isinstance(item, dict) and str(item.get("image_url") or "").strip()
+    }
 
 
 def _message_url(content: Any) -> str:

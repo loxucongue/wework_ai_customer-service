@@ -519,6 +519,93 @@ def test_no_new_case_tool_result_removes_image_requirement_and_blocks_recent_ima
         validate_reply_consistency(extra_progression, adjusted)
 
 
+def test_new_case_tool_result_restores_image_requirement_after_recent_blurry_case() -> None:
+    plan = build_planner_plan_v2(
+        {
+            **_effect_state("one_session_effect"),
+            "reply_governance": {
+                "semantic_contract_enabled": True,
+                "model_payment_sequencing_enabled": True,
+            },
+            "history_events": [
+                {
+                    "event_id": "recent-blurry-case",
+                    "event_type": "case_image_sent",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "facts": {"image_urls": ["https://oss.example.test/blurry-case.png"]},
+                }
+            ],
+        },
+        _effect_model_payload("one_session_effect"),
+    )
+    plan["reply_contract"]["required_deliveries"] = plan["reply_contract"]["required_deliveries"][:2]
+    plan["fact_envelope"] = {
+        "structured_facts": {
+            "case_facts": [
+                {
+                    "status": "ok",
+                    "document_id": "clear-case",
+                    "image_url": CASE_IMAGE,
+                }
+            ]
+        }
+    }
+    plan["reply_governance"] = {
+        "semantic_contract_enabled": True,
+        "model_payment_sequencing_enabled": True,
+    }
+    plan["payment_action"] = "none"
+    plan["payment_decision"] = {"action": "none"}
+
+    adjusted, changed = _apply_runtime_delivery_availability(plan)
+
+    assert changed is True
+    assert [item["message_type"] for item in adjusted["reply_contract"]["required_deliveries"]] == [
+        "text",
+        "text",
+        "image",
+    ]
+    assert "new_case_image_available_after_tool" in adjusted["reply_strategy"]["runtime_delivery_adjustments"]
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "content": "亲，近距离看不清需要结合斑点基础来判断，我先给您看同类型的真实改善参考。",
+                "order": 1,
+            },
+            {
+                "type": "text",
+                "content": "您刚才说上一张不够清楚，这张细节会更直观一些。",
+                "order": 2,
+            },
+            {"type": "image", "content": {"url": CASE_IMAGE}, "order": 3},
+        ],
+        adjusted,
+    )
+
+
+def test_non_case_manifest_image_does_not_restore_effect_image_requirement() -> None:
+    plan = build_planner_plan_v2(
+        _effect_state("one_session_effect"),
+        _effect_model_payload("one_session_effect"),
+    )
+    plan["reply_contract"]["required_deliveries"] = plan["reply_contract"]["required_deliveries"][:2]
+    plan["authorized_sop_delivery_manifest"] = {
+        "active": True,
+        "messages": [
+            {
+                "message_type": "image",
+                "content": {"url": "https://oss.example.test/activity.png"},
+            }
+        ],
+    }
+
+    adjusted, changed = _apply_runtime_delivery_availability(plan)
+
+    assert changed is False
+    assert adjusted is plan
+
+
 def test_similarity_warning_applies_even_when_reply_contains_image() -> None:
     warnings = collect_reply_soft_warnings(
         [
