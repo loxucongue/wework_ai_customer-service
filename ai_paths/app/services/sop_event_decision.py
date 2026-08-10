@@ -20,6 +20,8 @@ MAX_MERGED_SOP_PACKS = 2
 def normalize_event_decision(
     raw: dict[str, Any],
     selector_input: dict[str, Any],
+    *,
+    schema_only: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     """Normalize the model contract without choosing a business action for it."""
 
@@ -57,7 +59,8 @@ def normalize_event_decision(
     violations.extend(availability_violations)
     busy_guard_active = bool(availability_guard.get("active"))
     if (
-        mode == "platform_actions"
+        not schema_only
+        and mode == "platform_actions"
         and not busy_guard_active
         and decision in {"skip", "defer", "send_ai_touch"}
         and _platform_actions_have_sendable_content(selector_input)
@@ -172,7 +175,7 @@ def normalize_event_decision(
         and not _conflict_guard_supported(selector_input, candidate_sops, completed_ids, completed_categories)
     ):
         violations.append("conflict_guard_missing_evidence_source")
-    if not busy_guard_active and decision in {"skip", "defer"} and _repeated_candidates_should_be_ai_touch(
+    if not schema_only and not busy_guard_active and decision in {"skip", "defer"} and _repeated_candidates_should_be_ai_touch(
         selector_input=selector_input,
         candidates=candidate_sops,
         completed_ids=completed_ids,
@@ -181,14 +184,14 @@ def normalize_event_decision(
         strategy=strategy,
     ):
         violations.append("repeated_candidates_should_use_ai_touch")
-    if not busy_guard_active and decision in {"skip", "defer"} and _completed_activity_with_deposit_candidate_should_continue(
+    if not schema_only and not busy_guard_active and decision in {"skip", "defer"} and _completed_activity_with_deposit_candidate_should_continue(
         selector_input=selector_input,
         candidates=candidate_sops,
         event_policy=event_policy,
         strategy=strategy,
     ):
         violations.append("completed_activity_with_deposit_candidate_should_continue")
-    if not busy_guard_active and decision == "send_ai_touch" and _backlog_should_use_mainline_candidate(
+    if not schema_only and not busy_guard_active and decision == "send_ai_touch" and _backlog_should_use_mainline_candidate(
         selector_input=selector_input,
         candidates=candidate_sops,
         completed_ids=completed_ids,
@@ -196,6 +199,17 @@ def normalize_event_decision(
         event_policy=event_policy,
     ):
         violations.append("backlog_should_use_mainline_candidate")
+
+    safety_decision = _normalize_safety_decision(output.get("safety_decision"))
+    if (
+        schema_only
+        and mode == "platform_actions"
+        and not busy_guard_active
+        and decision in {"skip", "defer"}
+        and _platform_actions_have_sendable_content(selector_input)
+        and not _safety_decision_supports_no_send(safety_decision)
+    ):
+        violations.append("platform_no_send_requires_safety_evidence")
 
     if decision not in {"send", "merge"}:
         output["text_adjustments"] = []
@@ -217,12 +231,40 @@ def normalize_event_decision(
             "skip_reason": _text(output.get("skip_reason")),
             "frequency_reason": _text(output.get("frequency_reason")),
             "backlog_handling": _text(output.get("backlog_handling")) or "none",
+            "safety_decision": safety_decision,
             "suggested_next_window": _text(output.get("suggested_next_window")),
             "contact_availability_decision": availability_decision,
             "availability_guard": availability_guard,
         }
     )
     return output, _unique(violations)
+
+
+def _normalize_safety_decision(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        "block_send": bool(raw.get("block_send")),
+        "reason_type": _text(raw.get("reason_type")) or "none",
+        "evidence_refs": [_text(item) for item in raw.get("evidence_refs") or [] if _text(item)],
+        "reason": _text(raw.get("reason")),
+    }
+
+
+def _safety_decision_supports_no_send(value: dict[str, Any]) -> bool:
+    return bool(
+        value.get("block_send")
+        and value.get("reason_type")
+        in {
+            "severe_complaint",
+            "stop_contact",
+            "health_risk",
+            "paid_conflict",
+            "customer_deleted",
+            "realtime_conversation",
+            "unreliable_identity",
+        }
+        and value.get("evidence_refs")
+    )
 
 
 def _ai_touch_messages(output: dict[str, Any]) -> list[dict[str, Any]]:

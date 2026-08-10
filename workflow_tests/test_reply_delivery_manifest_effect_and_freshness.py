@@ -6,15 +6,20 @@ from datetime import datetime, timezone
 import pytest
 
 from app.chat_runtime import ChatRuntime
-from app.graph.nodes.conversation_history_fetch import newer_customer_message_after_trigger
+from app.graph.nodes.conversation_history_fetch import (
+    newer_conversation_activity_after_trigger,
+    newer_customer_message_after_trigger,
+)
 from app.graph.nodes.reply_delivery_manifest import (
     authorize_sop_delivery_manifest,
     build_sop_delivery_manifest,
     merge_manifest_into_reply_contract,
 )
+from app.graph.nodes.reply_nodes import _apply_runtime_delivery_availability
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
 from app.graph.nodes.reply_validation import validate_reply_consistency
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
+from app.graph.planner.brain_v2 import _build_planner_plan_with_governance_shadow
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT
 from app.prompts.reply_synthesizer import REPLY_SYSTEM_PROMPT
 from app.schemas import ChatRequest
@@ -358,6 +363,47 @@ def test_effect_scene_overrides_activity_and_payment_with_evidence_contract(scen
     validate_reply_consistency(_valid_effect_messages(), _effect_reply_state(plan))
 
 
+def test_semantic_effect_contract_reports_model_drift_without_replanning_scene() -> None:
+    state = {
+        **_effect_state(),
+        "reply_governance": {
+            "semantic_contract_enabled": True,
+            "model_payment_sequencing_enabled": True,
+        },
+    }
+    plan = build_planner_plan_v2(state, _effect_model_payload())
+
+    assert plan["main_blocker"] == "none"
+    assert plan["sales_progression"]["target_stage"] == "deposit"
+    assert plan["payment_decision"]["action"] == "send_now"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    missing = {item.get("missing") for item in plan["tool_policy_violations"]}
+    assert "effect_trust_payment_decision_must_be_none" in missing
+    assert "effect_trust_progression_must_deliver_proof" in missing
+
+
+def test_effect_contract_shadow_records_candidate_without_changing_baseline() -> None:
+    state = {
+        **_effect_state(),
+        "reply_governance": {
+            "semantic_contract_enabled": False,
+            "model_payment_sequencing_enabled": False,
+            "shadow_mode": True,
+            "configured": {
+                "semantic_contract_enabled": True,
+                "model_payment_sequencing_enabled": False,
+            },
+        },
+    }
+    plan = _build_planner_plan_with_governance_shadow(state, _effect_model_payload())
+
+    assert plan["main_blocker"] == "effect"
+    shadow = plan["reply_governance_shadow"]
+    assert shadow["applied"] == "baseline"
+    assert shadow["candidate"]["main_blocker"] == "none"
+    assert shadow["changed"] is True
+
+
 @pytest.mark.parametrize(
     ("messages", "error"),
     [
@@ -432,6 +478,47 @@ def test_effect_contract_uses_authoritative_history_event_when_no_new_case_is_av
     validate_reply_consistency(messages, state)
 
 
+def test_no_new_case_tool_result_removes_image_requirement_and_blocks_recent_image_resend() -> None:
+    plan = build_planner_plan_v2(_effect_state(), _effect_model_payload())
+    state = {
+        **plan,
+        "history_events": [
+            {
+                "event_id": "recent-case",
+                "event_type": "case_image_sent",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "facts": {"image_urls": ["https://oss.example.test/recent-case.png"]},
+            }
+        ],
+        "fact_envelope": {"structured_facts": {"case_facts": [{"status": "no_new_case_image"}]}},
+        "reply_governance": {"semantic_contract_enabled": True},
+    }
+
+    adjusted, changed = _apply_runtime_delivery_availability(state)
+
+    assert changed is True
+    assert [item["message_type"] for item in adjusted["reply_contract"]["required_deliveries"]] == [
+        "text",
+        "text",
+    ]
+    assert "image" not in adjusted["sales_progression"]["required_message_types"]
+    assert adjusted["reply_strategy"]["case_image_delivery"] == "reference_recent_no_new_image"
+
+    repeated = [
+        *_valid_effect_messages()[:2],
+        {"type": "image", "order": 3, "content": {"url": "https://oss.example.test/recent-case.png"}},
+    ]
+    with pytest.raises(ValueError, match="effect_trust_repeated_case_image_not_allowed"):
+        validate_reply_consistency(repeated, adjusted)
+
+    extra_progression = [
+        *_valid_effect_messages()[:2],
+        {"type": "text", "order": 3, "content": "我再把活动名额给您接上。"},
+    ]
+    with pytest.raises(ValueError, match="effect_trust_delivery_sequence_mismatch"):
+        validate_reply_consistency(extra_progression, adjusted)
+
+
 def test_similarity_warning_applies_even_when_reply_contains_image() -> None:
     warnings = collect_reply_soft_warnings(
         [
@@ -480,6 +567,22 @@ def test_newer_platform_customer_message_supersedes_completed_reply() -> None:
     assert result["status"] == "checked"
     assert result["newer_customer_message"] is True
     assert result["newer_message_refs"] == ["customer-2"]
+
+
+def test_newer_platform_assistant_message_marks_run_stale() -> None:
+    result = newer_conversation_activity_after_trigger(
+        [
+            {"msgid": "trigger-1", "direction": "customer", "content": "价格"},
+            {"msgid": "staff-2", "direction": "staff", "content": "活动价268元"},
+        ],
+        trigger_message_id="trigger-1",
+        trigger_events=[],
+    )
+
+    assert result["status"] == "checked"
+    assert result["newer_customer_message"] is False
+    assert result["newer_assistant_message"] is True
+    assert result["newer_assistant_message_refs"] == ["staff-2"]
 
 
 def test_missing_trigger_and_timestamp_reports_freshness_unavailable() -> None:
@@ -652,6 +755,48 @@ def test_runtime_freshness_guard_clears_text_image_and_card_after_new_customer_t
     assert result["reply_source"] == "platform_superseded"
     assert result["reply_freshness_check"]["status"] == "superseded"
     assert result["reply_freshness_check"]["newer_message_refs"] == ["customer-2"]
+
+
+def test_runtime_freshness_guard_cancels_after_another_assistant_replied() -> None:
+    runtime = ChatRuntime(
+        full_graph=_UnusedGraph(),
+        trace_logger=_UnusedTraceLogger(),
+        repository=_UnusedRepository(),
+        platform_reply_coordinator=_FreshnessCoordinator(),
+        outreach_send_client=_FreshnessConversationClient(
+            {
+                "status": "ok",
+                "messages": [
+                    {"msgid": "trigger-1", "direction": "customer", "content": "价格"},
+                    {"msgid": "staff-2", "direction": "staff", "content": "活动价268元"},
+                ],
+            }
+        ),
+    )
+    state = {
+        "corp_id": "corp",
+        "wechat": "DY258",
+        "customer_id": "customer",
+        "external_userid": "external",
+        "request_context": {"msgid": "trigger-1"},
+        "reply_messages": [{"type": "text", "content": "旧回复"}],
+        "trace": [],
+        "errors": [],
+        "warnings": [],
+    }
+
+    result = asyncio.run(
+        runtime._apply_platform_freshness_guard(
+            request=_freshness_request(),
+            state=state,
+            control_record=_freshness_record(),
+        )
+    )
+
+    assert result["reply_messages"] == []
+    assert result["reply_source"] == "platform_superseded"
+    assert result["reply_freshness_check"]["reason"] == "newer_assistant_message_detected_after_trigger"
+    assert result["reply_freshness_check"]["newer_assistant_message_refs"] == ["staff-2"]
 
 
 def test_runtime_freshness_guard_keeps_latest_reply_when_refresh_is_unavailable() -> None:

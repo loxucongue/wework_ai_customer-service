@@ -80,16 +80,17 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 - 历史累计发送次数只是弱证据；当前客户新进展优先。但多次婉拒且无新进展时，不能继续高压。
 
 # Decision Procedure
-1. 先理解客户真正关心的点，而不是匹配字面词语。
-2. 判断是否符合某个预约卡点适用场景或上述硬场景 `effect_definition_trust/one_session_effect`；命中时填写唯一 `selected_scene_id`，不命中填空字符串。
-3. 逐条检查候选 SOP 的实际消息：
+1. 先输出 `safety_decision`：只有当前消息或权威事实明确证明停止联系、严重客诉、健康风险、人工接管、客户关系删除或身份不可靠时才 `status=stop`；普通异议、考虑、改天、距离和价格顾虑都必须 `continue`。必须引用 `conversation_evidence` 的消息编号，不能按关键词机械判断。`status=stop` 时必须输出 `route=ai_only`，不得选择 SOP 包。
+2. 再输出 `scene_decision`，只描述当前问题、卡点和建议恢复阶段。若协调器合并了多条连续客户消息，必须在 `explicit_questions` 中逐项列出每个尚未回答的独立诉求及交付目标，不能只保留最后一句。Scene Router 无权因为缺少精准 SOP、礼貌回复或门店未选而终止销售主线。
+3. 判断是否符合某个预约卡点适用场景或上述硬场景 `effect_definition_trust/one_session_effect`；命中时填写唯一 `selected_scene_id`，不命中填空字符串。
+4. 逐条检查候选 SOP 的实际消息：
    - `exact`：能够直接回答客户真正的问题。
    - `partial`：不能替代精准回答，但精准回答后能继续正确主线。
    - `none`：无关、需要工具事实，或会与当前事实冲突。
-4. `exact -> sop_only`，`partial -> ai_then_sop`，`none -> ai_only`。
-5. `ai_then_sop` 最终顺序必须是 AI 精准回答在前、SOP 在后。
-6. 客户直接问报名、参加或留名额，若选择的完整活动包首条静态 text 没有先回答操作方式，必须输出该首条的 `text_adjustments`；缺少这项改写视为决策不完整，不能把答案埋在活动长文后面。
-7. 输出 `active_task` 描述当前消息正在承接的唯一任务。它是你的语义判断，不是代码关键词结果；若客户是在确认上一轮解析出的地区，填写 `type=location_confirmation`、完整 `query`、`required_tool=customer_store_lookup` 和真实消息引用。
+5. `exact -> sop_only`，`partial -> ai_then_sop`，`none -> ai_only`。
+6. `ai_then_sop` 最终顺序必须是 AI 精准回答在前、SOP 在后。
+7. 客户直接问报名、参加或留名额，若选择的完整活动包首条静态 text 没有先回答操作方式，必须输出该首条的 `text_adjustments`；缺少这项改写视为决策不完整，不能把答案埋在活动长文后面。
+8. 输出 `active_task` 描述当前消息正在承接的唯一任务。它是你的语义判断，不是代码关键词结果；若客户是在确认上一轮解析出的地区，填写 `type=location_confirmation`、完整 `query`、`required_tool=customer_store_lookup` 和真实消息引用。
 
 # Precision Reply Boundary
 - “一次能改善多少、会不会反弹、隐形消费、项目是否真正包含斑点改善、手能否做和价格、手脸两个部位/两个地方、线上不支持项目、操作感受”等明确追问，不能用宽泛项目介绍或案例包抢答。
@@ -156,6 +157,8 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 # Output
 只输出 JSON：
 {
+  "safety_decision": {"status":"continue | stop","reason_type":"none | stop_contact | severe_complaint | health_risk | manual_takeover | deleted_relation | unreliable_identity","evidence_refs":[],"reason":""},
+  "scene_decision": {"current_question":"","explicit_questions":[{"question_id":"question_1","question":"客户原始诉求","resolution_goal":"本轮必须交付的答案"}],"blocker":"effect | price | distance | time | trust | payment | none","resume_stage":"","evidence_refs":[]},
   "route": "sop_only | ai_only | ai_then_sop",
   "coverage": "exact | partial | none",
   "selected_scene_id": "precision_qa_index 中的 scene_id、effect_definition_trust、one_session_effect 或空字符串",
@@ -202,9 +205,40 @@ SOP_CHAT_GATE_MAINLINE_REVIEW_PROMPT = r"""
 """.strip()
 
 
+_GOVERNANCE_DECISION_PROCEDURE = """# Decision Procedure
+1. 先输出 `safety_decision`：只有当前消息或权威事实明确证明停止联系、严重客诉、健康风险、人工接管、客户关系删除或身份不可靠时才 `status=stop`；普通异议、考虑、改天、距离和价格顾虑都必须 `continue`。必须引用 `conversation_evidence` 的消息编号，不能按关键词机械判断。`status=stop` 时必须输出 `route=ai_only`，不得选择 SOP 包。
+2. 再输出 `scene_decision`，只描述当前问题、卡点和建议恢复阶段。若协调器合并了多条连续客户消息，必须在 `explicit_questions` 中逐项列出每个尚未回答的独立诉求及交付目标，不能只保留最后一句。Scene Router 无权因为缺少精准 SOP、礼貌回复或门店未选而终止销售主线。
+3. 判断是否符合某个预约卡点适用场景或上述硬场景 `effect_definition_trust/one_session_effect`；命中时填写唯一 `selected_scene_id`，不命中填空字符串。
+4. 逐条检查候选 SOP 的实际消息："""
+
+_LEGACY_DECISION_PROCEDURE = """# Decision Procedure
+1. 先理解客户真正关心的点，而不是匹配字面词语。
+2. 判断是否符合某个预约卡点适用场景或上述硬场景 `effect_definition_trust/one_session_effect`；命中时填写唯一 `selected_scene_id`，不命中填空字符串。
+3. 逐条检查候选 SOP 的实际消息："""
+
+_GOVERNANCE_OUTPUT_FIELDS = """  "safety_decision": {"status":"continue | stop","reason_type":"none | stop_contact | severe_complaint | health_risk | manual_takeover | deleted_relation | unreliable_identity","evidence_refs":[],"reason":""},
+  "scene_decision": {"current_question":"","explicit_questions":[{"question_id":"question_1","question":"客户原始诉求","resolution_goal":"本轮必须交付的答案"}],"blocker":"effect | price | distance | time | trust | payment | none","resume_stage":"","evidence_refs":[]},
+"""
+
+
+def _gate_system_prompt(selector_input: dict[str, Any]) -> str:
+    ownership = selector_input.get("decision_ownership")
+    if isinstance(ownership, dict) and ownership.get("scene_and_sales_rhythm") == "model":
+        return SOP_CHAT_GATE_SYSTEM_PROMPT
+    return (
+        SOP_CHAT_GATE_SYSTEM_PROMPT
+        .replace(_GOVERNANCE_DECISION_PROCEDURE, _LEGACY_DECISION_PROCEDURE)
+        .replace("5. `exact -> sop_only`", "4. `exact -> sop_only`")
+        .replace("6. `ai_then_sop`", "5. `ai_then_sop`")
+        .replace("7. 客户直接问报名", "6. 客户直接问报名")
+        .replace("8. 输出 `active_task`", "7. 输出 `active_task`")
+        .replace(_GOVERNANCE_OUTPUT_FIELDS, "")
+    )
+
+
 def build_sop_chat_gate_messages(selector_input: dict[str, Any]) -> list[dict[str, str]]:
     return [
-        {"role": "system", "content": SOP_CHAT_GATE_SYSTEM_PROMPT},
+        {"role": "system", "content": _gate_system_prompt(selector_input)},
         {"role": "user", "content": json.dumps(selector_input, ensure_ascii=False, separators=(",", ":"))},
     ]
 
@@ -215,7 +249,7 @@ def build_sop_chat_gate_repair_messages(
     violations: list[str],
 ) -> list[dict[str, str]]:
     return [
-        {"role": "system", "content": SOP_CHAT_GATE_SYSTEM_PROMPT},
+        {"role": "system", "content": _gate_system_prompt(selector_input)},
         {"role": "system", "content": SOP_CHAT_GATE_REPAIR_PROMPT},
         {
             "role": "user",
@@ -238,6 +272,9 @@ def should_review_sop_chat_gate_mainline(
 ) -> bool:
     if str(output.get("route") or "").strip() != "ai_only":
         return False
+    safety = output.get("safety_decision") if isinstance(output.get("safety_decision"), dict) else {}
+    if str(safety.get("status") or "").strip() == "stop":
+        return False
     if not any(isinstance(item, dict) for item in selector_input.get("unfinished_sops") or []):
         return False
     active_task = output.get("active_task") if isinstance(output.get("active_task"), dict) else {}
@@ -251,7 +288,7 @@ def build_sop_chat_gate_mainline_review_messages(
     return [
         {
             "role": "system",
-            "content": SOP_CHAT_GATE_SYSTEM_PROMPT + "\n\n" + SOP_CHAT_GATE_MAINLINE_REVIEW_PROMPT,
+            "content": _gate_system_prompt(selector_input) + "\n\n" + SOP_CHAT_GATE_MAINLINE_REVIEW_PROMPT,
         },
         {
             "role": "user",

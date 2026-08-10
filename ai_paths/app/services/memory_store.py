@@ -237,6 +237,58 @@ class CustomerMemoryStore:
                 pass
         return {"status": "recorded", "event_id": event_id, "sop_pack_id": clean_pack_id}
 
+    def record_stop_contact(
+        self,
+        customer_id: str,
+        *,
+        request_id: str,
+        evidence_refs: list[str],
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Persist a model-confirmed stop-contact fact without storing message bodies."""
+        clean_customer_id = str(customer_id or "").strip()
+        clean_request_id = str(request_id or "").strip()
+        if not clean_customer_id:
+            return {"status": "skipped", "reason": "missing_customer_scope"}
+
+        data = self.load(clean_customer_id)
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        event_id = f"stop_contact_{clean_request_id or uuid4()}"
+        if any(isinstance(item, dict) and item.get("event_id") == event_id for item in events):
+            return {"status": "skipped", "reason": "duplicate_event", "event_id": event_id}
+
+        now = self._now()
+        events.append(
+            {
+                "event_id": event_id,
+                "event_type": "stop_contact_confirmed",
+                "event_time": now,
+                "facts": {
+                    "evidence_refs": [str(item) for item in evidence_refs if str(item or "").strip()],
+                    "request_id": clean_request_id,
+                    "reason": str(reason or "")[:500],
+                },
+                "source": "safety_gate_model",
+            }
+        )
+        data["customer_id"] = clean_customer_id
+        data["updated_at"] = now
+        data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(clean_customer_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if self.repository:
+            try:
+                self.repository.save_memory(clean_customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "event_id": event_id}
+
     def record_store_fact(
         self,
         customer_id: str,

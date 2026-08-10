@@ -63,6 +63,8 @@ def precision_qa_for_id(question_id: str) -> dict[str, Any]:
             "scene_id": target,
             "applicable_scene": grouped[target]["applicable_scene"],
         }
+    if target in _HARD_PRECISION_SCENE_CONTRACTS:
+        return {"id": target, "hard_rule": True, **_HARD_PRECISION_SCENE_CONTRACTS[target]}
     if target in _HARD_PRECISION_QUESTION_IDS:
         return {"id": target, "hard_rule": True}
     return {}
@@ -137,7 +139,11 @@ def sales_mainline_for_model() -> dict[str, Any]:
 
 
 def precision_qa_index_for_gate() -> list[dict[str, Any]]:
-    return [
+    reserved = [
+        {"scene_id": scene_id, "applicable_scene": contract["applicable_scene"], "priority": "reserved"}
+        for scene_id, contract in _HARD_PRECISION_SCENE_CONTRACTS.items()
+    ]
+    return reserved + [
         {"scene_id": scene_id, "applicable_scene": group["applicable_scene"]}
         for scene_id, group in _appointment_blocker_groups().items()
     ]
@@ -155,6 +161,18 @@ def _appointment_blocker_groups() -> dict[str, dict[str, Any]]:
         group = groups.setdefault(scene_id, {"applicable_scene": scene, "items": []})
         group["items"].append(item)
     return groups
+
+
+_HARD_PRECISION_SCENE_CONTRACTS = {
+    "effect_definition_trust": {
+        "applicable_scene": "客户质疑项目是否真正改善斑点、是否只是颜色变淡，或强调要祛斑而不是普通淡化时的效果定义与信任疑虑",
+        "gate_route": "ai_only",
+    },
+    "one_session_effect": {
+        "applicable_scene": "客户明确询问一次能否改善、需要几次，或因担心一次效果而犹豫时的次数与效果信任疑虑",
+        "gate_route": "ai_only",
+    },
+}
 
 
 _HARD_PRECISION_QUESTION_IDS = {

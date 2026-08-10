@@ -13,6 +13,8 @@ from app.chat_runtime import (
     _merge_ai_then_sop_reply_messages,
     _planner_sync_reply_messages,
     _should_run_async_finalize,
+    _sop_gate_direct_reply,
+    _sop_gate_terminal_no_reply,
 )
 from app.config import Settings
 from app.schemas import ChatRequest
@@ -22,6 +24,17 @@ from app.services.workflow_compat import workflow_response_from_chat
 
 
 class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_model_confirmed_safety_stop_is_terminal(self) -> None:
+        self.assertTrue(
+            _sop_gate_terminal_no_reply(
+                {
+                    "mode": "safety_stop_no_reply",
+                    "send_sop": False,
+                    "need_ai_reply": False,
+                }
+            )
+        )
+
     def test_runtime_initial_state_contains_shared_round_budget(self) -> None:
         runtime = ChatRuntime(
             full_graph=_EmptyReplyGraph(),
@@ -234,6 +247,30 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         workflow_body = workflow_response_from_chat(response)
         self.assertEqual(workflow_body["code"], 0)
         self.assertEqual(len(workflow_body["data"]["reply_messages"]), 2)
+
+    def test_only_explicit_opening_passthrough_can_bypass_planner(self) -> None:
+        messages = [{"type": "text", "content": {"text": "配置内容"}}]
+        self.assertTrue(
+            _sop_gate_direct_reply(
+                {
+                    "mode": "platform_auto_opening_sop",
+                    "delivery_mode": "configured_passthrough",
+                    "send_sop": True,
+                    "need_ai_reply": False,
+                    "reply_messages": messages,
+                }
+            )
+        )
+        self.assertFalse(
+            _sop_gate_direct_reply(
+                {
+                    "mode": "sop_only",
+                    "send_sop": True,
+                    "need_ai_reply": False,
+                    "reply_messages": messages,
+                }
+            )
+        )
 
     async def test_precision_ai_reply_precedes_selected_sop_and_confirms_task(self) -> None:
         repository = _Repository()
@@ -526,6 +563,7 @@ class _OpeningSopGate:
     ) -> dict[str, Any]:
         return {
             "mode": "platform_auto_opening_sop",
+            "delivery_mode": "configured_passthrough",
             "send_sop": True,
             "need_ai_reply": False,
             "reason": "platform_auto_opening_first_add_sop",
@@ -605,6 +643,11 @@ class _PrecisionReplyGraph:
                 "reply_source": "reply_synthesizer",
                 "planner_reply_messages": final_messages,
                 "reply_messages": final_messages,
+                "authorized_sop_delivery_manifest": {
+                    **dict(state.get("sop_delivery_manifest") or {}),
+                    "active": True,
+                    "delivery_decision": {"action": "deliver_now"},
+                },
                 "trace": [],
                 "errors": [],
             }

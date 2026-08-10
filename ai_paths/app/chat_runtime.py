@@ -14,7 +14,7 @@ from app.config import Settings
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.conversation_history_fetch import (
     conversation_fetch_params,
-    newer_customer_message_after_trigger,
+    newer_conversation_activity_after_trigger,
 )
 from app.graph.nodes.reply_delivery_manifest import build_sop_delivery_manifest
 from app.graph.planner.runtime_plan import planner_public_route
@@ -24,6 +24,7 @@ from app.services.customer_scope import customer_scope_from_state
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
+from app.services.reply_governance import reply_governance_flags
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository
@@ -167,6 +168,9 @@ class ChatRuntime:
             "route": str(sop_gate.get("route") or sop_gate.get("mode") or ""),
             "coverage": str(sop_gate.get("coverage") or ""),
             "reason": str(sop_gate.get("reason") or ""),
+            "scene_decision": dict(sop_gate.get("scene_decision") or {})
+            if isinstance(sop_gate.get("scene_decision"), dict)
+            else {},
             "task": dict(sop_gate.get("active_task") or {})
             if isinstance(sop_gate.get("active_task"), dict)
             else {},
@@ -187,6 +191,12 @@ class ChatRuntime:
                 if isinstance(message, dict) and str(message.get("type") or "") == "image"
             ),
             "source": "chat_sop_gate_model",
+            "safety_decision": dict(sop_gate.get("safety_decision") or {})
+            if isinstance(sop_gate.get("safety_decision"), dict)
+            else {},
+            "scene_decision": dict(sop_gate.get("scene_decision") or {})
+            if isinstance(sop_gate.get("scene_decision"), dict)
+            else {},
         }
         initial_state["sop_progress_evidence"] = dict(sop_gate.get("sop_progress_evidence") or {})
         initial_state["sop_gate_candidate_messages"] = [
@@ -458,7 +468,7 @@ class ChatRuntime:
         state: AgentState,
         control_record: PlatformReplyRecord | None,
     ) -> AgentState:
-        """Drop a completed reply when the platform already has a newer customer turn."""
+        """Drop a completed reply when the platform conversation already moved on."""
 
         if not control_record or not self._outreach_send_client:
             return state
@@ -476,7 +486,7 @@ class ChatRuntime:
         except Exception as exc:
             result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
         messages = result.get("messages") if isinstance(result, dict) and isinstance(result.get("messages"), list) else []
-        comparison = newer_customer_message_after_trigger(
+        comparison = newer_conversation_activity_after_trigger(
             messages,
             trigger_message_id=control_record.message_id,
             trigger_events=control_record.merged_input_events,
@@ -487,13 +497,17 @@ class ChatRuntime:
             "fetch_status": fetch_status,
             "trigger_message_id": control_record.message_id,
             "newer_customer_message": bool(comparison.get("newer_customer_message")),
-            "newer_message_refs": list(comparison.get("newer_message_refs") or []),
+            "newer_assistant_message": bool(comparison.get("newer_assistant_message")),
+            "newer_message_refs": list(comparison.get("newer_customer_message_refs") or []),
+            "newer_assistant_message_refs": list(comparison.get("newer_assistant_message_refs") or []),
             "reason": str(comparison.get("reason") or result.get("reason") or result.get("error") or "")[:500],
             "duration_ms": int((time.perf_counter() - started_at) * 1000),
         }
         state["reply_freshness_check"] = freshness
         _append_platform_freshness_trace(state, freshness)
-        if fetch_status == "ok" and comparison.get("newer_customer_message"):
+        if fetch_status == "ok" and (
+            comparison.get("newer_customer_message") or comparison.get("newer_assistant_message")
+        ):
             stale_state = self._superseded_state(state, control_record)
             stale_state["trace"] = list(state.get("trace") or [])
             stale_state["errors"] = list(state.get("errors") or [])
@@ -501,7 +515,11 @@ class ChatRuntime:
             stale_state["reply_freshness_check"] = {
                 **freshness,
                 "status": "superseded",
-                "reason": "newer_customer_message_detected_after_trigger",
+                "reason": (
+                    "newer_customer_message_detected_after_trigger"
+                    if comparison.get("newer_customer_message")
+                    else "newer_assistant_message_detected_after_trigger"
+                ),
             }
             stale_state["reply_source"] = "platform_superseded"
             return stale_state
@@ -1005,6 +1023,7 @@ class ChatRuntime:
             "test_isolated": test_isolated,
             "memory_persist_allowed": bool(request_context.get("memory_persist_allowed")),
             "runtime_budget": build_runtime_budget(self._settings),
+            "reply_governance": reply_governance_flags(self._settings),
             "trace": [],
             "errors": [],
         }
@@ -1043,6 +1062,11 @@ class ChatRuntime:
         gate_task = gate.get("task") if isinstance(gate.get("task"), dict) else {}
         if str(gate_task.get("status") or "") == "pending":
             reply_source = str(final_state.get("reply_source") or "")
+            authorized_manifest = (
+                final_state.get("authorized_sop_delivery_manifest")
+                if isinstance(final_state.get("authorized_sop_delivery_manifest"), dict)
+                else {}
+            )
             if (
                 bool(final_state.get("reply_blocked"))
                 or final_state.get("errors")
@@ -1053,12 +1077,26 @@ class ChatRuntime:
                     final_state,
                     error=str(final_state.get("recovery_reason") or reply_source or "unified_reply_chain_failed"),
                 )
-            elif raw_reply_messages:
+            elif raw_reply_messages and authorized_manifest.get("active"):
                 _confirm_deferred_chat_sop_task(
                     self._sop_execution_service,
                     final_state,
                     request_id=request_id,
                     reply_messages=[item for item in raw_reply_messages if isinstance(item, dict)],
+                )
+            else:
+                delivery_decision = (
+                    authorized_manifest.get("delivery_decision")
+                    if isinstance(authorized_manifest.get("delivery_decision"), dict)
+                    else {}
+                )
+                _fail_deferred_chat_sop_task(
+                    self._sop_execution_service,
+                    final_state,
+                    error=(
+                        "planner_"
+                        + str(delivery_decision.get("action") or authorized_manifest.get("reason") or "sop_not_delivered")
+                    ),
                 )
         if bool(final_state.get("reply_blocked")):
             allow_empty_reply = True
@@ -1157,6 +1195,7 @@ class ChatRuntime:
                 "async_final_reply": final_state.get("async_final_reply", {}),
                 "reply_control": final_state.get("reply_control", {}),
                 "sop_gate": final_state.get("sop_gate", {}),
+                "reply_governance": final_state.get("reply_governance", {}),
                 "conversation_id": conversation_id,
             },
         )
@@ -1272,7 +1311,8 @@ def _platform_reply_source(state: AgentState) -> str:
 
 def _sop_gate_terminal_no_reply(sop_gate: dict[str, Any]) -> bool:
     return (
-        str(sop_gate.get("mode") or "") == "ignored_platform_auto_message"
+        str(sop_gate.get("mode") or "")
+        in {"ignored_platform_auto_message", "safety_stop_no_reply", "safety_stop_contact"}
         and not sop_gate.get("send_sop")
         and not sop_gate.get("need_ai_reply")
     )
@@ -1280,7 +1320,9 @@ def _sop_gate_terminal_no_reply(sop_gate: dict[str, Any]) -> bool:
 
 def _sop_gate_direct_reply(sop_gate: dict[str, Any]) -> bool:
     return (
-        bool(sop_gate.get("send_sop"))
+        str(sop_gate.get("mode") or "") == "platform_auto_opening_sop"
+        and str(sop_gate.get("delivery_mode") or "") == "configured_passthrough"
+        and bool(sop_gate.get("send_sop"))
         and not bool(sop_gate.get("need_ai_reply"))
         and isinstance(sop_gate.get("reply_messages"), list)
         and bool(sop_gate.get("reply_messages"))

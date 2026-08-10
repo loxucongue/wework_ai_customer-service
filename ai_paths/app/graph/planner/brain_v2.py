@@ -69,6 +69,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
 - `sop_delivery_manifest` 只是 Gate 候选。当前轮确实完整发送该包才选 `deliver_now`；先处理其他问题或工具动作选 `defer`；候选包与当前轮冲突选 `suppress`。不要让代码猜测业务语义。
 - 当前问题正是询问活动、价格或参加方式，且候选活动包能够完整回答时选 `deliver_now`；当前轮先查门店、补位置或完成其他工具动作时才 `defer`。不能自己输出缩略活动文本却延后候选包中的图片。
+- 紧邻助手正在谈活动或项目介绍时，客户说“介绍一下/说一下/具体呢”就是要求介绍紧邻对象；Gate 选中活动包时必须用具体 `deliver_value + source_pack_id + deliver_now`，不能说稍后由 Reply 决定，Reply 无权替 Planner 选择交付动作。
 
 # Output JSON Schema
 只输出 JSON：
@@ -86,7 +87,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "store_binding_decision": {"status":"none | accepted_explicit | accepted_implicit | exploring | rejected | ambiguous","store_id":"","confidence":"high | medium | low","source":"","basis":[]},
   "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
-  "current_turn_resolution": {"required":true,"customer_question":"","resolution_goal":"","required_facts":[]},
+  "current_turn_resolution": {"required":true,"customer_question":"","resolution_goal":"","required_facts":[],"explicit_questions":[{"question_id":"question_1","question":"","resolution_goal":""}]},
   "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | effect_proof | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[],"required_message_types":["text"],"source_pack_ids":[],"asset_ids":[],"reason":""},
   "sop_delivery_decision": {"action":"deliver_now | defer | suppress","sop_pack_id":"","reason":""},
   "reply_contract": {"locked_facts":[],"forbidden_claims":[],"known_fields_not_to_request":[],"required_deliveries":[{"message_type":"text","asset_id":"","source_pack_id":""}]},
@@ -126,20 +127,20 @@ def planner_v2_repair_messages_for_model(
     violations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     payload = {
-        **_planner_payload_for_model(state),
+        **_compact_timeout_retry_payload_for_model(state, previous_error="planner_contract_violation"),
         "original_plan": _compact_plan_for_repair(original_plan),
         "tool_policy_violations": _compact_violations_for_repair(violations),
     }
+    payload["timeout_recovery"] = {
+        "goal": "repair_only_the_reported_contract_violations",
+        "must_preserve": "current_question_scene_sales_rhythm_and_valid_facts",
+    }
     return [
-        {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": PLANNER_TIMEOUT_RECOVERY_PROMPT},
         {"role": "system", "content": PLANNER_STORE_LOCATION_LOOKUP_CONTRACT},
-        {"role": "system", "content": PLANNER_PRECISION_QA_CONTRACT},
-        {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
-        {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
+        {"role": "system", "content": "# Current Repair Business Rules\n" + planner_recovery_business_rules_prompt_section()},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
-        {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
     ]
 
 
@@ -190,7 +191,7 @@ async def run_planner_brain_v2(
             tier=tier,
             deadline_monotonic=primary_deadline,
         )
-        plan = build_planner_plan_v2(planner_state, payload)
+        plan = _build_planner_plan_with_governance_shadow(planner_state, payload)
         initial_usage = model_usage_snapshot(model_client)
     except Exception as exc:
         initial_error = f"{type(exc).__name__}: {exc}"
@@ -242,7 +243,7 @@ async def run_planner_brain_v2(
                 tier="fast",
                 deadline_monotonic=recovery_deadline,
             )
-            plan = build_planner_plan_v2(planner_state, payload)
+            plan = _build_planner_plan_with_governance_shadow(planner_state, payload)
             retry_call["raw_json_output"] = payload
             retry_call["output"] = _planner_call_output(plan)
             retry_call["usage"] = model_usage_snapshot(model_client)
@@ -276,7 +277,7 @@ async def run_planner_brain_v2(
             }
             return plan, model_call
         nested_calls.append(retry_call)
-    for repair_attempt in range(1, 2):
+    for repair_attempt in range(1, 3):
         violations = list(plan.get("tool_policy_violations", []))
         if not violations:
             break
@@ -322,7 +323,7 @@ async def run_planner_brain_v2(
                 tier=repair_tier,
                 deadline_monotonic=repair_deadline,
             )
-            repaired_plan = build_planner_plan_v2(planner_state, repaired_payload)
+            repaired_plan = _build_planner_plan_with_governance_shadow(planner_state, repaired_payload)
             plan = repaired_plan
             repair_call["raw_json_output"] = repaired_payload
             repair_call["output"] = _planner_call_output(plan)
@@ -331,6 +332,8 @@ async def run_planner_brain_v2(
             repair_call["error"] = f"{type(exc).__name__}: {exc}"
             repair_call["usage"] = model_usage_snapshot(model_client)
             nested_calls.append(repair_call)
+            if repair_attempt < 2:
+                continue
             break
         nested_calls.append(repair_call)
     model_call = {
@@ -882,6 +885,7 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
             "need_ai_reply": raw.get("need_ai_reply"),
             "coverage": raw.get("coverage"),
             "reason": raw.get("reason"),
+            "scene_decision": raw.get("scene_decision") if isinstance(raw.get("scene_decision"), dict) else {},
             "task": _compact_gate_task(raw.get("task") or raw.get("active_task")),
             "priority_question_id": raw.get("priority_question_id"),
             "selected_scene_id": raw.get("selected_scene_id") or raw.get("priority_question_id"),
@@ -1238,6 +1242,81 @@ def _store_scope_location_hints(
         store_candidate.get("district"),
     ]
     return [str(value).strip() for value in values if str(value or "").strip()]
+
+
+def _build_planner_plan_with_governance_shadow(
+    state: AgentState,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    baseline = build_planner_plan_v2(state, payload)
+    governance = state.get("reply_governance") if isinstance(state.get("reply_governance"), dict) else {}
+    configured = governance.get("configured") if isinstance(governance.get("configured"), dict) else {}
+    shadow_flags = {
+        key: bool(configured.get(key))
+        for key in ("semantic_contract_enabled", "model_payment_sequencing_enabled")
+    }
+    if not governance.get("shadow_mode") or not any(shadow_flags.values()):
+        return baseline
+    candidate_state = {
+        **state,
+        "reply_governance": {
+            **governance,
+            **shadow_flags,
+            "shadow_mode": False,
+        },
+    }
+    try:
+        candidate = build_planner_plan_v2(candidate_state, payload)
+        baseline["reply_governance_shadow"] = _planner_shadow_comparison(baseline, candidate)
+    except Exception as exc:  # noqa: BLE001 - shadow normalization cannot affect the live plan
+        baseline["reply_governance_shadow"] = {
+            "status": "failed",
+            "applied": "baseline",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return baseline
+
+
+def _planner_shadow_comparison(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    def summary(plan: dict[str, Any]) -> dict[str, Any]:
+        progression = plan.get("sales_progression") if isinstance(plan.get("sales_progression"), dict) else {}
+        payment = plan.get("payment_decision") if isinstance(plan.get("payment_decision"), dict) else {}
+        contract = plan.get("reply_contract") if isinstance(plan.get("reply_contract"), dict) else {}
+        return {
+            "planner_decision": str(plan.get("planner_decision") or ""),
+            "main_blocker": str(plan.get("main_blocker") or ""),
+            "next_step": str(plan.get("next_step") or ""),
+            "sales_target_stage": str(progression.get("target_stage") or ""),
+            "sales_action": str(progression.get("action") or ""),
+            "payment_action": str(payment.get("action") or ""),
+            "required_fact_ids": list(contract.get("required_fact_ids") or []),
+            "required_message_types": [
+                str(item.get("message_type") if isinstance(item, dict) else item)
+                for item in contract.get("required_deliveries") or []
+            ],
+            "violations": [
+                str(item.get("missing") or "")
+                for item in plan.get("tool_policy_violations") or []
+                if isinstance(item, dict) and str(item.get("missing") or "")
+            ],
+        }
+
+    baseline_summary = summary(baseline)
+    candidate_summary = summary(candidate)
+    changed_fields = [
+        key for key in baseline_summary if baseline_summary.get(key) != candidate_summary.get(key)
+    ]
+    return {
+        "status": "compared",
+        "applied": "baseline",
+        "baseline": baseline_summary,
+        "candidate": candidate_summary,
+        "changed": bool(changed_fields),
+        "changed_fields": changed_fields,
+    }
 
 
 def _drop_empty(value: Any) -> Any:

@@ -4782,6 +4782,23 @@ def test_reply_validation_rejects_adjacent_payment_collection_after_previous_sen
         )
 
 
+def test_reply_validation_allows_negative_entry_wording_for_transfer_choice() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "可以，您也可以直接转账，不用重复发入口。转好后跟我说一声就行。",
+            }
+        ],
+        {
+            "payment_state": "link_sent",
+            "payment_action": "explain_existing",
+            "payment_decision": {"action": "explain", "method": "none"},
+        },
+    )
+
+
 def test_reply_validation_rejects_payment_collection_after_paid_deposit_context() -> None:
     with pytest.raises(ValueError, match="payment_collection_blocked_by_paid_deposit_context"):
         validate_reply_consistency(

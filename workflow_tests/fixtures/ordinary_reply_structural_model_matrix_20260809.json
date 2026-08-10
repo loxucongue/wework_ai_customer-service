@@ -283,6 +283,48 @@
       "expected_planner": {"decisions": ["need_tools"], "required_tools": ["kb_search"], "forbidden_message_types": ["payment_collection"]},
       "expected_reply": {"required_types": ["text"], "forbidden_types": ["image", "payment_collection"], "forbidden_phrases": ["268", "258", "10元", "预约金", "可能需要多次", "不一定有效"]},
       "semantic_goal": "上一轮刚发真实效果图时仍先查询另一张未发素材；工具确认没有新图后围绕刚发图片解释，不机械重发同一张图。"
+    },
+    {
+      "id": "replay_multi_question_store_trust_price_parallel",
+      "category": "真实回放-多问题并行交付",
+      "messages": ["重庆有嘛\n真实嘛\n价格", "重庆有嘛\n真实嘛\n价格", "重庆有嘛\n真实嘛\n价格"],
+      "history": ["用户: 想了解淡斑活动"],
+      "state_patch": {
+        "sop_gate_decision": {
+          "route": "ai_then_sop",
+          "coverage": "partial",
+          "sop_pack_id": "s10_activity_intro",
+          "scene_decision": {
+            "current_question": "门店真实性和活动价格",
+            "explicit_questions": [
+              {"question_id": "store", "question": "重庆有门店吗", "resolution_goal": "确认重庆有门店并在缺少区县时自然补问区域"},
+              {"question_id": "trust", "question": "真实吗", "resolution_goal": "直接回应门店和活动真实性"},
+              {"question_id": "price", "question": "价格", "resolution_goal": "完整交付当前268元活动价格"}
+            ],
+            "blocker": "trust",
+            "resume_stage": "activity",
+            "evidence_refs": ["current_message"]
+          },
+          "reason": "客户同时询问门店、真实性和价格，门店工具与活动包并行",
+          "task": {"type": "store_lookup", "status": "pending", "query": "重庆", "required_tool": "customer_store_lookup"},
+          "resume_stage": "activity",
+          "source": "chat_sop_gate_model"
+        },
+        "sop_gate_candidate_messages": [
+          {"type": "text", "order": 1, "content": {"text": "现在我们是线上淡斑活动，前30名登记的顾客到店可以享受268元淡斑特惠价。套餐包括淡斑、检测皮肤、基础清洁和肌肤补水。线上预定每位10元并登记姓名电话，到店抵扣10元，做的话再付258元；未做或不满意可退，实际按付款记录核对。仅限线上报名客户有效，预定后到店时间可以按您方便安排。"}},
+          {"type": "image", "order": 2, "content": {"url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png"}},
+          {"type": "text", "order": 3, "content": {"text": "到店先看效果和方案，满意再做；线上登记主要是先保留活动名额。"}}
+        ],
+        "conversation_state": {
+          "customer_fields": {"name": {"status": "unknown"}, "mobile": {"status": "unknown"}, "location": {"status": "known", "city": "重庆"}},
+          "delivery_progress": {"activity_intro": {"status": "not_started"}, "payment_card": {"status": "not_sent"}},
+          "payment_card_cooldown": {"active": false},
+          "sop_progress": {"completed_stages": [], "earliest_unfinished_stage": "activity"}
+        }
+      },
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"], "forbidden_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text", "image"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["199", "先确认门店再介绍", "后面再说价格"]},
+      "semantic_goal": "必须同轮逐项回答重庆门店存在性、真实性和价格；需要补区县只能限制具体门店卡，不能阻塞完整268元活动介绍和活动图片。"
     }
   ],
   "gate_cases": [
@@ -314,7 +356,7 @@
         "小贝: 那就更好处理，您这种我先按改善方向给您接上。"
       ],
       "candidates": ["s10_need_and_case", "s10_activity_intro"],
-      "expected_routes": ["ai_then_sop"],
+      "expected_routes": ["sop_only", "ai_then_sop"],
       "expected_pack": "s10_need_and_case",
       "semantic_goal": "客户追问上一轮未交付的改善方向时，先解释方向并同轮交付效果案例包。"
     },

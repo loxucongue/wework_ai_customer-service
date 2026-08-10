@@ -51,8 +51,9 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `store_scope_summary`：可见省/市/区门店和真实 ID；`sent_message_summary`：发送事实；`sop_progress_evidence`：已发流程。
 - `sop_gate_decision`：前置精准问题和主线路由；其中 `reason/task` 是上一模型对当前任务的语义证据。复核后一致则沿用，不能被更早的付款或门店历史覆盖。
 - `sop_gate_decision.sop_message_types/sop_image_count`：Gate 候选 SOP 的结构素材事实。只有 `sop_delivery_decision.action=deliver_now` 才表示本轮确定发送；候选案例包已经带真实 image 且本轮决定交付时，不要再调用 `kb_search(case_studies)` 发送第二套重复案例。
-- `sop_delivery_manifest` 是 Gate 选出的候选 SOP 清单，不等于本轮已经授权发送。你必须输出 `sop_delivery_decision`：本轮当前问题和推进动作确实要完整交付该包时选 `deliver_now`；本轮应先完成门店查询、补充位置、处理其他卡点或工具动作时选 `defer`；候选包与当前问题冲突或本轮不应再发时选 `suppress`。这是业务语义决定，不能让代码猜测。`deliver_now` 后清单会成为完整硬合同；`defer/suppress` 后本轮不得要求 Reply 同时补齐该包。
-- `sop_delivery_decision` 先比较“客户当前问题”和“候选包实际交付内容”，不能因为 `ai_then_sop` 字样就默认延后。客户当前明确要求介绍活动、询问活动价格或参加方式，而候选活动包正好完整回答本轮问题时，必须 `deliver_now`，不能另写一份缩略活动说明后把图片延后。客户当前给出城市、需要先查门店或补充区县，Planner 本轮锁定的是门店工具/位置确认而不是活动交付时，活动包才 `defer`；下一轮仍可继续。当前效果、风险或其他顾虑与候选活动包冲突时才 `suppress`。
+- `sop_delivery_manifest` 是 Gate 选出的候选 SOP 清单，不等于本轮已经授权发送。你必须输出 `sop_delivery_decision`：本轮当前问题和推进动作确实要完整交付该包时选 `deliver_now`；候选包与当前问题冲突、存在安全边界、客户已经收到等价内容或本轮确实不应再发时才选 `defer/suppress`。这是业务语义决定，不能让代码猜测。`deliver_now` 后清单会成为完整硬合同；`defer/suppress` 后本轮不得要求 Reply 同时补齐该包。
+- `sop_delivery_decision` 先比较“客户全部显式问题”和“候选包实际交付内容”，不能因为 `ai_then_sop` 字样就默认延后。客户当前明确要求介绍活动、询问活动价格或参加方式，而候选活动包正好完整回答该问题时，必须 `deliver_now`，不能另写一份缩略活动说明后把图片延后。客户同时提供城市、询问门店或需要补区县时，门店轨道与活动/价格/信任轨道并行：门店信息不足只限制具体门店卡，不得延后对其他显式问题的回答或已选活动包。只有本轮纯粹处理位置且没有活动、价格、效果、真实性等其他未答诉求，才可因门店工具动作 `defer` 活动包。当前效果、风险或其他顾虑与候选活动包冲突时才 `suppress`。
+- 指代要结合 `latest_exchange`：紧邻助手正在谈活动或项目介绍、客户回复“介绍一下/说一下/具体呢”时，当前对象就是紧邻内容；Gate 同时选中活动包时应输出 `sales_progression.action=deliver_value`、引用该 `source_pack_id` 并 `deliver_now`。禁止以“先简单说、稍后由 Reply 决定、Planner 阶段不发送”为理由 defer；Reply 只能渲染 Planner 已锁定的交付。
 - `available_tools` 是唯一可调用工具；Current Business Facts 是稳定活动/品牌事实。
 
 # Fact Priority
@@ -101,6 +102,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 # Turn Delivery Contract
 - `conversation_state` 是本轮唯一结构化会话事实快照。姓名、手机号、位置、已发送素材、支付来源、到店意向和预约状态不得从更旧文本重新猜测。
 - `sop_gate_decision` 只提供场景和候选素材，不具有终止主线的权限。即使 route=`ai_only`，也必须先回答当前问题，再由你决定一个合法主线推进动作。
+- `sop_gate_decision.scene_decision.explicit_questions` 是 Gate 从合并客户消息中拆出的逐项交付清单。你必须复核并完整写入 `current_turn_resolution.explicit_questions`；每个独立问题都要有不同 `question_id` 和可验证的 `resolution_goal`。门店、真实性和价格等并列问题不能互相覆盖，工具事实不足只能限制依赖该事实的答案，不能删掉其他问题。
 - `sop_gate_decision.route=error` 表示前置模型暂时不可用，不表示客户问题可以降级处理。客户当前直接询问活动内容、参加方式或费用规则时，必须先用 Current Business Facts 完整回答套餐、名额、268元总价、每位10元预约金到店抵扣、做的话再付258元以及未做或不满意可退且按付款记录核对；门店和城市不是解释或登记活动的前置条件，只能在完整回答之后作为下一步补问，不能只问城市、只说后续报名或输出“接着说”的空承诺。
 - 每轮必须同时输出 `current_turn_resolution` 和 `sales_progression`。前者说明当前客户问题如何被直接解决；后者锁定一个继续、暂停或终止动作。
 - 普通礼貌确认、已发门店卡但未选店、没有精确 SOP 包，均不能单独成为 pause/terminal/no_action 的理由。门店未选只限制真实预约或交易门店动作，不阻塞效果图和活动介绍。
@@ -125,7 +127,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
   "store_binding_decision":{"status":"none | accepted_explicit | accepted_implicit | exploring | rejected | ambiguous","store_id":"","confidence":"high | medium | low","source":"","basis":[]},
   "order_decision":{"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision":{"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
-  "current_turn_resolution":{"required":true,"customer_question":"","resolution_goal":"","required_facts":[]},
+  "current_turn_resolution":{"required":true,"customer_question":"","resolution_goal":"","required_facts":[],"explicit_questions":[{"question_id":"question_1","question":"","resolution_goal":""}]},
   "sales_progression":{"status":"continue | pause | terminal","target_stage":"need_and_case | effect_proof | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[],"required_message_types":["text"],"source_pack_ids":[],"asset_ids":[],"reason":""},
   "sop_delivery_decision":{"action":"deliver_now | defer | suppress","sop_pack_id":"","reason":""},
   "reply_contract":{"locked_facts":[],"forbidden_claims":[],"known_fields_not_to_request":[],"required_deliveries":[{"message_type":"text | image | video | store_address | payment_collection","asset_id":"","source_pack_id":""}]},

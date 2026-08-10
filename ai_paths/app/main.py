@@ -86,6 +86,9 @@ sop_execution_service = SopExecutionService(
     event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
     chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
     event_model_max_concurrency=settings.sop_event_model_max_concurrency,
+    model_semantic_routing_enabled=settings.reply_model_semantic_routing_enabled,
+    event_schema_only_normalizer_enabled=settings.sop_event_schema_only_normalizer_enabled,
+    governance_shadow_mode=settings.reply_governance_shadow_mode,
 )
 sop_event_service = SopEventService(
     repository=repository,

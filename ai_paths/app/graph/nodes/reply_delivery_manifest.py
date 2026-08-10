@@ -6,6 +6,18 @@ from typing import Any
 
 
 EFFECT_TRUST_SCENE_IDS = {"effect_definition_trust", "one_session_effect"}
+ACTIVITY_INTRO_FACTS = {
+    "activity_price": "当前淡斑活动总价为268元",
+    "package_items": "套餐包含淡斑、皮肤检测、基础清洁和肌肤补水",
+    "quota": "线上活动限前30名",
+    "deposit_redemption": "每位10元预约金到店抵扣，做的话再付258元",
+    "refund_policy": "未做或不满意可退，实际按付款记录核对",
+    "visit_flexibility": "完成登记后到店时间按客户方便安排",
+}
+EFFECT_TRUST_FACTS = {
+    "effect_positive_confidence": "正面说明是做斑点改善，绝大多数顾客一次有很好的改善效果",
+    "registered_free_detection": "说明完成线上活动登记后可到店免费做皮肤检测，并结合具体情况讲解",
+}
 
 
 def build_sop_delivery_manifest(sop_gate: dict[str, Any]) -> dict[str, Any]:
@@ -45,13 +57,16 @@ def build_sop_delivery_manifest(sop_gate: dict[str, Any]) -> dict[str, Any]:
             }
         )
     manifest_messages.sort(key=lambda item: int(item.get("source_order") or 0))
+    core_fact_contract = "activity_intro_v1" if pack_id == "s10_activity_intro" else ""
     return {
         "active": bool(manifest_messages),
         "source": "chat_sop_gate",
         "sop_pack_id": pack_id,
         "route": route,
         "mode": "preserve_required_messages",
-        "core_fact_contract": "activity_intro_v1" if pack_id == "s10_activity_intro" else "",
+        "core_fact_contract": core_fact_contract,
+        "required_fact_ids": list(ACTIVITY_INTRO_FACTS) if core_fact_contract else [],
+        "fact_definitions": dict(ACTIVITY_INTRO_FACTS) if core_fact_contract else {},
         "messages": manifest_messages,
     }
 
@@ -187,6 +202,19 @@ def merge_manifest_into_reply_contract(
     contract["delivery_manifest_active"] = bool(raw.get("active"))
     contract["delivery_manifest_pack_id"] = str(raw.get("sop_pack_id") or "")
     contract["delivery_manifest_core_fact_contract"] = str(raw.get("core_fact_contract") or "")
+    if raw.get("active"):
+        contract["required_fact_ids"] = list(
+            dict.fromkeys(
+                [
+                    *[str(item) for item in contract.get("required_fact_ids") or [] if str(item).strip()],
+                    *[str(item) for item in raw.get("required_fact_ids") or [] if str(item).strip()],
+                ]
+            )
+        )
+        contract["fact_definitions"] = {
+            **(contract.get("fact_definitions") if isinstance(contract.get("fact_definitions"), dict) else {}),
+            **(raw.get("fact_definitions") if isinstance(raw.get("fact_definitions"), dict) else {}),
+        }
     return contract
 
 

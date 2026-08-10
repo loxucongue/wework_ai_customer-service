@@ -157,7 +157,28 @@ def newer_customer_message_after_trigger(
     trigger_message_id: str,
     trigger_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Compare a completed run with the latest platform conversation."""
+    """Backward-compatible customer-only view of newer conversation activity."""
+
+    result = newer_conversation_activity_after_trigger(
+        messages,
+        trigger_message_id=trigger_message_id,
+        trigger_events=trigger_events,
+    )
+    return {
+        "status": result["status"],
+        "newer_customer_message": result["newer_customer_message"],
+        "newer_message_refs": result["newer_customer_message_refs"],
+        "reason": result["reason"],
+    }
+
+
+def newer_conversation_activity_after_trigger(
+    messages: list[dict[str, Any]],
+    *,
+    trigger_message_id: str,
+    trigger_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Find customer or assistant turns that make a completed run stale."""
 
     ordered = _dedupe_platform_messages(_ordered_platform_messages(messages))
     trigger_id = str(trigger_message_id or "").strip()
@@ -171,15 +192,21 @@ def newer_customer_message_after_trigger(
             None,
         )
         if trigger_index is not None:
-            newer = [
-                _message_ref(item, index=index + 1)
-                for index, item in enumerate(ordered[trigger_index + 1 :], start=trigger_index + 1)
-                if message_role(item) == "customer"
-            ]
+            customer_refs: list[str] = []
+            assistant_refs: list[str] = []
+            for index, item in enumerate(ordered[trigger_index + 1 :], start=trigger_index + 1):
+                role = message_role(item)
+                ref = _message_ref(item, index=index + 1)
+                if role == "customer":
+                    customer_refs.append(ref)
+                elif role == "assistant":
+                    assistant_refs.append(ref)
             return {
                 "status": "checked",
-                "newer_customer_message": bool(newer),
-                "newer_message_refs": newer[-10:],
+                "newer_customer_message": bool(customer_refs),
+                "newer_assistant_message": bool(assistant_refs),
+                "newer_customer_message_refs": customer_refs[-10:],
+                "newer_assistant_message_refs": assistant_refs[-10:],
                 "reason": "trigger_message_found",
             }
 
@@ -189,16 +216,23 @@ def newer_customer_message_after_trigger(
         return {
             "status": "unavailable",
             "newer_customer_message": False,
-            "newer_message_refs": [],
+            "newer_assistant_message": False,
+            "newer_customer_message_refs": [],
+            "newer_assistant_message_refs": [],
             "reason": "trigger_message_not_found_and_timestamp_unavailable",
         }
-    newer_refs: list[str] = []
+    customer_refs: list[str] = []
+    assistant_refs: list[str] = []
     trigger_echo_consumed = False
     for index, item in enumerate(ordered, start=1):
         timestamp = _message_timestamp(item)
         if timestamp is None or timestamp <= trigger_timestamp:
             continue
-        if message_role(item) != "customer":
+        role = message_role(item)
+        if role == "assistant":
+            assistant_refs.append(_message_ref(item, index=index))
+            continue
+        if role != "customer":
             continue
         if (
             not trigger_echo_consumed
@@ -208,11 +242,13 @@ def newer_customer_message_after_trigger(
         ):
             trigger_echo_consumed = True
             continue
-        newer_refs.append(_message_ref(item, index=index))
+        customer_refs.append(_message_ref(item, index=index))
     return {
         "status": "checked",
-        "newer_customer_message": bool(newer_refs),
-        "newer_message_refs": newer_refs[-10:],
+        "newer_customer_message": bool(customer_refs),
+        "newer_assistant_message": bool(assistant_refs),
+        "newer_customer_message_refs": customer_refs[-10:],
+        "newer_assistant_message_refs": assistant_refs[-10:],
         "reason": "trigger_timestamp_compared",
     }
 

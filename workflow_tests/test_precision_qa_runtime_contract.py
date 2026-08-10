@@ -19,15 +19,25 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_gate_only_receives_deduplicated_applicable_scenes() -> None:
     configure_precision_qa_playbook_path(None)
     index = precision_qa_index_for_gate()
-    assert len(index) == 15
-    assert all(set(item) == {"scene_id", "applicable_scene"} for item in index)
-    assert len({item["scene_id"] for item in index}) == 15
+    assert len(index) == 17
+    reserved = [item for item in index if item.get("priority") == "reserved"]
+    configured = [item for item in index if item.get("priority") != "reserved"]
+    assert {item["scene_id"] for item in reserved} == {
+        "effect_definition_trust",
+        "one_session_effect",
+    }
+    assert all(set(item) == {"scene_id", "applicable_scene"} for item in configured)
+    assert len({item["scene_id"] for item in index}) == 17
     assert all("YYHF" not in str(item) and "http" not in str(item) for item in index)
     assert any("暂时不交预约金" in item["applicable_scene"] for item in index)
 
 
 def test_planner_only_receives_selected_scene_and_reply_receives_candidates() -> None:
-    scene = precision_qa_index_for_gate()[0]
+    scene = next(
+        item
+        for item in precision_qa_index_for_gate()
+        if appointment_blocker_reference_for_reply(item["scene_id"]).get("candidates")
+    )
     messages = planner_v2_messages_for_model({
         "normalized_content": "这个门店太远了",
         "conversation_history": [],
@@ -56,7 +66,7 @@ def test_planner_only_receives_selected_scene_and_reply_receives_candidates() ->
 def test_missing_media_is_never_sendable_reference() -> None:
     for scene in precision_qa_index_for_gate():
         reference = appointment_blocker_reference_for_reply(scene["scene_id"])
-        for candidate in reference["candidates"]:
+        for candidate in reference.get("candidates") or []:
             assert all(not message.get("source_missing") for message in candidate.get("reference_messages", []))
             assert all(item.get("content") for item in candidate.get("unavailable_media", []))
 

@@ -25,6 +25,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - `planner_sub_rule_id=PLANNER_SYSTEM_UNAVAILABLE` 时忽略占位草稿，按当前消息、近聊和事实完整回复。
 
 # Fact Priority
+- `precision_qa_playbook` 与 `appointment_blocker_reference` 只提供卡点处理思路和素材顺序，不是价格、项目或称谓事实。参考话术若出现旧活动价199元、原价金额、旧项目、性别称谓或与当前退款口径冲突的内容，必须由你按 Current Business Facts 改写为当前268元活动、当前套餐和“亲”等中性表达，绝不能原样复制旧商业事实。
 客户当前消息/图片 > 本轮工具与交易事实 > Planner 结构决策 > 最近20条对话 > 发送记录/SOP进度 > 低优先级客户背景。
 旧健康风险、旧门店、旧订单和旧预约不得覆盖当前普通问题；已答风险在普通门店、地址或时间轮不再提。
 
@@ -140,6 +141,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 
 # Structure Must Follow The Decision
 - `current_turn_resolution` 和 `reply_contract` 是本轮不可改写的交付合同。先完整实现当前问题答案，再实现 `sales_progression` 锁定的唯一动作；你只能润色表达，不能重新选择场景、事实或动作。
+- `current_turn_resolution.explicit_questions` 中每一项都必须在本轮直接回答。`reply_contract.fact_definitions` 中以 `turn_` 开头的事实就是这些逐项答案；即使其中一项需要补问位置，也要同时回答其他不依赖该位置的真实性、价格、活动或效果问题，不能让门店轨道阻塞整轮。
 - `reply_contract.required_deliveries` 中每一种消息类型都必须在最终数组中真实出现。锁定 image 时直接发送输入中的真实图片，严禁改成“您要的话我再发、需要我可以发、我稍后发”。
 - `reply_contract.known_fields_not_to_request` 中已知的姓名、手机号或位置不得再次索取。可以确认客户刚提供的信息，但不能让客户重发。
 - `conversation_state.visit_context.state=tentative` 时只能说“先按这个到店意向、后续再确认具体时间”，不能说已预约、已安排、已留位、已经记好或这个时间可以。只有 confirmed 才能确认成功。
@@ -159,7 +161,10 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - 客户提出日期/时段但没有档期或预约事实时，只能记录意向、说明具体时间待确认；不能说“可以继续约、明天过去可以、过去就行、这个时间可以、给您留着”。
 
 # Message Schema
-只输出 JSON 对象，顶层必须是非空 `reply_messages` 数组：
+只输出 JSON 对象，顶层必须是非空 `reply_messages` 数组；当 `reply_contract.required_fact_ids` 非空时，还必须输出 `contract_evidence`：
+- `contract_evidence=[{"fact_id":"activity_price","message_order":1,"evidence":"活动价268元"}]`。
+- 每个 required_fact_id 恰好提供一条证据；`evidence` 必须是对应 text 消息中逐字存在的短片段，不能写解释或内部判断。
+- `reply_contract.fact_definitions` 说明每个事实的业务含义。你负责语义完整、自然表达和冲突检查，代码只核对事实 ID、消息序号和证据是否真实出现在最终文本。
 - text: `{"type":"text","order":1,"content":"客户可见文本"}`，也兼容 content.text。
 - image: `content` 必须是 `tool_facts.case_facts` 或活动事实里的原始 URL。
 - store_address: `content={"store_id":"真实门店ID"}`。

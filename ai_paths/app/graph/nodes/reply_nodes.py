@@ -8,7 +8,12 @@ from app.graph.nodes.activity_intro_image import activity_intro_image_url, appen
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
 from app.graph.nodes.reply_delivery_manifest import manifest_image_urls
-from app.graph.nodes.reply_validation import _paid_deposit_context, validate_reply_consistency
+from app.graph.nodes.reply_validation import (
+    _effect_image_may_reference_recent_delivery,
+    _paid_deposit_context,
+    validate_reply_consistency,
+    validate_semantic_contract_evidence,
+)
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.services.payment_collection import (
     normalize_payment_amount_text,
@@ -25,7 +30,9 @@ from app.services.trace_logger import TraceLogger
 REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售回复模型。完整 Reply 已超时或未通过硬事实校验，请根据去重后的完整业务事实重新生成客户可见回复。精简只删除重复字段，不代表可以忽略业务规则、最近历史或结构事实。
 
 要求：
-- 只输出 JSON 对象：{\"reply_messages\":[{\"type\":\"text\",\"order\":1,\"content\":\"...\"}]}。
+- 只输出 JSON 对象：{\"reply_messages\":[{\"type\":\"text\",\"order\":1,\"content\":\"...\"}],\"contract_evidence\":[]}。
+- 预约卡点参考话术只提供处理思路；其中旧价格、旧项目、性别称谓或冲突退款文案必须按当前业务事实改写，禁止输出199元，当前活动价格使用268元。
+- `reply_contract.required_fact_ids` 非空时，contract_evidence 必须逐项覆盖，并引用最终 text 中逐字存在的证据片段。
 - 当前消息优先，结合最近12条原序历史。先直接解决本轮问题，再自然承接一个销售动作；“人呢/在吗”等短催促直接续最近未完动作，不列选项重问意图；不要复读整套规则，不要说“继续处理、安排下一步、温馨提醒、尊敬的客户”。
 - 像真人微信聊天：短句、口语、具体，不暴露“事实、排序、工具、系统、流程、状态”等内部表达。客户只回“好/嗯”时，确认并轻推下一步，不重播上一轮顾虑、案例、价格和预约金全套内容。
 - 只能使用输入中的工具、门店、订单、支付、图片和档期事实；没有事实就不要编。
@@ -43,7 +50,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 
 REPLY_TARGETED_REPAIR_SYSTEM_PROMPT = """你是企业微信淡斑活动的最终回复修复模型。上一版回复已经通过了大部分业务理解，但没有通过结构或事实校验。你的任务不是重新规划业务，而是在保留当前问题回答和销售节奏的前提下，按给定违规做最小修复。
 要求：
-- 只输出严格 JSON 对象，顶层必须包含非空 `reply_messages` 数组。
+- 只输出严格 JSON 对象，顶层必须包含非空 `reply_messages` 数组；输入要求语义事实证据时同时输出 `contract_evidence`。
 - 只修复给定 `violation` 和 `repair_hint`，不要改业务场景，不要改门店、价格、支付、图片等已给定事实。
 - `authorized_sop_delivery_manifest.active=true` 时，必须逐条保留清单中的必需文本、图片、顺序和核心事实；局部措辞违规只能最小修改对应句子，不能重写或删减整套交付。
 - 如果违规是“承诺发地址/导航但没有 store_address”，只能二选一：要么补合法 `store_address`，要么删掉这类承诺并改成收区县、片区或门店名。
@@ -63,6 +70,7 @@ def create_synthesize_reply_node(
     schedule_background_task: Callable[[AgentState], Any] | None = None,
 ):
     async def synthesize_reply(state: AgentState) -> dict[str, Any]:
+        state, runtime_delivery_adjusted = _apply_runtime_delivery_availability(state)
         with trace_logger.node(
             state,
             "synthesize_reply",
@@ -70,6 +78,14 @@ def create_synthesize_reply_node(
         ) as span:
             errors = list(state.get("errors", []))
             warnings = list(state.get("warnings", []))
+            if runtime_delivery_adjusted:
+                warnings.append(
+                    {
+                        "node": "synthesize_reply",
+                        "message": "required_delivery_adjusted_to_runtime_tool_availability",
+                        "detail": "no_new_case_image_reference_recent_delivery",
+                    }
+                )
             messages: list[dict[str, Any]] = []
             planner_messages: list[dict[str, Any]] = []
             reply_source = "main_model"
@@ -260,6 +276,38 @@ def create_synthesize_reply_node(
     return synthesize_reply
 
 
+def _apply_runtime_delivery_availability(state: AgentState) -> tuple[AgentState, bool]:
+    """Reconcile Planner delivery requirements with facts returned by later tool calls."""
+    if not _effect_image_may_reference_recent_delivery(state):
+        return state, False
+
+    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
+    progression = state.get("sales_progression") if isinstance(state.get("sales_progression"), dict) else {}
+    deliveries = contract.get("required_deliveries") if isinstance(contract.get("required_deliveries"), list) else []
+    required_types = (
+        progression.get("required_message_types")
+        if isinstance(progression.get("required_message_types"), list)
+        else []
+    )
+    adjusted_deliveries = [
+        item
+        for item in deliveries
+        if not (isinstance(item, dict) and str(item.get("message_type") or "").strip() == "image")
+    ]
+    adjusted_types = [item for item in required_types if str(item or "").strip() != "image"]
+    if len(adjusted_deliveries) == len(deliveries) and len(adjusted_types) == len(required_types):
+        return state, False
+
+    adjusted: AgentState = dict(state)
+    adjusted["reply_contract"] = {**contract, "required_deliveries": adjusted_deliveries}
+    adjusted["sales_progression"] = {**progression, "required_message_types": adjusted_types}
+    adjusted["reply_strategy"] = {
+        **(state.get("reply_strategy") if isinstance(state.get("reply_strategy"), dict) else {}),
+        "case_image_delivery": "reference_recent_no_new_image",
+    }
+    return adjusted, True
+
+
 def _is_hard_reply_contract_failure(error: str) -> bool:
     return any(
         marker in str(error or "")
@@ -275,6 +323,7 @@ def _is_hard_reply_contract_failure(error: str) -> bool:
             "sop_delivery_manifest_",
             "activity_intro_core_facts_missing",
             "effect_trust_",
+            "semantic_contract_",
             "empty_delivery_promise_not_allowed",
             "unsupported_store_address_message",
             "payment_confirmation_fact_required",
@@ -298,6 +347,7 @@ def _is_recoverable_delivery_contract_failure(error: str) -> bool:
         "adjacent_payment_collection_not_allowed",
         "reply_too_similar_to_previous_assistant_message",
         "effect_trust_",
+        "semantic_contract_",
         "unsupported_store_address_message",
         "payment_confirmation_fact_required",
     )
@@ -319,6 +369,7 @@ def _reply_contract_failure_code(error: str) -> str:
         "sop_delivery_manifest_",
         "activity_intro_core_facts_missing",
         "effect_trust_",
+        "semantic_contract_",
         "empty_delivery_promise_not_allowed",
         "unsupported_store_address_message",
         "payment_confirmation_fact_required",
@@ -432,6 +483,7 @@ async def _run_reply_model_pipeline(
                 messages = validated_model_messages(payload, state)
                 messages = _prepare_structural_messages(messages, state, warnings)
                 validate_reply_consistency(messages, state)
+                validate_semantic_contract_evidence(payload, messages, state)
                 _raise_repairable_reply_quality_issues(messages, state)
             except Exception as validation_exc:
                 repair_logs: list[dict[str, Any]] = []
@@ -477,6 +529,7 @@ async def _run_reply_model_pipeline(
                         messages = validated_model_messages(retry_payload, state)
                         messages = _prepare_structural_messages(messages, state, warnings)
                         validate_reply_consistency(messages, state)
+                        validate_semantic_contract_evidence(retry_payload, messages, state)
                         _raise_repairable_reply_quality_issues(messages, state)
                         break
                     except Exception as retry_validation_exc:
@@ -536,6 +589,7 @@ async def _run_reply_model_pipeline(
         messages = validated_model_messages(recovery_payload, state)
         messages = _prepare_structural_messages(messages, state, warnings)
         validate_reply_consistency(messages, state)
+        validate_semantic_contract_evidence(recovery_payload, messages, state)
         _raise_repairable_reply_quality_issues(messages, state)
     except Exception as recovery_exc:
         recovery_call["error"] = f"{type(recovery_exc).__name__}: {recovery_exc}"
@@ -716,6 +770,7 @@ def _should_use_targeted_reply_repair(error: str) -> bool:
             "known_customer_field_requested_again",
             "adjacent_payment_collection_not_allowed",
             "nearby_store_claim_without_location_fact",
+            "semantic_contract_",
         )
     )
 
@@ -761,6 +816,11 @@ def _validated_manifest_fallback_messages(
         else {}
     )
     if not manifest.get("active"):
+        return []
+    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
+    if any(str(item).startswith("turn_") for item in contract.get("required_fact_ids") or []):
+        # A static pack cannot prove that every independent customer question
+        # was answered. Let the constrained model repair handle those runs.
         return []
     ordered = sorted(
         (item for item in manifest.get("messages") or [] if isinstance(item, dict) and item.get("required")),
@@ -1000,6 +1060,12 @@ def _compact_text(value: Any) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
+    if "semantic_contract_evidence_missing" in error or "semantic_contract_evidence_invalid" in error:
+        return (
+            "保持 Planner 锁定场景和消息类型不变。根据 reply_contract.fact_definitions 补齐对应事实，"
+            "并在 contract_evidence 中为每个 required_fact_id 提供最终 text 内逐字存在的短证据及 message_order；"
+            "不得虚构事实、改场景或追加未授权卡片。"
+        )
     if "sop_delivery_manifest_order_or_type_mismatch" in error:
         return "严格按 authorized_sop_delivery_manifest.messages 的 source_order 输出全部必需文本、图片和已授权卡片；可以把文本短聊化，但不能调整消息顺序、删掉消息或把直接交付改成稍后再说。"
     if "sop_delivery_manifest_required_asset_missing" in error:

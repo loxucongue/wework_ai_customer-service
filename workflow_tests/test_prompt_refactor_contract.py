@@ -13,6 +13,7 @@ from app.graph.planner.brain_v2 import (
 )
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import (
+    PLANNER_REPAIR_PROMPT,
     PLANNER_RISK_PATCH_PROMPT,
     PLANNER_SYSTEM_PROMPT,
     PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT,
@@ -365,17 +366,23 @@ def test_planner_actual_messages_include_risk_transaction_and_rule_contracts() -
     initial = planner_v2_messages_for_model(state)
     repair = planner_v2_repair_messages_for_model(
         state,
-        original_plan={"decision": "direct_reply", "reply_messages": []},
-        violations=[{"code": "empty_direct_reply"}],
+        original_plan={"planner_decision": "direct_reply", "planner_reply_messages": []},
+        violations=[{"missing": "empty_direct_reply", "note": "需要客户可见回复"}],
     )
-    for messages in (initial, repair):
-        joined = "\n".join(str(item.get("content") or "") for item in messages)
-        assert PLANNER_RISK_PATCH_PROMPT in joined
-        assert PLANNER_TRANSACTION_PATCH_PROMPT in joined
-        assert '"scene_catalog"' in joined
-        assert '"conversion_psychology"' in joined
-        assert '"transaction_policy"' in joined
-        assert "真实结构素材的当轮交付同时算“回答当前问题”和本轮主线推进" in joined
+    initial_joined = "\n".join(str(item.get("content") or "") for item in initial)
+    assert PLANNER_RISK_PATCH_PROMPT in initial_joined
+    assert PLANNER_TRANSACTION_PATCH_PROMPT in initial_joined
+    assert '"scene_catalog"' in initial_joined
+    assert '"conversion_psychology"' in initial_joined
+    assert '"transaction_policy"' in initial_joined
+    assert "真实结构素材的当轮交付同时算“回答当前问题”和本轮主线推进" in initial_joined
+
+    repair_joined = "\n".join(str(item.get("content") or "") for item in repair)
+    assert PLANNER_REPAIR_PROMPT in repair_joined
+    assert "Current Repair Business Rules" in repair_joined
+    repair_payload = json.loads(repair[-1]["content"])
+    assert repair_payload["original_plan"]
+    assert repair_payload["tool_policy_violations"]
 
 
 def test_chat_gate_actual_messages_keep_sop_precision_and_ai_boundaries() -> None:

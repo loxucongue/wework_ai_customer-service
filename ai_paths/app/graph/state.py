@@ -46,6 +46,7 @@ class AgentState(TypedDict, total=False):
     test_isolated: bool
     memory_persist_allowed: bool
     runtime_budget: dict[str, Any]
+    reply_governance: dict[str, Any]
 
     normalized_content: str
     location_card: dict[str, Any]

@@ -23,6 +23,7 @@ from app.services.payment_collection import (
 )
 from app.services.customer_payment_state import is_paid_deposit_state
 from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
+from app.services.reply_governance import governance_enabled
 from app.services.store_fact_integrity import store_fact_is_valid
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
@@ -279,6 +280,53 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_store_delivery_text_matches_cards(messages, state)
 
 
+def validate_semantic_contract_evidence(
+    payload: dict[str, Any],
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Validate model-declared fact coverage without encoding sales wording in Python."""
+
+    if not governance_enabled(state, "semantic_contract_enabled"):
+        return
+    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
+    required_fact_ids = [
+        str(item).strip()
+        for item in contract.get("required_fact_ids") or []
+        if str(item).strip()
+    ]
+    if not required_fact_ids:
+        return
+    raw_evidence = payload.get("contract_evidence") if isinstance(payload, dict) else []
+    evidence = {
+        str(item.get("fact_id") or "").strip(): item
+        for item in raw_evidence or []
+        if isinstance(item, dict) and str(item.get("fact_id") or "").strip()
+    }
+    missing = [fact_id for fact_id in required_fact_ids if fact_id not in evidence]
+    if missing:
+        raise ValueError("semantic_contract_evidence_missing:" + ",".join(missing))
+
+    text_by_order = {
+        int(item.get("order") or index): message_content_text(item.get("content"))
+        for index, item in enumerate(messages, start=1)
+        if isinstance(item, dict) and str(item.get("type") or "") == "text"
+    }
+    invalid: list[str] = []
+    for fact_id in required_fact_ids:
+        item = evidence[fact_id]
+        quote = re.sub(r"\s+", "", str(item.get("evidence") or ""))
+        try:
+            order = int(item.get("message_order") or 0)
+        except (TypeError, ValueError):
+            order = 0
+        target = re.sub(r"\s+", "", text_by_order.get(order, ""))
+        if not quote or not target or quote not in target:
+            invalid.append(fact_id)
+    if invalid:
+        raise ValueError("semantic_contract_evidence_invalid:" + ",".join(invalid))
+
+
 def _validate_reply_delivery_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
     required = contract.get("required_deliveries") if isinstance(contract.get("required_deliveries"), list) else []
@@ -334,7 +382,10 @@ def _validate_sop_delivery_manifest(messages: list[dict[str, Any]], state: dict[
         }
         if not required_image_urls.issubset(emitted_image_urls):
             raise ValueError("sop_delivery_manifest_required_asset_missing")
-    if str(manifest.get("core_fact_contract") or "") == "activity_intro_v1":
+    if (
+        str(manifest.get("core_fact_contract") or "") == "activity_intro_v1"
+        and not governance_enabled(state, "semantic_contract_enabled")
+    ):
         _validate_activity_intro_core_facts(_combined_text(messages))
 
 
@@ -377,6 +428,9 @@ def _validate_activity_intro_core_facts(text: str) -> None:
 
 
 def _validate_effect_trust_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if governance_enabled(state, "semantic_contract_enabled"):
+        _validate_effect_trust_structural_boundaries(messages, state)
+        return
     contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
     scene_id = str(contract.get("effect_trust_scene_id") or "").strip()
     if scene_id not in EFFECT_TRUST_SCENE_IDS:
@@ -437,6 +491,36 @@ def _validate_effect_trust_contract(messages: list[dict[str, Any]], state: dict[
             raise ValueError("effect_trust_real_case_image_required")
 
 
+def _validate_effect_trust_structural_boundaries(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
+    if str(contract.get("effect_trust_scene_id") or "") not in EFFECT_TRUST_SCENE_IDS:
+        return
+    visible = [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") in VISIBLE_MESSAGE_TYPES]
+    if any(str(item.get("type") or "") == "payment_collection" for item in visible):
+        raise ValueError("effect_trust_payment_collection_not_allowed")
+    if _effect_image_may_reference_recent_delivery(state) and any(
+        str(item.get("type") or "") == "image" for item in visible
+    ):
+        raise ValueError("effect_trust_repeated_case_image_not_allowed")
+    required_deliveries = (
+        contract.get("required_deliveries") if isinstance(contract.get("required_deliveries"), list) else []
+    )
+    required_types = [
+        str(item.get("message_type") or "").strip()
+        for item in required_deliveries
+        if isinstance(item, dict) and str(item.get("message_type") or "").strip() in VISIBLE_MESSAGE_TYPES
+    ]
+    visible_types = [str(item.get("type") or "").strip() for item in visible]
+    if required_types and visible_types != required_types:
+        raise ValueError("effect_trust_delivery_sequence_mismatch")
+    compact = re.sub(r"\s+", "", _combined_text(visible))
+    if re.search(r"(?:268|258|10)元|预约金|活动价", compact):
+        raise ValueError("effect_trust_price_or_deposit_not_allowed")
+
+
 def _effect_image_may_reference_recent_delivery(state: dict[str, Any]) -> bool:
     contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
     if str(contract.get("effect_trust_scene_id") or "") not in EFFECT_TRUST_SCENE_IDS:
@@ -485,7 +569,14 @@ def _validate_known_customer_fields_not_requested(messages: list[dict[str, Any]]
     if not known:
         return
     compact = re.sub(r"\s+", "", _combined_text(messages))
-    asks_name = any(term in compact for term in ("姓名和手机号", "名字和手机号", "姓名电话", "名字电话"))
+    combined_fields = r"(?:姓名|名字)(?:和|及|、|\+|加)?(?:手机号|电话)"
+    asks_name = bool(
+        re.search(
+            rf"(?:请|麻烦|需要您|您(?:再)?)(?:把|提供|发|留|填写|登记)?(?:一下)?{combined_fields}",
+            compact,
+        )
+        or re.search(rf"{combined_fields}(?:再发|发我|发一下|提供一下|留一下|填写一下)", compact)
+    )
     asks_mobile = any(term in compact for term in ("手机号再发", "电话再发", "发下手机号", "发一下手机号", "手机号发我", "电话发我"))
     asks_name_only = any(term in compact for term in ("姓名再发", "名字再发", "姓名发我", "名字发我"))
     if ("name" in known and (asks_name or asks_name_only)) or ("mobile" in known and (asks_name or asks_mobile)):
@@ -717,7 +808,7 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         or str(state.get("conversion_stage") or "") == "deposit_push"
         or str(state.get("next_step") or "") == "send_deposit"
         or _promises_payment_entry(text)
-    ) and not activity_intro_completed_for_payment(state):
+    ) and not governance_enabled(state, "model_payment_sequencing_enabled") and not activity_intro_completed_for_payment(state):
         raise ValueError("payment_collection_requires_activity_intro")
     payment_context = payment_collection_context(state=state, messages=messages)
     needs_payment = False
@@ -2173,6 +2264,12 @@ def _has_appointment_confirmation_fact(state: dict[str, Any]) -> bool:
 
 def _promises_payment_entry(text: str) -> bool:
     compact = "".join(str(text or "").split())
+    compact = re.sub(
+        r"(?:不用|不会|不再|无需|不需要|不能|不要)(?:给[您你])?(?:重新|重复|再)?(?:发送|发)"
+        r"(?:付款|收款|支付|预约金|报名)?(?:卡片|卡|入口)",
+        "",
+        compact,
+    )
     return any(
         term in compact
         for term in (
