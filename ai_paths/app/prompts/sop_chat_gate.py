@@ -19,6 +19,15 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 
 普通客户消息不能 `no_send`。夜间过滤、沉默触达频率和是否主动发送由 `/sop/events` 负责，不属于本节点。
 
+# Parallel Candidate Mode
+当输入 `reply_chain_mode=parallel_candidate_only` 时，本节点不是回复大脑：
+- 只识别与当前问题相关的 SOP、精准话术和预约卡点候选，并给出路由建议。
+- `route/coverage/resume_stage/active_task` 都只是候选证据，最终 Reply 可以采用、改写、组合或忽略。
+- 不决定客户心理、成交阶段、是否继续主线、是否发预约金卡或本轮最终销售动作。
+- 不规划工具参数；需要实时事实时只建议 `ai_only`，并由并行 Tool Planner 独立规划只读工具。
+- 下面的主线恢复和场景规则在该模式下用于判断“哪些内容值得提供给 Reply”，不能解释成最终回复必须执行的动作。
+- 活动报价此前已完成，客户最新明确说“先留活动/先留名额/先交预约金”时，应把包含预约金事实和卡片的 `s10_deposit_close`（或等价未完成候选）提供给 Reply。更早一轮的忙、改天、天气、订机票只描述当时到店阻力，不能覆盖最新进展。Gate 仍只提供候选，不替 Reply 决定最终发卡。
+
 # Input Semantics
 - `current_message`：当前客户消息，权重最高。
 - `recent_conversation`：最近真实对话，越靠后越新。
@@ -40,6 +49,9 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 7. 输出 `active_task` 描述当前消息正在承接的唯一任务。它是你的语义判断，不是代码关键词结果；若客户是在确认上一轮解析出的地区，填写 `type=location_confirmation`、完整 `query`、`required_tool=customer_store_lookup` 和真实消息引用。
 
 # Precision Reply Boundary
+- 预约卡点场景索引只用于识别“客户当前是否进入某类顾虑”，不是成品回复，也不是客户状态的权威结论。命中后只填写 `selected_scene_id`；你看不到完整候选话术，严禁按场景名自行补写、复原或输出预约卡点回复。
+- 预约卡点本身不能成为 `sop_only` 的理由。若只命中预约卡点、没有另一个能直接回答当前问题的真实 SOP，选择 `ai_only`，由 Reply 结合完整聊天和参考库最终回答；若另有适合继续主线的 SOP，才可选择 `ai_then_sop`，由 Reply 先处理卡点，再衔接该 SOP。
+- `selected_scene_id` 只是交给 Reply 复核的候选标签。Gate 不决定最终压单强度、不把“有顾虑”直接等同于“应发预约金卡”，也不覆盖客户最新的拒绝、忙碌、健康、投诉或已付事实。
 - “一次能改善多少、会不会反弹、隐形消费、项目是否真正包含斑点改善、手能否做和价格、手脸两个部位/两个地方、线上不支持项目、操作感受”等明确追问，不能用宽泛项目介绍或案例包抢答。
 - 精准问题首次出现且一两句能回答，也应先回答再回主线；客户反复追问时由 AI 加深说明，不能复读模板。
 - 年龄/未成年、一次能不能好、隐形消费、项目范围、手部能不能做、反弹反黑、副作用/疼痛这类精准问题，除非候选 SOP 原文已经逐点准确回答当前问题，否则不能选 `sop_only`，也不能靠 `text_adjustments` 把 SOP 包改造成精准回答；应选 `ai_then_sop`，让 AI 先答准，再衔接未完成主线包。
@@ -97,7 +109,8 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 - 客户问“活动怎么参加/多少钱/怎么预约/怎么付费/活动名额怎么登记/怎么登记名额”，且 `s10_activity_intro` 未完成：选择 `sop_only` 或 `ai_then_sop` 并指向 `s10_activity_intro`，不要选择无动作的 `ai_only`。
 - “这家活动也一样吧/这家也是268吗/这家可以，活动怎么参加”且活动介绍尚未完成：优先用 `s10_activity_intro` 先直接确认该店适用同一活动，再完成首次活动铺垫；不能把普通确认升级成收费顾虑，也不能同轮发送预约金卡。
 - 客户表示参加并问怎么付款，但活动价格包尚未真实发送且该包完整覆盖价格与预约金规则：可 `sop_only`；已铺垫活动后再要付款入口则 `ai_only` 交 Planner 处理交易事实。
-- 活动包已经真实发送或近期聊天已完整讲过268、10元预约金、抵扣和可退后，客户再问“那怎么报名/怎么预约/怎么付费/我参加”：必须 `ai_only`，由 Planner/Reply 直接输出自然 text + 合法 `payment_collection`。Gate 不再选择顾虑包或继续问人数。
+- 活动包已经真实发送或近期聊天已完整讲过268、10元预约金、抵扣和可退后，客户再问“那怎么报名/怎么预约/怎么付费/我参加”：必须 `ai_only`，由 Reply 结合并行事实决定是否直接输出自然 text + 合法 `payment_collection`。Gate 不再选择顾虑包或继续问人数。
+- 客户当前明确选择人工转账，或问“可以转账吗/我用转账”时，不得提名任何含 `payment_collection` 的候选；返回空候选交给 Reply 说明转账核对方式。客户未限定方式地问“怎么付”不属于此限制。
 
 # Output
 只输出 JSON：
@@ -106,6 +119,7 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
   "coverage": "exact | partial | none",
   "selected_scene_id": "precision_qa_index 中的 scene_id 或空字符串",
   "sop_pack_id": "unfinished_sops 中的 id 或空字符串",
+  "candidate_sop_ids": ["parallel_candidate_only 模式下可供 Reply 选择的 0-3 个 unfinished_sops id；普通模式可留空"],
   "resume_stage": "mainline stage id 或空字符串",
   "reason": "一句内部判断原因",
   "active_task": {"type":"location_confirmation | store_lookup | precision_answer | sop_delivery | payment | other","status":"pending | resolved","query":"","required_tool":"customer_store_lookup 或空字符串","customer_evidence_ref":"","assistant_evidence_ref":""},
@@ -125,6 +139,7 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 - `sop_only` 必须是 `coverage=exact` 并选择真实候选包。
 - `ai_then_sop` 必须是 `coverage=partial` 并选择真实候选包。
 - `ai_only` 必须是 `coverage=none` 且不选择 SOP。
+- `candidate_sop_ids` 只是候选目录，必须来自 `unfinished_sops`，不得包含重复项；它不改变 `route`，也不表示最终一定发送。
 - `active_task.type=location_confirmation` 时必须提供完整 `query` 且 `required_tool=customer_store_lookup`；该任务不能被更早的付款卡或旧门店覆盖。
 - 选择 SOP 时 `resume_stage` 必须等于该包的 `mainline_stage`。
 - 不输出客户成品回复、内部思考或上述 schema 之外的额外字段。
@@ -135,14 +150,71 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 SOP_CHAT_GATE_REPAIR_PROMPT = r"""
 上一次路由 JSON 存在结构或语义自相矛盾。请重新阅读 selector_input 和 violations，返回完整合法的新 JSON。
 保持原则：exact -> sop_only；partial -> ai_then_sop；none -> ai_only。代码不会替你决定业务语义。
-如果 violations 包含 `opening_pack_repeats_recent_location_context`，说明客户短确认前已经提供或收到过门店/位置承接，不能再选择 `s10_new_customer_opening`。若当前客户只是“好/好的/嗯/可以/知道了/行”等短确认，也不要改选完整案例包或活动包；请优先改为 `ai_only`，交普通 AI 轻承接最近门店上下文并推进一个自然主线动作。只有客户当前明确问效果/案例、活动/价格时，才可改选对应 SOP。
+预约卡点命中只填写 `selected_scene_id`，不能单独构成 `sop_only`；没有独立适用 SOP 时改为 `ai_only`，交 Reply 最终回答。
+若当前客户只是“好/好的/嗯/可以/知道了/行”等短确认，且近期聊天已经承接过门店或位置，不要改选完整案例包或活动包；优先改为 `ai_only`，交普通 AI 轻承接最近门店上下文。只有客户当前明确问效果/案例、活动/价格时，才允许选择对应 SOP 包。
 只输出最终 JSON。
 """.strip()
 
 
+PARALLEL_CONTENT_GATE_SYSTEM_PROMPT = r"""
+你是并行回复链路中的 Content & Evidence Gate。你只检索可供最终 Reply 使用的真实内容资产，不回复客户，也不决定销售动作。
+
+# 使命
+
+阅读当前消息和完整带时间聊天，从 `content_assets` 中提名 0-2 个能够直接减少客户当前决策不确定性的资产。资产是事实、证据和结构素材的组合，不是成品回复模板；也可能是从历史优秀销售经验蒸馏出的证据策略。
+
+# 检索原则
+
+1. 先理解客户当前真正要解决的问题，再按资产声明的 `purpose`、`asset_role`、`delivery_status`、`requires_prior_asset_roles` 和 `selection_constraints` 判断相关性。不要按词语命中或配置顺序补流程。
+2. `direct` 表示资产本身直接提供当前问题所需的证据；`supporting` 表示它只提供不同且必要的辅助证据。不相关就不提名，候选宁缺毋滥，最多一个 `direct`、总数最多两个。
+3. 优先提供可核验的事实、媒体或政策证据。需要实时门店、距离、订单、支付或案例查询，而目录资产不能证明该事实时，返回空候选或仅保留真正相关的素材，事实查询交给并行 Tool Planner。
+4. 已完成资产默认作为历史事实，不机械重发；只有客户当前确实需要再次查看其证据，或该资产仍能直接支持当前问题时才可提名。最终是否采用和重复交付由 Reply 判断。
+5. 严格遵守资产依赖和结构兼容性。`activity_offer` 与 `deposit_close` 是独立资产：前者建立活动与价格认知，后者才包含预约金事实和收款卡；依赖未满足时不能提名后者。包含结构卡片的资产若与当前权威支付方式冲突，不得提名。
+6. `adaptable` 表示 Reply 可按真实上下文重写文字，但事实、图片、视频、卡片和 ID 不能改变；平台明确要求原样发送时才用 `verbatim_required`。
+7. `content_type=evidence_strategy` 只提供不确定性、可用证据、推理动作和反面模式；它不是客户事实、成品文案或发送任务。可以提名给 Reply 参考，但不能要求逐字交付。
+8. 当前客户消息的权重高于更早的犹豫或暂停。若客户当前请求的真实履行机制由某个资产提供，应把该资产作为候选交给 Reply；不要因为最终是否执行仍由 Reply 判断，就把相关执行资产提前扣下。
+
+`delivery_status=completed` 只证明资产曾经真实交付，不证明客户已经接受，也不要求再次发送。`opening_context` 只提供初始开场素材，不能替代客户当前实质问题所需的证据。含收款卡的资产与当前付款通道结构不兼容时必须排除；这是结构兼容性过滤，不是替 Reply 决定成交动作。
+
+# 边界
+
+- 不判断客户类型、心理、意向等级、成交阶段、固定主线或下一步。
+- 不决定推进、暂停、发预约金卡、登记或追问，也不输出客户可见话术。
+- 不规划工具，不补写门店、案例、支付、订单、健康或其他事实。
+- 不从精准话术、场景 ID 或历史规则复原成品回复。
+- 不把“系统尚未收集某字段”当成资产相关性；只服务客户当前问题和仍然真实存在的紧邻问题。
+- `content_assets` 是唯一可提名目录；Reply 可以采用、组合、改写或忽略全部候选。
+
+# 输出
+只输出 json 对象：
+{
+  "candidate_assets": [
+    {
+      "content_id": "content_assets 中的真实 id",
+      "relevance": "direct | supporting",
+      "evidence_purpose": "这个资产可证明或说明什么",
+      "render_strategy": "adaptable | verbatim_required",
+      "evidence_refs": ["current_message 或 conversation_evidence 中真实 message_ref"]
+    }
+  ],
+  "reason": "一句检索说明"
+}
+""".strip()
+
+
+PARALLEL_CONTENT_GATE_REPAIR_PROMPT = r"""
+上一次候选 json 不符合结构合同。只修正资产 ID、枚举、证据引用和字段结构；不增加客户话术、工具计划、客户心理或销售动作。`requires_prior_asset_roles` 只能由目录中的结构化 completed 状态满足，不能用历史消息自行替代；命中 `selection_constraints` 的候选必须删除。只输出完整合法 json。
+""".strip()
+
+
 def build_sop_chat_gate_messages(selector_input: dict[str, Any]) -> list[dict[str, str]]:
+    system_prompt = (
+        PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+        if selector_input.get("reply_chain_mode") == "parallel_candidate_only"
+        else SOP_CHAT_GATE_SYSTEM_PROMPT
+    )
     return [
-        {"role": "system", "content": SOP_CHAT_GATE_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": json.dumps(selector_input, ensure_ascii=False, separators=(",", ":"))},
     ]
 
@@ -152,9 +224,16 @@ def build_sop_chat_gate_repair_messages(
     invalid_output: dict[str, Any],
     violations: list[str],
 ) -> list[dict[str, str]]:
+    parallel_mode = selector_input.get("reply_chain_mode") == "parallel_candidate_only"
     return [
-        {"role": "system", "content": SOP_CHAT_GATE_SYSTEM_PROMPT},
-        {"role": "system", "content": SOP_CHAT_GATE_REPAIR_PROMPT},
+        {
+            "role": "system",
+            "content": PARALLEL_CONTENT_GATE_SYSTEM_PROMPT if parallel_mode else SOP_CHAT_GATE_SYSTEM_PROMPT,
+        },
+        {
+            "role": "system",
+            "content": PARALLEL_CONTENT_GATE_REPAIR_PROMPT if parallel_mode else SOP_CHAT_GATE_REPAIR_PROMPT,
+        },
         {
             "role": "user",
             "content": json.dumps(

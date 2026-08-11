@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -39,6 +39,13 @@ _STORE_SNAPSHOT_CACHE: dict[str, Any] | None = None
 _STORE_SNAPSHOT_CACHE_KEY: tuple[str, int] | None = None
 _ACTION_TOOL_TIMEOUT_SECONDS = 12.0
 _STORE_SCOPE_RECOVERY_TIMEOUT_SECONDS = 4.5
+_READ_ONLY_REPLY_CHAIN_TOOLS = {
+    "customer_store_lookup",
+    "distance_calculate",
+    "kb_search",
+    "appointment_record_query",
+}
+_DEFERRED_COMMIT_TOOLS = {"create_work_order", "add_customer_mobile"}
 
 
 def create_execute_actions_node(
@@ -48,26 +55,45 @@ def create_execute_actions_node(
     store_service: StoreService | None,
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
     platform_agent_client: PlatformAgentClient | None = None,
+    execution_mode: str = "all",
 ) -> Callable[[AgentState], Any]:
     async def execute_actions(state: AgentState) -> dict[str, Any]:
-        required_tools = planner_required_tools(state)
+        isolated_execution = execution_mode in {"readonly", "commit"}
+        explicit_tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
+        required_tools = list(explicit_tools) if isolated_execution else planner_required_tools(state)
         with trace_logger.node(
             state,
             "execute_actions",
             {
-                "primary_task": planner_primary_task(state),
-                "secondary_tasks": planner_secondary_tasks(state),
+                "primary_task": {} if isolated_execution else planner_primary_task(state),
+                "secondary_tasks": [] if isolated_execution else planner_secondary_tasks(state),
                 "required_tools": required_tools,
+                "execution_mode": execution_mode,
             },
         ) as span:
             content = state.get("normalized_content") or ""
             tool_results: dict[str, Any] = {}
             tool_calls: list[dict[str, Any]] = []
             tool_tasks: list[ActionToolTask] = []
-            planned_tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
-            if planned_tools:
-                required_tools = [tool for tool in planned_tools if isinstance(tool, dict)]
+            if isolated_execution:
+                required_tools = [tool for tool in explicit_tools if isinstance(tool, dict)]
+            else:
+                planned_tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
+                if planned_tools:
+                    required_tools = [tool for tool in planned_tools if isinstance(tool, dict)]
             required_tools = _dedupe_planned_tools(required_tools)
+            if execution_mode == "readonly":
+                required_tools = [
+                    tool
+                    for tool in required_tools
+                    if str(tool.get("name") or "").strip() in _READ_ONLY_REPLY_CHAIN_TOOLS
+                ]
+            elif execution_mode == "commit":
+                required_tools = [
+                    tool
+                    for tool in required_tools
+                    if str(tool.get("name") or "").strip() in _DEFERRED_COMMIT_TOOLS
+                ]
             required_tools = _filter_invalid_planned_tools(required_tools, state, tool_results, tool_calls)
 
             execution_state: AgentState = dict(state)
@@ -120,7 +146,11 @@ def create_execute_actions_node(
                     )
                 tool_results["customer_store_lookup"] = result
                 tool_calls.append({"name": "customer_store_lookup", "input": lookup_tool, "output": result})
-                if not _needs_distance_calculate(required_tools) and _lookup_result_needs_distance_enrichment(result):
+                if (
+                    execution_mode != "readonly"
+                    and not _needs_distance_calculate(required_tools)
+                    and _lookup_result_needs_distance_enrichment(result)
+                ):
                     distance_tool = {
                         "name": "distance_calculate",
                         "origin": str(result.get("query") or lookup_tool.get("query") or content or "").strip(),
@@ -171,7 +201,7 @@ def create_execute_actions_node(
                     }
                 )
 
-            if platform_agent_client:
+            if platform_agent_client and execution_mode != "readonly":
                 platform_tool_results: dict[str, Any] = dict(tool_results)
                 platform_tool_calls: list[dict[str, Any]] = []
                 try:
@@ -197,7 +227,7 @@ def create_execute_actions_node(
                         }
                     )
 
-            if _needs_appointment_lookup(required_tools) and store_service:
+            if execution_mode != "readonly" and _needs_appointment_lookup(required_tools) and store_service:
                 try:
                     appointment_query = _appointment_query_from_planner(required_tools, state)
                     if _needs_available_time(required_tools):
@@ -234,7 +264,7 @@ def create_execute_actions_node(
                         }
                     )
 
-            if _needs_professional_assist(required_tools):
+            if execution_mode != "readonly" and _needs_professional_assist(required_tools):
                 assist = _professional_assist_result(state)
                 tool_results["professional_assist"] = assist
                 tool_calls.append({"name": "professional_assist", "input": _planned_tool(required_tools, "professional_assist"), "output": assist})
@@ -253,11 +283,18 @@ def create_execute_actions_node(
             fact_envelope = dict(planner_fact_output.get("fact_envelope") or {})
 
             span["entry"]["tool_calls"] = tool_calls
-            output: dict[str, Any] = {
-                "tool_results": tool_results,
-                "fact_envelope": fact_envelope,
-                "trace": state.get("trace", []),
-            }
+            if execution_mode == "commit":
+                output: dict[str, Any] = {
+                    "commit_tool_results": tool_results,
+                    "commit_fact_envelope": fact_envelope,
+                    "trace": state.get("trace", []),
+                }
+            else:
+                output = {
+                    "tool_results": tool_results,
+                    "fact_envelope": fact_envelope,
+                    "trace": state.get("trace", []),
+                }
             span["output_snapshot"] = output
             if recovered_store_knowledge:
                 return {**output, "customer_store_knowledge": recovered_store_knowledge}
@@ -1432,6 +1469,53 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
                 geocode = raw_result
 
     text_candidates = _stores_for_text_query(resolved_query, stores, purpose)
+    exact_region_candidates, exact_region = _stores_for_explicit_visible_region(resolved_query, stores)
+    if exact_region_candidates and not geocode.get("location"):
+        normalized, invalid_candidates = filter_valid_store_facts(
+            exact_region_candidates,
+            known_stores=[*_snapshot_store_values(), *stores, *exact_region_candidates],
+        )
+        normalized = [_store_lookup_item(store) for store in normalized[:60]]
+        location_evidence = build_location_evidence(
+            state,
+            raw_text=raw_query,
+            query=resolved_query,
+            geocode={"formatted_address": resolved_query, **exact_region},
+            confirmed_by_customer=True,
+        )
+        location_evidence.update(
+            {
+                **exact_region,
+                "confirmation_status": "confirmed",
+                "confirmation_mode": "none",
+                "confirmation_required_before_match": False,
+                "confidence": "high",
+            }
+        )
+        scope_fields = _store_lookup_scope_fields(
+            {
+                "query": resolved_query,
+                "geocode": exact_region,
+                "candidate_stores": normalized,
+            }
+        )
+        return {
+            "status": "ok",
+            "raw_query": raw_query,
+            "query": resolved_query,
+            "purpose": purpose,
+            "source": "customer_scope_exact_text_region",
+            "geocode": {"formatted_address": resolved_query, **exact_region},
+            "location_evidence": location_evidence,
+            "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
+            **scope_fields,
+            "stores": normalized[:12],
+            "candidate_stores": normalized,
+            "candidate_store_count": len(normalized),
+            "filtered_invalid_stores": [*invalid_scope_stores, *invalid_candidates],
+            "tool_errors": [],
+            "missing": [],
+        }
     exact_store_reference = any(
         _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
         and _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
@@ -1582,7 +1666,16 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     scope_level = _geocode_resolved_admin_level(resolved_query, scope_geocode)
     candidates = [] if geocode_conflict else _stores_for_geocode(scope_geocode, stores, purpose)
     source = "customer_scope_geocode_conflict_ignored" if geocode_conflict else "customer_scope_geocode"
-    text_narrowing_allowed = exact_store_reference or scope_level not in {"province", "city"}
+    exact_scope_has_store = _geocode_exact_scope_has_store(scope_geocode, candidates, scope_level)
+    # Text scoring may refine an exact-area match or an explicit store name. It must
+    # not collapse parent-city/province fallback candidates, because the repeated
+    # parent place name is not evidence that one fallback store is nearer.
+    # Text scoring may distinguish an explicit store or refine a district/POI.
+    # It must not narrow a city/province result by a lower-level region that
+    # happens to share the same base name (for example, 荆州市 -> 荆州区).
+    text_narrowing_allowed = exact_store_reference or (
+        exact_scope_has_store is True and scope_level in {"district", "township"}
+    )
     if (
         candidates
         and text_candidates
@@ -1646,6 +1739,47 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         ],
         "missing": [] if normalized else (["store_scope_unavailable"] if scope_unavailable else ["matched_customer_scope_store"]),
     }
+
+
+def _stores_for_explicit_visible_region(
+    query: str,
+    stores: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Match explicit structured regions already present in the visible scope.
+
+    This is a factual fallback for unavailable geocoding, not a fuzzy place-name
+    guess. Province-only input remains unresolved, and multiple matched regions
+    remain ambiguous.
+    """
+
+    compact_query = _compact_store_text(query)
+    if not compact_query:
+        return [], {}
+    for field, level in (("township", "township"), ("district", "district"), ("city", "city")):
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        original_values: dict[str, str] = {}
+        for store in stores:
+            value = str(store.get(field) or "").strip()
+            compact_value = _compact_store_text(value)
+            if not compact_value or compact_value not in compact_query:
+                continue
+            grouped.setdefault(compact_value, []).append(store)
+            original_values[compact_value] = value
+        if len(grouped) != 1:
+            if grouped:
+                return [], {}
+            continue
+        key, matched = next(iter(grouped.items()))
+        first = matched[0]
+        region = {
+            key_name: str(first.get(key_name) or "").strip()
+            for key_name in ("province", "city", "district", "township")
+            if str(first.get(key_name) or "").strip()
+        }
+        region["resolved_admin_level"] = level
+        region[field] = original_values[key]
+        return matched, region
+    return [], {}
 
 
 def _store_lookup_geocode_queries(tool: dict[str, Any], query: str) -> list[dict[str, Any]]:
@@ -2108,6 +2242,11 @@ def _admin_name_mentioned_in_query(
 
 def _strip_admin_suffix(value: str) -> str:
     text = _compact_text(value)
+    # Some official district names are commonly provided without the composite
+    # suffix (for example, "浦东" for "浦东新区").  Keep one-character roots such
+    # as "高新区" on the normal "区" path so "高新" remains the usable alias.
+    if text.endswith("新区") and len(text[: -len("新区")]) >= 2:
+        return text[: -len("新区")]
     for suffix in ("省", "市", "区", "县", "镇", "乡", "村", "街道", "社区"):
         if text.endswith(suffix) and len(text) > len(suffix):
             return text[: -len(suffix)]
@@ -2343,7 +2482,27 @@ def _store_id_sort_key(item: dict[str, Any]) -> int:
 def _region_equal(left: Any, right: Any) -> bool:
     left_tokens = {_compact_text(token) for token in _region_tokens(str(left or "")) if _compact_text(token)}
     right_tokens = {_compact_text(token) for token in _region_tokens(str(right or "")) if _compact_text(token)}
-    return bool(left_tokens & right_tokens)
+    if left_tokens & right_tokens:
+        return True
+    return _autonomous_prefecture_alias_equal(str(left or ""), str(right or ""))
+
+
+def _autonomous_prefecture_alias_equal(left: str, right: str) -> bool:
+    """Normalize a county-level city nested under an autonomous prefecture."""
+
+    for autonomous_value, city_value in ((left, right), (right, left)):
+        autonomous = _compact_text(autonomous_value)
+        city = _compact_text(city_value)
+        if not autonomous.endswith("自治州"):
+            continue
+        city_core = city[:-1] if city.endswith("市") else city
+        autonomous_core = autonomous[: -len("自治州")]
+        if len(city_core) < 2 or not autonomous_core.startswith(city_core):
+            continue
+        ethnic_suffix = autonomous_core[len(city_core) :]
+        if ethnic_suffix and ethnic_suffix.endswith("族"):
+            return True
+    return False
 
 
 def _compact_text(value: Any) -> str:

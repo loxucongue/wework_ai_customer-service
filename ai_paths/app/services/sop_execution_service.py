@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,6 +24,7 @@ from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
 from app.services.model_client import ModelClient
+from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
 from app.services.sop_event_decision import normalize_event_decision, selected_candidate_packs
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
@@ -281,6 +283,7 @@ class SopExecutionService:
         event_model_total_timeout_seconds: float = 60.0,
         chat_gate_total_timeout_seconds: float = 15.0,
         event_model_max_concurrency: int = 2,
+        model_led_objection_playbook_service: ModelLedObjectionPlaybookService | None = None,
     ) -> None:
         self.repository = repository
         self.sop_reply_pack_service = sop_reply_pack_service
@@ -292,7 +295,104 @@ class SopExecutionService:
         self.event_model_attempt_timeout_seconds = max(1.0, float(event_model_attempt_timeout_seconds or 45.0))
         self.event_model_total_timeout_seconds = max(1.0, float(event_model_total_timeout_seconds or 60.0))
         self.chat_gate_total_timeout_seconds = max(1.0, float(chat_gate_total_timeout_seconds or 15.0))
+        self.model_led_objection_playbook_service = model_led_objection_playbook_service
         self._event_model_semaphore = asyncio.Semaphore(max(1, int(event_model_max_concurrency or 1)))
+
+    def reply_chain_content_catalog(self) -> dict[str, Any]:
+        """Return a metadata-only index; Gate loads bodies through its own boundary."""
+        packs = _parallel_candidate_packs(
+            _enabled_chat_packs(self.sop_reply_pack_service.load())
+        )
+        distilled_service = getattr(self, "model_led_objection_playbook_service", None)
+        distilled = (
+            distilled_service.metadata_index()
+            if distilled_service is not None
+            else []
+        )
+        return {
+            "schema_version": "reply_chain_content_index_v2",
+            "sop_packs": [
+                {
+                    "content_id": str(pack.get("id") or ""),
+                    "content_type": str(pack.get("content_type") or "sop"),
+                    "name": str(pack.get("name") or ""),
+                    "purpose": str(pack.get("purpose") or ""),
+                    "asset_role": str(pack.get("asset_role") or "supporting_content"),
+                    "requires_prior_asset_roles": [
+                        str(item)
+                        for item in pack.get("requires_prior_asset_roles") or []
+                        if str(item or "").strip()
+                    ],
+                    "category": str(pack.get("sop_category") or ""),
+                }
+                for pack in packs
+            ] + deepcopy(distilled),
+            "sales_principles": (
+                distilled_service.sales_principles()
+                if distilled_service is not None
+                else []
+            ),
+        }
+
+    def reply_chain_sop_progress(
+        self,
+        request: ChatRequest,
+        *,
+        request_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return scoped SOP delivery facts without selecting content or writing state."""
+
+        identity = _chat_identity(request, request_context)
+        if not _string(identity.get("wechat")):
+            return {
+                "status": "scope_unavailable",
+                "source": "scoped_sop_send_records",
+                "reason": "wechat_required_for_sop_scope",
+                "completed_pack_ids": [],
+                "completed_categories": [],
+                "unfinished_sops": [],
+            }
+        enabled_packs, completed_ids, completed_categories, unfinished = self._reply_chain_sop_progress_parts(
+            identity
+        )
+        return {
+            "status": "available",
+            "source": "scoped_sop_send_records",
+            "enabled_pack_count": len(enabled_packs),
+            "completed_pack_ids": sorted(completed_ids),
+            "completed_categories": sorted(completed_categories),
+            "unfinished_sops": [_sop_progress_summary(pack) for pack in unfinished],
+        }
+
+    def _reply_chain_sop_progress_parts(
+        self,
+        identity: dict[str, str],
+    ) -> tuple[list[dict[str, Any]], set[str], set[str], list[dict[str, Any]]]:
+        enabled_packs = _enabled_chat_packs(self.sop_reply_pack_service.load())
+        completed_ids = set(
+            self.repository.list_sent_sop_pack_ids_for_customer(
+                customer_id=identity["customer_id"],
+                external_userid=identity["external_userid"],
+                corp_id=identity.get("corp_id", ""),
+                wechat=identity.get("wechat", ""),
+            )
+        )
+        completed_categories = set(_sent_categories(self.repository, identity))
+        completed_mainline_stages = _completed_mainline_stages(
+            completed_ids,
+            completed_categories,
+        )
+        unfinished = [
+            pack
+            for pack in enabled_packs
+            if _string(pack.get("id")) not in completed_ids
+            and _pack_category(pack) not in completed_categories
+            and not (
+                mainline_stage_for_event_pack(pack) == "activity_and_price"
+                and "activity_and_price" in completed_mainline_stages
+            )
+        ]
+        return enabled_packs, completed_ids, completed_categories, unfinished
 
     async def evaluate_chat_gate(
         self,
@@ -300,6 +400,8 @@ class SopExecutionService:
         *,
         request_id: str,
         request_context: dict[str, Any],
+        record_task: bool = True,
+        shared_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         result: dict[str, Any] = {
@@ -326,7 +428,7 @@ class SopExecutionService:
             "error": "",
         }
         try:
-            if is_platform_auto_opening_message(request.content):
+            if is_platform_auto_opening_message(request.content) and record_task:
                 identity = _chat_identity(request, request_context)
                 if not _string(identity.get("wechat")):
                     result.update(
@@ -358,14 +460,18 @@ class SopExecutionService:
             if request_context.get("skip_sop_gate"):
                 result.update({"mode": "skipped", "reason": "skip_sop_gate"})
                 return _finish(result, started)
-            non_text_reason = _chat_non_text_ai_route_reason(request, request_context)
-            if non_text_reason:
-                result.update({"mode": "skipped", "need_ai_reply": True, "reason": non_text_reason})
-                return _finish(result, started)
-            gate_risk = _chat_gate_professional_assist_risk(request)
-            if gate_risk:
-                result.update({"mode": "skipped", "need_ai_reply": True, "reason": gate_risk})
-                return _finish(result, started)
+            # The active parallel chain sends every normalized message type to
+            # Gate and Tool Planner together. Legacy pre-routing remains only
+            # for callers that still use the committing Gate API.
+            if record_task:
+                non_text_reason = _chat_non_text_ai_route_reason(request, request_context)
+                if non_text_reason:
+                    result.update({"mode": "skipped", "need_ai_reply": True, "reason": non_text_reason})
+                    return _finish(result, started)
+                gate_risk = _chat_gate_professional_assist_risk(request)
+                if gate_risk:
+                    result.update({"mode": "skipped", "need_ai_reply": True, "reason": gate_risk})
+                    return _finish(result, started)
 
             identity = _chat_identity(request, request_context)
             if not _string(identity.get("wechat")):
@@ -378,68 +484,91 @@ class SopExecutionService:
                     }
                 )
                 return _finish(result, started)
-            enabled_packs = _enabled_chat_packs(self.sop_reply_pack_service.load())
-            if not enabled_packs:
+            progress_from_shared = _reply_chain_sop_progress_from_shared_state(shared_state)
+            if progress_from_shared:
+                enabled_packs = _enabled_chat_packs(self.sop_reply_pack_service.load())
+                completed_ids = set(progress_from_shared.get("completed_pack_ids") or [])
+                completed_categories = set(progress_from_shared.get("completed_categories") or [])
+                unfinished_ids = {
+                    _string(item.get("id") or item.get("content_id"))
+                    for item in progress_from_shared.get("unfinished_sops") or []
+                    if isinstance(item, dict)
+                }
+                unfinished = [
+                    pack for pack in enabled_packs if _string(pack.get("id")) in unfinished_ids
+                ]
+            else:
+                enabled_packs, completed_ids, completed_categories, unfinished = (
+                    self._reply_chain_sop_progress_parts(identity)
+                )
+            parallel_candidate_mode = shared_state is not None and not record_task
+            distilled_service = getattr(self, "model_led_objection_playbook_service", None)
+            distilled_assets = (
+                distilled_service.gate_assets()
+                if parallel_candidate_mode and distilled_service is not None
+                else []
+            )
+            if not enabled_packs and not distilled_assets:
                 result.update({"mode": "complete", "reason": "no_enabled_sop_packs"})
                 return _finish(result, started)
-
-            completed_ids = set(
-                self.repository.list_sent_sop_pack_ids_for_customer(
-                    customer_id=identity["customer_id"],
-                    external_userid=identity["external_userid"],
-                    corp_id=identity.get("corp_id", ""),
-                    wechat=identity.get("wechat", ""),
-                )
-            )
-            completed_categories = set(_sent_categories(self.repository, identity))
-            completed_mainline_stages = _completed_mainline_stages(
-                completed_ids,
-                completed_categories,
-            )
             recent_delivery_evidence = _recent_chat_sop_delivery_evidence(
                 self.repository,
                 identity,
             )
-            unfinished = [
-                pack
-                for pack in enabled_packs
-                if _string(pack.get("id")) not in completed_ids
-                and _pack_category(pack) not in completed_categories
-                and not (
-                    mainline_stage_for_event_pack(pack) == "activity_and_price"
-                    and "activity_and_price" in completed_mainline_stages
-                )
-            ]
             result["completed_sop_pack_ids"] = sorted(completed_ids)
             result["completed_sop_categories"] = sorted(completed_categories)
             result["unfinished_count"] = len(unfinished)
-            result["sop_progress_evidence"] = {
+            result["sop_progress_evidence"] = progress_from_shared or {
+                "status": "available",
+                "source": "scoped_sop_send_records",
+                "enabled_pack_count": len(enabled_packs),
                 "completed_pack_ids": sorted(completed_ids),
                 "completed_categories": sorted(completed_categories),
                 "unfinished_sops": [_sop_progress_summary(pack) for pack in unfinished],
             }
-            if not unfinished:
+            candidate_pool = (
+                [*_parallel_candidate_packs(enabled_packs), *distilled_assets]
+                if parallel_candidate_mode
+                else unfinished
+            )
+            if not candidate_pool:
                 result.update({"mode": "complete", "reason": "all_sop_packs_completed"})
                 return _finish(result, started)
 
-            customer_memory = self._load_chat_customer_memory(identity)
-            order_gate = self._load_chat_order_gate(
-                request=request,
-                request_context=request_context,
-                identity=identity,
-                customer_memory=customer_memory,
+            customer_memory = {} if shared_state is not None else self._load_chat_customer_memory(identity)
+            order_gate = (
+                _chat_order_gate_from_shared_state(shared_state)
+                if shared_state is not None
+                else self._load_chat_order_gate(
+                    request=request,
+                    request_context=request_context,
+                    identity=identity,
+                    customer_memory=customer_memory,
+                )
             )
             result["order_gate"] = order_gate.get("summary", {})
-            if _apply_chat_order_gate_block(result, order_gate):
+            if record_task and _apply_chat_order_gate_block(result, order_gate):
                 return _finish(result, started)
             selector_input = _chat_selector_input(
                 request,
-                unfinished,
+                candidate_pool,
                 sop_progress_evidence=result["sop_progress_evidence"],
                 recent_delivery_evidence=recent_delivery_evidence,
                 customer_memory=customer_memory,
                 customer_context=order_gate.get("customer_context", {}),
+                shared_context=(shared_state or {}).get("shared_context") if shared_state is not None else None,
+                completed_pack_ids=completed_ids,
             )
+            if shared_state is not None:
+                selector_input["reply_chain_mode"] = "parallel_candidate_only"
+                selector_input["content_assets"] = selector_input.pop("unfinished_sops", [])
+                selector_input["candidate_boundary"] = {
+                    "purpose": "nominate relevant approved content or distilled evidence guidance for final Reply",
+                    "route_is_advisory": True,
+                    "may_decide_final_customer_reply": False,
+                    "may_decide_sales_action": False,
+                    "may_plan_tools": False,
+                }
             result["selector_input"] = compact(selector_input, max_chars=6000)
             selector_output = await self._select_chat_sop(
                 selector_input,
@@ -447,13 +576,43 @@ class SopExecutionService:
             )
             result["selector_output"] = selector_output
             result["decision"] = _string(selector_output.get("decision"))
-            result["selected_pack_ids"] = [
-                _string(item) for item in selector_output.get("selected_pack_ids") or [] if _string(item)
-            ]
+            candidate_packs = _candidate_packs(selector_output, candidate_pool)
+            result["selected_pack_ids"] = [_string(item.get("id")) for item in candidate_packs]
             result["frequency_reason"] = _string(selector_output.get("frequency_reason"))
             result["backlog_handling"] = _string(selector_output.get("backlog_handling"))
             result["suggested_next_window"] = _string(selector_output.get("suggested_next_window"))
             result["model_usage"] = dict(self.model_client.last_usage or {})
+            if shared_state is not None and not record_task:
+                annotations = {
+                    _string(item.get("content_id")): item
+                    for item in selector_output.get("candidate_assets") or []
+                    if isinstance(item, dict) and _string(item.get("content_id"))
+                }
+                candidate_items = [
+                    _parallel_content_candidate(
+                        pack,
+                        annotations.get(_string(pack.get("id")), {}),
+                        completed_pack_ids=completed_ids,
+                    )
+                    for pack in candidate_packs
+                ]
+                result.update(
+                    {
+                        "mode": "candidate_only",
+                        "route": "candidate_only",
+                        "coverage": "candidate_evidence",
+                        "send_sop": bool(candidate_items),
+                        "sop_pack_id": "",
+                        "sop_pack_name": "",
+                        "need_ai_reply": True,
+                        "reason": str(selector_output.get("reason") or ""),
+                        "reply_messages": [],
+                        "candidate_packs": candidate_items,
+                        "task": {},
+                        "candidate_only": True,
+                    }
+                )
+                return _finish(result, started)
             route = _chat_gate_route(selector_output)
             result["route"] = route
             result["coverage"] = _chat_gate_coverage(selector_output)
@@ -514,6 +673,22 @@ class SopExecutionService:
                         "send_sop": False,
                         "need_ai_reply": True,
                         "reason": "payment_collection_blocked_by_paid_state",
+                    }
+                )
+                return _finish(result, started)
+
+            if not record_task:
+                result.update(
+                    {
+                        "mode": route,
+                        "send_sop": True,
+                        "sop_pack_id": str(selected.get("id") or ""),
+                        "sop_pack_name": str(selected.get("name") or ""),
+                        "need_ai_reply": True,
+                        "reason": str(selector_output.get("reason") or ""),
+                        "reply_messages": messages,
+                        "task": {},
+                        "candidate_only": True,
                     }
                 )
                 return _finish(result, started)
@@ -727,7 +902,9 @@ class SopExecutionService:
             deadline_monotonic=deadline_monotonic,
         )
         output = data if isinstance(data, dict) else {}
-        violations = _chat_gate_output_violations(output, selector_input)
+        parallel_mode = _string(selector_input.get("reply_chain_mode")) == "parallel_candidate_only"
+        validator = _parallel_content_gate_output_violations if parallel_mode else _chat_gate_output_violations
+        violations = validator(output, selector_input)
         if not violations:
             return output
         repaired = await self.model_client.chat_json(
@@ -737,11 +914,18 @@ class SopExecutionService:
             deadline_monotonic=deadline_monotonic,
         )
         repaired_output = repaired if isinstance(repaired, dict) else {}
-        repaired_violations = _chat_gate_output_violations(repaired_output, selector_input)
+        repaired_violations = validator(repaired_output, selector_input)
         if not repaired_violations:
             repaired_output["repair_applied"] = True
             repaired_output["initial_violations"] = violations
             return repaired_output
+        if parallel_mode:
+            return {
+                "candidate_assets": [],
+                "reason": "content_gate_invalid_after_repair_continue_reply",
+                "initial_violations": violations,
+                "repair_violations": repaired_violations,
+            }
         return {
             "route": "ai_only",
             "coverage": "none",
@@ -1216,6 +1400,104 @@ class SopExecutionService:
         updated["created"] = created
         return updated
 
+    def commit_reply_selected_chat_gate_candidate(
+        self,
+        *,
+        state: dict[str, Any],
+        reply_messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Record a Gate candidate only after Reply validation selected it."""
+
+        if not state.get("memory_persist_allowed") or state.get("test_isolated"):
+            return {"status": "skipped", "reason": "persistence_disabled_or_isolated"}
+        gate = state.get("content_gate_result") if isinstance(state.get("content_gate_result"), dict) else {}
+        candidate = gate.get("candidate_commit") if isinstance(gate.get("candidate_commit"), dict) else {}
+        offered_ids = {
+            _string(item)
+            for item in candidate.get("sop_pack_ids") or []
+            if _string(item)
+        }
+        selected_ids = {
+            _string(item)
+            for item in state.get("selected_content_ids") or []
+            if _string(item)
+        }
+        committed_ids = offered_ids & selected_ids
+        completed_candidate_ids = {
+            _string(item.get("content_id"))
+            for item in gate.get("content_candidates") or []
+            if isinstance(item, dict)
+            and _string(item.get("delivery_status")) == "completed"
+            and _string(item.get("content_id"))
+        }
+        reference_only_ids = committed_ids & completed_candidate_ids
+        committed_ids -= reference_only_ids
+        if not committed_ids:
+            return {
+                "status": "skipped",
+                "reason": (
+                    "selected_candidates_already_completed_reference_only"
+                    if reference_only_ids
+                    else "reply_did_not_select_sop_candidate"
+                ),
+                "offered_sop_pack_ids": sorted(offered_ids),
+                "reference_only_sop_pack_ids": sorted(reference_only_ids),
+            }
+        packs_by_id = {
+            _string(item.get("id")): item
+            for item in _enabled_chat_packs(self.sop_reply_pack_service.load())
+            if isinstance(item, dict) and _string(item.get("id"))
+        }
+        request = ChatRequest(
+            content=_string(state.get("content")),
+            customer_id=_string(state.get("customer_id")),
+            corp_id=_string(state.get("corp_id")),
+            conversation_history=list(state.get("conversation_history") or []),
+            file_image=state.get("file_image"),
+            user_id=state.get("user_id"),
+            wechat=state.get("wechat"),
+            external_userid=state.get("external_userid"),
+            customer_add_wechat_id=state.get("customer_add_wechat_id"),
+            confirmed_store_id=state.get("confirmed_store_id"),
+            confirmed_store_name=state.get("confirmed_store_name"),
+            store_id=state.get("store_id"),
+            store_name=state.get("store_name"),
+            appointment_id=state.get("appointment_id"),
+            appointment_time=state.get("appointment_time"),
+            request_context=dict(state.get("request_context") or {}),
+        )
+        identity = _chat_identity(request, dict(state.get("request_context") or {}))
+        records: list[dict[str, Any]] = []
+        missing_ids: list[str] = []
+        for pack_id in sorted(committed_ids):
+            pack = packs_by_id.get(pack_id)
+            if not isinstance(pack, dict):
+                missing_ids.append(pack_id)
+                continue
+            records.append(
+                self._record_chat_gate_task(
+                    request=request,
+                    request_id=_string(state.get("request_id")),
+                    request_context=dict(state.get("request_context") or {}),
+                    identity=identity,
+                    pack=pack,
+                    reply_messages=reply_messages,
+                    trigger_source="parallel_reply_commit",
+                    mark_sent=True,
+                )
+            )
+        return {
+            "status": "recorded" if records else "skipped",
+            "recorded_sop_pack_ids": [
+                _string(record.get("sop_pack_id"))
+                for record in records
+                if _string(record.get("sop_pack_id"))
+            ],
+            "missing_sop_pack_ids": missing_ids,
+            "reference_only_sop_pack_ids": sorted(reference_only_ids),
+            "records": records,
+        }
+
     def fail_chat_gate_task(self, task: dict[str, Any], *, error: str) -> dict[str, Any]:
         task_id = _string(task.get("id")) if isinstance(task, dict) else ""
         if not task_id or _string(task.get("status")) != "pending":
@@ -1507,6 +1789,16 @@ def _enabled_chat_packs(config: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(enabled, key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")))
 
 
+def _parallel_candidate_packs(packs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply content-owner visibility without interpreting the customer message."""
+
+    return [
+        pack
+        for pack in packs
+        if isinstance(pack, dict) and bool(pack.get("parallel_candidate_enabled", True))
+    ]
+
+
 def first_add_candidate_packs(
     config: dict[str, Any],
     *,
@@ -1765,27 +2057,119 @@ def _chat_selector_input(
     recent_delivery_evidence: list[dict[str, Any]] | None = None,
     customer_memory: dict[str, Any] | None = None,
     customer_context: dict[str, Any] | None = None,
+    shared_context: dict[str, Any] | None = None,
+    completed_pack_ids: set[str] | None = None,
 ) -> dict[str, Any]:
-    conversation_evidence = _chat_conversation_evidence(
-        request.conversation_history,
-        current_message=str(request.content or "").strip(),
-    )
-    return {
-        "current_message": str(request.content or "").strip(),
-        "recent_conversation": _recent_history(request.conversation_history),
+    shared = shared_context if isinstance(shared_context, dict) else {}
+    if shared:
+        current = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
+        conversation_evidence = [
+            {
+                "message_ref": _string(item.get("message_ref")),
+                "direction": _string(item.get("role")),
+                "content": _string(item.get("content")),
+                "sent_at": item.get("sent_at") or item.get("timestamp") or item.get("created_at"),
+            }
+            for item in shared.get("conversation") or []
+            if isinstance(item, dict) and _string(item.get("content"))
+        ]
+        current_message = _string(current.get("content") or current.get("raw_content"))
+        recent_conversation = conversation_evidence
+        authoritative = (
+            shared.get("authoritative_facts")
+            if isinstance(shared.get("authoritative_facts"), dict)
+            else {}
+        )
+        authoritative_context = {
+            key: deepcopy(authoritative.get(key))
+            for key in (
+                "orders_and_payment",
+                "visible_store_scope",
+                "sent_messages",
+                "image_or_transfer_fact",
+                "location_card",
+            )
+            if authoritative.get(key) not in (None, "", [], {})
+        }
+        progress = authoritative.get("sop_progress") if isinstance(authoritative.get("sop_progress"), dict) else {}
+        authoritative_context["content_delivery_progress"] = {
+            key: deepcopy(progress.get(key))
+            for key in ("status", "source", "completed_pack_ids", "completed_categories")
+            if progress.get(key) not in (None, "", [], {})
+        }
+    else:
+        current_message = str(request.content or "").strip()
+        conversation_evidence = _chat_conversation_evidence(
+            request.conversation_history,
+            current_message=current_message,
+        )
+        recent_conversation = _recent_history(request.conversation_history)
+        authoritative_context = {}
+    payload = {
+        "current_time": deepcopy(shared.get("current_time") or {}),
+        "current_message": current_message,
+        "recent_conversation": recent_conversation,
         "conversation_evidence": conversation_evidence,
+        "authoritative_context": authoritative_context,
         "recent_sop_delivery_evidence": recent_delivery_evidence or [],
-        "mainline": sales_mainline_for_model(),
-        "mainline_progress": sop_progress_evidence or {},
-        "precision_qa_index": precision_qa_index_for_gate(),
         "unfinished_sops": [
-            _sop_summary(
-                pack,
-                customer_memory=customer_memory or {},
-                customer_context=customer_context or {},
+            (
+                _parallel_sop_asset_summary(pack, completed_pack_ids=completed_pack_ids)
+                if shared
+                else _sop_summary(
+                    pack,
+                    customer_memory=customer_memory or {},
+                    customer_context=customer_context or {},
+                )
             )
             for pack in unfinished_packs
         ],
+    }
+    if not shared:
+        payload["mainline_progress"] = sop_progress_evidence or {}
+        payload["mainline"] = sales_mainline_for_model()
+        payload["precision_qa_index"] = precision_qa_index_for_gate()
+    return payload
+
+
+def _chat_order_gate_from_shared_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Reuse the background order snapshot without adding a second fetch.
+
+    This function only exposes payment/order facts to Gate. It does not decide
+    whether the customer should receive a sales message; Reply owns that
+    semantic decision and final hard validation still protects paid customers.
+    """
+
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    authoritative = (
+        shared.get("authoritative_facts")
+        if isinstance(shared.get("authoritative_facts"), dict)
+        else {}
+    )
+    customer_context = (
+        authoritative.get("orders_and_payment")
+        if isinstance(authoritative.get("orders_and_payment"), dict)
+        else {}
+    )
+    payment = (
+        customer_context.get("resolved_payment")
+        if isinstance(customer_context.get("resolved_payment"), dict)
+        else resolved_payment_fact(orders=customer_context.get("orders"))
+    )
+    summary = {
+        "source": str(customer_context.get("source") or "shared_background_context"),
+        "order_count": len(customer_context.get("orders") or []) if isinstance(customer_context.get("orders"), list) else 0,
+        "order_id": str(payment.get("order_id") or ""),
+        "store_id": str(payment.get("store_id") or ""),
+        "deposit_state": str(payment.get("deposit_state") or "unknown"),
+        "prepay_required": payment.get("prepay_required"),
+        "prepay_paid": payment.get("prepay_paid"),
+    }
+    return {
+        "status": "paid" if is_paid_deposit_state(payment.get("deposit_state")) else "unpaid",
+        "customer_context": customer_context,
+        "payment": payment,
+        "summary": summary,
     }
 
 
@@ -1962,7 +2346,8 @@ def _sop_summary(
     customer_context: dict[str, Any] | None = None,
     event_scope: bool = False,
 ) -> dict[str, Any]:
-    messages = _pack_messages(pack)
+    content_type = _string(pack.get("content_type")) or "sop"
+    messages = _pack_messages(pack) if content_type != "evidence_strategy" else []
     return {
         "id": str(pack.get("id") or ""),
         "scope": _pack_scope(pack),
@@ -1970,6 +2355,7 @@ def _sop_summary(
         "sop_category": _pack_category(pack),
         "name": str(pack.get("name") or ""),
         "purpose": str(pack.get("purpose") or "")[:240],
+        "asset_role": _string(pack.get("asset_role")) or "supporting_content",
         "order": int(pack.get("order") or 0),
         "mainline_stage": mainline_stage_for_event_pack(pack)
         if event_scope
@@ -2022,6 +2408,53 @@ def _sop_progress_summary(pack: dict[str, Any]) -> dict[str, Any]:
             if str(item or "").strip()
         ],
         "triggers": [str(item) for item in pack.get("triggers") or [] if str(item or "").strip()],
+    }
+
+
+def _parallel_sop_asset_summary(
+    pack: dict[str, Any],
+    *,
+    completed_pack_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Expose content evidence without legacy stage/order routing metadata."""
+
+    content_type = _string(pack.get("content_type")) or "sop"
+    messages = _pack_messages(pack) if content_type != "evidence_strategy" else []
+    return {
+        "content_id": _string(pack.get("id")),
+        "content_type": content_type,
+        "name": _string(pack.get("name")),
+        "purpose": _string(pack.get("purpose")),
+        "asset_role": _string(pack.get("asset_role")) or "supporting_content",
+        "selection_constraints": deepcopy(pack.get("selection_constraints") or {}),
+        "requires_prior_asset_roles": [
+            _string(item)
+            for item in pack.get("requires_prior_asset_roles") or []
+            if _string(item)
+        ],
+        "category": _pack_category(pack),
+        "delivery_status": (
+            "completed"
+            if _string(pack.get("id")) in (completed_pack_ids or set())
+            else "available"
+        ),
+        "approved_points": [
+            _packed_text_content(item)
+            for item in messages
+            if isinstance(item, dict)
+            and _string(item.get("type")) == "text"
+            and _packed_text_content(item)
+        ],
+        "media": [
+            deepcopy(item)
+            for item in messages
+            if isinstance(item, dict) and _string(item.get("type")) != "text"
+        ],
+        "customer_uncertainty": _string(pack.get("customer_uncertainty")),
+        "useful_evidence": [_string(item) for item in pack.get("useful_evidence") or [] if _string(item)],
+        "reasoning_moves": [_string(item) for item in pack.get("reasoning_moves") or [] if _string(item)],
+        "anti_patterns": [_string(item) for item in pack.get("anti_patterns") or [] if _string(item)],
+        "render_strategy": _string(pack.get("render_strategy")) or "adaptable",
     }
 
 
@@ -2734,6 +3167,105 @@ def _selected_pack(selector_output: dict[str, Any], packs: list[dict[str, Any]])
     return {}
 
 
+def _candidate_packs(selector_output: dict[str, Any], packs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only model-nominated configured packs, without choosing business priority in code."""
+
+    available = {
+        _string(pack.get("id")): pack
+        for pack in packs
+        if isinstance(pack, dict) and _string(pack.get("id"))
+    }
+    requested_assets = selector_output.get("candidate_assets")
+    if isinstance(requested_assets, list):
+        candidate_ids = [
+            _string(item.get("content_id"))
+            for item in requested_assets
+            if isinstance(item, dict) and _string(item.get("content_id"))
+        ]
+    else:
+        requested = selector_output.get("candidate_sop_ids")
+        candidate_ids = [_string(item) for item in requested or [] if _string(item)]
+    primary_id = _string(selector_output.get("sop_pack_id"))
+    if primary_id:
+        candidate_ids.insert(0, primary_id)
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    limit = 2 if isinstance(requested_assets, list) else 3
+    for pack_id in candidate_ids[: max(3, limit + 1)]:
+        if pack_id in seen or pack_id not in available:
+            continue
+        seen.add(pack_id)
+        result.append(available[pack_id])
+        if len(result) == limit:
+            break
+    return result
+
+
+def _parallel_content_candidate(
+    pack: dict[str, Any],
+    annotation: dict[str, Any],
+    *,
+    completed_pack_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Expose a configured content asset without turning Gate into a reply author."""
+
+    content_type = _string(pack.get("content_type")) or "sop"
+    messages = _pack_messages(pack) if content_type != "evidence_strategy" else []
+    approved_points = [
+        _packed_text_content(item)
+        for item in messages
+        if isinstance(item, dict)
+        and _string(item.get("type")) == "text"
+        and _packed_text_content(item)
+    ]
+    media = [
+        deepcopy(item)
+        for item in messages
+        if isinstance(item, dict) and _string(item.get("type")) != "text"
+    ]
+    render_strategy = _string(annotation.get("render_strategy"))
+    if render_strategy not in {"adaptable", "verbatim_required"}:
+        render_strategy = "adaptable"
+    return {
+        "content_id": _string(pack.get("id")),
+        "content_type": content_type,
+        "name": _string(pack.get("name")),
+        "purpose": _string(pack.get("purpose")),
+        "asset_role": _string(pack.get("asset_role")) or "supporting_content",
+        "selection_constraints": deepcopy(pack.get("selection_constraints") or {}),
+        "evidence_purpose": _string(annotation.get("evidence_purpose") or pack.get("purpose")),
+        "relevance": _string(annotation.get("relevance")) or "supporting",
+        "delivery_status": (
+            "completed"
+            if _string(pack.get("id")) in (completed_pack_ids or set())
+            else "available"
+        ),
+        "render_strategy": render_strategy,
+        "fact_refs": [f"content_asset:{_string(pack.get('id'))}"],
+        "evidence_refs": [
+            _string(item) for item in annotation.get("evidence_refs") or [] if _string(item)
+        ],
+        "requires_prior_asset_roles": [
+            _string(item)
+            for item in pack.get("requires_prior_asset_roles") or []
+            if _string(item)
+        ],
+        "approved_points": approved_points,
+        "media": media,
+        "customer_uncertainty": _string(pack.get("customer_uncertainty")),
+        "useful_evidence": [_string(item) for item in pack.get("useful_evidence") or [] if _string(item)],
+        "reasoning_moves": [_string(item) for item in pack.get("reasoning_moves") or [] if _string(item)],
+        "anti_patterns": [_string(item) for item in pack.get("anti_patterns") or [] if _string(item)],
+        # Kept for deterministic structured-delivery validation and SOP completion.
+        # Reply may rewrite text but cannot invent or mutate structured media.
+        "messages": messages,
+        "constraints": {
+            "facts_and_media_must_remain_authoritative": True,
+            "customer_visible_text_may_be_adapted": render_strategy == "adaptable",
+        },
+    }
+
+
 def _chat_gate_route(selector_output: dict[str, Any]) -> str:
     route = _string(selector_output.get("route"))
     if route in {"sop_only", "ai_only", "ai_then_sop"}:
@@ -2774,6 +3306,13 @@ def _chat_gate_output_violations(
         if isinstance(item, dict) and _string(item.get("scene_id"))
     }
     violations: list[str] = []
+    candidate_ids = [_string(item) for item in selector_output.get("candidate_sop_ids") or [] if _string(item)]
+    if len(candidate_ids) > 3:
+        violations.append("candidate_sop_ids_exceed_limit")
+    if len(candidate_ids) != len(set(candidate_ids)):
+        violations.append("candidate_sop_ids_must_be_unique")
+    if any(item not in packs for item in candidate_ids):
+        violations.append("candidate_sop_id_not_unfinished")
     expected_coverage = {
         "sop_only": "exact",
         "ai_then_sop": "partial",
@@ -2781,9 +3320,11 @@ def _chat_gate_output_violations(
     }[route]
     if coverage != expected_coverage:
         violations.append(f"route_coverage_mismatch:{route}:{coverage}")
-    hard_rule = precision_qa_for_id(selected_scene_id)
-    if selected_scene_id and selected_scene_id not in scene_ids and not hard_rule.get("hard_rule"):
-        violations.append("unknown_selected_scene_id")
+    if selected_scene_id and selected_scene_id not in scene_ids:
+        if _string(selector_input.get("reply_chain_mode")) == "parallel_candidate_only":
+            violations.append("unknown_selected_scene_id")
+        elif not precision_qa_for_id(selected_scene_id).get("hard_rule"):
+            violations.append("unknown_selected_scene_id")
     if active_task.get("type") == "location_confirmation":
         if active_task.get("required_tool") != "customer_store_lookup" or not active_task.get("query"):
             violations.append("location_confirmation_requires_store_lookup_task")
@@ -2792,9 +3333,7 @@ def _chat_gate_output_violations(
             violations.append("selected_pack_missing_or_not_unfinished")
         elif resume_stage != _string(packs[pack_id].get("mainline_stage")):
             violations.append("resume_stage_must_match_selected_pack")
-        if _chat_gate_opening_repeats_recent_location_context(selector_input, pack_id):
-            violations.append("opening_pack_repeats_recent_location_context")
-        if pack_id in packs:
+        if pack_id in packs and _string(selector_input.get("reply_chain_mode")) != "parallel_candidate_only":
             violations.extend(_chat_gate_party_size_violations(selector_output, selector_input, packs[pack_id]))
     else:
         if pack_id:
@@ -2808,60 +3347,114 @@ def _chat_gate_output_violations(
     return violations
 
 
-def _chat_gate_opening_repeats_recent_location_context(selector_input: dict[str, Any], pack_id: str) -> bool:
-    if pack_id != "s10_new_customer_opening":
-        return False
-    if not _is_short_ack_message(_string(selector_input.get("current_message"))):
-        return False
-    previous_messages = [
-        item
-        for item in selector_input.get("conversation_evidence") or []
-        if isinstance(item, dict) and _string(item.get("message_ref")) != "current_message"
-    ][-12:]
-    customer_location_seen = False
-    assistant_location_handled = False
-    for item in previous_messages:
-        direction = _string(item.get("direction"))
-        content = _string(item.get("content"))
-        if direction == "customer" and _looks_like_location_or_store_content(content):
-            customer_location_seen = True
-        elif direction == "assistant" and _looks_like_location_or_store_content(content):
-            assistant_location_handled = True
-    return customer_location_seen and assistant_location_handled
-
-
-def _is_short_ack_message(content: str) -> bool:
-    text = re.sub(r"\s+", "", content or "")
-    if not text or len(text) > 8:
-        return False
-    return text in {
-        "\u597d",
-        "\u597d\u7684",
-        "\u597d\u554a",
-        "\u597d\u5462",
-        "\u597d\u561e",
-        "\u53ef\u4ee5",
-        "\u884c",
-        "\u884c\u7684",
-        "\u55ef",
-        "\u55ef\u55ef",
-        "\u77e5\u9053\u4e86",
-        "\u6536\u5230",
-        "ok",
-        "OK",
+def _parallel_content_gate_output_violations(
+    selector_output: dict[str, Any],
+    selector_input: dict[str, Any],
+) -> list[str]:
+    assets = selector_output.get("candidate_assets")
+    if not isinstance(assets, list):
+        return ["candidate_assets_must_be_list"]
+    if len(assets) > 2:
+        return ["candidate_assets_exceed_limit"]
+    available_assets = {
+        _string(item.get("content_id") or item.get("id")): item
+        for item in selector_input.get("content_assets") or []
+        if isinstance(item, dict) and _string(item.get("content_id") or item.get("id"))
     }
-
-
-def _looks_like_location_or_store_content(content: str) -> bool:
-    text = _string(content)
-    if not text:
-        return False
-    return bool(
-        re.search(
-            r"(\u95e8\u5e97|\u5730\u5740|\u5b9a\u4f4d|\u4f4d\u7f6e|\u5e97|\u7701|\u5e02|\u533a|\u53bf|\u9547|\u6751|\u8857\u9053|\u8fd9\u8fb9\u6211\u8bb0\u4e0b)",
-            text,
-        )
+    available_ids = set(available_assets)
+    completed_asset_roles = {
+        _string(item.get("asset_role"))
+        for item in available_assets.values()
+        if _string(item.get("delivery_status")) == "completed" and _string(item.get("asset_role"))
+    }
+    valid_refs = {"current_message"}
+    valid_refs.update(
+        _string(item.get("message_ref"))
+        for item in selector_input.get("conversation_evidence") or []
+        if isinstance(item, dict) and _string(item.get("message_ref"))
     )
+    violations: list[str] = []
+    prohibited_fields = {
+        "reply_messages",
+        "payment_decision",
+        "action",
+        "sales_judgment",
+        "selected_scene_id",
+        "sop_pack_id",
+        "tool_calls",
+        "commit_actions",
+        "route",
+        "coverage",
+        "resume_stage",
+        "active_task",
+    }
+    for field in sorted(prohibited_fields):
+        if selector_output.get(field) not in (None, "", [], {}):
+            violations.append(f"parallel_gate_forbidden_field:{field}")
+    seen: set[str] = set()
+    direct_count = 0
+    for index, item in enumerate(assets):
+        if not isinstance(item, dict):
+            violations.append(f"candidate_asset_not_object:{index}")
+            continue
+        content_id = _string(item.get("content_id"))
+        if not content_id or content_id not in available_ids:
+            violations.append(f"candidate_asset_not_available:{content_id or index}")
+        if content_id in seen:
+            violations.append(f"candidate_asset_duplicate:{content_id}")
+        seen.add(content_id)
+        if _string(item.get("relevance")) not in {"direct", "supporting"}:
+            violations.append(f"candidate_asset_invalid_relevance:{content_id or index}")
+        elif _string(item.get("relevance")) == "direct":
+            direct_count += 1
+        if not _string(item.get("evidence_purpose")):
+            violations.append(f"candidate_asset_missing_evidence_purpose:{content_id or index}")
+        if _string(item.get("render_strategy")) not in {"adaptable", "verbatim_required"}:
+            violations.append(f"candidate_asset_invalid_render_strategy:{content_id or index}")
+        refs = [_string(ref) for ref in item.get("evidence_refs") or [] if _string(ref)]
+        if not refs or any(ref not in valid_refs for ref in refs):
+            violations.append(f"candidate_asset_invalid_evidence_refs:{content_id or index}")
+        if "prerequisite_evidence_refs" in item:
+            violations.append(f"candidate_asset_forbidden_prerequisite_refs:{content_id or index}")
+        required_roles = {
+            _string(role)
+            for role in (available_assets.get(content_id) or {}).get("requires_prior_asset_roles") or []
+            if _string(role)
+        }
+        missing_roles = required_roles - completed_asset_roles
+        if missing_roles:
+            violations.append(
+                f"candidate_asset_missing_required_role:{content_id or index}:"
+                f"{','.join(sorted(missing_roles))}"
+            )
+        constraints = (
+            (available_assets.get(content_id) or {}).get("selection_constraints")
+            if isinstance((available_assets.get(content_id) or {}).get("selection_constraints"), dict)
+            else {}
+        )
+        authoritative = (
+            selector_input.get("authoritative_context")
+            if isinstance(selector_input.get("authoritative_context"), dict)
+            else {}
+        )
+        forbidden_facts = {
+            _string(name)
+            for name in constraints.get("forbidden_when_authoritative_facts_present") or []
+            if _string(name)
+        }
+        present_forbidden = sorted(
+            name
+            for name in forbidden_facts
+            if authoritative.get(name) not in (None, "", [], {})
+        )
+        if present_forbidden:
+            violations.append(
+                f"candidate_asset_conflicts_with_authoritative_fact:{content_id or index}:"
+                f"{','.join(present_forbidden)}"
+            )
+    if direct_count > 1:
+        violations.append("candidate_assets_multiple_direct")
+    return violations
 
 
 def _chat_gate_active_task(value: Any) -> dict[str, str]:
@@ -2936,6 +3529,13 @@ def _pack_messages(pack: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(output, key=lambda item: int(item.get("order") or 0))
 
 
+def _packed_text_content(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, dict):
+        return _string(content.get("text") or content.get("content"))
+    return _string(content)
+
+
 def _pack_scope(pack: dict[str, Any]) -> str:
     return _pack_scopes(pack)[0]
 
@@ -2998,6 +3598,31 @@ def _chat_identity(request: ChatRequest, request_context: dict[str, Any]) -> dic
         "external_userid": external_userid,
         "customer_id": external_userid or customer_id,
     }
+
+
+def _reply_chain_sop_progress_from_shared_state(
+    shared_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(shared_state, dict):
+        return {}
+    shared_context = (
+        shared_state.get("shared_context")
+        if isinstance(shared_state.get("shared_context"), dict)
+        else {}
+    )
+    authoritative_facts = (
+        shared_context.get("authoritative_facts")
+        if isinstance(shared_context.get("authoritative_facts"), dict)
+        else {}
+    )
+    progress = (
+        authoritative_facts.get("sop_progress")
+        if isinstance(authoritative_facts.get("sop_progress"), dict)
+        else {}
+    )
+    if progress.get("status") != "available":
+        return {}
+    return deepcopy(progress)
 
 
 def _apply_chat_order_gate_block(result: dict[str, Any], order_gate: dict[str, Any]) -> bool:

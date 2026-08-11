@@ -19,16 +19,25 @@ from app.graph.nodes.reply_validation import (
 
 
 def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, str]]:
-    checks = (
-        _validate_case_image_required_for_effect_turn,
-        _validate_effect_reply_confidence_order,
-        _validate_generic_store_question_does_not_use_context_store,
-        _validate_appointment_time_option_count,
-        _validate_repeat_similarity,
-        _validate_two_text_rhythm,
-        _validate_precision_reply_active_mainline_closure,
-        _validate_nearby_store_claim_has_fact,
-    )
+    if state.get("evidence_join"):
+        # The model-led chain owns sales rhythm and wording. Runtime warnings are
+        # limited to observable repetition and an unsupported location claim;
+        # they must not require a fixed next action, message count, or tone.
+        checks = (
+            _validate_repeat_similarity,
+            _validate_nearby_store_claim_has_fact,
+        )
+    else:
+        checks = (
+            _validate_case_image_required_for_effect_turn,
+            _validate_effect_reply_confidence_order,
+            _validate_generic_store_question_does_not_use_context_store,
+            _validate_appointment_time_option_count,
+            _validate_repeat_similarity,
+            _validate_two_text_rhythm,
+            _validate_precision_reply_active_mainline_closure,
+            _validate_nearby_store_claim_has_fact,
+        )
     warnings: list[dict[str, str]] = []
     for check in checks:
         try:

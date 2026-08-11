@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from app.graph.nodes.reply_context import reply_user_payload_for_model
@@ -19,10 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_gate_only_receives_deduplicated_applicable_scenes() -> None:
     configure_precision_qa_playbook_path(None)
     index = precision_qa_index_for_gate()
-    assert len(index) == 14
+    assert len(index) == 15
     assert all(set(item) == {"scene_id", "applicable_scene"} for item in index)
-    assert len({item["scene_id"] for item in index}) == 14
+    assert len({item["scene_id"] for item in index}) == 15
     assert all("YYHF" not in str(item) and "http" not in str(item) for item in index)
+    assert any("暂时不交预约金" in item["applicable_scene"] for item in index)
 
 
 def test_planner_only_receives_selected_scene_and_reply_receives_candidates() -> None:
@@ -94,3 +96,24 @@ def test_sop_page_exposes_appointment_blocker_workbench() -> None:
     assert "SopConfigWorkbench" in page
     assert "预约卡点话术库" in workbench
     assert "/admin/precision-qa-playbook" in route
+
+
+def test_latest_deposit_timing_blocker_is_synced_without_changing_neighbor() -> None:
+    paths = [
+        ROOT / "ai_paths/app/policies/precision_qa_playbook.json",
+        ROOT / "config/precision_qa_playbook.json",
+    ]
+    loaded = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    assert loaded[0] == loaded[1]
+
+    contents = {
+        item["content_id"]: item
+        for item in loaded[0]["items"]
+        if item.get("content_id") in {"YYHF-0026", "YYHF-0027"}
+    }
+    assert contents["YYHF-0026"]["blocker_type"] == "没有时间"
+    assert contents["YYHF-0027"]["blocker_type"] == "没有时间/预约金顾虑"
+    assert "暂时不交预约金" in contents["YYHF-0027"]["applicable_scene"]
+    text = contents["YYHF-0027"]["reply_messages"][0]["content"]
+    assert "10元锁住优惠名额" in text
+    assert "未做或不满意可退" in text

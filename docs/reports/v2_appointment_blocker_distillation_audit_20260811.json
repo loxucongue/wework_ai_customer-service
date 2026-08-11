@@ -1,12 +1,27 @@
 {
-  "version": 4,
-  "updated_at": "2026-08-07T00:00:00+00:00",
-  "items": [
+  "schema_version": "v2_appointment_blocker_distillation_audit_v1",
+  "source_workbook": "预约卡点回访方向_结构化清洗.xlsx",
+  "imported_record_count": 104,
+  "unique_scene_count": 14,
+  "unique_asset_count": 74,
+  "all_assets_default_pending_review": true,
+  "records": [
     {
+      "source_id": "YYHF-0001",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0001",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_staff_or_schedule",
+        "distance_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "好评实拍✨顾客专程驱车50公里到店，做完效果十分满意👍，还打算介绍朋友前来 。\n\n\n\n今天几点来呀？我安排同款专家老师给你操作~"
@@ -15,24 +30,48 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097490567_image1.jpeg"
         }
-      ]
-    },
-    {
-      "blocker_type": "距离远",
-      "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0002",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "亲，距离不是问题，效果跟质量才是最重要的，我们有些顾客甚至过来就要三四个小时，无非就是看中我们家效果好，而不是距离问题哈，"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097490567_image1.jpeg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0002",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0003",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "亲，距离不是问题，效果跟质量才是最重要的，我们有些顾客甚至过来就要三四个小时，无非就是看中我们家效果好，而不是距离问题哈，"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0003",
+      "blocker_type": "距离远",
+      "applicable_scene": "客户在的城市有门店，但距离比远",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲 你看这是客户坐车一个小时到我们门店做完恢复后的效果反馈哦  做脸上斑点最重要的是看效果哦 没有效果就算门店在你家附近我想你也是不会去的 你说是吧"
@@ -41,13 +80,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786098053993_image2.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786098053993_image2.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0004",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市没门店，但周边城市有门店，距离比较远",
-      "content_id": "YYHF-0004",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这个姐姐是经过朋友介绍专门坐了3个小时动车过来的 说为了这效果就是要我坐一天的车也值得 效果杠杠的，看要给您约个时间过来了解下吗？"
@@ -56,13 +111,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723276_image3.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723276_image3.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0005",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市没门店，但周边城市有门店，距离比较远",
-      "content_id": "YYHF-0005",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "大姐特意从外地专程到店体验，已经做完项目啦～❤\n原相机实拍，效果肉眼看得见👍"
@@ -71,24 +142,53 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723226_image4.jpeg"
         }
-      ]
-    },
-    {
-      "blocker_type": "效果异议",
-      "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
-      "content_id": "YYHF-0006",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "李姐一开始顾虑重重[愉快],担心做完达不到预期,纠结许久才过来体验,做完之后整个人状态提升明显,直呼早知道早点安排!\n\n成千上万位客户肯定，这是效果➕口碑 \n\n\n\n衰老问题改善，我们更专业，效果有保障。\n\n今天有空过来看看嘛~  安排总监一对一接待[玫瑰]"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723226_image4.jpeg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0006",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
-      "content_id": "YYHF-0007",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited"
+      ],
+      "risk_labels": [
+        "absolute_effect_claim",
+        "unverified_staff_or_schedule"
+      ],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "李姐一开始顾虑重重[愉快],担心做完达不到预期,纠结许久才过来体验,做完之后整个人状态提升明显,直呼早知道早点安排!\n\n成千上万位客户肯定，这是效果➕口碑 \n\n\n\n衰老问题改善，我们更专业，效果有保障。\n\n今天有空过来看看嘛~  安排总监一对一接待[玫瑰]"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0007",
+      "blocker_type": "效果异议",
+      "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "你担心的效果不断有人给你验证，你还担心什么呢☺ 咱们从专业角度操作您的问题效果都有保障现在活动力度大，打算做的话就别犹豫啦🙏，定金10给您登记保留一个吗？"
@@ -97,13 +197,32 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723974_image5.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723974_image5.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0008",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有尴尬期或恢复期，比如：疼/红肿/发红/破皮/结痂，发什么回访内容？",
-      "content_id": "YYHF-0008",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_gift",
+        "distance_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "前后对比效果一目了然，与其一直纠结观望，不如到店亲眼见证真实效果，体验满意再决定[愉快]\n\n\n\n全程大约50分钟，操作温和舒适，没有尴尬恢复期，做完直接正常上班出行，到店还赠送美白补水护理[色]\n\n\n\n今天哪个时间段有空，我提前帮您预留位置[勾引][勾引]"
@@ -112,57 +231,107 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097722998_image6.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097722998_image6.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0009",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有尴尬期或恢复期，比如：疼/红肿/发红/破皮/结痂，发什么回访内容？",
-      "content_id": "YYHF-0009",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": " 亲 理解您的，您放心哈 咱们的过程都是温和舒适的 做完都是不红不肿的  操作过程都是温和体验的  并且做完以后您正常上班出行都是没问题的 正常社交上班生活的"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0010",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有副作用，发什么回访内容？",
-      "content_id": "YYHF-0010",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们使用的是目前市面上最先进的技术的  上午做完下午出门 上班都是没有任何影响的哦  今天帮你安排个位置过来吗？"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0011",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有副作用，发什么回访内容？",
-      "content_id": "YYHF-0011",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这个操作是没有任何不良反应的 做完就可以正常上班出行的"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0012",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果不好，希望一次就可以做干净，发什么回访内容？",
-      "content_id": "YYHF-0012",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited"
+      ],
+      "risk_labels": [
+        "absolute_effect_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "衰老问题改善，我们更专业，效果有保障。"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0013",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果不好，希望一次就可以做干净，发什么回访内容？",
-      "content_id": "YYHF-0013",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "每个人的情况不一样 ，到店老师都会免费给您检测然后给您针对性操作的呀"
@@ -171,24 +340,50 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723063_image7.jpeg"
         }
-      ]
-    },
-    {
-      "blocker_type": "效果异议",
-      "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
-      "content_id": "YYHF-0014",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "今天有空过来看看嘛~  安排总监一对一接待[玫瑰]"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723063_image7.jpeg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0014",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
-      "content_id": "YYHF-0015",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited"
+      ],
+      "risk_labels": [
+        "unverified_staff_or_schedule"
+      ],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "今天有空过来看看嘛~  安排总监一对一接待[玫瑰]"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0015",
+      "blocker_type": "效果异议",
+      "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "对比图是真实案例参考，每个人肤质条件不同，效果会有个体差异，不能保证和图片完全一样，但会尽力达到您的理想改善效果。您可以放心，我们会根据您的情况定制方案。"
@@ -197,13 +392,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786102971755_image8.jpg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786102971755_image8.jpg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0016",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看万效果对比图，但担心会反弹或再长出来，发什么回访内容？",
-      "content_id": "YYHF-0016",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们有专业的售后团队都是会定期回访您的哦，我们既然做服务行业，要的也是长久的生意"
@@ -212,35 +423,67 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723398_image9.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723398_image9.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0017",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看万效果对比图，但担心会反弹或再长出来，发什么回访内容？",
-      "content_id": "YYHF-0017",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "咱们项目不是表面改善，只要您配合做好护理和日常保养，效果是很稳定的，很少出现明显再长。我会全程跟进您的恢复情况，有任何问题都可以随时找我。"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0018",
       "blocker_type": "价格异议",
       "applicable_scene": "客户了解完活动价格，担心还有其他隐形消费，发什么回访内容？",
-      "content_id": "YYHF-0018",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们是正规门店，都是录进咱们活动系统的，消费透明，不会强制消费的 也没有捆绑消费"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0019",
       "blocker_type": "价格异议",
       "applicable_scene": "客户了解完活动价格，担心还有其他隐形消费，发什么回访内容？",
-      "content_id": "YYHF-0019",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": " 我们全国连锁的门店 没有那些套路的 没有任何捆绑消费跟强制消费的 可以先预约一个我们的活动到时候随时过来店里看"
@@ -249,24 +492,48 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097724942_image10.jpeg"
         }
-      ]
-    },
-    {
-      "blocker_type": "价格异议",
-      "applicable_scene": "客户想要更低的价格，发什么回访内容？",
-      "content_id": "YYHF-0020",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "您随便去市场上哪里做都是要几千打底的，我们现在是有公司和其他平台合作的活动，所以才会这么优惠，而且名额也都是有限制的，这个就是最优惠的价格了呢 每天到店的顾客都是非常多的"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097724942_image10.jpeg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0020",
       "blocker_type": "价格异议",
       "applicable_scene": "客户想要更低的价格，发什么回访内容？",
-      "content_id": "YYHF-0021",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "您随便去市场上哪里做都是要几千打底的，我们现在是有公司和其他平台合作的活动，所以才会这么优惠，而且名额也都是有限制的，这个就是最优惠的价格了呢 每天到店的顾客都是非常多的"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0021",
+      "blocker_type": "价格异议",
+      "applicable_scene": "客户想要更低的价格，发什么回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "咱们家做的是效果和性价比哦  更注重的是效果和顾客的反馈吗，你看看我们做完好评的客户这么多"
@@ -275,13 +542,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097725740_image11.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097725740_image11.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0022",
       "blocker_type": "价格异议",
       "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
-      "content_id": "YYHF-0022",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "咱们家做的是效果和性价比哦  不一味的对比低价的 注重的是效果和顾客的反馈"
@@ -290,13 +573,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097725912_image12.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097725912_image12.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0023",
       "blocker_type": "价格异议",
       "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
-      "content_id": "YYHF-0023",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "很多客户都是从其他佳做完之后不满意过来，您可以看看我们都是好评"
@@ -305,24 +604,48 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097725740_image11.png"
         }
-      ]
-    },
-    {
-      "blocker_type": "价格异议",
-      "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
-      "content_id": "YYHF-0024",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "我们全国连锁400多家门店，门店协议和售后合同保障都是十分全面的，您到店都是可以了解的到的，您后续有任何问题都可以来我们门店，不会说您做完就不管您了"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097725740_image11.png",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0024",
       "blocker_type": "价格异议",
       "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
-      "content_id": "YYHF-0025",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "我们全国连锁400多家门店，门店协议和售后合同保障都是十分全面的，您到店都是可以了解的到的，您后续有任何问题都可以来我们门店，不会说您做完就不管您了"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0025",
+      "blocker_type": "价格异议",
+      "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们有专业的售后团队都是会定期回访您的哦，我们既然做服务行业，要的也是长久的生意"
@@ -331,13 +654,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723398_image9.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097723398_image9.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0026",
       "blocker_type": "没有时间",
       "applicable_scene": "客户了解完项目、价格，也有意向，但总是说没有时间，发什么回访内容？",
-      "content_id": "YYHF-0026",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "参与我们活动后，我给您保留名额是永久有效的，不是说您预定了就一定要马上来做，时间都是您自由安排的，您什么时候来做都是这个活动价哈，不然名额没有了，很可惜的"
@@ -346,24 +685,52 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097725961_image13.jpeg"
         }
-      ]
-    },
-    {
-      "blocker_type": "没有时间/预约金顾虑",
-      "applicable_scene": "客户有到店意愿，但表示过段时间再来、暂时不交预约金、想到店再付或担心先付不方便",
-      "content_id": "YYHF-0027",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "知道您最近时间不凑巧，建议您可以先支付10元锁住优惠名额。这样不管您下周还是下个月来，都能享受这个活动价。后续如果不想做或者没时间来，10元到店抵扣；未做或不满意可退，实际按付款记录核对。这样不影响您的时间安排，也能把优惠先保留住。"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097725961_image13.jpeg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0027",
+      "blocker_type": "没有时间",
+      "applicable_scene": "客户了解完项目、价格，也有意向，但总是说没有时间，发什么回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "建议您可以先保留一个，预约金也只要10元，不想做随时退还，给您登记一个嘛？"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0028",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0028",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "distance_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，我们最应该考虑的是效果和品质呢，达到了您想要的结果路程远点又何妨呢，花1.2个小时的时间到店操作过程45分钟左右就能换您干净的容颜，下午还有空位，到了就可以做，你几点来？"
@@ -372,24 +739,49 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097727407_image14.jpeg"
         }
-      ]
-    },
-    {
-      "blocker_type": "距离远",
-      "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0029",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "亲，这个城市我们门店是在这个地方，也是做了很多年的专业门店。 也不需要你天天过来，现在交通也方便。只要做好，这点距离我相信也不算什么的，是吧？"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097727407_image14.jpeg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0029",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0030",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "亲，这个城市我们门店是在这个地方，也是做了很多年的专业门店。 也不需要你天天过来，现在交通也方便。只要做好，这点距离我相信也不算什么的，是吧？"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0030",
+      "blocker_type": "距离远",
+      "applicable_scene": "客户在的城市有门店，但距离比远",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们很多客户都是从老远的地方过来的呢，淡斑不是天天来，做一次就有效果的，如果没效果开在您家旁边您也不会来"
@@ -399,13 +791,30 @@
           "content": "斑点对比.jpg",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image_reference",
+          "content": "斑点对比.jpg",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0031",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市没门店，但周边城市有门店，距离比较远",
-      "content_id": "YYHF-0031",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，最近还好吗？知道你家离我们店路程远，来回折腾费时间，平时也不总打扰你。最近好多顾客反馈皮肤起皮暗沉，如果你在家护肤遇到卡粉、干燥问题，我可以教你简单居家护理方法。哪天方便过来放松一下，我提前帮你预留好时间，不用排队等候。"
@@ -415,35 +824,67 @@
           "content": "6f0ede770347c97c028b96c468243f31.mp4",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "video_reference",
+          "content": "6f0ede770347c97c028b96c468243f31.mp4",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0032",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市没门店，但周边城市有门店，距离比较远",
-      "content_id": "YYHF-0032",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，您真的诚心想做好，这个路程就不算什么了。 我们每天都有周边城市的客户专程过来。 您只需要提前预订好，过来就操作，做完回去，也很方便的。 "
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0033",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市没门店，但周边城市有门店，距离比较远",
-      "content_id": "YYHF-0033",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "现在交通也是很方便的，相比\n与距离，我觉得价格和效果才\n是最重要的。斑也不是天天要\n来做的，操作的好下次就\n不需要来了"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0034",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
-      "content_id": "YYHF-0034",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们针对性操作好是可以保持10年左右的哈，做完就可以看到很好的效果，到店亲眼看看效果满意合适就操作，不满意不做不花您一分钱的，我们家在这里开了十几年了，没有做不好的客户，而且售后都是有保障的哈。"
@@ -452,13 +893,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097727002_image15.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097727002_image15.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0035",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
-      "content_id": "YYHF-0035",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们是专业机构，已经营业很多年了，口碑和效果，都是非常好的。因为每个人的皮肤情况不一样，肯定要到店先做个检测，才能知道预期的效果是吧？  "
@@ -467,13 +924,30 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097791143_image16.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097791143_image16.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0036",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
-      "content_id": "YYHF-0036",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们很多客户做一次就可以了，具体得您到店检测一下，参与了活动检测是免费的哈，因为现在也看不见您面部情况所以可以先保留一个活动，看您今天什么时候有空过来我给您面诊一下"
@@ -483,13 +957,29 @@
           "content": "lQDPJv-7ouGt4c_NB37NCgCwy1X9q7KGYy0HoFNUkXlwAQ_2560_1918(3).jpg",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image_reference",
+          "content": "lQDPJv-7ouGt4c_NB37NCgCwy1X9q7KGYy0HoFNUkXlwAQ_2560_1918(3).jpg",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0037",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有尴尬期或恢复期，比如：疼/红肿/发红/破皮/结痂，发什么回访内容？",
-      "content_id": "YYHF-0037",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们设备操作完是不会的哈，不影响你出行生活的，做完就可以回去了，没有尴尬期的。我们很多客户就是奔着我们的技术过来的。"
@@ -498,13 +988,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097729684_image17.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097729684_image17.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0038",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有尴尬期或恢复期，比如：疼/红肿/发红/破皮/结痂，发什么回访内容？",
-      "content_id": "YYHF-0038",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这方面就不用担心了，我们都是温和操作，做完不影响工作和生活的。"
@@ -513,13 +1019,30 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097731616_image18.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097731616_image18.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0039",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有尴尬期或恢复期，比如：疼/红肿/发红/破皮/结痂，发什么回访内容？",
-      "content_id": "YYHF-0039",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "早上淡斑下午上班，您可以看看这是咱们客户早上做完的效果对比，刚做完就微微红,敷个面膜就差不多好了，不影响正常出行上班。"
@@ -529,13 +1052,31 @@
           "content": "女斑8.jpg",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image_reference",
+          "content": "女斑8.jpg",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0040",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有副作用，发什么回访内容？",
-      "content_id": "YYHF-0040",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "side_effect_or_recovery_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "对皮肤还有对眼睛周围都是没有任何影响的，我们是无痕去眼袋，无痕操作，所以不会对您皮肤和眼睛有任何的一些伤害，很温和的，全程做下来也不会痛，上午做完下午就可以正常去上班了，不影响您日常出行。"
@@ -544,13 +1085,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097731194_image19.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097731194_image19.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0041",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有副作用，发什么回访内容？",
-      "content_id": "YYHF-0041",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这方面就不用担心了，我们都是温和操作，做完不影响工作和生活的。"
@@ -559,13 +1116,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097734331_image20.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097734331_image20.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0042",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果不好，希望一次就可以做干净，发什么回访内容？",
-      "content_id": "YYHF-0042",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "absolute_effect_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "每个人情况是不一样的呢，就像我们每个人生下来长的也不一样，做之前我们会给您检测眼袋情况，也会和你说做到怎么样的效果，效果你也绝对可以放心，我们是专业操作眼袋十几年了，到店你觉得合适满意再操作的哈。"
@@ -574,13 +1149,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097738560_image21.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097738560_image21.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0043",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果不好，希望一次就可以做干净，发什么回访内容？",
-      "content_id": "YYHF-0043",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "做完的效果都是很好的。 每个人严重情况不一样，皮肤状态不一样，所以一定差距都没有，那也是不可能的，不过肯定会让您满意的。"
@@ -589,13 +1180,30 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097741074_image22.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097741074_image22.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0044",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果不好，希望一次就可以做干净，发什么回访内容？",
-      "content_id": "YYHF-0044",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "每个人的面部情况是不一样的呢，您看您今天什么时候有空过来我给您当面检测一下，当然参与了活动检测是免费的，检测会直接告诉您做完之后的效果，您满意在操作的哈"
@@ -605,13 +1213,29 @@
           "content": "检测.mp4",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "video_reference",
+          "content": "检测.mp4",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0045",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
-      "content_id": "YYHF-0045",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们针对性操作好是不会复发反弹的哈，针对性操作好可以保持10年左右，当然我们也保证不了你一辈子就都不会有了，因为你之前也是没有眼袋的呀也是后天形成的，随着年纪的增长脂肪的堆积，肯定也是会有的，但是我们很多客户这辈子做那么一次就足够了哈。"
@@ -620,13 +1244,30 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097746871_image23.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097746871_image23.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0046",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
-      "content_id": "YYHF-0046",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "做完后，做一些常规的皮肤保湿保养，就不用担心这些问题的哈"
@@ -636,13 +1277,30 @@
           "content": "现场操作视频.mp4",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "video_reference",
+          "content": "现场操作视频.mp4",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0047",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
-      "content_id": "YYHF-0047",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "目前我们还没有出现反弹情况的客户呢，做完多注意保湿补水可以一直保持的哈。"
@@ -652,13 +1310,32 @@
           "content": "e5be0f41ea6c5eb63845922c99c4f224.jpg",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image_reference",
+          "content": "e5be0f41ea6c5eb63845922c99c4f224.jpg",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0048",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，但担心会反弹或再长出来，发什么回访内容？",
-      "content_id": "YYHF-0048",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_staff_or_schedule",
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这个您放心咱们是品牌机构，明码标价的，技术总监给您方案是最适合您的，您做什么就是什么价格，做前都会和您交代清楚的，不存在强制消费哈"
@@ -668,24 +1345,49 @@
           "content": "video(7).mp4",
           "source_missing": true
         }
-      ]
-    },
-    {
-      "blocker_type": "效果异议",
-      "applicable_scene": "客户看完效果对比图，但担心会反弹或再长出来，发什么回访内容？",
-      "content_id": "YYHF-0049",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "预定活动后就是活动价。明码标价，放心消费"
+          "message_index": 1,
+          "type": "video_reference",
+          "content": "video(7).mp4",
+          "direct_url": false
         }
       ]
     },
     {
+      "source_id": "YYHF-0049",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，但担心会反弹或再长出来，发什么回访内容？",
-      "content_id": "YYHF-0050",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "预定活动后就是活动价。明码标价，放心消费"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0050",
+      "blocker_type": "效果异议",
+      "applicable_scene": "客户看完效果对比图，但担心会反弹或再长出来，发什么回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "参与活动多少钱就是多少钱哈，我们做这个活动就是做口碑，您做完满意才能给我们介绍更多的客户，不会有其他强制消费的哈。"
@@ -695,13 +1397,29 @@
           "content": "净斑瞬间.mp4",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "video_reference",
+          "content": "净斑瞬间.mp4",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0051",
       "blocker_type": "价格异议",
       "applicable_scene": "客户了解完活动价格，担心还有其他隐形消费，发什么回访内容？",
-      "content_id": "YYHF-0051",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，我们这个价格的话，他不仅仅是给您操作全脸的斑斑点点，我们同时还给您做美白护理，深层清洁补水保湿的，所以价格是非常划算的"
@@ -710,35 +1428,67 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097770751_image24.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097770751_image24.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0052",
       "blocker_type": "价格异议",
       "applicable_scene": "客户了解完活动价格，担心还有其他隐形消费，发什么回访内容？",
-      "content_id": "YYHF-0052",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这次我发您的活动价，就是本年度最低的特价活动价，每家门店的名额都是有限的， 公司总部统一的活动。"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0053",
       "blocker_type": "价格异议",
       "applicable_scene": "客户了解完活动价格，担心还有其他隐形消费，发什么回访内容？",
-      "content_id": "YYHF-0053",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "请您放心！本次活动的价格，包含检测、操作，清洁护理。我们的目的是让您用最低的成本体验我们的专业技术和服务"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0054",
       "blocker_type": "价格异议",
       "applicable_scene": "客户想要更低的价格，发什么回访内容？",
-      "content_id": "YYHF-0054",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "基本上都是一 次的哈 我们很少有顾客二次到店操作斑点的  效果很好  具体您 可以抽空到店了解的"
@@ -747,24 +1497,49 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097771845_image25.jpeg"
         }
-      ]
-    },
-    {
-      "blocker_type": "价格异议",
-      "applicable_scene": "客户想要更低的价格，发什么回访内容？",
-      "content_id": "YYHF-0055",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "效果都可以放心，而且也都是有保障的。 我们很多客户也是操作完一次后很满意的。  但是因为每个人皮肤情况不一样，斑点的严重程度不一样，需要到店先检测，才能知道预期的效果。 到时候您满意再操作就行"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097771845_image25.jpeg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0055",
       "blocker_type": "价格异议",
       "applicable_scene": "客户想要更低的价格，发什么回访内容？",
-      "content_id": "YYHF-0056",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "效果都可以放心，而且也都是有保障的。 我们很多客户也是操作完一次后很满意的。  但是因为每个人皮肤情况不一样，斑点的严重程度不一样，需要到店先检测，才能知道预期的效果。 到时候您满意再操作就行"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0056",
+      "blocker_type": "价格异议",
+      "applicable_scene": "客户想要更低的价格，发什么回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们很多客户都是做一次就可以了的，我们是最先进的技术，效果这块您可以放心，您可以看看这些都是咱们客户做完的实拍对比，因为现在也不知道您的斑点情况，您今天方便有空来门店检测一下吗"
@@ -774,13 +1549,32 @@
           "content": "女搬.jpg",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image_reference",
+          "content": "女搬.jpg",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0057",
       "blocker_type": "价格异议",
       "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
-      "content_id": "YYHF-0057",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "absolute_effect_claim",
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这种情况，是客户看到竞争同行的广告报价，不是我们家的。   要求不能乱给价，我们家没有这个价格的套餐，希望您选择安全可靠，全国连锁的大型机构操作，这样安全性和效果都有保障， 绝对不是为了省几十块钱，而去选便宜的。     我们有专业的门店和老师，也有目前市面上最新的技术"
@@ -790,35 +1584,70 @@
           "content": "video(3).mp4",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "video_reference",
+          "content": "video(3).mp4",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0058",
       "blocker_type": "价格异议",
       "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
-      "content_id": "YYHF-0058",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "那就要看您在乎的是价钱多少，还是在乎效果的好坏了。  别人家我不评价，最起码我能保证我家的安全和效果。  活动价都已经这么低了，还去在乎那10块，20块的，去一家小店，也没必要吧"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0059",
       "blocker_type": "价格异议",
       "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
-      "content_id": "YYHF-0059",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "对于持久高效的淡斑需求，选择专业机构设备是金标准，它能量更高，针对性更强，而且我们是由专业人员操作，效果和安全性都非其他家能比的"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0060",
       "blocker_type": "价格异议",
       "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
-      "content_id": "YYHF-0060",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "所以您的担心的方面，我们其实都有考虑到，毕竟是涉及到做脸的，肯定不能让你随随便便就来做的呀，肯定是了解满意的，这个请您放心，而且做完之后我们也会跟踪您的后续情况，给您保障售后"
@@ -828,13 +1657,29 @@
           "content": "video(1).mp4",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "video_reference",
+          "content": "video(1).mp4",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0061",
       "blocker_type": "价格异议",
       "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
-      "content_id": "YYHF-0061",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "到店先了解满意再操作，而且我们也都是有后续效果追踪的，所以您完全不用担心售后保障方面的问题。  您担心的，我们都考虑到了"
@@ -843,24 +1688,49 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786102972129_image26.jpg"
         }
-      ]
-    },
-    {
-      "blocker_type": "价格异议",
-      "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
-      "content_id": "YYHF-0062",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "亲 ，效果我们都是很自信的。 服务那么多顾客还没见过没有效果的情况， 而且也都是有售后保障的。"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786102972129_image26.jpg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0062",
+      "blocker_type": "价格异议",
+      "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "亲 ，效果我们都是很自信的。 服务那么多顾客还没见过没有效果的情况， 而且也都是有售后保障的。"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0063",
       "blocker_type": "没有时间",
       "applicable_scene": "客户了解完项目、价格，也有意向，但总是说没有时间，发什么回访内容？",
-      "content_id": "YYHF-0063",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "时间挤一挤咱们就会有的，操作时间五十分钟左右，您什么时候抽空过来做一下就行了，做完没有尴尬期，不影响您的正常出行和上班的 亲"
@@ -870,35 +1740,71 @@
           "content": "video(3).mp4",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "video_reference",
+          "content": "video(3).mp4",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0064",
       "blocker_type": "没有时间",
       "applicable_scene": "客户了解完项目、价格，也有意向，但总是说没有时间，发什么回访内容？",
-      "content_id": "YYHF-0064",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "时间主要是看您怎么去安排，总会有休息和空闲的时间的。 操作时间也很快，不会耽误很久，而且做完不影响你工作和生活的"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0065",
       "blocker_type": "没有时间",
       "applicable_scene": "客户了解完项目、价格，也有意向，但总是说没有时间，发什么回访内容？",
-      "content_id": "YYHF-0065",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "如果您有想法做的话，建议先预定一下，反正也就10块钱，到店都是给您抵扣的，不然的话名额约满了，到时候你想做都是原价，也没必要去浪费这个钱，效果都是一样的。"
         }
-      ]
+      ],
+      "media": []
     },
     {
+      "source_id": "YYHF-0066",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0066",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "考虑了两个月的苏女士特地从香港来深圳做，趁活动价已经到店操作完毕，效果很满意，距离虽然是麻烦，但是皮肤实实在在变好，很多顾客都觉得值得，现在参加活动报名仅需定金10[红包]，到店再付189 即可，你的所有担心顾虑，别人都已经帮您见证了， 每一个顾客的满意都是对我们最大的肯定。给您也登记一个吗？[玫瑰]"
@@ -907,13 +1813,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097774966_image27.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097774966_image27.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0067",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0067",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "absolute_effect_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们针对较远客户到店有加赠一份价值298美白管理，针对您的斑肌进行补水，让您跑这一趟绝对不亏！您看这周哪天有空呀？\n\n\n\n "
@@ -922,13 +1846,30 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097778887_image28.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097778887_image28.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0068",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市有门店，但距离比远",
-      "content_id": "YYHF-0068",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "改善斑点也不是天天都要过来的，效果好的话过来一次就非常值得的，现在交通都很方便，您可以发个定位给我。您这边过来我也会给您指引路线。比如公交，地铁，打车的线路，这个是不用担心的哈"
@@ -938,13 +1879,29 @@
           "content": "客户坐车的路线图",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image_reference",
+          "content": "客户坐车的路线图",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0069",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市没门店，但周边城市有门店，距离比较远",
-      "content_id": "YYHF-0069",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "咱们是全国300多家连锁门店✨，门店都是通用的哈\n\n很多姐妹当地没有门店，都是专门开车过来淡斑的。\n\n就像图片里这位顾客，也是专程跑过来做的淡斑，操作完效果看得见\n\n大家也都嫌路途麻烦，但看到皮肤实实在在的改变，都觉得值得❤\n\n先给你登记保留一个吗？ 等有空随时都是可以过来做的"
@@ -953,13 +1910,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097781058_image29.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097781058_image29.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0070",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市没门店，但周边城市有门店，距离比较远",
-      "content_id": "YYHF-0070",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "absolute_effect_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "您看我这个客户是从隔壁市特地坐动车过来做的，做完效果很满意还说要给我介绍朋友~我坚信我们的效果也是会让您满意的，绝对会让您不虚此行的亲"
@@ -968,13 +1943,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097781406_image30.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097781406_image30.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0071",
       "blocker_type": "距离远",
       "applicable_scene": "客户在的城市没门店，但周边城市有门店，距离比较远",
-      "content_id": "YYHF-0071",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "distance_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "姐姐/哥哥，效果好的话，过来一趟也是非常值得的呢，我们都有很多外地的客户开车2-3小时过来的，就是看中我们的效果"
@@ -983,13 +1976,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097788537_image31.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097788537_image31.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0072",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
-      "content_id": "YYHF-0072",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "很多人都说怕做不干净，担心效果，您不迈出这一步斑点永远都在，效果好不好每天都有人替你实践有斑迟早都是要做的，不然后期只会越长越多，早做早变美，给您预定一个过来操作看看吧"
@@ -998,13 +2007,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786102972048_image32.jpg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786102972048_image32.jpg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0073",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
-      "content_id": "YYHF-0073",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "您看我们客人做完的效果和反馈都是非常好的，还推荐朋友过来您如果考虑做可以登记一下，登记好直接过来店里看，到店看也更清楚更直观，看了各方面合适满意再做哈"
@@ -1013,13 +2038,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097799847_image33.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097799847_image33.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0074",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果，但又希望能承诺包干净，发什么回访内容？",
-      "content_id": "YYHF-0074",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "distance_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "今日好评反馈！！！\n\n千好万好，不如顾客说好这是咱们顾客做完的好评反馈[让我看看]\n\n全国300多家门店能做到现在  效果和服务满意度都有保障[强] \n\n美女早做早好，抽45分钟过来呀，我这边帮您安排变美！"
@@ -1028,13 +2071,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097801636_image34.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097801636_image34.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0075",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有尴尬期或恢复期，比如：疼/红肿/发红/破皮/结痂，发什么回访内容？",
-      "content_id": "YYHF-0075",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "美女，这个小姐姐参加活动到咱们门店做的，做完后的效果对比也都是非常好，不会留疤，也不伤咱们的皮肤，回家可以敷面个膜，第二天就不红了，您看看效果怎么样？要不要给您也订一个呢~"
@@ -1043,13 +2102,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097802921_image35.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097802921_image35.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0076",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有尴尬期或恢复期，比如：疼/红肿/发红/破皮/结痂，发什么回访内容？",
-      "content_id": "YYHF-0076",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "咱们是无创的哦，温和无刺激，每个人的皮肤情况不一样，有些顾客做完会有微红的现象，不影响正常出行上班的哦"
@@ -1058,13 +2133,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786102992838_image36.jpg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786102992838_image36.jpg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0077",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有尴尬期或恢复期，比如：疼/红肿/发红/破皮/结痂，发什么回访内容？",
-      "content_id": "YYHF-0077",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "参加活动的客户，到店操作完了哟，做完又年轻好几岁了\n不仅能淡斑又能改善肤质\n随做随走 无尴尬期\n亲爱的，勇敢试一次，总比不断的关注如何淡斑变好看要来的实在，10元[红包]给您也登记一个好吗？"
@@ -1073,13 +2166,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097805188_image37.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097805188_image37.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0078",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有副作用，发什么回访内容？",
-      "content_id": "YYHF-0078",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_staff_or_schedule"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "真想把斑做掉就不要再等了[拥抱]\n\n\n\n资深总监，专业设备，目前公认最安全有效的设备操作，直接作用在斑点源头色素，做到满意的效果，不伤皮肤，做完即可正常上下班，不影响出行[强]\n\n\n\n全国连锁300多家连锁门店，如果我们都帮助不了你，就没有哪家机构可以帮助到你解决斑点问题了，给你登记一个吗？[玫瑰]"
@@ -1088,13 +2199,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097806261_image38.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097806261_image38.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0079",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有副作用，发什么回访内容？",
-      "content_id": "YYHF-0079",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，放心哦，我们是不会伤害您的皮肤的，做完不会影响正常出行上班的，针对以前的技术都是更有优势的"
@@ -1103,13 +2230,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097808383_image39.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097808383_image39.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0080",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心有副作用，发什么回访内容？",
-      "content_id": "YYHF-0080",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲， 还有在考虑脸上的斑吗？咱们这个净肤净斑仪都是非常温和的，只对黑色素产生效果，不会伤害到皮肤其他组织，对皮肤也不会有任何副作用，一次相当于二十次基础皮肤护理，帮您登记上吗？"
@@ -1118,13 +2261,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097810571_image40.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097810571_image40.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0081",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果不好，希望一次就可以做干净，发什么回访内容？",
-      "content_id": "YYHF-0081",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这么好的效果您还在担心什么呢？参加活动的黄小姐已经做完了[加油]。[烟花]患者：黄小姐肤色黄，遗传性斑困扰多年，经过我们专业操作，斑点不见了，肤色也恢复如初。只要[红包]定金10就可以参与活动[握手]给您也先登记保留一个，有空再来可以吗？[玫瑰]"
@@ -1133,13 +2294,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097811415_image41.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097811415_image41.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0082",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果不好，希望一次就可以做干净，发什么回访内容？",
-      "content_id": "YYHF-0082",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们家很多客户一次效果都很满意每个人情况不一样 您预约到店会给您免费检测看看您自己的情况 根据您的情况给您针对性做的 做之前也会了解清楚 您不用担心"
@@ -1148,13 +2325,32 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786103007208_image42.jpg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786103007208_image42.jpg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0083",
       "blocker_type": "效果异议",
       "applicable_scene": "客户担心效果不好，希望一次就可以做干净，发什么回访内容？",
-      "content_id": "YYHF-0083",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_gift",
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "真金不怕火炼 这些客户到店做完的效果都是看得见的好 \n\n\n\n现在预交10元订金，赠送198元面部护理一次10元做了抵扣，不做随时退哦（10元订金转账或者发红包我去登记）"
@@ -1163,13 +2359,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097815205_image43.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097815205_image43.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0084",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
-      "content_id": "YYHF-0084",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "refund_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "美女，效果再好也是别人脸上的，一味观望犹豫不决，斑点只会越拖越重，预订后直接到店我们现场观察才是最真实有用的，行动起来你也可以，任何不满意全额退款，不限制时间使用，10+电话姓名。预定一个吗？"
@@ -1178,13 +2392,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097820941_image44.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097820941_image44.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0085",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
-      "content_id": "YYHF-0085",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_staff_or_schedule"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "千人千面姐姐，效果发出来是让你看到我们的实力，但是我们不了解你的情况，怎么可能保证给你做到跟图片一模一样呢，刚好这两天总监在店给你安排一个总监位置让你到店更好的了解一下，你看可以吗"
@@ -1193,13 +2425,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097860489_image45.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097860489_image45.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0086",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看完效果对比图，希望做完的效果是否和图片一模一样，发什么 回访内容？",
-      "content_id": "YYHF-0086",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们很多客户一次就好了，给您发的图片都是我们客户活动的效果，每个人都面部斑点情况不同 ，您到店检测之后，老师都是会给您针对处理的，今天来门店了解一下吗？"
@@ -1208,13 +2456,33 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097843030_image46.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097843030_image46.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0087",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看万效果对比图，但担心会反弹或再长出来，发什么回访内容？",
-      "content_id": "YYHF-0087",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_urgency",
+        "unverified_staff_or_schedule",
+        "missing_or_indirect_asset"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，和你一起咨询的都已经过来做了哦，来之前也跟您一样担心犹豫，凡事都要自己亲自了解👏👏我们都是资深总监，针对性一对一操作的，无论你是斑点，痘印美白都可以，做完效果都是可以保持的\n\n🌹名额不多了，我给您登记保留一个吧？"
@@ -1224,13 +2492,29 @@
           "content": "效果图+反弹原理视频",
           "source_missing": true
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "media_reference",
+          "content": "效果图+反弹原理视频",
+          "direct_url": false
+        }
       ]
     },
     {
+      "source_id": "YYHF-0088",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看万效果对比图，但担心会反弹或再长出来，发什么回访内容？",
-      "content_id": "YYHF-0088",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "这个姐姐做完两年多了 到现在都保持的很好 都没有再长 最近又带了自己的女儿过来操作 "
@@ -1239,13 +2523,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097845713_image47.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097845713_image47.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0089",
       "blocker_type": "效果异议",
       "applicable_scene": "客户看万效果对比图，但担心会反弹或再长出来，发什么回访内容？",
-      "content_id": "YYHF-0089",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们不止是单单去除表面的斑点，也可以透过表皮层去除皮下的黑色素，做完只要做好保养补水，防晒就可以保持的哦。而且这边到店专业老师会根据您的实际情况免费检测，我们都是根据您的情况针对操作的，今天有空过来吗？"
@@ -1254,13 +2554,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097848425_image48.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097848425_image48.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0090",
       "blocker_type": "价格异议",
       "applicable_scene": "客户了解完活动价格，担心还有其他隐形消费，发什么回访内容？",
-      "content_id": "YYHF-0090",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "到店的客户已操作完了，您看这效果，没有套路没有产品，同时美白去黄没有瑕疵，即做即走不影响日常生活。😍到店在付尾款189即可，定金10元登记保留！\n\n🌹活动倒计时，要给您登记保留一个吗？"
@@ -1269,13 +2587,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097859946_image49.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097859946_image49.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0091",
       "blocker_type": "价格异议",
       "applicable_scene": "客户了解完活动价格，担心还有其他隐形消费，发什么回访内容？",
-      "content_id": "YYHF-0091",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "晚上好亲，做完项目的都发来反馈啦，给您看一下我们的门店情况，您还担心什么呢？名额只剩一个  马上就恢复原价2980了。不限制您到店时间，没有任何隐形消费，您这边回复一个消息我帮您先预订一个名额吧"
@@ -1284,13 +2620,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097865676_image50.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097865676_image50.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0092",
       "blocker_type": "价格异议",
       "applicable_scene": "客户了解完活动价格，担心还有其他隐形消费，发什么回访内容？",
-      "content_id": "YYHF-0092",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "原价1980的淡斑项目，现在仅需199元！\n\n做完气色翻倍，颜值显龄年轻好几岁✨\n名额系统即将关闭，斑点还没做的姐妹抓紧报名，错过再等无期🙀\n\n贵姓➕电话➕10元发我即可，预留吗？"
@@ -1299,13 +2653,33 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097867554_image51.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097867554_image51.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0093",
       "blocker_type": "价格异议",
       "applicable_scene": "客户想要更低的价格，发什么回访内容？",
-      "content_id": "YYHF-0093",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_gift",
+        "distance_claim",
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "效果实打实看得见夏天加速代谢做完更显年轻\n\n\n\n活动千万不要错过……\n\n最优惠价格和最好的效果给到您赠送价值198的美白管理\n\n\n\n给你登记一个吗？50分钟完成✅，做完不影响出行、工作"
@@ -1314,13 +2688,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097878972_image52.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097878972_image52.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0094",
       "blocker_type": "价格异议",
       "applicable_scene": "客户想要更低的价格，发什么回访内容？",
-      "content_id": "YYHF-0094",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_gift"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "价格确实没法再少，不过我可以给您申请额外福利：赠送护理 / 小样 / 延长护理时长 / 多一次配套项目，相当于给到您实惠，您看这样可以吗？"
@@ -1329,13 +2721,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097884894_image53.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097884894_image53.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0095",
       "blocker_type": "价格异议",
       "applicable_scene": "客户想要更低的价格，发什么回访内容？",
-      "content_id": "YYHF-0095",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_gift"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲爱的，您看看姐姐的真实反馈\n她前后对比了四五家，最后选择咱们家，淡斑效果特别满意，还介绍姐姐过来做护理，效果才是最重要的您说对吧？我这边额外申请给您赠送价值198的美白管理，给你登记一个吗"
@@ -1344,13 +2754,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097897807_image54.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097897807_image54.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0096",
       "blocker_type": "价格异议",
       "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
-      "content_id": "YYHF-0096",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "千好万好，不如顾客真实好评\n\n这位顾客之前贪便宜做别家低价项目，效果不满意，在我们这里做完后，斑点改善很明显，也真实对比出差距。\n\n\n\n低价看着诱人，但淡斑护肤安全和效果才是根本，我们敢保障服务满意度\n\n不管要不要，麻烦回复下，10订金锁定名额，到店时间您自己定，帮您留一个吗？"
@@ -1359,24 +2785,48 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097899998_image55.jpeg"
         }
-      ]
-    },
-    {
-      "blocker_type": "价格异议",
-      "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
-      "content_id": "YYHF-0097",
-      "reply_messages": [
+      ],
+      "media": [
         {
-          "type": "text",
-          "content": "XX 姐，昨天跟您聊完，知道您也对比了别家的价格，非常理解，换做是谁消费都会多方对比，想选性价比合适的。\n\n价格上确实会有高低差异，但美业项目不能只看报价，产品耗材、操作技术、后期的售后跟进、修复保障这些差距是看不见的。低价做一旦皮肤出问题，后续修复反而花更多钱。\n\n我这边也不强迫您马上做，只是真心希望您的皮肤安全出效果。如果您有顾虑，也可以再来店里，我给您再详细讲讲咱们项目的细节，您再综合考虑哈😊"
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097899998_image55.jpeg",
+          "direct_url": true
         }
       ]
     },
     {
+      "source_id": "YYHF-0097",
       "blocker_type": "价格异议",
       "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
-      "content_id": "YYHF-0098",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
+        {
+          "type": "text",
+          "content": "XX 姐，昨天跟您聊完，知道您也对比了别家的价格，非常理解，换做是谁消费都会多方对比，想选性价比合适的。\n\n价格上确实会有高低差异，但美业项目不能只看报价，产品耗材、操作技术、后期的售后跟进、修复保障这些差距是看不见的。低价做一旦皮肤出问题，后续修复反而花更多钱。\n\n我这边也不强迫您马上做，只是真心希望您的皮肤安全出效果。如果您有顾虑，也可以再来店里，我给您再详细讲讲咱们项目的细节，您再综合考虑哈😊"
+        }
+      ],
+      "media": []
+    },
+    {
+      "source_id": "YYHF-0098",
+      "blocker_type": "价格异议",
+      "applicable_scene": "客户对比其他家，说别家价格更优惠，发什么回访内容？",
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲爱的，您看看姐姐的真实反馈\n她前后对比了四五家，最后选择咱们家，淡斑效果特别满意，还介绍姐姐过来做护理，我们主要是看重效果，相信您肯定也不是舍不得这几百块钱，而且活动名额马上就截止了，帮您留一个吗？"
@@ -1385,13 +2835,32 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097897807_image54.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097897807_image54.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0099",
       "blocker_type": "价格异议",
       "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
-      "content_id": "YYHF-0099",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "unverified_staff_or_schedule",
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，考虑再多不如来店里检测一下哦~效果绝不会让您失望的做完白白嫩嫩的皮肤自己看着也高兴呀，身边小姐妹都羡慕到不行。店先免费总监接待操作，满意操作，不满意不操作10元订金照退，您也不花一分钱，还免费享受一次皮肤检测~🌹🌹亲，那我给您预留一个名额，可以吗？"
@@ -1400,13 +2869,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097811415_image41.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097811415_image41.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0100",
       "blocker_type": "价格异议",
       "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
-      "content_id": "YYHF-0100",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "我们操作完都是有售后的，做完后定期回访您，有任何问题都是会给您解决的，像这个顾客就是做完后半年了 在我们售后的定期回访下都是保持的很好 对效果都是满意的"
@@ -1415,13 +2900,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097914441_image56.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097914441_image56.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0101",
       "blocker_type": "价格异议",
       "applicable_scene": "客户在预约前，反复强调是否无效能退款，发什么回访内容？",
-      "content_id": "YYHF-0101",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，您可以放心的哈，我们都是有售后的，您做完有什么问题，我们都是有售后服务的哦，不会说您做完了就不管您了哈，今天来门店了解下吗？"
@@ -1430,13 +2931,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786103008325_image57.jpg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786103008325_image57.jpg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0102",
       "blocker_type": "没有时间",
       "applicable_scene": "客户了解完项目、价格，也有意向，但总是说没有时间，发什么回访内容？",
-      "content_id": "YYHF-0102",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲晚上好，这位顾客每天都很忙，最后预定了抽了个一小时时间来我们门店做了，做完就能看到效果[哇]，现在整个肤质都亮了一圈，和之前相比年轻有气色了很多，心情也非常的开心，10预定保留名额，不限制时间，给您保留一个吧[嘿哈]"
@@ -1445,13 +2962,29 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097922284_image58.jpeg"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097922284_image58.jpeg",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0103",
       "blocker_type": "没有时间",
       "applicable_scene": "客户了解完项目、价格，也有意向，但总是说没有时间，发什么回访内容？",
-      "content_id": "YYHF-0103",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "style_reference",
+        "asset_pending_review"
+      ],
+      "risk_labels": [],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "亲，这个顾客也是刚登记的，趁着199活动先报名，后面休息再过来。时间自由安排，到店任何不满意没做订金也是全额退还的，帮您保留一个吗?"
@@ -1460,13 +2993,31 @@
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097933229_image59.png"
         }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097933229_image59.png",
+          "direct_url": true
+        }
       ]
     },
     {
+      "source_id": "YYHF-0104",
       "blocker_type": "没有时间",
       "applicable_scene": "客户了解完项目、价格，也有意向，但总是说没有时间，发什么回访内容？",
-      "content_id": "YYHF-0104",
-      "reply_messages": [
+      "classifications": [
+        "logic_reusable",
+        "rewrite_required",
+        "prohibited",
+        "asset_pending_review"
+      ],
+      "risk_labels": [
+        "price_or_amount_claim"
+      ],
+      "parse_error": "",
+      "messages": [
         {
           "type": "text",
           "content": "让您三个放心！！\n\n担心效果？\n\n这个您大可放心没有这个金刚钻我们不敢做这个瓷器活！\n\n担心价格？\n\n我们明码标价没有隐形消费198弄斑还有额外补贴您40车费仅需158元！！\n\n担心没时间？\n\n我们全程您了解合适在做，做完就一个小时左右随做随走！！\n\n今天愿意抽个时间来店里了解吗？有时间的话提前联系我帮您安排专家主任老师的位置！！"
@@ -1474,6 +3025,14 @@
         {
           "type": "image",
           "content": "https://test.by4dev.4ba.cn/uploads/images/1786097945169_image60.jpeg"
+        }
+      ],
+      "media": [
+        {
+          "message_index": 1,
+          "type": "image",
+          "content": "https://test.by4dev.4ba.cn/uploads/images/1786097945169_image60.jpeg",
+          "direct_url": true
         }
       ]
     }

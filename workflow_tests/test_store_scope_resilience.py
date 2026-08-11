@@ -43,6 +43,84 @@ class _FakeCoze:
         geocode_workflow_id = ""
 
 
+def test_query_scope_keeps_commonly_abbreviated_new_district() -> None:
+    scoped = action_nodes._geocode_for_query_scope(
+        "上海市浦东",
+        {
+            "formatted_address": "上海市浦东新区",
+            "province": "上海市",
+            "city": "上海市",
+            "district": "浦东新区",
+            "location": "121.544346,31.221461",
+        },
+    )
+
+    assert scoped["district"] == "浦东新区"
+    assert action_nodes._geocode_resolved_admin_level("上海市浦东", scoped) == "district"
+
+
+def test_abbreviated_new_district_lookup_delivers_only_district_stores() -> None:
+    coze = _FakeGeocodeCoze(
+        {
+            "上海市浦东": {
+                "formatted_address": "上海市浦东新区",
+                "province": "上海市",
+                "city": "上海市",
+                "district": "浦东新区",
+                "location": "121.544346,31.221461",
+            }
+        }
+    )
+    state = {
+        "content": "浦东",
+        "normalized_content": "浦东",
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "405",
+                    "store_name": "上海浦东二店",
+                    "province": "上海市",
+                    "city": "上海市",
+                    "district": "浦东新区",
+                    "store_address": "上海市浦东新区苗圃路63号东朔商务中心",
+                },
+                {
+                    "store_id": "152",
+                    "store_name": "上海浦东店",
+                    "province": "上海市",
+                    "city": "上海市",
+                    "district": "浦东新区",
+                    "store_address": "上海市浦东新区浦东南路1036号隆宇大厦",
+                },
+                {
+                    "store_id": "285",
+                    "store_name": "上海普陀店",
+                    "province": "上海市",
+                    "city": "上海市",
+                    "district": "普陀区",
+                    "store_address": "上海市普陀区长寿路97号世纪商务大厦",
+                },
+            ]
+        },
+    }
+
+    lookup = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "上海市浦东", "purpose": "existence"},
+            state,
+            coze,  # type: ignore[arg-type]
+        )
+    )
+    facts = build_planner_fact_output({"customer_store_lookup": lookup}, state)
+    resolution = facts["structured_facts"]["store_resolution_fact"]
+
+    assert lookup["resolved_admin_level"] == "district"
+    assert lookup["district"] == "浦东新区"
+    assert {item["store_id"] for item in lookup["stores"]} == {"405", "152"}
+    assert resolution["status"] == "send_multiple"
+    assert set(resolution["delivery_store_ids"]) == {"405", "152"}
+
+
 class _StoreScopeRecoveryPlatformClient:
     available = True
 
@@ -361,6 +439,109 @@ def test_store_lookup_city_query_augments_customer_scope_with_snapshot_city_stor
     assert [item["store_id"] for item in output["stores"]] == ["589"]
     assert output["location_evidence"]["city"] == "荆州市"
     assert output["location_evidence"]["confirmation_mode"] == "informational_echo"
+
+
+def test_store_lookup_city_query_does_not_collapse_to_same_named_district(monkeypatch) -> None:
+    province = "\u6e56\u5317\u7701"
+    city = "\u8346\u5dde\u5e02"
+    stores = {
+        "241": {
+            "store_id": "241",
+            "store_name": "\u8346\u5dde\u4e07\u8fbe\u4e8c\u5e97",
+            "province": province,
+            "city": city,
+            "district": "\u8346\u5dde\u533a",
+            "store_address": "\u6e56\u5317\u7701\u8346\u5dde\u5e02\u8346\u5dde\u533a\u5317\u4eac\u897f\u8def",
+            "store_fact_integrity": "valid",
+        },
+        "242": {
+            "store_id": "242",
+            "store_name": "\u8346\u5dde\u6c99\u5e02\u5e97",
+            "province": province,
+            "city": city,
+            "district": "\u6c99\u5e02\u533a",
+            "store_address": "\u6e56\u5317\u7701\u8346\u5dde\u5e02\u6c99\u5e02\u533a\u5317\u4eac\u4e2d\u8def",
+            "store_fact_integrity": "valid",
+        },
+    }
+    monkeypatch.setattr(action_nodes, "_STORE_SNAPSHOT_CACHE", {"stores_by_id": stores})
+    coze = _FakeGeocodeCoze(
+        {
+            "\u8346\u5dde": {
+                "province": province,
+                "city": city,
+                "formatted_address": f"{province}{city}",
+                "location": "112.239,30.335",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "\u8346\u5dde", "purpose": "existence"},
+            {"customer_store_knowledge": {"stores": list(stores.values())}},
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["resolved_admin_level"] == "city"
+    assert output["source"] == "customer_scope_geocode"
+    assert [item["store_id"] for item in output["stores"]] == ["241", "242"]
+
+
+def test_store_lookup_preserves_all_parent_city_candidates_for_county_fallback(monkeypatch) -> None:
+    province = "\u6e56\u5317\u7701"
+    city = "\u8346\u5dde\u5e02"
+    county = "\u6d2a\u6e56\u5e02"
+    district = "\u8346\u5dde\u533a"
+    stores = {
+        "241": {
+            "store_id": "241",
+            "store_name": "\u8346\u5dde\u4e07\u8fbe\u5e97",
+            "province": province,
+            "city": city,
+            "district": district,
+            "store_address": "\u8346\u5dde\u5e02\u8346\u5dde\u533a\u5317\u4eac\u897f\u8def\u4e07\u8fbe\u5e7f\u573a",
+            "location": "112.247,30.339",
+            "store_fact_integrity": "valid",
+        },
+        "242": {
+            "store_id": "242",
+            "store_name": "\u8346\u5dde\u4e07\u8fbe\u4e8c\u5e97",
+            "province": province,
+            "city": city,
+            "district": district,
+            "store_address": "\u8346\u5dde\u5e02\u8346\u5dde\u533a\u5317\u4eac\u897f\u8def\u4e07\u8fbe\u5e7f\u573a\u5199\u5b57\u697c",
+            "location": "112.239,30.335",
+            "store_fact_integrity": "valid",
+        },
+    }
+    monkeypatch.setattr(action_nodes, "_STORE_SNAPSHOT_CACHE", {"stores_by_id": stores})
+    coze = _FakeGeocodeCoze(
+        {
+            county: {
+                "province": province,
+                "city": city,
+                "district": county,
+                "formatted_address": f"{province}{city}{county}",
+                "location": "113.475984,29.827256",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": county, "purpose": "existence"},
+            {"normalized_content": county, "customer_store_knowledge": {"stores": list(stores.values())}},
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["scope_match_level"] == "city_fallback"
+    assert output["exact_scope_has_store"] is False
+    assert {item["store_id"] for item in output["candidate_stores"]} == {"241", "242"}
 
 
 def test_store_lookup_town_without_local_store_uses_customer_scope_province_candidates(monkeypatch) -> None:

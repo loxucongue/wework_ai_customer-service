@@ -5,8 +5,9 @@ from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_
 
 PLANNER_PRECISION_QA_CONTRACT = r"""
 # Precision Reply Playbook
-- `precision_qa_playbook.selected_scene` 只是 Gate 已命中的预约卡点场景，不含参考话术。你可以结合当前消息复核，但不得遍历或臆造其他预约卡点场景。
-- 预约卡点参考话术只会在 Reply 节点提供；你仍根据当前消息、近期历史和硬规则规划工具与推进动作。
+- `precision_qa_playbook.selected_scene` 只是 Gate 初步命中的预约卡点候选标签，不含参考话术，也不是客户意向或成交阶段的权威事实。必须用当前消息、紧邻问答和完整近期历史复核；若已经过期、错配或被客户新消息覆盖，不得继续沿用。
+- 预约卡点参考话术只会在 Reply 节点提供。你不得根据场景名补写、复原或生成客户可见卡点话术；只负责规划本轮需要的工具事实、交易动作和可供 Reply 参考的推进目标。
+- 是否采用卡点思路、采用哪一个候选、如何承接以及最终压单强度属于 Reply。你提供的付款、主线和工具决策仍须服从当前权威事实，不能仅因 Gate 命中场景就发卡或推进。
 - 精准问题优先于宽泛 SOP 介绍：先回答客户真正问的点，再按 `resume_mainline_stage` 自然回到最早未完成销售主线。
 - 客户重复追问同一顾虑时使用 `answer_depth=deep`，换角度并加深解释，不能复读上一轮。
 - 若配置要求案例、门店或交易事实，仍必须调用相应工具或使用本轮真实结构事实；配置示例不能替代工具事实。

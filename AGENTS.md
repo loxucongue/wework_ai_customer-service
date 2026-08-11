@@ -7,6 +7,20 @@ This repository follows one core rule for the customer reply chain:
 
 Do not add Python keyword branches that decide normal sales intent, objections, or conversation stage. If a business reply is wrong, first inspect the model prompt, context payload, model choice, and tool facts.
 
+## Model-Led Reply Constitution
+
+- Content assets are evidence bundles, not scenario templates. Their text may be adapted to the conversation; configured facts, media, cards, and IDs must remain authentic.
+- Content Gate performs semantic evidence retrieval only. It may nominate a small set of relevant assets from their declared purpose, delivery state, dependencies, and the real conversation, but it must not use "customer says X -> send Y" rules or decide the sales action.
+- Reply is the only owner of customer-visible wording and normal sales decisions. It decides whether to use a nominated asset, answer, advance, switch dimensions, pause, or close from the full conversation and authoritative facts.
+- A correct answer is not automatically a complete sales turn. Unless the conversation should deliberately pause or stop, Reply should use the answer and evidence to seek one smallest, context-appropriate customer commitment. This is a model-owned judgment, not a Python-enforced call-to-action rule.
+- A proposed next step must be singular enough that a short reply such as “好/行/可以” has one clear meaning. When the preceding proposition is ambiguous, Reply must clarify rather than treating the short acknowledgment as payment consent.
+- Soft hesitation is not automatically a hard rejection. Reply may make one low-pressure attempt to identify the real remaining friction or provide the most relevant missing evidence; explicit opt-out, active risk, complaint, or a clear request not to continue must be respected.
+- Runtime code must not hard-check whether a reply is persuasive, whether it advanced the mainline, or whether it handled a soft objection strongly enough. Those properties belong to model evaluation and multi-turn simulation.
+- Code may enforce asset integrity after Reply selects an asset: required configured media and structured messages must be delivered exactly once and with valid IDs. This validates the model's choice; it does not choose the asset.
+- The activity offer and deposit close are separate actions. First activity or price education may deliver the activity evidence and campaign image, but must not automatically introduce or send the deposit card. Deposit collection requires earlier activity evidence and the current conversation to support closing.
+- Style is governed by general communication principles, not phrase dictionaries, semantic regular expressions, or micro-scenario patches. Customer-facing copy should continue the actual chat, use the customer's vocabulary, and avoid meta-service filler.
+- Context reduction may remove literal duplication and irrelevant bulk only. It must not remove the sole copy of an active business fact, hard boundary, current message, relevant conversation evidence, or current tool result.
+
 ## Testing Modes
 
 Single-node model effect tests are used before online deployment to tune one model node in isolation. They call the Planner or Reply model with controlled context fixtures, so prompt changes can be evaluated without polluting online customer history.

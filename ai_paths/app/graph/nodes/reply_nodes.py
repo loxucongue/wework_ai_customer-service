@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import time
 from typing import Any, Callable
@@ -7,8 +8,22 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
-from app.graph.nodes.reply_validation import _paid_deposit_context, validate_reply_consistency
+from app.graph.nodes.reply_validation import (
+    _paid_deposit_context,
+    _parallel_paid_deposit_context,
+    _parallel_shared_context,
+    extract_image_url_from_text,
+    message_content_text,
+    validate_reply_consistency,
+)
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
+from app.graph.nodes.parallel_reply_chain import parallel_reply_payload
+from app.prompts.reply_synthesizer import build_parallel_reply_messages
+from app.prompts.reply_fact_auditor import (
+    build_reply_fact_audit_messages,
+    build_reply_fact_audit_repair_messages,
+)
+from app.graph.nodes.common import json_dumps
 from app.services.payment_collection import (
     normalize_payment_amount_text,
     payment_collection_content,
@@ -39,6 +54,33 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - payment_collection、store_address、image、human_handoff_notice 必须使用输入中已核验的结构事实。
 - 使用自然微信口吻，不解释系统故障，不输出 markdown 或内部分析。
 """
+
+
+class ReplyModelPipelineError(RuntimeError):
+    """Keep failed model payloads available to local traces and release audits."""
+
+    def __init__(self, message: str, *, model_call: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.model_call = model_call
+
+
+class ReplyFactAuditViolation(ValueError):
+    """A valid audit found unsupported customer-visible factual claims."""
+
+    def __init__(self, audit_result: dict[str, Any]) -> None:
+        self.audit_result = audit_result
+        super().__init__(
+            "reply_fact_audit_failed::"
+            + json.dumps(audit_result, ensure_ascii=False, separators=(",", ":"))
+        )
+
+
+class ReplyFactAuditUnavailable(RuntimeError):
+    """The audit itself could not produce a trustworthy structured result."""
+
+    def __init__(self, message: str, *, audit_call: dict[str, Any]) -> None:
+        self.audit_call = audit_call
+        super().__init__(message)
 
 
 def create_synthesize_reply_node(
@@ -81,7 +123,12 @@ def create_synthesize_reply_node(
                     )
                 except Exception as exc:
                     primary_error = f"{type(exc).__name__}: {exc}"
-                    model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
+                    failed_model_call = getattr(exc, "model_call", None)
+                    model_call = (
+                        failed_model_call
+                        if isinstance(failed_model_call, dict)
+                        else model_call or {"name": "reply_synthesizer_model", "input": {}}
+                    )
                     model_call["error"] = primary_error
                     if planner_direct_valid:
                         messages = _prepare_structural_messages(planner_messages, state, warnings)
@@ -105,13 +152,21 @@ def create_synthesize_reply_node(
                 errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": reason})
                 model_call = {"name": "reply_synthesizer_model", "input": {}, "error": reason}
 
-            messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
+            # The parallel chain leaves every customer-visible structure to Reply.
+            # Legacy callers keep this compatibility repair until that path is removed.
+            if not state.get("evidence_join"):
+                messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
+            else:
+                handoff_notice_appended = False
             if handoff_notice_appended:
                 validate_reply_consistency(messages, state)
                 warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
                 if model_call:
                     model_call["handoff_notice_appended"] = True
-            messages, stale_handoff_removed = _suppress_stale_handoff_notice(messages, state)
+            if not state.get("evidence_join"):
+                messages, stale_handoff_removed = _suppress_stale_handoff_notice(messages, state)
+            else:
+                stale_handoff_removed = False
             if stale_handoff_removed:
                 validate_reply_consistency(messages, state)
                 warnings.append({"node": "synthesize_reply", "message": "stale_handoff_notice_removed"})
@@ -140,7 +195,10 @@ def create_synthesize_reply_node(
                 if model_call:
                     model_call["fallback"] = {"strategy": reply_source}
                     model_call["output"] = {"messages": len(messages)}
-                messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
+                if not state.get("evidence_join"):
+                    messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
+                else:
+                    handoff_notice_appended_after_fallback = False
                 if handoff_notice_appended_after_fallback:
                     warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
                     if model_call:
@@ -161,8 +219,20 @@ def create_synthesize_reply_node(
                 or state.get("recovery_reason")
                 or ""
             )[:500]
+            reply_metadata = _reply_metadata_from_model_call(model_call) if state.get("evidence_join") else {}
             output = {
                 "reply_messages": messages,
+                "used_fact_refs": reply_metadata.get("used_fact_refs", []),
+                "selected_content_ids": reply_metadata.get("selected_content_ids", []),
+                "reply_action": reply_metadata.get("action", "none"),
+                "reply_action_reason": reply_metadata.get("action_reason", ""),
+                "reply_sales_judgment": reply_metadata.get("sales_judgment", {}),
+                "reply_payment_assessment": reply_metadata.get("payment_assessment", {}),
+                "reply_deposit_evidence": reply_metadata.get("deposit_evidence", {}),
+                "reply_safety_assessment": reply_metadata.get("safety_assessment", {}),
+                "reply_party_size_assessment": reply_metadata.get("party_size_assessment", {}),
+                "reply_fact_audit": reply_metadata.get("fact_audit", {}),
+                "commit_actions": reply_metadata.get("commit_actions", []),
                 "reply_source": reply_source,
                 "postprocess_changed": False,
                 "postprocess_reasons": [],
@@ -232,6 +302,15 @@ async def _run_reply_model_pipeline(
     debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
     warnings: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    if state.get("evidence_join"):
+        return await _run_model_led_reply_pipeline(
+            state=state,
+            model_client=model_client,
+            model_messages=model_messages,
+            validated_model_messages=validated_model_messages,
+            debug_message_contents=debug_message_contents,
+            warnings=warnings,
+        )
     tier = _reply_model_tier(state)
     primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
     recovery_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 15.0)
@@ -273,13 +352,14 @@ async def _run_reply_model_pipeline(
                 tier=tier,
                 deadline_monotonic=primary_deadline,
             )
-            model_call["raw_json_output"] = payload
+            model_call["raw_json_output"] = copy.deepcopy(payload)
             model_call["usage"] = model_usage_snapshot(model_client)
             try:
-                messages = validated_model_messages(payload, state)
-                messages = _prepare_structural_messages(messages, state, warnings)
-                validate_reply_consistency(messages, state)
-                _raise_repairable_reply_quality_issues(messages, state)
+                validation_state = _reply_validation_state(state, payload)
+                messages = validated_model_messages(payload, validation_state)
+                messages = _prepare_structural_messages(messages, validation_state, warnings)
+                validate_reply_consistency(messages, validation_state)
+                _raise_repairable_reply_quality_issues(messages, validation_state)
             except Exception as validation_exc:
                 if not can_start_model_retry(state, tier=tier):
                     model_call["retry"] = {
@@ -288,7 +368,11 @@ async def _run_reply_model_pipeline(
                         "runtime_budget": runtime_budget_snapshot(state, tier=tier),
                     }
                     raise
-                retry_messages = _reply_retry_messages(model_messages, validation_exc)
+                retry_messages = _reply_retry_messages(
+                    model_messages,
+                    validation_exc,
+                    previous_payload=payload,
+                )
                 retry_deadline = _capped_deadline(
                     time.monotonic() + recovery_budget,
                     model_deadline_monotonic(state, tier=tier),
@@ -305,10 +389,11 @@ async def _run_reply_model_pipeline(
                     "raw_json_output": retry_payload,
                     "usage": model_usage_snapshot(model_client),
                 }
-                messages = validated_model_messages(retry_payload, state)
-                messages = _prepare_structural_messages(messages, state, warnings)
-                validate_reply_consistency(messages, state)
-                _raise_repairable_reply_quality_issues(messages, state)
+                retry_validation_state = _reply_validation_state(state, retry_payload)
+                messages = validated_model_messages(retry_payload, retry_validation_state)
+                messages = _prepare_structural_messages(messages, retry_validation_state, warnings)
+                validate_reply_consistency(messages, retry_validation_state)
+                _raise_repairable_reply_quality_issues(messages, retry_validation_state)
             model_call["draft_messages"] = debug_message_contents(messages)
             model_call["output"] = {"messages": len(messages)}
             model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
@@ -317,7 +402,7 @@ async def _run_reply_model_pipeline(
             primary_error = exc
             model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
 
-    recovery_messages = _reply_recovery_messages(state)
+    recovery_messages = _reply_recovery_messages(state, primary_error=primary_error)
     if not can_start_model_retry(state, tier=tier):
         model_call["recovery"] = {
             "status": "skipped_insufficient_round_budget",
@@ -343,19 +428,67 @@ async def _run_reply_model_pipeline(
         )
         recovery_call["raw_json_output"] = recovery_payload
         recovery_call["usage"] = model_usage_snapshot(model_client)
-        messages = validated_model_messages(recovery_payload, state)
-        messages = _prepare_structural_messages(messages, state, warnings)
-        validate_reply_consistency(messages, state)
-        _raise_repairable_reply_quality_issues(messages, state)
+        recovery_validation_state = _reply_validation_state(state, recovery_payload)
+        messages = validated_model_messages(recovery_payload, recovery_validation_state)
+        messages = _prepare_structural_messages(messages, recovery_validation_state, warnings)
+        validate_reply_consistency(messages, recovery_validation_state)
+        _raise_repairable_reply_quality_issues(messages, recovery_validation_state)
     except Exception as recovery_exc:
         recovery_call["error"] = f"{type(recovery_exc).__name__}: {recovery_exc}"
         recovery_call["usage"] = model_usage_snapshot(model_client)
         model_call["recovery"] = recovery_call
+        if not can_start_model_retry(state, tier=tier):
+            model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+            raise RuntimeError(
+                f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
+                f"compact recovery failed: {type(recovery_exc).__name__}: {recovery_exc}"
+            ) from recovery_exc
+
+        # The compact recovery can still omit one required card or media item.
+        # Give Reply one final, evidence-complete schema repair before using the
+        # neutral fallback. This retry does not choose customer intent or add a
+        # structure in Python; it only returns the exact validation violation to
+        # the model that owns the final reply.
+        final_repair_messages = _reply_recovery_messages(state, primary_error=recovery_exc)
+        final_repair_deadline = _capped_deadline(
+            time.monotonic() + recovery_budget,
+            model_deadline_monotonic(state, tier=tier),
+        )
+        final_repair_call: dict[str, Any] = {
+            "tier": tier,
+            "messages": final_repair_messages,
+            "reason": f"{type(recovery_exc).__name__}: {recovery_exc}",
+        }
+        try:
+            final_repair_payload = await _chat_json_with_deadline(
+                model_client,
+                final_repair_messages,
+                tier=tier,
+                deadline_monotonic=final_repair_deadline,
+            )
+            final_repair_call["raw_json_output"] = final_repair_payload
+            final_repair_call["usage"] = model_usage_snapshot(model_client)
+            final_validation_state = _reply_validation_state(state, final_repair_payload)
+            messages = validated_model_messages(final_repair_payload, final_validation_state)
+            messages = _prepare_structural_messages(messages, final_validation_state, warnings)
+            validate_reply_consistency(messages, final_validation_state)
+            _raise_repairable_reply_quality_issues(messages, final_validation_state)
+        except Exception as final_repair_exc:
+            final_repair_call["error"] = f"{type(final_repair_exc).__name__}: {final_repair_exc}"
+            final_repair_call["usage"] = model_usage_snapshot(model_client)
+            model_call["final_repair"] = final_repair_call
+            model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+            raise RuntimeError(
+                f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
+                f"compact recovery failed: {type(recovery_exc).__name__}: {recovery_exc}; "
+                f"final repair failed: {type(final_repair_exc).__name__}: {final_repair_exc}"
+            ) from final_repair_exc
+
+        model_call["final_repair"] = final_repair_call
+        model_call["draft_messages"] = debug_message_contents(messages)
+        model_call["output"] = {"messages": len(messages)}
         model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise RuntimeError(
-            f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
-            f"compact recovery failed: {type(recovery_exc).__name__}: {recovery_exc}"
-        ) from recovery_exc
+        return messages, model_call, "final_targeted_repair_model"
 
     model_call["recovery"] = recovery_call
     model_call["draft_messages"] = debug_message_contents(messages)
@@ -364,15 +497,581 @@ async def _run_reply_model_pipeline(
     return messages, model_call, "compact_recovery_model"
 
 
-def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state: AgentState) -> None:
-    repairable_details = {
-        "nearby_store_claim_without_location_fact",
-        "precision_reply_missing_mainline_action",
+async def _run_model_led_reply_pipeline(
+    *,
+    state: AgentState,
+    model_client: ModelClient,
+    model_messages: list[dict[str, Any]],
+    validated_model_messages: Callable[..., list[dict[str, Any]]],
+    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
+    warnings: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    """Run the final sales brain once, then allow one evidence-complete repair.
+
+    Transport retries remain ModelClient-owned. This layer does not switch to a
+    smaller scene prompt or manufacture a business reply after validation.
+    """
+
+    tier = _reply_model_tier(state)
+    primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
+    repair_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 25.0)
+    fact_audit_budget = _model_budget_seconds(
+        model_client,
+        "model_fact_audit_timeout_seconds",
+        15.0,
+    )
+    started_at = time.monotonic()
+    round_deadline = model_deadline_monotonic(state, tier=tier)
+    repair_reserve_seconds = min(repair_budget, 9.0)
+    primary_round_deadline = (
+        round_deadline - repair_reserve_seconds
+        if round_deadline is not None
+        else None
+    )
+    primary_deadline = _capped_deadline(started_at + primary_budget, primary_round_deadline)
+    model_call: dict[str, Any] = {
+        "name": "reply_synthesizer_model",
+        "input": {"tier": tier, "required": True, "messages": model_messages},
+        "deadline": {
+            "primary_budget_seconds": primary_budget,
+            "repair_budget_seconds": repair_budget,
+            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+        },
     }
-    for warning in collect_reply_soft_warnings(messages, state):
-        detail = str(warning.get("detail") or "")
-        if detail in repairable_details:
-            raise ValueError(detail)
+
+    primary_error: Exception
+    if primary_deadline is not None and primary_deadline <= started_at + 1.0:
+        primary_error = TimeoutError("reply_primary_skipped_to_preserve_single_repair_budget")
+        model_call["primary_error"] = f"{type(primary_error).__name__}: {primary_error}"
+    else:
+        try:
+            payload = await _chat_json_with_deadline(
+                model_client,
+                model_messages,
+                tier=tier,
+                deadline_monotonic=primary_deadline,
+            )
+            model_call["raw_json_output"] = copy.deepcopy(payload)
+            model_call["usage"] = model_usage_snapshot(model_client)
+            messages = _validated_parallel_reply_payload(
+                state=state,
+                payload=payload,
+                validated_model_messages=validated_model_messages,
+                warnings=warnings,
+            )
+            audit_result, audit_call = await _run_parallel_reply_fact_audit(
+                state=state,
+                model_client=model_client,
+                messages=messages,
+                payload=payload,
+            )
+            model_call["fact_audit"] = audit_call
+            if audit_result.get("status") != "pass":
+                raise ReplyFactAuditViolation(audit_result)
+            model_call["validated_json_output"] = payload
+            model_call["draft_messages"] = debug_message_contents(messages)
+            model_call["output"] = {"messages": len(messages)}
+            model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+            return messages, model_call, "main_model"
+        except Exception as exc:
+            primary_error = exc
+            model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, ReplyFactAuditUnavailable):
+                model_call["fact_audit"] = exc.audit_call
+
+    if isinstance(primary_error, ReplyFactAuditUnavailable):
+        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        raise ReplyModelPipelineError(
+            f"reply fact audit unavailable: {primary_error}",
+            model_call=model_call,
+        ) from primary_error
+
+    if not can_start_model_retry(state, tier=tier):
+        model_call["repair"] = {
+            "status": "skipped_insufficient_round_budget",
+            "reason": f"{type(primary_error).__name__}: {primary_error}",
+            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+        }
+        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        raise ReplyModelPipelineError(
+            f"reply primary failed and repair budget is unavailable: "
+            f"{type(primary_error).__name__}: {primary_error}",
+            model_call=model_call,
+        ) from primary_error
+
+    repair_validation_context = _parallel_reply_repair_context(state)
+    repair_messages = _reply_retry_messages(
+        model_messages,
+        primary_error,
+        previous_payload=(model_call.get("raw_json_output") if isinstance(model_call.get("raw_json_output"), dict) else None),
+        validation_context=repair_validation_context,
+    )
+    repair_deadline = _capped_deadline(
+        time.monotonic() + repair_budget,
+        round_deadline - fact_audit_budget if round_deadline is not None else None,
+    )
+    repair_payload: dict[str, Any] | None = None
+    try:
+        repair_payload = await _chat_json_with_deadline(
+            model_client,
+            repair_messages,
+            tier=tier,
+            deadline_monotonic=repair_deadline,
+        )
+        model_call["retry"] = {
+            "reason": f"{type(primary_error).__name__}: {primary_error}",
+            "messages": repair_messages,
+            "raw_json_output": copy.deepcopy(repair_payload),
+            "usage": model_usage_snapshot(model_client),
+        }
+        messages = _validated_parallel_reply_payload(
+            state=state,
+            payload=repair_payload,
+            validated_model_messages=validated_model_messages,
+            warnings=warnings,
+        )
+        audit_result, audit_call = await _run_parallel_reply_fact_audit(
+            state=state,
+            model_client=model_client,
+            messages=messages,
+            payload=repair_payload,
+        )
+        model_call["retry"]["fact_audit"] = audit_call
+        if audit_result.get("status") != "pass":
+            raise ReplyFactAuditViolation(audit_result)
+        model_call["validated_json_output"] = repair_payload
+    except Exception as repair_error:
+        model_call["retry"] = {
+            **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
+            "reason": f"{type(primary_error).__name__}: {primary_error}",
+            "error": f"{type(repair_error).__name__}: {repair_error}",
+            "usage": model_usage_snapshot(model_client),
+        }
+        model_call["deadline"]["elapsed_ms"] = int(
+            (time.monotonic() - started_at) * 1000
+        )
+        raise ReplyModelPipelineError(
+            f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
+            f"single repair failed: {type(repair_error).__name__}: {repair_error}",
+            model_call=model_call,
+        ) from repair_error
+
+    model_call["draft_messages"] = debug_message_contents(messages)
+    model_call["output"] = {"messages": len(messages)}
+    model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+    return messages, model_call, "single_targeted_repair_model"
+
+
+def _validated_parallel_reply_payload(
+    *,
+    state: AgentState,
+    payload: dict[str, Any],
+    validated_model_messages: Callable[..., list[dict[str, Any]]],
+    warnings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    _validate_parallel_raw_reply_schema(payload)
+    validation_state = _reply_validation_state(state, payload)
+    messages = validated_model_messages(payload, validation_state)
+    messages = _prepare_structural_messages(messages, validation_state, warnings)
+    validate_reply_consistency(messages, validation_state)
+    _raise_repairable_reply_quality_issues(messages, validation_state)
+    return messages
+
+
+async def _run_parallel_reply_fact_audit(
+    *,
+    state: AgentState,
+    model_client: ModelClient,
+    messages: list[dict[str, Any]],
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Audit customer-visible factual claims without making sales decisions."""
+
+    settings = getattr(model_client, "settings", None)
+    if settings is None or not bool(getattr(settings, "model_fact_audit_enabled", False)):
+        result = {"status": "pass", "violations": [], "audit_skipped": True}
+        return result, {
+            "name": "reply_fact_auditor_model",
+            "input": {"enabled": False},
+            "output": result,
+        }
+
+    audit_input = _parallel_reply_fact_audit_input(
+        state=state,
+        messages=messages,
+        payload=payload,
+    )
+    audit_messages = build_reply_fact_audit_messages(audit_input, json_dumps=json_dumps)
+    audit_tier = str(getattr(settings, "model_fact_audit_tier", "reply") or "reply").strip()
+    budget = _model_budget_seconds(model_client, "model_fact_audit_timeout_seconds", 15.0)
+    deadline = _capped_deadline(
+        time.monotonic() + budget,
+        model_deadline_monotonic(state, tier=audit_tier),
+    )
+    audit_call: dict[str, Any] = {
+        "name": "reply_fact_auditor_model",
+        "input": {"tier": audit_tier, "messages": audit_messages},
+        "deadline": {"budget_seconds": budget},
+    }
+    started_at = time.monotonic()
+    try:
+        raw = await _chat_json_with_deadline(
+            model_client,
+            audit_messages,
+            tier=audit_tier,
+            deadline_monotonic=deadline,
+        )
+        audit_call["raw_json_output"] = raw
+        audit_call["usage"] = model_usage_snapshot(model_client)
+        try:
+            result = _validated_parallel_reply_fact_audit(
+                raw,
+                messages=messages,
+                valid_refs=set(audit_input.get("valid_fact_refs") or []),
+            )
+        except ValueError as validation_exc:
+            repair_messages = build_reply_fact_audit_repair_messages(
+                audit_input,
+                raw,
+                str(validation_exc),
+                json_dumps=json_dumps,
+            )
+            audit_call["validation_retry"] = {
+                "input": {"tier": audit_tier, "messages": repair_messages},
+                "validation_error": str(validation_exc),
+            }
+            repaired_raw = await _chat_json_with_deadline(
+                model_client,
+                repair_messages,
+                tier=audit_tier,
+                deadline_monotonic=deadline,
+            )
+            audit_call["validation_retry"]["raw_json_output"] = repaired_raw
+            result = _validated_parallel_reply_fact_audit(
+                repaired_raw,
+                messages=messages,
+                valid_refs=set(audit_input.get("valid_fact_refs") or []),
+            )
+            audit_call["validation_retry"]["output"] = result
+        audit_call["output"] = result
+        audit_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        return result, audit_call
+    except Exception as exc:
+        audit_call["error"] = f"{type(exc).__name__}: {exc}"
+        audit_call["usage"] = model_usage_snapshot(model_client)
+        audit_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        raise ReplyFactAuditUnavailable(
+            f"{type(exc).__name__}: {exc}",
+            audit_call=audit_call,
+        ) from exc
+
+
+def _parallel_reply_fact_audit_input(
+    *,
+    state: AgentState,
+    messages: list[dict[str, Any]],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
+    conversation = [item for item in shared.get("conversation") or [] if isinstance(item, dict)]
+    current_message = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
+    used_refs = {
+        str(item).strip()
+        for item in payload.get("used_fact_refs") or []
+        if str(item).strip()
+    }
+    referenced_messages = [
+        {
+            "ref": str(item.get("message_ref") or "").strip(),
+            "role": str(item.get("role") or "").strip(),
+            "content": str(item.get("content") or ""),
+            "sent_at": item.get("sent_at"),
+        }
+        for item in conversation
+        if str(item.get("message_ref") or "").strip() in used_refs
+    ]
+    if "current_message" in used_refs:
+        referenced_messages.append(
+            {
+                "ref": "current_message",
+                "role": "customer",
+                "content": str(current_message.get("content") or ""),
+                "sent_at": current_message.get("sent_at"),
+            }
+        )
+
+    selected_ids = {
+        str(item).strip()
+        for item in payload.get("selected_content_ids") or []
+        if str(item).strip()
+    }
+    selected_candidates = [
+        item
+        for item in joined.get("content_candidates") or []
+        if isinstance(item, dict)
+        and str(item.get("content_id") or item.get("id") or "").strip() in selected_ids
+    ]
+    reply_payload = parallel_reply_payload(state)
+    valid_refs = _fact_audit_reference_set(reply_payload)
+    valid_refs.add("current_message")
+    rules = shared.get("rules") if isinstance(shared.get("rules"), dict) else {}
+    return {
+        "schema_version": "reply_fact_audit_input_v1",
+        "current_message": {
+            "content": str(current_message.get("content") or ""),
+            "message_type": str(current_message.get("message_type") or ""),
+            "sent_at": current_message.get("sent_at"),
+        },
+        "reply_messages": [
+            {"type": str(item.get("type") or ""), "content": item.get("content")}
+            for item in messages
+            if isinstance(item, dict)
+        ],
+        "used_fact_refs": sorted(used_refs),
+        "reply_audit_metadata": {
+            "authority": "reply_owned_non_authoritative_claims",
+            "action": str(payload.get("action") or ""),
+            "payment_assessment": (
+                payload.get("payment_assessment")
+                if isinstance(payload.get("payment_assessment"), dict)
+                else {}
+            ),
+            "deposit_evidence": (
+                payload.get("deposit_evidence")
+                if isinstance(payload.get("deposit_evidence"), dict)
+                else {}
+            ),
+            "safety_assessment": (
+                payload.get("safety_assessment")
+                if isinstance(payload.get("safety_assessment"), dict)
+                else {}
+            ),
+            "party_size_assessment": (
+                payload.get("party_size_assessment")
+                if isinstance(payload.get("party_size_assessment"), dict)
+                else {}
+            ),
+        },
+        "referenced_messages": referenced_messages,
+        "authoritative_facts": shared.get("authoritative_facts") or {},
+        "authoritative_claim_facts": _fact_audit_authoritative_claim_facts(rules),
+        "tool_facts": {
+            "raw": joined.get("tool_facts") or {},
+            "normalized": joined.get("normalized_tool_facts") or {},
+        },
+        "store_fact_status": reply_payload.get("store_fact_status") or {},
+        "registration_fact_status": reply_payload.get("registration_fact_status") or {},
+        "structured_delivery_options": reply_payload.get("structured_delivery_options") or {},
+        "selected_content_assets": selected_candidates,
+        "rules": {
+            "must_follow": rules.get("MUST FOLLOW") or rules.get("must_follow") or [],
+            "authoritative_facts": (
+                rules.get("AUTHORITATIVE FACTS")
+                or rules.get("authoritative_facts")
+                or []
+            ),
+        },
+        "actual_structured_deliveries": [
+            {"message_index": index, "type": str(item.get("type") or ""), "content": item.get("content")}
+            for index, item in enumerate(messages)
+            if isinstance(item, dict) and str(item.get("type") or "") != "text"
+        ],
+        "valid_fact_refs": sorted(valid_refs),
+    }
+
+
+def _fact_audit_authoritative_claim_facts(rules: dict[str, Any]) -> dict[str, Any]:
+    """Expose claim-bearing business facts without selecting a reply strategy."""
+
+    facts = rules.get("AUTHORITATIVE FACTS") or rules.get("authoritative_facts") or {}
+    if not isinstance(facts, dict):
+        return {}
+    return {
+        key: facts.get(key)
+        for key in (
+            "offer",
+            "customer_visible_evidence_policy",
+            "health_risk_policy",
+            "store_address_disclosure_policy",
+            "transaction_policy",
+        )
+        if facts.get(key) is not None
+    }
+
+
+def _fact_audit_reference_set(value: Any) -> set[str]:
+    refs: set[str] = set()
+
+    def visit(item: Any, *, key: str = "") -> None:
+        if isinstance(item, dict):
+            for child_key, child in item.items():
+                normalized_key = str(child_key or "").strip().lower()
+                if normalized_key in {"ref", "used_fact_ref"} and isinstance(child, str) and child.strip():
+                    refs.add(child.strip())
+                else:
+                    visit(child, key=normalized_key)
+            return
+        if isinstance(item, list):
+            if key.endswith("refs"):
+                refs.update(str(child).strip() for child in item if isinstance(child, str) and child.strip())
+            for child in item:
+                visit(child, key=key)
+
+    visit(value)
+    return refs
+
+
+def _validated_parallel_reply_fact_audit(
+    payload: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]],
+    valid_refs: set[str],
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_reply_fact_audit_payload")
+    status = str(payload.get("status") or "").strip()
+    if status not in {"pass", "fail"}:
+        raise ValueError("invalid_reply_fact_audit_status")
+    raw_violations = payload.get("violations")
+    if not isinstance(raw_violations, list):
+        raise ValueError("invalid_reply_fact_audit_violations")
+    allowed_codes = {
+        "unsupported_claim",
+        "contradicted_claim",
+        "wrong_temporality",
+        "unfulfilled_delivery",
+    }
+    violations: list[dict[str, Any]] = []
+    for item in raw_violations:
+        if not isinstance(item, dict):
+            raise ValueError("invalid_reply_fact_audit_violation")
+        code = str(item.get("code") or "").strip()
+        if code not in allowed_codes:
+            raise ValueError("invalid_reply_fact_audit_code")
+        try:
+            message_index = int(item.get("message_index"))
+        except (TypeError, ValueError):
+            raise ValueError("invalid_reply_fact_audit_message_index") from None
+        if not 0 <= message_index < len(messages):
+            raise ValueError("invalid_reply_fact_audit_message_index")
+        if str(messages[message_index].get("type") or "") != "text":
+            raise ValueError("reply_fact_audit_must_quote_text_message")
+        quote = str(item.get("quote") or "").strip()
+        message_text = message_content_text(messages[message_index].get("content"))
+        if not quote or quote not in message_text:
+            raise ValueError("reply_fact_audit_quote_not_in_message")
+        evidence_refs = _normalized_evidence_refs(item.get("evidence_refs"))
+        if any(ref not in valid_refs for ref in evidence_refs):
+            raise ValueError("reply_fact_audit_has_invalid_evidence_ref")
+        reason = str(item.get("reason") or "").strip()
+        if not reason:
+            raise ValueError("reply_fact_audit_reason_required")
+        violations.append(
+            {
+                "code": code,
+                "message_index": message_index,
+                "quote": quote,
+                "evidence_refs": evidence_refs,
+                "reason": reason[:500],
+            }
+        )
+    if status == "pass" and violations:
+        raise ValueError("reply_fact_audit_pass_requires_no_violations")
+    if status == "fail" and not violations:
+        raise ValueError("reply_fact_audit_fail_requires_violations")
+    return {"status": status, "violations": violations}
+
+
+def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
+    """Reject lossy compatibility before customer-visible normalization."""
+
+    payload["action"] = _normalized_reply_action(payload.get("action"))
+
+    # commit_actions is optional and an omitted/null value means no deferred
+    # write. Normalizing that value is schema cleanup, not a business action.
+    if payload.get("commit_actions") is None:
+        payload["commit_actions"] = []
+
+    if payload.get("structured_delivery_decisions") is None:
+        payload["structured_delivery_decisions"] = []
+
+    for field in (
+        "used_fact_refs",
+        "selected_content_ids",
+        "structured_delivery_decisions",
+        "commit_actions",
+    ):
+        if not isinstance(payload.get(field), list):
+            raise ValueError(f"invalid_parallel_reply_list_field:{field}")
+
+    messages = payload.get("reply_messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("Model JSON missing reply_messages")
+    allowed_types = {
+        "text",
+        "image",
+        "video",
+        "store_address",
+        "payment_collection",
+        "human_handoff_notice",
+    }
+    payment_count = 0
+    handoff_count = 0
+    handoff_seen = False
+    for index, item in enumerate(messages):
+        if not isinstance(item, dict):
+            raise ValueError(f"invalid_parallel_reply_message_object:{index}")
+        message_type = item.get("type")
+        if message_type not in allowed_types:
+            raise ValueError(f"invalid_parallel_reply_message_type:{index}")
+        content = item.get("content")
+        if message_type in {"store_address", "payment_collection"} and isinstance(content, str):
+            try:
+                parsed_content = json.loads(content)
+            except json.JSONDecodeError:
+                parsed_content = None
+            if isinstance(parsed_content, dict):
+                content = parsed_content
+                item["content"] = parsed_content
+        if message_type == "text":
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError(f"invalid_parallel_reply_message_content:{index}:text")
+            if extract_image_url_from_text(content):
+                raise ValueError(f"parallel_text_must_not_embed_image_url:{index}")
+        elif message_type in {"image", "video"}:
+            media_url = (
+                str(content.get("url") or "").strip()
+                if isinstance(content, dict)
+                else str(content or "").strip()
+            )
+            if not media_url.lower().startswith(("http://", "https://")):
+                raise ValueError(f"invalid_parallel_reply_message_content:{index}:{message_type}")
+        elif message_type == "store_address":
+            if not isinstance(content, dict) or not str(content.get("store_id") or "").strip():
+                raise ValueError(f"invalid_parallel_reply_message_content:{index}:store_address")
+        elif message_type == "payment_collection":
+            if not isinstance(content, dict):
+                raise ValueError(f"invalid_parallel_reply_message_content:{index}:payment_collection")
+        elif not message_content_text(content):
+            raise ValueError(f"invalid_parallel_reply_message_content:{index}:{message_type}")
+        if message_type == "payment_collection":
+            payment_count += 1
+        if message_type == "human_handoff_notice":
+            handoff_count += 1
+            handoff_seen = True
+        elif handoff_seen:
+            raise ValueError("parallel_handoff_notice_must_follow_visible_messages")
+    if payment_count > 1:
+        raise ValueError("duplicate_payment_collection_in_single_turn")
+    if handoff_count > 1:
+        raise ValueError("duplicate_human_handoff_notice_in_single_turn")
+
+
+def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state: AgentState) -> None:
+    # Style and phrasing diagnostics are observations only.  Promoting them
+    # to hard repair would let Python overrule Reply's sales judgement.
+    collect_reply_soft_warnings(messages, state)
 
 
 def _prepare_structural_messages(
@@ -380,6 +1079,10 @@ def _prepare_structural_messages(
     state: AgentState,
     warnings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    if state.get("evidence_join"):
+        # The model-led chain never silently edits customer-visible output.
+        # Hard fact/schema violations are returned to Reply for one repair.
+        return _renumber(messages)
     prepared = _filter_unsupported_images(messages, state, warnings)
     prepared = append_activity_intro_image(prepared, state, warnings)
     prepared, duplicate_payment_removed = _dedupe_payment_collection_messages(prepared)
@@ -423,12 +1126,352 @@ def _maybe_append_planner_payment_structure(
     )
 
 
-def _reply_recovery_messages(state: AgentState) -> list[dict[str, Any]]:
+def _reply_recovery_messages(
+    state: AgentState,
+    *,
+    primary_error: Exception | None = None,
+) -> list[dict[str, Any]]:
+    if state.get("evidence_join"):
+        # Parallel Reply is the sole business brain. Its recovery must retain
+        # the complete Gate candidates, conversation, tool facts, and layered
+        # rules; generic deep compaction can turn a full SOP candidate into an
+        # isolated card and materially change the business decision. The round
+        # deadline still bounds this evidence-complete retry.
+        payload = parallel_reply_payload(state)
+        messages = build_parallel_reply_messages(payload, json_dumps=json_dumps)
+        if primary_error is not None:
+            return _reply_retry_messages(messages, primary_error)
+        return messages
     payload = _compact_recovery_value(reply_recovery_payload_for_model(state))
     return [
         {"role": "system", "content": REPLY_RECOVERY_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
+
+
+def _reply_metadata_from_model_call(model_call: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(model_call, dict):
+        return {}
+    payload = model_call.get("validated_json_output")
+    if not isinstance(payload, dict):
+        return {}
+    action = _normalized_reply_action(payload.get("action"))
+    payload["action"] = action
+    return {
+        "used_fact_refs": [str(item).strip() for item in payload.get("used_fact_refs") or [] if str(item).strip()],
+        "selected_content_ids": [
+            str(item).strip() for item in payload.get("selected_content_ids") or [] if str(item).strip()
+        ],
+        "structured_delivery_decisions": _normalized_structured_delivery_decisions(
+            payload.get("structured_delivery_decisions")
+        ),
+        "action": action,
+        "action_reason": str(payload.get("action_reason") or "")[:500],
+        "sales_judgment": _normalized_sales_judgment(payload.get("sales_judgment")),
+        "payment_assessment": _normalized_payment_assessment(payload.get("payment_assessment")),
+        "deposit_evidence": _normalized_deposit_evidence(
+            payload.get("deposit_evidence"),
+            strict=action == "payment",
+        ),
+        "safety_assessment": _normalized_safety_assessment(payload.get("safety_assessment")),
+        "party_size_assessment": _normalized_party_size_assessment(payload.get("party_size_assessment")),
+        "fact_audit": _final_fact_audit_from_model_call(model_call),
+        "commit_actions": [item for item in payload.get("commit_actions") or [] if isinstance(item, dict)],
+    }
+
+
+def _final_fact_audit_from_model_call(model_call: dict[str, Any]) -> dict[str, Any]:
+    retry = model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}
+    call = retry.get("fact_audit") if isinstance(retry.get("fact_audit"), dict) else model_call.get("fact_audit")
+    if not isinstance(call, dict):
+        return {}
+    output = call.get("output") if isinstance(call.get("output"), dict) else {}
+    return {
+        "status": str(output.get("status") or ""),
+        "violations": [item for item in output.get("violations") or [] if isinstance(item, dict)],
+        "model": str((call.get("usage") or {}).get("model") or ""),
+        "elapsed_ms": int((call.get("deadline") or {}).get("elapsed_ms") or 0),
+    }
+
+
+def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> AgentState:
+    if not state.get("evidence_join"):
+        return state
+    validation_state: AgentState = dict(state)
+    safety = _normalized_safety_assessment(payload.get("safety_assessment"))
+    party_size = _normalized_party_size_assessment(payload.get("party_size_assessment"))
+    valid_refs = _customer_message_refs(state)
+    _validate_assessment_refs(safety, valid_refs, field="safety_assessment")
+    _validate_assessment_refs(party_size, valid_refs, field="party_size_assessment")
+    validation_state["reply_safety_assessment"] = safety
+    validation_state["reply_party_size_assessment"] = party_size
+    validation_state["reply_sales_judgment"] = _normalized_sales_judgment(payload.get("sales_judgment"))
+    payment = _normalized_payment_assessment(payload.get("payment_assessment"))
+    _validate_payment_assessment_refs(payment, valid_refs, authoritative_paid=_parallel_paid_deposit_context(state))
+    validation_state["reply_payment_assessment"] = payment
+    action = _normalized_reply_action(payload.get("action"))
+    payload["action"] = action
+    validation_state["reply_action"] = action
+    validation_state["reply_deposit_evidence"] = _normalized_deposit_evidence(
+        payload.get("deposit_evidence"),
+        strict=action == "payment",
+    )
+    validation_state["reply_selected_content_ids"] = [
+        str(item).strip() for item in payload.get("selected_content_ids") or [] if str(item).strip()
+    ]
+    reply_payload = parallel_reply_payload(state)
+    delivery_options = (
+        reply_payload.get("structured_delivery_options")
+        if isinstance(reply_payload.get("structured_delivery_options"), dict)
+        else {}
+    )
+    delivery_refs = {
+        str(option.get("fact_ref") or "").strip()
+        for option in delivery_options.values()
+        if isinstance(option, dict)
+        and option.get("message_payloads")
+        and str(option.get("fact_ref") or "").strip()
+    }
+    delivery_decisions = _normalized_structured_delivery_decisions(
+        payload.get("structured_delivery_decisions")
+    )
+    decision_refs = {item["fact_ref"] for item in delivery_decisions}
+    missing_delivery_refs = sorted(delivery_refs - decision_refs)
+    if missing_delivery_refs:
+        raise ValueError(
+            "structured_delivery_decision_required: " + ", ".join(missing_delivery_refs)
+        )
+    invalid_delivery_refs = sorted(decision_refs - delivery_refs)
+    if invalid_delivery_refs:
+        raise ValueError(
+            "invalid_structured_delivery_fact_ref: " + ", ".join(invalid_delivery_refs)
+        )
+    validation_state["reply_structured_delivery_decisions"] = delivery_decisions
+    reply_used_fact_refs = [
+        str(item).strip() for item in payload.get("used_fact_refs") or [] if str(item).strip()
+    ]
+    valid_fact_refs = _fact_audit_reference_set(reply_payload)
+    valid_fact_refs.add("current_message")
+    invalid_fact_refs = sorted(set(reply_used_fact_refs) - valid_fact_refs)
+    if invalid_fact_refs:
+        raise ValueError(
+            "invalid_parallel_used_fact_refs: " + ", ".join(invalid_fact_refs)
+        )
+    validation_state["reply_used_fact_refs"] = reply_used_fact_refs
+    for item in delivery_decisions:
+        if item["decision"] == "deliver" and item["fact_ref"] not in reply_used_fact_refs:
+            raise ValueError(
+                "structured_delivery_requires_used_fact_ref:" + item["fact_ref"]
+            )
+    return validation_state
+
+
+def _normalized_reply_action(value: Any) -> str:
+    action = str(value or "none").strip()
+    if action == "answer":
+        # `answer` is a common accidental copy of sales_judgment.posture.
+        # Mapping it to the no-structure action is enum compatibility only;
+        # it does not alter customer text or choose a sales move.
+        return "none"
+    if action not in {"none", "ask", "offer", "payment", "registration"}:
+        raise ValueError("invalid_parallel_reply_action")
+    return action
+
+
+def _normalized_structured_delivery_decisions(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("invalid_structured_delivery_decisions")
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"invalid_structured_delivery_decision:{index}")
+        fact_ref = str(item.get("fact_ref") or "").strip()
+        decision = str(item.get("decision") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not fact_ref or decision not in {"deliver", "defer"}:
+            raise ValueError(f"invalid_structured_delivery_decision:{index}")
+        if fact_ref in seen:
+            raise ValueError("duplicate_structured_delivery_decision:" + fact_ref)
+        if decision == "defer" and not reason:
+            raise ValueError("structured_delivery_defer_requires_reason:" + fact_ref)
+        seen.add(fact_ref)
+        normalized.append(
+            {"fact_ref": fact_ref, "decision": decision, "reason": reason[:500]}
+        )
+    return normalized
+
+
+def _normalized_safety_assessment(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    status = str(raw.get("status") or "none").strip()
+    if status not in {"none", "health_risk", "complaint_refund", "explicit_reject"}:
+        raise ValueError("invalid_reply_safety_assessment")
+    return {
+        "status": status,
+        "evidence_refs": _normalized_evidence_refs(raw.get("evidence_refs")),
+    }
+
+
+def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    posture = str(raw.get("posture") or "answer").strip()
+    if posture not in {"answer", "advance", "switch", "pause", "close"}:
+        raise ValueError("invalid_reply_sales_posture")
+    established_keys: list[str] = []
+    for item in raw.get("established_keys") or []:
+        key = str(item or "").strip()
+        if key not in {"address", "effect", "activity", "objection"}:
+            raise ValueError("invalid_reply_established_key")
+        if key not in established_keys:
+            established_keys.append(key)
+    return {
+        "customer_goal": str(raw.get("customer_goal") or "")[:500],
+        "established_keys": established_keys,
+        "active_friction": str(raw.get("active_friction") or "")[:500],
+        "decision_opportunity": str(raw.get("decision_opportunity") or "")[:500],
+        "primary_objective": str(raw.get("primary_objective") or "")[:500],
+        "smallest_next_commitment": str(raw.get("smallest_next_commitment") or "")[:500],
+        "posture": posture,
+        "reason": str(raw.get("reason") or "")[:500],
+    }
+
+
+def _normalized_deposit_evidence(value: Any, *, strict: bool = True) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    supporting_key = str(raw.get("supporting_key") or "").strip()
+    supporting_key = {"none": ""}.get(supporting_key, supporting_key)
+    if strict and supporting_key not in {"", "address", "effect", "objection"}:
+        raise ValueError("invalid_reply_deposit_supporting_key")
+    return {
+        "offer_prior_turn_refs": _normalized_evidence_refs(raw.get("offer_prior_turn_refs")),
+        "supporting_key": supporting_key,
+        "supporting_refs": _normalized_evidence_refs(raw.get("supporting_refs")),
+        "current_intent_refs": _normalized_evidence_refs(raw.get("current_intent_refs")),
+    }
+
+
+def _normalized_payment_assessment(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    status = str(raw.get("status") or "unknown").strip()
+    status = {
+        "unverified_oral_paid_claim": "unverified_paid_claim",
+    }.get(status, status)
+    if status not in {
+        "unknown",
+        "none",
+        "manual_transfer",
+        "unverified_paid_claim",
+        "payment_request",
+        "authoritative_paid",
+    }:
+        raise ValueError("invalid_reply_payment_assessment")
+    return {
+        "status": status,
+        "evidence_refs": _normalized_evidence_refs(raw.get("evidence_refs")),
+    }
+
+
+def _normalized_party_size_assessment(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    status = str(raw.get("status") or "unknown").strip()
+    if status not in {"unknown", "known", "over_limit"}:
+        raise ValueError("invalid_reply_party_size_assessment")
+    party_size: int | None = None
+    if status in {"known", "over_limit"}:
+        try:
+            party_size = int(raw.get("party_size"))
+        except (TypeError, ValueError):
+            raise ValueError("invalid_reply_party_size") from None
+        if status == "known" and not 1 <= party_size <= 4:
+            raise ValueError("invalid_reply_party_size")
+        if status == "over_limit" and party_size <= 4:
+            raise ValueError("invalid_reply_party_size")
+    return {
+        "status": status,
+        "party_size": party_size,
+        "evidence_refs": _normalized_evidence_refs(raw.get("evidence_refs")),
+    }
+
+
+def _normalized_evidence_refs(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+
+
+def _customer_message_refs(state: AgentState) -> set[str]:
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    refs: set[str] = set()
+    for item in shared.get("conversation") or []:
+        if not isinstance(item, dict) or str(item.get("role") or "").strip().lower() not in {"customer", "user"}:
+            continue
+        ref = str(item.get("message_ref") or "").strip()
+        if ref:
+            refs.add(ref)
+    refs.add("current_message")
+    return refs
+
+
+def _validate_assessment_refs(assessment: dict[str, Any], valid_refs: set[str], *, field: str) -> None:
+    status = str(assessment.get("status") or "")
+    refs = _canonical_assessment_refs(assessment.get("evidence_refs"), valid_refs)
+    assessment["evidence_refs"] = refs
+    requires_evidence = status not in {"none", "unknown"}
+    if requires_evidence and not refs:
+        raise ValueError(f"{field}_requires_customer_message_evidence")
+    if any(ref not in valid_refs for ref in refs):
+        raise ValueError(f"{field}_has_invalid_evidence_ref")
+
+
+def _validate_payment_assessment_refs(
+    assessment: dict[str, Any],
+    valid_customer_refs: set[str],
+    *,
+    authoritative_paid: bool,
+) -> None:
+    status = str(assessment.get("status") or "unknown")
+    refs = _canonical_assessment_refs(assessment.get("evidence_refs"), valid_customer_refs)
+    # Citation lists are audit metadata. Drop fabricated/non-customer refs
+    # without changing Reply's payment status, action, or visible wording. A
+    # non-neutral status still fails below when no valid customer ref remains.
+    refs = [ref for ref in refs if ref in valid_customer_refs]
+    assessment["evidence_refs"] = refs
+    if status in {"unknown", "none"}:
+        return
+    if status == "authoritative_paid":
+        if not authoritative_paid:
+            raise ValueError("payment_assessment_authoritative_paid_requires_fact")
+        assessment["evidence_refs"] = ["payment_fact:authoritative_paid"]
+        return
+    if not refs:
+        raise ValueError("payment_assessment_requires_customer_message_evidence")
+
+
+def _canonical_assessment_refs(value: Any, valid_refs: set[str]) -> list[str]:
+    """Normalize unambiguous reference notation without inferring semantics."""
+
+    aliases = {
+        "current_message.content": "current_message",
+        "shared_context.current_message": "current_message",
+        "shared_context.current_message.content": "current_message",
+        "evidence.shared_context.current_message": "current_message",
+        "evidence.shared_context.current_message.content": "current_message",
+    }
+    output: list[str] = []
+    for raw in _normalized_evidence_refs(value):
+        ref = aliases.get(raw, raw)
+        for prefix in ("conversation:", "shared_context.conversation:", "evidence.shared_context.conversation:"):
+            if ref.startswith(prefix):
+                candidate = ref[len(prefix) :]
+                if candidate in valid_refs:
+                    ref = candidate
+                break
+        if ref not in output:
+            output.append(ref)
+    return output
 
 
 def _compact_recovery_value(value: Any, *, depth: int = 0) -> Any:
@@ -480,16 +1523,742 @@ def _capped_deadline(node_deadline: float, round_deadline: float | None) -> floa
     return min(node_deadline, round_deadline) if round_deadline is not None else node_deadline
 
 
-def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> list[dict[str, Any]]:
+def _reply_retry_messages(
+    messages: list[dict[str, Any]],
+    exc: Exception,
+    *,
+    previous_payload: dict[str, Any] | None = None,
+    validation_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    if isinstance(validation_context, dict) and validation_context.get("schema_version") == "parallel_reply_repair_context_v2":
+        return _parallel_generic_reply_repair_messages(
+            messages,
+            exc,
+            previous_payload=previous_payload,
+            validation_context=validation_context,
+        )
     repair_hint = _reply_repair_hint(str(exc))
-    retry_instruction = (
-        "上一次输出没有通过 JSON schema 校验。"
-        f"错误：{type(exc).__name__}: {exc}。"
-        f"{repair_hint}"
-        "请只重新输出严格 JSON 对象，顶层必须包含非空 reply_messages 数组；"
-        "不要解释错误，不要输出 markdown，不要输出内部分析。"
+    payment_repair_guard = _reply_payment_repair_guard(previous_payload)
+    structural_repair_guard = _reply_structural_repair_guard(
+        str(exc),
+        previous_payload=previous_payload,
+        validation_context=validation_context,
     )
-    return [*messages, {"role": "user", "content": retry_instruction}]
+    context_hint = ""
+    if validation_context:
+        context_hint = (
+            "本轮可用的结构校验引用如下，必须逐字使用，不能编造："
+            f"{json_dumps(validation_context)}。"
+        )
+    if structural_repair_guard:
+        retry_instruction = (
+            "只执行下面最高优先级结构清单，并输出修复后的完整 JSON："
+            f"{structural_repair_guard}"
+            "上一版业务判断已经完成，本次只修复校验器明确指出的结构或事实表达错误。"
+            f"错误：{type(exc).__name__}: {exc}。"
+            "不要重新展开整套销售策略，也不要为了逃避结构修复而撤销已经有完整证据的合法动作。"
+            "只有结构清单明确要求重新阅读 current_message 时才允许修正支付状态；"
+            "其他情况下不得重判客户意图。"
+            "除最终结构清单明确允许改变的字段外，保持上一版已通过校验的字段和客户可见结构不变。"
+            "客户可见 text 必须是对 current_message 的自然回应，禁止原样复制客户消息来代替回答。"
+            "请只输出修复后的完整严格 JSON 对象，顶层必须包含非空 reply_messages 数组；"
+            "不要解释错误，不要输出 markdown，不要输出内部分析。"
+        )
+    else:
+        retry_instruction = (
+            "先执行本次针对性修复要求："
+            f"{payment_repair_guard}"
+            f"{repair_hint}"
+            "然后再按以下通用一致性合同复核整份输出。"
+            "上一次输出没有通过 JSON schema 校验。"
+            f"错误：{type(exc).__name__}: {exc}。"
+            "这是一次基于原始上下文的完整一致性修复，不是机械追加缺失字段。先重新核对上一版 action 是否被本轮真实引用和硬事实允许："
+            "若动作本身不合法，必须撤销或改成真实动作，并同步清空冲突的 deposit_evidence、selected_content_ids 和客户可见承诺；"
+            "若动作合法，才保留业务判断并一次补齐它要求的全部结构、引用和客户可见内容。"
+            "不要因为错误写着‘缺卡片’就直接加卡，也不要因为补卡会麻烦就逃避已经合法的 payment。"
+            "修复后必须重新检查整份 JSON，确保没有用当前轮内容资产冒充更早证据、没有修复一项又制造新的金额、支付、登记或候选交付冲突。"
+            f"{context_hint}"
+            "提交前统一复核：每个 selected_content_ids 都必须在 used_fact_refs 中有完全对应的 "
+            "content_asset:<id>，必须逐字复制 validation_context.content_candidate_reference_options "
+            "里的 used_fact_ref，不能用 sop_completed:<id> 或其他历史引用替代；并交付该候选要求的全部结构消息；"
+            "action=payment 必须有且只有一张 "
+            "payment_collection 及完整 deposit_evidence；action=registration 只能用于 authoritative_paid=true。"
+            f"最后再次执行本轮付款状态的最高优先级结构要求：{payment_repair_guard}"
+            "请只重新输出严格 JSON 对象，顶层必须包含非空 reply_messages 数组；"
+            "不要解释错误，不要输出 markdown，不要输出内部分析。"
+        )
+    previous_output = (
+        [{"role": "assistant", "content": json.dumps(previous_payload, ensure_ascii=False, separators=(",", ":"))}]
+        if isinstance(previous_payload, dict)
+        else []
+    )
+    if structural_repair_guard:
+        # Structural repair is deliberately isolated from the full sales prompt.
+        # The model already made the business decision; repeating the 10k+ token
+        # strategy contract makes exact citation/message repairs less reliable.
+        # Python only exposes source facts and allowed choices here. The model
+        # still decides whether the cited customer text supports the action.
+        repair_facts = {
+            "current_message": (
+                validation_context.get("current_message")
+                if isinstance(validation_context, dict)
+                else {}
+            ),
+            "prior_message_options": (
+                validation_context.get("prior_message_options") or []
+                if isinstance(validation_context, dict)
+                else []
+            ),
+        }
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是 JSON 结构修复器，不重新制定销售策略。"
+                    "复制上一版完整 JSON，只按最后一条用户消息中的结构清单修复。"
+                    "不得自动补造证据、素材或客户话术；证据是否支持动作仍由你阅读原文判断。"
+                    "只输出一个完整、严格、可解析的 json 对象。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": "本次修复可使用的原始事实：" + json_dumps(repair_facts),
+            },
+            *previous_output,
+            {"role": "user", "content": retry_instruction},
+        ]
+    return [*messages, *previous_output, {"role": "user", "content": retry_instruction}]
+
+
+def _parallel_generic_reply_repair_messages(
+    messages: list[dict[str, Any]],
+    exc: Exception,
+    *,
+    previous_payload: dict[str, Any] | None,
+    validation_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Repair only explicit structure/fact violations on the model-led path."""
+
+    if isinstance(exc, ReplyFactAuditViolation):
+        violations: Any = exc.audit_result.get("violations") or []
+        failure_class = "fact_audit"
+    else:
+        raw_error = str(exc)
+        marker = "parallel_reply_hard_violations::"
+        violation_codes = raw_error.split(marker, 1)[1].split(";;") if marker in raw_error else [raw_error]
+        violations = [item.strip() for item in violation_codes if item.strip()]
+        failure_class = "structure_or_provenance"
+    required_changes = _parallel_repair_required_changes(violations)
+    repair_contract = {
+        "schema_version": "parallel_reply_generic_repair_v2",
+        "failure_class": failure_class,
+        "violations": violations,
+        "required_changes": required_changes,
+        "rules": [
+            "只修复列出的结构或事实冲突，保留其余合法业务判断和客户可见内容。",
+            "不得新增权威事实中不存在的门店、素材、支付、预约、退款或效果结论。",
+            "不得评价或重做销售策略。原动作因事实或结构冲突无法成立时，由 Reply 阅读原始完整证据后选择合法动作。",
+            "selected_content_ids、used_fact_refs、结构消息和 action 必须彼此一致。",
+            "保留某个 selected_content_id 时，仅对 repeat_delivery_required=true 的资产逐项交付全部非文本结构消息；image/video 的 content 使用原始 URL 字符串。delivery_status=completed 的资产可作为历史证据引用，不强制重发旧素材。不能完整交付当前要求的资产时删除该资产 ID 和对应 content_asset 引用。",
+            "selected_content_delivery_missing 不代表候选一定应被采用。若上一版客户可见回复没有使用该候选的事实或素材，或候选不能解决上一版 sales_judgment.customer_goal，优先只删除错误声明的 selected_content_id 和 content_asset 引用，逐字保留原客户可见回复；不得为了补结构素材而把原回复替换成无关资产。",
+            "action 只能是 none、ask、offer、payment、registration；close 只属于 sales_judgment.posture。纯文字回答、暂停或切换维度使用 action=none；确实提出最小问题时才使用 ask。",
+            "所有 evidence_refs 只能逐字取自 valid_reference_contract 提供的真实引用。若证据不足，不得由代码或模型补造引用；应删除无证据的声明，或由 Reply 基于完整证据选择仍然成立的动作。",
+            "assessment、action 与结构消息发生冲突时，只修复被 violation 指出的不一致；语义判断仍由 Reply 根据 current_message、prior_message_options 和权威事实完成。",
+            "输出完整严格 json，不解释错误，不输出 markdown 或内部分析。",
+            "不得原样返回仍包含 violations 的上一版 JSON；逐项完成 required_changes 后再输出。",
+            "violations 没有指向 sales_judgment 时，逐字段保留上一版 sales_judgment，不得改写其姿态或理由。",
+            "结构或引用错误没有直接指出客户可见 text 冲突时，逐字保留原 text；只修改被点名的引用、资产 ID 或结构消息。",
+            "事实审计错误只修改 violation.quote 所在的事实片段及其直接依赖句，不新增卖点、群体结论或销售理由。",
+        ],
+        "output_schema_constraints": {
+            "action": ["none", "ask", "offer", "payment", "registration"],
+            "sales_judgment_required_fields": [
+                "customer_goal",
+                "established_keys",
+                "active_friction",
+                "decision_opportunity",
+                "primary_objective",
+                "smallest_next_commitment",
+                "posture",
+                "reason",
+            ],
+            "sales_judgment_posture": ["answer", "advance", "switch", "pause", "close"],
+            "sales_judgment_established_keys": ["address", "effect", "activity", "objection"],
+            "payment_assessment_status": [
+                "none",
+                "manual_transfer",
+                "unverified_paid_claim",
+                "payment_request",
+                "authoritative_paid",
+            ],
+        },
+        "previous_reply_claims": {
+            "action": str((previous_payload or {}).get("action") or ""),
+            "payment_assessment": (
+                (previous_payload or {}).get("payment_assessment")
+                if isinstance((previous_payload or {}).get("payment_assessment"), dict)
+                else {}
+            ),
+        },
+        "valid_reference_contract": {
+            "current_message": validation_context.get("current_message") or {},
+            "prior_message_options": validation_context.get("prior_message_options") or [],
+            "valid_customer_message_refs": validation_context.get("valid_customer_message_refs") or [],
+            "valid_deposit_evidence_refs": validation_context.get("valid_deposit_evidence_refs") or [],
+            "allowed_selected_content_ids": validation_context.get("allowed_selected_content_ids") or [],
+            "content_candidate_reference_options": validation_context.get("content_candidate_reference_options") or [],
+            "tool_fact_reference_options": validation_context.get("tool_fact_reference_options") or [],
+            "authoritative_fact_reference_options": (
+                validation_context.get("authoritative_fact_reference_options") or []
+            ),
+            "store_fact_status": validation_context.get("store_fact_status") or {},
+            "registration_fact_status": validation_context.get("registration_fact_status") or {},
+            "content_candidate_delivery_requirements": validation_context.get("content_candidate_delivery_requirements") or [],
+            "authoritative_paid": bool(validation_context.get("authoritative_paid")),
+        },
+    }
+    previous_output = (
+        [{"role": "assistant", "content": json.dumps(previous_payload, ensure_ascii=False, separators=(",", ":"))}]
+        if isinstance(previous_payload, dict)
+        else []
+    )
+    evidence_messages = [
+        item
+        for item in messages
+        if isinstance(item, dict) and str(item.get("role") or "") == "user"
+    ]
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是最终 Reply 的最小事实与结构修复器，不重新规划销售策略。"
+                "阅读完整证据和上一版 JSON，只修复 repair_contract 列出的冲突。"
+                "保留所有未冲突的客户可见内容与业务判断；只输出完整严格 json。"
+            ),
+        },
+        *evidence_messages,
+        *previous_output,
+        {
+            "role": "user",
+            "content": (
+                "这是一次事实与结构最小修复，不是重新制定销售策略。"
+                + json_dumps(repair_contract)
+            ),
+        },
+    ]
+
+
+def _parallel_repair_required_changes(violations: Any) -> list[dict[str, str]]:
+    """Expose generic repair obligations without prescribing business intent."""
+
+    required: list[dict[str, str]] = []
+    for raw in violations if isinstance(violations, list) else []:
+        code = str(raw or "")
+        if code.startswith("selected_content_delivery_missing:"):
+            required.append(
+                {
+                    "violation": code,
+                    "required_change": (
+                        "二选一：按 violation 中的 required 原样补齐全部结构消息；"
+                        "或删除该 selected_content_id 及其 content_asset 引用。若上一版客户可见回复没有实际使用"
+                        "该候选，选择删除并逐字保留原回复，不得用候选正文替换原回答。"
+                    ),
+                }
+            )
+        elif "evidence_ref" in code or code.startswith("selected_content_requires_used_fact_ref:"):
+            required.append(
+                {
+                    "violation": code,
+                    "required_change": (
+                        "纯引用修复：只能从 valid_reference_contract 逐字选择真实引用。"
+                        "引用不足时删除无支持的声明或资产选择；不得编造引用，不得顺带改变未冲突的客户可见内容。"
+                    ),
+                }
+            )
+        else:
+            required.append(
+                {
+                    "violation": code,
+                    "required_change": (
+                        "按 violation 指出的事实或结构冲突做最小修复。只使用 valid_reference_contract 中的"
+                        "权威事实、允许枚举、真实 ID 和结构选项；若原动作无法成立，由 Reply 基于完整证据选择合法动作。"
+                    ),
+                }
+            )
+    return required
+
+
+def _reply_payment_repair_guard(previous_payload: dict[str, Any] | None) -> str:
+    """Keep repair focused without inferring payment semantics in Python.
+
+    The guard only reflects Reply's own previous structured assessment. The
+    repair model still reads the original customer message and owns any
+    semantic correction.
+    """
+
+    if not isinstance(previous_payload, dict):
+        return ""
+    assessment = (
+        previous_payload.get("payment_assessment")
+        if isinstance(previous_payload.get("payment_assessment"), dict)
+        else {}
+    )
+    status = str(assessment.get("status") or "").strip()
+    status = {
+        "unverified_oral_paid_claim": "unverified_paid_claim",
+    }.get(status, status)
+    if status in {"manual_transfer", "unverified_paid_claim"}:
+        return (
+            f"上一版 Reply 已将 payment_assessment.status 判断为 {status}。本次错误若未明确指出该状态或其引用非法，"
+            "就必须保留这一更具体的非小程序支付判断，只修正冲突结构：action 使用 none/ask，"
+            "selected_content_ids=[]，deposit_evidence 全部清空，不发送 payment_collection，也不声称已到账或已登记。"
+        )
+    if status == "payment_request":
+        return (
+            "上一版写了 payment_assessment.status=payment_request，但枚举合法不代表语义一定正确。"
+            "修复前先由你重新阅读原始 current_message：普通文字声称已经付好/转好应改为 unverified_paid_claim；"
+            "客户选择人工转账或不用小程序应改为 manual_transfer；只有仍是一般报名付款请求或明确索要小程序收款卡时"
+            "才保留 payment_request。这个判断必须由你根据原文完成，代码没有替你做关键词判定。"
+            "这是结构修复，不允许把 payment_request 改成含糊的 none 来逃避补卡、补素材或补引用。"
+            "除非原文实际属于 manual_transfer/unverified_paid_claim，或输入存在硬禁区，否则必须保留"
+            " payment_request，并让 action、deposit_evidence 和客户可见结构与它一致。"
+            "如果你把状态纠正为 manual_transfer 或 unverified_paid_claim，必须在同一个 JSON 中成组完成四项结构修复："
+            "action 改为 none/ask；selected_content_ids=[]；deposit_evidence 四个字段全部清空；删除候选图片和"
+            "payment_collection，只保留转账说明或待核对话术。不得只改 payment_assessment 枚举却保留发卡结构。"
+        )
+    return ""
+
+
+def _reply_structural_repair_guard(
+    error: str,
+    *,
+    previous_payload: dict[str, Any] | None,
+    validation_context: dict[str, Any] | None,
+) -> str:
+    """Build a final evidence-only checklist for common parallel Reply repairs.
+
+    The checklist exposes exact references and candidate messages. It never
+    selects evidence, changes a sales action, or manufactures customer-visible
+    structures in Python; the repair model still owns those decisions.
+    """
+
+    if not isinstance(previous_payload, dict) or not isinstance(validation_context, dict):
+        return ""
+
+    tasks: list[dict[str, Any]] = []
+    if "offer_total_tail_amount_conflict" in error:
+        immutable_fields = {
+            key: previous_payload.get(key)
+            for key in (
+                "action",
+                "payment_assessment",
+                "deposit_evidence",
+                "selected_content_ids",
+                "used_fact_refs",
+            )
+        }
+        non_text_messages = [
+            item
+            for item in previous_payload.get("reply_messages") or []
+            if isinstance(item, dict) and str(item.get("type") or "").strip() != "text"
+        ]
+        tasks.append(
+            {
+                "violation": "text_only_tail_amount_wording_repair",
+                "instruction": (
+                    "本次错误只允许修正客户可见 text 中把258元尾款写成抵扣金额的事实错误；"
+                    "改为到店再付或补付258元。不得重新审理销售动作，不得删除或新增结构消息。"
+                ),
+                "immutable_fields": immutable_fields,
+                "required_non_text_messages": non_text_messages,
+            }
+        )
+    if (
+        "registration_confirmation_fact_required" in error
+        or "appointment_confirmation_fact_required" in error
+    ):
+        immutable_fields = {
+            key: previous_payload.get(key)
+            for key in (
+                "action",
+                "payment_assessment",
+                "deposit_evidence",
+                "selected_content_ids",
+                "used_fact_refs",
+            )
+        }
+        non_text_messages = [
+            item
+            for item in previous_payload.get("reply_messages") or []
+            if isinstance(item, dict) and str(item.get("type") or "").strip() != "text"
+        ]
+        tasks.append(
+            {
+                "violation": "unverified_registration_or_appointment_wording",
+                "instruction": (
+                    "只修正客户可见 text 中把尚未支付、登记或预约写成已经留好、已经安排、"
+                    "已经登记的事实错误。未付时改为条件表达，例如付10元预约金后才能留活动资格；"
+                    "不得索要已付登记信息，不得重新审理销售动作。"
+                ),
+                "immutable_fields": immutable_fields,
+                "required_non_text_messages": non_text_messages,
+            }
+        )
+    if (
+        "payment_collection_requires_prior_supporting_key_evidence" in error
+        or "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
+    ):
+        deposit = (
+            previous_payload.get("deposit_evidence")
+            if isinstance(previous_payload.get("deposit_evidence"), dict)
+            else {}
+        )
+        allowed_refs = {
+            str(item or "").strip()
+            for item in validation_context.get("prior_customer_message_refs") or []
+            if str(item or "").strip()
+        }
+        customer_options = [
+            {
+                "ref": str(item.get("ref") or "").strip(),
+                "content": str(item.get("content") or ""),
+            }
+            for item in validation_context.get("prior_message_options") or []
+            if isinstance(item, dict)
+            and str(item.get("role") or "").strip().lower() in {"customer", "user"}
+            and str(item.get("ref") or "").strip() in allowed_refs
+        ]
+        tasks.append(
+            {
+                "violation": "missing_customer_engagement_reference",
+                "previous_supporting_key": str(deposit.get("supporting_key") or "").strip(),
+                "previous_supporting_refs": [
+                    str(item or "").strip()
+                    for item in deposit.get("supporting_refs") or []
+                    if str(item or "").strip()
+                ],
+                "allowed_customer_message_options": customer_options,
+                "customer_engagement_definition": (
+                    "客户对该维度主动提问、描述自己的情况、表达顾虑、比较或认可，均属于客户参与；"
+                    "不要求客户必须先表示认可。逐条阅读 allowed_customer_message_options，"
+                    "只要原文直接涉及 previous_supporting_key，就应使用该真实 ref。"
+                ),
+                "choice_keep_payment": (
+                    "由你阅读原文；仅当某条客户原话确实参与 previous_supporting_key 对应维度时，"
+                    "把该 ref 逐字加入 supporting_refs，并保持其余合法付款结构。"
+                    "不得因为客户原话是疑问句而判定为未参与。"
+                ),
+                "choice_cancel_payment": {
+                    "when": "没有任何语义匹配的客户原话",
+                    "action": "改为真实的非付款动作",
+                    "selected_content_ids": [],
+                    "deposit_evidence": {
+                        "offer_prior_turn_refs": [],
+                        "supporting_key": "",
+                        "supporting_refs": [],
+                        "current_intent_refs": [],
+                    },
+                    "payment_collection": "删除",
+                },
+            }
+        )
+
+    repair_payment_assessment = (
+        previous_payload.get("payment_assessment")
+        if isinstance(previous_payload.get("payment_assessment"), dict)
+        else {}
+    )
+    repair_payment_status = str(repair_payment_assessment.get("status") or "").strip()
+    if repair_payment_status in {"manual_transfer", "unverified_paid_claim"}:
+        tasks.append(
+            {
+                "violation": "non_card_payment_status_requires_structural_cleanup",
+                "payment_status": repair_payment_status,
+                "required_structure": {
+                    "action": "none 或确实需要客户补截图时 ask",
+                    "selected_content_ids": [],
+                    "deposit_evidence": {
+                        "offer_prior_turn_refs": [],
+                        "supporting_key": "",
+                        "supporting_refs": [],
+                        "current_intent_refs": [],
+                    },
+                    "payment_collection": "禁止",
+                    "sales_assessment.dimension_decision": "stay | switch | pause | close",
+                },
+                "instruction": (
+                    "保持模型已经判断的具体支付状态，只清除小程序卡及冲突成交结构。"
+                    "客户可见 text 必须自然回答客户，不能原样复制 current_message。"
+                ),
+            }
+        )
+
+    if "invalid_reply_dimension_decision" in error:
+        tasks.append(
+            {
+                "violation": "invalid_sales_assessment_dimension_decision",
+                "allowed_values": ["stay", "switch", "pause", "close"],
+                "instruction": (
+                    "只把 sales_assessment.dimension_decision 修正为一个合法枚举；"
+                    "不得借此重新改变支付状态、动作或客户可见结构。"
+                ),
+            }
+        )
+
+    delivery_options = (
+        validation_context.get("structured_delivery_options")
+        if isinstance(validation_context.get("structured_delivery_options"), dict)
+        else {}
+    )
+    store_delivery = (
+        delivery_options.get("store_address")
+        if isinstance(delivery_options.get("store_address"), dict)
+        else {}
+    )
+    store_payloads = [
+        item
+        for item in store_delivery.get("message_payloads") or []
+        if isinstance(item, dict)
+    ]
+    if store_payloads:
+        prior_decisions = _normalized_structured_delivery_decisions(
+            previous_payload.get("structured_delivery_decisions")
+        )
+        prior_store_decision = next(
+            (
+                item
+                for item in prior_decisions
+                if item["fact_ref"] == "tool_fact:customer_store_lookup"
+            ),
+            None,
+        )
+        tasks.append(
+            {
+                "violation": "current_tool_store_delivery_requires_explicit_decision",
+                "tool_status": str(store_delivery.get("status") or ""),
+                "fact_ref": str(
+                    store_delivery.get("fact_ref")
+                    or "tool_fact:customer_store_lookup"
+                ),
+                "available_store_messages": store_payloads,
+                "previous_decision": prior_store_decision or {},
+                "instruction": (
+                    "只修复结构交付冲突，并保留 Reply 原有销售判断。必须对 fact_ref 明确选择 deliver 或 defer："
+                    "选择 deliver 时引用 fact_ref 并逐项输出 available_store_messages；"
+                    "选择 defer 时保留不交付的上下文理由，不得伪称已经发送。"
+                ),
+            }
+        )
+
+    if "completed_content_repeat_requires_current_customer_ref" in error:
+        tasks.append(
+            {
+                "violation": "completed_content_repeat_reference",
+                "instruction": (
+                    "重复采用已完成内容资产时，只有当前客户确实再次要求该内容才保留资产并把"
+                    " current_message 加入 used_fact_refs；否则删除该资产 ID 和 content_asset 引用。"
+                    "无论选择哪条路径，都不得覆盖本轮真实工具交付。"
+                ),
+            }
+        )
+
+    selected_ids = [
+        str(item or "").strip()
+        for item in previous_payload.get("selected_content_ids") or []
+        if str(item or "").strip()
+    ]
+    if selected_ids or "selected_content_delivery_missing" in error:
+        selected_set = set(selected_ids)
+        requirements = [
+            item
+            for item in validation_context.get("content_candidate_delivery_requirements") or []
+            if isinstance(item, dict) and str(item.get("content_id") or "").strip() in selected_set
+        ]
+        tasks.append(
+            {
+                "violation": "selected_content_delivery_incomplete",
+                "selected_content_ids": selected_ids,
+                "exact_delivery_requirements": requirements,
+                "choice_keep_asset": (
+                    "保留 ID 时，逐项输出 exact_delivery_requirements.messages 中全部结构消息，"
+                    "并保留 required_used_fact_ref；不得只补其中一项。"
+                ),
+                "choice_drop_asset": (
+                    "不交付整套素材时，删除该 ID 及其 content_asset:<id> 引用。"
+                    "若独立预约金证据仍合法，可保留 action=payment 和一张 payment_collection，"
+                    "但不得再声明采用该内容资产。"
+                ),
+            }
+        )
+
+    previous_messages = [
+        item for item in previous_payload.get("reply_messages") or [] if isinstance(item, dict)
+    ]
+    previous_payment_messages = [
+        {"type": "payment_collection", "content": item.get("content")}
+        for item in previous_messages
+        if str(item.get("type") or "").strip() == "payment_collection"
+    ]
+    if str(previous_payload.get("action") or "").strip() == "payment" or previous_payment_messages:
+        assessment = (
+            previous_payload.get("payment_assessment")
+            if isinstance(previous_payload.get("payment_assessment"), dict)
+            else {}
+        )
+        deposit = (
+            previous_payload.get("deposit_evidence")
+            if isinstance(previous_payload.get("deposit_evidence"), dict)
+            else {}
+        )
+        tasks.append(
+            {
+                "violation": "preserve_or_cancel_payment_structure_as_one_group",
+                "previous_payment_status": str(assessment.get("status") or "").strip(),
+                "previous_payment_messages": previous_payment_messages,
+                "previous_deposit_evidence": deposit,
+                "choice_keep_payment": (
+                    "仅当重新阅读 current_message 后仍是合法 payment_request 且硬事实允许时，"
+                    "保持 action=payment、完整 deposit_evidence，并输出且只输出一张 payment_collection。"
+                ),
+                "choice_cancel_payment": (
+                    "若支付位置应改为 manual_transfer/unverified_paid_claim 或命中硬禁区，"
+                    "同时撤销 payment、删除 payment_collection、清空 deposit_evidence 和冲突候选；"
+                    "不得只修文字后丢卡，也不得只留卡而清空证据。"
+                ),
+            }
+        )
+
+    assessment = (
+        previous_payload.get("payment_assessment")
+        if isinstance(previous_payload.get("payment_assessment"), dict)
+        else {}
+    )
+    engagement_evidence_violation = (
+        "payment_collection_requires_prior_supporting_key_evidence" in error
+        or "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
+    )
+    if (
+        str(assessment.get("status") or "").strip() == "payment_request"
+        and not engagement_evidence_violation
+    ):
+        tasks.append(
+            {
+                "violation": "payment_request_decision_must_remain_structurally_consistent",
+                "instruction": (
+                    "先重新阅读 current_message。若它仍是普通报名、预约、付款请求或索要小程序收款卡，"
+                    "必须保留 payment_assessment.status=payment_request；不得改成 none 来逃避结构修复。"
+                    "此时若原 deposit_evidence 经引用修复后完整，就必须保持 action=payment，"
+                    "并输出且只输出一张 payment_collection。可以放弃某个内容资产及其图片，"
+                    "但不能同时放弃独立合法的付款动作。只有原文实际是人工转账、无权威已付声明，"
+                    "或输入存在硬禁区时，才允许改成对应状态并成组撤销付款结构。"
+                ),
+                "previous_payment_assessment": assessment,
+                "previous_deposit_evidence": (
+                    previous_payload.get("deposit_evidence")
+                    if isinstance(previous_payload.get("deposit_evidence"), dict)
+                    else {}
+                ),
+            }
+        )
+
+    if not tasks:
+        return ""
+    contract = {
+        "schema_version": "parallel_reply_structural_repair_v1",
+        "instruction": "逐项完成全部 tasks；每项只能选择其中一条路径，禁止混合或遗漏。",
+        "tasks": tasks,
+    }
+    return f"最高优先级最终结构清单（覆盖前面冲突的通用措辞）：{json_dumps(contract)}。"
+
+
+def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
+    """Expose factual reference choices needed for schema repair."""
+
+    if not state.get("evidence_join"):
+        return {}
+    shared = _parallel_shared_context(state)
+    conversation = [item for item in shared.get("conversation") or [] if isinstance(item, dict)]
+    prior_customer_refs = [
+        str(item.get("message_ref") or "").strip()
+        for item in conversation
+        if str(item.get("role") or "").strip().lower() in {"customer", "user"}
+        and str(item.get("message_ref") or "").strip()
+        and str(item.get("message_ref") or "").strip() != "current_message"
+    ]
+    prior_assistant_refs = [
+        str(item.get("message_ref") or "").strip()
+        for item in conversation
+        if str(item.get("role") or "").strip().lower() in {"assistant", "staff"}
+        and str(item.get("message_ref") or "").strip()
+        and str(item.get("message_ref") or "").strip() != "current_message"
+    ]
+    prior_message_options = [
+        {
+            "ref": str(item.get("message_ref") or "").strip(),
+            "role": str(item.get("role") or "").strip().lower(),
+            "content": str(item.get("content") or ""),
+        }
+        for item in conversation
+        if str(item.get("message_ref") or "").strip()
+        and str(item.get("message_ref") or "").strip() != "current_message"
+    ]
+    payload = parallel_reply_payload(state)
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    candidate_requirements: list[dict[str, Any]] = []
+    for candidate in joined.get("content_candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        content_id = str(candidate.get("content_id") or "").strip()
+        if not content_id:
+            continue
+        candidate_requirements.append(
+            {
+                "content_id": content_id,
+                "required_used_fact_ref": f"content_asset:{content_id}",
+                "asset_role": str(candidate.get("asset_role") or "").strip(),
+                "delivery_status": str(candidate.get("delivery_status") or "").strip(),
+                "repeat_delivery_required": (
+                    str(candidate.get("delivery_status") or "").strip() != "completed"
+                ),
+                "messages": [
+                    {
+                        "type": str(item.get("type") or "").strip(),
+                        "content": item.get("content"),
+                    }
+                    for item in candidate.get("messages") or []
+                    if isinstance(item, dict) and str(item.get("type") or "").strip()
+                ],
+            }
+        )
+    return {
+        "schema_version": "parallel_reply_repair_context_v2",
+        "current_message": dict(shared.get("current_message") or {}),
+        "prior_customer_message_refs": prior_customer_refs,
+        "prior_message_options": prior_message_options,
+        "valid_customer_message_refs": payload.get("valid_customer_message_refs") or [],
+        "valid_deposit_evidence_refs": payload.get("valid_deposit_evidence_refs") or [],
+        "structured_prior_activity_refs": payload.get("structured_prior_activity_refs") or [],
+        "prior_assistant_message_refs": (
+            payload.get("prior_assistant_message_refs") or prior_assistant_refs
+        ),
+        "structured_delivered_assets": payload.get("structured_delivered_assets") or [],
+        "structured_delivery_options": payload.get("structured_delivery_options") or {},
+        "store_fact_status": payload.get("store_fact_status") or {},
+        "registration_fact_status": payload.get("registration_fact_status") or {},
+        "prior_message_and_delivery_refs": (
+            payload.get("prior_message_and_delivery_refs") or []
+        ),
+        "allowed_selected_content_ids": payload.get("allowed_selected_content_ids") or [],
+        "content_candidate_reference_options": (
+            payload.get("content_candidate_reference_options") or []
+        ),
+        "tool_fact_reference_options": payload.get("tool_fact_reference_options") or [],
+        "authoritative_fact_reference_options": (
+            payload.get("authoritative_fact_reference_options") or []
+        ),
+        "content_candidate_delivery_requirements": candidate_requirements,
+        "authoritative_paid": bool(_parallel_paid_deposit_context(state)),
+    }
 
 
 def _reply_model_tier(state: AgentState) -> str:
@@ -499,6 +2268,11 @@ def _reply_model_tier(state: AgentState) -> str:
 
 
 def _needs_strong_reply_model(state: AgentState) -> bool:
+    if state.get("evidence_join"):
+        # The final Reply receives the complete joined evidence and owns the
+        # business interpretation. Do not select a model from legacy stage,
+        # blocker, customer-type, or Planner fields.
+        return False
     handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
     if handoff.get("needed"):
         return True
@@ -529,6 +2303,10 @@ def _maybe_build_required_payment_collection_fallback(
     *,
     messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]] | None:
+    if state.get("evidence_join"):
+        # A structured payment card is a final Reply decision in the parallel
+        # chain. Python may validate it, but must never manufacture one.
+        return None
     if "payment_collection_required_when_reply_promises_payment_entry" not in str(exc):
         return None
     source_messages = [item for item in (messages or []) if isinstance(item, dict)]
@@ -726,6 +2504,227 @@ def _compact_text(value: Any) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
+    aggregate_marker = "parallel_reply_hard_violations::"
+    if aggregate_marker in error:
+        raw = error.split(aggregate_marker, 1)[1]
+        combined_asset_deposit_error = (
+            "selected_content_delivery_missing" in raw
+            and (
+                "payment_collection_requires_prior_supporting_key_evidence" in raw
+                or "payment_collection_requires_customer_engaged_supporting_key_evidence" in raw
+            )
+        )
+        hints: list[str] = [_reply_repair_hint(raw)] if combined_asset_deposit_error else []
+        for violation in (item.strip() for item in raw.split(";;")):
+            if not violation:
+                continue
+            if combined_asset_deposit_error and (
+                "selected_content_delivery_missing" in violation
+                or "payment_collection_requires_prior_supporting_key_evidence" in violation
+                or "payment_collection_requires_customer_engaged_supporting_key_evidence" in violation
+            ):
+                continue
+            hint = _reply_repair_hint(violation)
+            if hint and hint not in hints:
+                hints.append(hint)
+        if hints:
+            return "本次输出同时违反多项硬事实或结构合同，必须在同一个新 JSON 中全部修正：" + " ".join(hints)
+    if "Model JSON missing reply_messages" in error or "Model reply_messages are empty" in error:
+        return (
+            "reply_messages 不能缺失或为空。即使 Gate 没有候选、工具没有结果或你决定暂停推进，也必须根据当前消息、"
+            "完整聊天和权威事实生成至少一条客户可见 text；不采用候选时 selected_content_ids 留空即可。"
+        )
+    if "invalid_parallel_reply_action" in error:
+        return (
+            "action 必须逐字使用 none、ask、offer、payment、registration 之一，并与本轮实际可见消息一致。"
+            "不要用自定义枚举，也不要用 registration 表示未付客户参加活动。"
+        )
+    if "invalid_parallel_reply_list_field" in error:
+        return (
+            "used_fact_refs、selected_content_ids 和 commit_actions 必须始终是 JSON 数组；没有内容时使用空数组，"
+            "不能省略、写成字符串或对象。"
+        )
+    if (
+        "safety_assessment_has_invalid_evidence_ref" in error
+        or "party_size_assessment_has_invalid_evidence_ref" in error
+    ):
+        return (
+            "safety_assessment.evidence_refs and party_size_assessment.evidence_refs may only use exact values "
+            "from validation_context.valid_customer_message_refs. Do not cite assistant/staff messages. "
+            "If there is no valid customer evidence for an assessment, use status=none/unknown and an empty list. "
+            "This is a citation-only repair: preserve the valid customer-visible answer and business action, remove only invalid refs, "
+            "and do not newly select a content asset, add deposit_evidence, add a payment/registration action, or introduce a new sales step. "
+            "Unless the original output already validly used them, keep selected_content_ids and deposit_evidence empty."
+        )
+    if (
+        "payment_assessment_requires_customer_message_evidence" in error
+        or "payment_assessment_has_invalid_evidence_ref" in error
+        or "payment_assessment_none_requires_empty_evidence" in error
+    ):
+        return (
+            "payment_assessment 只描述本轮客户支付位置。manual_transfer、unverified_paid_claim 和 payment_request "
+            "必须逐字引用 valid_customer_message_refs 中的客户消息；none 必须使用空 evidence_refs。"
+            "不要为了保留原 action 改写支付状态，也不要引用客服消息冒充客户选择。"
+        )
+    if "payment_assessment_authoritative_paid_requires_fact" in error:
+        return (
+            "输入没有权威已付事实，payment_assessment 不能使用 authoritative_paid。"
+            "客户普通文字称已转好只能用 unverified_paid_claim 并引用客户原话；同时不得发卡、不得进入 registration。"
+        )
+    if "payment_assessment_blocks_payment_collection" in error:
+        return (
+            "你已经把本轮支付位置判断为 manual_transfer 或 unverified_paid_claim，但输出仍在发小程序卡或执行 payment。"
+            "必须保持该真实判断：action 改为 none 或确有必要时 ask，selected_content_ids=[]，删除 payment_collection 和候选图片，"
+            "并把 deposit_evidence 精确清空为 "
+            "{\"offer_prior_turn_refs\":[],\"supporting_key\":\"\",\"supporting_refs\":[],\"current_intent_refs\":[]}。"
+            "人工转账只说明转好后告知或发截图核对；待核对声明只说明核对付款记录或请客户补成功截图。"
+        )
+    if "payment_collection_requires_payment_request_assessment" in error:
+        return (
+            "payment_collection 只能与 payment_assessment.status=payment_request 一致。"
+            "重新根据客户原话判断：索要小程序收款卡、明确问报名/预约/付款可用 payment_request；"
+            "明确人工转账必须用 manual_transfer；普通文字称已转好但无权威事实必须用 unverified_paid_claim。"
+            "不要为了保留卡片把后两类改写成 payment_request；若不是小程序付款请求，就撤销 payment、清空候选和 deposit_evidence。"
+        )
+    if "registration_action_requires_authoritative_paid_assessment" in error:
+        return (
+            "registration 只允许 payment_assessment.status=authoritative_paid，且输入必须真实存在 payment_fact:authoritative_paid。"
+            "没有该事实就撤销 registration，不得提前收姓名电话或声称已登记。"
+        )
+    if "invalid_parallel_reply_message_object" in error or "invalid_parallel_reply_message_type" in error:
+        return (
+            "reply_messages 的每一项必须是包含 type 和 content 的 JSON 对象；type 只能使用输出合同允许的消息类型，"
+            "不能输出纯字符串或自定义类型。"
+        )
+    if "duplicate_payment_collection_in_single_turn" in error:
+        return "同一轮最多一张 payment_collection；保留唯一正确金额的卡片，删除其余重复卡片。"
+    if "selected_content_id_not_in_gate_candidates" in error:
+        return (
+            "selected_content_ids 只能逐字取自输入 allowed_selected_content_ids。"
+            "请删除错误中未被 Gate 提名的 ID；仍可使用聊天和权威业务事实自行回答，但不能把未提名资产写成已采用。"
+        )
+    if "invalid_reply_deposit_supporting_key" in error or "payment_collection_requires_supporting_sales_key" in error:
+        return (
+            "这次错误说明 supporting_key 枚举或其证据不合法。修复前先按 payment_assessment 的信息特异性重新阅读"
+            "原始 current_message：普通文字称已经付好/转好属于待核对声明，明确选择人工转账属于 manual_transfer，"
+            "二者都优先于一般 payment_request，并且都必须清空 deposit_evidence、候选和小程序卡。"
+            "若原文复核后仍是一般付款请求，才保留 payment_request 和支付动作，只修正证据。"
+            "只有实际发送 payment_collection 时才填写 deposit_evidence。supporting_key 只能是 address、effect、"
+            "objection 之一，并且要与 supporting_refs 所引用的历史承接一致；时间、忙碌、改天、观望或费用顾虑"
+            "都属于 objection 维度，不能自造 time/refusal/price 等枚举。若历史没有真实成立的另一把钥匙，就取消本轮发卡并清空 deposit_evidence；"
+            "若证据存在且支付位置复核仍为 payment_request，只修正 supporting_key 和 supporting_refs，不改写客户可见支付方式。"
+        )
+    if "payment_collection_requires_prior_activity_evidence" in error:
+        return (
+            "你决定发卡，但 offer_prior_turn_refs 没有引用更早轮次中由客服讲清活动与268元价格的消息，"
+            "或没有引用输入允许的 sop_completed 活动事实。offer_prior_turn_refs 必须至少包含一个"
+            " prior_assistant_message_refs 中的更早客服原文，或 structured_prior_activity_refs 中的结构化活动交付引用。"
+            "这些列表只证明来源和时间；你必须重新阅读原文，确认它确实讲清活动，不能把案例、门店或普通寒暄误当活动介绍。"
+            "如果不存在，就取消本轮 payment_collection 和 action=payment，只先讲活动。"
+        )
+    if (
+        "selected_content_delivery_missing" in error
+        and (
+            "payment_collection_requires_prior_supporting_key_evidence" in error
+            or "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
+        )
+    ):
+        return (
+            "组合修复：上一版已经同时声明采用内容资产和发送预约金，但结构素材与预约金证据没有一次补齐。"
+            "先重新阅读 current_message 并按支付位置的信息特异性核对上一版 payment_assessment：已付/转好待核对声明和"
+            "人工转账选择优先于一般 payment_request，不能为了补候选素材而保留错误的小程序通道。只有复核后仍是"
+            "一般付款请求或明确索要收款卡，才保留上一版 payment_request 和支付动作；不要把真实索要收款卡误改成人工转账。"
+            "再用 validation_context.prior_message_options 逐条核对历史原文，由你判断哪一组真实消息"
+            "属于 address、effect 或 objection；若另一把钥匙确实成立，supporting_refs 必须同时包含该维度的"
+            "历史客户 ref（取自 prior_customer_message_refs）以及相关客服/交付 ref，不能只引用客服发过的内容。"
+            "然后二选一：如果继续采用 selected_content_ids 中的候选，严格按"
+            " content_candidate_delivery_requirements 一次输出它要求的全部 image/video/store_address/"
+            "payment_collection，并补齐 content_asset:<id>；如果不采用整套候选，就删除该 ID，但仍可在真实证据"
+            "成立时保留 action=payment、自然文字和一张 payment_collection。若历史没有客户真实参与另一把钥匙，"
+            "则取消 payment、清空 deposit_evidence，改为补最有价值的缺口。当前未权威已付时，不得改成"
+            " registration，也不得声称已经登记或已经留好名额。提交前一次性复核所有原错误，不要只修第一项。"
+        )
+    if (
+        "payment_collection_requires_prior_supporting_key_evidence" in error
+        or "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
+    ):
+        return (
+            "你决定发卡，但 supporting_refs 尚未证明地址、效果或卡点排疑中的另一把钥匙已被客户真实承接。"
+            "补证据前必须先由你重新阅读 current_message 核对支付位置：已付/转好待核对声明和人工转账选择优先于"
+            "一般 payment_request；若上一版把更具体的支付位置误归成 payment_request，应纠正状态、撤销小程序卡并清空"
+            " deposit_evidence。只有复核后仍是一般付款请求或明确索要收款卡，这才是单纯证据引用修复，此时必须保留"
+            " payment_request 和支付通道，不得把‘把收款卡发我/发卡给我’改写成人工转账。"
+            "如果上一版 sales_assessment 已把与 supporting_key 相同的维度判为 engaged，且本次唯一相关错误只是缺少客户引用，"
+            "本次 repair 不得重新审理该业务结论，也不得仅因漏写 ref 改成 offer、pause 或取消收款卡；应从"
+            " validation_context.prior_message_options 中找到该维度已经存在的客户原话 ref，并追加到原 supporting_refs。"
+            "请从更早聊天中同时引用该维度的客服消息和客户参与消息；supporting_refs 至少包含一个"
+            " prior_customer_message_refs 中的历史客户引用，current_message 只证明本轮行动，不能替代另一把钥匙的历史承接。"
+            "只有 prior_message_options 中确实不存在任何与原 supporting_key 对应的历史客户原话时，才取消本轮发卡，补最有价值的一把钥匙。"
+        )
+    if "payment_collection_requires_current_action_signal_evidence" in error:
+        return (
+            "你决定发卡时，current_intent_refs 必须包含 current_message，证明本轮客户明确在问付款/报名、同意参加"
+            "或同意留名额；如果当前消息没有行动信号，就取消 payment_collection 和 action=payment。"
+        )
+    if "deposit_evidence_requires_payment_action" in error:
+        return (
+            "deposit_evidence 只用于 action=payment 的本轮成交审计，不能和 offer、ask、none 或 registration 并存。"
+            "先检查当前消息是不是客户普通文字声称‘付好了/转好了’：如果没有平台转账成功事件、成功截图或实时订单已付，"
+            "这不是新的付款行动信号，绝对不能重新发卡、不能进入 registration，也不能把它改写成仍需付款；应清空 "
+            "deposit_evidence，使用 none 或确有必要时 ask，请客户发成功截图或说明会结合付款记录核对。这里的清空必须是精确对象："
+            "{\"offer_prior_turn_refs\":[],\"supporting_key\":\"\",\"supporting_refs\":[],\"current_intent_refs\":[]}；"
+            "不要在 current_intent_refs 中保留 current_message。此时也必须把 selected_content_ids 精确清空为 []，"
+            "删除仅为这些候选添加的 content_asset:<id> 引用，不交付候选中的图片或 payment_collection；"
+            "不能一边说等待核对，一边继续声明采用 deposit_close。"
+            "先保留你对真实上下文的业务判断：如果这些引用确实证明更早活动、另一把钥匙和当前行动都成立，且无硬禁区，"
+            "就改为 action=payment 并同轮交付一张 payment_collection；如果你并未认定条件齐全，就清空 deposit_evidence。"
+            "代码不会替你判断客户心理，也不要为了通过校验编造引用。"
+        )
+    if "selected_content_requires_used_fact_ref" in error:
+        return (
+            "你声明采用了 Gate 内容资产，但 used_fact_refs 没有引用对应的 content_asset:<id>。"
+            "如果确实采用，请补上错误中每个内容资产的引用；如果没有采用，就从 selected_content_ids 删除。"
+            "这是纯元数据修复：不要修改原客户可见回复、action、assessment、deposit_evidence 或新增登记/付款承诺来迁就引用。"
+        )
+    if "completed_content_repeat_requires_current_customer_ref" in error:
+        return (
+            "你重复采用了已完成交付的内容资产，但没有证明这是当前客户本轮明确请求或当前问题所需。"
+            "如果上一版已经正确回答了客户本轮明确询问的同一内容，请保持客户可见回复、action 和其他审计字段不变，"
+            "只在 used_fact_refs 补入 current_message，并确认已有对应 content_asset:<id>；否则删除该资产选择，"
+            "自然承接客户当前问题，不要机械复读。这是引用元数据修复，不要借此重做销售决定。"
+        )
+    if "selected_content_delivery_missing" in error:
+        return (
+            "你在 selected_content_ids 中声明采用了 Gate 候选，但没有输出该候选的结构素材。"
+            "错误会一次列出所有已选候选缺少的 required，请全部处理。请重新检查当前客户问题和硬边界："
+            "如果候选适合本轮，优先保持上一版业务决定，并按错误中的 required 以及 "
+            "validation_context.content_candidate_delivery_requirements 一次补齐真实的 "
+            "image/video/store_address/payment_collection；如果候选与当前付款方式、已付、风险或客户状态冲突，"
+            "就从 selected_content_ids 删除该候选，并保持回复内容和 action 与本轮实际决定一致。"
+            "保留任何候选时，还必须在 used_fact_refs 中加入对应的 content_asset:<id>；不要等下一次校验再补引用。"
+            "如果你只是依据权威业务事实自行回答或发送合法预约金卡、并不准备交付候选的整套素材，优先删除该候选 ID；"
+            "action=payment 仍可保留并输出 payment_collection，不需要为了发卡强行选择 deposit_close。"
+            "若你因此新增 payment_collection，还必须同时填写合法 deposit_evidence：更早活动引用、另一把钥匙及客户参与引用、"
+            "current_message 行动信号。仅引用历史事实而不重发资产时，不要选择该资产。"
+            "未付且本轮不发送 payment_collection 时，action 不能使用 registration；registration 只表示权威已付后的信息登记。"
+            "首次活动介绍应使用 offer、ask 或 none 中与实际回复一致的动作，并且不得提前索要姓名或手机号。"
+            "代码不会替你自动追加或删除客户可见卡片。"
+        )
+    if "planned_store_lookup_requires_store_delivery" in error:
+        return (
+            "Tool Planner 已明确规划门店查询，且本轮权威 store_resolution_fact 已要求交付门店卡。"
+            "请从错误中的 required_store_ids 逐个输出 "
+            '`{"type":"store_address","content":{"store_id":"真实ID"}}`，不能把 content 写成门店名或地址字符串，'
+            "也不能只在文字里提门店名或说稍后再发；"
+            "这些 ID 必须全部发送且不得增加其他门店。"
+        )
+    if "planned_store_lookup_delivery_ids_mismatch" in error:
+        return (
+            "本轮门店卡与权威 store_resolution_fact 不一致。请删除现有 store_address，"
+            "只按错误中的 required_store_ids 逐个输出 "
+            '`{"type":"store_address","content":{"store_id":"真实ID"}}`，不得遗漏或增加其他门店，'
+            "content 不能是门店名或地址字符串。"
+        )
     if "precision_reply_passive_mainline_closure" in error:
         return "精准支线问题已经回答到点，但收尾不能等待客户许可。请删除“如果您想/如果您愿意/我可以继续/要不要/是否需要”等表达，直接落一个主线动作：问城市或区域、主动接活动、发案例、推进预约金或登记。没有真实图片或门店卡事实时，直接问城市/区或接活动，不要承诺稍后发。"
     if "precision_reply_missing_mainline_action" in error:
@@ -740,14 +2739,74 @@ def _reply_repair_hint(error: str) -> str:
         return "当前是精准问答边界：不支持项目不能发预约金卡；手脸/两个部位问题不能把部位当同行人数发卡。先把当前边界答清，再自然回到淡斑主线，不要承诺本轮发入口。"
     if "payment_collection_requires_activity_intro" in error:
         return "客户还没有看到完整活动报价/预约金规则时，不要输出 payment_collection，也不要说入口或卡片已发，不要写“付好截图发我”。先用自然话术补活动价268、每位10元预约金到店抵扣、未做或不满意可退，再用“您确认按这个活动参加的话，我马上给您发小程序收款卡”这类封闭式动作承接。"
+    if "payment_action_requires_payment_collection" in error:
+        return (
+            "你已结构声明 action=payment，但本轮没有同时输出 payment_collection。先核验该 payment 是否真的成立："
+            "offer_prior_turn_refs 必须来自 validation_context.structured_prior_activity_refs，或来自"
+            " validation_context.prior_message_options 中当前消息之前且确实讲清活动与268元的客服原文；"
+            "当前轮的 content_asset:<id> 不能冒充更早活动证据。另一把钥匙还必须有历史客户参与引用。"
+            "如果这些引用齐全且没有任何硬禁区，说明销售决定本身有效："
+            "repair 必须保留 payment 并补齐卡片，不能改成 none/ask/offer 来逃避结构错误，也不能再问客户是否需要入口。"
+            "如果 selected_content_ids 中采用了候选，还要一次输出 validation_context.content_candidate_delivery_requirements"
+            " 中该候选要求的全部真实 image/video/store_address/payment_collection，并保持合法 deposit_evidence。"
+            "若更早活动引用无效、另一把钥匙未被客户承接或命中硬禁区，就撤销 payment，删除卡片和发卡承诺，"
+            "清空 deposit_evidence，并按当前真实上下文选择合法 action；不能为了补结构而制造提前发卡。"
+        )
+    if "registration_action_requires_paid_context" in error:
+        return (
+            "你已结构声明 action=registration，但本轮没有权威预约金已付事实。registration 只用于已付后收姓名、电话、门店和到店意向，"
+            "不能表示未付客户参加活动。请重新根据当前问题决定合法动作，不得虚构已付或提前进入登记。"
+            "只有 validation_context.prior_assistant_message_refs 中存在你从原文确认的活动介绍，或 structured_prior_activity_refs 有真实活动交付，"
+            "并且另一把钥匙和当前行动信号也已经齐全，"
+            "才可改为 action=payment，并一次输出 deposit_close 候选要求的真实 text、"
+            "image 和 payment_collection，补齐对应 content_asset:<id> 引用与合法 deposit_evidence；或者删除该候选 ID，"
+            "仅按权威交易事实输出自然 text、payment_collection 和合法 deposit_evidence。"
+            "没有任何更早活动证据时必须使用 offer、ask 或 none，不得发卡，也不得索要姓名手机号。"
+            "不要保留候选 ID 却漏素材。"
+        )
+    if (
+        "unpaid_registration_details_requested_before_payment" in error
+        or "unpaid_registration_claim_before_payment" in error
+    ):
+        return (
+            "当前没有权威预约金已付事实，本轮也没有发送收款卡。姓名和手机号只在支付成功后登记；"
+            "删除索要姓名、名字或手机号，以及声称已经帮客户登记、保留或留住名额的句子。"
+            "如果上一版 payment_assessment 是 manual_transfer 或 unverified_paid_claim，本次只修正未付状态措辞，"
+            "必须保留原支付通道、none/ask 动作、空 deposit_evidence 和无卡结构；绝对不能改成 payment_request、"
+            "deposit_close 或小程序收款卡。可以条件式说明核对到账后再继续登记或保留资格，但不能写成当前已经完成。"
+            "重新阅读当前客户原话：若客户只是普通文字声称已经付好或转好，这仍是待核对声明，"
+            "不得重复发卡；请客户发截图，或说明会结合平台付款记录核对。"
+            "只有当前客户是在开始付款、报名或预约，而不是声称已经付款，并且预约金证据确实齐全时，"
+            "才直接发送一张 payment_collection。若上一版 deposit_evidence 已经同时给出更早活动、"
+            "另一把钥匙和 current_message，并且当前原话是要求保留活动而非声称已付，"
+            "应保留这些真实引用，改为 action=payment 并发送卡；只改写错误的完成态文字，不要删除卡片、"
+            "不要清空 deposit_evidence，也不要改选 activity_offer 来逃避成交。文字把付款条件和结果连在一起，"
+            "例如‘付10元预约金就能把活动名额留住’，不能写‘给您先留活动名额/先帮您留着’。"
+            "若是首次活动咨询，则只讲活动价值。"
+            "不要把客户和客服的动作主客体写反：不能让客户‘把活动名额发来/把名额给我’，"
+            "也不能要求客户提供一个并不存在的‘活动名额’对象。应直接说明当前真实活动或下一步真实动作。"
+            "不得创造口头登记或让客户先回复资料的中间步骤。"
+        )
+    if "registration_confirmation_fact_required" in error:
+        return (
+            "本轮没有权威已付、订单或登记完成事实，不能说已经登记、已经留好名额、已经安排或已经预约。"
+            "逐字删除‘可以，先给您留着’、‘我先帮您留着’、‘先给您留好’这类付前完成态；"
+            "如果本轮同时发送预约金卡，改成条件与结果相连的真实表述，例如‘付10元预约金就能把活动名额留住’，"
+            "不要只删卡片或改掉已经成立的 payment 决策。"
+            "请改成尚未完成的真实状态：如果历史活动报价已完成且客户明确要留名额，可选择 action=payment 并同轮输出一张 payment_collection；"
+            "如果只是解释规则，则使用与实际文字一致的 action，不要把将来动作写成已经完成。"
+        )
     if "payment_collection_required" in error:
         return "如果 payment_action=send_now、文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
     if "payment_collection_amount_text_mismatch" in error:
         return "预约金卡片金额必须和文本一致；同行按每位10元锁活动名额，2位说一共20元，3位说一共30元，4位说一共40元。"
     if "payment_confirmation_fact_required" in error:
-        return "当前没有成功支付截图、平台转账成功事件或实时订单已付事实。客户口头说已转账时，可先收姓名电话并说明会结合平台付款记录核对；截图方便时可发但不是必选。不能说已收到、已到账、已核款或支付已确认。"
+        return "当前没有成功支付截图、平台转账成功事件或实时订单已付事实。客户口头说已转账时，不得重复发卡、不得进入已付登记或索要姓名电话；请客户发转账截图，或说明会结合平台付款记录核对。不能说已收到、已到账、已核款或支付已确认。"
     if "offer_total_tail_amount_conflict" in error:
-        return "活动总价是268元。10元预约金计入总价并到店抵扣，客户实际做时再付剩余258元；不能把258说成最终总价、全部费用或一共只付258元。"
+        return (
+            "活动总价是268元。10元预约金计入总价，到店做时再付剩余258元；"
+            "不能写成‘到店抵扣258元’，也不能把258说成最终总价、全部费用或一共只付258元。"
+        )
     if "payment_participant_count_confirm_required" in error:
         return "客户同行人数超过4位时不要发送 payment_collection；改成 text 确认一共几位到店，或说明多人同行先由门店承接确认。"
     if "human_handoff_notice" in error:
@@ -795,7 +2854,12 @@ def _reply_repair_hint(error: str) -> str:
     if "distance_fact_required" in error:
         return "没有 store_resolution_fact.ranking_method=haversine 和 customer_claim_level=relative_near 时，不要输出最近、离您最近、较近、就近或交通方便等排序表达。只使用已有门店事实，并按当前主线自然承接。"
     if "nearby_store_claim_without_location_fact" in error:
-        return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
+        return (
+            "没有客户定位、门店工具或距离排序事实时，不要说‘附近门店/离您近’，也不要换成‘我帮您看下门店’这类"
+            "没有实际交付的承诺。重新看当前客户是否真的在请求匹配门店：如果没有，只删除整条可选门店承诺并保留原问题的"
+            "有效回答，action 与 selected_content_ids 同步保持最小；如果客户当前确实要求匹配门店，则直接问一个城市、区县或定位。"
+            "不要仅因 Gate 提名了门店资产就新增门店步骤。"
+        )
     if "available_time_fact_required" in error:
         return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“当前淡斑效果活动价268元、绝大多数客户一次就好 + 发送 case_facts.image_url + 登记后可到门店免费检测并听取具体情况讲解”。"
     if "appointment_confirmation_fact_required" in error:
@@ -849,6 +2913,16 @@ def _case_image_urls(state: AgentState) -> set[str]:
         url = str(item.get("image_url") or "").strip()
         if url:
             urls.add(url)
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    for candidate in joined.get("content_candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        for message in candidate.get("messages") or []:
+            if not isinstance(message, dict) or str(message.get("type") or "") != "image":
+                continue
+            url = _message_url(message.get("content"))
+            if url:
+                urls.add(url)
     activity_url = activity_intro_image_url(state)
     if activity_url:
         urls.add(activity_url)

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import json
 
 from app.policies.business_rules import load_business_rules
 import pytest
 
-from app.services.sop_execution_service import first_add_candidate_packs
+from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs
 from app.services.sop_reply_pack_service import SopReplyPackService
 
 
@@ -34,6 +35,10 @@ def _load_config() -> dict:
     ).load()
 
 
+def _write_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
 def _pack(config: dict, pack_id: str) -> dict:
     return next(pack for pack in config["packs"] if pack.get("id") == pack_id)
 
@@ -57,6 +62,87 @@ def test_opening_efficacy_image_does_not_replace_activity_ad_or_case_media() -> 
     assert OPENING_EFFICACY_IMAGE not in _image_urls(activity)
     assert OPENING_EFFICACY_IMAGE not in _image_urls(cases)
     assert ACTIVITY_AD_IMAGE not in _image_urls(opening)
+    assert opening["enabled"] is True
+    assert opening["parallel_candidate_enabled"] is False
+
+
+def test_v2_overlay_changes_only_code_owned_candidate_metadata(tmp_path: Path) -> None:
+    base_path = tmp_path / "sop_reply_packs.json"
+    overlay_path = tmp_path / "v2_sop_asset_overlay.json"
+    base = json.loads(Path("config/sop_reply_packs.json").read_text(encoding="utf-8"))
+    _write_json(base_path, base)
+    _write_json(
+        overlay_path,
+        {
+            "version": 1,
+            "packs": [
+                {
+                    "id": "s10_activity_intro",
+                    "parallel_candidate_enabled": False,
+                    "asset_role": "activity_offer_v2",
+                }
+            ],
+        },
+    )
+
+    without_overlay = SopReplyPackService(
+        SimpleNamespace(sop_reply_packs_path=base_path)
+    ).load()
+    with_overlay = SopReplyPackService(
+        SimpleNamespace(
+            sop_reply_packs_path=base_path,
+            sop_reply_packs_overlay_path=overlay_path,
+        )
+    ).load()
+
+    base_activity = _pack(without_overlay, "s10_activity_intro")
+    v2_activity = _pack(with_overlay, "s10_activity_intro")
+    assert v2_activity["parallel_candidate_enabled"] is False
+    assert v2_activity["asset_role"] == "activity_offer_v2"
+    assert v2_activity["reply_messages"] == base_activity["reply_messages"]
+    assert v2_activity["purpose"] == base_activity["purpose"]
+
+
+@pytest.mark.parametrize("field", ["reply_messages", "purpose", "enabled", "order"])
+def test_v2_overlay_rejects_business_content_fields(tmp_path: Path, field: str) -> None:
+    base_path = tmp_path / "sop_reply_packs.json"
+    overlay_path = tmp_path / "v2_sop_asset_overlay.json"
+    _write_json(
+        base_path,
+        json.loads(Path("config/sop_reply_packs.json").read_text(encoding="utf-8")),
+    )
+    _write_json(
+        overlay_path,
+        {"packs": [{"id": "s10_activity_intro", field: "forbidden"}]},
+    )
+
+    service = SopReplyPackService(
+        SimpleNamespace(
+            sop_reply_packs_path=base_path,
+            sop_reply_packs_overlay_path=overlay_path,
+        )
+    )
+    with pytest.raises(ValueError, match="business-content fields"):
+        service.load()
+
+
+def test_v2_overlay_rejects_unknown_pack_id(tmp_path: Path) -> None:
+    base_path = tmp_path / "sop_reply_packs.json"
+    overlay_path = tmp_path / "v2_sop_asset_overlay.json"
+    _write_json(
+        base_path,
+        json.loads(Path("config/sop_reply_packs.json").read_text(encoding="utf-8")),
+    )
+    _write_json(overlay_path, {"packs": [{"id": "missing_pack", "asset_role": "x"}]})
+
+    service = SopReplyPackService(
+        SimpleNamespace(
+            sop_reply_packs_path=base_path,
+            sop_reply_packs_overlay_path=overlay_path,
+        )
+    )
+    with pytest.raises(ValueError, match="unknown base pack"):
+        service.load()
 
 
 def test_active_sop_configuration_contains_chat_gate_packs_only() -> None:
@@ -83,19 +169,24 @@ def test_activity_intro_image_matches_business_rule_fact_source() -> None:
     assert offer["activity_intro_image_url"] == _image_urls(activity)[0]
 
 
-def test_activity_intro_includes_deposit_card_after_refund_rule_text() -> None:
+def test_activity_intro_is_offer_only_and_deposit_close_owns_payment_card() -> None:
     activity = _pack(_load_config(), "s10_activity_intro")
-    messages = activity.get("reply_messages") or []
+    deposit = _pack(_load_config(), "s10_deposit_close")
+    activity_messages = activity.get("reply_messages") or []
+    deposit_messages = deposit.get("reply_messages") or []
 
-    assert [message.get("type") for message in messages] == [
+    assert activity["asset_role"] == "activity_offer"
+    assert deposit["asset_role"] == "deposit_close"
+    assert deposit["requires_prior_asset_roles"] == ["activity_offer"]
+    assert [message.get("type") for message in activity_messages] == ["text", "image", "text"]
+    assert all(message.get("type") != "payment_collection" for message in activity_messages)
+    assert [message.get("type") for message in deposit_messages] == [
         "text",
         "image",
-        "text",
         "payment_collection",
     ]
-    assert messages[-1]["content"] == {"amount": 10, "remark": ""}
-    assert "未做或不满意可退" in messages[-2]["content"]["text"]
-    assert "实际按付款记录核对" in messages[-2]["content"]["text"]
+    assert deposit_messages[-1]["content"] == {"amount": 10, "remark": ""}
+    assert "未做或不满意可退" in deposit_messages[0]["content"]["text"]
 
 
 def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
@@ -105,8 +196,12 @@ def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
     deposit = _pack(config, "s10_deposit_close")
 
     assert _image_urls(cases) == EFFECT_CASE_IMAGES
-    assert store_prompt["enabled"] is True
-    assert store_prompt["reply_messages"][0]["content"]["text"] == "亲，您是在那个省份那个城市呢？我给您匹配最近的店铺。"
+    assert store_prompt["enabled"] is False
+    assert store_prompt["selection_constraints"] == {
+        "forbidden_when_authoritative_facts_present": ["location_card"]
+    }
+    assert "Tool Planner" in store_prompt["purpose"]
+    assert "event_s10_store_prompt_5min" in store_prompt["purpose"]
     assert deposit["enabled"] is True
     assert _image_urls(deposit) == [DEPOSIT_LIGHT_IMAGE]
     assert [message.get("type") for message in deposit["reply_messages"]] == [
@@ -114,6 +209,20 @@ def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
         "image",
         "payment_collection",
     ]
+
+
+def test_static_store_prompt_is_not_exposed_to_normal_reply_gate() -> None:
+    service = object.__new__(SopExecutionService)
+    service.sop_reply_pack_service = SopReplyPackService(
+        SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json"))
+    )
+
+    catalog = service.reply_chain_content_catalog()
+
+    assert "s10_store_prompt" not in {
+        str(item.get("content_id") or "")
+        for item in catalog.get("sop_packs") or []
+    }
 
 
 def test_activity_intro_tail_does_not_ask_default_single_person_count() -> None:
@@ -126,8 +235,9 @@ def test_activity_intro_tail_does_not_ask_default_single_person_count() -> None:
 
     for phrase in ["自己一位参加吗", "1位参加对吧", "几位参加", "按人数"]:
         assert phrase not in visible_text
-    assert "10元预约金" in visible_text
-    assert "到店抵扣" in visible_text
+    assert "268元" in visible_text
+    assert "10元预约金" not in visible_text
+    assert "到店抵扣" not in visible_text
 
 
 def test_static_sop_copy_does_not_contain_absolute_effect_or_safety_claims() -> None:

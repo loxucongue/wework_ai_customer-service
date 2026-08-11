@@ -8,12 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 from typing import Any
 
-from app.chat_runtime import (
-    ChatRuntime,
-    _merge_ai_then_sop_reply_messages,
-    _planner_sync_reply_messages,
-    _should_run_async_finalize,
-)
+from app.chat_runtime import ChatRuntime
 from app.config import Settings
 from app.schemas import ChatRequest
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
@@ -45,7 +40,6 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         graph = _SlowPlannerGraph()
         runtime = ChatRuntime(
             full_graph=graph,
-            planner_graph=graph,
             trace_logger=_TraceLogger(),
             repository=_Repository(),
             platform_reply_coordinator=PlatformReplyCoordinator(_settings_with_empty_filter(self)),
@@ -67,7 +61,6 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         graph = _SlowPlannerGraph()
         runtime = ChatRuntime(
             full_graph=graph,
-            planner_graph=graph,
             trace_logger=_TraceLogger(),
             repository=_Repository(),
             platform_reply_coordinator=PlatformReplyCoordinator(_settings_with_empty_filter(self)),
@@ -86,65 +79,6 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         cached_response = await runtime.run_platform_reply(request)
         self.assertEqual(len(graph.states), 1)
         self.assertEqual(first_response.model_dump(), cached_response.model_dump())
-
-    async def test_need_tools_sync_reply_is_always_empty(self) -> None:
-        messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
-        self.assertEqual(messages, [])
-
-    async def test_need_tools_does_not_emit_intermediate_transition(self) -> None:
-        messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
-        self.assertEqual(messages, [])
-
-    async def test_rejected_direct_reply_schedules_async_finalize(self) -> None:
-        state = {
-            "planner_decision": "direct_reply",
-            "tool_policy_violations": [
-                {
-                    "task_type": "tool_required",
-                    "subtype": "customer_store_lookup",
-                    "missing": "store_detail_tool_required",
-                }
-            ],
-        }
-
-        self.assertTrue(_should_run_async_finalize(state))
-
-    async def test_valid_direct_reply_also_waits_for_final_reply_model(self) -> None:
-        state = {
-            "planner_decision": "direct_reply",
-            "tool_policy_violations": [],
-            "planner_reply_messages": [
-                {"type": "text", "order": 1, "content": {"text": "planner draft"}}
-            ],
-        }
-
-        self.assertTrue(_should_run_async_finalize(state))
-
-    async def test_professional_assist_waits_for_final_reply(self) -> None:
-        state = {
-            "planner_decision": "need_tools",
-            "required_tools": [{"name": "professional_assist", "reason": "健康高风险"}],
-            "planner_tool_calls": [{"name": "professional_assist", "reason": "健康高风险"}],
-            "planner_reply_messages": [],
-        }
-        messages = _planner_sync_reply_messages(state)
-        self.assertEqual(messages, [])
-        self.assertTrue(_should_run_async_finalize(state))
-
-    async def test_malformed_need_tools_without_executable_call_still_runs_final_reply(self) -> None:
-        state = {
-            "planner_decision": "need_tools",
-            "planner_tool_calls": [],
-            "tool_policy_violations": [
-                {
-                    "task_type": "tool_structure",
-                    "subtype": "need_tools",
-                    "missing": "need_tools_requires_executable_tool",
-                }
-            ],
-        }
-
-        self.assertTrue(_should_run_async_finalize(state))
 
     async def test_run_chat_graph_exception_returns_deterministic_reply_instead_of_502(self) -> None:
         repository = _Repository()
@@ -203,97 +137,15 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.saved_states[-1]["reply_messages"], [])
         self.assertEqual(repository.saved_states[-1]["reply_source"], "platform_superseded")
         self.assertEqual(repository.saved_states[-1]["reply_control"]["sync_return"]["type"], "empty")
-        self.assertEqual(
-            repository.saved_states[-1]["reply_chain_commit_shadow"]["schema_version"],
-            "reply_chain_commit_shadow_v1",
-        )
-        self.assertFalse(
-            repository.saved_states[-1]["reply_chain_commit_shadow"]["planned_side_effects"]["conversation_assistant_message"]
-        )
-
-    async def test_persist_response_records_commit_shadow_before_save_run(self) -> None:
-        repository = _Repository()
-        runtime = ChatRuntime(
-            full_graph=_EmptyReplyGraph(),
-            trace_logger=_TraceLogger(),
-            repository=repository,
-        )
-        state = runtime._initial_state(_request("hello"), "request-id", {})
-        state["reply_messages"] = [{"type": "text", "order": 1, "content": {"text": "hello"}}]
-        state["parallel_reply_chain_shadow"] = {
-            "schema_version": "parallel_reply_chain_shadow_v1",
-            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
-            "current_serial_observation": {"tool_planner_legacy_residue_count": 0},
-        }
-        state["parallel_gate_planner_runner_shadow"] = {
-            "schema_version": "parallel_gate_planner_runner_shadow_v1",
-            "mode": "completed_shadow",
-            "input_isolation_audit": {
-                "schema_version": "parallel_branch_input_isolation_audit_v1",
-                "initial_state_unchanged_after_branches": True,
-                "shadow_only_fields_present_in_initial_state": [],
-            },
-            "branch_output_contract_audit": {
-                "schema_version": "parallel_branch_output_contract_audit_v1",
-                "ready": True,
-                "blockers": [],
-                "required_outputs": {
-                    "sop_chat_gate": {
-                        "required_field": "gate_router_shadow",
-                        "required_schema_version": "chat_gate_router_shadow_v1",
-                        "observed_schema_version": "chat_gate_router_shadow_v1",
-                        "valid": True,
-                    },
-                    "tool_planner": {
-                        "required_field": "tool_plan_preview",
-                        "required_schema_version": "tool_plan_preview_v2",
-                        "observed_schema_version": "tool_plan_preview_v2",
-                        "valid": True,
-                    },
-                },
-            },
-            "branches": {
-                "sop_chat_gate": {"status": "completed"},
-                "tool_planner": {"status": "completed"},
-            },
-        }
-        state["parallel_reply_chain_comparison"] = {
-            "schema_version": "parallel_reply_chain_comparison_v1",
-            "status": "matched_shadow_replay",
-        }
-
-        response = runtime._persist_and_build_response(
-            request=_request("hello"),
-            request_id="request-id",
-            conversation_id="conversation-id",
-            final_state=state,
-            allow_empty_reply=False,
-        )
-
-        self.assertEqual(len(response.reply_messages), 1)
-        shadow = repository.saved_states[-1]["reply_chain_commit_shadow"]
-        self.assertEqual(shadow["schema_version"], "reply_chain_commit_shadow_v1")
-        self.assertEqual(shadow["commit_phase_owner"], "runtime_after_reply_validation")
-        self.assertTrue(shadow["planned_side_effects"]["conversation_assistant_message"])
-        self.assertTrue(shadow["planned_side_effects"]["trace_log_write"])
-        self.assertTrue(shadow["planned_side_effects"]["run_record_save"])
-        self.assertFalse(shadow["planned_side_effects"]["case_image_memory_record"])
-        diagnostics = repository.saved_states[-1]["parallel_reply_chain_diagnostics"]
-        self.assertEqual(diagnostics["schema_version"], "parallel_reply_chain_diagnostics_v1")
-        self.assertEqual(diagnostics["phase"], "ready_for_human_review")
-        self.assertTrue(diagnostics["commit"]["present"])
-        self.assertEqual(diagnostics["commit"]["commit_phase_owner"], "runtime_after_reply_validation")
 
     async def test_platform_auto_opening_returns_sop_before_planner(self) -> None:
         graph = _UnexpectedGraph()
         repository = _Repository()
         runtime = ChatRuntime(
             full_graph=graph,
-            planner_graph=graph,
             trace_logger=_TraceLogger(),
             repository=repository,
             sop_execution_service=_OpeningSopGate(),
-            profile_event_extractor=_UnexpectedProfileExtractor(),
         )
 
         response = await runtime.run_platform_reply(_request("我已经添加了你，现在我们可以开始聊天了。"))
@@ -314,13 +166,12 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workflow_body["code"], 0)
         self.assertEqual(len(workflow_body["data"]["reply_messages"]), 1)
 
-    async def test_precision_ai_reply_precedes_selected_sop_and_confirms_task(self) -> None:
+    async def test_runtime_does_not_merge_gate_content_outside_parallel_graph(self) -> None:
         repository = _Repository()
         gate = _PrecisionSopGate()
         graph = _PrecisionReplyGraph()
         runtime = ChatRuntime(
             full_graph=graph,
-            planner_graph=graph,
             trace_logger=_TraceLogger(),
             repository=repository,
             sop_execution_service=gate,
@@ -330,30 +181,17 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [message.content["text"] for message in response.reply_messages if message.type == "text"],
-            ["多数客户做一次就能看到改善，具体程度要到店检测后判断。", "我给您发一组同类案例参考。"],
+            ["多数客户做一次就能看到改善，具体程度要到店检测后判断。"],
         )
-        self.assertTrue(gate.confirmed)
+        self.assertFalse(gate.confirmed)
         self.assertFalse(gate.failed)
-        self.assertEqual(graph.states[0]["sop_gate_decision"]["priority_question_id"], "one_session_effect")
-        self.assertEqual(set(graph.states[0]["sop_gate_decision"]["sop_message_types"]), {"text", "image"})
-        self.assertEqual(graph.states[0]["sop_gate_decision"]["sop_image_count"], 1)
-        self.assertEqual(graph.states[0]["sop_gate_preview"]["route"], "content_and_ai_graph")
-        self.assertEqual(
-            graph.states[0]["sop_gate_preview"]["commit_policy"],
-            "defer_sop_commit_until_ai_reply_is_usable",
-        )
-        self.assertEqual(graph.states[0]["sop_gate_router_shadow"]["route_suggestion"], "content_only_reply")
-        self.assertEqual(
-            graph.states[0]["sop_gate_router_shadow"]["selected_content"]["sop_pack_ids"],
-            ["s10_need_and_case"],
-        )
+        self.assertNotIn("sop_gate_decision", graph.states[0])
 
     async def test_precision_ai_failure_withholds_sop_and_returns_nonempty_fallback(self) -> None:
         repository = _Repository()
         gate = _PrecisionSopGate()
         runtime = ChatRuntime(
             full_graph=_ErrorGraph(),
-            planner_graph=_ErrorGraph(),
             trace_logger=_TraceLogger(),
             repository=repository,
             sop_execution_service=gate,
@@ -365,15 +203,13 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.reply_messages[0].content.get("text"))
         self.assertNotEqual(response.reply_messages[0].content["text"], "我在，继续帮您处理。")
         self.assertFalse(gate.confirmed)
-        self.assertTrue(gate.failed)
+        self.assertFalse(gate.failed)
 
-    async def test_finalize_empty_reply_is_recovered_and_returned_synchronously(self) -> None:
+    async def test_full_graph_empty_reply_is_recovered_and_returned_synchronously(self) -> None:
         repository = _Repository()
         outreach = _OutreachSendClient()
         runtime = ChatRuntime(
-            full_graph=_NeedToolsPlannerGraph(),
-            planner_graph=_NeedToolsPlannerGraph(),
-            finalize_graph=_EmptyReplyGraph(),
+            full_graph=_EmptyReplyGraph(),
             trace_logger=_TraceLogger(),
             repository=repository,
             outreach_send_client=outreach,
@@ -385,9 +221,9 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.reply_messages[0].type, "text")
         self.assertFalse(outreach.sent.is_set())
         saved = repository.saved_states[-1]
-        self.assertEqual(saved["async_final_reply"]["status"], "completed_sync")
+        self.assertEqual(saved["async_final_reply"]["status"], "not_required")
         self.assertEqual(saved["reply_control"]["sync_return"]["type"], "final_reply")
-        self.assertEqual(saved["reply_source"], "deterministic_sync_empty_reply_fallback")
+        self.assertEqual(saved["reply_source"], "deterministic_empty_reply_fallback")
 
     async def test_trace_file_preserves_terminal_reply_fields_after_top_level_compaction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -443,13 +279,11 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model_call["raw_json_output"], raw_output)
         self.assertEqual(model_call["recovery"]["raw_json_output"], {"decision": "direct_reply"})
 
-    async def test_finalize_exception_is_recovered_and_returned_synchronously(self) -> None:
+    async def test_full_graph_exception_is_recovered_and_returned_synchronously(self) -> None:
         repository = _Repository()
         outreach = _OutreachSendClient()
         runtime = ChatRuntime(
-            full_graph=_NeedToolsPlannerGraph(),
-            planner_graph=_NeedToolsPlannerGraph(),
-            finalize_graph=_ErrorGraph(),
+            full_graph=_ErrorGraph(),
             trace_logger=_TraceLogger(),
             repository=repository,
             outreach_send_client=outreach,
@@ -462,47 +296,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(outreach.sent.is_set())
         recovered = [state for state in repository.saved_states if state.get("reply_source") == "deterministic_runtime_exception_fallback"]
         self.assertTrue(recovered)
-        self.assertEqual(recovered[-1]["async_final_reply"]["status"], "error_recovered_sync")
-
-    def test_ai_then_sop_merge_keeps_structural_material_without_sop_text_stack(self) -> None:
-        ai_messages = [
-            {"type": "text", "order": 1, "content": {"text": "answer current question"}},
-            {"type": "store_address", "order": 2, "content": {"store_id": "216"}},
-            {"type": "text", "order": 3, "content": {"text": "closing action"}},
-        ]
-        sop_messages = [
-            {"type": "text", "order": 1, "content": {"text": "fixed sop explanation"}},
-            {"type": "image", "order": 2, "content": {"url": "https://example.invalid/a.jpg"}},
-            {"type": "image", "order": 3, "content": {"url": "https://example.invalid/b.jpg"}},
-            {"type": "image", "order": 4, "content": {"url": "https://example.invalid/c.jpg"}},
-            {"type": "text", "order": 5, "content": {"text": "fixed sop question"}},
-        ]
-
-        merged = _merge_ai_then_sop_reply_messages(ai_messages, sop_messages)
-
-        self.assertEqual([message["type"] for message in merged], ["text", "store_address", "image", "image", "image", "text"])
-        self.assertNotIn("fixed sop explanation", json.dumps(merged))
-        self.assertNotIn("fixed sop question", json.dumps(merged))
-        self.assertEqual([message["order"] for message in merged], [1, 2, 3, 4, 5, 6])
-
-    def test_ai_then_sop_merge_keeps_only_latest_ai_payment_card(self) -> None:
-        ai_messages = [
-            {"type": "text", "order": 1, "content": {"text": "按您一位先留名额"}},
-            {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
-        ]
-        sop_messages = [
-            {"type": "text", "order": 1, "content": {"text": "固定活动说明"}},
-            {"type": "payment_collection", "order": 2, "content": {"amount": 20}},
-            {"type": "image", "order": 3, "content": {"url": "https://example.invalid/activity.jpg"}},
-        ]
-
-        merged = _merge_ai_then_sop_reply_messages(ai_messages, sop_messages)
-
-        cards = [message for message in merged if message["type"] == "payment_collection"]
-        self.assertEqual(len(cards), 1)
-        self.assertEqual(cards[0]["content"]["amount"], 10)
-        self.assertEqual([message["order"] for message in merged], list(range(1, len(merged) + 1)))
-
+        self.assertEqual(recovered[-1]["async_final_reply"]["status"], "not_required")
 
 class _SlowPlannerGraph:
     def __init__(self) -> None:
@@ -550,25 +344,6 @@ class _EmptyReplyGraph:
         return output
 
 
-class _NeedToolsPlannerGraph:
-    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
-        output = dict(state)
-        output.update(
-            {
-                "planner_decision": "need_tools",
-                "planner_stage": "S2",
-                "planner_sub_rule_id": "S2_LOCATION_DETAIL",
-                "planner_reply_messages": [],
-                "planner_tool_calls": [{"name": "customer_store_lookup", "query": "厦门集美", "purpose": "existence"}],
-                "required_tools": [{"name": "customer_store_lookup", "query": "厦门集美", "purpose": "existence"}],
-                "reply_messages": [],
-                "trace": [],
-                "errors": [],
-            }
-        )
-        return output
-
-
 class _UnexpectedGraph:
     def __init__(self) -> None:
         self.called = False
@@ -576,11 +351,6 @@ class _UnexpectedGraph:
     async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
         self.called = True
         raise AssertionError("planner should not run for ignored platform auto opening")
-
-
-class _UnexpectedProfileExtractor:
-    async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError("profile extractor should not run for ignored platform auto opening")
 
 
 class _OpeningSopGate:

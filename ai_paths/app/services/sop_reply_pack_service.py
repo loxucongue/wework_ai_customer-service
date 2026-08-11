@@ -14,6 +14,12 @@ ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_
 ALLOWED_SOP_SCOPES = {"chat_gate", "event_first_add", "event_platform_task"}
 ALLOWED_SCHEDULE_BASES = {"friend_added", "previous_stage_sent", "payment_card_sent", "local_clock"}
 ALLOWED_PAYMENT_STATES = {"", "unpaid", "paid"}
+V2_OVERLAY_FIELDS = {
+    "parallel_candidate_enabled",
+    "asset_role",
+    "selection_constraints",
+    "requires_prior_asset_roles",
+}
 ALLOWED_SOP_CATEGORIES = {
     "opening",
     "intro",
@@ -35,6 +41,7 @@ DEFAULT_SOP_REPLY_PACKS: dict[str, Any] = {
         {
             "id": "s10_new_customer_opening",
             "enabled": False,
+            "parallel_candidate_enabled": False,
             "scope": "chat_gate",
             "scopes": ["chat_gate", "event_first_add"],
             "sop_category": "opening",
@@ -389,20 +396,31 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
 class SopReplyPackService:
     def __init__(self, settings: Settings) -> None:
         self.path = settings.sop_reply_packs_path
+        self.overlay_path = getattr(settings, "sop_reply_packs_overlay_path", None)
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
-            normalized = self._normalize(deepcopy(DEFAULT_SOP_REPLY_PACKS), allow_legacy_event_scopes=True)
+            payload = deepcopy(DEFAULT_SOP_REPLY_PACKS)
+            normalized = self._normalize(
+                self._apply_overlay(payload),
+                allow_legacy_event_scopes=True,
+            )
             normalized["audit"] = _audit_config(normalized)
             return normalized
         try:
             with self.path.open("r", encoding="utf-8") as file:
                 payload = json.load(file)
-            normalized = self._normalize(payload, allow_legacy_event_scopes=True)
+            normalized = self._normalize(
+                self._apply_overlay(payload),
+                allow_legacy_event_scopes=True,
+            )
             normalized["audit"] = _audit_config(normalized)
             return normalized
-        except (OSError, json.JSONDecodeError, ValueError):
-            normalized = self._normalize(deepcopy(DEFAULT_SOP_REPLY_PACKS), allow_legacy_event_scopes=True)
+        except (OSError, json.JSONDecodeError):
+            normalized = self._normalize(
+                self._apply_overlay(deepcopy(DEFAULT_SOP_REPLY_PACKS)),
+                allow_legacy_event_scopes=True,
+            )
             normalized["audit"] = _audit_config(normalized)
             return normalized
 
@@ -418,6 +436,54 @@ class SopReplyPackService:
         self._write_json(self.path, normalized)
         normalized["audit"] = _audit_config(normalized)
         return normalized
+
+    def _apply_overlay(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Merge code-owned V2 metadata without copying customer-visible content."""
+
+        if self.overlay_path is None:
+            return payload
+        if not self.overlay_path.exists():
+            raise ValueError(f"SOP overlay file does not exist: {self.overlay_path}")
+        try:
+            with self.overlay_path.open("r", encoding="utf-8") as file:
+                overlay = json.load(file)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid SOP overlay: {exc}") from exc
+        raw_overlay_packs = overlay.get("packs") if isinstance(overlay, dict) else None
+        if not isinstance(raw_overlay_packs, list):
+            raise ValueError("SOP overlay packs must be a list")
+
+        merged = deepcopy(payload)
+        raw_packs = merged.get("packs") if isinstance(merged.get("packs"), list) else None
+        if raw_packs is None:
+            raise ValueError("SOP base packs must be a list")
+        base_by_id = {
+            _clean_identifier(item.get("id")): item
+            for item in raw_packs
+            if isinstance(item, dict) and _clean_identifier(item.get("id"))
+        }
+        seen: set[str] = set()
+        for index, item in enumerate(raw_overlay_packs):
+            if not isinstance(item, dict):
+                raise ValueError(f"SOP overlay pack #{index + 1} must be an object")
+            pack_id = _clean_identifier(item.get("id"))
+            if not pack_id:
+                raise ValueError(f"SOP overlay pack #{index + 1} id is required")
+            if pack_id in seen:
+                raise ValueError(f"duplicated SOP overlay pack id: {pack_id}")
+            seen.add(pack_id)
+            target = base_by_id.get(pack_id)
+            if target is None:
+                raise ValueError(f"SOP overlay references unknown base pack: {pack_id}")
+            illegal = sorted(set(item) - {"id", *V2_OVERLAY_FIELDS})
+            if illegal:
+                raise ValueError(
+                    f"SOP overlay pack {pack_id} contains business-content fields: {','.join(illegal)}"
+                )
+            for field in V2_OVERLAY_FIELDS:
+                if field in item:
+                    target[field] = deepcopy(item[field])
+        return merged
 
     def append_missing_event_first_add_templates(self) -> dict[str, Any]:
         raise ValueError("主动事件话术已迁移到第三方 SOP 平台")
@@ -480,9 +546,13 @@ class SopReplyPackService:
         return {
             "id": pack_id,
             "enabled": bool(item.get("enabled")),
+            "parallel_candidate_enabled": bool(item.get("parallel_candidate_enabled", True)),
             "scope": scopes[0],
             "scopes": scopes,
             "sop_category": _choice_text(item.get("sop_category"), pack_id, ALLOWED_SOP_CATEGORIES, allow_custom=True),
+            "asset_role": _clean_identifier(item.get("asset_role")) or "supporting_content",
+            "selection_constraints": _selection_constraints(item.get("selection_constraints")),
+            "requires_prior_asset_roles": _identifier_list(item.get("requires_prior_asset_roles")),
             "name": _checked_text(item.get("name"), f"SOP {index + 1}"),
             "purpose": _checked_text(item.get("purpose"), ""),
             "order": _positive_int(item.get("order"), (index + 1) * 10),
@@ -800,6 +870,17 @@ def _identifier_list(value: Any) -> list[str]:
         cleaned = _clean_identifier(item)
         if cleaned and cleaned not in output:
             output.append(cleaned)
+    return output
+
+
+def _selection_constraints(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    output: dict[str, list[str]] = {}
+    for key in ("forbidden_when_authoritative_facts_present", "semantic_exclusions"):
+        items = _identifier_list(value.get(key))
+        if items:
+            output[key] = items
     return output
 
 

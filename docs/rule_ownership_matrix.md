@@ -1,118 +1,45 @@
 # Reply Chain Rule Ownership Matrix
 
-This is the Stage 0 baseline for `codex/reply-chain-refactor`. It is not a new
-business policy source. It maps existing active rule areas to their current and
-target owners so the refactor can move responsibilities without losing rules or
-moving business semantics into code.
+本文件是 `codex/reply-chain-refactor` 的规则迁移基线，不是新的业务事实来源。它用于确认重构只移动职责，不遗漏规则，也不把业务语义转移到代码。
 
-Status values:
-
-- `active`: still valid business or safety rule.
-- `merged`: valid but should be expressed through a broader target contract.
-- `superseded`: historical rule that must not be restored.
-- `hard_boundary`: deterministic structure, safety, or fact protection owned by code.
+状态：`active` 表示有效；`merged` 表示并入更高层合同；`superseded` 表示不得恢复。规则类型统一为 `hard_law | business_fact | sales_principle | content_asset | deprecated`。
 
 | rule_id | source | business meaning | current owner | target owner | fact dependencies | type | migration status | regression tests |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| constitution_model_semantics | AGENTS.md project contract | Model decides customer semantics, psychology, and sales rhythm. | Global prompts, Planner, Reply, SOP Event | Global contract shared by Gate/Reply; Tool Planner only receives factual intent from Gate/Reply | Full timestamped conversation, authoritative facts | hard_boundary | active | prompt contract, simulation constitution checks |
-| code_fact_boundaries | AGENTS.md project contract | Code handles factual inputs, tools, schema, idempotency, safety, fallback. | Normalizer, validation, tool nodes, runtime | Protocol pre-router, read-only tool executor, validation/commit layer | Tool facts, state facts, schema | hard_boundary | active | deterministic validation and isolation tests |
-| full_chat_priority | refactor discussion and current pain points | Latest customer message and complete recent chat must dominate stale profile summaries. | Planner/Reply payloads, current_turn_context | Shared context builder used by Gate, Tool Planner, Reply | Full timestamped conversation, current_time | active | active | shadow context tests, simulation history-order cases |
-| no_soft_profile_authority | test_context_slim_and_availability.py, refactor plan | Soft profile strategy must not override the current chat. | Planner payload pruning, Reply background facts | Shared authoritative snapshot; profile only as low-priority background if explicitly allowed | Customer profile, history events | active | active | context slimming tests |
-| gate_not_business_brain | parallel refactor plan | Gate may select content candidates and route, but complex customer status, final turn outcome, and closing action belong to Reply. | SOP Chat Gate, Planner, Reply split | Gate content router + Reply final brain | Full timestamped conversation, gate evidence refs, tool facts | hard_boundary | active | reply chain refactor contract, gate router tests |
-| sop_mainline_progression | SOP Event rules and sales mainline | Active outreach should advance the earliest unfinished mainline stage unless current context proves it is covered or unsafe. | SOP Event model and normalizer | SOP Event stays owner; Gate only routes chat-time SOP usage | SOP progress, recent sent facts, chat evidence | active | active | sop_event_flow, offline simulation |
-| precision_answer_then_mainline | precision QA prompts/config | Answer precise objections first, then naturally connect one unfinished mainline action. | Gate/Planner/Reply prompts | Gate may select content candidate; Reply owns final phrasing and mainline action in complex cases | Precision QA config, current message, history | active | active | precision QA runtime contract, Reply model cases |
-| offer_activity_facts | business_rules.json offer | Activity facts are 268 total, 10 prepay, 258 tail, limited quota, eligible registration gift, refundable if not done or unsatisfied, and approved scarcity reasons only. | business_rules, Planner/Reply prompts, SOP packs | Shared authoritative business facts; Reply chooses one fitting reason; validation protects amounts | business_rules.offer, payment state, sent facts | active | active | prompt contract, business rule model matrix, payment tests |
-| project_scope_boundary | business_rules.json offer/customer_visible_evidence_policy | Online activity includes face/hand spot and pigment concerns including acne marks/pits and explicit mole-improvement direction; unsupported items such as wrinkle, eye bag, dark circle and water-light cannot be booked or charged. | business_rules, precision QA, Reply prompt | Gate may select precision answer; Reply finalizes scope answer and mainline bridge; validation blocks unsupported payment | current message, image facts, business_rules.offer | active | active | precision QA runtime contract, reply output strategy |
-| effect_case_image_evidence | AGENTS long-term lesson, business_rules evidence policy | Customer asking effect/case should receive real case image when no recent authoritative image delivery exists; SOP completion or text promise does not prove image sent. | Planner prompt, kb tool plan, Reply | Tool Planner plans kb_search; Reply uses only tool case facts | sent_message_summary.case_image_delivery, kb_search facts | active | active | case image delivery regression, business rule model matrix |
-| store_visible_scope_only | store fact integrity and long-term lessons | Store cards must come only from the customer's visible store range. | Store tools, Planner guards, Reply validation | Read-only tool executor + validation; Reply uses only provided store facts | store_scope_summary, store_resolution_fact | hard_boundary | active | store visibility and location-card tests |
-| store_candidate_count_rule | business rule discussion | If visible candidates are 1-3, send all; if more than 3, ask district/location. | Planner/Reply prompt and store guards | Reply final brain using tool facts; Tool Planner only plans lookup | store_resolution_fact, visible candidates | active | active | store scenario simulation |
-| store_after_card_mainline | Reply rules | After a real store card, do not keep asking convenience; handle objection then return to spot/case/activity as appropriate. | Reply prompt | Reply | Recent store card facts, history | active | active | door-store simulation cases |
-| location_detail_disclosure | recent address policy | Public store address can be sent; detailed arrival guidance requires authoritative detail/registration flow and must not be fabricated. | Reply prompt, store validation | Reply + validation | Store detail facts, public address facts | active | active | location detail tests |
-| payment_no_order_precondition | AGENTS long-term lesson | Activity quote/paving allows payment card; order is not a card precondition. | business_rules, Planner/Reply, payment guards | Reply final action + validation; backend order link after payment | Activity completion, payment state, risk state | active | active | payment card and transaction tests |
-| payment_after_paid_registration | business rules | After paid, collect name/phone and visit intent; current ordinary flow does not query slots or create order_plan. | Planner/Reply/tool rules | Reply + deferred write commit layer | deposit_state, registration_state | active | active | transaction flow tests |
-| unknown_message_transfer_paid | business rule | Platform unknown message type is an authoritative transfer-paid event. | Input normalization, payment evidence | Protocol pre-router/input normalization | msgtype/content placeholder | hard_boundary | active | unknown transfer tests |
-| one_payment_card_per_turn | reply structure guard | One reply turn may contain at most one payment_collection. | Reply validation/postprocess | Validation/commit layer | reply_messages | hard_boundary | active | reply output strategy tests |
-| health_risk_priority | business rules | Current allergy/inflammation/broken skin risk blocks sales push and payment card. | Risk evidence, Planner, Reply validation | Shared facts + Reply; validation enforces hard block | image_info, current message, risk_hold | hard_boundary | active | health risk simulation |
-| explicit_reject_no_payment | business rules | Clear refusal/complaint/refund stops payment push; gentle outreach may be separate SOP Event decision. | Planner/Reply/SOP Event | Reply for chat; SOP Event for outreach | Current message, recent history | active | active | refusal simulation |
-| human_wechat_style | business_rules identity and Reply quality rules | Replies should sound like a real WeChat salesperson: short, direct, warm, one action; no robotic phrases such as continuing to process, arranging next step, or abstract system reminders. | Reply prompt and soft quality checks | Reply owns final expression; soft quality warnings guide repair without clearing safe replies | current message, history, selected content, tool facts | active | active | reply output strategy, model simulation review |
-| sop_platform_task_passthrough | SOP platform task rule | `sop_platform_task` message_content is platform-authored and should pass through without model rewriting. | SOP platform task service | Protocol pre-router / SOP service | event payload | hard_boundary | active | sop_platform_task_flow |
-| model_failure_neutral_fallback | runtime rules | If model/repair fails, return the configured neutral wait text instead of empty reply. | Runtime, Reply node | Runtime fallback layer | failure trace, retry state | hard_boundary | active | model timeout tests |
-| old_order_paid_window | AGENTS long-term lesson | Paid orders within 3 months protect paid state; older completed/paid history is not a current paid state. | Order normalization, payment facts | Authoritative fact snapshot + validation | order created_at/status/prepay_paid | hard_boundary | active | order lifecycle tests |
-| order_required_before_payment_card | historical transaction rule | Requiring successful order before card is obsolete and must not be restored. | Historical docs/tests only | None | n/a | superseded | superseded | payment no-order regression |
+| constitution_model_semantics | AGENTS.md | 模型判断客户语义、心理和销售节奏。 | Planner、Reply、SOP 模型 | Gate 提供素材，Reply 最终判断；Tool Planner 不接管语义 | 完整带时间聊天、权威事实 | hard_law | active | Prompt 合同、仿真宪法检查 |
+| code_fact_boundaries | AGENTS.md | 代码负责事实、工具、schema、幂等、安全和兜底。 | Normalizer、Validation、Tool、Runtime | 预路由、只读工具执行、Validation、Commit | 工具和状态事实 | hard_law | active | 确定性校验、隔离测试 |
+| full_chat_priority | 重构讨论 | 最新消息和完整近期聊天优先于旧画像摘要。 | Planner/Reply payload | Shared Context Builder | 完整带时间聊天、current_time | business_fact | active | Shared Context、历史顺序仿真 |
+| no_soft_profile_authority | 现有上下文规则 | 旧画像策略不能压过当前聊天。 | Payload pruning | Shared Context Builder | 画像、聊天、事件 | sales_principle | active | 上下文测试 |
+| gate_not_business_brain | 重构方案 | Gate 只提名内容证据，复杂状态与最终动作属于 Reply。 | SOP Gate、Planner、Reply | Gate + Reply | 完整聊天、Gate 证据、工具事实 | hard_law | active | Gate 合同、Reply 场景 |
+| sop_mainline_progression | SOP 主线 | 主动触达正常推进最早未完成阶段，但上下文可证明覆盖或不适合时允许调整。 | SOP Event | SOP Event | SOP 进度、发送事实、聊天 | sales_principle | active | sop_event_flow、仿真 |
+| precision_answer_then_mainline | 104 条精准话术蒸馏 | 先解决客户当前问题，再由 Reply 判断是否以及如何继续推进。 | 旧精准回复运行时目录 | model_led_sales_principles；成品回复仅作离线样本 | 当前消息、完整历史、权威事实 | sales_principle | active | 精准回复、Reply 模型场景 |
+| appointment_blocker_reply_ownership | 预约卡点话术库 | 卡点成品回复不进入新链路常驻 Prompt；其证据用途、销售原理和反面模式由 Reply 使用。 | Gate 场景索引、Reply 候选库 | model_led_sales_principles + Reply | 当前消息、完整聊天、权威交易和风险事实 | sales_principle | active | precision_qa_runtime_contract、Prompt 合同、预约卡点仿真 |
+| offer_activity_facts | business_rules.json | 当前活动价格、预约金、尾款、退款和赠送事实以配置为准。 | 业务规则、Prompt、SOP | Shared Facts + Reply；Validation 校验金额 | 活动配置、支付状态 | business_fact | active | Prompt、支付、模型矩阵 |
+| project_scope_boundary | 业务规则和精准回复 | 可预约项目和不可预约项目必须按当前配置说明。 | 业务规则、精准回复、Reply | Gate 选素材，Reply 最终回答，Validation 阻止错误收费 | 当前消息、图片事实、活动配置 | business_fact | active | 精准回复、Reply 输出策略 |
+| effect_case_image_evidence | AGENTS.md | 客户问效果且无近期真实发图证据时必须查真实案例；SOP 完成或文字承诺不等于已发图。 | Planner、KB、Reply | Tool Planner 规划 KB，Reply 使用真实案例事实 | case_image_delivery、KB facts | business_fact | active | 案例图回归、模型矩阵 |
+| store_visible_scope_only | 门店事实规则 | 门店卡只能来自客户可见范围。 | Store tools、Validation | Read-only Tool Executor + Validation | visible_store_scope、store_resolution_fact | hard_law | active | 门店可见范围、定位卡测试 |
+| store_candidate_count_rule | 已确认业务规则 | 可见候选 1 到 3 家可全部发送，超过 3 家再补区域或定位。 | Planner/Reply | Reply 使用工具事实决定表达 | 可见候选 | business_fact | active | 门店仿真 |
+| store_after_card_mainline | Reply 策略 | 发真实门店卡后不反复纠结方便与否，处理当前异议后由 Reply 自主选择下一维度。 | Reply Prompt | Reply | 最近门店卡、聊天 | sales_principle | active | 门店异议仿真 |
+| location_detail_disclosure | 地址政策 | 可发公开地址；详细到店指引必须有权威事实，不能编造。 | Reply、Validation | Reply + Validation | 门店详情、登记事实 | business_fact | active | 地址详情测试 |
+| payment_no_order_precondition | AGENTS.md | 活动铺垫完成后可发预约金卡，订单不是前置。 | 业务规则、Planner/Reply | Reply + Validation，支付后再关联订单 | 活动完成、支付、风险 | business_fact | active | 无订单发卡回归 |
+| payment_deposit_evidence_gate | 已确认成交规则 | 首次活动接触不得同轮发卡；后续发卡必须有更早活动介绍、另一把已承接销售钥匙、当前行动信号且无硬禁区。 | 业务规则、Reply、Validation | Reply 判断证据语义；Validation 只校验引用来源、角色、时间顺序和结构一致性 | 完整聊天、SOP 交付、当前客户消息 | hard_law | active | 首次询价禁卡、预约金证据、引用真实性测试 |
+| payment_after_paid_registration | 业务规则 | 已付后收姓名、电话和到店意向，普通流程不查档期、不排客。 | Planner/Reply/Tool | Reply + Commit 延后写 | deposit_state、registration_state | business_fact | active | 事务流程测试 |
+| unknown_message_transfer_paid | 业务规则 | 平台未知消息类型是权威转账成功事件。 | 输入归一 | 预路由/输入归一 | msgtype、结构事件 | hard_law | active | 未知转账测试 |
+| one_payment_card_per_turn | 回复结构规则 | 同轮最多一张预约金卡。 | Reply Validation | Validation | reply_messages | hard_law | active | Reply 输出策略 |
+| health_risk_priority | 风险规则 | 当前过敏、发炎或破损阻止营销推进和发卡。 | 风险事实、Planner、Reply | Shared Facts + Reply + Validation | 图片、当前消息、risk_hold | hard_law | active | 健康风险仿真 |
+| explicit_reject_no_payment | 业务规则 | 模型引用当前客户原文认定明确拒绝、投诉或退款后，代码阻止付款结构。 | Planner/Reply/SOP Event | Reply 语义判断 + Validation 事实引用校验 | 当前消息、近期历史 | hard_law | active | 拒绝场景仿真 |
+| human_wechat_style | Reply 风格规则 | 回复短、直接、亲切，每轮最多一个自然动作，禁止机器人句式。 | Reply Prompt、软质量门 | Reply | 当前消息、历史、素材、工具事实 | sales_principle | active | Reply 模型评审 |
+| sop_platform_task_passthrough | SOP 协议规则 | `sop_platform_task` 的 message_content 原样转发，不经模型改写。 | SOP service | 协议预路由/SOP service | event payload | hard_law | active | sop_platform_task_flow |
+| model_failure_neutral_fallback | Runtime 规则 | 模型和修复均失败时返回中性等待文案，不得空回复。 | Runtime、Reply | Runtime fallback | 重试和失败 trace | hard_law | active | 超时和空回复测试 |
+| old_order_paid_window | AGENTS.md | 三个月内已付保护；更早历史不作为当前已付状态。 | Order normalization | Shared Facts + Validation | 订单时间和状态 | hard_law | active | 订单生命周期测试 |
+| order_required_before_payment_card | 历史旧规则 | 发卡前必须有订单的规则已废弃，不得恢复。 | 历史文档 | None | n/a | deprecated | superseded | 无订单发卡回归 |
+| conversion_stage | legacy conversion_psychology | 固定成交阶段不得进入新 Reply。 | 旧串行 Planner/Reply | None | n/a | deprecated | superseded | parallel_excludes_conversion_stage |
+| customer_type | legacy conversion_psychology | 固定客户类型不得进入新 Shared Context 或 Reply。 | 旧串行 Planner/Reply | None | n/a | deprecated | superseded | parallel_excludes_customer_type |
+| fixed_mainline_next_step | legacy conversion_psychology | 固定下一步不得覆盖当前消息。 | 旧串行 Planner/Reply | None | n/a | deprecated | superseded | parallel_excludes_fixed_mainline |
 
-Review notes:
+Review 要求：
 
-- New architecture commits must update this matrix when moving an active rule.
-- A rule may move owners only with a named target owner and a regression test.
-- Business wording changes belong in a separate business-review commit, not in
-  structural refactor commits.
-
-## Structural Refactor Review Gate
-
-These review gates are mandatory for every commit that changes the reply-chain
-architecture. They are not business rules. They are release controls to keep the
-refactor aligned with the project constitution.
-
-| gate_id | purpose | required evidence |
-| --- | --- | --- |
-| rule_matrix_delta_review | Every moved or split responsibility must keep its active business rule mapped. | Updated row in this matrix, named target owner, and a regression test reference. |
-| payload_isolation_review | Shadow-only diagnostics must not influence active Gate, Planner, or Reply prompts. | `reply_chain_payload_isolation_audit_v1` proves the shadow-only field list is checked against active Planner, Reply, SOP Chat Gate selector, and SOP Chat Gate model messages with no leaked fields or markers; safety markers show audit-only/no-send/no-write/no-model behavior. |
-| authority_snapshot_review | The shared context must prove complete timestamped chat is primary authority, the timeline window follows the full-chat/truncation policy, the current request message is present as the latest authoritative customer message, soft profile strategy is excluded, and authoritative fact sections have no source errors before any behavior switch. | `reply_chain_authority_audit_v1`, `reply_chain_timeline_window_audit_v1`, `reply_chain_current_message_audit_v1`, and `reply_chain_fact_snapshot_audit_v1` are present in shadow diagnostics; `workflow_tests/test_reply_chain_shadow_context.py` and `workflow_tests/test_parallel_reply_chain_shadow.py` pass. |
-| gate_commit_boundary_review | Gate preview/router output must remain candidate-only. SOP task creation, `send_once` updates, database writes, and customer sends belong to the post-Reply validation/commit phase. | `chat_gate_commit_boundary_v1` is present in Gate preview/router shadow diagnostics; `workflow_tests/test_chat_gate_preview.py`, `workflow_tests/test_chat_gate_router_shadow.py`, and `workflow_tests/test_parallel_reply_chain_shadow.py` pass. |
-| branch_input_isolation_review | Parallel Gate and Tool Planner branches must start from copied branch inputs and must not consume prior branch-output shadow fields when behavior switching is considered. | `parallel_branch_input_isolation_audit_v1` is present in runner diagnostics; no `shadow_only_fields_present_in_initial_state` are allowed for active parallel input; `workflow_tests/test_parallel_reply_chain_runner.py` and `workflow_tests/test_parallel_reply_chain_diagnostics.py` pass. |
-| final_expression_owner_review | Join must not become a third brain. Complex turns must route to Reply as final customer-message owner; direct replies are only static Gate candidates with no dynamic fact requirement and still require commit validation. | `reply_final_expression_boundary_v1` is present in Join diagnostics; `workflow_tests/test_reply_chain_join_shadow.py` and `workflow_tests/test_parallel_reply_chain_shadow.py` pass. |
-| direct_reply_guard_review | Gate direct reply is an explicit narrow exception, not a general business brain path. | `reply_chain_direct_reply_guard_audit_v1` proves static candidate exists and no dynamic facts, read tools, or unknown tools are required; `workflow_tests/test_reply_chain_join_shadow.py`, `workflow_tests/test_parallel_reply_chain_shadow.py`, `workflow_tests/test_parallel_reply_chain_diagnostics.py`, and `workflow_tests/test_reply_chain_shadow_bundle_audit.py` pass. |
-| reply_handoff_readiness_review | Reply must receive complete timestamped chat, a ready timeline window, authoritative facts, Gate candidates as references, read-only tool facts, Join ownership evidence, a complete legacy-field mapping, and an explicit target Reply input schema before any Reply payload switch. | `reply_final_brain_handoff_readiness_audit_v1` is present, ready, includes `reply_chain_timeline_window_audit_v1`, includes `reply_legacy_field_mapping_audit_v1`, includes `reply_final_brain_target_input_schema_audit_v1`, and has no blockers; `workflow_tests/test_reply_final_brain_handoff.py` and `workflow_tests/test_parallel_reply_chain_shadow.py` pass. |
-| reply_target_input_schema_review | Future Reply active payload groups must be explicit and must not include legacy Planner groups or sources. | `parallel_reply_chain_shadow.current_serial_observation.reply_target_input_schema_audit_schema` is `reply_final_brain_target_input_schema_audit_v1`, target schema is `reply_final_brain_target_input_schema_v1`, no active group id/source points at legacy Planner fields, and ready is true; `workflow_tests/test_parallel_reply_chain_diagnostics.py` and `workflow_tests/test_reply_final_brain_handoff.py` pass. |
-| reply_handoff_semantic_residue_review | Legacy Planner customer wording and sales-decision fields must be explicitly migrated or blocked before Reply payload switching. | `parallel_reply_chain_diagnostics_v1.migration.reply_handoff_legacy_business_field_count` is observed as `0`; nonzero counts create `reply_handoff_legacy_business_field_residue:*` blockers; `workflow_tests/test_parallel_reply_chain_diagnostics.py` passes. |
-| commit_phase_shadow_review | Final writes, memory records, trace/run persistence, deferred write tools, and customer-visible assistant-message commits must be observable as a post-Reply validation commit phase before any write-path refactor. | `reply_chain_commit_shadow_v1`, `reply_chain_deferred_write_handoff_audit_v1`, and `reply_chain_write_action_inventory_v1` are present in saved runtime state, included in final diagnostics, and excluded from model payloads; `workflow_tests/test_reply_chain_commit_shadow.py`, `workflow_tests/test_platform_reply_runtime.py`, `workflow_tests/test_parallel_reply_chain_diagnostics.py`, and `workflow_tests/test_reply_chain_shadow_payload_isolation.py` pass. |
-| business_wording_freeze_review | Structural commits must not silently change customer-visible business facts or sales wording. | `reply_chain_business_wording_freeze_audit_v1` proves protected customer-visible assets are unchanged: `changed_protected_paths=[]`, `customer_visible_business_assets_unchanged=true`, and safety markers show no runtime/model/send/write behavior. Intentional wording changes use a separate business-review commit. |
-| model_semantics_ownership_review | Code, Join, and Tool Planner must not take ownership of customer psychology, objections, sales rhythm, or final customer-visible wording. | `reply_chain_model_semantics_ownership_audit_v1` proves Tool Planner has zero legacy semantic residue, Join does not generate customer text or decide sales psychology, direct reply is only the static-candidate exception, and Reply remains final expression owner. This structural audit does not replace offline effect simulation. |
-| simulation_regression_review | Behavior flags cannot be enabled until old and new chains are compared on representative conversations. | `offline_reply_chain_simulation_report_v1` covers SOP, precision QA, store, payment, paid registration, risk, and model-failure cases; `evaluation_scope.full_release_gate_candidate=true`, `targeted_smoke=false`, `run_options.skip_review=false`, ordinary attempts are at least 3, and critical attempts are at least 5. |
-| model_matrix_review | The refactored chain's model choice must be backed by measured accuracy and latency across approved candidate models. | `reply_chain_refactor_model_matrix_v1` report compares `claude-opus-4-7`, `gemini-3.5-flash`, and `gpt-5.4` through the relay using local-only environment keys; report includes semantic pass rate, hard errors, P50, P90, and ranking without storing API key values; `evaluation_scope.full_release_gate_candidate=true`, `targeted_smoke=false`, `run_options.skip_review=false`, ordinary attempts are at least 3, and critical attempts are at least 5. |
-| rollback_evidence_review | Each stage must be independently revertible and must not be deployed from this branch. | `reply_chain_refactor_rollback_evidence_v1` proves the reviewed commit is on `codex/reply-chain-refactor`, the current branch is not `main`, deployment-sensitive paths are unchanged, rollback steps are present, and safety markers show audit-only/no-send/no-write/no-model/no-deploy behavior. |
-
-Before any behavior flag changes from shadow mode to active mode, the reviewer
-must check all sixteen gates above and attach the test output or report path in the
-commit or review note.
-Use `docs/reply_chain_refactor_execution_checklist.md` as the per-commit
-execution checklist for these gates. That checklist is procedural evidence only;
-it does not add or replace any business rule.
-
-`reply_chain_release_review_checklist_v1` is diagnostic evidence only. It can
-show which gates have automated shadow evidence, but it must always require
-human review and offline simulation evidence before any behavior switch.
-The checklist must also group unresolved blockers by review owner, including
-contract, runner, comparison, commit, migration, Reply payload schema, and
-manual review. These groups are for human audit readability only and must not
-be treated as automatic approval to switch behavior.
-
-`reply_chain_behavior_switch_guard_v1` is the final admission guard after the
-sixteen review gates. It consumes the flag snapshot, postcommit shadow bundle
-audit, comparison diagnostics, offline simulation report, model matrix report,
-and human review approval. It is not itself one of the sixteen diagnostic
-gates, and it must not enable runtime behavior by side effect.
-`workflow_tests/test_reply_chain_behavior_switch_guard.py` must pass before
-any proposed behavior switch can be reviewed.
-`workflow_tests/test_reply_chain_external_gate_evidence.py` must pass to prove
-that offline simulation and model-matrix reports are validated through one
-shared evidence contract before either the postcommit bundle audit or final
-guard consumes them.
-When diagnostics include grouped release blockers, the guard may expose those
-groups for reviewer readability, but the groups remain evidence only and do not
-enable behavior by themselves. If a group still reports blockers, the guard
-must treat that as unresolved review evidence and block behavior switching even
-when the flat gate list is accidentally empty.
-The postcommit shadow bundle audit must apply the same unresolved-group
-protection so `ready_for_refactor_review` cannot disagree with the final switch
-guard on release-review blockers.
-If a release checklist ever reports `can_enable_behavior_switch` as anything
-other than `false`, both the postcommit bundle audit and final guard must block
-it as malformed evidence. Only the final behavior-switch guard may produce a
-positive switch decision after human review and offline simulation evidence are
-present.
-
-Parallel behavior cannot be enabled until `SOP_CHAT_GATE_V2_ENABLED`,
-`TOOL_PLANNER_V2_ENABLED`, and `REPLY_FINAL_BRAIN_V2_ENABLED` are all true and
-the comparison diagnostics show no shadow replay diffs. This prevents Gate or
-Tool Planner from becoming the final business brain by accident.
+- 移动任何 active 规则时必须更新 target owner 和 regression tests。
+- 结构重构不能顺带修改客户可见业务口径。
+- `hard_law/business_fact` 可进入硬校验或权威事实；`sales_principle/content_asset` 只能由模型结合上下文判断或采用，不能触发 Python 业务分支。
+- 每个实施阶段都要同时做结构 review 和业务规则保护 review。

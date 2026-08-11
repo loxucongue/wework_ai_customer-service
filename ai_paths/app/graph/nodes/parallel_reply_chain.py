@@ -1,0 +1,1589 @@
+from __future__ import annotations
+
+import asyncio
+import copy
+import re
+import time
+from datetime import datetime
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+from app.graph.nodes.common import json_dumps, model_usage_snapshot
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+from app.graph.nodes.store_scope_summary import build_store_scope_summary
+from app.graph.state import AgentState
+from app.policies.business_rules import parallel_reply_business_rules_for_model
+from app.schemas import ChatRequest
+from app.services.model_client import ModelClient
+from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
+from app.services.sop_execution_service import SopExecutionService
+from app.services.trace_logger import TraceLogger
+
+
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+READ_ONLY_TOOL_NAMES = {
+    "customer_store_lookup",
+    "distance_calculate",
+    "kb_search",
+    "appointment_record_query",
+}
+DEFERRED_COMMIT_TOOL_NAMES = {"create_work_order", "add_customer_mobile"}
+
+
+TOOL_PLANNER_SYSTEM_PROMPT = """你是客服回复链路的只读 Tool Planner，不是客服，也不是销售策略模型。
+
+你的唯一任务是根据 shared_context 判断 Reply 在回答当前消息前是否缺少实时事实，并规划最少的只读工具调用。
+
+必须遵守：
+- 只输出 json 对象，不输出客户话术。
+- 不判断客户心理、意向等级、成交阶段、是否推进主线或是否发预约金卡。
+- 不选择 SOP、精准话术或成交理由。
+- 不规划任何写操作、发送动作、开单、同步手机号或排客。
+- 已在 shared_context.authoritative_facts 中存在且没有错误的事实，不重复查询。但 `raw_visible_store_records` 只证明客户有权看到哪些门店，不证明客户地名解析到了哪里、哪家与客户位置匹配或哪家最近。
+- 事实不足且没有可用只读工具时，写入 missing_facts，交给 Reply 决定是否反问。
+- 工具参数只能来自当前消息、完整聊天或结构事实，并在 evidence_refs 中引用来源。
+- `evidence_refs` 只能填写 Shared Context 中真实存在的 `message_ref`，例如 `current_message`、`conv_001`；不要填写 `.content` 字段路径，也不要引用事实分区路径。
+
+允许工具：
+1. customer_store_lookup：门店、地址、定位、区县、乡镇、村、地标、营业信息或门店详情查询。参数可含 query、purpose。
+2. distance_calculate：客户明确比较远近且已有合法候选时排序。参数可含 origin、candidate_source。
+3. kb_search：查询真实案例等知识库素材。参数必须同时含非空 kb_name 和非空 query；案例使用 case_studies，query 从当前客户原话或聊天原文提取。
+4. appointment_record_query：只读查询已有预约记录；普通登记流程不得规划 available_time 或 create_order_plan。
+
+案例查询边界：
+- Gate 与你并行执行，你看不到 Gate 的候选结果，也不能假设 Gate 一定会提供案例素材。
+- 客户当前直接询问效果、改善程度或索要案例/效果图，且 `authoritative_facts.sent_messages.case_image_delivery` 和紧邻聊天都没有近期真实案例图片发送证据时，必须独立规划 `kb_search(kb_name=case_studies)`。即使未完成 SOP 可能含案例图，也不能因此省略查询；最终 Reply 会对 Gate 候选与工具事实去重并选择素材。
+- 若权威发送证据表明紧邻上一轮已经真实发送案例图，客户只是评价或追问刚发素材，则不要重复查询；客户明确要求新的、更多案例时仍应查询。
+
+门店查询边界：
+- 当前消息直接询问某地门店、索要门店地址，或消息本身是一个省、市、区县、县级市、乡镇、村或地标名称时，除非紧邻历史已经交付同一批真实门店且客户只是在选择其中一家，否则必须规划 `customer_store_lookup`。即使 `visible_store_scope` 已列出 1–3 家，也要用本轮查询建立“当前地名解析 + 本轮候选交付”的权威事实；权限列表本身不能替代本轮匹配。
+- `visible_store_scope.relevant_regions` 只证明可见范围并帮助工具校验权限，不证明当前地名已经完成匹配。客户给出区县/县级市时，最终候选必须对应该区县；仅有父级城市候选不等于县城、乡镇、村或地标已经解析完成。
+- 客户给县级市、县城、乡镇、村、地标或同名地点，而 Shared Context 没有当前地名对应的明确行政归属和候选时，必须调用 `customer_store_lookup`；不能仅凭全量可见门店列表自行猜上级城市或要求客户重复标准化地名。
+- 客户给出带经纬度的定位卡，或给出县城、乡镇、村、地标且其本级没有真实门店、父级范围有多家候选时，同时规划 `customer_store_lookup` 与 `distance_calculate`。`distance_calculate.origin` 使用当前定位坐标或当前地名原文，`candidate_source` 使用 `customer_store_lookup`；这是为了用真实排序选择父级回退门店，不要求客户必须先说“最近”。
+- 客户问“最近/更近”但没有可比较的真实位置原点时，不自行挑门店；把位置原点写入 `missing_facts`。已有合法原点和候选时才规划 `distance_calculate`。
+- 当前客户只补充区县、乡镇或地标时，必须先读取完整聊天中刚刚明确的父级省市，并把两者组合成完整查询词；不要把裸下级地名交给工具后再次追问客户。例如历史刚确认“广州”，当前回复“番禺区”，`customer_store_lookup.query` 应为“广州市番禺区”，证据同时引用当前消息和历史中的“广州”。只有历史没有明确父级或存在冲突时，才按原文查询并把歧义交给 Reply。
+- 父级行政区只能来自客户当前原话、完整聊天或结构化定位事实。若这些证据都没有父级，查询参数必须保持客户原始地名，不得凭常识、同名联想或可见门店列表补写省、市、县。例如当前只有“乌林镇乌林村”且历史没有父级，`customer_store_lookup.query` 必须原样使用“乌林镇乌林村”，不得补成“监利市乌林镇乌林村”或先猜“洪湖市”；行政归属交给门店工具解析。
+
+输出前做门店任务自检：如果最近助手刚询问城市/区县/定位，当前客户用一个具体地区作答，这不是普通短确认，而是尚未完成的门店查询输入；`tool_calls` 必须包含 `customer_store_lookup`。例如历史问“广州哪个区”，当前答“番禺区”，必须查询“广州市番禺区”，不能因历史已经出现广州门店候选就返回空工具计划。只有紧邻历史已经真实发送对应门店卡、客户当前只是在选择或确认该卡时，才可以不重复查询。
+
+输出格式：
+{
+  "tool_calls": [{"name":"customer_store_lookup","arguments":{},"purpose":"","evidence_refs":[]}],
+  "missing_facts": [{"field":"","reason":"","evidence_refs":[]}],
+  "evidence_refs": [],
+  "reason": ""
+}
+"""
+
+
+def create_shared_context_node(
+    *,
+    trace_logger: TraceLogger,
+    sop_execution_service: SopExecutionService | None = None,
+) -> Callable[[AgentState], Any]:
+    async def build_shared_context(state: AgentState) -> dict[str, Any]:
+        with trace_logger.node(
+            state,
+            "shared_context",
+            {"request_id": state.get("request_id"), "message_type": _message_type(state)},
+        ) as span:
+            content_catalog = (
+                sop_execution_service.reply_chain_content_catalog()
+                if sop_execution_service is not None
+                else {"schema_version": "reply_chain_content_index_v2", "sop_packs": []}
+            )
+            if sop_execution_service is None:
+                sop_progress = {
+                    "status": "unavailable",
+                    "source": "sop_execution_service_unavailable",
+                    "completed_pack_ids": [],
+                    "completed_categories": [],
+                    "unfinished_sops": [],
+                }
+            else:
+                try:
+                    sop_progress = sop_execution_service.reply_chain_sop_progress(
+                        _request_from_state(state),
+                        request_context=dict(state.get("request_context") or {}),
+                    )
+                except Exception as exc:
+                    sop_progress = {
+                        "status": "error",
+                        "source": "scoped_sop_send_records",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "completed_pack_ids": [],
+                        "completed_categories": [],
+                        "unfinished_sops": [],
+                    }
+            shared = _shared_context(
+                state,
+                content_catalog=content_catalog,
+                sop_progress=sop_progress,
+            )
+            facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+            output = {
+                "shared_context": shared,
+                "store_scope_summary": copy.deepcopy(facts.get("visible_store_scope") or {}),
+                "sent_message_summary": copy.deepcopy(facts.get("sent_messages") or {}),
+                "trace": state.get("trace", []),
+            }
+            span["output_snapshot"] = {
+                "schema_version": shared.get("schema_version"),
+                "conversation_count": len(shared.get("conversation") or []),
+                "fact_sections": sorted((shared.get("authoritative_facts") or {}).keys()),
+                "excluded_semantic_fields": shared.get("excluded_semantic_fields") or [],
+            }
+            return output
+
+    return build_shared_context
+
+
+def create_parallel_evidence_node(
+    *,
+    trace_logger: TraceLogger,
+    model_client: ModelClient | None,
+    sop_execution_service: SopExecutionService | None,
+) -> Callable[[AgentState], Any]:
+    async def parallel_evidence(state: AgentState) -> dict[str, Any]:
+        started = time.perf_counter()
+        with trace_logger.node(
+            state,
+            "parallel_gate_tool_planner",
+            {"shared_context_schema": (state.get("shared_context") or {}).get("schema_version")},
+        ) as span:
+            gate_task = asyncio.create_task(_run_content_gate(state, sop_execution_service))
+            planner_task = asyncio.create_task(_run_tool_planner(state, model_client))
+            raw_gate, raw_tool_plan = await asyncio.gather(
+                gate_task,
+                planner_task,
+                return_exceptions=True,
+            )
+            gate_result = _completed_parallel_branch(
+                raw_gate,
+                schema_version="content_gate_result_v3",
+                fallback={
+                    "route_advice": "tools_only",
+                    "content_candidate_ids": [],
+                    "content_candidates": [],
+                },
+            )
+            tool_plan = _completed_parallel_branch(
+                raw_tool_plan,
+                schema_version="tool_plan_v1",
+                fallback={
+                    "tool_calls": [],
+                    "missing_facts": [],
+                    "evidence_refs": [],
+                },
+            )
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            metrics = {
+                "elapsed_ms": elapsed_ms,
+                "gate_duration_ms": int(gate_result.get("duration_ms") or 0),
+                "tool_planner_duration_ms": int(tool_plan.get("duration_ms") or 0),
+                "parallel_expected_elapsed_ms": max(
+                    int(gate_result.get("duration_ms") or 0),
+                    int(tool_plan.get("duration_ms") or 0),
+                ),
+            }
+            output = {
+                "content_gate_result": gate_result,
+                "tool_plan": tool_plan,
+                "parallel_branch_metrics": metrics,
+                # Compatibility input for the existing read-only executor.
+                "planner_tool_calls": list(tool_plan.get("tool_calls") or []),
+                "required_tools": list(tool_plan.get("tool_calls") or []),
+                "planner_source": "parallel_tool_planner",
+                "trace": state.get("trace", []),
+            }
+            span["entry"]["tool_calls"] = [
+                {"name": "content_gate_model", "output": _branch_trace_output(gate_result)},
+                {"name": "tool_planner_model", "output": _branch_trace_output(tool_plan)},
+            ]
+            span["output_snapshot"] = {
+                "gate_route_advice": gate_result.get("route_advice"),
+                "selected_content_ids": gate_result.get("content_candidate_ids") or [],
+                "tool_names": [item.get("name") for item in tool_plan.get("tool_calls") or []],
+                "missing_fact_count": len(tool_plan.get("missing_facts") or []),
+                "metrics": metrics,
+            }
+            return output
+
+    return parallel_evidence
+
+
+def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentState], Any]:
+    async def evidence_join(state: AgentState) -> dict[str, Any]:
+        with trace_logger.node(state, "deterministic_evidence_join", {}) as span:
+            gate = copy.deepcopy(state.get("content_gate_result") or {})
+            tool_plan = copy.deepcopy(state.get("tool_plan") or {})
+            tool_results = copy.deepcopy(state.get("tool_results") or {})
+            fact_envelope = _normalized_tool_fact_envelope(state.get("fact_envelope"))
+            joined = {
+                "schema_version": "reply_chain_evidence_join_v1",
+                "shared_context": copy.deepcopy(state.get("shared_context") or {}),
+                "content_candidates": copy.deepcopy(gate.get("content_candidates") or []),
+                "gate_evidence": _drop_keys(
+                    gate,
+                    {"content_candidates", "selector_input", "selector_output", "model_usage"},
+                ),
+                "tool_plan": _drop_keys(tool_plan, {"model_usage"}),
+                "tool_facts": tool_results,
+                # The executor already normalizes raw tool payloads into
+                # authority-scoped facts. Reply needs those facts to emit
+                # valid structured messages, while Join remains agnostic
+                # about whether a sales action should be taken.
+                "normalized_tool_facts": fact_envelope,
+                "missing_facts": copy.deepcopy(tool_plan.get("missing_facts") or []),
+                "authority_conflicts": _authority_conflicts(state, tool_results),
+                "join_policy": "evidence_only_no_customer_copy_no_sales_decision",
+            }
+            output = {
+                "evidence_join": joined,
+                "reply_mode": "parallel_evidence_reply",
+                "trace": state.get("trace", []),
+            }
+            span["output_snapshot"] = {
+                "content_candidate_count": len(joined["content_candidates"]),
+                "tool_fact_names": sorted(tool_results),
+                "missing_fact_count": len(joined["missing_facts"]),
+                "conflict_count": len(joined["authority_conflicts"]),
+            }
+            return output
+
+    return evidence_join
+
+
+def _normalized_tool_fact_envelope(value: Any) -> dict[str, Any]:
+    """Expose only executor-owned facts, never legacy sales semantics."""
+
+    if not isinstance(value, dict):
+        return {}
+    allowed_fields = (
+        "usable_facts",
+        "missing_facts",
+        "risky_facts",
+        "unsupported_claims",
+        "structured_facts",
+    )
+    return {
+        field: copy.deepcopy(value[field])
+        for field in allowed_fields
+        if field in value
+    }
+
+
+def create_prepare_commit_node(*, trace_logger: TraceLogger) -> Callable[[AgentState], Any]:
+    async def prepare_commit(state: AgentState) -> dict[str, Any]:
+        with trace_logger.node(state, "prepare_commit", {}) as span:
+            normalized: list[dict[str, Any]] = []
+            violations: list[str] = []
+            for item in state.get("commit_actions") or []:
+                if not isinstance(item, dict):
+                    violations.append("commit_action_not_object")
+                    continue
+                name = str(item.get("name") or "").strip()
+                if name not in DEFERRED_COMMIT_TOOL_NAMES:
+                    violations.append(f"commit_action_not_allowed:{name or 'missing'}")
+                    continue
+                arguments = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
+                evidence_refs = _string_list(item.get("evidence_refs"))
+                action_violations = _commit_action_violations(
+                    name,
+                    arguments,
+                    state,
+                    evidence_refs=evidence_refs,
+                )
+                if action_violations:
+                    violations.extend(action_violations)
+                    continue
+                normalized.append(
+                    {
+                        "name": name,
+                        **copy.deepcopy(arguments),
+                        "evidence_refs": evidence_refs,
+                    }
+                )
+            output = {
+                "planner_tool_calls": normalized,
+                "required_tools": normalized,
+                "commit_result": {
+                    "status": "prepared" if normalized else "no_actions",
+                    "violations": violations,
+                },
+                "trace": state.get("trace", []),
+            }
+            span["output_snapshot"] = {
+                "commit_tool_names": [item.get("name") for item in normalized],
+                "violations": violations,
+            }
+            return output
+
+    return prepare_commit
+
+
+def create_commit_coordinator_node(
+    *,
+    trace_logger: TraceLogger,
+    sop_execution_service: SopExecutionService | None,
+) -> Callable[[AgentState], Any]:
+    async def commit(state: AgentState) -> dict[str, Any]:
+        with trace_logger.node(state, "commit_coordinator", {}) as span:
+            result = dict(state.get("commit_result") or {})
+            result["write_results"] = copy.deepcopy(state.get("commit_tool_results") or {})
+            if sop_execution_service is not None:
+                try:
+                    result["sop"] = sop_execution_service.commit_reply_selected_chat_gate_candidate(
+                        state=state,
+                        reply_messages=list(state.get("reply_messages") or []),
+                    )
+                except Exception as exc:
+                    result["sop"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            else:
+                result["sop"] = {"status": "skipped", "reason": "sop_execution_service_missing"}
+            output = {"commit_result": result, "trace": state.get("trace", [])}
+            span["output_snapshot"] = result
+            return output
+
+    return commit
+
+
+async def _run_content_gate(
+    state: AgentState,
+    service: SopExecutionService | None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    if service is None:
+        return {
+            "schema_version": "content_gate_result_v3",
+            "status": "unavailable",
+            "route_advice": "tools_only",
+            "content_candidate_ids": [],
+            "content_candidates": [],
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+    try:
+        result = await service.evaluate_chat_gate(
+            _request_from_state(state),
+            request_id=str(state.get("request_id") or ""),
+            request_context=dict(state.get("request_context") or {}),
+            record_task=False,
+            shared_state={"shared_context": copy.deepcopy(state.get("shared_context") or {})},
+        )
+        content_candidates = _dict_list(result.get("candidate_packs"))
+        candidate_ids = [
+            str(item.get("content_id") or "").strip()
+            for item in content_candidates
+            if str(item.get("content_id") or "").strip()
+        ]
+        return {
+            "schema_version": "content_gate_result_v3",
+            "status": "completed",
+            "route_advice": _gate_route_advice(result),
+            "content_candidate_ids": list(dict.fromkeys(candidate_ids)),
+            "content_candidates": content_candidates,
+            "reason": str(result.get("reason") or ""),
+            "sop_progress_evidence": copy.deepcopy(result.get("sop_progress_evidence") or {}),
+            "candidate_commit": {
+                "sop_pack_ids": [
+                    str(item.get("content_id") or "").strip()
+                    for item in content_candidates
+                    if item.get("content_type") == "sop" and str(item.get("content_id") or "").strip()
+                ]
+            },
+            "model_usage": copy.deepcopy(result.get("model_usage") or {}),
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+    except Exception as exc:
+        return {
+            "schema_version": "content_gate_result_v3",
+            "status": "error",
+            "route_advice": "tools_only",
+            "content_candidate_ids": [],
+            "content_candidates": [],
+            "error": f"{type(exc).__name__}: {exc}",
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+
+
+async def _run_tool_planner(state: AgentState, model_client: ModelClient | None) -> dict[str, Any]:
+    started = time.perf_counter()
+    if model_client is None or not model_client.available:
+        protocol_calls = _protocol_required_read_only_tools(state)
+        return {
+            "schema_version": "tool_plan_v1",
+            "status": "protocol_recovered" if protocol_calls else "unavailable",
+            "tool_calls": protocol_calls,
+            "missing_facts": [],
+            "evidence_refs": [],
+            "protocol_recovery": bool(protocol_calls),
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+    try:
+        messages = [
+            {"role": "system", "content": TOOL_PLANNER_SYSTEM_PROMPT},
+            {"role": "user", "content": json_dumps({"shared_context": _tool_planner_shared_context(state)})},
+        ]
+        payload = await model_client.chat_json(
+            messages,
+            tier="planner",
+            temperature=0,
+        )
+        tool_calls, violations = _normalize_read_only_tool_calls(
+            payload.get("tool_calls"),
+            valid_evidence_refs=_shared_context_evidence_refs(state),
+        )
+        violations.extend(_protocol_tool_plan_violations(state, tool_calls))
+        initial_violations = list(violations)
+        repair_attempted = False
+        repair_error = ""
+        if violations:
+            repair_attempted = True
+            try:
+                repaired_payload = await model_client.chat_json(
+                    [
+                        *messages,
+                        {
+                            "role": "user",
+                            "content": json_dumps(
+                                {
+                                    "schema_violations": violations,
+                                    "instruction": (
+                                        "只修正工具计划的 schema、必填参数和 evidence_refs。"
+                                        "不要新增客户话术、业务判断或写操作；返回完整 json 对象。"
+                                    ),
+                                }
+                            ),
+                        },
+                    ],
+                    tier="planner",
+                    temperature=0,
+                )
+                repaired_calls, repaired_violations = _normalize_read_only_tool_calls(
+                    repaired_payload.get("tool_calls"),
+                    valid_evidence_refs=_shared_context_evidence_refs(state),
+                )
+                repaired_violations.extend(
+                    _protocol_tool_plan_violations(state, repaired_calls)
+                )
+                payload = repaired_payload
+                tool_calls = repaired_calls
+                violations = repaired_violations
+            except Exception as exc:
+                repair_error = f"{type(exc).__name__}: {exc}"
+        protocol_recovery_calls = _protocol_required_read_only_tools(state)
+        protocol_recovery = bool(
+            protocol_recovery_calls
+            and any(item.startswith("protocol_required_tool_missing:") for item in violations)
+        )
+        if protocol_recovery_calls:
+            # A protocol-required tool may already be present but carry a
+            # model-shortened title instead of the location card's full
+            # address/coordinates. Always apply protocol-owned arguments;
+            # `protocol_recovery` remains reserved for a missing tool name.
+            tool_calls = _merge_tool_calls(tool_calls, protocol_recovery_calls)
+        if protocol_recovery:
+            violations = [
+                item
+                for item in violations
+                if not item.startswith("protocol_required_tool_missing:")
+            ]
+        return {
+            "schema_version": "tool_plan_v1",
+            "status": (
+                "protocol_recovered"
+                if protocol_recovery and not violations
+                else "completed" if not violations else "completed_with_violations"
+            ),
+            "tool_calls": tool_calls,
+            "missing_facts": _dict_list(payload.get("missing_facts")),
+            "evidence_refs": _string_list(payload.get("evidence_refs")),
+            "reason": str(payload.get("reason") or ""),
+            "violations": violations,
+            "initial_violations": initial_violations,
+            "repair_attempted": repair_attempted,
+            "repair_error": repair_error,
+            "protocol_recovery": protocol_recovery,
+            "model_usage": model_usage_snapshot(model_client),
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+    except Exception as exc:
+        protocol_calls = _protocol_required_read_only_tools(state)
+        return {
+            "schema_version": "tool_plan_v1",
+            "status": "protocol_recovered" if protocol_calls else "error",
+            "tool_calls": protocol_calls,
+            "missing_facts": [],
+            "evidence_refs": [],
+            "error": f"{type(exc).__name__}: {exc}",
+            "protocol_recovery": bool(protocol_calls),
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+
+
+def _protocol_required_read_only_tools(state: AgentState) -> list[dict[str, Any]]:
+    """Recover only tool calls mandated by an inbound message protocol."""
+
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    current = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    location_card = facts.get("location_card") if isinstance(facts.get("location_card"), dict) else {}
+    if str(current.get("message_type") or "").strip().lower() != "location":
+        return []
+    address = str(location_card.get("address") or location_card.get("location_address") or "").strip()
+    title = str(location_card.get("title") or location_card.get("location_title") or "").strip()
+    coordinates = str(location_card.get("coordinates") or location_card.get("location") or "").strip()
+    query = " ".join(dict.fromkeys(item for item in (address, title) if item)).strip()
+    if not query:
+        query = coordinates
+    if not query:
+        return []
+    calls = [
+        {
+            "name": "customer_store_lookup",
+            "query": query,
+            "purpose": "protocol_location_card_resolution",
+            "evidence_refs": ["current_message"],
+        }
+    ]
+    if coordinates:
+        calls.append(
+            {
+                "name": "distance_calculate",
+                "origin": coordinates,
+                "candidate_source": "customer_store_lookup",
+                "purpose": "protocol_location_card_distance_ranking",
+                "evidence_refs": ["current_message"],
+            }
+        )
+    return calls
+
+
+def _protocol_tool_plan_violations(
+    state: AgentState,
+    tool_calls: list[dict[str, Any]],
+) -> list[str]:
+    required_names = {
+        str(item.get("name") or "").strip()
+        for item in _protocol_required_read_only_tools(state)
+        if str(item.get("name") or "").strip()
+    }
+    planned_names = {
+        str(item.get("name") or "").strip()
+        for item in tool_calls
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    return [
+        f"protocol_required_tool_missing:{name}"
+        for name in sorted(required_names - planned_names)
+    ]
+
+
+def _merge_tool_calls(
+    planned: list[dict[str, Any]],
+    required: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    required_by_name = {
+        str(item.get("name") or "").strip(): item
+        for item in required
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    output: list[dict[str, Any]] = []
+    present: set[str] = set()
+    for raw in planned:
+        if not isinstance(raw, dict):
+            continue
+        item = copy.deepcopy(raw)
+        name = str(item.get("name") or "").strip()
+        if name in required_by_name:
+            # Protocol facts such as a location card's address and coordinates
+            # are authoritative input data. They may replace model-generated
+            # arguments for the same read-only tool without choosing a sales
+            # action or interpreting customer intent.
+            item.update(copy.deepcopy(required_by_name[name]))
+        output.append(item)
+        if name:
+            present.add(name)
+    output.extend(
+        copy.deepcopy(item)
+        for name, item in required_by_name.items()
+        if name not in present
+    )
+    return output
+
+
+def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
+    joined = copy.deepcopy(state.get("evidence_join") or {})
+    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
+    valid_customer_message_refs = ["current_message"]
+    valid_message_refs = ["current_message"]
+    for item in shared.get("conversation") or []:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("message_ref") or "").strip()
+        if ref and ref not in valid_message_refs:
+            valid_message_refs.append(ref)
+        if (
+            ref
+            and str(item.get("role") or "").strip().lower() in {"customer", "user"}
+            and ref not in valid_customer_message_refs
+        ):
+            valid_customer_message_refs.append(ref)
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    sop_progress = facts.get("sop_progress") if isinstance(facts.get("sop_progress"), dict) else {}
+    content_indexes = shared.get("content_indexes") if isinstance(shared.get("content_indexes"), dict) else {}
+    content_catalog = (
+        content_indexes.get("available_sop")
+        if isinstance(content_indexes.get("available_sop"), dict)
+        else {}
+    )
+    catalog_by_id = {
+        str(item.get("content_id") or "").strip(): item
+        for item in content_catalog.get("sop_packs") or []
+        if isinstance(item, dict) and str(item.get("content_id") or "").strip()
+    }
+    structured_delivered_assets = [
+        {
+            "ref": f"sop_completed:{content_id}",
+            "content_id": content_id,
+            "asset_role": str((catalog_by_id.get(content_id) or {}).get("asset_role") or "").strip(),
+        }
+        for raw_content_id in sop_progress.get("completed_pack_ids") or []
+        if (content_id := str(raw_content_id).strip()) in catalog_by_id
+    ]
+    structured_delivery_refs = [item["ref"] for item in structured_delivered_assets]
+    structured_deposit_refs = [
+        item["ref"]
+        for item in structured_delivered_assets
+        if item.get("asset_role") == "activity_offer"
+    ]
+    prior_assistant_refs = [
+        str(item.get("message_ref") or "").strip()
+        for item in shared.get("conversation") or []
+        if isinstance(item, dict)
+        and str(item.get("role") or "").strip().lower() in {"assistant", "staff", "ai"}
+        and str(item.get("message_ref") or "").strip()
+    ]
+    prior_assistant_message_refs = list(dict.fromkeys(prior_assistant_refs))
+    prior_message_and_delivery_refs = list(
+        dict.fromkeys([*valid_message_refs, *structured_delivery_refs])
+    )
+    allowed_selected_content_ids = [
+        str(item.get("content_id") or item.get("id") or "").strip()
+        for item in joined.get("content_candidates") or []
+        if isinstance(item, dict)
+        and str(item.get("content_id") or item.get("id") or "").strip()
+    ]
+    content_candidate_reference_options = [
+        {
+            "content_id": content_id,
+            "used_fact_ref": f"content_asset:{content_id}",
+        }
+        for content_id in dict.fromkeys(allowed_selected_content_ids)
+    ]
+    tool_facts = joined.get("tool_facts") if isinstance(joined.get("tool_facts"), dict) else {}
+    tool_fact_reference_options = [
+        {
+            "ref": f"tool_fact:{tool_name}",
+            "tool_name": tool_name,
+        }
+        for raw_tool_name, tool_fact in tool_facts.items()
+        if (tool_name := str(raw_tool_name or "").strip())
+        and isinstance(tool_fact, dict)
+    ]
+    valid_commit_evidence = _valid_commit_evidence(state, shared)
+    authoritative_fact_reference_options = [
+        {
+            "ref": str(item.get("ref") or "").strip(),
+            "kind": str(item.get("kind") or "").strip(),
+        }
+        for item in valid_commit_evidence
+        if isinstance(item, dict)
+        and str(item.get("ref") or "").strip()
+        and str(item.get("kind") or "").strip() != "customer_message"
+    ]
+    registration_fact_status = _registration_fact_status(state, shared)
+    store_fact_status = _store_fact_status(joined)
+    structured_delivery_options = _structured_delivery_options(joined)
+    reply_evidence = copy.deepcopy(joined)
+    reply_shared = (
+        reply_evidence.get("shared_context")
+        if isinstance(reply_evidence.get("shared_context"), dict)
+        else {}
+    )
+    reply_authoritative = (
+        reply_shared.get("authoritative_facts")
+        if isinstance(reply_shared.get("authoritative_facts"), dict)
+        else {}
+    )
+    # The complete permission inventory is needed by the Tool Planner, but the
+    # final Reply only needs the compact scope plus current-turn matched facts.
+    # Removing this duplicate bulk does not remove any unique business fact.
+    reply_authoritative.pop("raw_visible_store_records", None)
+    return {
+        "schema_version": "parallel_reply_input_v2",
+        # Put the current turn's compact tool contract before the larger evidence
+        # envelope. This changes no business decision; it prevents authoritative
+        # tool results from being buried behind pre-tool content candidates.
+        "structured_delivery_options": structured_delivery_options,
+        "tool_fact_reference_options": tool_fact_reference_options,
+        "authoritative_fact_reference_options": authoritative_fact_reference_options,
+        "registration_fact_status": registration_fact_status,
+        "store_fact_status": store_fact_status,
+        "evidence": reply_evidence,
+        "valid_message_refs": valid_message_refs,
+        "valid_customer_message_refs": valid_customer_message_refs,
+        "structured_delivered_assets": structured_delivered_assets,
+        "valid_deposit_evidence_refs": [*valid_message_refs, *structured_delivery_refs],
+        "structured_prior_activity_refs": structured_deposit_refs,
+        # Neutral provenance pools. Their names intentionally do not label any
+        # message as an activity offer or a supporting sales key.
+        "prior_assistant_message_refs": prior_assistant_message_refs,
+        "prior_message_and_delivery_refs": prior_message_and_delivery_refs,
+        "allowed_selected_content_ids": list(dict.fromkeys(allowed_selected_content_ids)),
+        # Exact schema references only; Reply still decides whether to adopt an asset.
+        "content_candidate_reference_options": content_candidate_reference_options,
+        # Neutral provenance identifiers for this turn's actual tool outputs.
+        # They do not describe what the facts mean or whether Reply should use them.
+        "valid_commit_evidence": valid_commit_evidence,
+        "output_contract": {
+            "reply_messages": "required customer-visible message list",
+            "used_fact_refs": "fact references actually used",
+            "selected_content_ids": "Gate candidates actually adopted",
+            "action": "none | ask | offer | payment | registration",
+            "action_reason": "brief model reasoning for audit; never customer-visible",
+            "sales_judgment": (
+                "ephemeral current-turn judgment including friction, decision opportunity and one smallest next commitment; "
+                "model-owned and never persisted"
+            ),
+            "payment_assessment": "ephemeral Reply-owned payment context with evidence refs; never persisted",
+            "deposit_evidence": "required evidence references only when a payment card is sent",
+            "safety_assessment": "model conclusion using exact refs from valid_customer_message_refs",
+            "party_size_assessment": "model conclusion using exact refs from valid_customer_message_refs",
+            "commit_actions": "optional validated deferred writes; never execute before reply validation",
+        },
+    }
+
+
+def _shared_context(
+    state: AgentState,
+    *,
+    content_catalog: dict[str, Any],
+    sop_progress: dict[str, Any],
+) -> dict[str, Any]:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    store_knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    location_hints = [
+        state.get("normalized_content"),
+        (state.get("location_card") or {}).get("title") if isinstance(state.get("location_card"), dict) else "",
+        (state.get("location_card") or {}).get("address") if isinstance(state.get("location_card"), dict) else "",
+    ]
+    authoritative_facts = {
+        "orders_and_payment": _authoritative_order_payment_facts(state),
+        "visible_store_scope": build_store_scope_summary(store_knowledge, location_hints=location_hints),
+        "raw_visible_store_records": copy.deepcopy(store_knowledge.get("stores") or []),
+        "sop_progress": copy.deepcopy(sop_progress),
+        "sent_messages": sent_message_summary_for_model(state),
+        "image_or_transfer_fact": copy.deepcopy(state.get("image_info") or {}),
+        "location_card": copy.deepcopy(state.get("location_card") or {}),
+        "request_store_facts": {
+            "confirmed_store_id": state.get("confirmed_store_id"),
+            "confirmed_store_name": state.get("confirmed_store_name"),
+            "store_id": state.get("store_id"),
+            "store_name": state.get("store_name"),
+        },
+        "registration_facts": _authoritative_registration_facts(state),
+        "fact_source_status": copy.deepcopy(state.get("background_fact_views") or {}),
+    }
+    return {
+        "schema_version": "shared_context_v2",
+        "current_time": {
+            "iso": datetime.now(BEIJING_TZ).isoformat(),
+            "timezone": "Asia/Shanghai",
+        },
+        "current_message": {
+            "content": str(state.get("normalized_content") or state.get("content") or ""),
+            "raw_content": str(state.get("content") or ""),
+            "message_type": _message_type(state),
+            "msgid": str(request_context.get("msgid") or ""),
+            "sent_at": request_context.get("msgtime") or request_context.get("created_at"),
+        },
+        "conversation": _conversation(state),
+        "customer_scope": copy.deepcopy(state.get("customer_scope") or {}),
+        "authoritative_facts": authoritative_facts,
+        "content_indexes": {
+            "available_sop": _content_index_with_delivery_status(content_catalog, sop_progress),
+        },
+        "sales_guidance": {
+            "source": "v2_distilled_objection_playbook",
+            "principles": copy.deepcopy(content_catalog.get("sales_principles") or []),
+            "raw_source_replies_included": False,
+        },
+        "rules": parallel_reply_business_rules_for_model(),
+        "fact_priority": [
+            "current_customer_message",
+            "current_turn_tool_facts",
+            "recent_real_conversation",
+            "structured_delivery_records",
+            "non_authoritative_background",
+        ],
+        "excluded_semantic_fields": [
+            "signup_state",
+            "next_slot",
+            "deposit_ready_candidate",
+            "customer_profile.next_sales_strategy",
+            "customer_type",
+            "main_blocker",
+            "conversion_stage",
+            "automatic_store_confirmation",
+        ],
+    }
+
+
+def _tool_planner_shared_context(state: AgentState) -> dict[str, Any]:
+    """Remove sales/content guidance from the read-only tool planning boundary."""
+
+    shared = copy.deepcopy(state.get("shared_context") or {})
+    shared.pop("content_indexes", None)
+    shared.pop("sales_guidance", None)
+    rules = shared.get("rules") if isinstance(shared.get("rules"), dict) else {}
+    shared["rules"] = {
+        key: copy.deepcopy(rules.get(key))
+        for key in ("MUST FOLLOW", "AUTHORITATIVE FACTS", "TOOL FACT BOUNDARIES")
+        if rules.get(key) not in (None, "", [], {})
+    }
+    return shared
+
+
+def _content_index_with_delivery_status(
+    content_catalog: dict[str, Any],
+    sop_progress: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose asset metadata and delivery state without leaking configured bodies."""
+
+    completed_ids = {
+        str(item).strip()
+        for item in sop_progress.get("completed_pack_ids") or []
+        if str(item).strip()
+    }
+    items: list[dict[str, Any]] = []
+    for raw in content_catalog.get("sop_packs") or []:
+        if not isinstance(raw, dict):
+            continue
+        content_id = str(raw.get("content_id") or "").strip()
+        if not content_id:
+            continue
+        items.append(
+            {
+                "content_id": content_id,
+                "content_type": str(raw.get("content_type") or "sop"),
+                "name": str(raw.get("name") or ""),
+                "purpose": str(raw.get("purpose") or ""),
+                "asset_role": str(raw.get("asset_role") or "supporting_content"),
+                "requires_prior_asset_roles": [
+                    str(item).strip()
+                    for item in raw.get("requires_prior_asset_roles") or []
+                    if str(item).strip()
+                ],
+                "selection_constraints": copy.deepcopy(raw.get("selection_constraints") or {}),
+                "category": str(raw.get("category") or ""),
+                "delivery_status": "completed" if content_id in completed_ids else "available",
+            }
+        )
+    return {
+        "schema_version": "content_asset_index_v2",
+        "sop_packs": items,
+    }
+
+
+def _structured_delivery_options(joined: dict[str, Any]) -> dict[str, Any]:
+    """Surface current-turn structured options without deciding to use them."""
+
+    tool_facts = joined.get("tool_facts") if isinstance(joined.get("tool_facts"), dict) else {}
+    normalized_tool_facts = (
+        joined.get("normalized_tool_facts")
+        if isinstance(joined.get("normalized_tool_facts"), dict)
+        else {}
+    )
+    pending: list[Any] = [tool_facts, normalized_tool_facts]
+    resolutions: list[dict[str, Any]] = []
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            resolution = value.get("store_resolution_fact")
+            if isinstance(resolution, dict):
+                resolutions.append(resolution)
+            pending.extend(item for item in value.values() if isinstance(item, (dict, list)))
+        elif isinstance(value, list):
+            pending.extend(item for item in value if isinstance(item, (dict, list)))
+    if not resolutions:
+        return {}
+    resolution = next(
+        (
+            item
+            for item in resolutions
+            if item.get("delivery_store_ids") or item.get("visible_candidate_ids")
+        ),
+        resolutions[0],
+    )
+    store_ids = [
+        str(item).strip()
+        for item in resolution.get("delivery_store_ids") or []
+        if str(item).strip()
+    ]
+    return {
+        "store_address": {
+            "fact_ref": "tool_fact:customer_store_lookup",
+            "status": str(resolution.get("status") or ""),
+            "available_store_ids": list(dict.fromkeys(store_ids)),
+            "message_payloads": [
+                {"type": "store_address", "content": {"store_id": store_id}}
+                for store_id in dict.fromkeys(store_ids)
+            ],
+            "candidate_search_complete": resolution.get("candidate_search_complete"),
+            "ranking_method": str(resolution.get("ranking_method") or ""),
+            "source": "current_turn_tool_fact",
+        }
+    }
+
+
+def _store_fact_status(joined: dict[str, Any]) -> dict[str, Any]:
+    """Copy compact location facts without selecting a clarification or store."""
+
+    normalized = (
+        joined.get("normalized_tool_facts")
+        if isinstance(joined.get("normalized_tool_facts"), dict)
+        else {}
+    )
+    structured = (
+        normalized.get("structured_facts")
+        if isinstance(normalized.get("structured_facts"), dict)
+        else {}
+    )
+    lookup = (
+        structured.get("store_lookup_status")
+        if isinstance(structured.get("store_lookup_status"), dict)
+        else {}
+    )
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    location = (
+        resolution.get("location_evidence")
+        if isinstance(resolution.get("location_evidence"), dict)
+        else {}
+    )
+    store_candidate_regions: list[dict[str, str]] = []
+    seen_regions: set[tuple[str, str, str]] = set()
+    for item in structured.get("store_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        region = (
+            str(item.get("province") or "").strip(),
+            str(item.get("city") or "").strip(),
+            str(item.get("district") or "").strip(),
+        )
+        if not any(region) or region in seen_regions:
+            continue
+        seen_regions.add(region)
+        store_candidate_regions.append(
+            {"province": region[0], "city": region[1], "district": region[2]}
+        )
+    return {
+        "status": str(resolution.get("status") or lookup.get("status") or ""),
+        "raw_place": str(
+            resolution.get("raw_place")
+            or lookup.get("raw_query")
+            or location.get("raw_text")
+            or ""
+        ),
+        "missing_facts": copy.deepcopy(normalized.get("missing_facts") or []),
+        "resolved_admin": {
+            "province": str(location.get("province") or lookup.get("province") or ""),
+            "city": str(location.get("city") or lookup.get("city") or ""),
+            "district": str(location.get("district") or lookup.get("district") or ""),
+        },
+        "candidate_regions": copy.deepcopy(location.get("geocode_candidate_regions") or []),
+        "store_candidate_regions": store_candidate_regions,
+        "candidate_store_count": int(resolution.get("visible_candidate_count") or 0),
+        "delivery_store_ids": copy.deepcopy(resolution.get("delivery_store_ids") or []),
+        "ranking_method": str(resolution.get("ranking_method") or ""),
+        "source": "normalized_tool_facts",
+    }
+
+
+def _conversation(state: AgentState) -> list[dict[str, Any]]:
+    """Return complete prior history; the current turn lives in current_message."""
+
+    turns = state.get("conversation_turns") if isinstance(state.get("conversation_turns"), list) else []
+    if turns:
+        output = []
+        for index, item in enumerate(turns, start=1):
+            if not isinstance(item, dict):
+                continue
+            turn = copy.deepcopy(item)
+            turn.setdefault("message_ref", f"history_{index}")
+            output.append(turn)
+    else:
+        output = []
+        for index, raw in enumerate(state.get("conversation_history") or [], start=1):
+            text = str(raw or "").strip()
+            role = "unknown"
+            for prefix, value in (("用户:", "customer"), ("客户:", "customer"), ("小贝:", "assistant"), ("AI:", "assistant"), ("员工:", "assistant")):
+                if text.startswith(prefix):
+                    role = value
+                    text = text[len(prefix) :].strip()
+                    break
+            output.append({"message_ref": f"history_{index}", "role": role, "content": text})
+    current = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if current and _conversation_ends_with(output, current):
+        last_role = str(output[-1].get("role") or "").strip().lower()
+        if last_role in {"customer", "user"}:
+            output.pop()
+    return output
+
+
+def _authoritative_order_payment_facts(state: AgentState) -> dict[str, Any]:
+    """Expose platform facts without old-memory ordering or sales-state labels."""
+
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    orders: list[dict[str, Any]] = []
+    for raw in context.get("orders") or []:
+        if not isinstance(raw, dict):
+            continue
+        order = copy.deepcopy(raw)
+        order.pop("is_current_order", None)
+        orders.append(order)
+    existing_state, existing_source, existing_fact = _authoritative_existing_payment(state)
+    output = {
+        "source": str(context.get("source") or ""),
+        "customer_id": context.get("customer_id"),
+        "platform_customer_id": context.get("platform_customer_id"),
+        "customer_add_wechat_id": context.get("customer_add_wechat_id"),
+        "customer": copy.deepcopy(context.get("customer") or {}),
+        "orders": orders,
+        "orders_error": str(context.get("orders_error") or ""),
+        "customer_info_error": str(context.get("customer_info_error") or ""),
+        "resolved_payment": resolved_payment_fact(
+            orders=orders,
+            image_info=state.get("image_info"),
+            existing_state=existing_state,
+            existing_source=existing_source,
+            existing_fact=existing_fact,
+        ),
+    }
+    if str(context.get("source") or "") == "platform_agent":
+        output["appointment"] = copy.deepcopy(context.get("appointment") or {})
+    return {key: value for key, value in output.items() if value not in (None, "", [], {})}
+
+
+def _authoritative_existing_payment(state: AgentState) -> tuple[str, str, Any]:
+    source = str(state.get("payment_source") or "").strip()
+    payment_state = str(state.get("payment_state") or "").strip()
+    if source in {"vision.payment_proof", "platform.unknown_message_transfer"}:
+        return payment_state, source, state.get("payment_fact")
+    if payment_state == "paid_by_platform_transfer_event":
+        return payment_state, "platform.unknown_message_transfer", state.get("payment_fact")
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    stored = basic.get("deposit_state") if isinstance(basic.get("deposit_state"), dict) else {}
+    stored_state = str(stored.get("status") or stored.get("deposit_state") or "").strip()
+    stored_source = str(stored.get("source") or "").strip()
+    if (
+        stored_state in {"paid_by_platform_transfer_event", "paid_by_screenshot"}
+        and stored_source in {"platform.unknown_message_transfer", "vision.payment_proof"}
+    ):
+        return stored_state, stored_source, stored
+    return "", "", None
+
+
+def _commit_action_violations(
+    name: str,
+    arguments: dict[str, Any],
+    state: AgentState,
+    *,
+    evidence_refs: list[str] | None = None,
+) -> list[str]:
+    """Validate deferred-write provenance without deciding sales semantics."""
+
+    refs = [str(item).strip() for item in evidence_refs or [] if str(item).strip()]
+    violations: list[str] = []
+    scope = _commit_customer_scope(state)
+    if not scope.get("persistence_allowed") or not scope.get("wechat"):
+        violations.append(f"commit_action_requires_current_sales_contact_scope:{name}")
+    if not state.get("memory_persist_allowed", True):
+        violations.append(f"commit_action_persistence_disabled:{name}")
+
+    valid_evidence = {
+        str(item.get("ref") or "").strip(): item
+        for item in _valid_commit_evidence(state)
+        if isinstance(item, dict) and str(item.get("ref") or "").strip()
+    }
+    if not refs:
+        violations.append(f"commit_action_requires_evidence_refs:{name}")
+    else:
+        unknown_refs = sorted({ref for ref in refs if ref not in valid_evidence})
+        if unknown_refs:
+            violations.append(
+                f"commit_action_unknown_evidence_refs:{name}:{','.join(unknown_refs)}"
+            )
+
+    if not _parallel_payment_is_paid(state):
+        violations.append(f"commit_action_requires_paid_deposit:{name}")
+    elif "payment_fact:authoritative_paid" not in refs:
+        violations.append(f"commit_action_requires_paid_evidence_ref:{name}")
+
+    mobile = re.sub(r"\D", "", str(arguments.get("mobile") or ""))
+    if name == "add_customer_mobile":
+        if len(mobile) != 11:
+            violations.append("commit_action_invalid_mobile:add_customer_mobile")
+        elif not _commit_value_has_evidence(
+            mobile,
+            refs,
+            valid_evidence,
+            kinds={"customer_message", "registration_mobile"},
+            digits_only=True,
+        ):
+            violations.append("commit_action_mobile_missing_source:add_customer_mobile")
+        return violations
+    if name == "create_work_order":
+        customer_name = str(arguments.get("customer_name") or "").strip()
+        store_id = str(arguments.get("store_id") or "").strip()
+        if not customer_name:
+            violations.append("commit_action_missing_customer_name:create_work_order")
+        elif not _commit_value_has_evidence(
+            customer_name,
+            refs,
+            valid_evidence,
+            kinds={"customer_message", "registration_name"},
+        ):
+            violations.append("commit_action_customer_name_missing_source:create_work_order")
+        if len(mobile) != 11:
+            violations.append("commit_action_invalid_mobile:create_work_order")
+        elif not _commit_value_has_evidence(
+            mobile,
+            refs,
+            valid_evidence,
+            kinds={"customer_message", "registration_mobile"},
+            digits_only=True,
+        ):
+            violations.append("commit_action_mobile_missing_source:create_work_order")
+        if not store_id:
+            violations.append("commit_action_missing_store_id:create_work_order")
+        else:
+            if store_id not in _visible_store_ids(state):
+                violations.append("commit_action_store_not_customer_visible:create_work_order")
+            store_ref = next(
+                (
+                    ref
+                    for ref in refs
+                    if valid_evidence.get(ref, {}).get("kind") == "store_anchor"
+                    and str(valid_evidence.get(ref, {}).get("value") or "") == store_id
+                ),
+                "",
+            )
+            if not store_ref:
+                violations.append("commit_action_store_missing_anchor:create_work_order")
+        return violations
+    return violations
+
+
+def _authoritative_registration_facts(state: AgentState) -> dict[str, Any]:
+    """Expose only structured registration values and their source."""
+
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    customer = context.get("customer") if isinstance(context.get("customer"), dict) else {}
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    name = str(
+        customer.get("customer_name")
+        or basic.get("customer_name")
+        or ""
+    ).strip()
+    mobile = re.sub(
+        r"\D",
+        "",
+        str(
+            customer.get("mobile")
+            or customer.get("phone")
+            or basic.get("phone")
+            or ""
+        ),
+    )
+    output: dict[str, Any] = {"source": "structured_registration"}
+    if name:
+        output["customer_name"] = name
+    if len(mobile) == 11:
+        output["mobile"] = mobile
+    return output if len(output) > 1 else {}
+
+
+def _registration_fact_status(
+    state: AgentState,
+    shared_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Summarize authoritative field presence without choosing a reply action."""
+
+    facts = (
+        shared_context.get("authoritative_facts")
+        if isinstance(shared_context.get("authoritative_facts"), dict)
+        else {}
+    )
+    registration = (
+        facts.get("registration_facts")
+        if isinstance(facts.get("registration_facts"), dict)
+        else {}
+    )
+    collected_fields: list[str] = []
+    if str(registration.get("customer_name") or "").strip():
+        collected_fields.append("customer_name")
+    mobile = re.sub(r"\D", "", str(registration.get("mobile") or ""))
+    if len(mobile) == 11:
+        collected_fields.append("customer_mobile")
+    expected_fields = ["customer_name", "customer_mobile"]
+    return {
+        "authoritative_paid": _parallel_payment_is_paid(
+            {**state, "shared_context": shared_context}
+        ),
+        "collected_fields": collected_fields,
+        "missing_fields": [field for field in expected_fields if field not in collected_fields],
+        "source": "authoritative_facts.registration_facts",
+    }
+
+
+def _valid_commit_evidence(
+    state: AgentState,
+    shared_context: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    shared = shared_context if isinstance(shared_context, dict) else (
+        state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    )
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    output: list[dict[str, str]] = []
+
+    current = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
+    current_text = str(current.get("content") or current.get("raw_content") or "").strip()
+    if current_text:
+        output.append({"ref": "current_message", "kind": "customer_message", "value": current_text})
+    for item in shared.get("conversation") or []:
+        if not isinstance(item, dict) or str(item.get("role") or "").strip().lower() not in {"customer", "user"}:
+            continue
+        ref = str(item.get("message_ref") or "").strip()
+        value = str(item.get("content") or "").strip()
+        if ref and value:
+            output.append({"ref": ref, "kind": "customer_message", "value": value})
+
+    if _parallel_payment_is_paid({**state, "shared_context": shared}):
+        output.append(
+            {
+                "ref": "payment_fact:authoritative_paid",
+                "kind": "paid_deposit",
+                "value": "paid",
+            }
+        )
+
+    registration = facts.get("registration_facts") if isinstance(facts.get("registration_facts"), dict) else {}
+    name = str(registration.get("customer_name") or "").strip()
+    mobile = re.sub(r"\D", "", str(registration.get("mobile") or ""))
+    if name:
+        output.append({"ref": "registration_fact:customer_name", "kind": "registration_name", "value": name})
+    if len(mobile) == 11:
+        output.append({"ref": "registration_fact:customer_mobile", "kind": "registration_mobile", "value": mobile})
+
+    request_store = facts.get("request_store_facts") if isinstance(facts.get("request_store_facts"), dict) else {}
+    for field in ("confirmed_store_id", "store_id"):
+        store_id = str(request_store.get(field) or "").strip()
+        if store_id:
+            output.append({"ref": f"request_store:{store_id}", "kind": "store_anchor", "value": store_id})
+
+    sent = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    anchor = sent.get("store_anchor_fact") if isinstance(sent.get("store_anchor_fact"), dict) else {}
+    if str(anchor.get("status") or "") == "eligible":
+        store_id = str(anchor.get("store_id") or "").strip()
+        if store_id:
+            output.append({"ref": f"sent_store_anchor:{store_id}", "kind": "store_anchor", "value": store_id})
+
+    for store_id in sorted(_tool_store_anchor_ids(state)):
+        output.append({"ref": f"tool_store:{store_id}", "kind": "store_anchor", "value": store_id})
+
+    deduped: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in output:
+        ref = item["ref"]
+        if ref in seen:
+            continue
+        seen.add(ref)
+        deduped.append(item)
+    return deduped
+
+
+def _commit_value_has_evidence(
+    value: str,
+    refs: list[str],
+    valid_evidence: dict[str, dict[str, str]],
+    *,
+    kinds: set[str],
+    digits_only: bool = False,
+) -> bool:
+    expected = re.sub(r"\D", "", value) if digits_only else str(value).strip()
+    if not expected:
+        return False
+    for ref in refs:
+        evidence = valid_evidence.get(ref) or {}
+        if evidence.get("kind") not in kinds:
+            continue
+        actual = str(evidence.get("value") or "")
+        actual = re.sub(r"\D", "", actual) if digits_only else actual
+        if expected in actual:
+            return True
+    return False
+
+
+def _visible_store_ids(state: AgentState) -> set[str]:
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    stores = facts.get("raw_visible_store_records") if isinstance(facts.get("raw_visible_store_records"), list) else []
+    return {
+        str(item.get("store_id") or item.get("id") or "").strip()
+        for item in stores
+        if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
+    }
+
+
+def _tool_store_anchor_ids(state: AgentState) -> set[str]:
+    results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    output: set[str] = set()
+    pending: list[Any] = [results]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            for key in ("delivery_store_ids", "store_ids"):
+                raw_ids = value.get(key)
+                if isinstance(raw_ids, list):
+                    output.update(str(item).strip() for item in raw_ids if str(item).strip())
+            fact = value.get("store_resolution_fact")
+            if isinstance(fact, dict):
+                pending.append(fact)
+            pending.extend(item for item in value.values() if isinstance(item, (dict, list)))
+        elif isinstance(value, list):
+            pending.extend(item for item in value if isinstance(item, (dict, list)))
+    return output
+
+
+def _commit_customer_scope(state: AgentState) -> dict[str, Any]:
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    scope = shared.get("customer_scope") if isinstance(shared.get("customer_scope"), dict) else {}
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    state_wechat = str(request_context.get("wechat") or state.get("wechat") or "").strip()
+    scope_wechat = str(scope.get("wechat") or "").strip()
+    if state_wechat and scope_wechat and state_wechat.lower() != scope_wechat.lower():
+        return {**scope, "persistence_allowed": False, "scope_conflict": "wechat"}
+    return scope
+
+
+def _parallel_payment_is_paid(state: AgentState) -> bool:
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    order_payment = facts.get("orders_and_payment") if isinstance(facts.get("orders_and_payment"), dict) else {}
+    resolved = order_payment.get("resolved_payment") if isinstance(order_payment.get("resolved_payment"), dict) else {}
+    return is_paid_deposit_state(resolved.get("deposit_state"))
+
+
+def _normalize_read_only_tool_calls(
+    raw: Any,
+    *,
+    valid_evidence_refs: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    calls: list[dict[str, Any]] = []
+    violations: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            violations.append("tool_call_not_object")
+            continue
+        name = str(item.get("name") or "").strip()
+        if name not in READ_ONLY_TOOL_NAMES:
+            violations.append(f"tool_not_read_only:{name or 'missing'}")
+            continue
+        arguments = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
+        argument_violations = _read_only_tool_argument_violations(name, arguments)
+        if argument_violations:
+            violations.extend(argument_violations)
+            continue
+        evidence_refs = [
+            _canonical_tool_evidence_ref(ref)
+            for ref in _string_list(item.get("evidence_refs"))
+        ]
+        evidence_refs = [ref for ref in dict.fromkeys(evidence_refs) if ref]
+        if valid_evidence_refs is not None:
+            if not evidence_refs:
+                violations.append(f"tool_call_missing_evidence_ref:{name}")
+                continue
+            if any(ref not in valid_evidence_refs for ref in evidence_refs):
+                violations.append(f"tool_call_invalid_evidence_ref:{name}")
+                continue
+        normalized = {
+            "name": name,
+            **copy.deepcopy(arguments),
+            "purpose": str(item.get("purpose") or ""),
+            "evidence_refs": evidence_refs,
+        }
+        key = (name, json_dumps(arguments))
+        if key in seen:
+            continue
+        seen.add(key)
+        calls.append(normalized)
+    return calls, violations
+
+
+def _read_only_tool_argument_violations(name: str, arguments: dict[str, Any]) -> list[str]:
+    """Validate tool contracts without inventing business meaning or argument values."""
+
+    if name == "kb_search":
+        missing = [key for key in ("kb_name", "query") if not str(arguments.get(key) or "").strip()]
+        return [f"tool_call_missing_argument:{name}:{key}" for key in missing]
+    if name == "customer_store_lookup":
+        if not any(str(arguments.get(key) or "").strip() for key in ("query", "origin", "address")):
+            return [f"tool_call_missing_location_argument:{name}"]
+    return []
+
+
+def _canonical_tool_evidence_ref(value: str) -> str:
+    """Normalize field-path spelling without inferring or replacing evidence."""
+
+    ref = str(value or "").strip()
+    if ref.startswith("shared_context."):
+        ref = ref[len("shared_context.") :]
+    if ref in {"current_message.content", "current_message.raw_content"}:
+        return "current_message"
+    match = re.fullmatch(r"conversation\.([A-Za-z0-9_-]+)(?:\.content)?", ref)
+    if match:
+        return match.group(1)
+    return ref
+
+
+def _shared_context_evidence_refs(state: AgentState) -> set[str]:
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    refs = {"current_message"}
+    for item in shared.get("conversation") or []:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("message_ref") or "").strip()
+        if ref:
+            refs.add(ref)
+    return refs
+
+
+def _request_from_state(state: AgentState) -> ChatRequest:
+    return ChatRequest(
+        content=str(state.get("content") or ""),
+        customer_id=str(state.get("customer_id") or ""),
+        corp_id=str(state.get("corp_id") or ""),
+        conversation_history=_gate_conversation_history(state),
+        file_image=state.get("file_image"),
+        user_id=state.get("user_id"),
+        wechat=state.get("wechat"),
+        external_userid=state.get("external_userid"),
+        customer_add_wechat_id=state.get("customer_add_wechat_id"),
+        confirmed_store_id=state.get("confirmed_store_id"),
+        confirmed_store_name=state.get("confirmed_store_name"),
+        store_id=state.get("store_id"),
+        store_name=state.get("store_name"),
+        appointment_id=state.get("appointment_id"),
+        appointment_time=state.get("appointment_time"),
+        request_context=dict(state.get("request_context") or {}),
+    )
+
+
+def _gate_conversation_history(state: AgentState) -> list[str]:
+    """Give Gate the same full, timestamped conversation that Reply receives."""
+
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    conversation = shared.get("conversation") if isinstance(shared.get("conversation"), list) else []
+    output: list[str] = []
+    role_labels = {"customer": "用户", "user": "用户", "assistant": "小贝", "staff": "员工"}
+    for item in conversation:
+        if not isinstance(item, dict) or str(item.get("message_ref") or "") == "current_message":
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        role = role_labels.get(str(item.get("role") or "").lower(), "消息")
+        sent_at = str(item.get("sent_at") or item.get("timestamp") or "").strip()
+        prefix = f"[{sent_at}] " if sent_at else ""
+        output.append(f"{prefix}{role}: {content}")
+    if output:
+        return output
+    return [str(item) for item in state.get("conversation_history") or []]
+
+
+def _message_type(state: AgentState) -> str:
+    context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    return str(context.get("msgtype") or ("image" if state.get("file_image") else "text"))
+
+
+def _gate_route_advice(result: dict[str, Any]) -> str:
+    # Gate and Tool Planner always run in parallel. This field only describes
+    # whether Gate produced candidate evidence; it must not inherit a legacy
+    # direct-reply route or treat legacy reply_messages as a valid candidate.
+    return "content_only" if result.get("candidate_packs") else "tools_only"
+
+
+def _authority_conflicts(state: AgentState, tool_results: dict[str, Any]) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    background = state.get("background_fact_views") if isinstance(state.get("background_fact_views"), dict) else {}
+    for section, fact in background.items():
+        if isinstance(fact, dict) and fact.get("missing"):
+            conflicts.append({"section": section, "type": "source_incomplete", "detail": fact.get("missing")})
+    for tool_name, result in tool_results.items():
+        if isinstance(result, dict) and result.get("error"):
+            conflicts.append({"section": tool_name, "type": "tool_error", "detail": result.get("error")})
+    return conflicts
+
+
+def _conversation_ends_with(messages: list[dict[str, Any]], content: str) -> bool:
+    if not messages:
+        return False
+    return str(messages[-1].get("content") or "").strip() == content
+
+
+def _branch_trace_output(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": result.get("status"),
+        "duration_ms": result.get("duration_ms"),
+        "error": result.get("error"),
+    }
+
+
+def _completed_parallel_branch(
+    result: dict[str, Any] | BaseException,
+    *,
+    schema_version: str,
+    fallback: dict[str, Any],
+) -> dict[str, Any]:
+    """Turn one failed sibling into explicit missing evidence without cancelling the other."""
+
+    if isinstance(result, dict):
+        return result
+    output = copy.deepcopy(fallback)
+    output.update(
+        {
+            "schema_version": schema_version,
+            "status": "error",
+            "error": f"{type(result).__name__}: {result}",
+            "duration_ms": 0,
+        }
+    )
+    return output
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    return [copy.deepcopy(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _string_list(value: Any) -> list[str]:
+    return [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
+
+
+def _drop_keys(value: dict[str, Any], keys: set[str]) -> dict[str, Any]:
+    return {key: copy.deepcopy(item) for key, item in value.items() if key not in keys}

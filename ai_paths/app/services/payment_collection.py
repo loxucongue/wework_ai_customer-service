@@ -104,6 +104,9 @@ def payment_collection_context(
     state: dict[str, Any] | None = None,
     messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    reply_assessment = _context_from_reply_party_size_assessment(state)
+    if reply_assessment:
+        return reply_assessment
     decision_context = _context_from_payment_decision(state)
     if decision_context:
         return decision_context
@@ -114,6 +117,29 @@ def payment_collection_context(
         "amount": participants * PAYMENT_COLLECTION_UNIT_AMOUNT,
         "over_limit": over_limit,
     }
+
+
+def _context_from_reply_party_size_assessment(state: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(state, dict) or not state.get("evidence_join"):
+        return {}
+    assessment = state.get("reply_party_size_assessment")
+    if not isinstance(assessment, dict):
+        return {"participants": 1, "amount": PAYMENT_COLLECTION_UNIT_AMOUNT, "over_limit": False}
+    status = str(assessment.get("status") or "unknown").strip()
+    if status == "over_limit":
+        return {"participants": 5, "amount": 5 * PAYMENT_COLLECTION_UNIT_AMOUNT, "over_limit": True}
+    if status == "known":
+        try:
+            participants = int(assessment.get("party_size"))
+        except (TypeError, ValueError):
+            participants = 1
+        if 1 <= participants <= PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS:
+            return {
+                "participants": participants,
+                "amount": participants * PAYMENT_COLLECTION_UNIT_AMOUNT,
+                "over_limit": False,
+            }
+    return {"participants": 1, "amount": PAYMENT_COLLECTION_UNIT_AMOUNT, "over_limit": False}
 
 
 def payment_amount_for_party_size(party_size: int | str | None) -> int | None:

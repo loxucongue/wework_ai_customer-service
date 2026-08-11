@@ -1,11 +1,11 @@
-﻿from typing import Any
+from typing import Any
 
 import asyncio
 import logging
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, status
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.chat_runtime import ChatRuntime
@@ -27,6 +27,7 @@ from app.services.precision_qa_playbook_service import PrecisionQaPlaybookServic
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import SopExecutionService
 from app.services.sop_objection_material_service import SopObjectionMaterialService
+from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
 from app.services.sop_platform_client import SopPlatformClient
 from app.services.sop_platform_task_service import SopPlatformTaskService
 from app.services.storage import AppRepository, build_store
@@ -62,6 +63,9 @@ store_service = StoreService(platform_agent_client)
 sop_reply_pack_service = SopReplyPackService(settings)
 precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
 sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
+model_led_objection_playbook_service = ModelLedObjectionPlaybookService(
+    settings.v2_model_led_objection_playbook_path
+)
 outreach_service = OutreachService(
     repository=repository,
     model_client=model_client,
@@ -83,6 +87,7 @@ sop_execution_service = SopExecutionService(
     event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
     chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
     event_model_max_concurrency=settings.sop_event_model_max_concurrency,
+    model_led_objection_playbook_service=model_led_objection_playbook_service,
 )
 sop_event_service = SopEventService(
     repository=repository,
@@ -122,19 +127,18 @@ reply_graphs = build_reply_graphs(
     store_service,
     outreach_send_client,
     platform_agent_client,
+    sop_execution_service,
 )
 compiled_graph = reply_graphs.full_graph
 chat_runtime = ChatRuntime(
     full_graph=reply_graphs.full_graph,
-    planner_graph=reply_graphs.planner_graph,
-    finalize_graph=reply_graphs.finalize_graph,
+    commit_graph=reply_graphs.commit_graph,
     trace_logger=trace_logger,
     repository=repository,
     outreach_send_client=outreach_send_client,
     memory_store=memory_store,
     platform_reply_coordinator=platform_reply_coordinator,
     sop_execution_service=sop_execution_service,
-    profile_event_extractor=reply_graphs.profile_event_extractor,
     settings=settings,
 )
 app = FastAPI(title=settings.app_name)
@@ -229,6 +233,9 @@ async def _run_outreach_plan_monitor_worker() -> None:
 async def startup() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
     storage_store.initialize()
+    if not settings.background_workers_enabled:
+        logger.info("Background workers disabled for service role: %s", settings.service_role)
+        return
     backfill_result = await asyncio.to_thread(repository.backfill_first_day_outreach_runs)
     if backfill_result.get("created_runs"):
         logger.info("Backfilled first-day outreach run history: %s", backfill_result)
@@ -287,6 +294,14 @@ async def shutdown() -> None:
 async def health() -> dict[str, Any]:
     return {
         "status": "ok",
+        "service_role": settings.service_role,
+        "background_workers_enabled": settings.background_workers_enabled,
+        "release": {
+            "release_id": settings.release_id,
+            "git_commit": settings.build_git_commit,
+            "dirty": settings.build_dirty,
+            "config_revision": settings.build_config_revision,
+        },
         "platform_sop_worker": sop_platform_task_service.runtime_status(),
     }
 
@@ -331,6 +346,35 @@ async def require_external_api_key(authorization: str | None = Header(default=No
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing external API token",
+        )
+
+
+async def require_v2_workflow_api_key(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_ai_paths_v2_trusted_proxy: str | None = Header(default=None),
+) -> None:
+    """Accept V1/V2 tokens or the IP-restricted Nginx compatibility proxy."""
+    client_host = str(request.client.host if request.client else "").strip()
+    if x_ai_paths_v2_trusted_proxy == "1" and client_host in {"127.0.0.1", "::1"}:
+        return
+    accepted_tokens = {
+        token
+        for token in (settings.ai_paths_api_key, settings.ai_external_api_key)
+        if token
+    }
+    if not accepted_tokens:
+        if not settings.allow_missing_external_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Workflow API token is not configured",
+            )
+        return
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or token not in accepted_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing workflow API token",
         )
 
 
@@ -517,6 +561,17 @@ async def reply_workflow_compatible(
     background_tasks: BackgroundTasks = None,
     _: None = Depends(require_external_api_key),
 ) -> JSONResponse:
+    return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks)
+
+
+@app.post("/reply/workflow-compatible-v2")
+async def reply_workflow_compatible_v2(
+    payload: dict[str, Any] = Body(...),
+    background_tasks: BackgroundTasks = None,
+    _: None = Depends(require_v2_workflow_api_key),
+) -> JSONResponse:
+    if settings.service_role != "reply_chain_refactor":
+        raise HTTPException(status_code=404, detail="Reply chain v2 is not enabled on this service")
     return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks)
 
 

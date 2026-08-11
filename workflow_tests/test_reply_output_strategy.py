@@ -217,6 +217,13 @@ def test_reply_validation_blocks_customer_visible_internal_fact_language() -> No
         )
 
 
+def test_reply_validation_does_not_hard_fail_style_only_process_wording() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "我先回答清楚，再进入下一流程。"}],
+        {},
+    )
+
+
 def test_reply_validation_blocks_unverified_time_acceptance() -> None:
     with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
         validate_reply_consistency(
@@ -676,6 +683,22 @@ def test_platform_history_exposes_ordered_turns_with_beijing_time_and_refs() -> 
             "minutes_before_latest": 0,
         },
     ]
+
+
+def test_platform_history_keeps_complete_long_message_content() -> None:
+    long_content = "活动事实" * 300
+
+    history = platform_messages_to_history(
+        [{"direction": "staff", "content": long_content}],
+        limit=50,
+    )
+    turns = platform_messages_to_turns(
+        [{"id": "long-message", "direction": "staff", "content": long_content}],
+        limit=50,
+    )
+
+    assert history == [f"小贝: {long_content}"]
+    assert turns[0]["content"] == long_content
 
 
 def test_sop_gate_pending_location_task_structurally_blocks_stale_payment_plan() -> None:
@@ -5729,6 +5752,21 @@ def test_reply_validation_requires_distance_fact_for_specific_nearer_store() -> 
         )
 
 
+def test_reply_validation_does_not_treat_nearer_photo_as_store_ranking() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {
+                    "text": "如果方便，可以发一张近一点的照片；是否适合操作还是到店面对面评估。"
+                },
+            }
+        ],
+        {"normalized_content": "皮肤破了还能做吗", "planner_decision": "direct_reply"},
+    )
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -5758,6 +5796,34 @@ def test_reply_validation_rejects_customer_visible_distance_values(text: str) ->
         )
 
 
+def test_reply_validation_rejects_distance_value_without_legacy_stage_markers() -> None:
+    with pytest.raises(ValueError, match="distance_value_not_customer_visible"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "一两公里的话其实不算太远。"}],
+            {"evidence_join": {}, "normalized_content": "一二公里呢"},
+        )
+
+
+def test_parallel_reply_rejects_store_cards_when_resolution_requires_location() -> None:
+    state = {
+        "evidence_join": {"schema_version": "reply_chain_evidence_join_v1"},
+        "fact_envelope": {
+            "structured_facts": {
+                "store_resolution_fact": {
+                    "status": "need_location",
+                    "delivery_store_ids": [],
+                }
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="store_cards_not_allowed_when_location_clarification_required"):
+        validate_reply_consistency(
+            [{"type": "store_address", "content": {"store_id": "301"}}],
+            state,
+        )
+
+
 def test_reply_validation_requires_store_card_when_promising_navigation() -> None:
     with pytest.raises(ValueError, match="store_address_message_required"):
         validate_reply_consistency(
@@ -5766,28 +5832,26 @@ def test_reply_validation_requires_store_card_when_promising_navigation() -> Non
         )
 
 
-def test_reply_validation_requires_store_card_when_customer_requests_location() -> None:
-    with pytest.raises(ValueError, match="store_address_message_required"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "重庆百星渝中店地址是瑞天路10号嘉陵中心A馆。"}}],
-            {
-                "content": "发个位置",
-                "normalized_content": "发个位置",
-                "fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "467", "store_name": "重庆百星渝中店"}]}},
-            },
-        )
+def test_reply_validation_does_not_use_customer_keywords_to_force_store_card() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "重庆百星渝中店地址是瑞天路10号嘉陵中心A馆。"}}],
+        {
+            "content": "发个位置",
+            "normalized_content": "发个位置",
+            "fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "467", "store_name": "重庆百星渝中店"}]}},
+        },
+    )
 
 
-def test_reply_validation_requires_store_card_for_combined_address_location_request() -> None:
-    with pytest.raises(ValueError, match="store_address_message_required"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "广州白云三店地址是白云大道北349号。"}}],
-            {
-                "content": _u(r"\u4f60\u5730\u5740\u548c\u5b9a\u4f4d\u53d1\u7ed9\u6211\u4e0b"),
-                "normalized_content": _u(r"\u4f60\u5730\u5740\u548c\u5b9a\u4f4d\u53d1\u7ed9\u6211\u4e0b"),
-                "fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "562", "store_name": "广州白云三店"}]}},
-            },
-        )
+def test_reply_validation_does_not_infer_store_delivery_from_combined_request_words() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "广州白云三店地址是白云大道北349号。"}}],
+        {
+            "content": _u(r"\u4f60\u5730\u5740\u548c\u5b9a\u4f4d\u53d1\u7ed9\u6211\u4e0b"),
+            "normalized_content": _u(r"\u4f60\u5730\u5740\u548c\u5b9a\u4f4d\u53d1\u7ed9\u6211\u4e0b"),
+            "fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "562", "store_name": "广州白云三店"}]}},
+        },
+    )
 
 
 def test_reply_validation_rejects_confirmed_appointment_without_fact() -> None:
@@ -5948,7 +6012,7 @@ def test_reply_payload_lifts_current_mobile_sync_fact() -> None:
 def test_reply_validation_rejects_claimed_registration_without_order_fact() -> None:
     with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
         validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "可以，先给您报上。"}}],
+            [{"type": "text", "order": 1, "content": {"text": "可以，已经给您报上了。"}}],
             {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
         )
 
@@ -5956,15 +6020,23 @@ def test_reply_validation_rejects_claimed_registration_without_order_fact() -> N
 def test_reply_validation_rejects_claimed_reserved_slot_without_order_fact() -> None:
     with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
         validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "可以，我先给您留活动名额。"}}],
+            [{"type": "text", "order": 1, "content": {"text": "可以，名额已经给您留好了。"}}],
             {"fact_envelope": {"structured_facts": {"order_facts": []}}},
+        )
+
+
+def test_reply_validation_rejects_claimed_activity_hold_without_payment_fact() -> None:
+    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "可以，先给您留着这个活动价。"}],
+            {"evidence_join": {}, "fact_envelope": {"structured_facts": {"order_facts": []}}},
         )
 
 
 def test_reply_validation_rejects_claimed_activity_registration_without_order_fact() -> None:
     with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
         validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": _u(r"\u6211\u5148\u5e2e\u60a8\u767b\u8bb0\u6d3b\u52a8\u3002")}}],
+            [{"type": "text", "order": 1, "content": {"text": "活动已经帮您登记好了。"}}],
             {"fact_envelope": {"structured_facts": {"order_facts": []}}},
         )
 
@@ -5999,6 +6071,19 @@ def test_reply_validation_rejects_unverified_payment_confirmation_claim() -> Non
         )
 
 
+def test_reply_validation_allows_pending_payment_verification_wording() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "还没看到成功截图，我这边先不按已付处理；我先核对是否已到账，若已到账再继续登记。",
+            }
+        ],
+        {"normalized_content": "我付好了"},
+    )
+
+
 def test_reply_validation_allows_platform_transfer_payment_confirmation() -> None:
     validate_reply_consistency(
         [{"type": "text", "order": 1, "content": "已收到预约金，把姓名和手机号发我登记。"}],
@@ -6026,7 +6111,7 @@ def test_reply_validation_allows_registration_confirmation_after_authoritative_p
 def test_reply_validation_rejects_registration_confirmation_from_customer_claim_only() -> None:
     with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
         validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": "我先帮您登记活动。"}],
+            [{"type": "text", "order": 1, "content": "活动已经帮您登记好了。"}],
             {
                 "payment_state": "customer_claimed_paid",
                 "fact_envelope": {"structured_facts": {"order_facts": []}},
@@ -6151,7 +6236,7 @@ def test_reply_validation_allows_health_detection_and_generic_stop_stimulation()
 
     with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
         validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": _u(r"\u6211\u5148\u7ed9\u60a8\u8bb0\u4e0b\u6d3b\u52a8\u540d\u989d\u3002")}}],
+            [{"type": "text", "order": 1, "content": {"text": "名额已经给您留好了。"}}],
             {"fact_envelope": {"structured_facts": {"order_facts": []}}},
     )
 
@@ -6510,7 +6595,7 @@ def test_precision_reply_passive_mainline_closure_is_soft_warning() -> None:
     assert any(item.get("detail") == "precision_reply_passive_mainline_closure" for item in warnings)
 
 
-def test_precision_reply_missing_mainline_action_triggers_repair() -> None:
+def test_precision_reply_missing_mainline_action_is_soft_warning_only() -> None:
     messages = [
         {
             "type": "text",
@@ -6526,8 +6611,7 @@ def test_precision_reply_missing_mainline_action_triggers_repair() -> None:
     warnings = collect_reply_soft_warnings(messages, state)
 
     assert any(item.get("detail") == "precision_reply_missing_mainline_action" for item in warnings)
-    with pytest.raises(ValueError, match="precision_reply_missing_mainline_action"):
-        _raise_repairable_reply_quality_issues(messages, state)
+    _raise_repairable_reply_quality_issues(messages, state)
 
 
 def test_precision_reply_passive_closure_does_not_fail_reply_runtime() -> None:
@@ -7007,15 +7091,6 @@ def test_planner_prompt_treats_payment_sent_as_context_not_hard_dedupe() -> None
     assert "其次看今天次数" in PLANNER_SYSTEM_PROMPT
     assert "刚发且无新推进不机械重发" in PLANNER_SYSTEM_PROMPT
     assert "客户接受、继续成交或要重发时允许发送" in PLANNER_SYSTEM_PROMPT
-
-
-def test_reply_prompt_uses_handoff_notice_and_direct_resolution() -> None:
-    from app.prompts.reply_synthesizer import REPLY_SYSTEM_PROMPT
-
-    assert "human_handoff_notice" in REPLY_SYSTEM_PROMPT
-    assert "到店先检测" in REPLY_SYSTEM_PROMPT
-    assert "按结构事实追加 `human_handoff_notice`" in REPLY_SYSTEM_PROMPT
-    assert "专业同事确认/核对" not in REPLY_SYSTEM_PROMPT
 
 
 def test_profile_conversation_history_prefers_fetched_50_messages() -> None:

@@ -24,6 +24,12 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--max-cases", type=int, default=0)
     parser.add_argument("--reviewer-model", default="")
     parser.add_argument("--skip-review", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="With --resume, rerun hard-failed and infrastructure-failed checkpoints only.",
+    )
     parser.add_argument("--baseline", type=Path)
     return parser.parse_args()
 
@@ -46,6 +52,8 @@ async def _main() -> None:
         max_cases=args.max_cases,
         reviewer_model=args.reviewer_model,
         skip_review=args.skip_review,
+        resume=args.resume,
+        retry_failed=args.retry_failed,
         baseline_path=args.baseline,
     )
     print((output_dir / "report.md").resolve())

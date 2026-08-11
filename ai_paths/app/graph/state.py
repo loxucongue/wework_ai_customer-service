@@ -59,14 +59,12 @@ class AgentState(TypedDict, total=False):
     customer_context_error: str | None
     customer_store_knowledge: dict[str, Any]
     sent_message_summary: dict[str, Any]
+    store_scope_summary: dict[str, Any]
     sop_gate: dict[str, Any]
     sop_gate_decision: dict[str, Any]
-    sop_gate_preview: dict[str, Any]
-    sop_gate_router_shadow: dict[str, Any]
     sop_progress_evidence: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]
-    reply_chain_shadow_context: dict[str, Any]
     store_context_status: str
     store_context_elapsed_ms: int
     store_context_skipped_steps: list[str]
@@ -78,6 +76,31 @@ class AgentState(TypedDict, total=False):
     recovery_attempts: list[dict[str, Any]]
     recovery_reason: str
     fallback_source: str
+
+    # Reply-chain refactor evidence. These fields contain facts and model
+    # candidates only; customer-visible business decisions remain Reply-owned.
+    shared_context: dict[str, Any]
+    content_gate_result: dict[str, Any]
+    tool_plan: dict[str, Any]
+    parallel_branch_metrics: dict[str, Any]
+    evidence_join: dict[str, Any]
+    used_fact_refs: list[str]
+    selected_content_ids: list[str]
+    reply_action: str
+    reply_action_reason: str
+    # Ephemeral Reply-owned audit only. These fields are never persisted as
+    # customer profile or reused to control a later turn.
+    reply_sales_assessment: dict[str, Any]
+    reply_sales_judgment: dict[str, Any]
+    reply_payment_assessment: dict[str, Any]
+    reply_deposit_evidence: dict[str, Any]
+    reply_safety_assessment: dict[str, Any]
+    reply_party_size_assessment: dict[str, Any]
+    reply_fact_audit: dict[str, Any]
+    commit_actions: list[dict[str, Any]]
+    commit_tool_results: dict[str, Any]
+    commit_fact_envelope: dict[str, Any]
+    commit_result: dict[str, Any]
 
     planner_decision: str
     planner_stage: str
@@ -109,17 +132,6 @@ class AgentState(TypedDict, total=False):
     turn_evidence: dict[str, Any]
     required_tools: list[dict[str, Any]]
     tool_policy_violations: list[dict[str, Any]]
-    tool_plan_preview: dict[str, Any]
-    read_only_tool_executor_shadow: dict[str, Any]
-    reply_chain_join_shadow: dict[str, Any]
-    reply_final_brain_handoff_shadow: dict[str, Any]
-    parallel_reply_chain_shadow: dict[str, Any]
-    reply_chain_commit_shadow: dict[str, Any]
-    reply_chain_refactor_flags: dict[str, Any]
-    parallel_gate_planner_runner_shadow: dict[str, Any]
-    parallel_reply_chain_diagnostics: dict[str, Any]
-    parallel_reply_chain_comparison: dict[str, Any]
-    reply_chain_shadow_bundle_audit: dict[str, Any]
     reply_strategy: dict[str, Any]
     handoff: dict[str, Any]
     memory_update_hint: dict[str, Any]

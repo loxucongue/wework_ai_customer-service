@@ -76,7 +76,7 @@ async def fetch_platform_conversation_history(
 
 def request_conversation_history(state: AgentState, *, limit: int) -> list[str]:
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    return [str(item)[:240] for item in history[-limit:] if str(item or "").strip()]
+    return [str(item) for item in history[-limit:] if str(item or "").strip()]
 
 
 def conversation_fetch_params(
@@ -111,7 +111,7 @@ def platform_messages_to_history(messages: list[dict[str, Any]], *, limit: int) 
             text = message_text(item.get("text") or item.get("message") or item.get("body"))
         if not text:
             continue
-        output.append(f"{message_role_label(item)}: {text[:220]}")
+        output.append(f"{message_role_label(item)}: {text}")
     return output
 
 
@@ -137,7 +137,7 @@ def platform_messages_to_turns(messages: list[dict[str, Any]], *, limit: int) ->
         turn = {
             "message_ref": _message_ref(item, index=index),
             "role": message_role(item),
-            "content": text[:500],
+            "content": text,
         }
         if timestamp is not None:
             occurred_at = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(BEIJING_TZ)
@@ -161,7 +161,7 @@ def history_strings_to_turns(history: list[Any], *, limit: int = 50) -> list[dic
                 role = candidate_role
                 content = text[len(prefix) :].strip()
                 break
-        output.append({"message_ref": f"history_{index:03d}", "role": role, "content": content[:500]})
+        output.append({"message_ref": f"history_{index:03d}", "role": role, "content": content})
     return output
 
 

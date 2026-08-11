@@ -6,16 +6,7 @@ from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, 
 from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
-from app.services.parallel_reply_chain_comparison import parallel_reply_chain_comparison
-from app.services.parallel_reply_chain_diagnostics import parallel_reply_chain_diagnostics
-from app.services.parallel_reply_chain_runner import replay_parallel_gate_planner_shadow_from_serial_outputs
-from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
-from app.services.read_only_tool_executor_shadow import read_only_tool_executor_shadow_from_plan
-from app.services.reply_final_brain_handoff import reply_final_brain_handoff_shadow_from_planner_output
-from app.services.reply_chain_shadow_bundle_audit import reply_chain_shadow_bundle_audit
-from app.services.reply_chain_join_shadow import reply_chain_join_shadow
 from app.services.trace_logger import TraceLogger
-from app.services.tool_plan_preview import tool_plan_preview_from_planner_output
 
 
 def create_planner_brain_node(
@@ -139,48 +130,6 @@ def create_planner_brain_node(
                 ),
                 "trace": state.get("trace", []),
             }
-            output["tool_plan_preview"] = tool_plan_preview_from_planner_output(output)
-            output["read_only_tool_executor_shadow"] = read_only_tool_executor_shadow_from_plan(output["tool_plan_preview"])
-            output["reply_chain_join_shadow"] = reply_chain_join_shadow(
-                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
-                tool_plan_preview=output["tool_plan_preview"],
-            )
-            output["reply_final_brain_handoff_shadow"] = reply_final_brain_handoff_shadow_from_planner_output(
-                output,
-                reply_chain_shadow_context=state.get("reply_chain_shadow_context") if isinstance(state.get("reply_chain_shadow_context"), dict) else {},
-                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
-            )
-            output["parallel_reply_chain_shadow"] = parallel_reply_chain_shadow(
-                reply_chain_shadow_context=state.get("reply_chain_shadow_context") if isinstance(state.get("reply_chain_shadow_context"), dict) else {},
-                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
-                tool_plan_preview=output["tool_plan_preview"],
-                read_only_tool_executor_shadow=output["read_only_tool_executor_shadow"],
-                reply_chain_join_shadow=output["reply_chain_join_shadow"],
-                reply_final_brain_handoff_shadow=output["reply_final_brain_handoff_shadow"],
-                refactor_flags=state.get("reply_chain_refactor_flags") if isinstance(state.get("reply_chain_refactor_flags"), dict) else {},
-            )
-            output["parallel_gate_planner_runner_shadow"] = await replay_parallel_gate_planner_shadow_from_serial_outputs(
-                initial_state=dict(state),
-                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
-                tool_plan_preview=output["tool_plan_preview"],
-                refactor_flags=state.get("reply_chain_refactor_flags") if isinstance(state.get("reply_chain_refactor_flags"), dict) else {},
-                parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
-            )
-            output["parallel_reply_chain_comparison"] = parallel_reply_chain_comparison(
-                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
-                tool_plan_preview=output["tool_plan_preview"],
-                join_shadow=output["reply_chain_join_shadow"],
-                runner_shadow=output["parallel_gate_planner_runner_shadow"],
-            )
-            output["parallel_reply_chain_diagnostics"] = parallel_reply_chain_diagnostics(
-                parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
-                runner_shadow=output["parallel_gate_planner_runner_shadow"],
-                comparison_shadow=output["parallel_reply_chain_comparison"],
-            )
-            output["reply_chain_shadow_bundle_audit"] = reply_chain_shadow_bundle_audit(
-                state={**dict(state), **output},
-                require_commit_shadow=False,
-            )
             span["output_snapshot"] = output
             return output
 

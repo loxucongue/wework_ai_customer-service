@@ -27,7 +27,7 @@ def test_appointment_blocker_playbook_is_the_only_configured_outreach_material_s
     playbook = _playbook()
 
     assert len(playbook["items"]) == 104
-    assert len(build_appointment_blocker_scene_index(playbook)) == 14
+    assert len(build_appointment_blocker_scene_index(playbook)) == 15
     assert len(build_appointment_blocker_asset_catalog(playbook)) == 64
     assert len(appointment_blocker_materials(playbook)) == 104
 

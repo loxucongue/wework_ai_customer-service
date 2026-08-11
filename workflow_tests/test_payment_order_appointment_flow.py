@@ -184,6 +184,18 @@ def test_platform_unknown_message_placeholder_is_treated_as_transfer_success() -
     assert payment["source"] == "platform.unknown_message_transfer"
 
 
+def test_platform_unknown_msgtype_is_authoritative_even_when_display_text_changes() -> None:
+    image = _platform_unknown_transfer_image_info("【转账消息】", msgtype="unknown")
+
+    assert image is not None
+    assert image["payment_result"] == "success"
+    assert image["source"] == "platform.unknown_message_transfer"
+
+
+def test_plain_transfer_text_is_not_promoted_without_unknown_protocol_type() -> None:
+    assert _platform_unknown_transfer_image_info("【转账消息】", msgtype="text") is None
+
+
 def test_payment_card_does_not_require_matching_order_fact_in_full_planner_state() -> None:
     state = {
         **_base_state(),

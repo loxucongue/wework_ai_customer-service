@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.config import Settings
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_nodes import (
@@ -13,9 +15,26 @@ from app.graph.nodes.action_nodes import (
     _filter_invalid_planned_tools,
     _geocode_explicit_region_conflict,
     _lookup_result_allows_distance_calculate,
+    _region_equal,
+    _strip_admin_suffix,
 )
 from app.graph.planner.planner_schema_normalizer import normalize_tools
-from app.services.store_resolution_v2 import build_location_evidence, resolution_status_for_location
+from app.services.store_resolution_v2 import (
+    _region_or_text_mentioned,
+    _region_alias,
+    build_location_evidence,
+    resolution_status_for_location,
+)
+
+
+def test_autonomous_prefecture_and_county_level_city_share_region_scope() -> None:
+    assert _region_equal("黔南布依族苗族自治州", "黔南市") is True
+    assert _region_equal("黔南布依族苗族自治州", "贵阳市") is False
+
+
+def test_autonomous_prefecture_prefix_is_recognized_in_customer_text() -> None:
+    assert _region_or_text_mentioned("黔南布依族苗族自治州", "我在黔南荔波县") is True
+    assert _region_or_text_mentioned("黔南布依族苗族自治州", "我在贵阳") is False
 from app.services.store_snapshot_service import StoreSnapshotService, parse_geocode_workflow_response
 
 
@@ -28,6 +47,26 @@ class _GeocodeClient:
     async def run_workflow(self, workflow_id: str, parameters: dict[str, object]) -> dict[str, object]:
         self.calls.append((workflow_id, dict(parameters)))
         return {"data": self.results.get(str(parameters.get("address") or ""), {})}
+
+
+@pytest.mark.parametrize(
+    ("official_name", "expected_alias"),
+    [
+        ("浦东新区", "浦东"),
+        ("滨海新区", "滨海"),
+        ("雄安新区", "雄安"),
+        ("两江新区", "两江"),
+        ("高新区", "高新"),
+        ("荆州市", "荆州"),
+        ("荆州区", "荆州"),
+    ],
+)
+def test_administrative_aliases_preserve_useful_place_roots(
+    official_name: str,
+    expected_alias: str,
+) -> None:
+    assert _strip_admin_suffix(official_name) == expected_alias
+    assert _region_alias(official_name) == expected_alias
 
 
 def _store(store_id: str, name: str, *, location: str, district: str = "龙湾区") -> dict[str, object]:
@@ -95,6 +134,30 @@ def test_distance_origin_prefers_platform_location_card_coordinates_over_text_ge
 
     assert origin["location"] == "119.900001,30.100002"
     assert origin["origin_source"] == "platform_location_card"
+
+
+def test_location_evidence_reads_normalized_location_card_coordinates_field() -> None:
+    evidence = build_location_evidence(
+        {
+            "normalized_content": "定位卡片：萤火虫大厦",
+            "location_card": {
+                "title": "萤火虫大厦",
+                "address": "福建省厦门市湖里区岐山北二路1000号",
+                "coordinates": "24.535414,118.152077",
+            },
+        },
+        raw_text="福建省厦门市湖里区岐山北二路1000号 萤火虫大厦",
+        query="福建省厦门市湖里区岐山北二路1000号 萤火虫大厦",
+        geocode={
+            "province": "福建省",
+            "city": "厦门市",
+            "location": "114.000000,30.000000",
+        },
+    )
+
+    assert evidence["confirmation_mode"] == "authoritative_location_card"
+    assert evidence["longitude"] == 118.152077
+    assert evidence["latitude"] == 24.535414
 
 
 def test_province_only_location_requires_more_location() -> None:
@@ -998,6 +1061,43 @@ def test_store_lookup_blocks_explicit_district_when_first_poi_conflicts() -> Non
     assert result["status"] == "geocode_query_conflict"
     assert result["stores"] == []
     assert result["normalization_evidence"]["attempts"][0]["reason"] == "explicit_region_conflict"
+
+
+def test_store_lookup_uses_exact_visible_district_when_geocode_is_unavailable() -> None:
+    query = "贵阳市花溪区"
+    state = {
+        "normalized_content": query,
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "501",
+                    "store_name": "贵阳花溪店",
+                    "province": "贵州省",
+                    "city": "贵阳市",
+                    "district": "花溪区",
+                    "store_address": "贵州省贵阳市花溪区清溪路",
+                    "location": "106.67,26.41",
+                    "store_fact_integrity": "valid",
+                }
+            ]
+        },
+    }
+    client = _GeocodeClient({query: {}})
+
+    result = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": query, "purpose": "existence"},
+            state,
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["source"] == "customer_scope_exact_text_region"
+    assert [item["store_id"] for item in result["candidate_stores"]] == ["501"]
+    assert result["location_evidence"]["city"] == "贵阳市"
+    assert result["location_evidence"]["district"] == "花溪区"
+    assert result["location_evidence"]["confirmation_status"] == "confirmed"
 
 
 def test_geocode_multiple_regions_uses_first_but_preserves_ambiguity() -> None:

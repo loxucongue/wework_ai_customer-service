@@ -19,6 +19,7 @@ from app.graph.graph_builder import build_reply_graphs
 from app.schemas import ChatRequest
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_event_service import SopEventService
@@ -212,6 +213,9 @@ class SimulationRuntime:
             event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
             chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
             event_model_max_concurrency=2,
+            model_led_objection_playbook_service=ModelLedObjectionPlaybookService(
+                settings.v2_model_led_objection_playbook_path
+            ),
         )
         sop_event = SopEventService(
             repository=repository,
@@ -235,18 +239,17 @@ class SimulationRuntime:
             store_service,
             outreach,
             platform,
+            sop_execution,
         )
         chat_runtime = ChatRuntime(
             full_graph=graphs.full_graph,
-            planner_graph=graphs.planner_graph,
-            finalize_graph=graphs.finalize_graph,
+            commit_graph=graphs.commit_graph,
             trace_logger=trace_logger,
             repository=repository,
             outreach_send_client=outreach,
             memory_store=memory_store,
             platform_reply_coordinator=PlatformReplyCoordinator(settings),
             sop_execution_service=sop_execution,
-            profile_event_extractor=graphs.profile_event_extractor,
             settings=settings,
         )
         return SimulationBundle(
@@ -343,6 +346,7 @@ class SimulationRuntime:
         result["duration_ms"] = round((time.perf_counter() - started) * 1000)
         result["new_outbox"] = deepcopy(bundle.world.outbox[before_outbox:])
         result["new_simulated_writes"] = deepcopy(bundle.world.external_writes[before_writes:])
+        result["expected"] = deepcopy(step.get("expected") or {})
         return result
 
     async def _run_customer_message(self, bundle: SimulationBundle, step: dict[str, Any], *, index: int) -> dict[str, Any]:
@@ -570,6 +574,9 @@ def _hard_check(
         if not messages:
             errors.append(f"batch[{batch_index}].empty_reply")
             continue
+        batch_visible_text = "\n".join(_message_text(message) for message in messages if isinstance(message, dict))
+        if _is_neutral_wait_text(batch_visible_text):
+            errors.append(f"batch[{batch_index}].neutral_fallback_used")
         payment_count = 0
         for message in messages:
             if not isinstance(message, dict):
@@ -588,6 +595,17 @@ def _hard_check(
                     errors.append(f"batch[{batch_index}].store_out_of_scope:{store_id}")
         if payment_count > 1:
             errors.append(f"batch[{batch_index}].multiple_payment_cards:{payment_count}")
+    for step in step_results:
+        step_expected = step.get("expected") if isinstance(step.get("expected"), dict) else {}
+        if not step_expected:
+            continue
+        step_messages = _step_visible_messages(step)
+        _check_expected_messages(
+            errors,
+            expected=step_expected,
+            visible_messages=step_messages,
+            prefix=f"step[{int(step.get('index') or 0)}]",
+        )
     expected = scenario.get("expected") if isinstance(scenario.get("expected"), dict) else {}
     if expected.get("must_reply") and not all_batches:
         errors.append("scenario.no_customer_visible_reply")
@@ -641,6 +659,61 @@ def _hard_check(
     if any(str(item.get("transport") or "") != "simulation_only" for item in external_writes):
         errors.append("external_write_transport_detected")
     return sorted(set(errors))
+
+
+def _step_visible_messages(step: dict[str, Any]) -> list[dict[str, Any]]:
+    messages = [
+        item
+        for item in step.get("sync_reply_messages") or []
+        if isinstance(item, dict)
+    ]
+    for outbox_item in step.get("new_outbox") or []:
+        if not isinstance(outbox_item, dict):
+            continue
+        messages.extend(
+            item
+            for item in outbox_item.get("reply_messages") or []
+            if isinstance(item, dict)
+        )
+    return messages
+
+
+def _check_expected_messages(
+    errors: list[str],
+    *,
+    expected: dict[str, Any],
+    visible_messages: list[dict[str, Any]],
+    prefix: str,
+) -> None:
+    if expected.get("must_reply") is True and not visible_messages:
+        errors.append(f"{prefix}.no_customer_visible_reply")
+    if expected.get("must_reply") is False and visible_messages:
+        errors.append(f"{prefix}.unexpected_customer_visible_reply")
+
+    visible_types = [str(message.get("type") or "") for message in visible_messages]
+    for message_type in sorted({str(item) for item in expected.get("required_types") or [] if str(item)}):
+        if message_type not in visible_types:
+            errors.append(f"{prefix}.missing_required_type:{message_type}")
+    for message_type in sorted({str(item) for item in expected.get("forbidden_types") or [] if str(item)}):
+        if message_type in visible_types:
+            errors.append(f"{prefix}.forbidden_type:{message_type}")
+
+    expected_amount = expected.get("payment_amount")
+    if expected_amount not in (None, ""):
+        payment_amounts = [
+            int((message.get("content") or {}).get("amount") or 0)
+            for message in visible_messages
+            if str(message.get("type") or "") == "payment_collection"
+            and isinstance(message.get("content"), dict)
+        ]
+        if int(expected_amount) not in payment_amounts:
+            errors.append(f"{prefix}.missing_payment_amount:{int(expected_amount)}")
+
+    visible_text = "\n".join(_message_text(message) for message in visible_messages)
+    for phrase in expected.get("forbidden_phrases") or []:
+        normalized = str(phrase or "").strip()
+        if normalized and normalized in visible_text:
+            errors.append(f"{prefix}.forbidden_phrase:{normalized}")
 
 
 def _message_text(message: dict[str, Any]) -> str:

@@ -17,7 +17,7 @@ def test_business_wording_freeze_audit_detects_protected_path_changes(monkeypatc
         "_changed_paths",
         lambda **kwargs: [
             "ai_paths/app/policies/business_rules.json",
-            "ai_paths/app/services/chat_gate_router_shadow.py",
+            "ai_paths/app/services/model_client.py",
         ],
     )
     monkeypatch.setattr(audit, "_git_commit", lambda repo_root, ref: "abc123")
@@ -41,8 +41,8 @@ def test_business_wording_freeze_audit_passes_structural_only_changes(monkeypatc
         audit,
         "_changed_paths",
         lambda **kwargs: [
-            "ai_paths/app/services/chat_gate_router_shadow.py",
-            "workflow_tests/test_chat_gate_router_shadow.py",
+            "ai_paths/app/services/model_client.py",
+            "workflow_tests/test_model_client_json_mode.py",
         ],
     )
     monkeypatch.setattr(audit, "_git_commit", lambda repo_root, ref: "abc123")

@@ -56,6 +56,41 @@ def test_store_scope_exposes_every_real_store_in_requested_district() -> None:
     assert [item["store_id"] for item in region["requested_district_stores"]] == ["1", "2", "3", "4", "5"]
 
 
+def test_store_scope_distinguishes_same_name_city_and_district() -> None:
+    stores = [
+        {
+            "store_id": "241",
+            "store_name": "荆州万达二店",
+            "province": "湖北省",
+            "city": "荆州市",
+            "district": "荆州区",
+        },
+        {
+            "store_id": "242",
+            "store_name": "荆州沙市店",
+            "province": "湖北省",
+            "city": "荆州市",
+            "district": "沙市区",
+        },
+    ]
+
+    district_summary = build_store_scope_summary(
+        {"source": "fixture", "stores": stores},
+        location_hints=["荆州区"],
+    )
+    district_region = district_summary["relevant_regions"][0]
+    assert district_region["exact_area_store_count"] == 1
+    assert [item["store_id"] for item in district_region["requested_district_stores"]] == ["241"]
+
+    city_summary = build_store_scope_summary(
+        {"source": "fixture", "stores": stores},
+        location_hints=["荆州市"],
+    )
+    city_region = city_summary["relevant_regions"][0]
+    assert city_region["exact_area_store_count"] == 0
+    assert city_region["requested_district_stores"] == []
+
+
 def test_planner_uses_store_resolution_v2_as_the_only_delivery_contract() -> None:
     assert "`store_resolution_fact` 是唯一门店决策" in PLANNER_SYSTEM_PROMPT
     assert "只能发送 `delivery_store_ids`" in PLANNER_SYSTEM_PROMPT

@@ -2,7 +2,7 @@
 
 ## 目的
 
-仿真运行时复用当前代码中的 SOP Gate、Planner、工具编排、Reply、校验、SOP Event 和状态持久化。它用于在发布前复现多轮客户场景，不调用生产业务接口，也不发送真实客户消息。
+仿真运行时复用当前代码中的 Shared Context、并行 Content Gate 与 Tool Planner、只读工具、Deterministic Join、Reply、硬事实校验、Commit、SOP Event 和状态持久化。它用于在发布前复现多轮客户场景，不调用生产业务接口，也不发送真实客户消息。
 
 真实模型供应商是唯一允许的外部网络依赖。平台客户、门店、订单、支付、知识库、Coze 工作流和主动发送均由本地适配器提供。
 
@@ -68,7 +68,7 @@ python ai_paths/scripts/run_full_chain_simulation.py `
 - `semantic_goal`：独立评审模型使用的业务目标。
 - `expected`：消息类型、门店 ID、预约金金额和禁止表达等结构合同。
 
-模型故障通过 `initial.faults` 注入，随后仍走现有生产重试和 fallback：
+模型故障通过 `initial.faults` 注入，随后仍走现有模型重试和 fallback。旧夹具中的 `model:planner` 会映射到并行 Tool Planner；Reply 故障继续使用 `model:reply`：
 
 ```json
 {
@@ -99,7 +99,7 @@ python ai_paths/scripts/run_full_chain_simulation.py `
 套件报告还会输出 `review_artifacts`，用于人工 Review：
 
 - 每条轨迹对应的 `request_id`、`event_id` 和运行目录。
-- 节点 trace 名称，用来确认 SOP Gate、Planner、Reply 等链路是否实际执行。
+- 节点 trace 名称，用来确认 Shared Context、并行 Gate/Tool Planner、Join、Reply 和 Commit 等链路是否实际执行。
 - 工具调用名称，用来确认门店、案例、订单、语音等事实是否来自仿真适配器。
 - 同步回复数量、虚拟 outbox 批次数和模拟写入次数。
 
@@ -107,7 +107,7 @@ python ai_paths/scripts/run_full_chain_simulation.py `
 
 套件报告同时输出 `coverage.schema_version=offline_simulation_coverage_audit_v1`，用于确认发布前仿真没有漏掉必测业务类别。当前必测类别包括门店、SOP 主线、效果案例、精准问答、项目范围、健康风险、预约金、已付登记、客户异议、明确拒绝、SOP Event、消息归一和模型恢复等。`summary.acceptance.scenario_coverage_complete` 必须为 `true`，否则不能把报告作为行为切换证据。报告还必须包含可用的基线对比且无退化，聚合字段为 `summary.acceptance.baseline_comparison_passed=true`。
 
-套件报告还必须输出 `semantic_ownership_audit.schema_version=offline_simulation_semantic_ownership_audit_v1`，用于证明仿真结果中包含 Gate、Tool Planner、Join 和 Parallel Shadow 的所有权证据。`summary.acceptance.semantic_ownership_passed` 必须为 `true`，否则不能把报告作为行为切换证据。该字段只检查结构边界：Gate shadow 不提交或发送、Tool Planner 没有客户可见文案或成交心理残留、Join 不生成客户文案且不决定销售心理，最终复杂回复仍由 Reply 负责。
+架构职责边界由目标节点合同和对应确定性测试验证；仿真报告聚焦真实客户可见效果、事实安全、状态推进、隔离性和供应商稳定性，不用旁路 Shadow 字段替代真实链路验证。
 
 仿真报告只用于审核和发布门禁，不会自动修改 Prompt、部署或发送客户消息。
 

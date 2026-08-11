@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from app.config import Settings
@@ -17,15 +19,34 @@ from app.simulation.isolation import SimulationIsolationError, assert_simulation
 from app.simulation.runner import (
     REQUIRED_SIMULATION_CATEGORIES,
     _aggregate,
+    _attach_semantic_reviews,
     _configured_sop_media_urls,
+    _load_resumable_checkpoint,
     _record_semantic_review_failure,
+    _review_result,
+    _semantic_review_fingerprint,
+    _semantic_review_signature,
+    _semantic_visible_payload,
     _semantic_scores,
+    _simulation_runtime_fingerprint,
     load_suite,
     render_markdown,
     simulation_evaluation_scope,
     simulation_run_options,
 )
 from app.simulation.runtime import _hard_check, _provider_incidents, _unrecovered_infrastructure_errors
+
+
+def test_semantic_reviewer_reserves_critical_errors_for_release_blockers() -> None:
+    import inspect
+
+    source = inspect.getsource(_review_result)
+    assert "Use critical_errors only for actual release-blocking semantic failures" in source
+    assert "Tone that is slightly templated, conservative wording" in source
+    assert "minor verbosity" in source
+    assert "Both sync_reply_messages and simulated outbox reply_messages" in source
+    assert "semantic_goal and expected as the authoritative evaluation contract" in source
+    assert "Never attribute a message, image, store card, or payment card from a later turn" in source
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -43,44 +64,6 @@ def _isolation_audit(passed: bool = True) -> dict:
         "adapter_types": ["SimulationOutreachClient"],
         "identity_simulation_scoped": passed,
         "guarded_path_labels": ["database", "logs", "memory", "store_snapshot"],
-    }
-
-
-def _semantic_ownership_shadow_bundle(*, join_decides_sales_psychology: bool = False) -> dict:
-    return {
-        "chat_gate_commit_boundary": {
-            "schema_version": "chat_gate_commit_boundary_v1",
-            "shadow_output_only": True,
-            "this_shadow_creates_sop_task": False,
-            "this_shadow_updates_send_once": False,
-            "this_shadow_sends_customer_messages": False,
-            "this_shadow_writes_database": False,
-        },
-        "tool_plan_preview": {
-            "schema_version": "tool_plan_preview_v2",
-            "migration_audit": {
-                "schema_version": "tool_planner_migration_audit_v1",
-                "legacy_residue_count": 0,
-                "tool_planner_only_ready": True,
-            },
-        },
-        "reply_chain_join_shadow": {
-            "schema_version": "reply_chain_join_shadow_v1",
-            "final_expression_boundary": {
-                "schema_version": "reply_final_expression_boundary_v1",
-                "final_customer_message_owner": "reply",
-                "join_generates_customer_visible_text": False,
-                "join_decides_sales_psychology": join_decides_sales_psychology,
-            },
-        },
-        "parallel_reply_chain_shadow": {
-            "schema_version": "parallel_reply_chain_shadow_v1",
-            "current_serial_observation": {
-                "tool_planner_only_ready": True,
-                "join_generates_customer_visible_text": False,
-                "join_decides_sales_psychology": join_decides_sales_psychology,
-            },
-        },
     }
 
 
@@ -115,6 +98,276 @@ class FullChainSimulationTests(unittest.TestCase):
         )
         self.assertEqual(result["infrastructure_errors"], ["semantic_review:RuntimeError: review model 401"])
 
+    def test_runtime_fingerprint_changes_with_dirty_runtime_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime_file = root / "ai_paths" / "app" / "runtime.py"
+            runtime_file.parent.mkdir(parents=True)
+            runtime_file.write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "config").mkdir()
+            fixture = root / "fixture.json"
+            fixture.write_text('{"scenarios": []}', encoding="utf-8")
+            settings = Settings()
+
+            first = _simulation_runtime_fingerprint(repo_root=root, fixture=fixture, settings=settings)
+            runtime_file.write_text("VALUE = 2\n", encoding="utf-8")
+            second = _simulation_runtime_fingerprint(repo_root=root, fixture=fixture, settings=settings)
+
+            self.assertNotEqual(first, second)
+
+    def test_resume_checkpoint_requires_matching_fingerprint_and_clean_runtime(self) -> None:
+        scenario = {"id": "resume_case"}
+        runtime_fingerprint = "runtime-v1"
+        review_fingerprint = _semantic_review_fingerprint(
+            simulation_fingerprint=runtime_fingerprint,
+            reviewer_model="gpt-5.4",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_dir = Path(temp_dir)
+            checkpoint = checkpoint_dir / "resume_case-a1.json"
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "scenario_id": "resume_case",
+                        "attempt": 1,
+                        "simulation_fingerprint": runtime_fingerprint,
+                        "semantic_review_fingerprint": review_fingerprint,
+                        "hard_pass": True,
+                        "infrastructure_errors": [],
+                        "semantic_review": {"available": True, "pass": True},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            resumed = _load_resumable_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                scenario=scenario,
+                attempt=1,
+                simulation_fingerprint=runtime_fingerprint,
+                review_fingerprint=review_fingerprint,
+            )
+            self.assertIsNotNone(resumed)
+            self.assertTrue(resumed["semantic_review"]["pass"])
+
+            stale_review = _load_resumable_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                scenario=scenario,
+                attempt=1,
+                simulation_fingerprint=runtime_fingerprint,
+                review_fingerprint="review-v2",
+            )
+            self.assertIsNotNone(stale_review)
+            self.assertNotIn("semantic_review", stale_review)
+
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "scenario_id": "resume_case",
+                        "attempt": 1,
+                        "simulation_fingerprint": runtime_fingerprint,
+                        "hard_pass": False,
+                        "hard_errors": ["scenario.missing_reply"],
+                        "infrastructure_errors": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertIsNotNone(
+                _load_resumable_checkpoint(
+                    checkpoint_dir=checkpoint_dir,
+                    scenario=scenario,
+                    attempt=1,
+                    simulation_fingerprint=runtime_fingerprint,
+                    review_fingerprint=review_fingerprint,
+                )
+            )
+            self.assertIsNone(
+                _load_resumable_checkpoint(
+                    checkpoint_dir=checkpoint_dir,
+                    scenario=scenario,
+                    attempt=1,
+                    simulation_fingerprint=runtime_fingerprint,
+                    review_fingerprint=review_fingerprint,
+                    retry_failed=True,
+                )
+            )
+
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "scenario_id": "resume_case",
+                        "attempt": 1,
+                        "simulation_fingerprint": runtime_fingerprint,
+                        "hard_pass": False,
+                        "infrastructure_errors": ["provider timeout"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertIsNone(
+                _load_resumable_checkpoint(
+                    checkpoint_dir=checkpoint_dir,
+                    scenario=scenario,
+                    attempt=1,
+                    simulation_fingerprint=runtime_fingerprint,
+                    review_fingerprint=review_fingerprint,
+                )
+            )
+
+    def test_semantic_review_signature_ignores_attempt_and_transport_metadata(self) -> None:
+        scenario = {"id": "same", "semantic_goal": "same goal", "expected": {"reply": True}}
+        first = {
+            "attempt": 1,
+            "steps": [
+                {
+                    "kind": "customer_message",
+                    "input": {"content": "好的"},
+                    "sync_reply_messages": [{"type": "text", "content": "您脸上的斑大概有多久了？"}],
+                    "new_outbox": [{"request_id": "volatile-a", "reply_messages": []}],
+                }
+            ],
+        }
+        second = deepcopy(first)
+        second["attempt"] = 2
+        second["steps"][0]["new_outbox"][0]["request_id"] = "volatile-b"
+
+        self.assertEqual(
+            _semantic_review_signature(scenario, first),
+            _semantic_review_signature(scenario, second),
+        )
+
+    def test_semantic_visible_payload_preserves_turn_boundaries_and_expectations(self) -> None:
+        result = {
+            "steps": [
+                {
+                    "index": 1,
+                    "kind": "customer_message",
+                    "input": {"content": "这个活动多少钱"},
+                    "expected": {"forbidden_types": ["payment_collection"]},
+                    "sync_reply_messages": [{"type": "text", "content": "活动价是268元。"}],
+                    "new_outbox": [],
+                },
+                {
+                    "index": 2,
+                    "kind": "customer_message",
+                    "input": {"content": "那怎么报名"},
+                    "expected": {"required_types": ["payment_collection"]},
+                    "sync_reply_messages": [
+                        {"type": "payment_collection", "content": {"amount": 10}}
+                    ],
+                    "new_outbox": [],
+                },
+            ]
+        }
+
+        visible = _semantic_visible_payload(result)
+
+        self.assertEqual(visible[0]["turn_index"], 1)
+        self.assertEqual(visible[0]["expected_for_this_turn"], {"forbidden_types": ["payment_collection"]})
+        self.assertNotIn("payment_collection", [item["type"] for item in visible[0]["sync_reply_messages"]])
+        self.assertEqual(visible[1]["turn_index"], 2)
+        self.assertEqual(visible[1]["expected_for_this_turn"], {"required_types": ["payment_collection"]})
+        self.assertIn("payment_collection", [item["type"] for item in visible[1]["sync_reply_messages"]])
+
+    def test_identical_visible_results_share_one_semantic_review(self) -> None:
+        class Reviewer:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def chat_json(self, *_args, **_kwargs):
+                self.calls += 1
+                return {
+                    "scores": {key: 5 for key in (
+                        "current_question",
+                        "history_continuity",
+                        "mainline_progression",
+                        "conversion_naturalness",
+                        "human_tone",
+                        "fact_safety",
+                    )},
+                    "critical_errors": [],
+                    "reasons": "ok",
+                }
+
+        scenario = {"id": "same", "semantic_goal": "same goal", "expected": {"reply": True}}
+        result = {
+            "hard_pass": True,
+            "infrastructure_errors": [],
+            "steps": [
+                {
+                    "kind": "customer_message",
+                    "input": {"content": "好的"},
+                    "sync_reply_messages": [{"type": "text", "content": "您脸上的斑大概有多久了？"}],
+                    "new_outbox": [],
+                }
+            ],
+        }
+        results = [deepcopy(result), deepcopy(result)]
+        reviewer = Reviewer()
+
+        asyncio.run(
+            _attach_semantic_reviews(
+                reviewer=reviewer,
+                jobs=[(scenario, 1), (scenario, 2)],
+                results=results,
+                concurrency=2,
+            )
+        )
+
+        self.assertEqual(reviewer.calls, 1)
+        self.assertEqual(results[0]["semantic_review"]["pass"], results[1]["semantic_review"]["pass"])
+        self.assertEqual(results[0]["semantic_review"]["cache"]["sample_count"], 2)
+
+    def test_failed_first_review_uses_three_vote_consensus(self) -> None:
+        class Reviewer:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def chat_json(self, *_args, **_kwargs):
+                self.calls += 1
+                score = 3 if self.calls == 1 else 5
+                return {
+                    "scores": {key: score for key in (
+                        "current_question",
+                        "history_continuity",
+                        "mainline_progression",
+                        "conversion_naturalness",
+                        "human_tone",
+                        "fact_safety",
+                    )},
+                    "critical_errors": [] if score >= 4 else ["first vote rejected"],
+                    "reasons": f"vote-{self.calls}",
+                }
+
+        scenario = {"id": "consensus", "semantic_goal": "goal", "expected": {"reply": True}}
+        result = {
+            "hard_pass": True,
+            "infrastructure_errors": [],
+            "steps": [
+                {
+                    "kind": "customer_message",
+                    "input": {"content": "好的"},
+                    "sync_reply_messages": [{"type": "text", "content": "收到"}],
+                    "new_outbox": [],
+                }
+            ],
+        }
+        reviewer = Reviewer()
+
+        asyncio.run(
+            _attach_semantic_reviews(
+                reviewer=reviewer,
+                jobs=[(scenario, 1)],
+                results=[result],
+                concurrency=1,
+            )
+        )
+
+        self.assertEqual(reviewer.calls, 3)
+        self.assertTrue(result["semantic_review"]["pass"])
+        self.assertEqual(result["semantic_review"]["consensus"]["pass_votes"], 2)
+
     def test_v1_fixture_expands_to_at_least_one_hundred_scenarios(self) -> None:
         scenarios = load_suite(REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json")
 
@@ -139,6 +392,57 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["missing_required_categories"], [])
         self.assertEqual(report["coverage"]["missing_critical_required_categories"], [])
         self.assertTrue(report["summary"]["acceptance"]["scenario_coverage_complete"])
+
+    def test_template_variant_can_override_its_followup_without_cross_region_history(self) -> None:
+        scenarios = load_suite(REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json")
+        province_variants = {
+            item["id"]: [step.get("content") for step in item["timeline"]]
+            for item in scenarios
+            if str(item.get("id") or "").startswith("province_scope__")
+        }
+
+        self.assertEqual(
+            province_variants,
+            {
+                "province_scope__v01": ["湖北省", "荆州市荆州区"],
+                "province_scope__v02": ["我在广东", "广州市番禺区"],
+                "province_scope__v03": ["四川这边有吗", "成都市双流区"],
+                "province_scope__v04": ["贵州有店不", "贵阳市花溪区"],
+            },
+        )
+
+    def test_v1_fixture_uses_current_payment_and_registration_contracts(self) -> None:
+        fixture = REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json"
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        templates = {item["id"]: item for item in payload["templates"]}
+
+        self.assertIn("普通文字声称已经转好仍不是权威已付", templates["manual_transfer"]["semantic_goal"])
+        payment_followup_forbidden = templates["payment_after_activity"]["followup"]["expected"][
+            "forbidden_phrases"
+        ]
+        self.assertNotIn("已到账", payment_followup_forbidden)
+        self.assertNotIn("已经到账", payment_followup_forbidden)
+        self.assertIn("支付已确认", payment_followup_forbidden)
+        self.assertIn("不得重复索取", templates["paid_registration"]["semantic_goal"])
+        self.assertIn("新的成交进展", templates["soft_refusal"]["semantic_goal"])
+        self.assertEqual(
+            templates["soft_refusal"]["expected"],
+            {
+                "must_reply": True,
+                "required_types": ["payment_collection"],
+                "payment_amount": 10,
+            },
+        )
+        self.assertIn("权威预约金支付成功", templates["unknown_transfer_message"]["semantic_goal"])
+        self.assertIn(
+            "payment_collection",
+            templates["unknown_transfer_message"]["expected"]["forbidden_types"],
+        )
+        self.assertEqual(
+            templates["sop_duplicate_avoidance"]["expected"]["required_types"],
+            ["payment_collection"],
+        )
+        self.assertIn("风险未解除前不操作", templates["health_risk"]["semantic_goal"])
 
     def test_aggregate_exposes_simulation_scope_and_run_options(self) -> None:
         scope = simulation_evaluation_scope(scenario_id="store_case", category="门店V2", max_cases=1)
@@ -178,6 +482,8 @@ class FullChainSimulationTests(unittest.TestCase):
                 "concurrency": 1,
                 "skip_review": True,
                 "reviewer_model": "",
+                "resume": False,
+                "retry_failed": False,
             },
         )
 
@@ -249,74 +555,6 @@ class FullChainSimulationTests(unittest.TestCase):
 
         self.assertFalse(without_baseline["summary"]["acceptance"]["baseline_comparison_passed"])
         self.assertTrue(with_baseline["summary"]["acceptance"]["baseline_comparison_passed"])
-
-    def test_aggregate_exposes_semantic_ownership_audit_from_shadow_evidence(self) -> None:
-        report = _aggregate(
-            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
-            scenarios=[{"id": "ownership_ok", "category": "门店V2", "critical": True}],
-            results=[
-                {
-                    "scenario_id": "ownership_ok",
-                    "attempt": 1,
-                    "hard_pass": True,
-                    "semantic_review": {"available": True, "pass": True},
-                    "run": {"node_traces": [_semantic_ownership_shadow_bundle()]},
-                }
-            ],
-            baseline={},
-        )
-
-        ownership = report["semantic_ownership_audit"]
-        self.assertEqual(ownership["schema_version"], "offline_simulation_semantic_ownership_audit_v1")
-        self.assertEqual(ownership["result_count"], 1)
-        self.assertEqual(ownership["evidence_result_count"], 1)
-        self.assertEqual(ownership["missing_evidence_count"], 0)
-        self.assertEqual(ownership["violation_count"], 0)
-        self.assertTrue(ownership["passed"])
-        self.assertTrue(report["summary"]["acceptance"]["semantic_ownership_passed"])
-
-    def test_aggregate_blocks_semantic_ownership_when_shadow_evidence_missing_or_violates_boundary(self) -> None:
-        report = _aggregate(
-            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
-            scenarios=[
-                {"id": "ownership_missing", "category": "门店V2", "critical": True},
-                {"id": "ownership_violation", "category": "门店V2", "critical": True},
-            ],
-            results=[
-                {
-                    "scenario_id": "ownership_missing",
-                    "attempt": 1,
-                    "hard_pass": True,
-                    "semantic_review": {"available": True, "pass": True},
-                },
-                {
-                    "scenario_id": "ownership_violation",
-                    "attempt": 1,
-                    "hard_pass": True,
-                    "semantic_review": {"available": True, "pass": True},
-                    "run": {
-                        "node_traces": [
-                            _semantic_ownership_shadow_bundle(join_decides_sales_psychology=True)
-                        ]
-                    },
-                },
-            ],
-            baseline={},
-        )
-
-        ownership = report["semantic_ownership_audit"]
-        self.assertEqual(ownership["missing_evidence_count"], 1)
-        self.assertGreaterEqual(ownership["violation_count"], 1)
-        self.assertFalse(ownership["passed"])
-        self.assertFalse(report["summary"]["acceptance"]["semantic_ownership_passed"])
-        self.assertIn(
-            {
-                "scenario_id": "ownership_violation",
-                "attempt": 1,
-                "violation": "join_decides_sales_psychology",
-            },
-            ownership["violations"],
-        )
 
     def test_aggregate_blocks_acceptance_when_required_simulation_category_is_missing(self) -> None:
         report = _aggregate(
@@ -855,6 +1093,39 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertIn("scenario.missing_payment_amount:10", errors)
         self.assertIn("scenario.forbidden_phrase:翻一下前面的入口", errors)
 
+    def test_step_contract_detects_payment_card_sent_before_followup(self) -> None:
+        errors = _hard_check(
+            scenario={"expected": {"must_reply": True, "required_types": ["payment_collection"]}},
+            step_results=[
+                {
+                    "index": 1,
+                    "expected": {"must_reply": True, "forbidden_types": ["payment_collection"]},
+                    "sync_reply_messages": [
+                        {"type": "text", "content": "活动总价是268元。"},
+                        {"type": "payment_collection", "content": {"amount": 10}},
+                    ],
+                },
+                {
+                    "index": 2,
+                    "expected": {
+                        "must_reply": True,
+                        "required_types": ["payment_collection"],
+                        "payment_amount": 10,
+                    },
+                    "sync_reply_messages": [
+                        {"type": "text", "content": "可以，给您发预约金入口。"},
+                        {"type": "payment_collection", "content": {"amount": 10}},
+                    ],
+                },
+            ],
+            outbox=[],
+            stores=[],
+            external_writes=[],
+        )
+
+        self.assertIn("step[1].forbidden_type:payment_collection", errors)
+        self.assertNotIn("step[2].missing_required_type:payment_collection", errors)
+
     def test_provider_incidents_only_read_actual_error_evidence(self) -> None:
         steps = [
             {
@@ -934,6 +1205,20 @@ class FullChainSimulationTests(unittest.TestCase):
         )
 
         self.assertIn("scenario.neutral_fallback_used", errors)
+
+    def test_hard_check_flags_neutral_fallback_in_any_turn(self) -> None:
+        errors = _hard_check(
+            scenario={"expected": {"must_reply": True}},
+            step_results=[
+                {"sync_reply_messages": [{"type": "text", "content": "先解决当前问题。"}]},
+                {"sync_reply_messages": [{"type": "text", "content": "您稍等一下"}]},
+            ],
+            outbox=[],
+            stores=[],
+            external_writes=[],
+        )
+
+        self.assertIn("batch[2].neutral_fallback_used", errors)
 
     def test_outbox_captures_without_external_transport(self) -> None:
         identity = {

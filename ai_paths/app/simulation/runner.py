@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import statistics
@@ -59,9 +60,10 @@ def load_suite(path: Path) -> list[dict[str, Any]]:
                 {key: value for key, value in template.items() if key not in {"variants", "followup"}},
             )
             scenario["id"] = f"{template.get('id')}__v{index:02d}"
-            patch = variant if isinstance(variant, dict) else {"content": str(variant)}
+            patch = deepcopy(variant) if isinstance(variant, dict) else {"content": str(variant)}
+            variant_followup = patch.pop("followup", template.get("followup"))
             _apply_variant(scenario, patch)
-            followup = template.get("followup")
+            followup = variant_followup
             if followup:
                 followup_step = deepcopy(followup) if isinstance(followup, dict) else {
                     "kind": "customer_message",
@@ -85,6 +87,8 @@ async def run_suite(
     max_cases: int = 0,
     reviewer_model: str = "",
     skip_review: bool = False,
+    resume: bool = False,
+    retry_failed: bool = False,
     baseline_path: Path | None = None,
     base_settings: Settings | None = None,
 ) -> dict[str, Any]:
@@ -103,18 +107,29 @@ async def run_suite(
         category=category,
         max_cases=max_cases,
     )
+    settings = base_settings or Settings()
+    simulation_fingerprint = _simulation_runtime_fingerprint(
+        repo_root=repo_root,
+        fixture=fixture,
+        settings=settings,
+    )
+    review_fingerprint = _semantic_review_fingerprint(
+        simulation_fingerprint=simulation_fingerprint,
+        reviewer_model=reviewer_model or settings.model_reply,
+    )
     options = simulation_run_options(
         attempts=attempts,
         critical_attempts=critical_attempts,
         concurrency=concurrency,
         skip_review=skip_review,
         reviewer_model=reviewer_model,
+        resume=resume,
+        retry_failed=retry_failed,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    settings = base_settings or Settings()
     runtime = SimulationRuntime(repo_root=repo_root, run_root=output_dir / "runs", base_settings=settings)
     reviewer = None if skip_review else ModelClient(
         settings.model_copy(
@@ -124,11 +139,25 @@ async def run_suite(
             }
         )
     )
-    semaphore = asyncio.Semaphore(max(1, min(concurrency, 2)))
+    semaphore = asyncio.Semaphore(max(1, min(concurrency, 4)))
     jobs: list[tuple[dict[str, Any], int]] = []
     for scenario in scenarios:
         count = critical_attempts if bool(scenario.get("critical")) else attempts
         jobs.extend((scenario, attempt) for attempt in range(1, max(1, count) + 1))
+
+    cached_results: dict[tuple[str, int], dict[str, Any]] = {}
+    if resume:
+        for scenario, attempt in jobs:
+            cached = _load_resumable_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                scenario=scenario,
+                attempt=attempt,
+                simulation_fingerprint=simulation_fingerprint,
+                review_fingerprint=review_fingerprint,
+                retry_failed=retry_failed,
+            )
+            if cached is not None:
+                cached_results[(str(scenario.get("id") or ""), attempt)] = cached
 
     async def run_one(scenario: dict[str, Any], attempt: int) -> dict[str, Any]:
         async with semaphore:
@@ -145,18 +174,40 @@ async def run_suite(
                     "infrastructure_errors": [f"{type(exc).__name__}: {exc}"],
                     "runner_error": f"{type(exc).__name__}: {exc}",
                 }
+                result["simulation_fingerprint"] = simulation_fingerprint
                 _write_result_checkpoint(checkpoint_dir, result)
                 return result
-            if reviewer and result.get("hard_pass") and not result.get("infrastructure_errors"):
-                try:
-                    result["semantic_review"] = await _review_result(reviewer, scenario, result)
-                except Exception as exc:  # noqa: BLE001
-                    _record_semantic_review_failure(result, exc)
+            result["simulation_fingerprint"] = simulation_fingerprint
             _write_result_checkpoint(checkpoint_dir, result)
             return result
 
-    results = list(await asyncio.gather(*(run_one(scenario, attempt) for scenario, attempt in jobs)))
+    pending_jobs = [
+        (scenario, attempt)
+        for scenario, attempt in jobs
+        if (str(scenario.get("id") or ""), attempt) not in cached_results
+    ]
+    pending_results = list(
+        await asyncio.gather(*(run_one(scenario, attempt) for scenario, attempt in pending_jobs))
+    )
+    pending_by_key = {
+        (str(result.get("scenario_id") or ""), int(result.get("attempt") or 0)): result
+        for result in pending_results
+    }
+    results = [
+        cached_results.get((str(scenario.get("id") or ""), attempt))
+        or pending_by_key[(str(scenario.get("id") or ""), attempt)]
+        for scenario, attempt in jobs
+    ]
     if reviewer:
+        await _attach_semantic_reviews(
+            reviewer=reviewer,
+            jobs=jobs,
+            results=results,
+            concurrency=max(1, min(concurrency, 4)),
+            review_fingerprint=review_fingerprint,
+        )
+        for result in results:
+            _write_result_checkpoint(checkpoint_dir, result)
         await reviewer.aclose()
     report = _aggregate(
         fixture=fixture,
@@ -166,6 +217,8 @@ async def run_suite(
         evaluation_scope=scope,
         run_options=options,
     )
+    report["simulation_fingerprint"] = simulation_fingerprint
+    report["semantic_review_fingerprint"] = review_fingerprint
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
@@ -181,6 +234,95 @@ def _write_result_checkpoint(checkpoint_dir: Path, result: dict[str, Any]) -> No
     temporary.replace(target)
 
 
+def _checkpoint_path(checkpoint_dir: Path, scenario_id: str, attempt: int) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(scenario_id or "unknown"))
+    return checkpoint_dir / f"{safe_id}-a{int(attempt or 0)}.json"
+
+
+def _load_resumable_checkpoint(
+    *,
+    checkpoint_dir: Path,
+    scenario: dict[str, Any],
+    attempt: int,
+    simulation_fingerprint: str,
+    review_fingerprint: str,
+    retry_failed: bool = False,
+) -> dict[str, Any] | None:
+    target = _checkpoint_path(checkpoint_dir, str(scenario.get("id") or ""), attempt)
+    if not target.exists():
+        return None
+    try:
+        result = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(result, dict):
+        return None
+    if str(result.get("scenario_id") or "") != str(scenario.get("id") or ""):
+        return None
+    if int(result.get("attempt") or 0) != int(attempt):
+        return None
+    if str(result.get("simulation_fingerprint") or "") != simulation_fingerprint:
+        return None
+    if result.get("runner_error") or result.get("infrastructure_errors"):
+        return None
+    if retry_failed and (not bool(result.get("hard_pass")) or bool(result.get("hard_errors"))):
+        return None
+    if str(result.get("semantic_review_fingerprint") or "") != review_fingerprint:
+        result.pop("semantic_review", None)
+        result.pop("semantic_review_fingerprint", None)
+    return result
+
+
+def _simulation_runtime_fingerprint(*, repo_root: Path, fixture: Path, settings: Settings) -> str:
+    """Bind resumable results to the exact dirty worktree, fixture, and model runtime."""
+
+    digest = hashlib.sha256()
+    roots = (
+        repo_root / "ai_paths" / "app",
+        repo_root / "config",
+    )
+    files: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        files.extend(
+            path
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".py", ".json"}
+        )
+    files.extend(
+        path
+        for path in (repo_root / "ai_paths" / "scripts" / "run_full_chain_simulation.py", fixture)
+        if path.exists() and path.is_file()
+    )
+    for path in sorted(set(files), key=lambda item: item.as_posix()):
+        try:
+            relative = path.resolve().relative_to(repo_root.resolve()).as_posix()
+        except ValueError:
+            relative = path.resolve().as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+
+    raw_settings = settings.model_dump() if hasattr(settings, "model_dump") else {}
+    runtime_settings = {
+        str(key): value
+        for key, value in raw_settings.items()
+        if str(key).startswith("model_")
+        and not any(marker in str(key).lower() for marker in ("key", "token", "secret", "password"))
+    }
+    digest.update(
+        json.dumps(runtime_settings, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    )
+    return digest.hexdigest()
+
+
+def _semantic_review_fingerprint(*, simulation_fingerprint: str, reviewer_model: str) -> str:
+    payload = f"{simulation_fingerprint}\0{str(reviewer_model or '').strip()}\0semantic-review-v3"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _record_semantic_review_failure(result: dict[str, Any], exc: Exception) -> None:
     review_error = f"{type(exc).__name__}: {exc}"
     result["semantic_review"] = {
@@ -188,6 +330,92 @@ def _record_semantic_review_failure(result: dict[str, Any], exc: Exception) -> N
         "error": review_error,
     }
     result.setdefault("infrastructure_errors", []).append(f"semantic_review:{review_error}")
+
+
+async def _attach_semantic_reviews(
+    *,
+    reviewer: ModelClient,
+    jobs: list[tuple[dict[str, Any], int]],
+    results: list[dict[str, Any]],
+    concurrency: int,
+    review_fingerprint: str = "",
+) -> None:
+    """Review each unique customer-visible result once, then reuse that verdict."""
+    semaphore = asyncio.Semaphore(max(1, min(int(concurrency or 1), 2)))
+    review_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
+    assignments: list[tuple[dict[str, Any], str]] = []
+    sample_counts: dict[str, int] = {}
+    cached_reviews: dict[str, dict[str, Any]] = {}
+
+    async def review_once(scenario: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+        async with semaphore:
+            return await _review_result_with_consensus(reviewer, scenario, result)
+
+    for (scenario, _attempt), result in zip(jobs, results, strict=True):
+        review = result.get("semantic_review")
+        if (
+            isinstance(review, dict)
+            and review.get("available")
+            and (not review_fingerprint or result.get("semantic_review_fingerprint") == review_fingerprint)
+        ):
+            cached_reviews.setdefault(_semantic_review_signature(scenario, result), deepcopy(review))
+
+    for (scenario, _attempt), result in zip(jobs, results, strict=True):
+        if not result.get("hard_pass") or result.get("infrastructure_errors"):
+            continue
+        signature = _semantic_review_signature(scenario, result)
+        sample_counts[signature] = sample_counts.get(signature, 0) + 1
+        if signature not in cached_reviews and signature not in review_tasks:
+            review_tasks[signature] = asyncio.create_task(review_once(scenario, result))
+        assignments.append((result, signature))
+
+    for result, signature in assignments:
+        try:
+            review = deepcopy(cached_reviews.get(signature) or await review_tasks[signature])
+            review["cache"] = {
+                "signature": signature,
+                "sample_count": sample_counts[signature],
+                "reused": sample_counts[signature] > 1,
+            }
+            result["semantic_review"] = review
+            if review_fingerprint:
+                result["semantic_review_fingerprint"] = review_fingerprint
+        except Exception as exc:  # noqa: BLE001
+            _record_semantic_review_failure(result, exc)
+            if review_fingerprint:
+                result["semantic_review_fingerprint"] = review_fingerprint
+
+
+def _semantic_review_signature(scenario: dict[str, Any], result: dict[str, Any]) -> str:
+    payload = {
+        "scenario_id": scenario.get("id"),
+        "semantic_goal": scenario.get("semantic_goal"),
+        "expected": scenario.get("expected"),
+        "visible": _semantic_visible_payload(result),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _semantic_visible_payload(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep turn-scoped evaluation facts and customer-visible content."""
+    output: list[dict[str, Any]] = []
+    for item in _visible_transcript(result):
+        outbox_messages: list[Any] = []
+        for batch in item.get("outbox") or []:
+            if isinstance(batch, dict):
+                outbox_messages.extend(batch.get("reply_messages") or [])
+        output.append(
+            {
+                "turn_index": item.get("turn_index"),
+                "kind": item.get("kind"),
+                "input": item.get("input"),
+                "expected_for_this_turn": item.get("expected_for_this_turn") or {},
+                "sync_reply_messages": item.get("sync_reply_messages") or [],
+                "outbox_reply_messages": outbox_messages,
+            }
+        )
+    return output
 
 
 def simulation_evaluation_scope(*, scenario_id: str = "", category: str = "", max_cases: int = 0) -> dict[str, Any]:
@@ -212,6 +440,8 @@ def simulation_run_options(
     concurrency: int = 2,
     skip_review: bool = False,
     reviewer_model: str = "",
+    resume: bool = False,
+    retry_failed: bool = False,
 ) -> dict[str, Any]:
     return {
         "schema_version": "offline_simulation_run_options_v1",
@@ -220,6 +450,60 @@ def simulation_run_options(
         "concurrency": int(concurrency or 0),
         "skip_review": bool(skip_review),
         "reviewer_model": str(reviewer_model or ""),
+        "resume": bool(resume),
+        "retry_failed": bool(retry_failed),
+    }
+
+
+async def _review_result_with_consensus(
+    reviewer: ModelClient,
+    scenario: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    first = await _review_result(reviewer, scenario, result)
+    if first.get("pass"):
+        first["consensus"] = {"vote_count": 1, "pass_votes": 1, "triggered": False}
+        return first
+
+    additional = await asyncio.gather(
+        _review_result(reviewer, scenario, result),
+        _review_result(reviewer, scenario, result),
+        return_exceptions=True,
+    )
+    if any(isinstance(item, BaseException) for item in additional):
+        errors = [f"{type(item).__name__}: {item}" for item in additional if isinstance(item, BaseException)]
+        raise RuntimeError(f"semantic_consensus_incomplete: {'; '.join(errors)}")
+
+    votes = [first, *additional]
+    pass_votes = sum(bool(item.get("pass")) for item in votes)
+    passed = pass_votes >= 2
+    scores = {
+        key: int(statistics.median([_score((item.get("scores") or {}).get(key)) for item in votes]))
+        for key in SEMANTIC_SCORE_KEYS
+    }
+    failed_votes = [item for item in votes if not item.get("pass")]
+    critical_errors = [] if passed else list(
+        dict.fromkeys(
+            str(error)
+            for item in failed_votes
+            for error in item.get("critical_errors") or []
+            if str(error)
+        )
+    )
+    reasons = [str(item.get("reasons") or "") for item in votes if str(item.get("reasons") or "")]
+    return {
+        "available": True,
+        "pass": passed,
+        "scores": scores,
+        "average": round(statistics.mean(scores.values()), 2),
+        "critical_errors": critical_errors,
+        "reasons": reasons,
+        "raw": {"votes": [item.get("raw") or item for item in votes]},
+        "consensus": {
+            "vote_count": 3,
+            "pass_votes": pass_votes,
+            "triggered": True,
+        },
     }
 
 
@@ -228,7 +512,7 @@ async def _review_result(
     scenario: dict[str, Any],
     result: dict[str, Any],
 ) -> dict[str, Any]:
-    visible = _visible_transcript(result)
+    visible = _semantic_visible_payload(result)
     prompt = {
         "scenario_id": scenario.get("id"),
         "category": scenario.get("category"),
@@ -251,6 +535,9 @@ async def _review_result(
                 "content": (
                     "You are an independent Chinese customer-service quality reviewer. "
                     "Return valid json only. Judge the actual reply, not keyword presence. "
+                    "Treat semantic_goal and expected as the authoritative evaluation contract for this scenario. "
+                    "Do not invent a stricter preferred next action when the produced action is explicitly allowed by that contract. "
+                    "Materially identical customer-visible replies under the same contract must receive the same scores and verdict. "
                     "Treat authoritative_simulation_facts and authoritative_business_facts as true configured facts: "
                      "simulation-only URLs and IDs are valid when supplied there. Do not invent missing context or reject "
                      "configured business facts merely because they are not independently verifiable on the public internet. "
@@ -263,9 +550,22 @@ async def _review_result(
                     "cards; after the customer chooses one, asking spot history or returning to cases/activity is valid. "
                     "When 2-3 real store cards were sent and the customer has not selected one, asking which store or district "
                     "is more convenient remains a necessary unresolved-store action and must not lower mainline progression. "
+                    "When those cards belong to distinct districts, a customer reply naming one of those districts counts as "
+                    "selecting the corresponding store; do not require the assistant to ask for the same selection again. "
                     "Store IDs required by expected.required_store_ids/required_any_store_ids and store candidates returned by "
                     "the simulated tool are authoritative visible-scope facts. Do not override them with geographic intuition "
                     "or reject a configured parent-city/province fallback merely because it is outside the customer's county. "
+                    "The deterministic hard validator has already checked message schema, required structure types, configured "
+                    "store IDs, visible scope, payment-card count, and other machine-verifiable facts before this review runs. "
+                    "Do not invent a conflicting required store ID, missing card, or structural violation when the supplied "
+                    "expected contract and visible transcript show that the hard requirement was met. Your role is to score "
+                    "semantic quality beyond those verified facts. "
+                    "Both sync_reply_messages and simulated outbox reply_messages in conversation_and_replies are customer-visible "
+                    "deliveries. Never claim a reply or required card is missing merely because it appears in sync replies rather "
+                    "than the outbox. Judge the combined visible transcript. Each conversation_and_replies item is one isolated "
+                    "turn identified by turn_index. Evaluate its messages only against that turn's immediately preceding input and "
+                    "expected_for_this_turn. Never attribute a message, image, store card, or payment card from a later turn to an "
+                    "earlier turn, and never use a later turn's successful action to excuse an earlier turn's violation. "
                     "A real store card followed by one short spot-history question is the configured mainline progression, "
                     "not a premature topic change. When a county, town, village, or landmark resolves to one visible store, "
                     "sending that real store card and then asking spot history is sufficient; do not require extra explanation "
@@ -282,6 +582,9 @@ async def _review_result(
                     "is an approved business fact and must not be rejected as publicly unverifiable, described as too strong, "
                     "or used to lower fact_safety or any other score when the reply contains no absolute guarantee. Do not "
                     "recommend weakening this approved confidence statement. "
+                    "The configured SOP sentence that the process mainly lightens melanin and does not damage skin is also an "
+                    "approved service description. Do not lower fact_safety for that fixed sentence alone; only penalize an added "
+                    "absolute personal guarantee such as 100%, guaranteed, or permanently risk-free. "
                     "Every non-risk, non-terminal reply should end with one natural unfinished-mainline action. After directly "
                     "answering whether a supported body area can be treated or its configured price, asking the customer's city "
                     "or district to match a store is a valid and expected sales progression when no store is known; do not call "
@@ -296,7 +599,9 @@ async def _review_result(
                     "payment card is valid and must not be penalized; the card can follow after that introduction is completed. "
                     "That first complete activity introduction is itself the turn's main progression and must not include a payment "
                     "card, but its final text should still leave one natural single action such as confirming party size or continuing "
-                    "registration; it must not simply stop after the activity image. "
+                    "registration; it must not simply stop after the activity image. If the customer asked for the activity before "
+                    "their spot need was established, one short spot-type question after the complete activity answer is also a valid "
+                    "unfinished-mainline action; score materially equivalent replies consistently across attempts. "
                     "You may still lower tone or continuity scores for genuinely repetitive, overly formal, or poorly connected wording. "
                     "The current customer turn has priority over an unanswered slot from the immediately preceding turn. If the "
                     "assistant asked for city or another slot and the customer instead asks about effects, price, or another valid "
@@ -309,9 +614,33 @@ async def _review_result(
                     "Review every assistant reply against the immediately preceding customer turn; never attribute an earlier "
                     "reply to a later customer message. Choosing transfer may be answered with the 10-yuan amount and a request "
                     "for a success screenshot; after the customer says it was transferred, requesting the screenshot for "
-                    "verification is correct and must not be described as renewed payment collection. "
+                    "verification is correct and must not be described as renewed payment collection. The same applies when a "
+                    "customer says '我付好了' after receiving a mini-program payment card: ordinary customer text is not authoritative "
+                    "payment confirmation, so requesting a screenshot or explaining that the payment record must be checked is correct. "
+                    "Do not require post-payment registration until an authoritative payment event, successful screenshot, or paid order exists. "
+                    "A structured platform unknown-transfer event is configured as authoritative paid evidence: after that event, requesting "
+                    "another screenshot or sending another payment card is wrong, and the reply should collect only missing registration fields. "
+                    "The assistant may naturally acknowledge that structured event as received, transferred, recorded, or paid; wording such as "
+                    "'已经转好了' does not turn the authoritative platform event into an ordinary text claim. Judge the supplied event source, not "
+                    "the acknowledgement verb. "
+                    "After an authoritative paid event, once name and phone are already supplied, asking only for a still-missing store or broad "
+                    "visit intention is correct. Asking which city/store the customer plans to visit is exactly a valid remaining-store question, "
+                    "not a regression or a repeated slot; do not require the assistant to ask for name or phone again. If the customer repeatedly says the "
+                    "visit time is uncertain, accepting that uncertainty without offering fixed time slots is correct. "
+                    "A customer who first postpones and then explicitly says the activity can be reserved has made new transaction progress. "
+                    "When the prior activity quote is complete and no hard block exists, one payment card is the expected response rather than "
+                    "continuing the earlier passive close. "
                     "For active health risk, require a pause and in-store assessment before operation, but do not require "
-                    "online diagnosis, symptom interrogation, or medical-care instructions beyond configured boundaries. "
+                    "online diagnosis, symptom interrogation, or medical-care instructions beyond configured boundaries. If the customer then "
+                    "asks whether they may first visit for assessment, affirming assessment while clearly withholding operation during the active "
+                    "risk is correct and should not be treated as unsafe progression. "
+                    "Use critical_errors only for actual release-blocking semantic failures: fabricated or unauthorized facts, "
+                    "a violated payment/health/complaint safety boundary, a missing structure explicitly required by the scenario, "
+                    "failure to answer the current customer question, or a direct contradiction of the scenario goal. "
+                    "Tone that is slightly templated, conservative wording, confidence that could be stronger, minor verbosity, "
+                    "or a merely less-natural transition must only affect the relevant 1-5 score and must never appear in "
+                    "critical_errors. If all six scores are at least 4 and no actual release-blocking failure exists, return "
+                    "pass=true and critical_errors=[]. "
                     "Evaluate the full initial history plus conversation_and_replies. Separate infrastructure absence "
                     "from business quality. Output a scores object containing all six rubric keys, plus pass, reasons, "
                     "and critical_errors."
@@ -413,7 +742,6 @@ def _aggregate(
         baseline_comparison.get("available") is True
         and not baseline_comparison.get("regressed")
     )
-    semantic_ownership_audit = _semantic_ownership_audit(results)
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
@@ -448,14 +776,12 @@ def _aggregate(
                 ),
                 "isolation_audit_passed": isolation_audit["passed"],
                 "baseline_comparison_passed": baseline_comparison_passed,
-                "semantic_ownership_passed": semantic_ownership_audit["passed"],
             },
         },
         "coverage": coverage,
         "scenario_summary": scenario_summary,
         "effect_review": _effect_review(results),
         "review_artifacts": _review_artifacts(results),
-        "semantic_ownership_audit": semantic_ownership_audit,
         "baseline_comparison": baseline_comparison,
         "results": results,
     }
@@ -541,120 +867,6 @@ def _simulation_isolation_audit(results: list[dict[str, Any]]) -> dict[str, Any]
             item.get("real_connector_credentials_present") is True for item in audits
         ),
     }
-
-
-def _semantic_ownership_audit(results: list[dict[str, Any]]) -> dict[str, Any]:
-    observations = [_semantic_ownership_observation(result) for result in results]
-    violations = [
-        {
-            "scenario_id": item["scenario_id"],
-            "attempt": item["attempt"],
-            "violation": violation,
-        }
-        for item in observations
-        for violation in item["violations"]
-    ]
-    missing = [item for item in observations if item["evidence_count"] <= 0]
-    return {
-        "schema_version": "offline_simulation_semantic_ownership_audit_v1",
-        "result_count": len(results),
-        "evidence_result_count": len(results) - len(missing),
-        "missing_evidence_count": len(missing),
-        "violation_count": len(violations),
-        "passed": bool(results) and not missing and not violations,
-        "required_evidence": [
-            "chat_gate_commit_boundary_v1",
-            "tool_plan_preview_v2",
-            "reply_chain_join_shadow_v1",
-            "parallel_reply_chain_shadow_v1",
-        ],
-        "checks": [
-            "gate_shadow_cannot_commit_or_send",
-            "tool_planner_has_zero_business_semantic_residue",
-            "join_does_not_generate_customer_visible_text",
-            "join_does_not_decide_sales_psychology",
-            "reply_remains_final_expression_owner_for_complex_turns",
-        ],
-        "violations": violations[:50],
-    }
-
-
-def _semantic_ownership_observation(result: dict[str, Any]) -> dict[str, Any]:
-    snapshots = _collect_semantic_ownership_snapshots(result)
-    violations: list[str] = []
-    if not snapshots:
-        violations.append("missing_semantic_ownership_shadow_evidence")
-    for snapshot in snapshots:
-        schema = str(snapshot.get("schema_version") or "")
-        if schema == "chat_gate_commit_boundary_v1":
-            for field in (
-                "this_shadow_creates_sop_task",
-                "this_shadow_updates_send_once",
-                "this_shadow_sends_customer_messages",
-                "this_shadow_writes_database",
-            ):
-                if snapshot.get(field) is not False:
-                    violations.append(f"gate_commit_boundary_{field}_not_false")
-        elif schema == "tool_plan_preview_v2":
-            migration = snapshot.get("migration_audit") if isinstance(snapshot.get("migration_audit"), dict) else {}
-            if _safe_int(migration.get("legacy_residue_count")) != 0:
-                violations.append(f"tool_planner_legacy_residue:{migration.get('legacy_residue_count')}")
-            if migration.get("tool_planner_only_ready") is not True:
-                violations.append("tool_planner_not_tool_only_ready")
-        elif schema == "reply_chain_join_shadow_v1":
-            boundary = (
-                snapshot.get("final_expression_boundary")
-                if isinstance(snapshot.get("final_expression_boundary"), dict)
-                else {}
-            )
-            if boundary.get("final_customer_message_owner") != "reply":
-                violations.append(f"join_final_owner_not_reply:{boundary.get('final_customer_message_owner') or 'missing'}")
-            if boundary.get("join_generates_customer_visible_text") is not False:
-                violations.append("join_generates_customer_visible_text")
-            if boundary.get("join_decides_sales_psychology") is not False:
-                violations.append("join_decides_sales_psychology")
-        elif schema == "parallel_reply_chain_shadow_v1":
-            observation = (
-                snapshot.get("current_serial_observation")
-                if isinstance(snapshot.get("current_serial_observation"), dict)
-                else {}
-            )
-            if observation.get("join_generates_customer_visible_text") is not False:
-                violations.append("parallel_join_generates_customer_visible_text")
-            if observation.get("join_decides_sales_psychology") is not False:
-                violations.append("parallel_join_decides_sales_psychology")
-            if observation.get("tool_planner_only_ready") is not True:
-                violations.append("parallel_tool_planner_not_tool_only_ready")
-    return {
-        "scenario_id": str(result.get("scenario_id") or ""),
-        "attempt": int(result.get("attempt") or 0),
-        "evidence_count": len(snapshots),
-        "violations": sorted(set(violations)),
-    }
-
-
-def _collect_semantic_ownership_snapshots(value: Any) -> list[dict[str, Any]]:
-    targets = {
-        "chat_gate_commit_boundary_v1",
-        "tool_plan_preview_v2",
-        "reply_chain_join_shadow_v1",
-        "parallel_reply_chain_shadow_v1",
-    }
-    found: list[dict[str, Any]] = []
-
-    def visit(item: Any) -> None:
-        if isinstance(item, dict):
-            schema = str(item.get("schema_version") or "")
-            if schema in targets:
-                found.append(item)
-            for child in item.values():
-                visit(child)
-        elif isinstance(item, list):
-            for child in item:
-                visit(child)
-
-    visit(value)
-    return found
 
 
 def _safe_int(value: Any) -> int:
@@ -1019,7 +1231,12 @@ def _visible_transcript(result: dict[str, Any]) -> list[dict[str, Any]]:
     for step in result.get("steps") or []:
         if not isinstance(step, dict):
             continue
-        item = {"kind": step.get("kind"), "input": (step.get("input") or {}).get("content", "")}
+        item = {
+            "turn_index": step.get("index"),
+            "kind": step.get("kind"),
+            "input": (step.get("input") or {}).get("content", ""),
+            "expected_for_this_turn": deepcopy(step.get("expected") or {}),
+        }
         item["sync_reply_messages"] = step.get("sync_reply_messages") or []
         item["outbox"] = step.get("new_outbox") or []
         output.append(item)

@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "AI Paths"
+    service_role: str = Field(default="primary", alias="AI_PATHS_SERVICE_ROLE")
+    background_workers_enabled: bool = Field(default=True, alias="AI_PATHS_BACKGROUND_WORKERS_ENABLED")
+    release_id: str = Field(default="development", alias="AI_PATHS_RELEASE_ID")
+    build_git_commit: str = Field(default="unknown", alias="AI_PATHS_BUILD_GIT_COMMIT")
+    build_dirty: bool = Field(default=False, alias="AI_PATHS_BUILD_DIRTY")
+    build_config_revision: str = Field(default="unknown", alias="AI_PATHS_BUILD_CONFIG_REVISION")
     ai_paths_api_key: str = Field(default="", repr=False)
     ai_external_api_key: str = Field(default="", repr=False)
     allow_missing_external_api_key: bool = False
@@ -35,7 +41,9 @@ class Settings(BaseSettings):
     anthropic_version: str = "2023-06-01"
     model_max_tokens: int = 4096
     model_response_format_enabled: bool = True
-    model_http_trust_env: bool = False
+    # Match httpx/mainline behavior by default so local/system proxy settings
+    # remain available. Direct-connect deployments can explicitly set false.
+    model_http_trust_env: bool = True
     model_relay_reasoning_control_enabled: bool = True
     model_reasoning_enabled: bool = False
     model_reasoning_effort: str = "low"
@@ -56,27 +64,23 @@ class Settings(BaseSettings):
     model_timeout_seconds: int = 45
     model_hedge_delay_seconds: float = 3.0
     model_planner_hedge_delay_seconds: float = 10.0
+    model_reply_hedge_delay_seconds: float = 10.0
     model_hedge_max_parallel: int = 2
     model_planner_total_timeout_seconds: float = 35.0
     model_reply_total_timeout_seconds: float = 45.0
     model_planner_primary_budget_seconds: float = 25.0
     model_planner_recovery_budget_seconds: float = 10.0
     model_reply_primary_budget_seconds: float = 30.0
-    model_reply_recovery_budget_seconds: float = 15.0
+    model_reply_recovery_budget_seconds: float = 25.0
+    model_fact_audit_enabled: bool = True
+    model_fact_audit_timeout_seconds: float = 15.0
+    model_fact_audit_tier: str = "fast"
     model_round_budget_enforced: bool = True
     model_round_timeout_seconds: float = 120.0
     model_strong_round_timeout_seconds: float = 120.0
     model_reply_reserve_seconds: float = 30.0
     model_min_retry_remaining_seconds: float = 8.0
     model_vision_total_timeout_seconds: float = 15.0
-    parallel_gate_planner_enabled: bool = Field(default=False, alias="PARALLEL_GATE_PLANNER_ENABLED")
-    parallel_gate_planner_shadow: bool = Field(default=True, alias="PARALLEL_GATE_PLANNER_SHADOW")
-    sop_chat_gate_v2_enabled: bool = Field(default=False, alias="SOP_CHAT_GATE_V2_ENABLED")
-    tool_planner_v2_enabled: bool = Field(default=False, alias="TOOL_PLANNER_V2_ENABLED")
-    reply_final_brain_v2_enabled: bool = Field(default=False, alias="REPLY_FINAL_BRAIN_V2_ENABLED")
-    gate_direct_reply_enabled: bool = Field(default=False, alias="GATE_DIRECT_REPLY_ENABLED")
-    read_tool_early_execution_enabled: bool = Field(default=False, alias="READ_TOOL_EARLY_EXECUTION_ENABLED")
-    deferred_write_execution_enabled: bool = Field(default=False, alias="DEFERRED_WRITE_EXECUTION_ENABLED")
     model_request_retry_attempts: int = 2
     model_request_retry_delay_seconds: float = 0.5
     sop_event_model_retry_attempts: int = Field(default=3, alias="SOP_EVENT_MODEL_RETRY_ATTEMPTS")
@@ -159,9 +163,17 @@ class Settings(BaseSettings):
     store_snapshot_refresh_wechat: str = ""
     platform_filter_words_path: Path = Path("config/platform_filter_words.json")
     sop_reply_packs_path: Path = Field(default=Path("config/sop_reply_packs.json"), alias="SOP_REPLY_PACKS_PATH")
+    sop_reply_packs_overlay_path: Path | None = Field(
+        default=None,
+        alias="SOP_REPLY_PACKS_OVERLAY_PATH",
+    )
     precision_qa_playbook_path: Path = Field(
         default=Path("config/precision_qa_playbook.json"),
         alias="PRECISION_QA_PLAYBOOK_PATH",
+    )
+    v2_model_led_objection_playbook_path: Path = Field(
+        default=Path("config/v2_model_led_objection_playbook.json"),
+        alias="V2_MODEL_LED_OBJECTION_PLAYBOOK_PATH",
     )
     sop_objection_materials_path: Path = Field(
         default=Path("config/sop_objection_materials.json"),

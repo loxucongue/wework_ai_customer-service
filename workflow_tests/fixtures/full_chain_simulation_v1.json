@@ -177,6 +177,14 @@
           "location": "113.330000,23.130000",
           "candidate_count": 1
         },
+        "番禺区": {
+          "formatted_address": "广东省广州市番禺区",
+          "province": "广东省",
+          "city": "广州市",
+          "district": "番禺区",
+          "location": "113.360000,22.940000",
+          "candidate_count": 1
+        },
         "广州惠州": [
           {
             "formatted_address": "广东省广州市",
@@ -297,7 +305,7 @@
       "id": "store_v2_village_confirm",
       "category": "门店V2",
       "critical": true,
-      "semantic_goal": "乌林镇乌林村唯一解析为湖北荆州洪湖时，同轮发送相对合适的合法门店卡。",
+      "semantic_goal": "乌林镇乌林村唯一解析为湖北荆州洪湖时，同轮发送工具返回的1至3家合法候选门店卡；发送后可自然承接一个相邻主线问题。",
       "timeline": [{"kind": "customer_message", "content": "乌林镇乌林村"}],
       "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["242"]}
     },
@@ -326,6 +334,48 @@
       "initial": {"conversation": ["用户: 我在浙江省温州市龙湾区", "小贝: 龙湾区这边我记下了。"]},
       "timeline": [{"kind": "customer_message", "content": "好的"}],
       "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    },
+    {
+      "id": "store_v2_exact_room_number_unknown",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "客户确认具体房间号但权威门店事实没有该信息时，应最小澄清或说明需要核对，不得武断否定或编造。",
+      "initial": {
+        "conversation": [
+          "用户: 厦门湖里区",
+          "小贝: 福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
+          "小贝: 门店位置：厦门百星湖里店"
+        ]
+      },
+      "timeline": [{"kind": "customer_message", "content": "是301吗"}],
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"],
+        "forbidden_phrases": ["不是301", "就是301", "确定是301"]
+      }
+    },
+    {
+      "id": "activity_price_after_store_card",
+      "category": "SOP Gate",
+      "critical": true,
+      "semantic_goal": "门店已承接后首次询价，应自然续聊并发送268元活动介绍与活动宣传图，不绑定预约金或使用客服元话术。",
+      "initial": {
+        "conversation": [
+          "用户: 厦门湖里区",
+          "小贝: 福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
+          "小贝: 门店位置：厦门百星湖里店",
+          "用户: 是301吗",
+          "小贝: 您说的301是房间号吗？公开地址是萤火虫大厦，具体楼层房号我再帮您核一下。"
+        ],
+        "completed_sops": ["s10_new_customer_opening"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "多少钱"}],
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "image"],
+        "forbidden_types": ["payment_collection"],
+        "forbidden_phrases": ["10元预约金", "再付258", "如果方便", "我可以接着", "继续帮您处理"]
+      }
     }
   ],
   "templates": [
@@ -342,7 +392,7 @@
       "id": "effect_with_case",
       "category": "效果案例",
       "critical": true,
-      "semantic_goal": "先回答效果并发送真实案例图，再自然推进检测或活动主线。",
+      "semantic_goal": "先回答效果并发送真实案例图，再自然推进检测或活动主线。客户随后第一次问活动怎么参加时，应完整介绍活动；允许完整采用配置中的活动包，但不得跳过活动内容只发独立预约金卡。",
       "expected": {
         "must_reply": true,
         "required_types": ["text", "image"],
@@ -367,10 +417,38 @@
       "id": "price_transparency",
       "category": "精准问答",
       "critical": true,
-      "semantic_goal": "回答268、10元抵扣和费用透明，再自然接活动成交动作。",
-      "initial": {"conversation": ["小贝: 现在有线上淡斑活动。"]},
-      "timeline": [{"kind": "customer_message", "content": "真的就268吗"}],
-      "followup": "那怎么报名",
+      "semantic_goal": "先准确回答268元活动内容和费用透明，不因首次价格疑问直接发卡；更早活动与效果承接齐全后，客户下一轮明确问报名时再发送一张10元预约金卡。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "payment_collection"],
+        "payment_amount": 10
+      },
+      "initial": {
+        "conversation": [
+          "用户: 我主要担心做了看不出变化",
+          "小贝: 我先给您看过同类斑点的真实效果参考，做前做后会留原相机对比。",
+          "小贝: 现在是周年庆线上淡斑活动，活动价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。"
+        ],
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro"]
+      },
+      "timeline": [{
+        "kind": "customer_message",
+        "content": "真的就268吗",
+        "expected": {
+          "must_reply": true,
+          "required_types": ["text"],
+          "forbidden_types": ["payment_collection"]
+        }
+      }],
+      "followup": {
+        "kind": "customer_message",
+        "content": "那怎么报名",
+        "expected": {
+          "must_reply": true,
+          "required_types": ["text", "payment_collection"],
+          "payment_amount": 10
+        }
+      },
       "variants": ["真的就268吗", "去了不会变2680吧", "有没有隐形消费", "还会不会加套餐"]
     },
     {
@@ -395,7 +473,7 @@
       "id": "health_risk",
       "category": "健康风险",
       "critical": true,
-      "semantic_goal": "先处理当前健康风险，不压预约金、不保证效果。",
+      "semantic_goal": "先处理当前健康风险，不压预约金、不保证效果；客户追问能否先到店检测时，可同意先做门店评估，但风险未解除前不操作，也不继续在线问诊。",
       "expected": {
         "must_reply": true,
         "forbidden_types": ["payment_collection"]
@@ -413,11 +491,16 @@
       "expected": {
         "must_reply": true,
         "required_types": ["store_address"],
-        "required_store_ids": ["241", "242"]
+        "required_store_ids": ["241"]
       },
       "timeline": [{"kind": "customer_message", "content": "湖北省"}],
       "followup": "荆州市荆州区",
-      "variants": ["湖北省", "我在广东", "四川这边有吗", "贵州有店不"]
+      "variants": [
+        {"content": "湖北省", "followup": "荆州市荆州区", "expected": {"required_store_ids": ["241"]}},
+        {"content": "我在广东", "followup": "广州市番禺区", "expected": {"required_store_ids": ["301"]}},
+        {"content": "四川这边有吗", "followup": "成都市双流区", "expected": {"required_store_ids": ["401"]}},
+        {"content": "贵州有店不", "followup": "贵阳市花溪区", "expected": {"required_store_ids": ["501"]}}
+      ]
     },
     {
       "id": "city_many_stores",
@@ -451,7 +534,7 @@
       "id": "county_parent_city",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "县级市能唯一解析时，发送客户可见范围内相对合适的合法门店卡。",
+      "semantic_goal": "县级市能唯一解析时，发送客户可见范围内相对合适的合法门店卡；客户下一轮只是确认同一地点且门店卡已交付时，不重复发卡，可以自然进入斑点、案例或活动主线。",
       "expected": {
         "must_reply": true,
         "required_types": ["store_address"],
@@ -505,9 +588,9 @@
       "followup": "这家可以，活动怎么参加",
       "variants": [
         {"content": "定位卡片：萤火虫大厦", "expected": {"required_types": ["store_address"], "required_store_ids": ["601"]}},
-        {"content": "定位卡片：双流人民广场", "location_title": "双流人民广场", "location_address": "四川省成都市双流区", "expected": {"required_types": ["store_address"], "required_store_ids": ["401"]}},
-        {"content": "定位卡片：洪湖市新堤街道", "location_title": "新堤街道", "location_address": "湖北省荆州市洪湖市", "expected": {"required_types": ["store_address"], "required_store_ids": ["242"]}},
-        {"content": "定位卡片：甲良镇", "location_title": "甲良镇", "location_address": "贵州省荔波县甲良镇", "expected": {"required_types": ["store_address"], "required_store_ids": ["501"]}}
+        {"content": "定位卡片：双流人民广场", "location": "30.570000,103.920000", "location_title": "双流人民广场", "location_address": "四川省成都市双流区", "expected": {"required_types": ["store_address"], "required_store_ids": ["401"]}},
+        {"content": "定位卡片：洪湖市新堤街道", "location": "29.820000,113.470000", "location_title": "新堤街道", "location_address": "湖北省荆州市洪湖市", "expected": {"required_types": ["store_address"], "required_store_ids": ["242"]}},
+        {"content": "定位卡片：甲良镇", "location": "25.410000,107.880000", "location_title": "甲良镇", "location_address": "贵州省荔波县甲良镇", "expected": {"required_types": ["store_address"], "required_store_ids": ["501"]}}
       ]
     },
     {
@@ -529,7 +612,7 @@
       "id": "activity_intro_gate",
       "category": "SOP Gate",
       "critical": true,
-      "semantic_goal": "客户问活动且活动包未完成时触发活动介绍SOP并自然过渡。",
+      "semantic_goal": "客户首次问活动或价格时只介绍268元活动、项目范围和价值，不在同轮发送预约金卡；活动已讲清后，客户下一轮明确问报名时再自然发送一张10元预约金卡。",
       "expected": {
         "must_reply": true,
         "required_types": ["text", "payment_collection"],
@@ -545,8 +628,27 @@
         ],
         "completed_sops": ["s10_new_customer_opening", "s10_need_and_case"]
       },
-      "timeline": [{"kind": "customer_message", "content": "你们现在有什么活动"}],
-      "followup": "那怎么报名",
+      "timeline": [
+        {
+          "kind": "customer_message",
+          "content": "你们现在有什么活动",
+          "expected": {
+            "must_reply": true,
+            "required_types": ["text", "image"],
+            "forbidden_types": ["payment_collection"],
+            "forbidden_phrases": ["发我姓名", "姓名发我", "把姓名", "回复姓名", "姓名和手机号", "姓名+手机号", "发我手机号", "手机号发我", "把手机号", "回复手机号", "方便到店的城市", "方便到店的门店", "10元预约金", "十元预约金", "再付258", "补258", "到店抵扣", "不满意可退"]
+          }
+        }
+      ],
+      "followup": {
+        "kind": "customer_message",
+        "content": "那怎么报名",
+        "expected": {
+          "must_reply": true,
+          "required_types": ["text", "payment_collection"],
+          "payment_amount": 10
+        }
+      },
       "variants": ["你们现在有什么活动", "这个优惠怎么参加", "现在价格是多少", "活动名额怎么登记"]
     },
     {
@@ -562,19 +664,30 @@
       },
       "initial": {
         "conversation": [
-          "小贝: 当前活动总价268，每位先付10元锁活动名额，到店抵扣，做再付258，未做或不满意可退。"
+          "用户: 做一次能看出变化吗",
+          "小贝: 我给您看过同类斑点的真实效果参考，做前做后会留原相机对比。",
+          "小贝: 当前周年庆淡斑活动价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。"
         ],
-        "completed_sops": ["s10_activity_intro"]
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro"]
       },
       "timeline": [{"kind": "customer_message", "content": "怎么付费"}],
-      "followup": "我付好了",
+      "followup": {
+        "kind": "customer_message",
+        "content": "我付好了",
+        "expected": {
+          "must_reply": true,
+          "required_types": ["text"],
+          "forbidden_types": ["payment_collection"],
+          "forbidden_phrases": ["已核款", "支付已确认"]
+        }
+      },
       "variants": ["怎么付费", "那我参加", "把收款卡发我", "可以，给我预约"]
     },
     {
       "id": "manual_transfer",
       "category": "预约金",
       "critical": true,
-      "semantic_goal": "客户明确选择转账时说明转好后告知并进入登记，截图可选，不附预约金卡。",
+      "semantic_goal": "客户明确选择转账时说明转好后告知或发截图便于核对，不附预约金卡；后续普通文字声称已经转好仍不是权威已付，必须要求截图或核对付款记录，不能宣称到账或直接进入已付登记。",
       "expected": {
         "must_reply": true,
         "forbidden_types": ["payment_collection"]
@@ -591,7 +704,7 @@
       "id": "paid_registration",
       "category": "已付登记",
       "critical": true,
-      "semantic_goal": "已付后不再发卡，收姓名电话并登记门店及到店意向。",
+      "semantic_goal": "权威已付后不再发卡，只收缺失登记信息；客户给出姓名电话后不得重复索取，应继续确认尚缺的门店、到店日期或上午下午意向，时间未定时不细追具体时段。",
       "expected": {
         "must_reply": true,
         "forbidden_types": ["payment_collection"]
@@ -616,9 +729,16 @@
       "id": "soft_refusal",
       "category": "客户异议",
       "critical": true,
-      "semantic_goal": "识别为暂缓而非永久放弃，用一个自然理由继续推进活动资格。",
+      "semantic_goal": "首次暂缓时自然承接；客户随后明确说可以先留活动，视为新的成交进展，历史报价已完成且无硬边界时发送最多一张预约金卡。",
+      "expected": {
+        "must_reply": true,
+        "required_types": [
+          "payment_collection"
+        ],
+        "payment_amount": 10
+      },
       "initial": {
-        "conversation": ["小贝: 当前活动总价268，每位10元可以先留活动名额。"],
+        "conversation": ["小贝: 当前周年庆淡斑活动价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。"],
         "completed_sops": ["s10_activity_intro"]
       },
       "timeline": [{"kind": "customer_message", "content": "我改天再说"}],
@@ -641,6 +761,139 @@
       "timeline": [{"kind": "customer_message", "content": "不要了"}],
       "followup": "先不用了，谢谢",
       "variants": ["不要了", "别再发了", "我不做了", "不用联系我"]
+    },
+    {
+      "id": "sales_motion_ambiguous_short_ack",
+      "category": "销售节奏",
+      "critical": true,
+      "semantic_goal": "上一轮只介绍了活动、没有留下唯一付款命题时，客户说行不能被猜成同意付款；应选择一个低摩擦且唯一的下一步，不发送预约金卡。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text"],
+        "forbidden_types": ["payment_collection"],
+        "forbidden_phrases": ["效果、费用或者到店流程", "有问题随时问我", "需要的时候再联系", "往前安排一步"]
+      },
+      "initial": {
+        "conversation": [
+          "小贝: 这次周年庆淡斑活动价是268元，包含淡斑、皮肤检测、基础清洁和肌肤补水，您可以先了解一下。"
+        ],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "行"}],
+      "variants": [{}]
+    },
+    {
+      "id": "sales_motion_unique_close_ack",
+      "category": "销售节奏",
+      "critical": true,
+      "semantic_goal": "效果和活动已由客户参与承接，上一轮留下唯一的预约金确认命题后，客户明确回复可以，应减少解释并发送一张10元预约金卡。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "payment_collection"],
+        "payment_amount": 10
+      },
+      "initial": {
+        "conversation": [
+          "用户: 我这种老年斑能做吗",
+          "小贝: 老年斑属于这次淡斑改善范围，我也给您看过同类效果参考。",
+          "小贝: 这次周年庆淡斑活动价是268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。",
+          "小贝: 您要是确定参加，我现在把10元预约金入口发您，把这次活动名额留住，可以吗？"
+        ],
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "可以"}],
+      "variants": [{}]
+    },
+    {
+      "id": "sales_motion_soft_hesitation",
+      "category": "销售节奏",
+      "critical": true,
+      "semantic_goal": "客户首次说算了再考虑并不自动等于明确终止；应先承接情绪，再低压力确认一次真正卡点或补一个最相关证据，不发预约金卡，也不退化成客服菜单。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text"],
+        "forbidden_types": ["payment_collection"],
+        "forbidden_phrases": ["效果、费用或者到店流程", "有问题随时问我", "需要的时候再联系", "后面如果", "以后想了解", "再决定了找我"]
+      },
+      "initial": {
+        "conversation": [
+          "用户: 怎么还要预约金啊，一次能好吗",
+          "小贝: 预约金是用来锁这次活动名额的，不是额外收费；每位10元，到店抵扣，做的话再付258元，未做或不满意可以退。一次能改善到什么程度要结合斑点情况看，到店会先检测，也会做前后原相机对比。",
+          "用户: 行",
+          "小贝: 您要是想把这次活动名额留一下，我现在把10元预约金入口发您。"
+        ],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "算了吧，我再考虑一下"}],
+      "variants": [{}]
+    },
+    {
+      "id": "sales_motion_explicit_stop",
+      "category": "销售节奏",
+      "critical": true,
+      "semantic_goal": "客户明确要求停止联系时必须尊重并结束营销，不发预约金卡，不借软拒绝挽回原则继续追问。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text"],
+        "forbidden_types": ["payment_collection"],
+        "forbidden_phrases": ["主要担心", "卡在哪里", "先给您留", "预约金"]
+      },
+      "initial": {
+        "conversation": ["小贝: 这次周年庆淡斑活动价是268元。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "不用联系我了，别再发了"}],
+      "variants": [{}]
+    },
+    {
+      "id": "sales_motion_busy_pause",
+      "category": "销售节奏",
+      "critical": true,
+      "semantic_goal": "客户明确正在工作并要求晚点沟通时，简短承接并暂停，不追问顾虑、不推进预约金，也不要求客户当场做选择。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text"],
+        "forbidden_types": ["payment_collection"],
+        "forbidden_phrases": ["主要担心", "最拿不准", "先留名额", "现在方便"]
+      },
+      "initial": {
+        "conversation": ["小贝: 这次周年庆淡斑活动价是268元。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "我现在在上班，晚点再说"}],
+      "variants": [{}]
+    },
+    {
+      "id": "sales_motion_paid_time_uncertain",
+      "category": "销售节奏",
+      "critical": true,
+      "semantic_goal": "权威已付客户已经反复说明到店时间未定时，承接并暂停具体时间追问；不再发卡，不问2点、3点、4点或几点到店。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text"],
+        "forbidden_types": ["payment_collection"],
+        "forbidden_phrases": ["2点", "3点", "4点", "几点", "上午还是下午"]
+      },
+      "initial": {
+        "orders": [{
+          "id": "sim_paid_time_unknown",
+          "order_id": "sim_paid_time_unknown",
+          "store_id": "241",
+          "prepay_required": 10,
+          "prepay_paid": 10,
+          "status": "pending",
+          "created_at": "2026-08-11T10:00:00+08:00"
+        }],
+        "conversation": [
+          "小贝: 预约金已经收到，荆州万达二店这边给您登记。",
+          "用户: 时间还不知道",
+          "小贝: 好的，时间按您方便。",
+          "用户: 现在真定不了",
+          "小贝: 没关系，确定后告诉我就行。"
+        ]
+      },
+      "timeline": [{"kind": "customer_message", "content": "还没定呢"}],
+      "variants": [{}]
     },
     {
       "id": "sop_silence_progression",
@@ -671,8 +924,17 @@
       "category": "SOP Event",
       "critical": true,
       "semantic_goal": "历史已完整介绍活动时不重复活动介绍包，应进入预约金阶段；客户随后明确问名额怎么留时，可以简短说明并重新发送最多一张预约金卡。",
+      "expected": {
+        "must_reply": true,
+        "required_types": [
+          "payment_collection"
+        ],
+        "payment_amount": 10
+      },
       "initial": {
         "conversation": [
+          {"direction": "customer", "content": "我主要想看效果，做一次能改善吗？", "created_at": "2026-07-24T01:55:00+00:00"},
+          {"direction": "staff", "content": "具体改善程度要看斑点类型和深浅，我已经给您发过真实案例参考。", "created_at": "2026-07-24T01:56:00+00:00"},
           {"direction": "staff", "content": "当前活动总价268，每位先付10元，到店抵扣，做再付258，未做或不满意可退。", "created_at": "2026-07-24T02:00:00+00:00"}
         ],
         "completed_sops": ["s10_new_customer_opening", "s10_need_and_case", "s10_activity_intro"]
@@ -709,7 +971,7 @@
     {
       "id": "platform_task_passthrough",
       "category": "SOP Event",
-      "semantic_goal": "平台任务直接转发指定内容，不经过模型改选。",
+      "semantic_goal": "平台任务直接转发指定内容，不经过模型改选。客户随后只确认今天或明天可到、但尚无已确认门店时，承接时间后只补城市/区域或门店，不得声称可以直接到店，也不应改问斑点情况。",
       "expected": {
         "must_reply": true,
         "required_types": ["text", "image"]
@@ -736,7 +998,16 @@
       "id": "unknown_transfer_message",
       "category": "消息归一",
       "critical": true,
-      "semantic_goal": "未知消息类型按客户转账事实承接，不暴露未知类型文本，并进入支付确认与登记。",
+      "semantic_goal": "平台未知消息类型归一为权威预约金支付成功，不暴露未知类型文本，不再索要截图或发卡，直接收缺失登记信息；姓名电话给出后询问城市/区域以匹配门店就是正确的剩余登记动作，也可以在门店已定后询问到店意向，不得把询问门店判成流程回退。",
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": [
+          "payment_collection"
+        ],
+        "forbidden_phrases": [
+          "未知消息类型"
+        ]
+      },
       "initial": {
         "conversation": ["小贝: 当前活动总价268，每位先付10元预约金。"],
         "completed_sops": ["s10_activity_intro"]
@@ -755,6 +1026,9 @@
       "category": "模型恢复",
       "critical": true,
       "semantic_goal": "供应商超时、限流、502或畸形JSON后，现有重试和fallback仍需给客户非空回复。",
+      "expected": {
+        "must_reply": true
+      },
       "timeline": [{"kind": "customer_message", "content": "你好，我想了解一下"}],
       "followup": "那活动现在怎么参加",
       "variants": [

@@ -19,6 +19,31 @@ class _FailingCozeClient:
 
 
 class ActionToolErrorIsolationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_readonly_mode_never_falls_back_to_legacy_required_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node = create_execute_actions_node(
+                coze_client=_FailingCozeClient(),
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                store_service=None,
+                appointment_query_from_state=lambda _content, _store_lookup, _state: {},
+                execution_mode="readonly",
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-parallel-empty-tool-plan",
+                "trace": [],
+                "errors": [],
+                "normalized_content": "好的",
+                "planner_tool_calls": [],
+                "required_tools": [
+                    {"name": "customer_store_lookup", "purpose": "legacy", "query": "旧门店"}
+                ],
+            }
+
+            output = await node(state)
+
+        self.assertEqual(output["tool_results"], {})
+        self.assertEqual(output["trace"][0]["tool_calls"], [])
+
     async def test_customer_store_lookup_error_is_recorded_without_breaking_graph(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             node = create_execute_actions_node(

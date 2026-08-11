@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,51 @@ def reply_business_rules_for_model(*, stage: str = "", sub_rule_id: str = "") ->
     }
 
 
+def parallel_reply_business_rules_for_model() -> dict[str, Any]:
+    """Return principles and facts, never the legacy scene/stage playbook."""
+
+    rules = load_business_rules()
+    offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
+    transaction = rules.get("transaction_policy") if isinstance(rules.get("transaction_policy"), dict) else {}
+    return {
+        "version": rules.get("version"),
+        "MUST FOLLOW": {
+            "hard_forbidden": rules.get("forbidden") or [],
+            "payment_hard_blocks": transaction.get("payment_hard_blocks") or [],
+            "validation_owner": "code validates only facts, structure, permissions, arithmetic, idempotency and explicit model assessments",
+        },
+        "AUTHORITATIVE FACTS": {
+            "identity": _selected_dict_fields(rules.get("identity"), ("public_role", "style", "goal")),
+            "brand_trust": _selected_dict_fields(
+                rules.get("brand_trust_policy"),
+                ("allowed_points", "forbidden_points"),
+            ),
+            "offer": _offer_facts(offer),
+            "health_risk_policy": rules.get("health_risk_policy") or {},
+            "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
+            "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
+            "transaction_policy": transaction,
+        },
+        "SALES PRINCIPLES": {
+            "source": "shared_context.sales_guidance.principles",
+            "scope": "V2 ordinary reply only",
+            "runtime_contract": "high-level distilled reasoning only; no raw source replies or scene matching",
+        },
+        "CONTENT ASSET POLICY": {
+            "gate_candidates_are_optional_evidence": True,
+            "adaptable_text_may_be_rewritten": True,
+            "structured_media_and_facts_must_not_be_invented_or_mutated": True,
+            "precision_examples_are_offline_only": True,
+        },
+        "TOOL FACT BOUNDARIES": _tool_policy(rules).get("boundaries") or {},
+    }
+
+
+def _model_led_sales_principles(rules: dict[str, Any]) -> dict[str, Any]:
+    configured = rules.get("model_led_sales_principles")
+    return deepcopy(configured) if isinstance(configured, dict) else {}
+
+
 def outreach_business_facts_for_model() -> dict[str, Any]:
     """Return the authoritative facts needed by personalized outreach."""
     rules = load_business_rules()
@@ -153,15 +199,15 @@ def _rule_taxonomy(rules: dict[str, Any]) -> dict[str, Any]:
         "levels": {
             "hard_law": "Absolute safety, factual, structural, and compliance boundaries. Code may hard-check these.",
             "business_fact": "Authoritative business facts. The model must not contradict them, but decides when they matter.",
-            "strong_default": "Default sales strategy. Follow in normal cases, but adapt or skip when the current customer context conflicts.",
-            "playbook": "Expression guidance and examples. Use for tone and phrasing only.",
+            "sales_principle": "General reasoning principle owned by the model and evaluated semantically.",
+            "content_asset": "Approved facts and media that Gate may nominate and Reply may adapt or ignore.",
             "deprecated": "Superseded historical rule kept only for migration audit and never rendered into prompts.",
         },
         "validation_modes": {
             "hard_law": "hard_check",
             "business_fact": "fact_consistency",
-            "strong_default": "soft_warning_or_semantic_review",
-            "playbook": "semantic_review",
+            "sales_principle": "semantic_review",
+            "content_asset": "asset_integrity",
             "deprecated": "audit_only",
         },
     }
@@ -179,15 +225,15 @@ def _rule_layers_for_model(rules: dict[str, Any], *, current_rules: list[dict[st
         for item in current_rules
         if isinstance(item, dict) and str(item.get("rule_level") or "") == "business_fact"
     ]
-    default_rules = [
+    principle_rules = [
         item
         for item in current_rules
-        if isinstance(item, dict) and str(item.get("rule_level") or "") == "strong_default"
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "sales_principle"
     ]
-    playbook_rules = [
+    content_asset_rules = [
         item
         for item in current_rules
-        if isinstance(item, dict) and str(item.get("rule_level") or "") == "playbook"
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "content_asset"
     ]
     return {
         "MUST FOLLOW": {
@@ -202,17 +248,14 @@ def _rule_layers_for_model(rules: dict[str, Any], *, current_rules: list[dict[st
             "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
             "transaction_policy": rules.get("transaction_policy") or {},
         },
-        "DEFAULT STRATEGY": {
-            "description": (
-                "Strong defaults for sales rhythm. Follow when the customer context allows; pause or adjust for trust challenge, "
-                "complaint/refund, health risk, explicit refusal, repeated time uncertainty, or active busy/working context."
-            ),
-            "strong_default_rule_ids": [item.get("id") for item in default_rules if item.get("id")],
-            "conversion_psychology": _conversion_psychology(rules),
+        "SALES PRINCIPLES": {
+            "description": "Model-owned reasoning guidance. These rules never become Python hard failures.",
+            "sales_principle_rule_ids": [item.get("id") for item in principle_rules if item.get("id")],
+            "model_led_sales_principles": _model_led_sales_principles(rules),
         },
-        "STYLE PLAYBOOK": {
-            "description": "Tone and expression references only. They must not override facts or current customer context.",
-            "playbook_rule_ids": [item.get("id") for item in playbook_rules if item.get("id")],
+        "CONTENT ASSETS": {
+            "description": "Gate-nominated facts and media only; Reply decides whether and how to use them.",
+            "content_asset_rule_ids": [item.get("id") for item in content_asset_rules if item.get("id")],
         },
     }
 
@@ -227,6 +270,7 @@ def _offer_facts(offer: dict[str, Any]) -> dict[str, Any]:
         "tail_amount": offer.get("tail_amount"),
         "refund_rule": offer.get("refund_rule"),
         "arrival_time_rule": offer.get("arrival_time_rule"),
+        "reservation_completion_rule": offer.get("reservation_completion_rule"),
         "registration_skin_test": offer.get("registration_skin_test"),
         "body_scope": offer.get("body_scope"),
         "includes": offer.get("includes") or [],
@@ -252,45 +296,15 @@ def _conversion_psychology(rules: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _rule_metadata(rule_id: str, tools: list[str]) -> dict[str, str]:
-    rule_id = str(rule_id or "").strip()
-    tool_set = {str(tool or "").strip() for tool in tools}
-    if rule_id in {"S4_COMPLAINT_REFUND", "S4_HEALTH_RISK", "S3_APPOINTMENT_TIME"}:
-        level = "hard_law"
-        owner = "code_and_model"
-        validation = "hard_check"
-    elif tool_set or rule_id in {
-        "S1_BRAND_TRUST",
-        "S1_PROJECT_DIRECTION",
-        "S2_STORE_LOCATION",
-        "S2_CITY_ONLY",
-        "S2_LOCATION_DETAIL",
-        "S2_ADDRESS_PARKING_HOURS",
-        "S2_PRE_VISIT_TRANSPORT_POLICY",
-        "S3_PRICE",
-        "S3_PAYMENT_COLLECTION",
-    }:
-        level = "business_fact"
-        owner = "model_with_code_fact_checks"
-        validation = "fact_consistency"
-    elif rule_id in {
-        "S1_GREETING",
-        "S1_NEED_AND_CASE",
-        "S4_HESITATION",
-        "S4_SOFT_REFUSAL",
-        "S4_MAINLINE_RECOVERY",
-    }:
-        level = "strong_default"
-        owner = "model"
-        validation = "soft_warning_or_semantic_review"
-    else:
-        level = "strong_default"
-        owner = "model"
-        validation = "soft_warning_or_semantic_review"
+def _rule_metadata(rule: dict[str, Any]) -> dict[str, Any]:
+    """Read explicit ownership metadata; never infer sales semantics in Python."""
+
     return {
-        "rule_level": level,
-        "owner": owner,
-        "validation_mode": validation,
+        "rule_level": str(rule.get("rule_level") or "deprecated"),
+        "owner": str(rule.get("owner") or "none"),
+        "validation_mode": str(rule.get("validation_mode") or "audit_only"),
+        "source": str(rule.get("source") or ""),
+        "regression_ids": [str(item) for item in rule.get("regression_ids") or [] if str(item).strip()],
     }
 
 
@@ -305,7 +319,7 @@ def _scene_catalog(rules: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(rule, dict):
                 continue
             tools = [str(item) for item in rule.get("tools") or [] if str(item or "").strip()]
-            metadata = _rule_metadata(str(rule.get("id") or ""), tools)
+            metadata = _rule_metadata(rule)
             output.append(
                 {
                     "stage": stage.get("id"),
@@ -427,5 +441,5 @@ def _stage_rule_for_model(rule: dict[str, Any], *, transaction_policy: dict[str,
             tools,
             transaction_policy=transaction_policy,
         ),
-        **_rule_metadata(rule_id, tools),
+        **_rule_metadata(rule),
     }

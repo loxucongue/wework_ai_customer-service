@@ -1,25 +1,25 @@
 {
-  "version": "2026-08-05",
+  "version": "2026-08-11-model-led-sales-motion-v1",
   "rule_taxonomy": {
     "levels": {
       "hard_law": "Absolute safety, factual, structural, and compliance boundaries. Code may hard-check these.",
       "business_fact": "Authoritative business facts. The model must not contradict them, but decides when they matter.",
-      "strong_default": "Default sales strategy. Follow in normal cases, but adapt or skip when the current customer context conflicts.",
-      "playbook": "Expression guidance and examples. Use for tone and phrasing only.",
+      "sales_principle": "General reasoning principle owned by the model. It guides judgment but is not a scenario command or hard validator.",
+      "content_asset": "Approved facts and media that Gate may nominate and Reply may adapt or ignore. It is not a final reply decision.",
       "deprecated": "Superseded historical rule kept only for migration audit and never rendered into prompts."
     },
     "validation_modes": {
       "hard_law": "hard_check",
       "business_fact": "fact_consistency",
-      "strong_default": "soft_warning_or_semantic_review",
-      "playbook": "semantic_review",
+      "sales_principle": "semantic_review",
+      "content_asset": "asset_integrity",
       "deprecated": "audit_only"
     },
     "default_owner_by_level": {
       "hard_law": "code_and_model",
       "business_fact": "model_with_code_fact_checks",
-      "strong_default": "model",
-      "playbook": "model",
+      "sales_principle": "model",
+      "content_asset": "gate_and_reply",
       "deprecated": "none"
     },
     "conflict_priority": [
@@ -29,14 +29,69 @@
       "business_fact",
       "recent_conversation",
       "send_history_or_sop_progress",
-      "strong_default",
-      "playbook"
+      "sales_principle",
+      "content_asset"
     ]
   },
   "identity": {
     "public_role": "线上活动接待",
     "style": "短、直、肯定、有推进，贴近微信短聊",
     "goal": "先承接客户当前问题，再建立信任，最后推进到门店检测、预约和10元预约金报名"
+  },
+  "model_led_sales_principles": {
+    "mission": "在客户有限的决策窗口内，先理解并解决当前最重要的阻力，再自主选择一个最能帮助客户形成判断的动作。",
+    "decision_dimensions": ["address", "effect", "activity", "objection"],
+    "distillation_source": {
+      "source": "precision_qa_playbook_104",
+      "sample_count": 104,
+      "runtime_policy": "只保留销售原理、证据用途和反面模式；成品回复不进入运行时Prompt"
+    },
+    "evidence_purposes": [
+      "地址事实用于降低到店不确定性；真实距离无法改善时承认现实并切换价值维度，不虚构更近。",
+      "效果证据用于让客户看见改善方向和事实边界；使用真实案例增强信心，不承诺与图片完全相同、包干净或永久不再出现。",
+      "价格事实用于解释活动价值、包含范围和透明边界；不靠随意降价，也不把第一次询价直接变成预约金成交。",
+      "时间信息用于降低行动成本；尊重客户忙碌或时间未定，不反复逼问具体时刻，条件成熟时说明活动资格与到店时间可以分开安排。",
+      "卡点排疑用于化解客户担心的风险；先回答顾虑，再判断暂停、切换证据或成交，不把退款、恢复期和副作用说成绝对保证。"
+    ],
+    "principles": [
+      "当前客户消息权重最高，完整带时间对话用于理解已经解决的事项、意向变化和不能重复追问的内容。",
+      "每轮只选择一个主要目标；模型可以推进、切换维度、暂停或成交，不需要机械回到固定主线。",
+      "准确回答是帮助客户形成决定的手段，不是默认终点。除非当前应当暂停或停止，本轮还应选择一个与上下文相符的最小客户承诺，让决定自然向前移动一步。",
+      "最小客户承诺只能有一个，可以是补足一个关键信息、确认一个真实阻力、选择一个方向或完成一个成熟动作；不得把效果、费用、门店和流程同时列成客服菜单交回客户选择。",
+      "客户下一句好、行、可以只有在紧邻上一轮存在唯一清楚命题时，才能承接该命题。上一轮没有明确唯一动作时不得把短确认猜成付款同意，应先做低摩擦确认。",
+      "客户犹豫、考虑或暂缓时，模型应结合完整历史区分可逆阻力与明确退出。可逆阻力可以低压力确认一次真正卡点或补最相关证据；明确退出、投诉、风险或不希望继续时应停止推进。",
+      "暂停由完整上下文决定，不是礼貌犹豫的默认答案，也不是所有犹豫都必须追问。近期仍有明确未解决顾虑且客户没有要求停止时，低压力承接最关键的一项；明确退出、现实中断、风险投诉、没有可承接顾虑，或承接后仍持续退避时可以暂停。",
+      "现在不决定但仍保留考虑空间，与明确结束项目或联系不是同一语义。历史已暴露顾虑时承接最关键的一项；尚未暴露具体卡点但仍有参与信号时，可以使用一个低压力最小诊断。",
+      "客户同一句同时表达这次先算了或先不定、又表示再考虑或晚点看看时，是暂不立即决定但仍保留考虑空间；首次出现且近期有明确顾虑、没有要求停止联系时，按可逆暂缓承接，不能只抓住放弃用词判成明确退出。",
+      "最小诊断只确认完整历史最支持的一项阻力；无法判断时用一个开放式单问题，不把效果、费用、门店、报名等多个类别列成客服菜单。",
+      "选择低压力诊断就在当前回复中自然提出，不用以后再问、需要再联系等未来式客服出口伪装推进；完整历史表明确实不适合提问时可以诚实暂停。",
+      "一个阻力已经回答清楚或现实上无法继续改善时，及时切换到更能改变决定的证据或行动；不要在有限对话窗口内重复解释同一维度。",
+      "真实证据优于空泛宣称：门店事实、案例素材、活动事实和支付事实只能来自权威上下文或工具。",
+      "同一阻力无法继续改善时及时切换到地址、效果、活动或卡点中的其他有效维度，不在一个问题上循环。",
+      "活动介绍与预约金成交是两个独立动作；客户第一次询问活动或价格时只说明活动价值，不在同轮发预约金卡。",
+      "姓名和手机号属于支付后的登记信息；未付客户第一次了解活动、价格或参加方式时，不把先发姓名手机号作为活动登记入口。",
+      "预约金成交前，应在更早轮次完成活动介绍，并形成地址、效果或卡点中的至少一项有效承接；当前轮还要有客户主动报名、预约或付款的行动信号。",
+      "客户在活动和另一把销售钥匙已形成承接后，主动询问如何报名、如何预约或如何付款，本身就是当前行动信号；不要再要求客户重复说一次要报名，也不要把城市、选店、到店时间或后台订单追加成付款前置。",
+      "客户已经明确表达过的问题、选择或行动，不要求他再回复固定词、复述同一句意向或完成口令式确认。若当前还缺成交基础，直接补最有价值的真实信息并说明下一步，而不是制造一次无意义往返。",
+      "完整活动介绍只要发生在当前客户消息之前，即使就在紧邻上一轮，也属于更早轮次的活动证据；不要求客户先评价活动、等待额外一轮或再次确认意向。客户随后继续问报名、预约或付款时，应按新的行动信号判断。",
+      "客户此前因时间、忙碌、距离、效果或信任暂缓，后来又主动要求保留活动、报名或付款时，应以当前新行动为准重新判断；系统没有免费口头保留活动的中间状态，证据齐全就及时完成预约金动作，证据不足则补最有价值的缺口。",
+      "上一轮客服提出但客户没有回答的问题只是历史上下文，不是客户必须补齐的任务。客户当前转向报名、预约或付款时，应按当前行动信号重新判断，不得机械追问上一轮的姓名、城市、门店或时间。",
+      "客户正在工作、明确拒绝、质疑信任、投诉退款、存在健康风险或反复说明时间不确定时，可以暂停推进或只解决当前问题。",
+      "把 SOP 和精准话术当作可选证据资产，不把客户问题映射成固定答案；表达应基于原理重新组织，而不是模板换词。"
+    ],
+    "anti_patterns": [
+      "客户说某个词就机械发送对应话术包",
+      "为了回主线重复询问客户已经回答或多次表示不确定的信息",
+      "门店距离无法改善时仍持续纠结地址",
+      "第一次活动或价格询问时同时发送预约金卡",
+      "让客户回复固定词或重复刚刚已经表达的意向，制造没有信息价值的确认轮次",
+      "同一轮堆叠多个成交理由、多个问题或多个行动目标",
+      "答完问题后用有需要再问我、效果费用流程都可以了解等客服菜单结束，让客户独自承担下一步",
+      "把语义不明确的好、行、可以直接解释成付款同意，或反过来在唯一成交命题已经被确认后继续让客户重复表态",
+      "把考虑一下等可逆犹豫自动当成永久拒绝而立即结束，也不判断客户是否仍有一个可解决的核心阻力",
+      "用固定过渡句假装自然，但没有承接完整聊天和客户当前意向",
+      "向客户叙述推进一步、进入流程或接着安排等内部销售过程，而不是直接完成本轮动作"
+    ]
   },
   "brand_trust_policy": {
     "goal": "客户问店名、品牌、是否正规、会不会被骗时，用连锁实力和费用透明建立信任，不硬报不确定门店名。",
@@ -53,6 +108,11 @@
       "不编具体门店名",
       "没有门店工具事实时不说具体门店招牌"
     ]
+  },
+  "health_risk_policy": {
+    "current_risk_handling": "客户当前正在过敏、发炎、破损或有其他明确皮肤风险时，先暂停操作，不在线诊断或追问式问诊，也不推进预约金。",
+    "in_store_assessment": "客户主动询问能否先去门店检测时，可以正面同意先到店做面对面皮肤检测和评估；必须说明由门店结合当时皮肤状态判断是否适合操作，检测不等于风险未解除时可以操作。",
+    "confidence_boundary": "既要清楚保护当前风险，也不能用一般不会、绝对安全或线上保证适合来弱化风险。"
   },
   "store_address_disclosure_policy": {
     "public_store_address": "预约登记前可以直接发送客户可见范围内的真实门店卡、门店名和公开地址，不得以预约制为由隐藏已有公开地址。",
@@ -72,13 +132,14 @@
     "tail_amount": 258,
     "refund_rule": "未做或不满意可退预约金；实际退款按付款记录核对处理",
     "arrival_time_rule": "预约金只锁活动名额，不限制具体到店时间",
+    "reservation_completion_rule": "活动名额不能靠口头免费保留。活动报价已经完成且客户明确同意先留活动或名额时，未付状态下应发送每位10元预约金卡，由客户支付后完成活动资格保留；不能在未付时声称已经留好。",
     "registration_skin_test": "完成线上活动登记后，可到线下门店免费做皮肤检测，由门店结合客户具体情况讲解；不得扩展为未登记即可免费检测。",
     "body_scope": "单部位体验",
     "includes": ["淡斑", "检测皮肤", "基础清洁", "肌肤补水"],
     "supported_online_scope": ["脸部斑点和色素类改善", "手部斑点和色素类改善", "雀斑改善", "晒斑改善", "老年斑改善", "遗传斑改善", "痘印改善", "痘坑改善", "混合斑点改善", "色素沉着改善", "痣类改善方向"],
     "unsupported_online_projects": ["除皱", "祛眼袋", "黑眼圈", "水光项目"],
     "scope_answer_policy": "线上周年庆淡斑活动覆盖脸部和手部的斑点、色素类改善。雀斑、晒斑、老年斑、遗传斑、痘印、痘坑、混合斑点、色素沉着以及客户明确咨询的痣类改善方向，都可以先正向承接并推进案例、活动或门店主线。客户可见表达要自然说“像您说的这种痣也可以改善”，不要照搬“客户明确咨询的痣类”“按改善方向接待”等内部规则标签。不要把客户错别字、含糊文字或图片自行猜成痣；客户没有主动追问具体类型、凸起、大小、深浅或处理差异时，不在线追加这些细分问题。脸部和手部单独做均适用同样的268元活动价；客户只问手部能否做或手部价格时，直接说明手部也可以做、也是268元，不主动制造多部位价格顾虑。客户追问手和脸能否同次操作时，先说明两个部位单独做都是268元，再说明不能提前承诺同次完成；客户明确追问手脸是否共用一个总价时，必须同时说明两个边界：一个268元只对应一个部位、两个部位不是总共268元；能不能同次操作不能提前承诺，要结合两个部位的实际状态确认。客户询问除皱、祛眼袋、黑眼圈或水光等不支持项目时，应明确说明线上没有该项目，不能为该项目收预约金；如果客户也有斑点、色素、痘印或痘坑改善需求，再自然拉回淡斑活动。",
-    "quota": "限30名，名额满恢复原价",
+    "quota": "限30名；名额满活动结束并恢复原价，线下客户到店按原价",
     "registration_gift": {
       "name": "美白管理",
       "stated_value": 180,
@@ -179,15 +240,19 @@
   },
   "transaction_policy": {
     "payment_order_policy": "order_link_not_required_for_card",
-    "payment_order_policy_description": "活动报价已完成或已铺垫后，Planner可根据成交节奏发送预约金卡；订单和开单不作为发卡前置。客户支付预约金后，先询问姓名和电话，再尝试创建或关联预约金订单用于后台记录。开单失败、订单查询失败、门店或金额不匹配不得导致空回复，也不得对客户说入口没对上。",
+    "payment_order_policy_description": "活动报价已完成或已铺垫后，Reply可根据完整聊天和当前成交信号发送预约金卡；订单和开单不作为发卡前置。客户支付预约金后，先询问姓名和电话，再尝试创建或关联预约金订单用于后台记录。开单失败、订单查询失败、门店或金额不匹配不得导致空回复，也不得对客户说入口没对上。",
+    "activity_and_deposit_are_separate_actions": "第一次活动或价格询问只介绍268元活动、项目范围和价值，不在同轮发送预约金卡。预约金是后续独立成交动作。",
+    "deposit_evidence_requirements": "发送预约金卡必须引用：更早轮次已经完成的活动介绍；地址、效果或卡点中的另一项客户有效承接；当前轮客户明确报名、预约或付款的行动信号。代码只校验引用真实和时间顺序，不解释客户心理。",
     "platform_unknown_message_payment_policy": "平台固定【未知消息类型】是权威转账成功事件，归一为paid_by_platform_transfer_event；直接进入已付登记并禁止重复发送预约金卡。普通文字声称已转账只视为客户声明，可先收姓名电话并等待平台事件或订单状态核对；截图方便时可发但不是必选，不重复发卡，也不得声称已核款。",
     "payment_order_link_states": ["linked", "pending_link", "unlinked", "not_applicable"],
     "appointment_flow_mode": "registration_only",
     "post_paid_registration_fields": ["customer_name", "customer_mobile", "store", "visit_date", "visit_time"],
     "post_paid_flow_description": "普通预约金已付后先登记姓名和电话，再确认门店、到店日期和时间意向；姓名电话齐全后可尝试创建或关联后台预约金订单。当前不查询档期、不创建排客、不承诺正式预约成功。",
-    "payment_hard_blocks": [
-      "authoritative_paid",
-      "current_health_risk",
+      "payment_hard_blocks": [
+        "authoritative_paid",
+        "manual_transfer_method",
+        "unverified_oral_paid_claim",
+        "current_health_risk",
       "complaint_refund_or_payment_dispute",
       "explicit_strong_refusal",
       "unsupported_online_project",
@@ -214,9 +279,17 @@
     "store_policy": "门店覆盖概览来自store_scope_summary；具体门店、地址、停车、营业时间只能来自customer_store_lookup；距离工具仅用合法经纬度执行Haversine直线距离排序；最终只按store_resolution_fact.status和delivery_store_ids发卡，客户可见不输出公里、分钟、车程或路线"
   },
   "conversion_psychology": {
+    "rule_level": "deprecated",
+    "owner": "legacy_serial_chain_only",
+    "validation_mode": "audit_only",
+    "source": "business_rules.json#conversion_psychology",
+    "regression_ids": [
+      "reply_chain.parallel_excludes_legacy_sales_semantics"
+    ],
+    "status": "legacy_only_not_rendered_to_parallel_reply",
     "goal": "先解决客户当前最大心理阻力，再推进一个最自然的成交动作，最终把兴趣推进到门店时间和10元预约金。",
     "principles": [
-      "先判断conversion_stage，再判断stage/sub_rule_id；conversion_stage决定本轮成交推进策略，stage/sub_rule_id只负责事实边界、工具边界和风险边界。",
+      "旧串行链路可继续读取本段兼容信息；新并行 Reply 不接收固定客户类型、conversion_stage 或固定下一步。",
       "客户没有被说服前，不要为了成交节奏跳过当前问题。",
       "每轮先解决当前主要阻力，再选择一个自然的下一步动作；必要事实可以同轮补齐，但不要堆无关问题清单。",
       "每轮只保留一个主要行动目标。允许精准答疑后自然衔接一个未完成主线包，但不要同轮同时追问城市、发送完整活动介绍并发送预约金卡；应根据当前阶段选择其中一个最自然动作。",
@@ -269,14 +342,54 @@
       }
     ]
   },
+  "legacy_rule_migration": {
+    "conversion_stage": {
+      "rule_level": "deprecated",
+      "owner": "none",
+      "validation_mode": "audit_only",
+      "source": "business_rules.json#conversion_psychology.stages",
+      "regression_ids": [
+        "reply_chain.parallel_excludes_conversion_stage"
+      ],
+      "status": "deprecated",
+      "reason": "固定成交阶段会覆盖客户当前消息和完整历史，已由 Reply 当前轮自主销售判断替代。"
+    },
+    "customer_type": {
+      "rule_level": "deprecated",
+      "owner": "none",
+      "validation_mode": "audit_only",
+      "source": "business_rules.json#conversion_psychology.customer_types",
+      "regression_ids": [
+        "reply_chain.parallel_excludes_customer_type"
+      ],
+      "status": "deprecated",
+      "reason": "固定客户类型只保留历史审计，不进入 shared_context_v2 或 parallel_reply_input_v2。"
+    },
+    "fixed_mainline_next_step": {
+      "rule_level": "deprecated",
+      "owner": "none",
+      "validation_mode": "audit_only",
+      "source": "business_rules.json#conversion_psychology.stages.next_step",
+      "regression_ids": [
+        "reply_chain.parallel_excludes_fixed_mainline"
+      ],
+      "status": "deprecated",
+      "reason": "固定主线下一步会造成重复追问和机械推进，改由模型在销售原则与动态证据下自主选择。"
+    }
+  },
   "stages": [
     {
       "id": "S1",
       "name": "打招呼/介绍/疑问解答",
       "goal": "激活客户，承接需求，介绍淡斑方向和技术，不急着报价",
       "rules": [
-        {
+      {
           "id": "S1_GREETING",
+          "rule_level": "sales_principle",
+          "owner": "model",
+          "validation_mode": "semantic_review",
+          "source": "business_rules.json#stages.S1.S1_GREETING",
+          "regression_ids": ["reply_chain.greeting_context"],
           "scenes": ["客户打招呼", "问在不在", "无明确需求"],
           "decision": "轻问是否咨询淡斑/斑点改善，或问所在城市/改善方向",
           "tools": [],
@@ -284,6 +397,11 @@
         },
         {
           "id": "S1_PROJECT_DIRECTION",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S1.S1_PROJECT_DIRECTION",
+          "regression_ids": ["reply_chain.project_scope"],
           "scenes": ["能不能淡斑", "雀斑", "晒斑", "老年斑", "遗传斑", "痘印", "痘坑", "混合斑点", "色素沉着", "痣", "肤色不均"],
           "decision": "属于当前活动范围时先给方向确定感，不要求客户继续细分斑型；客户明确问痣时正向承接，但不能从错别字或含糊内容自行猜成痣",
           "tools": [],
@@ -291,6 +409,11 @@
         },
         {
           "id": "S1_BRAND_TRUST",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S1.S1_BRAND_TRUST",
+          "regression_ids": ["reply_chain.brand_trust"],
           "scenes": ["你们店叫什么", "你们是什么店", "正规吗", "会不会被骗", "是不是骗人的"],
           "decision": "不硬报不确定门店名，不输出企微主体名；用集团连锁、全国300多家、专业斑点和皮肤管理、费用透明建立信任",
           "tools": [],
@@ -298,6 +421,11 @@
         },
         {
           "id": "S1_CASE_OR_IMAGE",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S1.S1_CASE_OR_IMAGE",
+          "regression_ids": ["reply_chain.real_case_media"],
           "scenes": ["客户发图片", "客户要案例/效果图"],
           "decision": "图片只说表层可见问题，案例必须来自真实素材",
           "tools": ["kb_search(case_studies)"],
@@ -312,6 +440,11 @@
       "rules": [
         {
           "id": "S2_CITY_ONLY",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S2.S2_CITY_ONLY",
+          "regression_ids": ["reply_chain.store_city_resolution"],
           "scenes": ["只给城市", "问城市有没有门店"],
           "decision": "门店查询地址来自当前消息和近期可追溯的客户地址证据。只有省份时补问城市和区县；只有城市且客户可见候选超过3家时，即使客户问最近/附近，也因缺少区县、地标、定位或距离排序原点而先问区或定位，不能直接挑一家发卡。明确区县、乡镇、村、道路、地标或定位卡先查工具，唯一且内部一致的解析结果可顺带确认并同轮匹配门店。只有同名多地域、同级城市冲突、解析失败或错别字修正候选才阻断等待确认。工具完成后只按store_resolution_fact.status和delivery_store_ids发送门店卡。",
           "tools": ["customer_store_lookup", "distance_calculate"],
@@ -319,6 +452,11 @@
         },
         {
           "id": "S2_LOCATION_DETAIL",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S2.S2_LOCATION_DETAIL",
+          "regression_ids": ["reply_chain.store_location_detail"],
           "scenes": ["区", "机场", "地铁站", "商圈", "地标", "附近哪家"],
           "decision": "先建立可追溯LocationEvidence；唯一且内部一致的地理解析可直接从客户范围合法门店中匹配，只有歧义、冲突、解析失败或纠错候选需要客户确认；具备双方合法经纬度时用Haversine排序",
           "tools": ["customer_store_lookup", "distance_calculate"],
@@ -326,6 +464,11 @@
         },
         {
           "id": "S2_ADDRESS_PARKING_HOURS",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S2.S2_ADDRESS_PARKING_HOURS",
+          "regression_ids": ["reply_chain.store_public_and_arrival_address"],
           "scenes": ["详细地址", "停车", "营业时间", "路线", "导航"],
           "decision": "公开地址、停车、营业时间、楼号、房间号和到店指引必须来自门店详情；公开地址可在预约前发送，详细到店指引需在登记并确认到店意向后发送",
           "tools": ["customer_store_lookup"],
@@ -333,6 +476,11 @@
         },
         {
           "id": "S2_PRE_VISIT_TRANSPORT_POLICY",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S2.S2_PRE_VISIT_TRANSPORT_POLICY",
+          "regression_ids": ["reply_chain.transport_policy"],
           "scenes": ["车费报销", "包接送", "接送", "打车报销", "路费", "交通费"],
           "decision": "直接说明目前没有接送服务，交通费用需自理；可以继续帮客户查更方便的门店、路线、停车或导航",
           "tools": [],
@@ -343,24 +491,39 @@
     {
       "id": "S3",
       "name": "报价/费用解释/预约金说明/预约时间",
-      "goal": "正面回答价格、活动、预约金、尾款和时间问题；是否发送10元预约金入口必须由conversion_stage=deposit_push决定，S3不等于必须收款",
+      "goal": "正面回答价格、活动、预约金、尾款和时间问题；活动介绍与预约金成交分开，由最终 Reply 根据完整历史和真实证据决定本轮动作。",
       "rules": [
         {
           "id": "S3_PRICE",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S3.S3_PRICE",
+          "regression_ids": ["reply_chain.first_price_no_card", "reply_chain.activity_offer"],
           "scenes": ["多少钱", "价格", "活动", "优惠", "199", "58", "268", "一次费用"],
-          "decision": "直接回答周年庆活动价268，线上预约金10元，到店抵扣，做付258；未做或不满意可退，实际退款按付款记录核对",
+          "decision": "客户第一次询问活动或价格时，直接回答周年庆活动价268和活动包含范围；预约金是后续独立成交动作，不在首次询价同轮发卡。客户明确追问预约金、尾款或退款规则时，按权威事实回答其当前问题。",
           "tools": [],
-          "reply_focus": "先答原价/活动价、预约金、尾款、可退规则和名额理由，再按conversion_stage推进一个动作；不能因为命中S3_PRICE就自动发送payment_collection"
+          "reply_focus": "先精准回答客户实际询问的价格或活动内容，不机械展开整套交易规则；首次活动或价格询问不能发送payment_collection。"
         },
         {
           "id": "S3_PAYMENT_COLLECTION",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S3.S3_PAYMENT_COLLECTION",
+          "regression_ids": ["reply_chain.deposit_evidence", "reply_chain.payment_card_structure"],
           "scenes": ["付款入口", "怎么交10元", "我付", "先锁名额", "就这个时间", "报名", "怎么约", "怎么预约", "我要预约", "你帮我预约", "帮我报名", "可以约", "要交钱吗", "预约金怎么抵扣", "能不能退", "尾款多少", "是不是额外收费", "不交预约金可以直接去吗", "到店再付"],
-          "decision": "活动报价已完成或已铺垫，且conversion_stage=deposit_push、客户未付、无风险/强拒绝、人数金额合法时，可以发送payment_collection；不要求先成功创建或复用预约金订单。客户对预约金用途、退款、抵扣、尾款或额外收费轻度疑问时，若当前已处于预约推进、已明确门店/到店意向、历史已完成活动报价铺垫或画像deposit_state可正式推定金，可以解释规则后同轮轻推10元入口；客户问怎么报名、怎么预约、怎么交、怎么付费、我参加、帮我报名时，如果没有明确多人同行证据，按默认1位生成10元预约金卡，不先追问人数；只有客户明确说多人/朋友一起但人数不清时才先确认实际参加人数；明确强拒绝时不硬推",
+          "decision": "订单不是发卡前置。发送payment_collection必须同时有更早轮次的活动介绍、地址/效果/卡点中的另一项有效承接，以及当前轮明确报名、预约或付款信号；客户未付、无硬风险且人数金额合法。代码只校验证据引用、时间顺序和结构，不替模型判断客户心理。",
           "tools": [],
-          "reply_focus": "先说明10元预约金用于锁活动名额、到店抵扣、未做或不满意可退且不限制到店时间，再按成交节奏发送入口；活动报价已完成后，订单、开单、门店是否已经明确和普通单人未确认人数都不阻断发卡。缺门店时可同轮发卡，并把城市或区域作为唯一后续必要字段自然补问。支付后再收姓名电话、补齐门店并做后台开单或关联；强拒绝时不硬推"
+          "reply_focus": "证据满足且客户当前明确行动时，自然说明每位10元预约金、到店抵扣、做再付258、未做或不满意可退，并发送一张合法卡；支付后再收姓名电话并尝试后台关联。"
         },
         {
           "id": "S3_APPOINTMENT_TIME",
+          "rule_level": "hard_law",
+          "owner": "code_and_model",
+          "validation_mode": "hard_check",
+          "source": "business_rules.json#stages.S3.S3_APPOINTMENT_TIME",
+          "regression_ids": ["reply_chain.registration_only"],
           "scenes": ["今天能不能来", "明天几点", "周末能约吗"],
           "decision": "普通新客与预约金已付流程采用registration_only，只登记门店、到店日期和时间意向，不调用available_time，不创建排客。",
           "tools": [],
@@ -375,6 +538,11 @@
       "rules": [
         {
           "id": "S4_APPOINTMENT_FOLLOWUP",
+          "rule_level": "business_fact",
+          "owner": "model_with_code_fact_checks",
+          "validation_mode": "fact_consistency",
+          "source": "business_rules.json#stages.S4.S4_APPOINTMENT_FOLLOWUP",
+          "regression_ids": ["reply_chain.appointment_fact"],
           "scenes": ["已预约客户问地址", "问时间", "流程", "改约", "取消"],
           "decision": "围绕既有正式预约事实承接；只查询已有预约记录，不为普通预约金流程新查档期或创建排客。",
           "tools": ["appointment_record_query"],
@@ -382,6 +550,11 @@
         },
         {
           "id": "S4_HESITATION",
+          "rule_level": "sales_principle",
+          "owner": "model",
+          "validation_mode": "semantic_review",
+          "source": "business_rules.json#stages.S4.S4_HESITATION",
+          "regression_ids": ["reply_chain.contextual_hesitation"],
           "scenes": ["太远", "没时间", "家人反对", "再考虑", "担心一次没效果", "担心需要多次而说不做"],
           "decision": "带有可解决原因的犹豫或退出表达继续针对真实卡点承接一次，不按不做了等字面直接终止",
           "tools": [],
@@ -389,6 +562,11 @@
         },
         {
           "id": "S4_COMPLAINT_REFUND",
+          "rule_level": "hard_law",
+          "owner": "code_and_model",
+          "validation_mode": "hard_check",
+          "source": "business_rules.json#stages.S4.S4_COMPLAINT_REFUND",
+          "regression_ids": ["reply_chain.complaint_refund_safety"],
           "scenes": ["投诉", "退款", "付款异常", "多收钱", "严重不适", "强烈不满"],
           "decision": "需要professional_assist",
           "tools": ["professional_assist"],

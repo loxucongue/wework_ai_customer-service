@@ -91,6 +91,47 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_chat_gate_output_violations(output, selector_input), [])
 
+    def test_parallel_candidate_gate_does_not_decide_party_size_or_payment_safety(self) -> None:
+        selector_input = {
+            "reply_chain_mode": "parallel_candidate_only",
+            "mainline": {"stages": [{"id": "deposit_decision"}]},
+            "precision_qa_index": [],
+            "conversation_evidence": [
+                {"message_ref": "current_message", "direction": "customer", "content": "怎么参加"},
+            ],
+            "unfinished_sops": [
+                {
+                    "id": "two_people_pack",
+                    "mainline_stage": "deposit_decision",
+                    "payment_collection_gate": {"amounts": [20]},
+                }
+            ],
+        }
+        output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "two_people_pack",
+            "candidate_sop_ids": ["two_people_pack"],
+            "resume_stage": "deposit_decision",
+            "party_size_evidence": {},
+        }
+
+        self.assertEqual(_chat_gate_output_violations(output, selector_input), [])
+
+    def test_chat_gate_rejects_precision_scene_not_present_in_current_catalog(self) -> None:
+        selector_input = {
+            "mainline": {"stages": []},
+            "precision_qa_index": [],
+            "unfinished_sops": [],
+        }
+        output = {
+            "route": "ai_only",
+            "coverage": "none",
+            "selected_scene_id": "legacy_scene_not_in_input",
+        }
+
+        self.assertIn("unknown_selected_scene_id", _chat_gate_output_violations(output, selector_input))
+
     async def test_retired_sop_event_route_only_records_audit(self) -> None:
         repo = _Repo()
         client = _OutreachClient()

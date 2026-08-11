@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "id": "s10_new_customer_opening",
+      "parallel_candidate_enabled": false,
+      "asset_role": "opening_context"
+    },
+    {
+      "id": "s10_need_and_case",
+      "parallel_candidate_enabled": true,
+      "asset_role": "effect_evidence"
+    },
+    {
+      "id": "s10_activity_intro",
+      "parallel_candidate_enabled": true,
+      "asset_role": "activity_offer"
+    },
+    {
+      "id": "s10_store_prompt",
+      "parallel_candidate_enabled": true,
+      "asset_role": "location_capture",
+      "selection_constraints": {
+        "forbidden_when_authoritative_facts_present": [
+          "location_card"
+        ]
+      }
+    },
+    {
+      "id": "s10_objection_resolution",
+      "parallel_candidate_enabled": true,
+      "asset_role": "objection_support"
+    },
+    {
+      "id": "s10_deposit_close",
+      "parallel_candidate_enabled": true,
+      "asset_role": "deposit_close",
+      "requires_prior_asset_roles": [
+        "activity_offer"
+      ]
+    }
+  ]
+}

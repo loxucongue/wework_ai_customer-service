@@ -102,8 +102,22 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized[0]["role"], "system")
         self.assertIn("Return valid json only.", normalized[0]["content"])
         self.assertIn("Business contract", normalized[0]["content"])
-        self.assertEqual(normalized[1], {"role": "user", "content": "hello"})
+        self.assertEqual(
+            normalized[1],
+            {"role": "user", "content": "Return valid json only.\n\nhello"},
+        )
         self.assertEqual(normalized[2], {"role": "system", "content": "Final gate"})
+
+    def test_json_messages_keep_lowercase_marker_in_system_and_user_input(self) -> None:
+        normalized = ModelClient._prepare_json_messages(
+            [
+                {"role": "system", "content": "Business contract"},
+                {"role": "user", "content": "Produce the requested object."},
+            ]
+        )
+
+        self.assertIn("Return valid json only.", normalized[0]["content"])
+        self.assertIn("Return valid json only.", normalized[1]["content"])
 
     def test_round_budget_shadow_records_without_blocking_retry(self) -> None:
         now = time.monotonic()
@@ -167,22 +181,22 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(float(ordinary_deadline or 0), now + 60, places=3)
         self.assertAlmostEqual(float(strong_deadline or 0), now + 75, places=3)
 
-    async def test_model_client_uses_five_second_connect_timeout(self) -> None:
+    async def test_model_client_allows_ten_seconds_and_environment_proxy_for_relay_connection(self) -> None:
         client = ModelClient(_settings(model_timeout_seconds=45))
 
         http_client = client._http_client()
 
-        self.assertEqual(http_client.timeout.connect, 5)
+        self.assertEqual(http_client.timeout.connect, 10)
         self.assertEqual(http_client.timeout.read, 45)
-        self.assertFalse(http_client.trust_env)
+        self.assertTrue(http_client.trust_env)
         await client.aclose()
 
-    async def test_model_client_can_opt_into_environment_proxy_settings(self) -> None:
-        client = ModelClient(_settings(model_http_trust_env=True))
+    async def test_model_client_can_explicitly_disable_environment_proxy_settings(self) -> None:
+        client = ModelClient(_settings(model_http_trust_env=False))
 
         http_client = client._http_client()
 
-        self.assertTrue(http_client.trust_env)
+        self.assertFalse(http_client.trust_env)
         await client.aclose()
 
     def test_planner_retries_primary_once_then_falls_back_to_qwen_turbo(self) -> None:
@@ -210,10 +224,18 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model_names(settings, "reply"), ["qwen-plus"])
 
     def test_planner_uses_a_longer_quality_first_hedge_delay(self) -> None:
-        client = ModelClient(_settings(model_hedge_delay_seconds=0.01, model_planner_hedge_delay_seconds=0.02))
+        client = ModelClient(
+            _settings(
+                model_hedge_delay_seconds=0.01,
+                model_planner_hedge_delay_seconds=0.02,
+                model_reply_hedge_delay_seconds=0.03,
+            )
+        )
 
         self.assertEqual(client._hedge_delay_for_tier("planner"), 0.02)
-        self.assertEqual(client._hedge_delay_for_tier("reply"), 0.01)
+        self.assertEqual(client._hedge_delay_for_tier("reply"), 0.03)
+        self.assertEqual(client._hedge_delay_for_tier("strong"), 0.03)
+        self.assertEqual(client._hedge_delay_for_tier("fast"), 0.01)
 
     async def test_model_client_hedges_slow_primary_with_fallback(self) -> None:
         class HedgeModelClient(ModelClient):

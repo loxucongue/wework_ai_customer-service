@@ -299,6 +299,56 @@ class CustomerMemoryStore:
             "city": facts.get("city", ""),
         }
 
+    def record_authoritative_payment_fact(
+        self,
+        customer_id: str,
+        *,
+        deposit_state: str,
+        source: str,
+        request_id: str = "",
+        amount: Any = None,
+        order_id: str = "",
+        order_no: str = "",
+    ) -> dict[str, Any]:
+        """Persist only payment facts proven by a structured runtime source."""
+        clean_state = str(deposit_state or "").strip()
+        clean_source = str(source or "").strip()
+        if clean_state not in {"paid_by_platform_transfer_event", "paid_by_screenshot"}:
+            return {"status": "skipped", "reason": "payment_state_not_authoritative"}
+        if clean_source not in {"platform.unknown_message_transfer", "vision.payment_proof"}:
+            return {"status": "skipped", "reason": "payment_source_not_authoritative"}
+
+        now = self._now()
+        payment_fact = {
+            "status": clean_state,
+            "source": clean_source,
+            "amount": amount,
+            "order_id": str(order_id or "").strip(),
+            "order_no": str(order_no or "").strip(),
+            "updated_at": now,
+        }
+        event_id = f"deposit_payment_confirmed_{request_id or uuid4()}"
+        saved = self.save_update(
+            customer_id,
+            profile_update={"basic_info": {"deposit_state": payment_fact}},
+            event_updates=[
+                {
+                    "event_id": event_id,
+                    "event_type": "deposit_payment_confirmed",
+                    "event_time": now,
+                    "facts": payment_fact,
+                    "source": "deterministic_runtime_fact",
+                }
+            ],
+        )
+        return {
+            "status": "recorded",
+            "event_id": event_id,
+            "deposit_state": clean_state,
+            "source": clean_source,
+            "saved_memory": saved,
+        }
+
     def _path(self, customer_id: str) -> Path:
         safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", customer_id or "unknown")
         return self.memory_dir / f"{safe}.json"

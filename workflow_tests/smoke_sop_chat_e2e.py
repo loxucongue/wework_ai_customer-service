@@ -228,27 +228,6 @@ class FullGraph:
         return output
 
 
-class PlannerGraph:
-    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
-        content = str(state.get("content") or "")
-        messages = _ai_reply_for(content)
-        output = dict(state)
-        output["trace"] = list(state.get("trace") or []) + [
-            {"node": "fake_planner", "duration_ms": 8, "output_snapshot": {"content": content[:80]}}
-        ]
-        output["errors"] = []
-        output.update(
-            {
-                "planner_decision": "direct_reply",
-                "planner_stage": "S3",
-                "planner_sub_rule_id": "fake_planner",
-                "planner_reply_messages": messages,
-                "reply_messages": messages,
-            }
-        )
-        return output
-
-
 class OutreachClient:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
@@ -292,8 +271,6 @@ async def main() -> None:
     outreach = OutreachClient()
     runtime = ChatRuntime(
         full_graph=FullGraph(),
-        planner_graph=PlannerGraph(),
-        finalize_graph=FullGraph(),
         trace_logger=TraceLogger(),
         repository=repository,
         outreach_send_client=outreach,

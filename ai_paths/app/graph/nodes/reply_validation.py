@@ -12,7 +12,9 @@ from app.graph.nodes.store_scope_summary import (
 )
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
+    PAYMENT_COLLECTION_ALLOWED_AMOUNTS,
     activity_intro_completed_for_payment,
+    payment_amount_for_party_size,
     payment_amount_matches_text,
     payment_collection_content,
     payment_collection_context,
@@ -37,6 +39,12 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
     has_handoff = False
     has_payment_collection = False
     for item in messages:
+        if isinstance(item, str):
+            content = item.strip()
+            if content and visible_count < max_visible_messages:
+                result.append({"type": "text", "order": len(result) + 1, "content": content})
+                visible_count += 1
+            continue
         if not isinstance(item, dict):
             continue
         msg_type = item.get("type") if item.get("type") in ALLOWED_MESSAGE_TYPES else "text"
@@ -103,6 +111,12 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
 
 
 def _max_visible_messages(state: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> int:
+    if state.get("evidence_join"):
+        # The model-led chain must not silently truncate a structurally valid
+        # Reply. Candidate media, store cards, and the payment card are part of
+        # the model's explicit output contract; any bad shape is repaired
+        # before normalization instead of being hidden by a legacy count cap.
+        return max(MAX_VISIBLE_MESSAGES, _visible_message_count(messages or []))
     if _is_same_requested_scope_store_sequence(messages or [], state):
         return max(MAX_VISIBLE_MESSAGES, _visible_message_count(messages or []))
     return MAX_SOP_SEQUENCE_VISIBLE_MESSAGES if _is_sop_sequence_state(state) else MAX_VISIBLE_MESSAGES
@@ -243,6 +257,9 @@ def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[
 
 
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if state.get("evidence_join"):
+        _validate_parallel_reply_consistency(messages, state)
+        return
     _validate_handoff_notice_text(messages)
     _validate_deposit_refund_policy(messages)
     _validate_unverified_refund_execution_claims(messages)
@@ -271,6 +288,486 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_fact_boundaries(messages, state)
     _validate_store_address_card_consistency(messages, state)
     _validate_store_delivery_text_matches_cards(messages, state)
+
+
+def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """Validate structure and provenance without interpreting visible prose.
+
+    Natural-language factual meaning is audited by the Reply fact-auditor
+    model after these deterministic checks.  Keep this list deliberately
+    free of phrase matching and semantic regular expressions.
+    """
+
+    checks = (
+        lambda: _validate_handoff_notice_text(messages),
+        lambda: _validate_no_customer_visible_internal_language(messages),
+        lambda: _validate_single_payment_collection(messages),
+        lambda: _validate_parallel_selected_content_delivery(messages, state),
+        lambda: _validate_parallel_selected_content_provenance(state),
+        lambda: _validate_parallel_claimed_deposit_evidence(state),
+        lambda: _validate_parallel_payment_boundaries(messages, state),
+        lambda: _validate_parallel_media_facts(messages, state),
+        lambda: _validate_store_resolution_v2_contract(messages, state),
+        lambda: _validate_parallel_location_card_delivery(messages, state),
+        lambda: _validate_store_resolution_delivery_mode(messages, state),
+        lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),
+    )
+    violations: list[str] = []
+    for check in checks:
+        try:
+            check()
+        except ValueError as exc:
+            detail = str(exc).strip()
+            if detail and detail not in violations:
+                violations.append(detail)
+    if violations:
+        raise ValueError("parallel_reply_hard_violations::" + ";;".join(violations))
+
+
+def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """Require every emitted image/video to exist in joined authoritative evidence."""
+
+    emitted = {
+        _parallel_structured_message_key(item)
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") in {"image", "video"}
+    }
+    emitted.discard("")
+    if not emitted:
+        return
+
+    allowed: set[str] = set()
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    for candidate in joined.get("content_candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        for item in candidate.get("messages") or []:
+            if isinstance(item, dict) and str(item.get("type") or "") in {"image", "video"}:
+                key = _parallel_structured_message_key(item)
+                if key:
+                    allowed.add(key)
+
+    structured = _structured_facts(state)
+    for item in structured.get("case_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        for field, message_type in (("image_url", "image"), ("video_url", "video")):
+            url = str(item.get(field) or "").strip()
+            if url:
+                allowed.add(f"{message_type}:{url}")
+
+    unsupported = sorted(emitted - allowed)
+    if unsupported:
+        raise ValueError(f"unsupported_parallel_media_fact:{','.join(unsupported)}")
+
+
+def _validate_parallel_selected_content_delivery(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Require the structures that Reply explicitly says it adopted from Gate."""
+
+    selected_ids = {
+        str(item or "").strip()
+        for item in state.get("reply_selected_content_ids") or []
+        if str(item or "").strip()
+    }
+    if not selected_ids:
+        return
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
+    candidate_ids = {
+        str(item.get("content_id") or item.get("id") or "").strip()
+        for item in candidates
+        if isinstance(item, dict) and str(item.get("content_id") or item.get("id") or "").strip()
+    }
+    unknown_ids = sorted(selected_ids - candidate_ids)
+    if unknown_ids:
+        raise ValueError(
+            "selected_content_id_not_in_gate_candidates:"
+            f"{','.join(unknown_ids)}"
+        )
+    emitted = {_parallel_structured_message_key(item) for item in messages if isinstance(item, dict)}
+    missing_by_content: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
+        if content_id not in selected_ids:
+            continue
+        # A completed asset may be cited as prior evidence without replaying
+        # its old media. Provenance validation below still requires the
+        # current customer message when Reply deliberately reuses it.
+        if str(candidate.get("delivery_status") or "").strip() == "completed":
+            continue
+        candidate_messages = candidate.get("messages")
+        if not isinstance(candidate_messages, list):
+            candidate_messages = candidate.get("reply_messages") if isinstance(candidate.get("reply_messages"), list) else []
+        required = {
+            _parallel_structured_message_key(item)
+            for item in candidate_messages
+            if isinstance(item, dict) and str(item.get("type") or "") != "text"
+        }
+        required.discard("")
+        missing = sorted(required - emitted)
+        if missing:
+            missing_by_content.append(f"content_id={content_id};required={','.join(missing)}")
+    if missing_by_content:
+        raise ValueError("selected_content_delivery_missing:" + "|".join(missing_by_content))
+
+
+def _validate_parallel_selected_content_provenance(state: dict[str, Any]) -> None:
+    """Verify Reply's asset citations without deciding whether the asset was persuasive."""
+
+    selected_ids = {
+        str(item or "").strip()
+        for item in state.get("reply_selected_content_ids") or []
+        if str(item or "").strip()
+    }
+    if not selected_ids:
+        return
+    used_refs = {
+        str(item or "").strip()
+        for item in state.get("reply_used_fact_refs") or []
+        if str(item or "").strip()
+    }
+    missing_asset_refs = sorted(
+        content_id
+        for content_id in selected_ids
+        if f"content_asset:{content_id}" not in used_refs
+    )
+    if missing_asset_refs:
+        raise ValueError(
+            "selected_content_requires_used_fact_ref:"
+            f"{','.join(missing_asset_refs)}"
+        )
+
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
+    repeated_ids = sorted(
+        str(item.get("content_id") or item.get("id") or "").strip()
+        for item in candidates
+        if isinstance(item, dict)
+        and str(item.get("content_id") or item.get("id") or "").strip() in selected_ids
+        and str(item.get("delivery_status") or "").strip() == "completed"
+    )
+    if repeated_ids and "current_message" not in used_refs:
+        raise ValueError(
+            "completed_content_repeat_requires_current_customer_ref:"
+            f"{','.join(repeated_ids)}"
+        )
+
+
+def completed_parallel_selected_content_ids(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+    selected_ids: list[str],
+) -> list[str]:
+    """Keep only Gate candidates whose structured payload was fully adopted.
+
+    This changes internal commit metadata only. It never adds, removes, or
+    rewrites customer-visible messages. A partially used candidate therefore
+    remains a valid independent Reply, but is not recorded as a completed SOP.
+    """
+
+    requested = [str(item or "").strip() for item in selected_ids if str(item or "").strip()]
+    if not requested:
+        return []
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
+    emitted = {_parallel_structured_message_key(item) for item in messages if isinstance(item, dict)}
+    complete: list[str] = []
+    for content_id in dict.fromkeys(requested):
+        candidate = next(
+            (
+                item
+                for item in candidates
+                if isinstance(item, dict)
+                and str(item.get("content_id") or item.get("id") or "").strip() == content_id
+            ),
+            None,
+        )
+        if candidate is None:
+            continue
+        # This asset was already committed in an earlier turn. Selecting it
+        # as historical evidence must not create another completion event.
+        if str(candidate.get("delivery_status") or "").strip() == "completed":
+            continue
+        candidate_messages = candidate.get("messages")
+        if not isinstance(candidate_messages, list):
+            candidate_messages = candidate.get("reply_messages") if isinstance(candidate.get("reply_messages"), list) else []
+        required = {
+            _parallel_structured_message_key(item)
+            for item in candidate_messages
+            if isinstance(item, dict) and str(item.get("type") or "") != "text"
+        }
+        required.discard("")
+        if required.issubset(emitted):
+            complete.append(content_id)
+    return complete
+
+
+def _parallel_structured_message_key(message: dict[str, Any]) -> str:
+    message_type = str(message.get("type") or "").strip()
+    if not message_type or message_type == "text":
+        return ""
+    content = message.get("content")
+    if message_type == "store_address" and isinstance(content, dict):
+        return f"store_address:{str(content.get('store_id') or '').strip()}"
+    if message_type == "payment_collection" and isinstance(content, dict):
+        return f"payment_collection:{str(content.get('amount') or '').strip()}"
+    if message_type in {"image", "video"}:
+        return f"{message_type}:{message_content_text(content)}"
+    return f"{message_type}:{str(content or '').strip()}"
+
+
+def _validate_parallel_payment_boundaries(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    payment_messages = [
+        item
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") == "payment_collection"
+    ]
+    has_payment = bool(payment_messages)
+    reply_action = str(state.get("reply_action") or "none")
+    payment_assessment = (
+        state.get("reply_payment_assessment")
+        if isinstance(state.get("reply_payment_assessment"), dict)
+        else {}
+    )
+    payment_status = str(payment_assessment.get("status") or "unknown")
+    deposit_evidence = (
+        state.get("reply_deposit_evidence")
+        if isinstance(state.get("reply_deposit_evidence"), dict)
+        else {}
+    )
+    if payment_status in {"manual_transfer", "unverified_paid_claim"}:
+        if reply_action not in {"none", "ask"} or has_payment:
+            raise ValueError(f"payment_assessment_blocks_payment_collection:{payment_status}")
+    if payment_status == "authoritative_paid" and not _parallel_paid_deposit_context(state):
+        raise ValueError("payment_assessment_authoritative_paid_requires_fact")
+    if _parallel_paid_deposit_context(state) and payment_status != "authoritative_paid":
+        raise ValueError("authoritative_paid_fact_requires_matching_payment_assessment")
+    if reply_action == "registration" and not _parallel_paid_deposit_context(state):
+        raise ValueError("registration_action_requires_paid_context")
+    if reply_action == "registration" and payment_status != "authoritative_paid":
+        raise ValueError("registration_action_requires_authoritative_paid_assessment")
+    if not has_payment:
+        if reply_action == "payment":
+            raise ValueError("payment_action_requires_payment_collection")
+        return
+    if _parallel_paid_deposit_context(state):
+        raise ValueError("payment_collection_blocked_by_paid_deposit_context")
+    safety = state.get("reply_safety_assessment")
+    safety_status = str(safety.get("status") or "none") if isinstance(safety, dict) else "none"
+    if safety_status in {"health_risk", "complaint_refund", "explicit_reject"}:
+        raise ValueError(f"payment_collection_blocked_by_{safety_status}")
+    party = state.get("reply_party_size_assessment")
+    party_status = str(party.get("status") or "unknown") if isinstance(party, dict) else "unknown"
+    if party_status == "over_limit":
+        raise ValueError("payment_participant_count_confirm_required")
+    payment_content = payment_messages[0].get("content") if payment_messages else {}
+    payment_amount = int(payment_content.get("amount") or 0) if isinstance(payment_content, dict) else 0
+    if party_status == "known":
+        expected_amount = payment_amount_for_party_size(party.get("party_size") if isinstance(party, dict) else None)
+        if expected_amount is None or payment_amount != expected_amount:
+            raise ValueError("payment_collection_amount_conflicts_with_party_size_assessment")
+    elif payment_amount != 10:
+        raise ValueError("multi_person_payment_requires_known_party_size_assessment")
+    if reply_action != "payment":
+        raise ValueError("payment_collection_requires_reply_payment_action")
+    if payment_status != "payment_request":
+        raise ValueError("payment_collection_requires_payment_request_assessment")
+
+
+def _validate_parallel_claimed_deposit_evidence(state: dict[str, Any]) -> None:
+    """Validate claimed payment provenance independently of card delivery.
+
+    Keeping this as a separate aggregate check lets one repair see both an
+    incomplete card payload and invalid evidence references.  It does not
+    infer whether payment is appropriate; Reply already made that decision.
+    """
+
+    evidence = (
+        state.get("reply_deposit_evidence")
+        if isinstance(state.get("reply_deposit_evidence"), dict)
+        else {}
+    )
+    if str(state.get("reply_action") or "none") != "payment":
+        return
+    _validate_parallel_deposit_evidence(state)
+
+
+def _validate_parallel_unpaid_registration_request(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Keep post-payment identity collection behind the authoritative payment fact."""
+
+    if _parallel_paid_deposit_context(state):
+        return
+    if any(
+        isinstance(item, dict) and str(item.get("type") or "") == "payment_collection"
+        for item in messages
+    ):
+        return
+    compact = re.sub(r"\s+", "", _combined_text(messages))
+    if not compact:
+        return
+    identity_fields = (
+        r"(?:姓名|名字|手机号|手机号码|联系电话)"
+        r"(?:和|、|及|跟|\+|/)?(?:手机号|手机号码|联系电话|电话)?"
+    )
+    request_patterns = (
+        re.compile(
+            rf"(?:请|麻烦)?(?:您|你)?(?:把|将)?(?:您的|你的)?{identity_fields}"
+            r"(?:发我|告诉我|提供给我|回复我)"
+        ),
+        re.compile(
+            rf"(?:直接)?(?:发我|回我|告诉我|提供给我|回复我)(?:一下)?"
+            rf"(?:您的|你的)?{identity_fields}"
+        ),
+    )
+    conditional_markers = (
+        "支付后",
+        "付款后",
+        "付好后",
+        "转好后",
+        "付完后",
+        "核对后",
+        "核对到",
+        "核对到后",
+        "确认后",
+        "确认到账后",
+        "查到付款后",
+        "看到账后",
+    )
+    def has_payment_verification_condition(prefix: str) -> bool:
+        if any(marker in prefix for marker in conditional_markers):
+            return True
+        return bool(
+            re.search(
+                r"(?:核对|确认|核实|查到|看到|对上).{0,6}(?:后|再|就)",
+                prefix,
+            )
+        )
+
+    for request_pattern in request_patterns:
+        for match in request_pattern.finditer(compact):
+            prefix = compact[max(0, match.start() - 10) : match.start()]
+            if has_payment_verification_condition(prefix):
+                continue
+            raise ValueError("unpaid_registration_details_requested_before_payment")
+    reservation_verbs = r"(?:登记|记上|记下|保留|留住|留着|留意上)"
+    activity_slot = r"(?:(?:这个|本次|当前)?活动)?名额"
+    claim_pattern = re.compile(
+        rf"(?:活动名额)?我(?:这边)?(?:先)?帮您{reservation_verbs}(?:这个|本次)?(?:活动)?(?:名额)?"
+        rf"|我(?:这边)?(?:先)?给您{reservation_verbs}(?:这个|本次)?(?:活动)?(?:名额)?"
+        rf"|给您(?:先)?{reservation_verbs}(?:这个|本次)?(?:活动)?(?:名额)?"
+        rf"|给您(?:先)?留(?:下)?(?:这个|本次)?(?:活动)?名额"
+        rf"|(?:我)?先(?:帮您|给您)留(?:下)?(?:这个|本次)?(?:活动)?名额"
+        rf"|(?:我)?先帮您(?:把)?{activity_slot}(?:给您)?{reservation_verbs}"
+        rf"|(?:我)?先给您(?:把)?{activity_slot}(?:给您)?{reservation_verbs}"
+        rf"|(?:我)?先(?:帮您|给您){reservation_verbs}(?:这个|本次)?(?:活动)?(?:名额)?"
+        rf"|(?:我)?先把{activity_slot}(?:给您)?{reservation_verbs}"
+        r"|(?:直接)?(?:回我|回复我|回复)[“\"']?登记[”\"']?"
+    )
+    for match in claim_pattern.finditer(compact):
+        prefix = compact[max(0, match.start() - 12) : match.start()]
+        if has_payment_verification_condition(prefix):
+            continue
+        raise ValueError("unpaid_registration_claim_before_payment")
+
+
+def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
+    """Validate provenance only; Reply remains responsible for sales meaning."""
+
+    evidence = (
+        state.get("reply_deposit_evidence")
+        if isinstance(state.get("reply_deposit_evidence"), dict)
+        else {}
+    )
+    offer_refs = {
+        str(item).strip()
+        for item in evidence.get("offer_prior_turn_refs") or []
+        if str(item).strip()
+    }
+    supporting_key = str(evidence.get("supporting_key") or "").strip()
+    supporting_refs = {
+        str(item).strip()
+        for item in evidence.get("supporting_refs") or []
+        if str(item).strip()
+    }
+    action_refs = {
+        str(item).strip()
+        for item in evidence.get("current_intent_refs") or []
+        if str(item).strip()
+    }
+    shared = _parallel_shared_context(state)
+    conversation = [item for item in shared.get("conversation") or [] if isinstance(item, dict)]
+    prior_refs = {
+        str(item.get("message_ref") or "").strip()
+        for item in conversation
+        if str(item.get("message_ref") or "").strip()
+    }
+    prior_assistant_refs = {
+        str(item.get("message_ref") or "").strip()
+        for item in conversation
+        if str(item.get("role") or "").strip().lower() in {"assistant", "staff"}
+        and str(item.get("message_ref") or "").strip()
+    }
+    prior_customer_refs = {
+        str(item.get("message_ref") or "").strip()
+        for item in conversation
+        if str(item.get("role") or "").strip().lower() in {"customer", "user"}
+        and str(item.get("message_ref") or "").strip()
+    }
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    progress = facts.get("sop_progress") if isinstance(facts.get("sop_progress"), dict) else {}
+    content_indexes = shared.get("content_indexes") if isinstance(shared.get("content_indexes"), dict) else {}
+    content_catalog = (
+        content_indexes.get("available_sop")
+        if isinstance(content_indexes.get("available_sop"), dict)
+        else {}
+    )
+    activity_offer_ids = {
+        str(item.get("content_id") or "").strip()
+        for item in content_catalog.get("sop_packs") or []
+        if isinstance(item, dict)
+        and str(item.get("asset_role") or "").strip() == "activity_offer"
+        and str(item.get("content_id") or "").strip()
+    }
+    completed_refs = {
+        f"sop_completed:{str(item).strip()}"
+        for item in progress.get("completed_pack_ids") or []
+        if str(item).strip() in activity_offer_ids
+    }
+    all_completed_refs = {
+        f"sop_completed:{str(item).strip()}"
+        for item in progress.get("completed_pack_ids") or []
+        if str(item).strip()
+    }
+    valid_offer_refs = prior_assistant_refs | completed_refs
+    if (
+        not offer_refs
+        or not offer_refs.issubset(valid_offer_refs)
+    ):
+        raise ValueError("payment_collection_requires_prior_activity_evidence")
+    if supporting_key not in {"address", "effect", "objection"}:
+        raise ValueError("payment_collection_requires_supporting_sales_key")
+    if not supporting_refs or not supporting_refs.issubset(prior_refs | all_completed_refs):
+        raise ValueError("payment_collection_requires_prior_supporting_key_evidence")
+    if not supporting_refs.intersection(prior_customer_refs):
+        raise ValueError("payment_collection_requires_customer_engaged_supporting_key_evidence")
+    if "current_message" not in action_refs:
+        raise ValueError("payment_collection_requires_current_action_signal_evidence")
+
+
+def _parallel_shared_context(state: dict[str, Any]) -> dict[str, Any]:
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
+    if shared:
+        return shared
+    return state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
 
 
 def _validate_handoff_notice_text(messages: list[dict[str, Any]]) -> None:
@@ -411,7 +908,6 @@ def _validate_no_customer_visible_internal_language(messages: list[dict[str, Any
         "planner_decision",
         "payment_decision",
         "系统状态显示",
-        "进入下一流程",
     )
     if any(term in compact for term in internal_phrases):
         raise ValueError("customer_visible_internal_language")
@@ -426,6 +922,8 @@ def _validate_offer_total_and_tail_amount(messages: list[dict[str, Any]]) -> Non
         r"(?:最后|最终)(?:就是)?(?:按|算|是|为)258(?:元)?(?:算|结算)?",
         r"(?:总价|总共|一共|合计|全部费用|活动价)(?:就是|只要|只需|是|为|按)?258元?",
         r"258元?(?:就是|是)?(?:总价|总共|全部费用|活动价)",
+        r"(?:到店)?(?:抵扣|扣掉|减免)258元?",
+        r"258元?(?:用于|拿来|可以)?(?:抵扣|扣掉|减免)",
     )
     if any(re.search(pattern, text) for pattern in invalid_patterns):
         raise ValueError("offer_total_tail_amount_conflict")
@@ -531,26 +1029,78 @@ def _paid_deposit_context(state: dict[str, Any]) -> bool:
 
 
 def _validate_payment_confirmation_claim(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    if _paid_deposit_context(state):
+    paid_context = (
+        _parallel_paid_deposit_context(state)
+        if state.get("evidence_join")
+        else _paid_deposit_context(state)
+    )
+    if paid_context:
         return
     text = _compact_text(_combined_text(messages))
     if not text:
         return
-    if any(
-        marker in text
-        for marker in (
-            "已收到预约金",
-            "预约金已收到",
-            "已经到账",
-            "已到账",
-            "已经核款",
-            "已核款",
-            "支付已确认",
-            "付款已确认",
-            "按已付",
-        )
-    ):
+    if _asserts_payment_confirmed(text):
         raise ValueError("payment_confirmation_fact_required")
+
+
+def _asserts_payment_confirmed(text: str) -> bool:
+    """Detect an affirmative paid claim without rejecting verification wording."""
+
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    direct_markers = (
+        "已收到预约金",
+        "预约金已收到",
+        "已经到账",
+        "已到账",
+        "已经核款",
+        "已核款",
+        "支付已确认",
+        "付款已确认",
+        "按已付",
+    )
+    for clause in re.split(r"[，。！？；,.!?;]+", compact):
+        if not clause or not any(marker in clause for marker in direct_markers):
+            continue
+        # These clauses explicitly describe a pending check or a condition,
+        # rather than asserting a successful payment fact.
+        if any(
+            qualifier in clause
+            for qualifier in (
+                "是否已到账",
+                "是否已经到账",
+                "有没有到账",
+                "若已到账",
+                "如果已到账",
+                "待确认是否",
+                "待核对",
+                "核对是否",
+                "确认是否",
+                "尚未确认",
+                "还未确认",
+                "不能确认",
+                "不按已付",
+                "先不按已付",
+                "不能按已付",
+            )
+        ):
+            continue
+        return True
+    return False
+
+
+def _parallel_paid_deposit_context(state: dict[str, Any]) -> bool:
+    """Use only current joined order/payment facts in the parallel chain."""
+
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
+    if not shared:
+        shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    order_payment = facts.get("orders_and_payment") if isinstance(facts.get("orders_and_payment"), dict) else {}
+    resolved = order_payment.get("resolved_payment") if isinstance(order_payment.get("resolved_payment"), dict) else {}
+    return is_paid_deposit_state(resolved.get("deposit_state"))
 
 
 def _validate_no_payment_after_current_appointment_created(
@@ -633,7 +1183,12 @@ def _validate_effect_absolute_safety_claims(messages: list[dict[str, Any]], stat
         raise ValueError("effect_absolute_safety_claim")
 
 
-def _validate_store_address_message_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+def _validate_store_address_message_facts(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+    *,
+    check_visible_text: bool = True,
+) -> None:
     store_ids = [
         message_content_store_id(item.get("content"))
         for item in messages
@@ -655,7 +1210,7 @@ def _validate_store_address_message_facts(messages: list[dict[str, Any]], state:
     missing_ids = [store_id for store_id in store_ids if store_id not in allowed_ids]
     if missing_ids:
         raise ValueError("unsupported_store_address_message")
-    if _store_address_card_conflicts_with_visible_text(messages, state, store_ids):
+    if check_visible_text and _store_address_card_conflicts_with_visible_text(messages, state, store_ids):
         raise ValueError("store_address_text_card_mismatch")
 
 
@@ -749,6 +1304,65 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
     if status == "send_multiple":
         if emitted and (not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids):
             raise ValueError("store_resolution_send_multiple_contract_violation")
+
+
+def _validate_parallel_location_card_delivery(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Complete a current-turn store lookup with resolved store cards.
+
+    Reply still decides whether a store lookup is relevant. Once it explicitly
+    cites the current lookup fact and that fact has resolved 1-3 deliverable
+    stores, omitting the cards would leave the factual action incomplete. A
+    real inbound location card has the same delivery requirement even if Reply
+    accidentally omitted the tool reference.
+    """
+
+    shared = _parallel_shared_context(state)
+    current = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    location_card = facts.get("location_card") if isinstance(facts.get("location_card"), dict) else {}
+    is_location_card_request = str(current.get("message_type") or "").strip().lower() == "location" and any(
+        str(location_card.get(key) or "").strip()
+        for key in ("location", "coordinates", "title", "address", "location_title", "location_address")
+    )
+    decisions = {
+        str(item.get("fact_ref") or "").strip(): str(item.get("decision") or "").strip()
+        for item in state.get("reply_structured_delivery_decisions") or []
+        if isinstance(item, dict) and str(item.get("fact_ref") or "").strip()
+    }
+    store_decision = decisions.get("tool_fact:customer_store_lookup", "")
+    if not is_location_card_request and store_decision != "deliver":
+        return
+
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("status") or "") not in {"send_single", "send_multiple"}:
+        return
+    required_ids = {
+        str(item or "").strip()
+        for item in resolution.get("delivery_store_ids") or []
+        if str(item or "").strip()
+    }
+    if not required_ids:
+        return
+    emitted_ids = _emitted_store_address_ids(messages)
+    required_text = ",".join(sorted(required_ids))
+    if not emitted_ids:
+        raise ValueError(
+            "planned_store_lookup_requires_store_delivery:"
+            f"required_store_ids={required_text}"
+        )
+    if emitted_ids != required_ids:
+        raise ValueError(
+            "planned_store_lookup_delivery_ids_mismatch:"
+            f"required_store_ids={required_text}"
+        )
 
 
 def _validate_incomplete_store_scope_reply(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -935,14 +1549,23 @@ def _store_fact_ids(structured: dict[str, Any]) -> set[str]:
 
 def _authorized_store_facts_for_validation(state: dict[str, Any]) -> list[dict[str, Any]]:
     structured = _structured_facts(state)
-    store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
+    store_facts = list(
+        structured.get("store_facts")
+        if isinstance(structured.get("store_facts"), list)
+        else []
+    )
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     scope_ids = store_scope_ids(knowledge)
+    store_facts.extend(item for item in knowledge.get("stores") or [] if isinstance(item, dict))
+    for region in _store_scope_summary_regions(state):
+        for key in ("stores", "requested_district_stores"):
+            store_facts.extend(item for item in region.get(key) or [] if isinstance(item, dict))
+    known_stores = _known_store_records_for_validation(state)
     return [
         item
         for item in store_facts
         if isinstance(item, dict)
-        and store_fact_is_valid(item, known_stores=store_facts)
+        and store_fact_is_valid(item, known_stores=known_stores)
         and _store_fact_allowed_by_customer_scope(item, scope_ids)
     ]
 
@@ -976,26 +1599,14 @@ def _store_ids_in_requested_scope(store_ids: set[str], state: dict[str, Any]) ->
 
 def _validate_store_address_card_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     text = _combined_text(messages)
-    current_content = str(state.get("normalized_content") or state.get("content") or "")
     promises_card = _promises_store_address_card(text)
-    customer_requests_card = _current_message_requests_store_address_card(current_content)
-    if not promises_card and not (customer_requests_card and _current_turn_store_address_ids(state)):
+    # Validate the model's own delivery promise. Whether the customer's turn
+    # should receive a card is a Reply decision, not a Python keyword route.
+    if not promises_card:
         return
     if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
         return
     raise ValueError("store_address_message_required_when_reply_promises_location_card")
-
-
-def _current_turn_store_address_ids(state: dict[str, Any]) -> set[str]:
-    structured = _structured_facts(state)
-    ids: set[str] = set()
-    for item in structured.get("store_facts") or []:
-        if isinstance(item, dict):
-            _add_store_id(ids, item)
-    recommended = structured.get("recommended_store")
-    if isinstance(recommended, dict):
-        _add_store_id(ids, recommended)
-    return ids
 
 
 def _validate_appointment_time_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -1058,7 +1669,12 @@ def _validate_registration_confirmation_facts(messages: list[dict[str, Any]], st
     text = _combined_text(messages)
     if not text or not _asserts_registration_confirmed(text):
         return
-    if _paid_deposit_context(state):
+    paid_context = (
+        _parallel_paid_deposit_context(state)
+        if state.get("evidence_join")
+        else _paid_deposit_context(state)
+    )
+    if paid_context:
         return
     structured = _structured_facts(state)
     for fact in structured.get("order_facts") or []:
@@ -1069,6 +1685,68 @@ def _validate_registration_confirmation_facts(messages: list[dict[str, Any]], st
         ).strip():
             return
     raise ValueError("registration_confirmation_fact_required")
+
+
+def _validate_parallel_registration_confirmation_facts(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Reject completed registration claims without a completed fact.
+
+    Payment is authoritative evidence that the deposit was paid, not evidence
+    that a later customer-registration write has already succeeded.  The
+    model-led chain therefore cannot expose a completed registration state
+    before an existing order/registration fact proves it.
+    """
+
+    text = _combined_text(messages)
+    if not text or not _asserts_registration_confirmed(text):
+        return
+    structured = _structured_facts(state)
+    for fact in structured.get("order_facts") or []:
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("status") or "").lower() in {
+            "created",
+            "reused",
+            "pending",
+            "waiting_schedule",
+            "scheduled",
+        } and str(fact.get("order_id") or fact.get("id") or "").strip():
+            return
+    raise ValueError("registration_confirmation_fact_required")
+
+
+def _validate_parallel_appointment_confirmation_facts(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Validate appointment completion only from joined tool facts.
+
+    Legacy planner decisions and top-level memory fields are intentionally not
+    consulted here.  They are not authoritative inputs to the parallel Reply.
+    """
+
+    text_items = [
+        message_content_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    ]
+    if not any(text and _asserts_appointment_confirmed(text) for text in text_items):
+        return
+    structured = _structured_facts(state)
+    for fact in structured.get("appointment_facts") or []:
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("type") or "") not in {
+            "appointment_created",
+            "appointment_confirmed",
+            "appointment_record",
+        }:
+            continue
+        if str(fact.get("appointment_id") or fact.get("appointment_time") or fact.get("time") or "").strip():
+            return
+    raise ValueError("appointment_confirmation_fact_required")
 
 
 def _validate_finished_tool_turn_does_not_promise_pending_work(
@@ -1466,7 +2144,7 @@ def _asserts_distance_ranking(text: str, state: dict[str, Any]) -> bool:
         return False
     if _asks_customer_to_choose_by_convenience(compact):
         return False
-    if any(term in compact for term in ("最近的是", "离您最近", "离你最近", "距离最近")):
+    if any(term in compact for term in ("最近的是", "离您最近", "离你最近", "距离最近", "离您很近", "离你很近")):
         return True
     if any(term in compact for term in ("优先这家", "先看这家")):
         return True
@@ -1481,8 +2159,22 @@ def _asserts_distance_ranking(text: str, state: dict[str, Any]) -> bool:
         return True
     if any(term in compact for term in ("这家更方便", "这家相对方便", "这家更顺路", "这家相对顺路", "该店更方便", "该店更顺路")):
         return True
-    return any(term in compact for term in ("更近", "近一些", "近一点", "较近")) and any(
-        term in compact for term in ("门店", "店", "地址", "导航", "位置", "离您", "离你")
+    # Relative words such as "近一点" are not necessarily store ranking
+    # claims (for example, "发一张近一点的照片，到店再评估").  Require the
+    # proximity word and a store/location subject in the same natural clause.
+    # This remains a factual-claim guard; it does not infer sales intent.
+    clauses = [
+        clause
+        for clause in re.split(r"[，。！？；,.!?;]+", compact)
+        if clause
+    ]
+    return any(
+        any(term in clause for term in ("更近", "近一些", "近一点", "较近"))
+        and any(
+            term in clause
+            for term in ("门店", "店", "地址", "导航", "位置", "离您", "离你")
+        )
+        for clause in clauses
     )
 
 
@@ -1504,11 +2196,11 @@ def _asks_location_before_distance_matching(compact: str) -> bool:
 
 def _asserts_customer_visible_distance_value(text: str, state: dict[str, Any]) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
-    if not _is_store_distance_context(compact, state):
-        return False
     numeric_value = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百半几]+)"
     if re.search(rf"{numeric_value}(?:公里|千米|km)", compact, flags=re.IGNORECASE):
         return True
+    if not _is_store_distance_context(compact, state):
+        return False
     route_terms = "车程|步行|打车|开车|公交|地铁|骑车|过去|过来|到店|路程|导航|路上|交通"
     if re.search(rf"(?:{route_terms})[^，。！？；,.!?;]{{0,12}}{numeric_value}(?:-|到)?{numeric_value}?分钟", compact):
         return True
@@ -1567,48 +2259,6 @@ def _promises_store_address_card(text: str) -> bool:
             "位置卡",
             "定位卡",
         )
-    )
-
-
-def _current_message_requests_store_address_card(text: str) -> bool:
-    compact = re.sub(r"\s+", "", str(text or ""))
-    if any(
-        term in compact
-        for term in (
-            "我可以发定位给你",
-            "我可以发定位给您",
-            "我发定位给你",
-            "我发定位给您",
-            "我给你发定位",
-            "我给您发定位",
-            "我可以发位置给你",
-            "我可以发位置给您",
-        )
-    ):
-        return False
-    if any(
-        term in compact
-        for term in (
-            "发个位置",
-            "发位置",
-            "位置发我",
-            "位置给我",
-            "发个地址",
-            "发地址",
-            "地址发我",
-            "地址给我",
-            "发导航",
-            "导航发我",
-            "发定位",
-            "定位发我",
-            "门店位置",
-        )
-    ):
-        return True
-    if ("店" in compact or "门店" in compact) and any(term in compact for term in ("发我", "发给我", "给我", "发来")):
-        return True
-    return bool(re.search(r"发.{0,8}(地址|位置|定位|导航)", compact)) or bool(
-        re.search(r"(地址|位置|定位|导航).{0,8}(发|给)", compact)
     )
 
 
@@ -1805,31 +2455,52 @@ def _asserts_registration_confirmed(text: str) -> bool:
         "按截图",
         "确认后",
         "核对后",
+        "核对到后",
+        "确认到账后",
+        "查到付款后",
+        "看到账后",
         "收到截图",
     )
     if any(marker in compact for marker in conditional_markers):
         return False
+    if re.search(
+        r"(?:先)?(?:给|帮)[你您]?(?:把)?(?:活动|活动价|名额|资格)(?:先)?(?:保留|留住|留着|留好)",
+        compact,
+    ):
+        return True
+    if any(term in compact for term in ("活动", "活动价", "名额", "资格")) and any(
+        term in compact
+        for term in (
+            "给您留着",
+            "给你留着",
+            "帮您留着",
+            "帮你留着",
+            "给您留住",
+            "给你留住",
+            "帮您留住",
+            "帮你留住",
+            "给您留好了",
+            "给你留好了",
+        )
+    ):
+        return True
+    # Keep this factual guard limited to unmistakable completed-state claims.
+    # Future sales language such as “付好后给您登记” belongs to the model and
+    # must not be reclassified by a broad keyword branch.
     return any(
         term in compact
         for term in (
             "已经报名",
             "报名好了",
-            "给您报上",
-            "帮您报上",
-            "先给您报名",
-            "先帮您报名",
-            "给您登记活动",
-            "帮您登记活动",
-            "先给您登记活动",
-            "先帮您登记活动",
-            "给您记下活动名额",
-            "帮您记下活动名额",
-            "先给您记活动名额",
-            "先帮您记活动名额",
-            "给您留活动名额",
-            "帮您留活动名额",
-            "先给您留名额",
-            "先帮您留名额",
+            "已经给您报上",
+            "已经帮您报上",
+            "已经登记好了",
+            "活动登记好了",
+            "已经给您登记",
+            "已经帮您登记",
+            "名额已经留好",
+            "名额给您留好了",
+            "名额帮您留好了",
         )
     )
 
@@ -2001,6 +2672,19 @@ def message_content_payment_collection(
     state: dict[str, Any] | None = None,
     messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if isinstance(state, dict) and state.get("evidence_join"):
+        if not isinstance(content, dict):
+            raise ValueError("invalid_parallel_payment_collection_content")
+        try:
+            amount = int(float(str(content.get("amount") or "").strip()))
+        except (TypeError, ValueError):
+            raise ValueError("invalid_parallel_payment_collection_amount") from None
+        if amount not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
+            raise ValueError("invalid_parallel_payment_collection_amount")
+        return {
+            "amount": amount,
+            "remark": str(content.get("remark") or "").strip(),
+        }
     return payment_collection_content(content, state=state, messages=messages)
 
 

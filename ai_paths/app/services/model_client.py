@@ -623,6 +623,8 @@ class ModelClient:
     def _hedge_delay_for_tier(self, tier: ModelTier) -> float:
         if tier == "planner":
             return max(0.0, float(self.settings.model_planner_hedge_delay_seconds or 0.0))
+        if tier in {"reply", "strong"}:
+            return max(0.0, float(self.settings.model_reply_hedge_delay_seconds or 0.0))
         return max(0.0, float(self.settings.model_hedge_delay_seconds or 0.0))
 
     @staticmethod
@@ -664,7 +666,11 @@ class ModelClient:
             or self._client_timeout != timeout
             or self._client_loop_id != loop_id
         ):
-            connect_timeout = min(5.0, float(timeout))
+            # The relay occasionally needs more than five seconds to establish
+            # concurrent TLS connections. Keep this inside the existing node
+            # timeout while avoiding false provider failures during the real
+            # Gate/Tool-Planner parallel fan-out.
+            connect_timeout = min(10.0, float(timeout))
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout, connect=connect_timeout),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
@@ -736,9 +742,10 @@ class ModelClient:
 
     @staticmethod
     def _prepare_json_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return ModelClient._ensure_json_marker(
+        prepared = ModelClient._ensure_json_marker(
             ModelClient._merge_adjacent_system_messages(ModelClient._ensure_json_marker(messages))
         )
+        return ModelClient._ensure_json_user_marker(prepared)
 
     @staticmethod
     def _ensure_json_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -765,6 +772,43 @@ class ModelClient:
             return messages
         marker = {"role": "system", "content": marker_text}
         return [marker, *messages]
+
+    @staticmethod
+    def _ensure_json_user_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep the relay's lowercase marker after system-to-input conversion.
+
+        Some OpenAI-compatible relays validate only converted user input when
+        response_format=json_object is used.  The system marker remains the
+        model contract; this duplicate marker only preserves protocol syntax.
+        """
+
+        marker_text = ModelClient._JSON_MODE_MARKER
+        for index, message in enumerate(messages):
+            if str(message.get("role") or "").lower() != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                if marker_text in content:
+                    return messages
+                updated = list(messages)
+                item = dict(message)
+                item["content"] = f"{marker_text}\n\n{content}".strip()
+                updated[index] = item
+                return updated
+            if isinstance(content, list):
+                if any(
+                    isinstance(part, dict)
+                    and str(part.get("type") or "") in {"text", "input_text"}
+                    and marker_text in str(part.get("text") or "")
+                    for part in content
+                ):
+                    return messages
+                updated = list(messages)
+                item = dict(message)
+                item["content"] = [{"type": "text", "text": marker_text}, *content]
+                updated[index] = item
+                return updated
+        return [*messages, {"role": "user", "content": marker_text}]
 
     @staticmethod
     def _merge_adjacent_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

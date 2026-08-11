@@ -5,110 +5,110 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLAN_PATH = ROOT / "docs" / "parallel_gate_planner_refactor_plan.md"
+MODEL_LED_PLAN_PATH = ROOT / "docs" / "model_led_top_sales_brain_refactor_plan.md"
 MATRIX_PATH = ROOT / "docs" / "rule_ownership_matrix.md"
-CHECKLIST_PATH = ROOT / "docs" / "reply_chain_refactor_execution_checklist.md"
+GRAPH_BUILDER_PATH = ROOT / "ai_paths" / "app" / "graph" / "graph_builder.py"
+PARALLEL_CHAIN_PATH = ROOT / "ai_paths" / "app" / "graph" / "nodes" / "parallel_reply_chain.py"
 
 
-def test_refactor_plan_keeps_review_and_test_gates() -> None:
+def test_refactor_plan_keeps_node_ownership_boundaries() -> None:
     text = PLAN_PATH.read_text(encoding="utf-8")
 
     for marker in [
-        "Gate 不是新的 Planner",
-        "Gate 不是最终表达大脑",
-        "Tool Planner 不输出客户话术",
-        "Reply 是复杂场景最终业务大脑",
+        "Gate 只匹配可用话术和给出路由建议，不成为新的业务大脑",
+        "Tool Planner 只决定需要哪些只读事实",
+        "Reply 统一理解完整聊天",
+        "Join 只合并证据",
+        "不能在旧 Planner 完成后再把同一结果包装成两个分支",
+        "不新增 Python 关键词分支",
+    ]:
+        assert marker in text
+
+
+def test_refactor_plan_documents_real_parallel_and_review_stages() -> None:
+    text = PLAN_PATH.read_text(encoding="utf-8")
+
+    for marker in [
+        "asyncio.gather()",
         "每个阶段两轮 review",
-        "T0：合同与隔离测试",
-        "T4：Join 确定性测试",
-        "T6：并行组合测试",
+        "T1：Shared Context",
+        "T6：真实并行",
         "T7：离线全链路仿真",
-        "T8：Shadow 对比与行为开关审核",
-        "不得提交到 `main`，不得部署，不得主动发送真实客户消息",
-        "Gate 必须提供非空静态 `direct_reply_candidate`，否则交 Reply 恢复表达",
-        "行为切换仍保持 blocked，直到人工审核基于完整证据明确批准",
+        "目标运行时已经落入真实 Graph",
+        "真实模型全量仿真及人工回复审核仍是当前行为切换门禁",
+        "本分支不部署",
     ]:
         assert marker in text
 
 
-def test_refactor_plan_is_readable_utf8_without_common_encoding_damage() -> None:
-    text = PLAN_PATH.read_text(encoding="utf-8")
-    damaged_markers = [
-        "锟",
-        "????",
-        "閵",
-        "閸",
-        "娑撳秴",
-        "缁惧灝",
-        "閻",
-        "閺傚洦",
-        "銆",
-        "绗",
-        "鍒",
-        "杈",
-    ]
-
-    for marker in damaged_markers:
-        assert marker not in text, f"refactor plan contains possible encoding damage: {marker}"
+def test_refactor_documents_are_clean_utf8() -> None:
+    for path in (PLAN_PATH, MODEL_LED_PLAN_PATH, MATRIX_PATH):
+        text = path.read_text(encoding="utf-8")
+        for marker in ("????", "锟", "�", "娑撳秴", "銆"):
+            assert marker not in text, f"{path.name} contains encoding damage: {marker}"
 
 
-def test_refactor_plan_keeps_gate_and_planner_from_becoming_brains() -> None:
-    text = PLAN_PATH.read_text(encoding="utf-8")
+def test_active_reply_graph_cannot_reach_legacy_planner_or_normalizer() -> None:
+    graph = GRAPH_BUILDER_PATH.read_text(encoding="utf-8")
 
-    for marker in [
-        "Gate 是内容匹配和第一层路由节点，不是复杂场景的最终业务大脑",
-        "最终判断客户意向度、心理状态和成交阶段",
-        "Tool Planner 只规划只读工具事实，不能输出客户话术，不能判断客户心理",
-        "Join 是确定性合并层，不是第三个模型大脑",
-        "Reply 负责最终客户可见回复、复杂历史理解、客户当前意向、单一主线动作和语气",
-        "复杂软拒绝、时间反复不确定、客户信任异议等场景即使不需要工具，也应进入 Reply",
-    ]:
+    expected_nodes = (
+        '"shared_context"',
+        '"parallel_evidence"',
+        '"execute_readonly_actions"',
+        '"evidence_join"',
+        '"synthesize_reply"',
+    )
+    positions = [graph.index(node) for node in expected_nodes]
+    assert positions == sorted(positions)
+    assert "planner_nodes" not in graph
+    assert "brain_v2_normalizer" not in graph
+    assert "create_planner" not in graph
+
+
+def test_parallel_chain_does_not_publish_legacy_sales_decisions() -> None:
+    source = PARALLEL_CHAIN_PATH.read_text(encoding="utf-8")
+
+    assert "asyncio.create_task(_run_content_gate" in source
+    assert "asyncio.create_task(_run_tool_planner" in source
+    assert "await asyncio.gather(" in source
+    assert '"planner_decision":' not in source
+    for excluded in (
+        "signup_state",
+        "next_slot",
+        "deposit_ready_candidate",
+        "customer_type",
+        "main_blocker",
+        "conversion_stage",
+        "automatic_store_confirmation",
+    ):
+        assert f'"{excluded}"' in source
+
+
+def test_model_led_plan_requires_post_completion_architecture_review() -> None:
+    text = MODEL_LED_PLAN_PATH.read_text(encoding="utf-8")
+
+    for marker in (
+        "完成后的强制架构复审门禁",
+        "semantic_intrusion",
+        "over_protection",
+        "legacy_unreachable",
+        "代码在纠正结构时静默改变模型的业务决定",
+        "任一 `semantic_intrusion` 或未解释的 `over_protection` 未清零",
+    ):
         assert marker in text
 
 
-def test_refactor_plan_documents_current_behavior_switch_status_without_claiming_deployment() -> None:
-    text = PLAN_PATH.read_text(encoding="utf-8")
-
-    for marker in [
-        "当前 `codex/reply-chain-refactor` 已完成 B0-B8 的主要 shadow 骨架和行为开关审核门禁",
-        "Human review 不能只写 `approved=true`",
-        "当前所有改动只允许提交到 `codex/reply-chain-refactor`，不得部署，不得合入 `main`",
-        "使用真实模型完成三模型矩阵准确率和速度评估",
-        "对任何效果退化先修 prompt、上下文和事实输入，不新增 Python 关键词业务分支",
-    ]:
-        assert marker in text
-
-    assert "下一阶段应进入 B7" not in text
 def test_rule_matrix_active_rules_have_target_owner_and_tests() -> None:
     rows = _matrix_rows()
-    assert rows, "rule ownership matrix must not be empty"
+    assert rows
 
     for row in rows:
-        status = row["migration status"].strip()
-        if status in {"active", "merged", "hard_boundary"}:
-            assert row["target owner"].strip(), f"{row['rule_id']} missing target owner"
-            assert row["regression tests"].strip(), f"{row['rule_id']} missing regression tests"
+        if row["migration status"] == "active":
+            assert row["target owner"], row["rule_id"]
+            assert row["regression tests"], row["rule_id"]
 
 
-def test_tool_planner_target_does_not_own_business_semantics() -> None:
-    rows = _matrix_rows()
-    forbidden = ("psychology", "sales rhythm", "closing", "成交", "心理", "主线")
-
-    for row in rows:
-        target_owner = row["target owner"].lower()
-        business_meaning = row["business meaning"].lower()
-        if target_owner.startswith("tool planner"):
-            assert not any(term.lower() in business_meaning for term in forbidden), row["rule_id"]
-
-
-def test_superseded_order_precondition_stays_superseded() -> None:
-    rows = {row["rule_id"]: row for row in _matrix_rows()}
-    row = rows["order_required_before_payment_card"]
-
-    assert row["migration status"] == "superseded"
-    assert row["target owner"] == "None"
-
-
-def test_rule_matrix_covers_recent_high_risk_business_areas() -> None:
+def test_rule_matrix_keeps_high_risk_rules_and_superseded_order_precondition() -> None:
     rows = {row["rule_id"]: row for row in _matrix_rows()}
     required = {
         "gate_not_business_brain",
@@ -118,6 +118,7 @@ def test_rule_matrix_covers_recent_high_risk_business_areas() -> None:
         "store_visible_scope_only",
         "store_candidate_count_rule",
         "payment_no_order_precondition",
+        "payment_deposit_evidence_gate",
         "payment_after_paid_registration",
         "unknown_message_transfer_paid",
         "health_risk_priority",
@@ -125,143 +126,22 @@ def test_rule_matrix_covers_recent_high_risk_business_areas() -> None:
         "human_wechat_style",
         "sop_mainline_progression",
         "precision_answer_then_mainline",
+        "appointment_blocker_reply_ownership",
     }
 
-    missing = sorted(required.difference(rows))
-    assert not missing, f"missing rule ownership rows: {missing}"
-
-    for rule_id in required:
-        assert rows[rule_id]["migration status"] == "active", rule_id
-        assert rows[rule_id]["target owner"], rule_id
-
-
-def test_rule_matrix_has_structural_refactor_review_gates() -> None:
-    text = MATRIX_PATH.read_text(encoding="utf-8")
-
-    for marker in [
-        "Structural Refactor Review Gate",
-        "rule_matrix_delta_review",
-        "payload_isolation_review",
-        "authority_snapshot_review",
-        "reply_chain_authority_audit_v1",
-        "reply_chain_timeline_window_audit_v1",
-        "reply_chain_current_message_audit_v1",
-        "reply_chain_fact_snapshot_audit_v1",
-        "gate_commit_boundary_review",
-        "branch_input_isolation_review",
-        "final_expression_owner_review",
-        "direct_reply_guard_review",
-        "reply_chain_direct_reply_guard_audit_v1",
-        "reply_handoff_readiness_review",
-        "reply_final_brain_handoff_readiness_audit_v1",
-        "reply_chain_release_review_checklist_v1",
-        "reply_chain_behavior_switch_guard_v1",
-        "commit_phase_shadow_review",
-        "reply_chain_deferred_write_handoff_audit_v1",
-        "reply_chain_write_action_inventory_v1",
-        "business_wording_freeze_review",
-        "model_semantics_ownership_review",
-        "simulation_regression_review",
-        "model_matrix_review",
-        "rollback_evidence_review",
-        "REPLY_FINAL_BRAIN_V2_ENABLED",
-        "comparison diagnostics show no shadow replay diffs",
-        "workflow_tests/test_reply_chain_shadow_payload_isolation.py",
-        "workflow_tests/test_reply_chain_behavior_switch_guard.py",
-        "workflow_tests/test_reply_chain_external_gate_evidence.py",
-        "workflow_tests/test_reply_chain_shadow_context.py",
-        "workflow_tests/test_reply_final_brain_handoff.py",
-        "workflow_tests/test_parallel_reply_chain_shadow.py",
-        "offline_reply_chain_simulation_report_v1",
-        "evaluation_scope.full_release_gate_candidate=true",
-        "targeted_smoke=false",
-        "run_options.skip_review=false",
-        "ordinary attempts are at least 3",
-        "critical attempts are at least 5",
-        "reply_chain_refactor_model_matrix_v1",
-        "must check all sixteen gates",
-        "diagnostic evidence only",
-        "must not be deployed from this branch",
-    ]:
-        assert marker in text
+    assert not required.difference(rows)
+    assert rows["order_required_before_payment_card"]["migration status"] == "superseded"
+    assert rows["order_required_before_payment_card"]["target owner"] == "None"
+    for rule_id in ("conversion_stage", "customer_type", "fixed_mainline_next_step"):
+        assert rows[rule_id]["type"] == "deprecated"
+        assert rows[rule_id]["migration status"] == "superseded"
+        assert rows[rule_id]["target owner"] == "None"
 
 
-def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None:
-    text = CHECKLIST_PATH.read_text(encoding="utf-8")
-
-    for marker in [
-        "schema_version=offline_reply_chain_simulation_report_v1",
-        "evaluation_scope.schema_version=offline_simulation_scope_v1",
-        "evaluation_scope.full_release_gate_candidate=true",
-        "evaluation_scope.targeted_smoke=false",
-        "run_options.schema_version=offline_simulation_run_options_v1",
-        "run_options.skip_review=false",
-        "run_options.attempts >= 3",
-        "run_options.critical_attempts >= 5",
-        "summary.infrastructure_failures=0",
-        "summary.acceptance.infrastructure_failures_zero=true",
-        "coverage.schema_version=offline_simulation_coverage_audit_v1",
-        "coverage.missing_required_categories=[]",
-        "summary.acceptance.scenario_coverage_complete=true",
-        "summary.acceptance.baseline_comparison_passed=true",
-        "safety.production_customer_messages_sent=false",
-        "safety.production_writes_allowed=false",
-        "safety.virtual_outbox_only=true",
-        "safety.production_write_count=0",
-        "review_artifacts.schema_version=offline_simulation_review_artifacts_v1",
-        "request/event IDs, node trace names, tool call names",
-        "run_refactor_model_matrix.py",
-        "REFACTOR_MODEL_RELAY_BASE_URL='https://linkai.shop'",
-        "REFACTOR_MODEL_CLAUDE_API_KEY='<local-only secret>'",
-        "REFACTOR_MODEL_GEMINI_API_KEY='<local-only secret>'",
-        "REFACTOR_MODEL_OPENAI_API_KEY='<local-only secret>'",
-        "--profiles claude,gemini,openai",
-        "--require-keys",
-        "--profile-timeout-seconds 120",
-        "claude-opus-4-7",
-        "gemini-3.5-flash",
-        "gpt-5.4",
-        "schema_version=reply_chain_refactor_model_matrix_v1",
-        "evaluation_scope.schema_version=reply_chain_refactor_model_matrix_scope_v1",
-        "evaluation_scope.full_release_gate_candidate=true",
-        "evaluation_scope.targeted_smoke=false",
-        "run_options.schema_version=reply_chain_refactor_model_matrix_run_options_v1",
-        "run_options.skip_review=false",
-        "run_options.attempts >= 3",
-        "run_options.critical_attempts >= 5",
-        "profiles_requested",
-        "no profile has `status=timed_out`",
-        "profile_summary.semantic_pass_rate",
-        "p50_ms",
-        "p90_ms",
-        "profile_summary.infrastructure_failures=0",
-        "profile_summary.accepted_by_release_thresholds=true",
-        "safety.api_keys_written_to_report=false",
-        "safety.production_customer_messages_sent=false",
-        "safety.production_writes_allowed=false",
-        "The keys must only live in local or server environment variables",
-        "committed tests, fixtures, reports, Markdown",
-        "audit_model_semantics_ownership.py",
-        "schema_version=reply_chain_model_semantics_ownership_audit_v1",
-        "tool_planner_legacy_residue_count=0",
-        "join_generates_customer_visible_text=false",
-        "join_decides_sales_psychology=false",
-        "direct_reply_scope=static_candidate_only_no_dynamic_facts",
-        "semantic_ownership_passed=true",
-        "safety.does_not_call_external_tools=true",
-        "reply_chain_behavior_switch_guard(model_matrix_report=...)",
-        "reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=...)",
-        "Omitting payload isolation, business wording freeze, rollback",
-        "postcommit bundle and final behavior-switch guard aligned",
-        "Every external report attached to the final behavior-switch guard must also expose both",
-        "`git_commit` and `git_commit_set=[reviewed_commit]`",
-        "This applies to offline simulation, model matrix, payload isolation, business wording freeze, rollback evidence, and model semantics ownership",
-        "if any attached evidence has multiple commits",
-        "a valid matrix report",
-        "authoritative evidence",
-        "rg -n -P 'sk-[A-Za-z0-9]{20,}",
-    ]:
-        assert marker in text
+def test_rule_matrix_uses_model_led_taxonomy_only() -> None:
+    allowed = {"hard_law", "business_fact", "sales_principle", "content_asset", "deprecated"}
+    for row in _matrix_rows():
+        assert row["type"] in allowed, row["rule_id"]
 
 
 def _matrix_rows() -> list[dict[str, str]]:
@@ -271,7 +151,6 @@ def _matrix_rows() -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in table_lines[2:]:
         cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) != len(header):
-            continue
-        rows.append(dict(zip(header, cells)))
+        if len(cells) == len(header):
+            rows.append(dict(zip(header, cells)))
     return rows

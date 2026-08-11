@@ -217,7 +217,30 @@ def _location_card_point(card: dict[str, Any]) -> tuple[float, float] | None:
             return float(longitude), float(latitude)
         except (TypeError, ValueError):
             pass
+    # The workflow-compatible platform contract uses `latitude,longitude` for
+    # location-card `coordinates`. Older internal `location` values follow the
+    # geocoder's `longitude,latitude` contract, so the two aliases cannot share
+    # one parser.
+    coordinates = str(card.get("coordinates") or "").strip()
+    if coordinates:
+        return _parse_platform_lat_lng(coordinates)
     return _parse_lng_lat(str(card.get("location") or ""))
+
+
+def _parse_platform_lat_lng(value: str) -> tuple[float, float] | None:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 2:
+        return None
+    try:
+        first = float(parts[0])
+        second = float(parts[1])
+    except (TypeError, ValueError):
+        return None
+    # Normal workflow payloads are latitude,longitude. Keep a narrow fallback
+    # for already-normalized callers whose first value can only be longitude.
+    if abs(first) > 90 >= abs(second):
+        return first, second
+    return second, first
 
 
 def _parse_lng_lat(value: str) -> tuple[float, float] | None:
@@ -297,7 +320,25 @@ def _region_or_text_mentioned(value: str, text: str) -> bool:
     if not value_norm or not text_norm:
         return False
     alias = _compact(_region_alias(value))
-    return value_norm in text_norm or (len(alias) >= 2 and alias in text_norm)
+    return (
+        value_norm in text_norm
+        or (len(alias) >= 2 and alias in text_norm)
+        or _autonomous_prefecture_prefix_mentioned(value_norm, text_norm)
+    )
+
+
+def _autonomous_prefecture_prefix_mentioned(value: str, text: str) -> bool:
+    """Recognize the place-name prefix before autonomous ethnic designations."""
+
+    if not value.endswith("自治州"):
+        return False
+    core = value[: -len("自治州")]
+    for index in range(2, len(core)):
+        place_name = core[:index]
+        ethnic_suffix = core[index:]
+        if ethnic_suffix.endswith("族") and "族" in ethnic_suffix and place_name in text:
+            return True
+    return False
 
 
 def _assistant_proposed_location(query: str, messages: list[tuple[str, str]]) -> bool:
@@ -313,6 +354,11 @@ def _assistant_proposed_location(query: str, messages: list[tuple[str, str]]) ->
 
 def _region_alias(value: str) -> str:
     output = str(value or "").strip()
+    # Administrative "new districts" are usually supplied without the full
+    # composite suffix (for example, 浦东 -> 浦东新区). Preserve one-character
+    # roots such as 高新区 so their useful alias remains 高新.
+    if output.endswith("新区") and len(output[: -len("新区")]) >= 2:
+        return output[: -len("新区")]
     for suffix in ("特别行政区", "自治区", "自治州", "省", "市", "区", "县", "镇", "乡", "村", "街道"):
         if output.endswith(suffix) and len(output) > len(suffix):
             return output[: -len(suffix)]

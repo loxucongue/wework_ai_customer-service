@@ -13,7 +13,6 @@ from app.graph.nodes.common import (
 from app.graph.nodes.conversation_history_fetch import ConversationFetcher, fetch_platform_conversation_history
 from app.graph.nodes.image_info import build_vision_prompt, fallback_image_info, validated_image_info
 from app.graph.nodes.location_card import append_location_card_to_content
-from app.graph.nodes.reply_chain_shadow_context import build_reply_chain_shadow_context
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
@@ -56,7 +55,10 @@ def create_input_normalization_layer(
                 input_quality_flags.append("suspected_short_mojibake")
             temp_state = dict(state)
             temp_state["normalized_content"] = normalized
-            platform_transfer_info = _platform_unknown_transfer_image_info(normalized)
+            platform_transfer_info = _platform_unknown_transfer_image_info(
+                normalized,
+                msgtype=str(request_context.get("msgtype") or ""),
+            )
             if platform_transfer_info is not None:
                 normalized = "客户发送了转账消息"
                 image_info, model_calls = platform_transfer_info, []
@@ -80,10 +82,14 @@ def create_input_normalization_layer(
     return input_normalization_layer
 
 
-def _platform_unknown_transfer_image_info(content: str) -> dict[str, Any] | None:
-    """Normalize the platform's fixed unknown-message placeholder as a transfer fact."""
+def _platform_unknown_transfer_image_info(
+    content: str,
+    *,
+    msgtype: str = "",
+) -> dict[str, Any] | None:
+    """Normalize the platform's structured unknown message as a transfer fact."""
     compact = "".join(str(content or "").split())
-    if compact not in UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS:
+    if str(msgtype or "").strip().lower() != "unknown" and compact not in UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS:
         return None
     return {
         "has_image": False,
@@ -343,7 +349,7 @@ def create_background_context_layer(
                         "conversation_turns": list(state.get("conversation_turns") or []),
                         "conversation_fetch": {
                             "status": "timeout",
-                            "limit": 20,
+                            "limit": 50,
                             "used_message_count": len(state.get("conversation_history") or []),
                             "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
                         },
@@ -451,14 +457,6 @@ def create_background_context_layer(
                     customer_result=customer_result,
                     store_knowledge=customer_store_knowledge,
                     conversation_result=conversation_result,
-                ),
-                "reply_chain_shadow_context": build_reply_chain_shadow_context(
-                    state,
-                    identity=identity,
-                    customer_result=customer_result,
-                    store_knowledge=customer_store_knowledge,
-                    conversation_result=conversation_result,
-                    memory=memory,
                 ),
                 "trace": state.get("trace", []),
             }
@@ -600,8 +598,8 @@ async def _timed_conversation_fetch(
         summary = {
             "status": "failed",
             "error": f"{type(exc).__name__}: {exc}",
-            "used_message_count": len(fallback[-20:]),
-            "limit": 20,
+            "used_message_count": len(fallback[-50:]),
+            "limit": 50,
         }
         return {
             "name": "conversation_fetch",

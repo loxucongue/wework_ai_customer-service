@@ -5,11 +5,13 @@
     {
       "id": "s10_new_customer_opening",
       "enabled": true,
+      "parallel_candidate_enabled": false,
       "scope": "chat_gate",
       "scopes": [
         "chat_gate"
       ],
       "sop_category": "s10_new_customer_opening",
+      "asset_role": "opening_context",
       "name": "新客破冰",
       "purpose": "新客加微后建立基本信任，介绍技术优势，并引导客户提供城市/区域或定位以便匹配附近门店。",
       "order": 10,
@@ -54,6 +56,7 @@
         "chat_gate"
       ],
       "sop_category": "s10_need_and_case",
+      "asset_role": "effect_evidence",
       "name": "需求与效果承接",
       "purpose": "客户第一次问斑点、效果或是否能做时，承接需求、发送效果案例参考，并衔接客户是否来自线上推广活动。客户追问活动价是否只包含检测/清洁/洗脸、是否真正包含斑点改善时不适用，应交给普通 AI 解释项目内容与费用包含后继续推进。",
       "order": 20,
@@ -88,6 +91,13 @@
           "content": {
             "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_second-de0488d149ea.png"
           }
+        },
+        {
+          "type": "text",
+          "order": 4,
+          "content": {
+            "text": "您是看到我们线上淡斑活动进来的吗？"
+          }
         }
       ]
     },
@@ -99,8 +109,9 @@
         "chat_gate"
       ],
       "sop_category": "s10_activity_intro",
+      "asset_role": "activity_offer",
       "name": "活动介绍",
-      "purpose": "客户第一次了解活动、价格或预约金时，说明活动价值、费用规则、预约金可退抵扣口径、名额保留，并补充效果案例参考。",
+      "purpose": "客户第一次了解活动或价格时，说明268元活动价值、项目范围和名额事实；本资产不包含预约金成交动作或收款卡。已经完成本资产后，客户继续要求留活动、留名额、报名、预约或付款时，不再重复提名本资产，应考虑独立的deposit_close资产。",
       "order": 30,
       "send_once": true,
       "send_once_group": "activity_price_quote",
@@ -120,7 +131,7 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "现在我们是周年庆线上淡斑活动，前30名登记的顾客到店可以享受268元淡斑特惠价，我把活动给您发一下。\n\n周年庆线上淡斑活动（淡斑套餐）\n①268元活动价格仅限30名，套餐包括淡斑、检测皮肤、基础清洁和肌肤补水。\n②线上预定每位10元并登记姓名电话，到店抵扣10元，做的话再付258元；未做或不满意可退，实际按付款记录核对。\n③仅限线上报名客户有效，名额满活动结束并恢复原价；线下客户到店按原价。预定后到店时间可以按您方便安排。"
+            "text": "亲，现在周年庆线上淡斑活动是268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。前30名线上登记的顾客享受这个价格，名额满活动结束并恢复原价；线下客户到店按原价。"
           }
         },
         {
@@ -134,29 +145,27 @@
           "type": "text",
           "order": 3,
           "content": {
-            "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，未做或不满意可退，实际按付款记录核对，主要是先帮您保留活动价名额。"
-          }
-        },
-        {
-          "type": "payment_collection",
-          "order": 4,
-          "content": {
-            "amount": 10,
-            "remark": ""
+            "text": "我把活动图也发您看一下。到店会先看皮肤和斑点情况，再按实际情况跟您讲清楚。"
           }
         }
       ]
     },
     {
       "id": "s10_store_prompt",
-      "enabled": true,
+      "enabled": false,
       "scope": "chat_gate",
       "scopes": [
         "chat_gate"
       ],
       "sop_category": "store_prompt",
+      "asset_role": "location_capture",
+      "selection_constraints": {
+        "forbidden_when_authoritative_facts_present": [
+          "location_card"
+        ]
+      },
       "name": "轻度询问客户所在城市",
-      "purpose": "客户需要匹配附近门店但尚未提供省市时，轻问所在省份和城市。",
+      "purpose": "已退出普通聊天运行时。位置澄清由 Tool Planner 提供缺失事实，Reply 根据完整历史自然追问，避免静态模板重复询问客户已经提供的地址层级。事件轨问地址使用独立 event_s10_store_prompt_5min。",
       "order": 35,
       "send_once": true,
       "event_type": "",
@@ -174,7 +183,7 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "亲，您是在那个省份那个城市呢？我给您匹配最近的店铺。"
+            "text": "亲，您把具体城市、区县或定位发我，我按您提供的位置匹配方便到店的门店。"
           }
         }
       ]
@@ -184,8 +193,9 @@
       "enabled": true,
       "scope": "chat_gate",
       "sop_category": "s10_objection_resolution",
+      "asset_role": "objection_support",
       "name": "收费与预约金顾虑处理",
-      "purpose": "仅用于客户当前主要顾虑是套路、隐形消费、乱收费、费用规则、预约金抵扣/可退或活动价格真实性时，解释明码标价和预约金规则。效果真实性、怕没效果、反黑、做坏、伤肤等效果/安全顾虑不适用，应交给普通 AI 结合历史案例和当前上下文答疑推进。",
+      "purpose": "仅用于客户当前主要顾虑是套路、隐形消费、乱收费或活动价格真实性时，解释268元活动范围和明码标价边界。本资产不包含预约金、口头登记或收款动作；预约金抵扣/可退和付款方式由独立 deposit_close 资产承接。效果真实性、怕没效果、反黑、做坏、伤肤等效果/安全顾虑不适用，应交给普通 AI 结合历史案例和当前上下文答疑。",
       "order": 40,
       "send_once": true,
       "event_type": "",
@@ -201,36 +211,14 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "您放心，我们是全国连锁店，都是明码标价没有任何强制性消费的"
+            "text": "您放心，我们是全国连锁店，活动内容和费用都会提前说清，都是明码标价，没有强制消费。"
           }
         },
         {
           "type": "text",
           "order": 2,
           "content": {
-            "text": "您现在登记记下来优惠名额就是这个价格处理斑点问题，没有其他强制消费哈(仅限现在登记才是这个价格哦)"
-          }
-        },
-        {
-          "type": "text",
-          "order": 3,
-          "content": {
-            "text": "线上预付10到店在付款258共268 明码标价没有胡乱收费哈亲放心"
-          }
-        },
-        {
-          "type": "payment_collection",
-          "order": 4,
-          "content": {
-            "amount": 10,
-            "remark": ""
-          }
-        },
-        {
-          "type": "text",
-          "order": 5,
-          "content": {
-            "text": "报名登记是先给您保留本次活动价名额，后面按您的时间安排门店档期。10元预约金到店抵扣，未做或不满意可退，实际按付款记录核对。"
+            "text": "本次线上淡斑活动价是268元，包含淡斑、皮肤检测、基础清洁和肌肤补水；到店如果有人另外推荐项目，您不需要接受，按线上活动内容核对就可以。"
           }
         }
       ]
@@ -240,8 +228,12 @@
       "enabled": true,
       "scope": "chat_gate",
       "sop_category": "deposit_push",
+      "asset_role": "deposit_close",
+      "requires_prior_asset_roles": [
+        "activity_offer"
+      ],
       "name": "轻度催预约金",
-      "purpose": "客户已了解活动且未支付预约金时，用效果参考和可退抵扣规则轻度推动预约金。",
+      "purpose": "更早轮次已经完成活动介绍并形成另一项有效承接，客户当前明确要留活动、留名额、报名、预约或付款时，说明每位10元预约金、抵扣、258元尾款和可退规则，并提供收款卡；更早的暂缓不能覆盖客户当前重新打开的成交动作。",
       "order": 50,
       "send_once": true,
       "event_type": "sop_platform_task",
@@ -259,7 +251,7 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "您看下这个改善参考，活动名额先锁住更稳，到店时间按您方便安排，10元预约金到店抵扣；未做或不满意可退，实际按付款记录核对。"
+            "text": "确定参加的话，每位先付10元预约金保留活动名额，到店会抵扣，做的话再付258元；未做或不满意可退，实际按付款记录核对。到店时间后面按您方便安排。"
           }
         },
         {
@@ -284,6 +276,7 @@
       "enabled": false,
       "scope": "event_first_add",
       "sop_category": "intro",
+      "asset_role": "opening_context",
       "name": "事件-1分钟介绍补发",
       "purpose": "加微后客户未回复时，补发技术和效果铺垫，建立基础信任。",
       "order": 110,
@@ -322,6 +315,7 @@
         "event_first_add"
       ],
       "sop_category": "store_prompt",
+      "asset_role": "location_capture",
       "name": "事件-5分钟问地址",
       "purpose": "介绍后客户未回复时，追问城市或区域，为门店匹配做铺垫。",
       "order": 120,
@@ -360,6 +354,7 @@
         "event_first_add"
       ],
       "sop_category": "effect_case",
+      "asset_role": "effect_evidence",
       "name": "事件-30分钟效果铺垫",
       "purpose": "门店或地址沟通后未回复时，发送效果参考，强化客户价值预期。",
       "order": 130,
@@ -414,6 +409,7 @@
         "event_first_add"
       ],
       "sop_category": "price_quote",
+      "asset_role": "activity_offer",
       "name": "事件-60分钟报价",
       "purpose": "客户沉默时补齐活动价、预约金、尾款和可退规则，推进优惠名额。",
       "order": 140,
@@ -477,6 +473,7 @@
         "event_first_add"
       ],
       "sop_category": "deposit_push",
+      "asset_role": "deposit_close",
       "name": "事件-70分钟通单收款",
       "purpose": "报价后客户未成交时，轻推预约金入口，完成活动名额锁定。",
       "order": 150,
@@ -534,6 +531,7 @@
         "event_first_add"
       ],
       "sop_category": "payment_followup",
+      "asset_role": "payment_followup",
       "name": "事件-未付款1小时效果跟进",
       "purpose": "客户未付预约金时，继续用效果参考和到店抵扣规则降低付款压力。",
       "order": 160,
@@ -591,6 +589,7 @@
         "event_first_add"
       ],
       "sop_category": "operation_video",
+      "asset_role": "operation_evidence",
       "name": "事件-未付款2小时操作视频",
       "purpose": "客户未付预约金且未回复时，发送操作视频缓解效果和安全顾虑。",
       "order": 170,
@@ -640,6 +639,7 @@
         "event_first_add"
       ],
       "sop_category": "final_close",
+      "asset_role": "deposit_close",
       "name": "事件-当天18点最后收单",
       "purpose": "加微当天未付款时，做当天最后一次活动名额提醒。",
       "order": 180,

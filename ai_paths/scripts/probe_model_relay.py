@@ -104,8 +104,11 @@ async def _probe_model(
             }
             if json_mode:
                 payload["messages"] = [
-                    {"role": "system", "content": "Return valid JSON only."},
-                    {"role": "user", "content": '{"task":"connectivity_test","reply_schema":{"ok":true,"model":"string"}}'},
+                    {"role": "system", "content": "Return valid json only."},
+                    {
+                        "role": "user",
+                        "content": 'Return valid json only. {"task":"connectivity_test","reply_schema":{"ok":true,"model":"string"}}',
+                    },
                 ]
                 if use_response_format:
                     payload["response_format"] = {"type": "json_object"}
