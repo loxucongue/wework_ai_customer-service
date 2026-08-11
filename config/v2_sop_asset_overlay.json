@@ -18,7 +18,7 @@
     },
     {
       "id": "s10_store_prompt",
-      "parallel_candidate_enabled": true,
+      "parallel_candidate_enabled": false,
       "asset_role": "location_capture",
       "selection_constraints": {
         "forbidden_when_authoritative_facts_present": [

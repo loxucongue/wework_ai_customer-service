@@ -47,7 +47,7 @@ def test_original_price_is_answerable_but_not_used_in_proactive_marketing() -> N
 
 def test_activity_sop_copy_does_not_proactively_quote_original_price() -> None:
     payload = json.loads(open("config/sop_reply_packs.json", encoding="utf-8").read())
-    target_ids = {"s10_activity_intro", "event_s10_price_quote_60min", "event_s10_deposit_push_70min"}
+    target_ids = {"s10_activity_intro"}
     texts = {
         pack["id"]: "\n".join(
             str(message.get("content", {}).get("text") or "")

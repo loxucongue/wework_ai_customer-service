@@ -24,9 +24,10 @@ The active V2 path is:
 ## Risks Fixed
 
 1. **SOP configuration drift**
-   - V2 now consumes the same base SOP configuration as V1.
+   - V2 now consumes the same six-pack base SOP configuration as V1.
    - V2-only code metadata is applied from `v2_sop_asset_overlay.json`.
    - The overlay rejects customer-visible text, media, price or other business-content fields.
+   - The current operator-edited opening, case media and store prompt were preserved; the confirmed activity, objection and deposit assets were separated so first activity education no longer carries a payment card.
 
 2. **Code forcing store cards after the model chose not to send them**
    - Reply must explicitly decide `deliver` or `defer` for every current structured delivery option.
@@ -56,7 +57,7 @@ The active V2 path is:
 
 ## Validation
 
-- Deterministic suite: `1294 passed, 2 skipped`
+- Deterministic suite: `1297 passed, 2 skipped`
 - Focused Reply suite: `541 passed`
 - Configuration/release/V2 route suite: `29 passed`
 - Focused real-model simulations after repair:

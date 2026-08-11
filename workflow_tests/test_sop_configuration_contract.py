@@ -12,8 +12,8 @@ from app.services.sop_reply_pack_service import SopReplyPackService
 
 
 OPENING_EFFICACY_IMAGE = (
-    "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260720/"
-    "b441a00bbf264ea0-s10-opening-efficacy.png"
+    "https://test.by4dev.4ba.cn/uploads/images/"
+    "1786332826302_f0f91788-3af9-445f-b9e6-cf3b00787765.png"
 )
 ACTIVITY_AD_IMAGE = (
     "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/"
@@ -31,7 +31,10 @@ DEPOSIT_LIGHT_IMAGE = (
 
 def _load_config() -> dict:
     return SopReplyPackService(
-        SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json"))
+        SimpleNamespace(
+            sop_reply_packs_path=Path("config/sop_reply_packs.json"),
+            sop_reply_packs_overlay_path=Path("config/v2_sop_asset_overlay.json"),
+        )
     ).load()
 
 
@@ -196,12 +199,11 @@ def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
     deposit = _pack(config, "s10_deposit_close")
 
     assert _image_urls(cases) == EFFECT_CASE_IMAGES
-    assert store_prompt["enabled"] is False
+    assert store_prompt["enabled"] is True
     assert store_prompt["selection_constraints"] == {
         "forbidden_when_authoritative_facts_present": ["location_card"]
     }
-    assert "Tool Planner" in store_prompt["purpose"]
-    assert "event_s10_store_prompt_5min" in store_prompt["purpose"]
+    assert store_prompt["parallel_candidate_enabled"] is False
     assert deposit["enabled"] is True
     assert _image_urls(deposit) == [DEPOSIT_LIGHT_IMAGE]
     assert [message.get("type") for message in deposit["reply_messages"]] == [
@@ -214,7 +216,10 @@ def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
 def test_static_store_prompt_is_not_exposed_to_normal_reply_gate() -> None:
     service = object.__new__(SopExecutionService)
     service.sop_reply_pack_service = SopReplyPackService(
-        SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json"))
+        SimpleNamespace(
+            sop_reply_packs_path=Path("config/sop_reply_packs.json"),
+            sop_reply_packs_overlay_path=Path("config/v2_sop_asset_overlay.json"),
+        )
     )
 
     catalog = service.reply_chain_content_catalog()
