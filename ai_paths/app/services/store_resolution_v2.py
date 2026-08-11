@@ -37,7 +37,14 @@ def build_location_evidence(
     location_card = state.get("location_card") if isinstance(state.get("location_card"), dict) else {}
     card_text = " ".join(
         str(location_card.get(key) or "").strip()
-        for key in ("title", "address", "location_title", "location_address", "location")
+        for key in (
+            "title",
+            "address",
+            "location_title",
+            "location_address",
+            "coordinates",
+            "location",
+        )
         if str(location_card.get(key) or "").strip()
     ).strip()
     card_point = _location_card_point(location_card)
@@ -217,7 +224,7 @@ def _location_card_point(card: dict[str, Any]) -> tuple[float, float] | None:
             return float(longitude), float(latitude)
         except (TypeError, ValueError):
             pass
-    return _parse_lng_lat(str(card.get("location") or ""))
+    return _parse_lng_lat(str(card.get("coordinates") or card.get("location") or ""))
 
 
 def _parse_lng_lat(value: str) -> tuple[float, float] | None:
@@ -297,7 +304,25 @@ def _region_or_text_mentioned(value: str, text: str) -> bool:
     if not value_norm or not text_norm:
         return False
     alias = _compact(_region_alias(value))
-    return value_norm in text_norm or (len(alias) >= 2 and alias in text_norm)
+    return (
+        value_norm in text_norm
+        or (len(alias) >= 2 and alias in text_norm)
+        or _autonomous_prefecture_prefix_mentioned(value_norm, text_norm)
+    )
+
+
+def _autonomous_prefecture_prefix_mentioned(value: str, text: str) -> bool:
+    """Recognize the place-name prefix before autonomous ethnic designations."""
+
+    if not value.endswith("自治州"):
+        return False
+    core = value[: -len("自治州")]
+    for index in range(2, len(core)):
+        place_name = core[:index]
+        ethnic_suffix = core[index:]
+        if ethnic_suffix.endswith("族") and "族" in ethnic_suffix and place_name in text:
+            return True
+    return False
 
 
 def _assistant_proposed_location(query: str, messages: list[tuple[str, str]]) -> bool:

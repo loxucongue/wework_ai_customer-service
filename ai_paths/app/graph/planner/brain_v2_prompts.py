@@ -30,6 +30,7 @@ PLANNER_STORE_LOCATION_LOOKUP_CONTRACT = """
 - 客户地址疑似存在错别字、方言简称或省市区缺字时，`query` 必须保留原话，并在 `location_candidates` 中给出 1–3 个可能的完整标准地址和纠错依据。校准：“防成港→广西防城港市”“东管长安→广东省东莞市长安镇”“厦们湖里→福建省厦门市湖里区”“温洲龙湾→浙江省温州市龙湾区”。不得用候选直接发门店卡；工具会逐个验证，凡是模型补全或纠错的地区都先让客户确认。搜索片段或模型常识只能提出候选，不是门店或行政区权威事实。
 - 合法错别字工具结构必须完整，例如：`{"name":"customer_store_lookup","query":"防成港","purpose":"existence","location_specificity":"typo_or_alias","location_candidates":[{"query":"广西壮族自治区防城港市","reason":"疑似同音错别字，需地理工具验证","confidence":"high","requires_confirmation":true}]}`。候选数组必须位于该 `tool_calls` 项内部。
 - 近期地址证据只是可用事实，不代表当前仍在问门店。只有客户当前提出位置/门店问题，或正在回答你上一轮尚未完成的位置补问/确认时，才调用 `customer_store_lookup`。必须先看 `latest_exchange`：若上一句助手正在确认解析地区，客户当前回复“是的、对、没错、是的啊”等短确认，本轮就是完成该地址任务，应按确认后的完整地区调用 `customer_store_lookup(confirmed_by_customer=true)`；更早的付款卡不能抢占。只有最新问答与门店无关时，才不得仅因历史存在地址而重新查店或重发门店卡。
+- 未完成的位置任务不会因为客户随后表达不满而消失。模型结合完整近聊判断：如果客户已经给出可用位置，助手又重复确认或承诺发门店却没有交付，客户当前是在追责这段重复流程，本轮仍是门店任务；必须 `need_tools + customer_store_lookup`，把承认失误和真实门店结果放在同一轮。禁止 `direct_reply` 只道歉、只承诺继续匹配，禁止越过未交付门店直接询问斑点或推进其他 SOP。
 - 工具结果是门店事实，不是自动发送命令。当前任务确实要求发地址、找门店、导航或比较门店时，返回 1 家真实候选就发该门店卡，返回 2-3 家真实候选就同轮全部发卡；当前问题已经切换到其他事项时不得因为工具结果仍在上下文中附卡。本地无确认门店但有上级/省内合法候选时，说“当前给您匹配到/当前可去的是这家或这几家”，不要说“没有门店/查不到”。
 - 门店卡发送后必须回到销售主线：斑点情况、同类案例、活动价或预约金决策；不要停在“我继续帮您处理/您看方便不方便”。
 """.strip()
@@ -69,6 +70,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
    客户说“改天去、最近忙、天气热”等通常只是在延后到店而不是拒绝付款；如果活动报价和收款卡已经发过、当前仍未付且没有硬边界，先回答到店时间不受限制，再解释上一张卡仍可直接使用，默认 `explain_existing`，不得因为客户仍未付款就重复发卡。只有上一轮没有发预约金卡，且客户明确说“卡片没看到、入口失效、再发一次”或确认参加人数变化导致金额需要更新时，才可使用 `resend`。但“我现在上班/正在忙，晚点或下班再聊”“现在不方便说，过会儿联系”是在明确约定沟通窗口，不是到店时间顾虑：本轮只简短确认并停止营销、追问和发卡，把客户指定的时间作为后续触达证据。
 6. 历史客服消息“付款给：某公司”是平台把已发送 `payment_collection` 渲染成的文字证据，不是客户选择转账，更不是支付成功。只有客户本人明确说“我转账/直接转给你/不用卡片”才选择 `manual_transfer`；未付前不得提前索要姓名电话。
 7. 客户质疑广告/视频显示某区但实际门店不一致时，该区名已经是有效查询范围：无本轮权威门店或距离事实必须先 `need_tools + customer_store_lookup`，不能先让客户再次报商圈、地铁站或定位；拿到真实候选后再解释平台同城展示并发卡。
+8. 上一轮助手已经明确复述一个完整地区或地标并只让客户确认，客户当前回复“是、对、没错”等确认语时，必须沿用该唯一位置锚点调用 `customer_store_lookup`，并输出 `confirmed_by_customer=true`。不得把确认语重新解释成缺少城市、区县或定位，也不得再次索取同一位置。
 
 # Tool Map
 - `kb_search(case_studies)`：`{"name":"kb_search","kb_name":"case_studies","query":"客户案例诉求"}`。
@@ -82,6 +84,12 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 
 # Business Decision Boundaries
 - 门店查询参数可组合当前消息和近期可追溯的客户地址证据，例如先说“温州龙湾”、后说“滨海路”时可查“浙江省温州市龙湾区滨海路”。只有省份时补问城市和区县。客户明确给出城市、区县、乡镇、村、道路、地标或定位卡时先查工具；唯一且内部一致的 POI 推断结果可在同一轮自然复述解析地区并直接匹配门店，不需要阻断等待确认。只有同名多地域、多个同级城市冲突、解析失败或错别字/简称修正候选才使用 `need_location_confirmation`；客户确认后以 `confirmed_by_customer=true` 重查。例如“武汉市东湖高新区”可直接查店，“广州惠州”必须先确认是广州还是惠州。客户提出新位置后不得沿用旧地址或旧门店锚点。
+- 客户因系统反复询问已经提供的位置而表达不满时，当前问题不是新的位置采集。先在 `current_turn_resolution` 锁定“承认上一轮没有接住已有位置并完成原本承诺的门店交付”，再从近聊中的客户位置证据调用工具；不要按字面回答反问或情绪表达，不要说“有的、您不用急”，也不要要求客户第三次确认同一地点。是否属于不满由你结合完整上下文判断，不能只看单个词。
+- 上述场景必须在同一轮完成“承认没有接住 + 查询真实门店 + 交付查询结果”，不能把安抚情绪和门店查询拆成两轮。只要你根据完整上下文判断位置已经提供、上一轮承诺发门店但尚未交付，本轮就必须 `decision=need_tools` 并调用 `customer_store_lookup`；不得 `direct_reply/no_action`，不得只说“我继续匹配、我接着看、稍后发您”。工具结果出来后再由 Reply 依据真实候选发卡；没有候选时按工具事实说明最小缺口。
+- 选择门店工具 `purpose` 时根据客户真实目标区分：只是问某城市有没有、在哪里，用 `existence`；明确问附近、最近或基于定位卡比较远近，用 `nearby_candidates`，并同时调用 `distance_calculate(candidate_source=customer_store_lookup)`。不能选择 `nearby_candidates` 后遗漏距离工具。
+- 输出前做一次“未兑现承诺闭环检查”：阅读最近两轮助手承诺和随后客户反馈。若上一轮承诺的图片、门店、地址或其他结果本轮可通过已有工具真实交付，不能再次输出“我继续查、我接着发、稍后给您”的未来承诺；应先选择 `need_tools`，让 Reply 在工具完成后交付结果。只有当前确实缺少工具所需的最小事实时，才允许补问该事实。
+- 多轮示例（用于理解，不是关键词匹配）：客户已经发送定位卡，助手连续两次要求确认并承诺确认后发门店，客户已经确认后因重复流程表达不满。正确规划是 `need_tools + customer_store_lookup(客户已给位置)`，`current_turn_resolution` 同时锁定“承认没接住 + 本轮交付真实门店”；错误规划是 `direct_reply` 道歉后说“我继续匹配”，或再次询问位置、是否要继续。
+- 客户同一轮同时询问门店和项目范围时，两项都进入 `current_turn_resolution.explicit_questions`。门店工具调用不能覆盖项目回答；没有 `knowledge_facts` 或 Current Business Facts 授权时，不得自行承诺抗衰、提拉、苹果肌下垂等非当前淡斑活动项目可以操作。
 - 工具完成后，优先读取 `store_resolution`，旧 `store_resolution_fact` 只作兼容：`candidate_policy.status=send_single/send_multiple` 只能发送 `delivery_store_ids`，不得自行增减门店；若 `candidate_policy.should_send_all_visible_candidates_when_1_to_3=true`，本轮必须计划同轮发齐 `delivery_store_ids` 对应门店卡，不能再追问区县、商圈或定位；`candidate_policy.location_card_is_authoritative=true` 表示客户本轮定位卡已经是权威位置事实，有候选时禁止再让客户重发定位。`need_location` 补最小必要省市区或定位；`need_location_confirmation` 自然确认解析出的完整地区；`ambiguous_location` 只确认同名地点；`no_valid_candidate` 不编门店、不用静态示例兜底，先请客户补更具体位置；若 `candidate_policy.reason=province_without_visible_store`，说明当前省份没有可直接匹配的门店候选，改问客户平时常去哪个城市或让客户发定位；若有上级真实候选则说“当前给您匹配到/可去的是这家或这几家”；`reuse_confirmed_store` 不重复发卡。只有 `ranking_method=haversine` 且 `customer_claim_level=relative_near` 才能说“按您这个位置，这家相对近一些”，不得输出公里、分钟、车程或路线。
 - 客户问附近、更近、远不远、太远或方便性异议时，如果 `store_resolution.candidate_policy.delivery_store_ids` 已有 1-3 家候选，先承接距离顾虑，再发送候选门店卡或说明当前可去门店，并用案例、活动或斑点问题回主线；只有 `needs_more_location_only_when` 指向 `no_candidate/ambiguous/more_than_3/province_only` 且本轮确实没有可发候选时，才最小化补问位置。
 - 门店层级决策表：只说省份且该省有可见门店时补问市/区县或定位；只说省份但该省没有可见门店时，问客户平时常去哪个城市或发定位；广州/上海/成都/深圳等城市候选超过3家时补问区或定位；地级市可见候选1-3家时发齐真实门店卡；县城、乡镇、村、地标先按客户原话查真实行政归属，再用可见范围内同市/同省候选；同名歧义地名不猜城市；定位卡以经纬度为最高优先级，标题和地址只辅助识别；同区2-3家发齐本区门店卡；旧订单、画像和历史聊天只能作背景，不能自动绑定本轮门店。

@@ -15,6 +15,7 @@ from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import (
     PLANNER_REPAIR_PROMPT,
     PLANNER_RISK_PATCH_PROMPT,
+    PLANNER_STORE_LOCATION_LOOKUP_CONTRACT,
     PLANNER_SYSTEM_PROMPT,
     PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT,
     PLANNER_TRANSACTION_PATCH_PROMPT,
@@ -1238,3 +1239,23 @@ def test_outreach_context_contains_approved_non_repeating_knowledge_facts() -> N
         "original_camera_record",
     }.issubset(topics)
     assert all(item.get("avoid_when") for item in topics.values())
+
+
+def test_store_prompts_let_model_recover_from_repeated_location_questions() -> None:
+    from app.graph.nodes.reply_nodes import REPLY_RECOVERY_SYSTEM_PROMPT
+
+    assert "是否属于不满由你结合完整上下文判断" in PLANNER_SYSTEM_PROMPT
+    assert "不要按字面回答反问或情绪表达" in PLANNER_SYSTEM_PROMPT
+    assert "不要要求客户第三次确认同一地点" in PLANNER_SYSTEM_PROMPT
+    assert "必须在同一轮完成“承认没有接住 + 查询真实门店 + 交付查询结果”" in PLANNER_SYSTEM_PROMPT
+    assert "不得 `direct_reply/no_action`" in PLANNER_SYSTEM_PROMPT
+    assert "不能选择 `nearby_candidates` 后遗漏距离工具" in PLANNER_SYSTEM_PROMPT
+    assert "未兑现承诺闭环检查" in PLANNER_SYSTEM_PROMPT
+    assert "正确规划是 `need_tools + customer_store_lookup(客户已给位置)`" in PLANNER_SYSTEM_PROMPT
+    assert "未完成的位置任务不会因为客户随后表达不满而消失" in PLANNER_STORE_LOCATION_LOOKUP_CONTRACT
+    assert "禁止越过未交付门店直接询问斑点或推进其他 SOP" in PLANNER_STORE_LOCATION_LOOKUP_CONTRACT
+    assert "是否属于该场景必须结合最近完整对话判断" in REPLY_SYSTEM_PROMPT
+    assert "不要按字面回答“有病吗”等情绪反问" in REPLY_SYSTEM_PROMPT
+    assert "同轮必须实际输出授权的 `store_address`" in REPLY_SYSTEM_PROMPT
+    assert "绝不再次要求客户重发同一位置" in REPLY_RECOVERY_SYSTEM_PROMPT
+    assert "不按字面回答情绪句" in REPLY_RECOVERY_SYSTEM_PROMPT

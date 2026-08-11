@@ -122,6 +122,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pass|repair|block", verifier)
         self.assertIn("允许以前一步 `activity_intro` 作为本计划内报价证据", verifier)
         self.assertIn("不得因为超过两句就要求修复", verifier)
+        self.assertIn("已询问、等待回答", analyst)
+        self.assertIn("不能只看 SOP 完成标记", analyst)
+        self.assertIn("换词后的位置问题都属于重复", verifier)
+        self.assertIn("审核节点只判断语义重复，不自行改选场景", verifier)
         for prompt in (analyst, writer, verifier):
             self.assertNotIn("# 1. Role", prompt)
             self.assertNotIn("# 2. Objective", prompt)

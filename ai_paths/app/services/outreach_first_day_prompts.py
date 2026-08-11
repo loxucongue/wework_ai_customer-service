@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v8_text_payment_only"
-FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v8_transfer_or_red_packet"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v8_no_payment_card"
-FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v8_no_payment_card"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v9_no_repeated_slot"
+FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v9_no_repeated_slot"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v9_no_repeated_slot"
+FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v9_no_repeated_slot"
 
 
 FIRST_DAY_SCENE_ANALYST_PROMPT = """
@@ -55,6 +55,8 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 7. 门店规则：没有权威门店锚点时，`store_area_request` 只能询问省市、区县或常去区域，并且整个计划最多出现一次。
 8. 支付规则：首日主动唤醒永远不发送 `payment_collection` 预约金卡，所有场景都必须输出 `payment_action.step=0`、`allowed=false`。`deposit_close` 仍可使用预约金 SOP 的文本和有效图片，引导客户通过微信转账或发 10 元红包完成预约，并说明到店抵扣和统一退款口径；不得虚构已经收款、锁定或登记成功。
 9. `store_area_request` 不是通用兜底场景。只有 SOP 顺序中最早未完成的包就是门店区域询问，或位置确实是未解决需求，或客户明确想付款但缺少门店锚点时才能选择。不能仅因客户说“考虑一下”、很忙、提到天气或开始沉默，就主动询问位置。
+9.1 如果最近一次有效客服或 AI 回复本身已经在询问具体区县、常去区域或定位，而客户只是尚未回复，这个位置槽位处于“已询问、等待回答”，不等于可以再次发送同一个位置问题。此时禁止把第一步或第二步继续选成 `store_area_request`；应按最早未完成 SOP 直接交付效果、活动或其他不同的新价值。只有客户后来提供了新的但确实存在同名冲突的位置，或主动要求换区域、找更近门店时，才可重新选择位置场景。
+9.2 判断上一条是否已经询问位置必须阅读 `recent_messages` 的真实顺序和角色，不能只看 SOP 完成标记。连续出现两次位置询问、客户已经发送位置卡、或客户明确说“位置已经发了”时，位置场景都不能再次作为沉默触达内容。
 10. 对距离、天气或时间顾虑，第一句话可以轻承接，但锁定的第一步应优先交付尚未完成的具体价值，例如 `effect_proof` 或 `activity_intro`。不能用整个任务重复距离或日期顾虑。
 11. 客户在已经收到效果图和完整活动介绍后说“考虑一下”，优先选择 `trust_repair`，使用中性的自我形象、自信或低风险价值；第二步只有在位置确实缺失时才可询问门店区域。禁止复述“考虑一下”或用送客表达结束。即使短测试数据没有完整展示此前销售过程，最近一次真实“考虑一下”也必须承接具体的中性自信或自我形象价值，不能只说“不着急、慢慢考虑、以后再决定”。
    如果历史已经说过“到店先看效果和方案、满意或适合再做”等低风险价值，`trust_repair` 必须改用“改善后更自信、重视自己的状态”等中性自我形象价值，禁止把“先看实际情况、心里更稳、确认适合、再决定”换词后当成新价值。
@@ -332,6 +334,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 每一步的 `scene` 必须与场景合同完全一致，并且两个场景不同。
 - 第一步必须包含一句轻过渡并立即实质推进，不能只试探客户是否在线或承诺稍后发送。
 - 两步都不能在语义上重复近期客服或 AI、SOP、素材发送记录，也不能互相重复。
+- 最近一次客服或 AI 已经询问区县、区域或定位，客户尚未回答时，再生成任何换词后的位置问题都属于重复，必须返回 `repair`。客户已发送位置卡或明确说位置已经提供时，再索取位置同样必须修复；审核节点只判断语义重复，不自行改选场景。
 - 客户可见文本必须使用中性表达，禁止性别称谓或性别暗示。
 - 禁止虚构门店查询、匹配、推荐、URL、素材、订单、支付、预约、名额或已完成动作。
 - 素材策略和素材标识必须与场景合同及可用素材目录一致。

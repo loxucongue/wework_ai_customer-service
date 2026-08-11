@@ -2244,7 +2244,27 @@ def _store_id_sort_key(item: dict[str, Any]) -> int:
 def _region_equal(left: Any, right: Any) -> bool:
     left_tokens = {_compact_text(token) for token in _region_tokens(str(left or "")) if _compact_text(token)}
     right_tokens = {_compact_text(token) for token in _region_tokens(str(right or "")) if _compact_text(token)}
-    return bool(left_tokens & right_tokens)
+    if left_tokens & right_tokens:
+        return True
+    return _autonomous_prefecture_alias_equal(str(left or ""), str(right or ""))
+
+
+def _autonomous_prefecture_alias_equal(left: str, right: str) -> bool:
+    """Normalize a county-level city nested under an autonomous prefecture."""
+
+    for autonomous_value, city_value in ((left, right), (right, left)):
+        autonomous = _compact_text(autonomous_value)
+        city = _compact_text(city_value)
+        if not autonomous.endswith("自治州"):
+            continue
+        city_core = city[:-1] if city.endswith("市") else city
+        autonomous_core = autonomous[: -len("自治州")]
+        if len(city_core) < 2 or not autonomous_core.startswith(city_core):
+            continue
+        ethnic_suffix = autonomous_core[len(city_core) :]
+        if ethnic_suffix and ethnic_suffix.endswith("族"):
+            return True
+    return False
 
 
 def _compact_text(value: Any) -> str:
