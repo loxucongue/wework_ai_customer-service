@@ -280,7 +280,59 @@ def _ordered_platform_messages(messages: list[dict[str, Any]]) -> list[dict[str,
         if timestamp is None:
             return typed
         indexed.append((timestamp, index, item))
-    return [item for _, _, item in sorted(indexed, key=lambda part: (part[0], part[1]))]
+    ordered = [item for _, _, item in sorted(indexed, key=lambda part: (part[0], part[1]))]
+    return _dedupe_local_platform_mirrors(ordered)
+
+
+def _dedupe_local_platform_mirrors(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse a local send trace and its later platform archive copy."""
+
+    output: list[dict[str, Any]] = []
+    for item in messages:
+        timestamp = _message_timestamp(item)
+        content = _normalized_mirror_text(item)
+        reference = _raw_message_ref(item)
+        if message_role(item) != "assistant" or timestamp is None or not content or not reference:
+            output.append(item)
+            continue
+
+        mirror_index: int | None = None
+        for index in range(len(output) - 1, -1, -1):
+            candidate = output[index]
+            candidate_timestamp = _message_timestamp(candidate)
+            if candidate_timestamp is None or timestamp - candidate_timestamp > 30:
+                break
+            candidate_reference = _raw_message_ref(candidate)
+            if (
+                message_role(candidate) == "assistant"
+                and _normalized_mirror_text(candidate) == content
+                and bool(candidate_reference.startswith("trace-")) != bool(reference.startswith("trace-"))
+            ):
+                mirror_index = index
+                break
+
+        if mirror_index is None:
+            output.append(item)
+            continue
+        if _raw_message_ref(output[mirror_index]).startswith("trace-") and not reference.startswith("trace-"):
+            output.pop(mirror_index)
+            output.append(item)
+    return output
+
+
+def _normalized_mirror_text(item: dict[str, Any]) -> str:
+    text = message_text(item.get("content"))
+    if not text:
+        text = message_text(item.get("text") or item.get("message") or item.get("body"))
+    return " ".join(text.split())
+
+
+def _raw_message_ref(item: dict[str, Any]) -> str:
+    for key in ("message_ref", "message_id", "msgid", "msg_id", "id"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value[:120]
+    return ""
 
 
 def _dedupe_platform_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

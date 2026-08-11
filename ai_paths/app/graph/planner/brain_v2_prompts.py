@@ -223,6 +223,7 @@ PLANNER_RISK_PATCH_PROMPT = """
 PLANNER_TRANSACTION_PATCH_PROMPT = """
 # Current Transaction Gate
 - `store_address_delivery.unique_latest_store_id` 只证明最近权威批次为单店；是否沿该店成交由你结合后续对话输出 `store_binding_decision=accepted_explicit/accepted_implicit`。
+- 客户当前表达新的城市或门店偏好，且 `store_scope_summary` 有对应真实候选时，先输出 `store_binding_decision.status=exploring` 并保留该候选 `store_id`，调用 `customer_store_lookup` 查询这家门店。不要退回历史旧城市或旧门店；在客户尚未确认且没有最近唯一门店卡锚点前，不得标记 `accepted_implicit`，也不得据此创建订单。
 - `create_work_order` 用于支付后后台关联。客户支付后先收姓名和完整11位电话，再结合真实客户、真实门店和10/20/30/40金额尝试创建或复用订单；辅助字段可缺失。辅助字段缺失或平台开单失败时，本轮仍正常回答，不暴露接口错误。
 - 发卡前置是活动报价已完成/已铺垫、客户未付、无风险/强拒绝且人数金额合法；订单和开单不是发卡前置。
 - 已有同门店、同金额有效未付订单时，可以作为后台关联事实；没有订单或开单失败时仍可由模型判断本轮发卡，不得让客户翻旧入口或说“入口没对上”。

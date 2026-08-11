@@ -678,6 +678,71 @@ def test_platform_history_exposes_ordered_turns_with_beijing_time_and_refs() -> 
     ]
 
 
+def test_platform_history_collapses_local_trace_and_platform_archive_mirror() -> None:
+    messages = [
+        {
+            "id": "trace-631b9",
+            "direction": "assistant",
+            "content": "我给您看一下同类改善参考。",
+            "created_at": "2026-08-11T10:18:33+08:00",
+        },
+        {
+            "id": "215560_external",
+            "direction": "assistant",
+            "content": "我给您看一下同类改善参考。",
+            "created_at": "2026-08-11T10:18:42+08:00",
+        },
+    ]
+
+    assert platform_messages_to_history(messages, limit=50) == ["小贝: 我给您看一下同类改善参考。"]
+    assert platform_messages_to_turns(messages, limit=50) == [
+        {
+            "message_ref": "215560_external",
+            "role": "assistant",
+            "content": "我给您看一下同类改善参考。",
+            "occurred_at": "2026-08-11T10:18:42+08:00",
+            "minutes_before_latest": 0,
+        }
+    ]
+
+
+def test_platform_history_preserves_independent_repeated_messages() -> None:
+    messages = [
+        {
+            "id": "external-1",
+            "direction": "assistant",
+            "content": "我给您看一下同类改善参考。",
+            "created_at": "2026-08-11T10:18:33+08:00",
+        },
+        {
+            "id": "external-2",
+            "direction": "assistant",
+            "content": "我给您看一下同类改善参考。",
+            "created_at": "2026-08-11T10:18:42+08:00",
+        },
+        {
+            "id": "customer-1",
+            "direction": "customer",
+            "content": "好的",
+            "created_at": "2026-08-11T10:18:43+08:00",
+        },
+        {
+            "id": "customer-2",
+            "direction": "customer",
+            "content": "好的",
+            "created_at": "2026-08-11T10:18:44+08:00",
+        },
+    ]
+
+    history = platform_messages_to_history(messages, limit=50)
+    assert history == [
+        "小贝: 我给您看一下同类改善参考。",
+        "小贝: 我给您看一下同类改善参考。",
+        "用户: 好的",
+        "用户: 好的",
+    ]
+
+
 def test_sop_gate_pending_location_task_structurally_blocks_stale_payment_plan() -> None:
     plan = build_planner_plan_v2(
         {
@@ -2702,6 +2767,160 @@ def test_store_detail_clarification_without_anchor_can_direct_reply() -> None:
 
     assert plan["planner_decision"] == "direct_reply"
     assert not any(item.get("missing") == "store_detail_tool_required" for item in plan["tool_policy_violations"])
+
+
+def test_store_detail_lookup_prefers_model_selected_current_scope_candidate_over_stale_history() -> None:
+    state = {
+        "normalized_content": "去南宁不如去贵港近一点",
+        "conversation_history": [
+            "用户: 我之前在南宁",
+            "小贝: 南宁江南店可以看一下。",
+        ],
+        "customer_store_knowledge": {
+            "stores": [
+                {"store_id": "222", "store_name": "南宁江南店", "city": "南宁市"},
+                {"store_id": "440", "store_name": "贵港港北店", "city": "贵港市"},
+            ]
+        },
+        "store_scope_summary": {
+            "relevant_regions": [
+                {
+                    "province": "广西壮族自治区",
+                    "city": "南宁市",
+                    "stores": [{"store_id": "222", "store_name": "南宁江南店", "city": "南宁市"}],
+                },
+                {
+                    "province": "广西壮族自治区",
+                    "city": "贵港市",
+                    "stores": [{"store_id": "440", "store_name": "贵港港北店", "city": "贵港市"}],
+                },
+            ]
+        },
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "store_binding_decision": {
+                "status": "exploring",
+                "store_id": "440",
+                "source": "current_customer_preference",
+                "basis": ["current_message"],
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "那我按您说的贵港方向给您看。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_reply_messages"] == []
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": "贵港港北店"}
+    ]
+    assert not any(
+        item.get("missing") == "store_lookup_conflicts_with_accepted_binding"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_unverified_implicit_store_candidate_keeps_current_scope_lookup_for_repair() -> None:
+    state = {
+        "normalized_content": "去南宁不如去贵港近一点",
+        "conversation_history": ["小贝: 南宁江南店可以看一下。"],
+        "customer_store_knowledge": {
+            "stores": [
+                {"store_id": "222", "store_name": "南宁江南店", "city": "南宁市"},
+                {"store_id": "440", "store_name": "贵港港北店", "city": "贵港市"},
+            ]
+        },
+        "store_scope_summary": {
+            "relevant_regions": [
+                {
+                    "province": "广西壮族自治区",
+                    "city": "贵港市",
+                    "stores": [{"store_id": "440", "store_name": "贵港港北店", "city": "贵港市"}],
+                }
+            ]
+        },
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "store_binding_decision": {
+                "status": "accepted_implicit",
+                "store_id": "440",
+                "source": "current_customer_preference",
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "那我按您说的贵港方向给您看。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": "贵港港北店"}
+    ]
+    violation = next(
+        item
+        for item in plan["tool_policy_violations"]
+        if item.get("missing") == "accepted_implicit_requires_eligible_store_anchor_fact"
+    )
+    assert "keep that candidate store_id as exploring" in violation["note"]
+
+
+def test_exploring_store_candidate_rejects_tool_query_for_stale_history_store() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "去南宁不如去贵港近一点",
+            "conversation_history": ["小贝: 南宁江南店可以看一下。"],
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "222", "store_name": "南宁江南店", "city": "南宁市"},
+                    {"store_id": "440", "store_name": "贵港港北店", "city": "贵港市"},
+                ]
+            },
+            "store_scope_summary": {
+                "relevant_regions": [
+                    {
+                        "province": "广西壮族自治区",
+                        "city": "贵港市",
+                        "stores": [{"store_id": "440", "store_name": "贵港港北店", "city": "贵港市"}],
+                    }
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "store_binding_decision": {"status": "exploring", "store_id": "440"},
+            "reply_messages": [],
+            "tool_calls": [
+                {"name": "customer_store_lookup", "purpose": "detail", "query": "南宁江南店"}
+            ],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "store_lookup_conflicts_with_accepted_binding"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_generic_store_question_does_not_inherit_recent_store_card() -> None:
