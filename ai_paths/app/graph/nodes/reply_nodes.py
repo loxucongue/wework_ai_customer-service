@@ -862,7 +862,7 @@ def _reply_repair_hint(error: str) -> str:
     if "distance_value_not_customer_visible" in error:
         return "Haversine 直线距离只用于内部排序门店。客户可见最多说“按您这个位置，这家相对近一些”，不要输出公里、分钟、车程、路线或步行时长。"
     if "distance_fact_required" in error:
-        return "没有 store_resolution_fact.ranking_method=haversine 和 customer_claim_level=relative_near 时，不要输出最近、离您最近、较近、就近或交通方便等排序表达。只使用已有门店事实，并按当前主线自然承接。"
+        return "没有 store_resolution_fact.ranking_method=haversine 和 customer_claim_level=relative_near 时，不要输出最近、离您最近、较近、就近或交通方便等排序表达。可以承接客户自己提出的地区偏好，例如“那我按您说的贵港方向给您看”，但不得把它改写成系统计算出的距离结论；随后只使用已有门店事实。"
     if "nearby_store_claim_without_location_fact" in error:
         return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
     if "available_time_fact_required" in error:

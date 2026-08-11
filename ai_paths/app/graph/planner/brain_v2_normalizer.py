@@ -319,6 +319,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         sub_rule_id=sub_rule_id,
         messages=planner_reply_messages,
         required_tools=required_tools,
+        store_binding_decision=store_binding_decision,
         state=state,
     )
     order_decision, required_tools = _reconcile_existing_order_for_payment(
@@ -1197,10 +1198,10 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                         "subtype": "customer_store_lookup",
                         "missing": "store_lookup_conflicts_with_accepted_binding",
                         "note": (
-                            "store_binding_decision accepts a real store, but customer_store_lookup.query does not identify "
-                            "that store. Keep the accepted store without a new lookup, or change store_binding_decision to "
-                            "exploring/ambiguous and use location evidence from the current customer message. Do not treat an "
-                            "unrelated short reply as a new location."
+                            "store_binding_decision selects a factual store candidate, but customer_store_lookup.query does "
+                            "not identify that store. Keep the accepted store without a new lookup, or query the exact "
+                            "current-scope candidate while status is exploring. Do not replace it with an older location or "
+                            "treat an unrelated short reply as a new location."
                         ),
                     }
                 )
@@ -1389,9 +1390,12 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
 
 def _store_lookup_conflicts_with_accepted_binding(query: str, state: AgentState) -> bool:
     binding = state.get("store_binding_decision") if isinstance(state.get("store_binding_decision"), dict) else {}
-    if str(binding.get("status") or "").strip() not in {"accepted_explicit", "accepted_implicit"}:
+    status = str(binding.get("status") or "").strip()
+    if status not in {"accepted_explicit", "accepted_implicit", "exploring"}:
         return False
     bound_store_id = str(binding.get("store_id") or "").strip()
+    if status == "exploring" and not _store_scope_record_for_id(state, bound_store_id):
+        return False
     bound_store_name = str(binding.get("store_name") or "").strip()
     if not bound_store_name and bound_store_id:
         bound_store_name = _store_name_for_id(bound_store_id, state)
@@ -1401,6 +1405,9 @@ def _store_lookup_conflicts_with_accepted_binding(query: str, state: AgentState)
 
 
 def _store_name_for_id(store_id: str, state: AgentState) -> str:
+    scoped_store = _store_scope_record_for_id(state, store_id)
+    if scoped_store:
+        return str(scoped_store.get("store_name") or scoped_store.get("name") or "").strip()
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
     for store in stores:
@@ -1820,7 +1827,10 @@ def _store_binding_order_consistency_violations(
                     "missing": "accepted_implicit_requires_eligible_store_anchor_fact",
                     "note": (
                         "accepted_implicit requires the latest authoritative store-card batch to contain exactly one "
-                        "matching store. Unverified legacy events and multi-store batches must be exploring/ambiguous."
+                        "matching store. Unverified legacy events and multi-store batches must be exploring/ambiguous. "
+                        "When the current customer turn prefers a city/store and store_scope_summary contains a matching "
+                        "real candidate, keep that candidate store_id as exploring and look up that exact store; do not "
+                        "replace it with an older location from conversation history."
                     ),
                 }
             ]
@@ -2547,6 +2557,7 @@ def _enforce_declared_store_detail_lookup(
     sub_rule_id: str,
     messages: list[dict[str, Any]],
     required_tools: list[dict[str, Any]],
+    store_binding_decision: dict[str, Any],
     state: AgentState,
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     """Require factual detail lookup after Planner has declared a store-detail scene."""
@@ -2564,8 +2575,16 @@ def _enforce_declared_store_detail_lookup(
     )
     if not _current_turn_requires_declared_store_lookup(state, reply_text):
         return decision, messages, required_tools
+    binding_status = str(store_binding_decision.get("status") or "none").strip()
+    binding_store_id = str(store_binding_decision.get("store_id") or "").strip()
+    scoped_binding_store = (
+        _store_scope_record_for_id(state, binding_store_id)
+        if binding_status in {"accepted_explicit", "accepted_implicit", "exploring"}
+        else {}
+    )
     query = (
-        str(_store_from_current_message(state).get("store_name") or "").strip()
+        str(scoped_binding_store.get("store_name") or scoped_binding_store.get("name") or "").strip()
+        or str(_store_from_current_message(state).get("store_name") or "").strip()
         or str(_request_store_from_state(state).get("store_name") or "").strip()
         or _generic_store_contextual_anchor_name(state)
         or _recent_store_name_from_context(state)
@@ -2585,6 +2604,28 @@ def _enforce_declared_store_detail_lookup(
         }
     )
     return "need_tools", [], _dedupe_tools(tools)
+
+
+def _store_scope_record_for_id(state: AgentState, store_id: str) -> dict[str, Any]:
+    """Resolve a model-selected candidate only from the current factual store scope."""
+
+    target = str(store_id or "").strip()
+    if not target:
+        return {}
+    summary = state.get("store_scope_summary") if isinstance(state.get("store_scope_summary"), dict) else {}
+    regions = summary.get("relevant_regions") if isinstance(summary.get("relevant_regions"), list) else []
+    for region in regions:
+        if not isinstance(region, dict):
+            continue
+        for key in ("requested_district_stores", "stores"):
+            stores = region.get(key) if isinstance(region.get(key), list) else []
+            for store in stores:
+                if not isinstance(store, dict):
+                    continue
+                candidate_id = str(store.get("store_id") or store.get("id") or "").strip()
+                if candidate_id == target:
+                    return store
+    return {}
 
 
 def _current_turn_requires_declared_store_lookup(state: AgentState, reply_text: str) -> bool:
