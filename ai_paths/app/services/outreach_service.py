@@ -803,15 +803,26 @@ def _first_day_materialized_sop_messages(
     messages: list[dict[str, Any]],
     *,
     allow_payment_collection: bool,
+    text_overrides: list[str] | None = None,
     sent_urls: set[str] | None = None,
     used_urls: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
+    override_texts = [text for text in text_overrides or [] if _string(text)]
+    overrides_emitted = False
     sent = sent_urls or set()
     used = used_urls if used_urls is not None else set()
     for message in sorted(messages, key=lambda item: _int(item.get("order"), 9999)):
         message_type = _string(message.get("type"))
         if message_type == "text":
+            if override_texts:
+                if not overrides_emitted:
+                    output.extend(
+                        {"type": "text", "content": {"text": text}}
+                        for text in override_texts
+                    )
+                    overrides_emitted = True
+                continue
             text = _string(message.get("text"))
             if text:
                 output.append({"type": "text", "content": {"text": text}})
@@ -830,6 +841,11 @@ def _first_day_materialized_sop_messages(
                     },
                 }
             )
+    if override_texts and not overrides_emitted:
+        output = [
+            {"type": "text", "content": {"text": text}}
+            for text in override_texts
+        ] + output
     for order, message in enumerate(output, start=1):
         message["order"] = order
     return output
@@ -1525,14 +1541,8 @@ def _first_day_outreach_plan_error(response: dict[str, Any]) -> str:
         for step in steps
         if _bool(step.get("should_send_payment_collection"))
     ]
-    if len(payment_steps) > 1:
-        return "plan can contain at most one payment_collection step"
     if payment_steps:
-        payment_step = payment_steps[0]
-        if _string(payment_step.get("content_mode")) != "transaction":
-            return "payment_collection step must use transaction content_mode"
-        if _string(payment_step.get("payment_collection_basis")) != "model_selected_after_quote":
-            return "payment_collection step must use model_selected_after_quote basis"
+        return "first-day outreach cannot send payment_collection"
     return ""
 
 
@@ -1776,14 +1786,8 @@ def _first_day_scene_analysis_error(
     payment_allowed = _bool(payment_action.get("allowed"))
     if payment_allowed != (payment_step in {1, 2}):
         return "scene analysis payment_action allowed and step disagree"
-    payment_gate = source_snapshot.get("payment_collection_gate") or {}
-    expected_payment_step = (
-        _first_day_activity_sop_payment_step(response, source_snapshot)
-        if _bool(payment_gate.get("eligible"))
-        else 0
-    )
-    if payment_step != expected_payment_step:
-        return "scene analysis payment action is only allowed for the activity quote SOP pack"
+    if payment_step != 0 or payment_allowed:
+        return "first-day scene analysis cannot authorize payment_collection"
     for evidence in response.get("evidence") or []:
         if not isinstance(evidence, dict):
             return "scene analysis evidence items must be objects"
@@ -1815,14 +1819,13 @@ def _normalize_first_day_scene_analysis(
     if not isinstance(payment_action, dict):
         payment_action = {"step": 0, "allowed": False, "reason": "未选择预约金卡动作"}
         response["payment_action"] = payment_action
-    payment_gate = (source_snapshot or {}).get("payment_collection_gate") or {}
-    payment_step = (
-        _first_day_activity_sop_payment_step(response, source_snapshot)
-        if _bool(payment_gate.get("eligible"))
-        else 0
+    payment_action.update(
+        {
+            "step": 0,
+            "allowed": False,
+            "reason": "首日主动唤醒仅允许文字引导转账或红包预约",
+        }
     )
-    payment_action["step"] = payment_step
-    payment_action["allowed"] = bool(payment_step)
     if message_count <= 0:
         return response
     conversation_activity = (source_snapshot or {}).get("conversation_activity") or {}
@@ -1971,14 +1974,13 @@ def _normalize_first_day_scene_analysis(
     if not isinstance(payment_action, dict):
         payment_action = {"step": 0, "allowed": False, "reason": "未选择预约金卡动作"}
         response["payment_action"] = payment_action
-    payment_gate = (source_snapshot or {}).get("payment_collection_gate") or {}
-    payment_step = (
-        _first_day_activity_sop_payment_step(response, source_snapshot)
-        if _bool(payment_gate.get("eligible"))
-        else 0
+    payment_action.update(
+        {
+            "step": 0,
+            "allowed": False,
+            "reason": "首日主动唤醒仅允许文字引导转账或红包预约",
+        }
     )
-    payment_action["step"] = payment_step
-    payment_action["allowed"] = bool(payment_step)
     available_assets = {
         _string(item.get("asset_id")): item
         for item in (source_snapshot or {}).get("asset_catalog") or []
@@ -2318,10 +2320,21 @@ def _normalize_first_day_repaired_plan(
     if len(steps) != 2:
         return response
     required_assets = scene_analysis.get("required_assets") or {}
-    payment_step = _int((scene_analysis.get("payment_action") or {}).get("step"), 0)
+    payment_step = 0
     for index, step in enumerate(steps, start=1):
         step["step"] = index
         step["scene"] = _string(scene_analysis.get(f"step{index}_scene"))
+        reply_messages = [
+            dict(message)
+            for message in step.get("reply_messages") or []
+            if isinstance(message, dict)
+            and _string(message.get("type")) == "text"
+            and isinstance(message.get("content"), dict)
+            and _string(message["content"].get("text"))
+        ]
+        for message_index, message in enumerate(reply_messages, start=1):
+            message["order"] = message_index
+        step["reply_messages"] = reply_messages
         required_asset = required_assets.get(f"step{index}") or {}
         step["asset_strategy"] = _string(required_asset.get("strategy")) or "none"
         step["asset_id"] = _string(required_asset.get("asset_id"))
@@ -3472,14 +3485,6 @@ class OutreachService:
         payment_collection_added = False
         used_asset_keys: set[str] = set()
         used_media_urls: set[str] = set()
-        activity_sop_payment_step = (
-            _first_day_activity_sop_payment_step(
-                (source_snapshot.get("first_day_workflow") or {}).get("scene_analysis") or {},
-                source_snapshot,
-            )
-            if first_day_trigger and bool(payment_collection_gate.get("eligible"))
-            else 0
-        )
         normalized_schedule = (
             _normalize_first_day_outreach_schedule(now, raw_steps)
             if first_day_trigger
@@ -3499,7 +3504,7 @@ class OutreachService:
                 )
             )
             should_send_payment_collection = (
-                index == activity_sop_payment_step and not payment_collection_added
+                False
                 if first_day_trigger
                 else (
                     _bool(step.get("should_send_payment_collection"))
@@ -3527,8 +3532,12 @@ class OutreachService:
                 if isinstance(message, dict)
             ]
             sop_pack_texts = _first_day_sop_pack_texts(sop_pack_messages)
+            writer_texts = _plan_step_texts(step)
+            use_writer_deposit_text = (
+                first_day_trigger and _string(step.get("scene")) == "deposit_close"
+            )
             sop_pack_policy_error = ""
-            if first_day_trigger and sop_pack_texts:
+            if first_day_trigger and sop_pack_texts and not use_writer_deposit_text:
                 sop_pack_policy_error, _ = _first_day_message_policy_error(
                     sop_pack_texts,
                     step_index=index,
@@ -3537,9 +3546,11 @@ class OutreachService:
                 )
             preserve_sop_pack_messages = bool(sop_pack_messages and not sop_pack_policy_error)
             draft_texts = (
-                sop_pack_texts
+                writer_texts
+                if use_writer_deposit_text
+                else sop_pack_texts
                 if preserve_sop_pack_messages
-                else _plan_step_texts(step)
+                else writer_texts
             )
             if not draft_texts:
                 continue
@@ -3548,6 +3559,7 @@ class OutreachService:
                 reply_messages = _first_day_materialized_sop_messages(
                     sop_pack_messages,
                     allow_payment_collection=should_send_payment_collection,
+                    text_overrides=writer_texts if use_writer_deposit_text else None,
                     sent_urls=set(recent_media.get("urls") or []),
                     used_urls=used_media_urls,
                 )
@@ -5168,6 +5180,15 @@ class OutreachService:
             return {"ok": True, "status": "skipped", "reason": "task_already_claimed"}
         plan_detail = self.repository.get_outreach_plan(str(task["plan_id"]))
         plan = plan_detail.get("plan") or {}
+        source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+        trigger_context = (
+            source_snapshot.get("trigger_context")
+            if isinstance(source_snapshot.get("trigger_context"), dict)
+            else {}
+        )
+        is_first_day_plan = (
+            _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
+        )
         fresh_conversation_messages: list[dict[str, Any]] = []
         try:
             sent_today_loader = getattr(self.repository, "outreach_sent_today_count", None)
@@ -5178,13 +5199,6 @@ class OutreachService:
                     wechat=str(task.get("wechat") or plan.get("wechat") or ""),
                     external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
                 )
-                source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
-                trigger_context = (
-                    source_snapshot.get("trigger_context")
-                    if isinstance(source_snapshot.get("trigger_context"), dict)
-                    else {}
-                )
-                is_first_day_plan = _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
                 daily_task_limit = FIRST_DAY_DAILY_TASK_LIMIT if is_first_day_plan else OUTREACH_DAILY_TASK_LIMIT
                 if sent_today_count >= daily_task_limit:
                     if is_first_day_plan:
@@ -5405,6 +5419,52 @@ class OutreachService:
                     terminal=True,
                 )
                 return {"ok": True, "status": "skipped", "reason": reason}
+            if is_first_day_plan:
+                messages_before_policy = len(reply_messages)
+                reply_messages = [
+                    dict(message)
+                    for message in reply_messages
+                    if isinstance(message, dict)
+                    and _string(message.get("type")) != "payment_collection"
+                ]
+                if len(reply_messages) != messages_before_policy:
+                    for order, message in enumerate(reply_messages, start=1):
+                        message["order"] = order
+                    self.repository.add_outreach_event(
+                        plan_id=str(task["plan_id"]),
+                        task_id=task_id,
+                        customer_id=str(task["customer_id"]),
+                        event_type="first_day_payment_card_removed",
+                        event_summary="Removed a legacy payment card before first-day outreach send",
+                        payload={
+                            "removed_count": messages_before_policy - len(reply_messages),
+                            "policy": "first_day_text_payment_only",
+                        },
+                    )
+                if not reply_messages:
+                    reason = "first_day_payment_card_only_task_blocked"
+                    self.repository.update_outreach_task(
+                        task_id,
+                        status="skipped",
+                        error_message=reason,
+                    )
+                    self.repository.add_outreach_event(
+                        plan_id=str(task["plan_id"]),
+                        task_id=task_id,
+                        customer_id=str(task["customer_id"]),
+                        event_type="task_skipped_first_day_payment_card_only",
+                        event_summary="Skipped a first-day outreach task that contained only a payment card",
+                        payload={"reason": reason},
+                    )
+                    self._sync_first_day_run_for_task(
+                        plan=plan,
+                        task=task,
+                        status="blocked",
+                        reason_code=reason,
+                        final_decision="no_send",
+                        terminal=True,
+                    )
+                    return {"ok": True, "status": "skipped", "reason": reason}
             payment_duplicate = self._unanswered_payment_card_duplicate(
                 task=task,
                 plan=plan,
@@ -5650,12 +5710,7 @@ class OutreachService:
         )
         should_send_payment_collection = bool(task.get("should_send_payment_collection"))
         if first_day_opened_silence:
-            should_send_payment_collection = bool(
-                should_send_payment_collection
-                and _string(task_metadata.get("source_kind")) == "mainline_sop"
-                and _string(task_metadata.get("sop_category"))
-                in FIRST_DAY_ACTIVITY_SOP_CATEGORIES
-            )
+            should_send_payment_collection = False
         step_index = _int(task.get("step_index"), 0)
         if first_day_opened_silence and _bool(task_metadata.get("preserve_sop_pack_messages")):
             texts = _reply_texts(task.get("reply_messages"))

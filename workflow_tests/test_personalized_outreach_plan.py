@@ -21,6 +21,7 @@ from app.services.outreach_service import (
     _first_day_verifier_error,
     _first_day_writer_payload,
     _normalize_first_day_outreach_schedule,
+    _normalize_first_day_repaired_plan,
     _normalize_first_day_scene_analysis,
     _normalize_outreach_plan_response,
     _normalize_outreach_schedule,
@@ -102,7 +103,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("绝不撰写任何客户可见话术", analyst)
         self.assertIn("场景枚举", analyst)
         self.assertIn("只有文字效果说明不等于已经交付图片证据", analyst)
-        self.assertIn("payment_collection_gate.eligible=true", analyst)
+        self.assertIn("首日主动唤醒永远不发送 `payment_collection`", analyst)
         self.assertIn("personalized_order_gate", analyst)
         self.assertIn("historical_order_expired_new_cycle", analyst)
         self.assertIn("禁止误抑制", analyst)
@@ -377,7 +378,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         payment["payment_action"] = {"step": 1, "allowed": True, "reason": "customer wants to pay"}
         self.assertEqual(
             _first_day_scene_analysis_error(payment, source_snapshot=snapshot),
-            "scene analysis payment action is only allowed for the activity quote SOP pack",
+            "first-day scene analysis cannot authorize payment_collection",
         )
 
         external_case_search = _first_day_scene_analysis(
@@ -801,7 +802,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "plan step reply_messages must contain non-empty text items",
         )
 
-    def test_first_day_structure_allows_immediate_payment_when_order_gate_is_ready(self) -> None:
+    def test_first_day_structure_rejects_payment_card_even_when_order_gate_is_ready(self) -> None:
         response = _ModelClient().response
         response["steps"] = [dict(response["steps"][0]), dict(response["steps"][1])]
         response["steps"][0].update(
@@ -820,9 +821,12 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        self.assertEqual(_first_day_outreach_plan_error(response), "")
+        self.assertEqual(
+            _first_day_outreach_plan_error(response),
+            "first-day outreach cannot send payment_collection",
+        )
 
-    def test_first_day_immediate_payment_still_requires_transaction_content_mode(self) -> None:
+    def test_first_day_payment_card_is_rejected_before_content_mode_checks(self) -> None:
         response = _ModelClient().response
         response["steps"] = [dict(response["steps"][0]), dict(response["steps"][1])]
         response["steps"][0].update(
@@ -837,8 +841,36 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             _first_day_outreach_plan_error(response),
-            "payment_collection step must use transaction content_mode",
+            "first-day outreach cannot send payment_collection",
         )
+
+    def test_first_day_repair_normalizer_removes_model_media_placeholders_and_cards(self) -> None:
+        response = _ModelClient().response
+        response["steps"] = [dict(response["steps"][0]), dict(response["steps"][1])]
+        response["steps"][0]["reply_messages"] = [
+            {"type": "text", "order": 1, "content": {"text": "第一步文本"}},
+            {"type": "image", "order": 2, "content": {"url": "待代码拼装"}},
+        ]
+        response["steps"][1]["reply_messages"] = [
+            {"type": "text", "order": 1, "content": {"text": "可以微信转账或发10元红包预约"}},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
+        ]
+        analysis = _first_day_scene_analysis(
+            step1_scene="activity_intro",
+            step2_scene="deposit_close",
+        )
+        analysis["payment_action"] = {"step": 2, "allowed": True, "reason": "模型越权"}
+
+        normalized = _normalize_first_day_repaired_plan(
+            response,
+            scene_analysis=analysis,
+        )
+
+        self.assertEqual(
+            [[message["type"] for message in step["reply_messages"]] for step in normalized["steps"]],
+            [["text"], ["text"]],
+        )
+        self.assertFalse(any(step["should_send_payment_collection"] for step in normalized["steps"]))
 
     def test_realistic_first_day_model_fixtures_use_production_message_shape(self) -> None:
         fixture_paths = sorted(
@@ -989,6 +1021,20 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item["type"] for item in non_activity_messages],
             ["text", "image", "image", "text", "text"],
+        )
+
+        deposit_messages = _first_day_materialized_sop_messages(
+            pack_messages,
+            allow_payment_collection=False,
+            text_overrides=["亲，可以微信转账或发10元红包预约，到店抵扣。"],
+        )
+        self.assertEqual(
+            [item["type"] for item in deposit_messages],
+            ["text", "image", "image"],
+        )
+        self.assertEqual(
+            deposit_messages[0]["content"]["text"],
+            "亲，可以微信转账或发10元红包预约，到店抵扣。",
         )
 
     def test_mainline_sop_source_resolves_all_configured_media(self) -> None:

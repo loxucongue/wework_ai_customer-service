@@ -14,6 +14,86 @@ from app.services.customer_scope import build_customer_scope
 
 
 class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_day_legacy_payment_card_is_removed_before_send(self) -> None:
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+        )
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+        service._generate_task_messages = AsyncMock(
+            return_value=[
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "亲，可以微信转账或发10元红包先预约。"},
+                },
+                {
+                    "type": "payment_collection",
+                    "order": 2,
+                    "content": {"amount": 10, "remark": ""},
+                },
+            ]
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(system.sent), 1)
+        self.assertEqual(
+            system.sent[0]["reply_messages"],
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "亲，可以微信转账或发10元红包先预约。"},
+                }
+            ],
+        )
+        self.assertIn(
+            "first_day_payment_card_removed",
+            [event["event_type"] for event in repository.events],
+        )
+
+    async def test_first_day_legacy_payment_card_only_task_is_blocked(self) -> None:
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+        )
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+        service._generate_task_messages = AsyncMock(
+            return_value=[
+                {
+                    "type": "payment_collection",
+                    "order": 1,
+                    "content": {"amount": 10, "remark": ""},
+                }
+            ]
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(
+            result,
+            {
+                "ok": True,
+                "status": "skipped",
+                "reason": "first_day_payment_card_only_task_blocked",
+            },
+        )
+        self.assertEqual(system.sent, [])
+
     async def test_unanswered_payment_card_is_not_sent_by_outreach(self) -> None:
         repository = _ExecutionRepository(
             order_status="no_order",
