@@ -14,10 +14,12 @@ from app.graph.nodes.store_scope_summary import build_store_scope_summary
 from app.graph.state import AgentState
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.schemas import ChatRequest
+from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.sop_execution_service import SopExecutionService
 from app.services.trace_logger import TraceLogger
+from app.services.v2_sales_recall_service import V2SalesRecallService
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -30,42 +32,37 @@ READ_ONLY_TOOL_NAMES = {
 DEFERRED_COMMIT_TOOL_NAMES = {"create_work_order", "add_customer_mobile"}
 
 
-TOOL_PLANNER_SYSTEM_PROMPT = """你是客服回复链路的只读 Tool Planner，不是客服，也不是销售策略模型。
+TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。你不是客服，也不是销售策略模型。
 
-你的唯一任务是根据 shared_context 判断 Reply 在回答当前消息前是否缺少实时事实，并规划最少的只读工具调用。
+你的唯一任务：根据 shared_context 判断最终 Reply 在回答当前消息前是否缺少实时事实，并规划最少的只读工具调用。
 
-必须遵守：
-- 只输出 json 对象，不输出客户话术。
-- 不判断客户心理、意向等级、成交阶段、是否推进主线或是否发预约金卡。
-- 不选择 SOP、精准话术或成交理由。
-- 不规划任何写操作、发送动作、开单、同步手机号或排客。
-- 已在 shared_context.authoritative_facts 中存在且没有错误的事实，不重复查询。但 `raw_visible_store_records` 只证明客户有权看到哪些门店，不证明客户地名解析到了哪里、哪家与客户位置匹配或哪家最近。
-- 事实不足且没有可用只读工具时，写入 missing_facts，交给 Reply 决定是否反问。
-- 工具参数只能来自当前消息、完整聊天或结构事实，并在 evidence_refs 中引用来源。
-- `evidence_refs` 只能填写 Shared Context 中真实存在的 `message_ref`，例如 `current_message`、`conv_001`；不要填写 `.content` 字段路径，也不要引用事实分区路径。
+请只输出严格 json 对象。
 
-允许工具：
-1. customer_store_lookup：门店、地址、定位、区县、乡镇、村、地标、营业信息或门店详情查询。参数可含 query、purpose。
+# 边界
+- 不输出客户可见话术。
+- 不判断客户心理、意向等级、成交阶段、是否回主线或是否发预约金卡。
+- 不选择 SOP、精准话术、销冠召回或成交理由。
+- 不规划写操作、发送动作、开单、手机号同步或排客。
+- 已在 authoritative_facts 中存在且没有冲突的事实，不重复查询。但 raw_visible_store_records 只证明客户可见哪些门店，不证明当前地名已经完成匹配、排序或最近推荐。
+- 工具参数只能来自当前消息、完整聊天或结构事实，并在 evidence_refs 引用真实 message_ref，例如 current_message、conv_001。
+
+# 允许工具
+1. customer_store_lookup：门店、地址、定位、区县、县级市、乡镇、村、地标、营业信息或门店详情查询。参数可含 query、purpose。
 2. distance_calculate：客户明确比较远近且已有合法候选时排序。参数可含 origin、candidate_source。
-3. kb_search：查询真实案例等知识库素材。参数必须同时含非空 kb_name 和非空 query；案例使用 case_studies，query 从当前客户原话或聊天原文提取。
-4. appointment_record_query：只读查询已有预约记录；普通登记流程不得规划 available_time 或 create_order_plan。
+3. kb_search：查询真实案例等素材。案例使用 kb_name=case_studies，query 来自客户原话或聊天原文。
+4. appointment_record_query：只读查询已有预约记录；普通登记流程不得规划档期查询或开单。
 
-案例查询边界：
-- Gate 与你并行执行，你看不到 Gate 的候选结果，也不能假设 Gate 一定会提供案例素材。
-- 客户当前直接询问效果、改善程度或索要案例/效果图，且 `authoritative_facts.sent_messages.case_image_delivery` 和紧邻聊天都没有近期真实案例图片发送证据时，必须独立规划 `kb_search(kb_name=case_studies)`。即使未完成 SOP 可能含案例图，也不能因此省略查询；最终 Reply 会对 Gate 候选与工具事实去重并选择素材。
-- 客户用“是真的吗、靠谱吗、可信吗”等表达质疑紧邻对话中的客观宣称时，先确定被质疑对象，再查询能直接证明该对象的同维度事实，不能跨到客户没有询问的门店、费用或其他风险。被质疑对象是淡斑效果、改善能力或案例真实性，且没有近期真实案例图片证据时，规划 `kb_search(kb_name=case_studies)`；被质疑对象是门店、支付或订单时才使用对应工具。若紧邻话题无法确定被质疑对象，把该缺口交给 Reply 最小澄清，不自行扩展多个可能顾虑。
-- 若权威发送证据表明紧邻上一轮已经真实发送案例图，客户只是评价或追问刚发素材，则不要重复查询；客户明确要求新的、更多案例时仍应查询。
+# 案例查询
+- 客户当前直接问效果、改善程度、一次效果、案例或效果图，且近期没有真实案例图片发送证据时，规划 kb_search(kb_name=case_studies)。
+- 客户质疑“真的、靠谱吗、可信吗”时，先判断紧邻话题被质疑对象；若对象是效果或案例真实性，且没有近期真实案例图，规划案例查询。
+- 上一轮刚发过真实案例图且客户只是评价/追问该素材时，不重复查询；客户明确要新的或更多案例时仍可查询。
 
-门店查询边界：
-- 当前消息直接询问某地门店、索要门店地址，或消息本身是一个省、市、区县、县级市、乡镇、村或地标名称时，除非紧邻历史已经交付同一批真实门店且客户只是在选择其中一家，否则必须规划 `customer_store_lookup`。即使 `visible_store_scope` 已列出 1–3 家，也要用本轮查询建立“当前地名解析 + 本轮候选交付”的权威事实；权限列表本身不能替代本轮匹配。
-- `visible_store_scope.relevant_regions` 只证明可见范围并帮助工具校验权限，不证明当前地名已经完成匹配。客户给出区县/县级市时，最终候选必须对应该区县；仅有父级城市候选不等于县城、乡镇、村或地标已经解析完成。
-- 客户给县级市、县城、乡镇、村、地标或同名地点，而 Shared Context 没有当前地名对应的明确行政归属和候选时，必须调用 `customer_store_lookup`；不能仅凭全量可见门店列表自行猜上级城市或要求客户重复标准化地名。
-- 客户给出带经纬度的定位卡，或给出县城、乡镇、村、地标且其本级没有真实门店、父级范围有多家候选时，同时规划 `customer_store_lookup` 与 `distance_calculate`。`distance_calculate.origin` 使用当前定位坐标或当前地名原文，`candidate_source` 使用 `customer_store_lookup`；这是为了用真实排序选择父级回退门店，不要求客户必须先说“最近”。
-- 客户问“最近/更近”但没有可比较的真实位置原点时，不自行挑门店；把位置原点写入 `missing_facts`。已有合法原点和候选时才规划 `distance_calculate`。
-- 当前客户只补充区县、乡镇或地标时，必须先读取完整聊天中刚刚明确的父级省市，并把两者组合成完整查询词；不要把裸下级地名交给工具后再次追问客户。例如历史刚确认“广州”，当前回复“番禺区”，`customer_store_lookup.query` 应为“广州市番禺区”，证据同时引用当前消息和历史中的“广州”。只有历史没有明确父级或存在冲突时，才按原文查询并把歧义交给 Reply。
-- 父级行政区只能来自客户当前原话、完整聊天或结构化定位事实。若这些证据都没有父级，查询参数必须保持客户原始地名，不得凭常识、同名联想或可见门店列表补写省、市、县。例如当前只有“乌林镇乌林村”且历史没有父级，`customer_store_lookup.query` 必须原样使用“乌林镇乌林村”，不得补成“监利市乌林镇乌林村”或先猜“洪湖市”；行政归属交给门店工具解析。
-
-输出前做门店任务自检：如果最近助手刚询问城市/区县/定位，当前客户用一个具体地区作答，这不是普通短确认，而是尚未完成的门店查询输入；`tool_calls` 必须包含 `customer_store_lookup`。例如历史问“广州哪个区”，当前答“番禺区”，必须查询“广州市番禺区”，不能因历史已经出现广州门店候选就返回空工具计划。只有紧邻历史已经真实发送对应门店卡、客户当前只是在选择或确认该卡时，才可以不重复查询。
+# 门店查询
+- 当前消息问某地门店、索要地址，或消息本身是省、市、区县、县级市、乡镇、村、地标名时，除非紧邻历史已经真实发送了对应门店卡且客户只是在确认/选择该卡，否则规划 customer_store_lookup。
+- 客户补充下级地名时，结合完整历史中的父级城市组成查询词。例如历史刚确认“广州”，当前回复“番禺区”，查询“广州市番禺区”。
+- 只有客户原话、完整历史或定位事实能提供父级行政区时才能补全父级；否则保持客户原始地名，交给门店工具解析，不凭常识补省市县。
+- 县城、乡镇、村、地标或定位卡本级无门店且父级范围有多候选时，可同时规划 customer_store_lookup 和 distance_calculate，用真实排序支持 Reply。
+- 客户问“更近/最近”但没有真实位置原点时，不自行挑门店，把缺少位置原点写入 missing_facts。
 
 输出格式：
 {
@@ -144,6 +141,7 @@ def create_parallel_evidence_node(
     trace_logger: TraceLogger,
     model_client: ModelClient | None,
     sop_execution_service: SopExecutionService | None,
+    coze_client: CozeClient | None = None,
 ) -> Callable[[AgentState], Any]:
     async def parallel_evidence(state: AgentState) -> dict[str, Any]:
         started = time.perf_counter()
@@ -154,10 +152,16 @@ def create_parallel_evidence_node(
         ) as span:
             gate_task = asyncio.create_task(_run_content_gate(state, sop_execution_service))
             planner_task = asyncio.create_task(_run_tool_planner(state, model_client))
+            recall_task = asyncio.create_task(_run_sales_recall(state, coze_client))
             raw_gate, raw_tool_plan = await asyncio.gather(
                 gate_task,
                 planner_task,
                 return_exceptions=True,
+            )
+            raw_recall = await _finish_sales_recall(
+                recall_task,
+                coze_client=coze_client,
+                started=started,
             )
             gate_result = _completed_parallel_branch(
                 raw_gate,
@@ -177,19 +181,23 @@ def create_parallel_evidence_node(
                     "evidence_refs": [],
                 },
             )
+            sales_recall = _completed_sales_recall(raw_recall)
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             metrics = {
                 "elapsed_ms": elapsed_ms,
                 "gate_duration_ms": int(gate_result.get("duration_ms") or 0),
                 "tool_planner_duration_ms": int(tool_plan.get("duration_ms") or 0),
+                "sales_recall_duration_ms": int(sales_recall.get("duration_ms") or 0),
                 "parallel_expected_elapsed_ms": max(
                     int(gate_result.get("duration_ms") or 0),
                     int(tool_plan.get("duration_ms") or 0),
+                    int(sales_recall.get("duration_ms") or 0),
                 ),
             }
             output = {
                 "content_gate_result": gate_result,
                 "tool_plan": tool_plan,
+                "sales_recall": sales_recall,
                 "parallel_branch_metrics": metrics,
                 # Compatibility input for the existing read-only executor.
                 "planner_tool_calls": list(tool_plan.get("tool_calls") or []),
@@ -200,11 +208,14 @@ def create_parallel_evidence_node(
             span["entry"]["tool_calls"] = [
                 {"name": "content_gate_model", "output": _branch_trace_output(gate_result)},
                 {"name": "tool_planner_model", "output": _branch_trace_output(tool_plan)},
+                {"name": "v2_sales_recall", "output": _branch_trace_output(sales_recall)},
             ]
             span["output_snapshot"] = {
                 "gate_route_advice": gate_result.get("route_advice"),
                 "selected_content_ids": gate_result.get("content_candidate_ids") or [],
                 "tool_names": [item.get("name") for item in tool_plan.get("tool_calls") or []],
+                "sales_recall_status": sales_recall.get("status"),
+                "sales_recall_candidates": sales_recall.get("candidate_count"),
                 "missing_fact_count": len(tool_plan.get("missing_facts") or []),
                 "metrics": metrics,
             }
@@ -224,6 +235,7 @@ def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentSt
                 "schema_version": "reply_chain_evidence_join_v1",
                 "shared_context": copy.deepcopy(state.get("shared_context") or {}),
                 "content_candidates": copy.deepcopy(gate.get("content_candidates") or []),
+                "sales_recall": copy.deepcopy(state.get("sales_recall") or {}),
                 "gate_evidence": _drop_keys(
                     gate,
                     {"content_candidates", "selector_input", "selector_output", "model_usage"},
@@ -246,6 +258,8 @@ def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentSt
             }
             span["output_snapshot"] = {
                 "content_candidate_count": len(joined["content_candidates"]),
+                "sales_recall_status": (joined.get("sales_recall") or {}).get("status"),
+                "sales_recall_candidates": (joined.get("sales_recall") or {}).get("candidate_count"),
                 "tool_fact_names": sorted(tool_results),
                 "missing_fact_count": len(joined["missing_facts"]),
                 "conflict_count": len(joined["authority_conflicts"]),
@@ -405,6 +419,67 @@ async def _run_content_gate(
             "error": f"{type(exc).__name__}: {exc}",
             "duration_ms": int((time.perf_counter() - started) * 1000),
         }
+
+
+async def _run_sales_recall(state: AgentState, coze_client: CozeClient | None) -> dict[str, Any]:
+    return await V2SalesRecallService(coze_client).recall(copy.deepcopy(state.get("shared_context") or {}))
+
+
+async def _finish_sales_recall(
+    task: asyncio.Task,
+    *,
+    coze_client: CozeClient | None,
+    started: float,
+) -> Any:
+    settings = getattr(coze_client, "settings", None) if coze_client is not None else None
+    wait_seconds = float(getattr(settings, "v2_sales_recall_wait_seconds", 2.5) or 0)
+    if task.done():
+        return await task
+    if wait_seconds <= 0:
+        task.cancel()
+        return _sales_recall_timeout(started, "kb_recall_not_ready")
+    try:
+        return await asyncio.wait_for(task, timeout=wait_seconds)
+    except asyncio.TimeoutError:
+        task.cancel()
+        return _sales_recall_timeout(started, "kb_recall_timeout")
+
+
+def _sales_recall_timeout(started: float, reason: str) -> dict[str, Any]:
+    return {
+        "schema_version": "v2_sales_recall_v1",
+        "status": "timeout",
+        "source": "coze_workflow",
+        "reason": reason,
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+        "candidate_count": 0,
+        "candidates": [],
+    }
+
+
+def _completed_sales_recall(value: Any) -> dict[str, Any]:
+    if isinstance(value, Exception):
+        return {
+            "schema_version": "v2_sales_recall_v1",
+            "status": "error",
+            "source": "coze_workflow",
+            "reason": f"{type(value).__name__}: {value}",
+            "candidate_count": 0,
+            "candidates": [],
+        }
+    if isinstance(value, dict):
+        value.setdefault("schema_version", "v2_sales_recall_v1")
+        value.setdefault("candidates", [])
+        value["candidate_count"] = len(value.get("candidates") or [])
+        return value
+    return {
+        "schema_version": "v2_sales_recall_v1",
+        "status": "error",
+        "source": "coze_workflow",
+        "reason": "invalid_recall_result",
+        "candidate_count": 0,
+        "candidates": [],
+    }
 
 
 async def _run_tool_planner(state: AgentState, model_client: ModelClient | None) -> dict[str, Any]:
@@ -682,6 +757,17 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         }
         for content_id in dict.fromkeys(allowed_selected_content_ids)
     ]
+    sales_recall = joined.get("sales_recall") if isinstance(joined.get("sales_recall"), dict) else {}
+    sales_recall_reference_options = [
+        {
+            "ref": f"sales_recall:{source_id}",
+            "source_id": source_id,
+            "authority": "reference_only_not_business_fact",
+        }
+        for item in sales_recall.get("candidates") or []
+        if isinstance(item, dict)
+        and (source_id := str(item.get("source_id") or "").strip())
+    ]
     tool_facts = joined.get("tool_facts") if isinstance(joined.get("tool_facts"), dict) else {}
     tool_fact_reference_options = [
         {
@@ -744,6 +830,7 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         "allowed_selected_content_ids": list(dict.fromkeys(allowed_selected_content_ids)),
         # Exact schema references only; Reply still decides whether to adopt an asset.
         "content_candidate_reference_options": content_candidate_reference_options,
+        "sales_recall_reference_options": sales_recall_reference_options,
         # Neutral provenance identifiers for this turn's actual tool outputs.
         # They do not describe what the facts mean or whether Reply should use them.
         "valid_commit_evidence": valid_commit_evidence,

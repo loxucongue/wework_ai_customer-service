@@ -440,6 +440,41 @@ def test_parallel_reply_payload_lists_exact_customer_message_refs() -> None:
     assert payload["valid_customer_message_refs"] == ["current_message", "conv_002"]
 
 
+def test_parallel_reply_payload_exposes_sales_recall_as_reference_only() -> None:
+    state = {
+        "evidence_join": {
+            "schema_version": "reply_chain_evidence_join_v1",
+            "shared_context": {
+                "current_message": {"content": "太远了"},
+                "conversation": [
+                    {"message_ref": "current_message", "role": "customer", "content": "太远了"}
+                ],
+                "authoritative_facts": {},
+            },
+            "sales_recall": {
+                "status": "success",
+                "candidates": [
+                    {
+                        "source_id": "YYHF-0029",
+                        "objection_type": "距离远",
+                        "reusable_logic": "先承接路程麻烦，再切到活动价值和检测价值。",
+                    }
+                ],
+            },
+        }
+    }
+
+    payload = parallel_reply_payload(state)
+
+    assert payload["sales_recall_reference_options"] == [
+        {
+            "ref": "sales_recall:YYHF-0029",
+            "source_id": "YYHF-0029",
+            "authority": "reference_only_not_business_fact",
+        }
+    ]
+
+
 def test_reply_schema_normalizes_nonempty_string_items_as_text_messages() -> None:
     messages = validated_model_messages(
         {"reply_messages": ["现在活动价是268元。", "", {"type": "text", "content": "包含淡斑和皮肤检测。"}]},

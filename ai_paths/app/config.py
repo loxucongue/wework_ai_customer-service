@@ -175,6 +175,13 @@ class Settings(BaseSettings):
         default=Path("config/v2_model_led_objection_playbook.json"),
         alias="V2_MODEL_LED_OBJECTION_PLAYBOOK_PATH",
     )
+    v2_sales_recall_enabled: bool = Field(default=True, alias="V2_SALES_RECALL_ENABLED")
+    v2_sales_recall_workflow_id: str = Field(
+        default="7672999254608347179",
+        alias="V2_SALES_RECALL_WORKFLOW_ID",
+    )
+    v2_sales_recall_wait_seconds: float = Field(default=2.5, alias="V2_SALES_RECALL_WAIT_SECONDS")
+    v2_sales_recall_max_candidates: int = Field(default=3, alias="V2_SALES_RECALL_MAX_CANDIDATES")
     sop_objection_materials_path: Path = Field(
         default=Path("config/sop_objection_materials.json"),
         alias="SOP_OBJECTION_MATERIALS_PATH",

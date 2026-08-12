@@ -133,6 +133,7 @@ def _build_nodes(
         trace_logger=trace_logger,
         model_client=model_client,
         sop_execution_service=sop_execution_service,
+        coze_client=coze_client,
     )
     execute_readonly_actions = create_execute_actions_node(
         coze_client=coze_client,

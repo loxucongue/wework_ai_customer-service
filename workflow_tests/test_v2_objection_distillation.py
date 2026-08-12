@@ -167,41 +167,22 @@ def test_v2_prompts_do_not_restore_scene_matching_or_raw_reference_replies() -> 
 
     assert "selected_scene_id" not in active_prompts
     assert "appointment_blocker_reference" not in active_prompts
-    assert "如果方便我再说" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "与客户当前决定直接相关的低摩擦动作" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "是否想继续了解" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "没有值得客户决定的下一步时" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "第二道同意门槛" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "相关执行资产提前扣下" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "像成熟销冠一样" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "销冠经验素材" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户可见内容不能照抄" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "第一次询价或第一次问活动" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "活动介绍的一部分" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "reference_messages" not in active_prompts
     assert "客户说 X" not in active_prompts
-    assert "104 条历史优秀销售内容的离线蒸馏" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_v2_prompts_forbid_inventing_customer_concerns_and_valueless_questions() -> None:
-    assert "收缩客户的不确定性，不扩大问题空间" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "业务事实是可调用知识，不是必须主动披露的风险清单" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "提问必须有决策价值" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不同答案必须会实质改变下一步" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不能把内部 `active_friction` 猜测说给客户" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不得自行追加“不能保证、不能说太满、要看个人、先判断再说”" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不要索要照片、部位或斑点细分" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "身体部位不是默认获客问题" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "这种预防式排疑同样是在植入新顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "若 `primary_objective` 是活动介绍、证据交付或门店匹配，必须在本轮实际完成" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "您如果愿意我再讲" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "自然收住即可" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "用能力边界而不是固定句式判断" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不得把助手自己继续说话包装成推进" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "谁需要行动" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "再检查一次行动兑现" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "结构证据已经回答当前问题后，默认不要再追加" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不得新增一个假设性顾虑来索取客户回复" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "现有证据能否同时覆盖所有合理解释" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不让客户替系统选择“效果还是案例、价格还是价值”等内部分类" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "以紧邻对话主题判断当前证据需求" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
-    assert "证据策略只能服务客户已经明确表达且仍未解决的不确定性" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
-    assert "不推测客户没有表达的潜在顾虑" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "不要把销售推进写成" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "本轮能直接交付，就直接交付" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不防御式降调" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户多次说时间不确定" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "有没有引入客户没提的新顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "有没有把可直接交付的内容写成" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:
@@ -214,6 +195,14 @@ def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:
     assert "不自行用不能保证、不能说太满或因人而异削弱已批准结论" in principles["set_reasonable_expectations"]
     assert "客户明确询问" in strategies["strategy_outcome_confidence"]["customer_uncertainty"]
     assert "客户明确询问" in strategies["strategy_value_and_price"]["customer_uncertainty"]
+    assert any(
+        "不要继续围着距离争辩" in item
+        for item in strategies["strategy_travel_effort"]["reasoning_moves"]
+    )
+    assert any(
+        "首次询价只讲活动，不发卡" in item
+        for item in strategies["strategy_value_and_price"]["reasoning_moves"]
+    )
 
 
 def test_v2_concern_provenance_fixture_covers_both_suppression_and_explicit_questions() -> None:
