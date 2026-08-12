@@ -109,11 +109,11 @@ def test_parallel_gate_receives_strategy_guidance_without_legacy_scene_fields() 
     assert "reference_messages" not in json.dumps(payload, ensure_ascii=False)
 
 
-def test_parallel_gate_enforces_two_candidate_limit() -> None:
+def test_parallel_gate_enforces_three_candidate_limit() -> None:
     selector_input = {
         "content_assets": [
             {"content_id": f"strategy_{index}", "asset_role": "evidence_strategy"}
-            for index in range(3)
+                for index in range(4)
         ],
         "conversation_evidence": [
             {"message_ref": "current_message", "direction": "customer", "content": "我再想想"},
@@ -128,7 +128,7 @@ def test_parallel_gate_enforces_two_candidate_limit() -> None:
                 "render_strategy": "adaptable",
                 "evidence_refs": ["current_message"],
             }
-            for index in range(3)
+            for index in range(4)
         ]
     }
 
@@ -205,6 +205,11 @@ def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:
         "首次询价只讲活动，不发卡" in item
         for item in strategies["strategy_value_and_price"]["reasoning_moves"]
     )
+    time_moves = strategies["strategy_time_and_priority"]["reasoning_moves"]
+    assert any("不重复活动价格、案例或门店" in item for item in time_moves)
+    assert any("尚未交付" in item and "降低行动成本" in item for item in time_moves)
+    assert any("旧活动或旧价格不算新价值" in item for item in time_moves)
+    assert "不得因为活动价格容易复述" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_v2_concern_provenance_fixture_covers_both_suppression_and_explicit_questions() -> None:

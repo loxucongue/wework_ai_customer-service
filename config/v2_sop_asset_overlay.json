@@ -4,11 +4,13 @@
     {
       "id": "s10_new_customer_opening",
       "parallel_candidate_enabled": false,
+      "proactive_candidate_enabled": false,
       "asset_role": "opening_context"
     },
     {
       "id": "s10_need_and_case",
       "parallel_candidate_enabled": true,
+      "proactive_candidate_enabled": true,
       "asset_role": "effect_evidence",
       "customer_uncertainty": "客户明确对效果、真实性或是否值得了解存在疑问时，需要真实案例帮助形成判断。",
       "useful_evidence": [
@@ -31,6 +33,7 @@
     {
       "id": "s10_activity_intro",
       "parallel_candidate_enabled": true,
+      "proactive_candidate_enabled": true,
       "asset_role": "activity_offer",
       "customer_uncertainty": "客户还没有形成对本次活动价值、费用和包含内容的完整认知；或者当前问题已经用真实事实回答，活动尚未介绍，可以用活动事实作为一个不重复的相邻决策价值。",
       "useful_evidence": [
@@ -55,6 +58,7 @@
     {
       "id": "s10_store_prompt",
       "parallel_candidate_enabled": false,
+      "proactive_candidate_enabled": true,
       "asset_role": "location_capture",
       "selection_constraints": {
         "forbidden_when_authoritative_facts_present": [
@@ -65,11 +69,13 @@
     {
       "id": "s10_objection_resolution",
       "parallel_candidate_enabled": true,
+      "proactive_candidate_enabled": true,
       "asset_role": "objection_support"
     },
     {
       "id": "s10_deposit_close",
       "parallel_candidate_enabled": true,
+      "proactive_candidate_enabled": true,
       "asset_role": "deposit_close",
       "requires_prior_asset_roles": [
         "activity_offer"

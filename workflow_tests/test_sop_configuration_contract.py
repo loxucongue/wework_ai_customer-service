@@ -214,6 +214,7 @@ def test_activity_intro_is_offer_only_and_deposit_close_owns_payment_card() -> N
     assert deposit["requires_prior_asset_roles"] == ["activity_offer"]
     assert [message.get("type") for message in activity_messages] == ["text", "image", "text"]
     assert all(message.get("type") != "payment_collection" for message in activity_messages)
+    assert "完成线上活动登记后" in activity_messages[-1]["content"]["text"]
     assert [message.get("type") for message in deposit_messages] == [
         "text",
         "image",
@@ -230,6 +231,14 @@ def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
     deposit = _pack(config, "s10_deposit_close")
 
     assert _image_urls(cases) == EFFECT_CASE_IMAGES
+    case_text = " ".join(
+        str(message.get("content", {}).get("text") or "")
+        for message in cases["reply_messages"]
+        if message.get("type") == "text"
+    )
+    assert "真实对比" in case_text
+    assert "具体改善程度以实际情况为准" in case_text
+    assert "不伤皮肤" not in case_text
     assert store_prompt["enabled"] is True
     assert store_prompt["selection_constraints"] == {
         "forbidden_when_authoritative_facts_present": ["location_card"]
@@ -297,7 +306,7 @@ def test_static_sop_copy_does_not_contain_absolute_effect_or_safety_claims() -> 
         assert phrase not in visible_text
 
 
-def test_legacy_first_add_candidate_generation_is_empty_after_retirement() -> None:
+def test_platform_triggered_first_add_uses_only_explicit_proactive_assets() -> None:
     config = _load_config()
 
     candidates = first_add_candidate_packs(
@@ -312,7 +321,16 @@ def test_legacy_first_add_candidate_generation_is_empty_after_retirement() -> No
         },
     )
 
-    assert candidates == []
+    candidate_ids = {item["id"] for item in candidates}
+    assert candidate_ids == {
+        "s10_need_and_case",
+        "s10_activity_intro",
+        "s10_store_prompt",
+        "s10_objection_resolution",
+        "s10_deposit_close",
+    }
+    assert "s10_new_customer_opening" not in candidate_ids
+    assert all(item["proactive_candidate_enabled"] for item in candidates)
 
 
 def test_active_configuration_has_no_event_scope_audit_error() -> None:

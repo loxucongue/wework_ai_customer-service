@@ -64,6 +64,7 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。�
 - 只有客户原话、完整历史或定位事实能提供父级行政区时才能补全父级；否则保持客户原始地名，交给门店工具解析，不凭常识补省市县。
 - 县城、乡镇、村、地标或定位卡本级无门店且父级范围有多候选时，可同时规划 customer_store_lookup 和 distance_calculate，用真实排序支持 Reply。
 - 客户问“更近/最近”但没有真实位置原点时，不自行挑门店，把缺少位置原点写入 missing_facts。
+- `missing_facts` 只记录回答客户当前明确请求不可缺少的事实，不能记录可选销售机会。完整历史已经说明门店是按客户位置匹配或相对合适，并已交付门店结果时，当前窗口没有再次携带原始位置不等于该事实从未收集；客户只是评价远近、没有主动要求重新匹配、没有提供新位置也没有指出原位置错误时，不得把位置写成缺失事实。
 
 输出格式：
 {
@@ -166,7 +167,7 @@ def create_parallel_evidence_node(
             )
             gate_result = _completed_parallel_branch(
                 raw_gate,
-                schema_version="content_gate_result_v3",
+                schema_version="content_gate_result_v4",
                 fallback={
                     "route_advice": "tools_only",
                     "content_candidate_ids": [],
@@ -371,7 +372,7 @@ async def _run_content_gate(
     started = time.perf_counter()
     if service is None:
         return {
-            "schema_version": "content_gate_result_v3",
+            "schema_version": "content_gate_result_v4",
             "status": "unavailable",
             "route_advice": "tools_only",
             "content_candidate_ids": [],
@@ -393,7 +394,7 @@ async def _run_content_gate(
             if str(item.get("content_id") or "").strip()
         ]
         return {
-            "schema_version": "content_gate_result_v3",
+            "schema_version": "content_gate_result_v4",
             "status": "completed",
             "route_advice": _gate_route_advice(result),
             "content_candidate_ids": list(dict.fromkeys(candidate_ids)),
@@ -412,7 +413,7 @@ async def _run_content_gate(
         }
     except Exception as exc:
         return {
-            "schema_version": "content_gate_result_v3",
+            "schema_version": "content_gate_result_v4",
             "status": "error",
             "route_advice": "tools_only",
             "content_candidate_ids": [],

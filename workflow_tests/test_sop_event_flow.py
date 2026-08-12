@@ -781,7 +781,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("ai_touch_messages_required", violations)
 
-    def test_event_decision_allows_only_two_adjacent_packs_for_merge(self) -> None:
+    def test_event_decision_allows_two_complementary_candidates_without_adjacency_rule(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -796,16 +796,17 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             {"decision": "merge", "selected_pack_ids": ["store", "effect"]},
             selector_input,
         )
-        _, invalid_violations = normalize_event_decision(
+        non_adjacent, non_adjacent_violations = normalize_event_decision(
             {"decision": "merge", "selected_pack_ids": ["store", "activity"]},
             selector_input,
         )
 
         self.assertEqual(valid_violations, [])
         self.assertTrue(valid["send_sop"])
-        self.assertIn("merge_requires_adjacent_mainline_packs", invalid_violations)
+        self.assertEqual(non_adjacent_violations, [])
+        self.assertTrue(non_adjacent["send_sop"])
 
-    def test_event_decision_rejects_skipping_earliest_unfinished_pack(self) -> None:
+    def test_event_decision_allows_model_to_choose_any_eligible_nonpayment_candidate(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -825,8 +826,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             selector_input,
         )
 
-        self.assertIn("selected_packs_must_start_with_earliest_candidate", send_violations)
-        self.assertIn("selected_packs_must_start_with_earliest_candidate", merge_violations)
+        self.assertEqual(send_violations, [])
+        self.assertEqual(merge_violations, [])
 
     def test_event_decision_allows_next_pack_when_earliest_candidate_is_completed(self) -> None:
         selector_input = {
@@ -848,7 +849,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(violations, [])
         self.assertEqual(output["selected_pack_ids"], ["effect"])
 
-    def test_event_decision_rejects_opening_when_timeline_completed_it(self) -> None:
+    def test_event_decision_relies_on_candidate_eligibility_not_stage_order(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -887,7 +888,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             selector_input,
         )
 
-        self.assertIn("selected_packs_must_start_with_earliest_candidate", opening_violations)
+        self.assertEqual(opening_violations, [])
         self.assertEqual(next_violations, [])
         self.assertEqual(output["selected_pack_ids"], ["s10_need_and_case"])
 
@@ -1178,7 +1179,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(stage_status[stage_id]["structural_completed"])
             self.assertTrue(stage_status[stage_id]["payment_completed"])
 
-    def test_event_decision_requires_evidence_when_skipping_earlier_mainline_stage(self) -> None:
+    def test_event_decision_keeps_stage_evidence_for_audit_not_nonpayment_permission(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -1223,7 +1224,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             selector_input,
         )
 
-        self.assertIn("selected_packs_must_start_with_earliest_candidate", no_evidence)
+        self.assertEqual(no_evidence, [])
         self.assertEqual(with_evidence, [])
         self.assertEqual(output["stage_skip_evidence"][0]["stage_id"], "need_and_case")
 
@@ -1307,7 +1308,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["selected_pack_ids"], [])
         self.assertEqual(output["ai_touch_messages"], [])
 
-    def test_event_decision_requires_evidence_source_for_conflict_guard(self) -> None:
+    def test_event_decision_leaves_non_send_sales_reasoning_to_model(self) -> None:
         no_evidence = {
             "mode": "first_add_flow",
             "candidate_sops": [{"id": "close", "order": 10}],
@@ -1330,10 +1331,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             with_customer_evidence,
         )
 
-        self.assertIn("conflict_guard_missing_evidence_source", no_evidence_violations)
+        self.assertNotIn("conflict_guard_missing_evidence_source", no_evidence_violations)
         self.assertNotIn("conflict_guard_missing_evidence_source", customer_evidence_violations)
 
-    def test_repeated_candidates_need_ai_touch_unless_customer_or_policy_blocks(self) -> None:
+    def test_repeated_candidates_may_skip_when_no_new_value_exists(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [{"id": "close", "order": 10, "sop_category": "final_close"}],
@@ -1347,7 +1348,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             {"decision": "skip", "strategy": "conflict_guard"},
             selector_input,
         )
-        self.assertIn("repeated_candidates_should_use_ai_touch", violations)
+        self.assertEqual(violations, [])
 
         _, stage_repeat_violations = normalize_event_decision(
             {"decision": "skip", "strategy": "conflict_guard"},
@@ -1361,7 +1362,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 "event_policy_evidence": {},
             },
         )
-        self.assertIn("repeated_candidates_should_use_ai_touch", stage_repeat_violations)
+        self.assertEqual(stage_repeat_violations, [])
 
         _, customer_block_violations = normalize_event_decision(
             {"decision": "skip", "strategy": "conflict_guard"},
@@ -1370,9 +1371,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 "event_policy_evidence": {"customer_rejection": True},
             },
         )
-        self.assertNotIn("repeated_candidates_should_use_ai_touch", customer_block_violations)
+        self.assertEqual(customer_block_violations, [])
 
-    async def test_repeated_candidates_repair_failure_falls_back_to_ai_touch(self) -> None:
+    async def test_repeated_candidates_do_not_trigger_python_generated_touch(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [{"id": "close", "order": 10, "sop_category": "final_close"}],
@@ -1391,13 +1392,12 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         output = await service._judge_event_sop(selector_input)
 
-        self.assertEqual(output["decision"], "send_ai_touch")
-        self.assertEqual(output["touch_goal"], "resume_mainline")
+        self.assertEqual(output["decision"], "skip")
         self.assertEqual(output["sop_pack_id"], "")
-        self.assertTrue(output["ai_touch_messages"])
-        self.assertIn("repeated_candidates_should_use_ai_touch", output["initial_violations"])
+        self.assertEqual(output["ai_touch_messages"], [])
+        self.assertNotIn("fallback_applied", output)
 
-    async def test_completed_activity_repair_failure_falls_back_to_deposit_candidate(self) -> None:
+    async def test_completed_activity_does_not_force_python_deposit_selection(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -1419,12 +1419,11 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         output = await service._judge_event_sop(selector_input)
 
-        self.assertEqual(output["decision"], "send")
-        self.assertEqual(output["sop_pack_id"], "deposit")
-        self.assertEqual(output["selected_pack_ids"], ["deposit"])
-        self.assertIn("completed_activity_with_deposit_candidate_should_continue", output["initial_violations"])
+        self.assertEqual(output["decision"], "skip")
+        self.assertEqual(output["sop_pack_id"], "")
+        self.assertNotIn("fallback_applied", output)
 
-    def test_backlog_touch_requires_mainline_candidate_when_available(self) -> None:
+    def test_backlog_allows_model_generated_new_value_touch(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -1446,9 +1445,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             selector_input,
         )
 
-        self.assertIn("backlog_should_use_mainline_candidate", violations)
+        self.assertEqual(violations, [])
 
-    async def test_backlog_repair_failure_falls_back_to_mainline_candidate(self) -> None:
+    async def test_backlog_does_not_force_python_candidate_selection(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -1478,12 +1477,12 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         output = await service._judge_event_sop(selector_input)
 
-        self.assertEqual(output["decision"], "merge")
-        self.assertEqual(output["selected_pack_ids"], ["effect", "activity"])
-        self.assertEqual(output["strategy"], "recover_backlog")
-        self.assertIn("backlog_should_use_mainline_candidate", output["initial_violations"])
+        self.assertEqual(output["decision"], "send_ai_touch")
+        self.assertEqual(output["selected_pack_ids"], [])
+        self.assertEqual(output["strategy"], "soft_touch")
+        self.assertNotIn("fallback_applied", output)
 
-    def test_completed_activity_with_deposit_candidate_cannot_skip(self) -> None:
+    def test_completed_activity_does_not_make_deposit_selection_mandatory(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -1505,7 +1504,65 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             {"decision": "skip", "strategy": "conflict_guard"},
             selector_input,
         )
-        self.assertIn("completed_activity_with_deposit_candidate_should_continue", violations)
+        self.assertNotIn("conflict_guard_missing_evidence_source", violations)
+        self.assertNotIn("completed_activity_with_deposit_candidate_should_continue", violations)
+
+    def test_event_payment_pack_requires_current_customer_action_and_prior_value_refs(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {
+                    "id": "deposit",
+                    "payment_collection_gate": {
+                        "has_payment_collection": True,
+                        "status": "supported",
+                    },
+                }
+            ],
+            "recent_conversation": [],
+        }
+
+        _, violations = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["deposit"]},
+            selector_input,
+        )
+
+        self.assertIn("payment_collection_requires_current_customer_action_evidence", violations)
+
+    def test_event_payment_pack_accepts_model_evidence_with_real_role_and_chronology(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {
+                    "id": "deposit",
+                    "payment_collection_gate": {
+                        "has_payment_collection": True,
+                        "status": "supported",
+                    },
+                }
+            ],
+            "recent_conversation": [
+                {"message_ref": "conv_1", "direction": "assistant", "content": "真实效果案例已发"},
+                {"message_ref": "conv_2", "direction": "assistant", "content": "268元活动已经完整介绍"},
+                {"message_ref": "conv_3", "direction": "customer", "content": "可以，怎么付"},
+            ],
+        }
+
+        _, violations = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["deposit"],
+                "payment_readiness_evidence": {
+                    "customer_action_ref": "conv_3",
+                    "supporting_value": "effect",
+                    "supporting_value_ref": "conv_1",
+                    "reason": "模型判断客户当前主动询问付款",
+                },
+            },
+            selector_input,
+        )
+
+        self.assertEqual(violations, [])
 
     def test_event_decision_rejects_payment_pack_when_structural_gate_is_not_supported(self) -> None:
         selector_input = {
@@ -1877,19 +1934,27 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
-    async def test_active_reply_config_no_longer_supplies_first_add_event_track(self) -> None:
+    async def test_active_reply_config_supplies_only_explicit_proactive_assets(self) -> None:
         pack_service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = pack_service.load()
-        self.assertEqual(
-            first_add_candidate_packs(
+        candidates = first_add_candidate_packs(
                 config,
                 completed_sop_pack_ids=[],
                 completed_sop_categories=[],
                 delay_minutes=70,
                 payment_state="unpaid",
-            ),
-            [],
+            )
+        self.assertEqual(
+            {item["id"] for item in candidates},
+            {
+                "s10_need_and_case",
+                "s10_activity_intro",
+                "s10_store_prompt",
+                "s10_objection_resolution",
+                "s10_deposit_close",
+            },
         )
+        self.assertFalse(any(item["id"] == "s10_new_customer_opening" for item in candidates))
 
     async def test_first_add_event_can_send_ai_touch_when_fixed_pack_is_unsuitable(self) -> None:
         repo = _Repo()
@@ -3220,7 +3285,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item["scopes"] == ["chat_gate"] for item in config["packs"]))
         self.assertFalse(any(item["id"].startswith("event_") for item in config["packs"]))
 
-    def test_retired_first_add_final_close_is_not_an_active_candidate(self) -> None:
+    def test_retired_first_add_templates_do_not_return_as_candidates(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = service.load()
 
@@ -3231,9 +3296,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             delay_minutes=70,
             match_context={"delay_minutes": 70},
         )
-        self.assertEqual(early, [])
+        self.assertTrue(early)
+        self.assertFalse(any(item["id"].startswith("event_") for item in early))
 
-    def test_first_add_candidates_do_not_look_ahead_before_next_silent_stage(self) -> None:
+    def test_first_add_candidates_are_not_controlled_by_retired_silent_stage_delays(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = service.load()
 
@@ -3245,9 +3311,12 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             match_context={"delay_minutes": 10},
         )
 
-        self.assertEqual([item["id"] for item in candidates], [])
+        self.assertEqual(
+            {item["id"] for item in candidates},
+            {"s10_need_and_case", "s10_activity_intro", "s10_objection_resolution", "s10_deposit_close"},
+        )
 
-    def test_first_add_candidates_are_empty_after_event_config_retirement(self) -> None:
+    def test_first_add_candidates_exclude_fixed_opening_after_platform_trigger(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = service.load()
 
@@ -3259,9 +3328,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             match_context={"delay_minutes": 10},
         )
 
-        self.assertEqual(candidates, [])
+        self.assertTrue(candidates)
+        self.assertFalse(any(item["id"] == "s10_new_customer_opening" for item in candidates))
 
-    def test_first_add_semantic_skip_candidates_are_retired(self) -> None:
+    def test_completed_proactive_assets_are_removed_without_forcing_next_stage(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = service.load()
 
@@ -3272,16 +3342,18 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             delay_minutes=60,
             match_context={"delay_minutes": 60},
         )
-        self.assertEqual(before_effect, [])
+        self.assertIn("s10_need_and_case", {item["id"] for item in before_effect})
 
         after_effect = first_add_candidate_packs(
             config,
-            completed_sop_pack_ids=["event_s10_store_prompt_5min", "event_s10_effect_warmup_30min"],
+            completed_sop_pack_ids=["event_s10_store_prompt_5min", "s10_need_and_case"],
             completed_sop_categories=["store_prompt", "effect_case"],
             delay_minutes=60,
             match_context={"delay_minutes": 60},
         )
-        self.assertEqual(after_effect, [])
+        remaining_ids = {item["id"] for item in after_effect}
+        self.assertNotIn("s10_need_and_case", remaining_ids)
+        self.assertIn("s10_activity_intro", remaining_ids)
 
     def test_event_payment_candidate_requires_activity_stage_skip_evidence(self) -> None:
         selector_input = {
@@ -3311,7 +3383,6 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             },
             selector_input,
         )
-        self.assertIn("selected_packs_must_start_with_earliest_candidate", blocked)
         self.assertIn("selected_payment_pack_not_currently_supported", blocked)
 
         _, allowed = normalize_event_decision(
@@ -3329,7 +3400,6 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             },
             selector_input,
         )
-        self.assertNotIn("selected_packs_must_start_with_earliest_candidate", allowed)
         self.assertNotIn("selected_payment_pack_not_currently_supported", allowed)
 
     async def test_event_judge_prompt_defaults_to_platform_sop_unless_conflict_or_overlap(self) -> None:
@@ -3390,7 +3460,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                             "order": 1,
                             "content": {"text": "这是完整的效果案例铺垫原文，用于确认模型不会只根据截断摘要改写。"},
                         },
-                        {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                        {"type": "image", "order": 2, "content": {"url": "https://example.com/effect.jpg"}},
                     ],
                 }
             ],
@@ -3402,43 +3472,27 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         user_prompt = str(model.messages[1]["content"])
         self.assertEqual(system_prompt, SOP_EVENT_SYSTEM_PROMPT)
         self.assertIn(GLOBAL_STRUCTURED_NODE_CONTRACT, system_prompt)
-        self.assertIn(GLOBAL_BUSINESS_RHYTHM_CONTRACT, system_prompt)
-        self.assertIn("先做拒发审查", system_prompt)
-        self.assertIn("客户当前立场与候选包的核心行动相反", system_prompt)
-        self.assertIn("阶段目标 + 核心事实 + 行动目标", system_prompt)
-        self.assertIn("企业微信一对一聊天", system_prompt)
-        self.assertIn("尊敬的客户/尊敬的顾客", system_prompt)
-        self.assertIn("您好，温馨提醒", system_prompt)
-        self.assertIn("销冠正在连续承接", system_prompt)
-        self.assertIn("冲突", system_prompt)
-        self.assertIn("严重重合", system_prompt)
-        self.assertIn("客户未回复、只有 staff 消息", system_prompt)
-
-        self.assertIn("平台提醒现在应该主动触达客户", system_prompt)
-        self.assertIn("让客户重新开口", system_prompt)
-        self.assertIn("assistant_waiting_customer=true", system_prompt)
-        self.assertIn("最近活跃保护窗口", system_prompt)
-        self.assertIn("不是要求你机械按 `delay_minutes` 强制发送", system_prompt)
-        self.assertIn("最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标", system_prompt)
-        self.assertIn("不要无限重复追问同一个问题", system_prompt)
-        self.assertIn("客户沉默时，优先推进下一个合理 SOP 价值点", system_prompt)
-        self.assertIn("发送效果铺垫包", system_prompt)
-        self.assertIn("计时基准、阶段前置、付款状态和当天频率资格", system_prompt)
-        self.assertIn("不能在活动报价前发送预约金卡或催付", system_prompt)
+        self.assertNotIn(GLOBAL_BUSINESS_RHYTHM_CONTRACT, system_prompt)
+        self.assertIn("候选顺序只供审计，不是强制主线", system_prompt)
+        self.assertIn("历史未重复、最能降低当前决策不确定性的价值", system_prompt)
+        self.assertIn("默认每轮一个价值目标", system_prompt)
+        self.assertIn("两个资产互补、服务同一个客户目标", system_prompt)
+        self.assertIn("没有任何历史未重复的新价值时才 skip/defer", system_prompt)
+        self.assertIn("不能只问“考虑得怎么样、还有什么想了解、今天几点来”", system_prompt)
+        self.assertIn("整体过程约45～50分钟", system_prompt)
+        self.assertIn("完成线上活动登记后", system_prompt)
+        self.assertIn("活动报价是预约金卡和催付的硬前置", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("message_operations", system_prompt)
         self.assertIn("insert_text_after", system_prompt)
-        self.assertIn("payment_collection_gate.status", system_prompt)
-        self.assertIn("remove_message", system_prompt)
+        self.assertIn("`payment_collection_gate` 不支持时不得发送预约金卡", system_prompt)
         self.assertIn("handoff_to_ai_reply_not_allowed_for_proactive_event", Path("docs/sop_proactive_wakeup_ab_design_20260720.md").read_text(encoding="utf-8"))
-        self.assertIn("Plan A Decision Contract", system_prompt)
-        self.assertIn("event_policy_evidence.ai_reply_policy.allowed=true", system_prompt)
-        self.assertIn("adjacent_merge_options", system_prompt)
-        self.assertIn("editable_text_messages", system_prompt)
-        self.assertIn("readonly_messages", system_prompt)
-        self.assertIn("最新聊天 > 当前事件事实 > 已实际发送的 SOP 与结构事实", system_prompt)
+        self.assertIn("固定新客开场", system_prompt)
+        self.assertIn("必须原样转发平台", system_prompt)
+        self.assertIn('"editable_text_messages"', user_prompt)
+        self.assertIn('"readonly_messages"', user_prompt)
         self.assertIn("这是完整的效果案例铺垫原文，用于确认模型不会只根据截断摘要改写。", user_prompt)
-        self.assertIn('"amount":10', user_prompt)
+        self.assertIn('"asset":"configured"', user_prompt)
         self.assertIn('"direction":"staff"', user_prompt)
         self.assertIn('"source":"ai_reply"', user_prompt)
         self.assertIn('"message_type":"text"', user_prompt)
@@ -3453,9 +3507,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"candidate_policy"', user_prompt)
         self.assertIn('"candidate_group":"due"', user_prompt)
         self.assertIn('"payment_collection_gate"', user_prompt)
-        self.assertIn('"status":"supported"', user_prompt)
+        self.assertIn('"status":"not_required"', user_prompt)
         self.assertIn('"event_policy_evidence":{}', user_prompt)
-        self.assertIn('"adjacent_merge_options"', user_prompt)
+        self.assertIn('"merge_options"', user_prompt)
+        self.assertNotIn('"adjacent_merge_options"', user_prompt)
         self.assertIn('"event_time"', user_prompt)
         self.assertIn('"local_hour":12', user_prompt)
         self.assertIn('"mainline_stage_status"', user_prompt)
@@ -3492,8 +3547,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector_input["current_platform_task"]["priority"], "current_outreach_objective_after_hard_facts")
         self.assertIn("到店赠送护理一次", selector_input["current_platform_task"]["message_content"][0]["content"])
         self.assertEqual(selector_input["current_payment_state"]["deposit_state"], "paid_by_order")
-        self.assertIn("必须优先分析它的阶段目的", str(model.messages[0]["content"]))
-        self.assertIn("已支付预约金只禁止再次发送预约金卡或催付", str(model.messages[0]["content"]))
+        self.assertIn("必须原样转发平台", str(model.messages[0]["content"]))
+        self.assertIn("已付、健康风险、投诉退款、明确拒付", str(model.messages[0]["content"]))
 
     async def test_event_model_timeout_retries_then_succeeds(self) -> None:
         model = _SequenceModel([TimeoutError("total timeout 45.0s"), {"send_sop": True, "reason": "retry ok"}])
@@ -3544,7 +3599,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["model_attempts"]), 3)
         self.assertIn("TimeoutError", result["error"])
 
-    async def test_first_add_model_exhaustion_falls_back_to_first_eligible_mainline_pack(self) -> None:
+    async def test_first_add_model_exhaustion_does_not_let_python_choose_sales_content(self) -> None:
         model = _SequenceModel([TimeoutError("timeout 1"), TimeoutError("timeout 2")])
         service = SopExecutionService(
             repository=_Repo(),
@@ -3567,10 +3622,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             event_policy_evidence={},
         )
 
-        self.assertEqual(result["mode"], "event_selected")
-        self.assertTrue(result["send_sop"])
-        self.assertEqual(result["sop_pack_id"], "store_prompt")
-        self.assertEqual(result["reason"], "event_model_error_candidate_fallback")
+        self.assertEqual(result["mode"], "event_model_error")
+        self.assertFalse(result["send_sop"])
+        self.assertEqual(result["reason"], "event_sop_model_retries_exhausted")
         self.assertIn("TimeoutError", result["error"])
 
     async def test_event_judge_keeps_selector_contract_for_direct_prompt_inspection(self) -> None:
@@ -3590,33 +3644,16 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["send_sop"])
         system_prompt = str(model.messages[0]["content"])
-        self.assertIn("先做拒发审查", system_prompt)
-        self.assertIn("客户当前立场与候选包的核心行动相反", system_prompt)
-        self.assertIn("阶段目标 + 核心事实 + 行动目标", system_prompt)
-        self.assertIn("企业微信一对一聊天", system_prompt)
-        self.assertIn("尊敬的客户/尊敬的顾客", system_prompt)
-        self.assertIn("您好，温馨提醒", system_prompt)
-        self.assertIn("销冠正在连续承接", system_prompt)
-        self.assertIn("冲突", system_prompt)
-        self.assertIn("严重重合", system_prompt)
-        self.assertIn("客户未回复、只有 staff 消息", system_prompt)
-
-        self.assertIn("平台提醒现在应该主动触达客户", system_prompt)
-        self.assertIn("让客户重新开口", system_prompt)
-        self.assertIn("assistant_waiting_customer=true", system_prompt)
-        self.assertIn("最近活跃保护窗口", system_prompt)
-        self.assertIn("不是要求你机械按 `delay_minutes` 强制发送", system_prompt)
-        self.assertIn("最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标", system_prompt)
-        self.assertIn("不要无限重复追问同一个问题", system_prompt)
-        self.assertIn("客户沉默时，优先推进下一个合理 SOP 价值点", system_prompt)
-        self.assertIn("计时基准、阶段前置、付款状态和当天频率资格", system_prompt)
-        self.assertIn("不能在活动报价前发送预约金卡或催付", system_prompt)
+        self.assertIn("候选顺序只供审计，不是强制主线", system_prompt)
+        self.assertIn("轻触必须交付新事实、证据价值或降低行动成本", system_prompt)
+        self.assertIn("CTA 强度由完整历史决定", system_prompt)
+        self.assertIn("没有任何历史未重复的新价值时才 skip/defer", system_prompt)
+        self.assertIn("活动报价是预约金卡和催付的硬前置", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("message_operations", system_prompt)
         self.assertIn("insert_text_after", system_prompt)
-        self.assertIn("payment_collection_gate.status", system_prompt)
-        self.assertIn("remove_message", system_prompt)
-        self.assertIn("客户画像和旧事件不是当前对话事实", system_prompt)
+        self.assertIn("`payment_collection_gate` 不支持时不得发送预约金卡", system_prompt)
+        self.assertIn("不是客户心理结论", system_prompt)
 
     async def test_chat_gate_sends_configured_opening_for_platform_auto_message(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening", "need_ai_reply": False})

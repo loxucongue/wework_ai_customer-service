@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.policies.sales_flow import mainline_pack_sort_key, mainline_stage_for_event_pack
+from app.policies.sales_flow import mainline_pack_sort_key
 
 
 ALLOWED_EVENT_DECISIONS = {
@@ -82,15 +82,6 @@ def normalize_event_decision(
         invalid_ids = [pack_id for pack_id in selected_ids if pack_id not in candidate_by_id]
         if invalid_ids:
             violations.append("selected_pack_id_not_in_candidates")
-        elif selected_ids and not _packs_start_at_first_candidate(
-            selected_ids,
-            candidate_sops,
-            selector_input=selector_input,
-            model_output=output,
-            completed_ids=completed_ids,
-            completed_categories=completed_categories,
-        ):
-            violations.append("selected_packs_must_start_with_earliest_candidate")
 
     if decision == "send" and mode != "platform_actions" and len(selected_ids) != 1:
         violations.append("send_requires_exactly_one_pack")
@@ -99,8 +90,6 @@ def normalize_event_decision(
             violations.append("platform_actions_cannot_merge_configured_packs")
         if len(selected_ids) != MAX_MERGED_SOP_PACKS:
             violations.append("merge_requires_exactly_two_packs")
-        elif not _packs_are_adjacent(selected_ids, candidate_sops):
-            violations.append("merge_requires_adjacent_mainline_packs")
     if decision in {"send", "merge"} and any(
         _payment_gate_blocks_selection(candidate_by_id.get(pack_id), model_output=output)
         for pack_id in selected_ids
@@ -110,6 +99,18 @@ def normalize_event_decision(
         candidate_by_id=candidate_by_id,
     ):
         violations.append("selected_payment_pack_not_currently_supported")
+    payment_readiness_evidence = _payment_readiness_evidence(output)
+    if (
+        mode != "platform_actions"
+        and decision in {"send", "merge"}
+        and any(_candidate_has_supported_payment(candidate_by_id.get(pack_id)) for pack_id in selected_ids)
+    ):
+        violations.extend(
+            _payment_readiness_evidence_violations(
+                payment_readiness_evidence,
+                selector_input,
+            )
+        )
     if decision in {"send", "merge"} and _decision_removes_supported_payment_messages(
         output,
         selected_ids=selected_ids,
@@ -165,38 +166,6 @@ def normalize_event_decision(
         and not _frequency_guard_supported(event_policy)
     ):
         violations.append("frequency_guard_not_supported_by_event_evidence")
-    if (
-        not busy_guard_active
-        and decision in {"skip", "defer"}
-        and strategy == "conflict_guard"
-        and not _conflict_guard_supported(selector_input, candidate_sops, completed_ids, completed_categories)
-    ):
-        violations.append("conflict_guard_missing_evidence_source")
-    if not busy_guard_active and decision in {"skip", "defer"} and _repeated_candidates_should_be_ai_touch(
-        selector_input=selector_input,
-        candidates=candidate_sops,
-        completed_ids=completed_ids,
-        completed_categories=completed_categories,
-        event_policy=event_policy,
-        strategy=strategy,
-    ):
-        violations.append("repeated_candidates_should_use_ai_touch")
-    if not busy_guard_active and decision in {"skip", "defer"} and _completed_activity_with_deposit_candidate_should_continue(
-        selector_input=selector_input,
-        candidates=candidate_sops,
-        event_policy=event_policy,
-        strategy=strategy,
-    ):
-        violations.append("completed_activity_with_deposit_candidate_should_continue")
-    if not busy_guard_active and decision == "send_ai_touch" and _backlog_should_use_mainline_candidate(
-        selector_input=selector_input,
-        candidates=candidate_sops,
-        completed_ids=completed_ids,
-        completed_categories=completed_categories,
-        event_policy=event_policy,
-    ):
-        violations.append("backlog_should_use_mainline_candidate")
-
     if decision not in {"send", "merge"}:
         output["text_adjustments"] = []
         output["message_operations"] = []
@@ -214,6 +183,7 @@ def normalize_event_decision(
             "touch_goal": _text(output.get("touch_goal")),
             "reason": _text(output.get("reason") or output.get("skip_reason")),
             "stage_skip_evidence": _stage_skip_evidence(output),
+            "payment_readiness_evidence": payment_readiness_evidence,
             "skip_reason": _text(output.get("skip_reason")),
             "frequency_reason": _text(output.get("frequency_reason")),
             "backlog_handling": _text(output.get("backlog_handling")) or "none",
@@ -223,6 +193,77 @@ def normalize_event_decision(
         }
     )
     return output, _unique(violations)
+
+
+def _payment_readiness_evidence(output: dict[str, Any]) -> dict[str, str]:
+    raw = output.get("payment_readiness_evidence")
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "customer_action_ref": _text(raw.get("customer_action_ref")),
+        "supporting_value": _text(raw.get("supporting_value")).lower() or "none",
+        "supporting_value_ref": _text(raw.get("supporting_value_ref")),
+        "reason": _text(raw.get("reason"))[:300],
+    }
+
+
+def _payment_readiness_evidence_violations(
+    evidence: dict[str, str],
+    selector_input: dict[str, Any],
+) -> list[str]:
+    """Verify provenance and chronology; the model owns the sales semantics."""
+
+    recent = selector_input.get("recent_conversation")
+    recent = recent if isinstance(recent, list) else []
+    indexed = {
+        _text(item.get("message_ref")): (index, item)
+        for index, item in enumerate(recent)
+        if isinstance(item, dict) and _text(item.get("message_ref"))
+    }
+    customer_messages = [
+        (_text(item.get("message_ref")), index, item)
+        for index, item in enumerate(recent)
+        if isinstance(item, dict)
+        and _text(item.get("message_ref"))
+        and _text(item.get("direction")).lower() in {"customer", "user", "external"}
+    ]
+    if not customer_messages:
+        return ["payment_collection_requires_current_customer_action_evidence"]
+
+    customer_ref = evidence.get("customer_action_ref") or ""
+    support_ref = evidence.get("supporting_value_ref") or ""
+    supporting_value = evidence.get("supporting_value") or "none"
+    customer_match = indexed.get(customer_ref)
+    support_match = indexed.get(support_ref)
+    violations: list[str] = []
+    latest_customer_ref, _, _ = customer_messages[-1]
+    if not customer_match or customer_ref != latest_customer_ref:
+        violations.append("payment_collection_requires_latest_customer_action_ref")
+    elif _text(customer_match[1].get("direction")).lower() not in {"customer", "user", "external"}:
+        violations.append("payment_collection_customer_action_ref_must_be_customer")
+
+    if supporting_value not in {"address", "effect", "objection"}:
+        violations.append("payment_collection_requires_supporting_value_dimension")
+    if not support_match:
+        violations.append("payment_collection_requires_supporting_value_ref")
+    else:
+        support_index, support_message = support_match
+        support_direction = _text(support_message.get("direction")).lower()
+        if support_direction not in {"assistant", "staff", "ai", "agent", "employee"}:
+            violations.append("payment_collection_supporting_value_ref_must_be_assistant")
+        if customer_match and support_index >= customer_match[0]:
+            violations.append("payment_collection_supporting_value_must_precede_action")
+    return violations
+
+
+def _candidate_has_supported_payment(candidate: Any) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    gate = candidate.get("payment_collection_gate")
+    return bool(
+        isinstance(gate, dict)
+        and bool(gate.get("has_payment_collection"))
+        and _text(gate.get("status")) == "supported"
+    )
 
 
 def _ai_touch_messages(output: dict[str, Any]) -> list[dict[str, Any]]:
@@ -412,93 +453,6 @@ def _selected_pack_ids(output: dict[str, Any]) -> list[str]:
     return _unique([item for item in values if item])
 
 
-def _packs_are_adjacent(selected_ids: list[str], candidates: list[dict[str, Any]]) -> bool:
-    ordered_ids = [
-        _text(item.get("id"))
-        for item in sorted(
-            (item for item in candidates if isinstance(item, dict) and _text(item.get("id"))),
-            key=mainline_pack_sort_key,
-        )
-    ]
-    try:
-        positions = sorted(ordered_ids.index(pack_id) for pack_id in selected_ids)
-    except ValueError:
-        return False
-    return len(positions) == 2 and positions[1] == positions[0] + 1
-
-
-def _packs_start_at_first_candidate(
-    selected_ids: list[str],
-    candidates: list[dict[str, Any]],
-    *,
-    selector_input: dict[str, Any],
-    model_output: dict[str, Any],
-    completed_ids: set[str],
-    completed_categories: set[str],
-) -> bool:
-    stage_status = _stage_status(selector_input)
-    stage_skip_evidence = _stage_skip_evidence(model_output)
-    ordered_ids = []
-    for item in sorted(
-        (
-            item
-            for item in candidates
-            if isinstance(item, dict)
-            and _text(item.get("id"))
-            and _text(item.get("id")) not in completed_ids
-            and _text(item.get("sop_category")) not in completed_categories
-        ),
-        key=mainline_pack_sort_key,
-    ):
-        pack_id = _text(item.get("id"))
-        stage_id = mainline_stage_for_event_pack(item)
-        if stage_id != "deposit_decision" and _stage_structurally_completed(stage_id, stage_status):
-            continue
-        ordered_ids.append(pack_id)
-    if not selected_ids or not ordered_ids:
-        return False
-    if selected_ids == ordered_ids[: len(selected_ids)]:
-        return True
-    try:
-        first_selected_position = ordered_ids.index(selected_ids[0])
-    except ValueError:
-        return False
-    skipped = ordered_ids[:first_selected_position]
-    if not skipped:
-        return False
-    candidate_by_id = {
-        _text(item.get("id")): item
-        for item in candidates
-        if isinstance(item, dict) and _text(item.get("id"))
-    }
-    for pack_id in skipped:
-        stage_id = mainline_stage_for_event_pack(candidate_by_id.get(pack_id) or {})
-        if not _has_stage_skip_evidence(stage_skip_evidence, stage_id=stage_id, pack_id=pack_id):
-            return False
-    return selected_ids == ordered_ids[first_selected_position : first_selected_position + len(selected_ids)]
-
-
-def _stage_status(selector_input: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    raw = selector_input.get("mainline_stage_status")
-    if not isinstance(raw, list):
-        return {}
-    output: dict[str, dict[str, Any]] = {}
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        stage_id = _text(item.get("stage_id"))
-        if stage_id:
-            output[stage_id] = item
-    return output
-
-
-def _stage_structurally_completed(stage_id: str, stage_status: dict[str, dict[str, Any]]) -> bool:
-    if not stage_id:
-        return False
-    item = stage_status.get(stage_id)
-    return isinstance(item, dict) and bool(item.get("structural_completed"))
-
-
 def _stage_skip_evidence(output: dict[str, Any]) -> list[dict[str, str]]:
     raw = output.get("stage_skip_evidence")
     if not isinstance(raw, list):
@@ -683,191 +637,6 @@ def _frequency_guard_supported(event_policy: dict[str, Any]) -> bool:
         and not touch_frequency.get("has_new_customer_progress_since_last_touch")
         and not pending_backlog.get("has_pending")
     )
-
-
-def _conflict_guard_supported(
-    selector_input: dict[str, Any],
-    candidates: list[dict[str, Any]],
-    completed_ids: set[str],
-    completed_categories: set[str],
-) -> bool:
-    recent = selector_input.get("recent_conversation")
-    if isinstance(recent, list) and any(
-        isinstance(item, dict)
-        and _text(item.get("role") or item.get("direction")) == "customer"
-        and bool(_text(item.get("content")))
-        for item in recent
-    ):
-        return True
-    if not candidates:
-        return True
-    if any(
-        _text(item.get("id")) in completed_ids
-        or _text(item.get("sop_category")) in completed_categories
-        or _payment_gate_blocks_selection(item)
-        for item in candidates
-        if isinstance(item, dict)
-    ):
-        return True
-    platform_gate = selector_input.get("platform_payment_collection_gate")
-    return isinstance(platform_gate, dict) and _text(platform_gate.get("status")) not in {
-        "",
-        "not_required",
-        "supported",
-    }
-
-
-def _repeated_candidates_should_be_ai_touch(
-    *,
-    selector_input: dict[str, Any],
-    candidates: list[dict[str, Any]],
-    completed_ids: set[str],
-    completed_categories: set[str],
-    event_policy: dict[str, Any],
-    strategy: str,
-) -> bool:
-    if _text(selector_input.get("mode")) != "first_add_flow":
-        return False
-    if not candidates:
-        return False
-    if strategy == "frequency_guard" and _frequency_guard_supported(event_policy):
-        return False
-    if _has_customer_or_policy_block(selector_input, event_policy):
-        return False
-    candidate_ids = [
-        _text(item.get("id"))
-        for item in candidates
-        if isinstance(item, dict) and _text(item.get("id"))
-    ]
-    if not candidate_ids:
-        return False
-    candidate_by_id = {
-        _text(item.get("id")): item
-        for item in candidates
-        if isinstance(item, dict) and _text(item.get("id"))
-    }
-    completed_stages = _completed_mainline_stages(selector_input)
-    return all(
-        pack_id in completed_ids
-        or _text((candidate_by_id.get(pack_id) or {}).get("sop_category")) in completed_categories
-        or mainline_stage_for_event_pack(candidate_by_id.get(pack_id) or {}) in completed_stages
-        for pack_id in candidate_ids
-    )
-
-
-def _backlog_should_use_mainline_candidate(
-    *,
-    selector_input: dict[str, Any],
-    candidates: list[dict[str, Any]],
-    completed_ids: set[str],
-    completed_categories: set[str],
-    event_policy: dict[str, Any],
-) -> bool:
-    if _text(selector_input.get("mode")) != "first_add_flow":
-        return False
-    if _has_customer_or_policy_block(selector_input, event_policy):
-        return False
-    pending_backlog = (
-        event_policy.get("pending_backlog")
-        if isinstance(event_policy.get("pending_backlog"), dict)
-        else {}
-    )
-    backlog_count = _positive_int(event_policy.get("backlog_count"))
-    has_backlog = bool(event_policy.get("quiet_hour_backlog")) or backlog_count >= 2 or bool(
-        pending_backlog.get("has_pending")
-    )
-    if not has_backlog:
-        return False
-    completed_stages = _completed_mainline_stages(selector_input)
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        pack_id = _text(item.get("id"))
-        if not pack_id or pack_id in completed_ids:
-            continue
-        if _text(item.get("sop_category")) in completed_categories:
-            continue
-        if mainline_stage_for_event_pack(item) in completed_stages:
-            continue
-        if _payment_gate_blocks_selection(item):
-            continue
-        return True
-    return False
-
-
-def _has_customer_or_policy_block(selector_input: dict[str, Any], event_policy: dict[str, Any]) -> bool:
-    activity = selector_input.get("conversation_activity")
-    if not isinstance(activity, dict):
-        activity = {}
-    if any(
-        bool(activity.get(key))
-        for key in (
-            "latest_customer_pending_ai_reply",
-            "recent_active_chat",
-            "active_chat_window",
-        )
-    ):
-        return True
-    if any(
-        bool(event_policy.get(key))
-        for key in (
-            "customer_rejection",
-            "active_chat_window",
-            "health_or_medical_risk",
-            "complaint_or_payment_risk",
-            "payment_anomaly",
-        )
-    ):
-        return True
-    ai_reply_policy = event_policy.get("ai_reply_policy") if isinstance(event_policy.get("ai_reply_policy"), dict) else {}
-    return bool(ai_reply_policy.get("has_unhandled_customer_message"))
-
-
-def _completed_activity_with_deposit_candidate_should_continue(
-    *,
-    selector_input: dict[str, Any],
-    candidates: list[dict[str, Any]],
-    event_policy: dict[str, Any],
-    strategy: str,
-) -> bool:
-    if _text(selector_input.get("mode")) != "first_add_flow":
-        return False
-    if strategy == "frequency_guard" and _frequency_guard_supported(event_policy):
-        return False
-    if _has_customer_or_policy_block(selector_input, event_policy):
-        return False
-    stages = selector_input.get("mainline_stage_status")
-    if not isinstance(stages, dict):
-        return False
-    activity = stages.get("activity_and_price")
-    if not isinstance(activity, dict):
-        return False
-    activity_completed = bool(
-        activity.get("structural_completed")
-        or activity.get("semantic_completed")
-        or activity.get("completed")
-    )
-    if not activity_completed:
-        return False
-    return any(
-        isinstance(item, dict) and mainline_stage_for_event_pack(item) == "deposit_decision"
-        for item in candidates
-    )
-
-
-def _completed_mainline_stages(selector_input: dict[str, Any]) -> set[str]:
-    stages = selector_input.get("mainline_stage_status")
-    if not isinstance(stages, dict):
-        return set()
-    output: set[str] = set()
-    for stage_id, payload in stages.items():
-        if not isinstance(payload, dict):
-            continue
-        if payload.get("structural_completed") or payload.get("semantic_completed") or payload.get("completed"):
-            stage = _text(stage_id)
-            if stage:
-                output.add(stage)
-    return output
 
 
 def _unique(values: list[str]) -> list[str]:

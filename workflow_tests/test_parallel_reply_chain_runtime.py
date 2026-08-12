@@ -96,12 +96,12 @@ def test_authoritative_registration_facts_do_not_treat_platform_display_name_as_
 def test_parallel_gate_only_nominates_content_assets() -> None:
     prompt = PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
-    assert "0-2" in prompt
+    assert "0-3" in prompt
     assert "candidate_assets" in prompt
     assert "不回复客户" in prompt
     assert "不决定销售动作" in prompt
-    assert "相邻决策价值" in prompt
-    assert "最多一个" in prompt
+    assert "新价值" in prompt
+    assert "总数最多三个" in prompt
     assert "默认提名一个 `supporting`" in prompt
     assert "目录里确实没有尚未交付且有意义的新价值" in prompt
     assert "不要求客户先表示同意" in prompt
@@ -110,6 +110,8 @@ def test_parallel_gate_only_nominates_content_assets() -> None:
     assert "两个互不替代的步骤" in prompt
     assert "不能因为 A 没有直接资产，就把 B 一起判空" in prompt
     assert "相邻价值不要求客户当前主动询问该资产" in prompt
+    assert "相关性来自“在当前事实任务完成后，是否仍能用未重复的真实证据帮助这个客户继续形成判断”" in prompt
+    assert "不能仅以“客户只提供了位置/只问了当前问题”为由把 B 留空" in prompt
     assert "selected_scene_id" not in prompt
     assert "reference_messages" not in prompt
 
@@ -381,11 +383,52 @@ def test_parallel_reply_prompt_uses_history_without_fixed_short_ack_script() -> 
     assert "不要继续追问" in prompt
     assert "每轮只做一个主要目标" in prompt
     assert "answer：当前只适合答清楚" in prompt
-    assert "pause：客户正在工作" in prompt
+    assert "pause：客户当前确实无法继续接收沟通" in prompt
+    assert "客户当前明确正在工作" in prompt
+    assert "延后购买或到店决定不是沟通中止" in prompt
+    assert "不得用想象的忙碌、工作或现实事务补出暂停理由" in prompt
+    assert "不得把“改天、考虑、再看看”改写成“您先忙" in prompt
+    assert "`smallest_next_commitment` 所声明的新证据、新价值或客户动作必须" in prompt
+    assert "客户可见回复必须完成它" in prompt
+    assert "提醒客户记住之前已经讲过的价格、活动、案例或门店，不是新价值" in prompt
     assert "本轮只简短承接并停止" in prompt
     assert "不重复已经讲过的活动、效果或门店" in prompt
-    assert "现实中断，不适用上一条软拒绝推进原则" in prompt
+    assert "客户正在工作" in prompt
     assert "好/好的/嗯/可以" not in prompt
+
+
+def test_parallel_content_gate_does_not_reopen_completed_fact_collection_from_progress_gaps() -> None:
+    prompt = PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+
+    assert "完整聊天已经真实完成某个采集型资产所需的信息收集" in prompt
+    assert "不得仅为补进度再次提名该采集资产" in prompt
+    assert "客户提供了冲突事实、要求更换结果或指出原信息错误" in prompt
+
+
+def test_parallel_content_gate_distinguishes_delayed_decision_from_unavailable_conversation() -> None:
+    prompt = PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+
+    assert "区分延后购买决定与当前停止沟通" in prompt
+    assert "可以提名与时间、优先级或降低行动成本相关的证据策略" in prompt
+    assert "延后购买决定不属于这里的暂停边界" in prompt
+    assert "不得把“改天、考虑、再看看”自行改写成客户在忙" in prompt
+
+
+def test_parallel_content_gate_treats_recent_real_delivery_as_completed_and_still_searches_adjacent_value() -> None:
+    prompt = PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+
+    assert "即使结构化 `delivery_status` 没有更新，也要按已交付处理" in prompt
+    assert "不得再次提名同一资产" in prompt
+    assert "当前维度将由工具解决" in prompt
+    assert "不能因当前消息只是事实补充而省略相邻价值检索" in prompt
+
+
+def test_tool_planner_does_not_turn_truncated_history_into_a_new_location_question() -> None:
+    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+
+    assert "不能记录可选销售机会" in prompt
+    assert "当前窗口没有再次携带原始位置不等于该事实从未收集" in prompt
+    assert "不得把位置写成缺失事实" in prompt
 
 
 def test_parallel_reply_rule_view_keeps_unique_sections_without_repeating_layered_facts() -> None:
@@ -3197,7 +3240,7 @@ def test_parallel_reply_prompt_keeps_store_delivery_fact_based() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "门店必须属于客户当前可见范围" in prompt
-    assert "只有答案会实质改变下一步事实、工具、证据或动作时" in prompt
+    assert "只有客户答案会实质改变下一步事实、工具、证据或动作时" in prompt
     assert "应视为当前门店匹配请求" not in prompt
 
 

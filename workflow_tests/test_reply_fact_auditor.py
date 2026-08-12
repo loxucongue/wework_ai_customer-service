@@ -590,6 +590,31 @@ def test_fact_audit_input_includes_reply_claims_as_non_authoritative_metadata() 
     assert audit_input["reply_audit_metadata"]["payment_assessment"]["status"] == "unverified_paid_claim"
 
 
+def test_fact_audit_input_includes_recent_conversation_for_cross_turn_delivery_claims() -> None:
+    state = _state()
+    state["evidence_join"]["shared_context"]["conversation"].append(
+        {
+            "message_ref": "history:case-image",
+            "role": "assistant",
+            "content": "[image]https://example.invalid/case.jpg",
+            "occurred_at": "2026-08-11T09:59:00+08:00",
+        }
+    )
+
+    audit_input = _parallel_reply_fact_audit_input(
+        state=state,
+        messages=[{"type": "text", "content": "像刚发您的案例这样，可以先看改善方向。"}],
+        payload={"used_fact_refs": ["current_message"], "selected_content_ids": []},
+    )
+
+    assert audit_input["recent_conversation"][-1] == {
+        "ref": "history:case-image",
+        "role": "assistant",
+        "content": "[image]https://example.invalid/case.jpg",
+        "sent_at": "2026-08-11T09:59:00+08:00",
+    }
+
+
 def test_fact_audit_input_includes_current_structured_tool_delivery_options() -> None:
     state = _state()
     state["evidence_join"]["tool_facts"] = {
@@ -674,6 +699,7 @@ def test_generic_repair_contract_exposes_authoritative_paid_without_deciding_cus
     assert "逐字保留原 text" in repair_contract
     assert "事实审计错误只修改 violation.quote" in repair_contract
     assert "不能删除或改写其中的条件、适用对象、时态和否定词" in repair_contract
+    assert "不得索要姓名、手机号、门店或到店时间" in repair_contract
 
 
 def test_fact_audit_input_surfaces_claim_bearing_business_facts() -> None:
@@ -684,6 +710,7 @@ def test_fact_audit_input_surfaces_claim_bearing_business_facts() -> None:
                 "effect_confidence": "绝大多数客户都是一次就好",
             },
             "offer": {"new_customer_price": 268},
+            "customer_charge_policy": {"customer_visible_fact": "不会强制接受额外项目"},
         }
     }
 
@@ -698,6 +725,7 @@ def test_fact_audit_input_surfaces_claim_bearing_business_facts() -> None:
         "customer_visible_evidence_policy": {
             "effect_confidence": "绝大多数客户都是一次就好",
         },
+        "customer_charge_policy": {"customer_visible_fact": "不会强制接受额外项目"},
     }
 
 
@@ -707,6 +735,28 @@ def test_fact_auditor_separates_package_includes_from_registered_store_service()
     assert "必须区分“套餐包含什么”和“客户何时可以到店享受某项服务”" in prompt
     assert "`offer.includes` 直接支持" in prompt
     assert "不得用后者的登记条件否定前者的套餐包含范围" in prompt
+    assert "遗漏其他项目不是事实冲突" in prompt
+    assert "最近历史确有案例图片时，不得要求本轮重复交付" in prompt
+
+
+def test_fact_auditor_requires_claim_strength_to_match_authoritative_evidence() -> None:
+    prompt = REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+
+    assert "证据强度只能等量使用" in prompt
+    assert "真实案例只能支持该案例的可见变化和可参考方向" in prompt
+    assert "不能单独支持“绝对安全、完全无风险、不伤皮肤、一定有效、一次彻底解决”" in prompt
+    assert "应报告 `unsupported_claim`" in prompt
+
+
+def test_parallel_rules_expose_customer_charge_fact_to_reply_and_auditor() -> None:
+    from app.policies.business_rules import parallel_reply_business_rules_for_model
+
+    rules = parallel_reply_business_rules_for_model()
+
+    assert rules["AUTHORITATIVE FACTS"]["customer_charge_policy"]["rule_level"] == "business_fact"
+    assert "不会强制客户接受额外项目" in (
+        rules["AUTHORITATIVE FACTS"]["customer_charge_policy"]["customer_visible_fact"]
+    )
 
 
 def test_reply_and_fact_auditor_do_not_treat_admin_scope_as_distance_fact() -> None:
@@ -720,6 +770,33 @@ def test_reply_requires_direct_text_answer_before_structured_supplement() -> Non
     assert "先在 text 中直接说出足够识别该答案的事实" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不能代替文字回答本身" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不能只写“给您发这家/这是门店地址”" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_model_led_prompt_distinguishes_changeable_fact_gaps_from_fixed_constraints() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "只有前者值得提问" in prompt
+    assert "不能因为客户不满意结果就重新索要同一信息" in prompt
+    assert "不要用“您方便再联系我、考虑好再找我”" in prompt
+    assert "不要立即重复发送同一素材" in prompt
+    assert "不能自动等同于当前无法继续接收沟通" in prompt
+    assert "当前窗口没有重复携带原始位置" in prompt
+    assert "不要把历史素材声明成当前新选择" in prompt
+
+
+def test_model_led_reply_preserves_complete_selected_asset_contract() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "表示采用它的证据目的、核心事实和结构素材" in prompt
+    assert "不能遗漏候选 `approved_points/messages` 中构成该资产核心含义的事实" in prompt
+    assert "首次采用 `asset_role=activity_offer`" in prompt
+    assert "为了控制消息数量，可以把多段核心文本自然合并成一段" in prompt
+
+
+def test_unverified_payment_cannot_collect_post_paid_registration_fields() -> None:
+    assert "只做付款核验，不收姓名手机号" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "支付后登记资料的收集资格" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不得要求其先提交姓名、手机号做登记" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
 def test_candidate_only_media_requires_its_selected_asset_provenance() -> None:
@@ -750,6 +827,38 @@ def test_candidate_only_media_requires_its_selected_asset_provenance() -> None:
     state["reply_used_fact_refs"] = ["content_asset:s10_activity_intro"]
     _validate_parallel_reply_consistency(
         [{"type": "image", "content": "https://example.invalid/activity.jpg"}],
+        state,
+    )
+
+
+def test_recently_delivered_media_is_valid_history_provenance_without_reselecting_asset() -> None:
+    state = {
+        "reply_selected_content_ids": [],
+        "evidence_join": {
+            "shared_context": {
+                "conversation": [
+                    {
+                        "message_ref": "conv_case_image",
+                        "role": "assistant",
+                        "content": "[image]https://example.invalid/case.jpg",
+                    }
+                ]
+            },
+            "content_candidates": [
+                {
+                    "content_id": "s10_need_and_case",
+                    "delivery_status": "completed",
+                    "messages": [
+                        {"type": "image", "content": "https://example.invalid/case.jpg"}
+                    ],
+                }
+            ],
+            "normalized_tool_facts": {"structured_facts": {"case_facts": []}},
+        },
+    }
+
+    _validate_parallel_reply_consistency(
+        [{"type": "image", "content": "https://example.invalid/case.jpg"}],
         state,
     )
 

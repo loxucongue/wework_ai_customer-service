@@ -55,6 +55,7 @@
         }
       ],
       "parallel_candidate_enabled": false,
+      "proactive_candidate_enabled": false,
       "asset_role": "opening_context"
     },
     {
@@ -91,7 +92,7 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "亲，您看一下这个是参加活动进来的顾客做完后的参考，主要是淡化黑色素，不伤皮肤。"
+            "text": "亲，您看一下，这是参加活动的顾客做完后的真实对比，可以先参考斑点改善的方向。每个人的斑点情况不同，具体改善程度以实际情况为准。"
           }
         },
         {
@@ -109,7 +110,8 @@
           }
         }
       ],
-      "asset_role": "effect_evidence"
+      "asset_role": "effect_evidence",
+      "proactive_candidate_enabled": true
     },
     {
       "id": "s10_activity_intro",
@@ -161,11 +163,12 @@
           "type": "text",
           "order": 3,
           "content": {
-            "text": "我把活动图也发您看一下。到店会先看皮肤和斑点情况，再按实际情况跟您讲清楚。"
+            "text": "我把活动图也发您看一下。完成线上活动登记后，到店会先看皮肤和斑点情况，再按实际情况跟您讲清楚，确认适合、您满意再操作。"
           }
         }
       ],
-      "asset_role": "activity_offer"
+      "asset_role": "activity_offer",
+      "proactive_candidate_enabled": true
     },
     {
       "id": "s10_store_prompt",
@@ -207,6 +210,7 @@
         }
       ],
       "asset_role": "location_capture",
+      "proactive_candidate_enabled": true,
       "selection_constraints": {
         "forbidden_when_authoritative_facts_present": [
           "location_card"
@@ -257,7 +261,8 @@
           }
         }
       ],
-      "asset_role": "objection_support"
+      "asset_role": "objection_support",
+      "proactive_candidate_enabled": true
     },
     {
       "id": "s10_deposit_close",
@@ -314,6 +319,7 @@
         }
       ],
       "asset_role": "deposit_close",
+      "proactive_candidate_enabled": true,
       "requires_prior_asset_roles": [
         "activity_offer"
       ]

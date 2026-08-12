@@ -105,6 +105,7 @@ def parallel_reply_business_rules_for_model() -> dict[str, Any]:
             "offer": _offer_facts(offer),
             "health_risk_policy": rules.get("health_risk_policy") or {},
             "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
+            "customer_charge_policy": rules.get("customer_charge_policy") or {},
             "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
             "transaction_policy": transaction,
         },

@@ -597,7 +597,7 @@
       "id": "store_far",
       "category": "门店异议",
       "critical": true,
-      "semantic_goal": "承接距离顾虑后塑造活动与检测价值并回主线，不反复问方便不方便。",
+      "semantic_goal": "承接距离顾虑；客户没有提供新的位置或指出原位置有误时，不重新索要同一地址，直接切换到效果、活动或降低行动成本等能改变决定的新价值。",
       "initial": {
         "conversation": [
           "小贝: 这家是目前相对方便的门店。",
@@ -729,7 +729,7 @@
       "id": "soft_refusal",
       "category": "客户异议",
       "critical": true,
-      "semantic_goal": "首次暂缓时自然承接；客户随后明确说可以先留活动，视为新的成交进展，历史报价已完成且无硬边界时发送最多一张预约金卡。",
+      "semantic_goal": "首次延后决定但未要求停止沟通，不把下一步完全交还客户，应低压力交付一项历史未重复的新价值或可执行动作；历史已经交付效果证据和活动报价后，客户随后明确说可以先留活动，视为新的成交进展，无硬边界时发送最多一张预约金卡。",
       "expected": {
         "must_reply": true,
         "required_types": [
@@ -738,8 +738,12 @@
         "payment_amount": 10
       },
       "initial": {
-        "conversation": ["小贝: 当前周年庆淡斑活动价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。"],
-        "completed_sops": ["s10_activity_intro"]
+        "conversation": [
+          "小贝: 这是同类斑点改善前后的原相机对比，您可以先看一下改善方向。",
+          "小贝: [图片]https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f39ca4ff98754506-63c3c33d9f8777431fea56e4-f39ca4ff98754506472880e.jpg",
+          "小贝: 当前周年庆淡斑活动价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。"
+        ],
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro"]
       },
       "timeline": [{"kind": "customer_message", "content": "我改天再说"}],
       "followup": "可以先把活动留着",
@@ -899,7 +903,7 @@
       "id": "sop_silence_progression",
       "category": "SOP Event",
       "critical": true,
-      "semantic_goal": "客户沉默时按最早未完成主线触达，不跳过需求案例直接发活动。",
+      "semantic_goal": "客户沉默时由模型从已到期且合法的候选中选择一个历史未重复的新价值；后续客户追问刚收到的素材时自然承接，不机械重发同一图片。",
       "expected": {
         "must_reply": true,
         "required_types": ["text", "image"]

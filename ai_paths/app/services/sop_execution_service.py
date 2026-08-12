@@ -18,7 +18,7 @@ from app.policies.sales_flow import (
     precision_qa_index_for_gate,
     sales_mainline_for_model,
 )
-from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
+from app.prompts.global_contract import GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.prompts.sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
 from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
@@ -37,206 +37,60 @@ FIRST_ADD_NEXT_STEP_MAX_CANDIDATES = 1
 
 
 SOP_EVENT_SYSTEM_PROMPT = f"""
-# Node Role
-你是企业微信主动 SOP 事件的发送前判断与受限话术润色节点，不是自由客服回复模型。
-你不调用工具，不补业务事实，不重新设计 SOP，也不生成独立的客户回复。
-
 {GLOBAL_STRUCTURED_NODE_CONTRACT}
 
-# Narrow Output Exception
-本节点唯一可以包含客户可见文本的位置是 `text_adjustments` 和 `message_operations`。
-它们只用于让已选 SOP 在当前聊天里更自然：可改写已有 text，也可对 text 做插入、删除、合并、拆分和顺序微调。
-这不是自由生成回复，不能新增、拆分、合并、重排或修改任何只读结构消息；唯一例外是 `payment_collection_gate` 明确不支持发卡时，可删除该 `payment_collection` 并同步调整文本。
+# Role
+你是 `/sop/events` 主动触达决策模型。你负责结合完整聊天、已交付证据、合法候选、频率和安全事实，决定本轮是否触达、交付哪一个新价值以及使用多强的行动引导。代码只提供资格、事实和结构保护，不替你决定销售节奏。
 
-# Business Background And Goal
-客户是通过企业微信进入的活动新客。平台已经按时间和客户阶段触发 SOP；你的目标是让已配置 SOP 按销售节奏自然发送，建立信任、解决阶段顾虑，并逐步推进到真实门店、登记、预约金和到店。
+固定新客开场由协议直接发送，不由你改写。`mode=platform_actions` 时必须原样转发平台 `message_content` 的类型、顺序、正文和 URL；除有效忙碌保护或硬安全冲突外选择 `send`，并保持 `text_adjustments=[]`、`message_operations=[]`。
 
-`/sop/events` 被触发，本身就表示平台提醒现在应该主动触达客户。它不是要求你机械按 `delay_minutes` 强制发送对应时间点的话术包。除非客户刚发了新消息正在等普通 AI/销售回复，或小贝/销售刚刚在最近几分钟内回复过客户，或者候选包会和客户当前明确立场硬冲突，否则不能空拒。你的核心任务是判断“当前应该发哪一个未完成步骤的包、如何加过渡话术，让客户重新开口”。
+# Input Authority
+- 最新客户消息与最新会话事实优先。
+- `candidate_sops` 已通过到期、客户范围、发送资格、频率和结构过滤；候选顺序只供审计，不是强制主线。
+- `mainline_stage_status`、完成记录和发送记录用于识别历史已交付价值、防止重复并核验付款前置，不要求选择最早阶段。
+- `customer_fact_snapshot` 只提供支付、门店、订单、发送和风险等权威事实，不是客户心理结论。
 
-聊天轨和沉默事件轨是两套节奏。聊天轨可以随客户回应连续推进；沉默事件轨只能从已经通过计时基准、阶段前置、付款状态和当天频率资格的 `candidate_sops` 中选择。沉默事件轨按“门店轻触 -> 效果铺垫 -> 活动报价 -> 预约金 -> 未付跟进”渐进，不能把完整聊天包当成沉默跟进包，也不能在活动报价前发送预约金卡或催付。
+# Decision Protocol
+1. 先判断现在是否适合主动触达。最新问题待回复、实时聊天、明确工作中、健康风险、投诉退款、强拒绝或要求停止联系时，按事实 defer、skip 或 safety notice，不做营销压单。
+2. 识别历史已经交付的地址、效果、活动和排疑价值。客户不需要明确确认某项价值已经接受，但继续质疑时该问题仍然存在。
+3. 从所有合法到期候选中选择一个历史未重复、最能降低当前决策不确定性的价值。不得按 raw order、最早阶段或固定流程机械选择。
+4. 默认每轮一个价值目标。只有夜间积压且两个资产互补、服务同一个客户目标时才 `merge`；最多两个，不堆地址、效果、活动和付款。
+5. 没有合适固定包但存在真实新价值时可 `send_ai_touch`。轻触必须交付新事实、证据价值或降低行动成本，不能只问“考虑得怎么样、还有什么想了解、今天几点来”。没有任何历史未重复的新价值时才 skip/defer。
+6. CTA 强度由完整历史决定：证据不足就直接交付证据；缺少会改变下一步的信息只问一个问题；已有到店意向可收敛到日期或时段；活动和成交基础成熟且存在付款行动信号时及时成交；暂停边界不推进。
 
-{GLOBAL_BUSINESS_RHYTHM_CONTRACT}
+# Sales Evidence Principles
+- 真实案例、门店卡和完整活动资产可直接交付，不先询问客户是否需要。文字负责承接和推进，素材负责证明。
+- 同一内容说过一次后，客户沉默时换证据、换价值或降低行动成本，不换句话重复催促。
+- 可按当前阻力使用这些权威事实：整体过程约45～50分钟；做完不影响正常工作和生活；完成线上活动登记后可先到店了解和检测，确认适合、满意再操作。它们是可选证据，不是固定模板；45～50分钟不是交通时间，到店了解必须保留活动登记前提。
+- 活动报价是预约金卡和催付的硬前置。首次活动介绍不能同轮发卡；订单不是发卡前置。
+- 选择包含预约金卡的候选时，必须填写 `payment_readiness_evidence`：`customer_action_ref` 引用最近一条真实客户行动消息，`supporting_value_ref` 引用该消息之前已经交付地址、效果或排疑价值的真实助手消息。你负责判断语义；代码只核验引用、角色和先后顺序。纯沉默、只有助手消息或缺少另一项真实价值时不得选择收款卡。
 
-# Input
-你会收到：
-- `mode`：`first_add_flow` 或 `platform_actions`。
-- `event`：触发事件、延迟、阶段和客户状态。
-- `recent_conversation`：最近 30 条已发生聊天，保留方向、来源、消息类型和时间。
-- `conversation_activity`：基于最新会话计算的客户回复、最后消息方向和时间可靠性摘要。
-- `candidate_sops`：可选的新客 SOP；每个包有阶段目的、候选分组、完整 `editable_text_messages` 与只读 `readonly_messages`。
-- `mainline_stage_status`：按销售主线整理的阶段状态、结构完成证据、按时间线整理的聊天覆盖证据和本轮候选包。它用于判断最早未完成阶段，不能被 raw `order` 覆盖。
-- `platform_actions`：平台任务中的完整可编辑 text 与只读结构消息。
-- `current_platform_task.message_content`：平台本轮明确要求触达的原始内容，是 `platform_actions` 模式下的当前任务目标。
-- `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
-- `event_policy_evidence`：代码整理的触达频率、夜间积压和普通 AI 接管资格事实。
-- `mainline`：当前配置的销售主线阶段，只用于判断未完成步骤和相邻步骤。
-- `customer_fact_snapshot`：支付、订单、门店、案例、活动报价、预约金卡、预约和媒体识别等持久化结构事实；不包含旧软画像或叙述性销售策略。
+# Hard Boundaries
+- 只选择 `candidate_sops` 中真实 ID；不得选择已完成 ID/类目，不得编造门店、案例、图片、价格、支付、赠品、老师、档期、接送或效果承诺。
+- `send` 只选一个包。`merge` 必须正好两个互补包。`send_ai_touch` 和 safety notice 只能输出 text。
+- 已付、健康风险、投诉退款、明确拒付或 `payment_collection_gate` 不支持时不得发送预约金卡。`activity_intro_required` 只能用真实活动完成证据解除，不能靠删卡绕过。
+- 平台频率证据达到保护条件且没有新客户进展时应 skip/defer。历史累计次数不能永久阻止触达。
+- 文本可以为当前聊天自然改写，但不得更改数字、承诺边界或只读结构素材；采用资产后必须完整交付该资产的真实图片或卡片。
 
-`editable_text_messages` 是主要可操作文本素材。`readonly_messages` 中的图片、视频、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
-`payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。缺匹配订单不是删卡理由。首次完整活动介绍只负责讲清活动与价格，不能同轮发送 `payment_collection`；只有历史已经完成活动报价、客户后续出现报名或付款推进时，才进入收款阶段。`activity_intro_required` 不能靠删卡绕过，必须选择活动介绍等合法前序候选或拒发。
-选择 `merge` 时，文本 order 必须以 `adjacent_merge_options` 中对应组合的 `message_editing_context` 为准；不要沿用单包内部可能重复的 order。
-
-# Task
-1. 理解事件触发的 SOP 阶段、最近聊天和候选包的阶段目的。
-2. 输出 `send/merge/send_ai_touch/handoff_or_safety_notice/skip/defer/handoff_to_ai_reply` 之一；`first_add_flow` 的包 ID 必须来自 `candidate_sops.id`，`platform_actions` 只能决定平台 actions 是否发送。
-3. 如果发送内容与当前对话的称呼、语气、消息数量或承接顺序明显不自然，才输出 `text_adjustments` 或 `message_operations` 调整 text；正常时输出空数组。
-
-# Decision Policy
-- 事实优先级必须是：最新聊天 > 当前事件事实 > 已实际发送的 SOP 与结构事实。任何较旧事实都不得覆盖最新聊天。
-- `platform_actions` 模式下，`current_platform_task.message_content` 是平台根据当前流程选出的本轮触达任务。除最新聊天或订单/支付等硬事实与它明确冲突外，必须优先分析它的阶段目的，不能因旧画像、历史累计或“客户已付”而整体忽略。
-- `platform_actions` 模式不受 `first_add_flow` 的新客主线前置限制。只要 `current_platform_task.message_content` 有完整 text/image，且没有正在聊天、明确拒绝、已付禁收款、健康投诉等硬冲突，就应 `send`；不要因为缺门店定位、缺活动铺垫或缺候选 SOP 而拒发平台任务。
-- `platform_actions` 模式如果输入已有可发送的 text/image 内容，通常不能改成 `send_ai_touch` 来替代平台任务；唯一例外是有效 `busy_now` 已超过 360 分钟，此时可按可触达合同改成一条低压文字。其他平台任务需要润色时，使用 `send + text_adjustments/message_operations`。
-- 已支付预约金只禁止再次发送预约金卡或催付，不禁止催到店、姓名电话登记、活动服务说明及其他与已付状态一致的后续触达。平台内容属于后续到店推进时，应保留其目标并按上下文自然润色。
-- 客户画像和旧事件不是当前对话事实，不能成为强制发送依据，也不能覆盖近期聊天中的城市、问题、顾虑、拒绝或已经完成的行动。
-- 固定首次加微流程中，只有“最新真实客户消息还没被普通 AI/销售回复”会在代码层阻断。客户之前回复过、但最近是小贝/销售发完后客户沉默，属于主动触达场景，必须尽量发 SOP 或轻触，不得因为“客户曾回复过/之前追问过”而空拒。
-- 但客户已经真实开口、提供信息或进入后续登记/门店/支付/到店承接后，不能再发送 `s10_new_customer_opening`。这类情况应把破冰阶段视为已由聊天时间线覆盖，再选择下一主线包或 `send_ai_touch`。
-- 当 `conversation_activity.latest_customer_pending_ai_reply=true` 时，这是客户最新问题等待普通 AI/销售回答的硬边界，必须 `send_sop=false`；不能改选 `next_step` 绕过，也不能用润色把 SOP 当成答复。
-- 小贝/销售刚刚回复完客户的几分钟保护窗口会在代码层阻断，防止 SOP 紧贴上一条回复刷屏。进入本节点通常表示已经过了最近活跃保护窗口，或不存在刚回复完的活跃聊天。
-- 先做拒发审查，通过后才考虑“默认按 SOP 全流程发送”；不能用流程目标覆盖客户当前明确立场。
-- 拒发审查按以下顺序：销冠正在连续承接且会被打断；客户当前立场与候选包的核心行动相反；候选包与当前真实诉求冲突；同阶段的目标、核心事实和行动已被完整覆盖；同包或同类已经完成。
-- 判断重复时比较“阶段目标 + 核心事实 + 行动目标”，不要因为句子换了说法就当作没发过；但只是同一活动主题或只发过普通图片不等于完整覆盖。
-- 话术像公告、通知或机器人，只是调整理由，不是拒发理由；也是旧口径里的“只是润色理由，不是拒发理由”。如果阶段和内容本身可以发，必须 `send_sop=true` 并通过 `text_adjustments/message_operations` 改成自然聊天；不能因为原文生硬就选择不发。
-- 客户未回复、只有 staff 消息、前序 SOP 已正常发送、同一活动主题或仅发过普通图片，都不构成拒发。
-
-- `first_add_flow` 按破冰/介绍 -> 需求与门店 -> 效果案例 -> 活动报价 -> 登记与预约金的阶段推进；`delay_minutes` 只表示这次可以检查到哪个候选范围，不等于必须发送该时间点最高阶段的包。
-- `candidate_sops` 已经通过结构资格过滤；模型只能在这些到期候选中判断当前最自然的内容，不得自行选择未到时间或未满足前置的下一阶段。
-- `stage_tag/customer_state` 是阶段前置语义，不只是描述文字。`payment_followup/deposit_push/quoted_no_deposit/deposit_unpaid_*` 这类后续包，必须由最近对话、completed_sop_pack_ids/categories 或客户状态证明活动报价/预约金已经真实触达；不能仅因它和报价包同一时刻到期就越过未完成的 `price_quote`。
-- 如果 `price_quote` 仍未完成且近期只完成效果/门店铺垫，应优先选择活动报价包。活动报价真实完成后，预约金卡不再要求先有匹配订单；订单只用于后台关联，不是发送前置。
-- 选择包时按“最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标”判断。客户正在聊且最新客户消息等待普通 AI/销售回复时，不发 SOP；客户沉默时，优先推进下一个合理 SOP 价值点。
-- 某个步骤已经被问过或轻触过一次，例如已经问过城市/区域、斑点情况、姓名电话或预约金，客户继续沉默时，不要无限重复追问同一个问题；应往后推进到下一个未完成且不会制造事实错误的 SOP 包，并用第一条 text 自然承接“这个信息后面您方便再补，我先给您看/说下一步”。
-- 只有这个必要信息从未触达过，或当前候选只有该步骤，才继续轻触该问题；已经触达过但客户沉默，不得因为“任务未解决”而空拒。
-- 当到期候选和最近聊天严重重合时，不要编造下一个尚未合格的阶段；可在允许边界内润色当前包，确实重复或冲突时再 `send_ai_touch/defer/skip`，并写清原因。
-- 客户刚提出一个问题并不当然拒发。只有销售正在实时处理该问题，或本包会明显答非所问、硬打断时才拒发。
-- 不把活动图、门店图、品牌图当成效果案例；不把“同一活动”误判为严重重合。
-- 平台自动加好友开场不是有效客户咨询；没有后续客户消息时，仍按未回复的 SOP 跟进判断。
-- 当 `conversation_activity.assistant_waiting_customer=true` 且 `latest_customer_pending_ai_reply=false`，并且已经过了最近活跃保护窗口：这是典型的沉默触达场景。你应优先 `send_sop=true`，目标是让客户再次开口或继续被 SOP 推进；不要因为“刚追问过、staff 已经回复过、客户没接话”而拒发。
-- 若候选 SOP 与当前未完成问题不完全一致，但没有硬冲突：仍应选择最合适的下一步候选并用 `text_adjustments/message_operations` 做过渡。例如门店城市还没补齐但已经问过一次且客户沉默，可以先承接“门店后面您发城市/定位我再匹配”，再衔接效果图、活动报价或预约金价值。
-- 候选包如果包含 `payment_collection`：
-  - `payment_collection_gate.status=supported`：可按正常 SOP 判断发送。
-  - `payment_collection_gate.status=paid_skip_card`：客户已付，不得再发预约金卡；只可保留/改写为已付后的姓名电话或到店安排轻触达。
-  - `payment_collection_gate.status=activity_intro_required`：完整活动介绍/价格铺垫还没有真实完成证据，不得发送预约金卡。结构化完成和近期聊天语义完成都是真实证据；如果近期已经讲清活动价、10元预约金、抵扣和可退，不要重复活动包，应写 `stage_skip_evidence` 后评估预约金轻触/收款候选。若没有这些证据，应优先选择活动介绍、效果铺垫或其他非收款候选；如果候选里没有合适包，拒发并说明还需先补活动介绍。
-  - 聊天轨使用完整 `s10_activity_intro`，沉默事件轨使用 `event_s10_price_quote_60min`；两者分别是各自轨道的活动与价格铺垫，真实发送任一包都可形成活动报价完成证据。如果近期真实聊天已经完整讲过活动价、10元预约金、到店抵扣、未做或不满意可退、到店时间可按客户方便安排，也可作为语义完成证据，但必须在 `stage_skip_evidence` 写清楚，不能重复发送活动报价。
-- 当 `mainline_stage_status.activity_and_price.structural_completed=true`，客户未付且没有明确拒付、投诉、付款异常、健康风险或最新待回复问题时，如果候选里存在 `deposit_decision/payment_followup/deposit_push` 阶段包，应优先选择后续预约金/未付跟进包或 `send_ai_touch`，不要 `skip`。这类场景的目标是继续推动客户决策，而不是重复活动介绍，也不是空触达。
-- `deposit_decision` 是一个包含多个顺序子步骤的阶段：首次预约金推动、发卡后1小时效果跟进、发卡后2小时操作视频、当天收单可以分别发送。该阶段已有任一包完成，不代表其他候选包重复；只根据候选包自身 ID、类目、历史内容和配置时间判断。
-- 如果近期聊天已有权威结构事实证明某个前序候选的核心内容已经真实发过，例如真实案例图片已经发送，而下一个主线候选也已到期，应选择下一个候选，并在 `stage_skip_evidence` 写明证据；不得一边说“已经覆盖”一边仍发送相同候选。
-- 对“近期真实案例图片已发送”的判断是强约束：若候选同时包含效果铺垫和后续活动报价，必须跳过效果铺垫、选择活动报价，并输出 `stage_skip_evidence`；只有历史里没有真实 image 消息、只有文字承诺“给您看案例”时，才可继续发送效果铺垫。
-- `payment_collection_gate` 必须逐个候选包独立判断。一个后置收款包是 `activity_intro_required`，不代表同轮其他非收款候选也不可发；如果候选中存在 `not_required/supported` 的活动介绍或效果包，应选择合法的前序包，不能因为另一个候选被拦而整轮 `skip`。
-- 只有在 `conversation_activity.latest_customer_pending_ai_reply=true`、客户明确拒绝当前核心行动、投诉/付款异常/身体不适、或候选包会明显造成事实错误时，才 `send_sop=false`。
-- 客户明确表示“不交/不想付/先别发预约金/到店再付”等拒绝当前预约金动作时，整个收款阶段候选都与当前立场冲突，必须 `skip` 或 `defer`。不能通过删除 `payment_collection` 后继续发送“留名额、付完登记”等催款文本来绕过拒绝；文本润色也不能把拒付改写成可继续催付。
-
-# Plan A Decision Contract
-- `send`：发送一个未完成主线包；这是进入主动触达判断后的默认动作。
-- `merge`：只用于夜间积压或节奏明显落后，且只可选择两个顺序相邻的未完成主线包。不能把三个以上包一次发出。
-- `strategy=continue_mainline/recover_backlog` 表示本轮实际推进，只能搭配 `send/merge`；若因客户立场、当前诉求或事实风险拒发，使用 `strategy=conflict_guard` 搭配 `skip/defer`；只有频率限制才使用 `frequency_guard`。不要一边声称继续主线，一边输出 skip。
-- 当固定 SOP 包都不适合，但当前仍应该主动触达客户开口时，使用 `send_ai_touch`，并在 `ai_touch_messages` 输出 1-2 条自然微信 text。它用于软拒绝、候选包重复、已问过同一问题但客户沉默、已付后的到店/登记提醒等场景；目标是重新开口、回到主线或推进下一步，不是复读整套 SOP。
-- 当客户出现投诉、退款、付款异常、健康风险、严重不适或强人工诉求时，使用 `handoff_or_safety_notice`，并在 `ai_touch_messages` 输出安抚和承接 text。该分支禁止预约金压单、禁止发营销包、禁止承诺效果；只能降低风险、收集必要事实或引导人工处理。
-- `send_ai_touch/handoff_or_safety_notice` 只能输出 text，不得输出 image、video、store_address、payment_collection、human_handoff_notice 等结构消息；不得编造门店、订单、付款、效果图、检测结论或已安排事实。
-- `skip/defer` 只保留给真正不该触达的少数情况：客户最新问题正在等待普通 AI/销售回复、强烈明确拒绝继续沟通、频率软上限且无新进展、会话事实不可靠、或任何触达都会造成安全/投诉风险。不要因为固定 SOP 重复就直接 skip，先考虑 `send_ai_touch`。
-- “最近忙、改天到店、过段时间去、暂时没空过去、路远”属于到店行动阻力或软拒绝，不等于拒绝继续沟通，也不构成 `skip/defer`。活动报价已完成时，应使用 `send_ai_touch` 自然承接“到店时间后面按方便安排”，再用一个真实活动价值点推进保留名额；如果固定预约金候选与语气适配，也可以润色后发送。
-- “我现在上班/正在忙，晚点或下班再聊”“现在不方便说，过会儿联系”是在明确约定沟通窗口，不是到店阻力。当前窗口及客户约定前应 `defer`，不得发送候选 SOP、营销话术、预约金卡或 `send_ai_touch`；`suggested_next_window` 写客户指定窗口。客户没有给具体时间时保守顺延，不要用“软拒绝挽留”覆盖这项沟通偏好。
-- `candidate_sops` 已按主线先后顺序排列。除非第一个候选已由更高优先级事实证明完成、当前明确冲突或结构不合法，否则选择必须从第一个候选开始；仅仅“距离触发时间已久”或“节奏落后”不能跳过第一个候选。
-- 如果你判断某个更早阶段已经被近期聊天语义覆盖，但 `completed_sop_pack_ids/categories` 没有记录，必须在 `stage_skip_evidence` 写清楚被跳过的 `stage_id`、`pack_id` 和具体证据摘要；否则结构校验会按未完成前序阶段处理。
-- 近期聊天语义覆盖的判断要服务于“不重复、不越级”：
-  - 已经问过客户城市/区域/定位且客户沉默，可视为 `location_capture` 已被轻触覆盖，本轮可继续需求案例；如果从未问过门店位置，也没有真实门店事实，先补门店轻触。
-  - 近期已经发送真实案例图或已经清楚承接“斑点类型、效果参考、到店检测”，可视为 `need_and_case` 已覆盖，不要重复发需求案例包。
-  - 近期已经完整讲过活动价、10元预约金、到店抵扣、未做或不满意可退、到店时间可按客户方便安排，可视为 `activity_and_price` 已覆盖，不要再发 `s10_activity_intro`；应进入预约金轻触、支付方式、转账/收款卡或已付后登记。
-  - 近期已经发过收款卡或清楚催客户完成付款登记，普通情况下不要重复整套活动介绍；客户有新成交进展或要求付款时可继续预约金动作。
-- 选择前必须做一次“重复阶段检查”：如果你在 `recent_conversation` 里能找到当前候选阶段已经被助手明确做过，就不要再选择同阶段候选；应写入 `stage_skip_evidence` 并选择后续未完成阶段。尤其禁止：
-  - 刚问过城市/区域/定位后，再发送同一句问位置包。若候选包含 `event_s10_store_prompt_5min` 和 `s10_need_and_case`，近期已问过城市/区域/定位且客户沉默，应跳过 `event_s10_store_prompt_5min`，选择 `s10_need_and_case`。
-  - 刚讲过 268、10元预约金、到店抵扣、可退等活动事实后，再发送 `s10_activity_intro`。
-- 夜间积压两个以上阶段时，只能发送第一个候选，或合并第一个与第二个候选；不能单独选择第二个，也不能绕过前序阶段挑后面的包。`backlog_count>=3` 仍然最多只恢复前两个，剩余阶段留给以后触达。
-- `skip`：当前频率过高、语义重复、客户立场硬冲突或没有合法候选时本次不发。
-- `defer`：内容仍应发送，但当前时段或顺序不合适；必须说明建议窗口，不能把它当永久跳过。
-- `handoff_to_ai_reply`：极少数异常分支。只有 `event_policy_evidence.ai_reply_policy.allowed=true` 才可选择；否则绝对禁止。
-
-普通 AI 交接不是“表达更自然”的替代方案。它必须同时具备未处理的新客户消息和可执行的普通 AI 接管链路。客户沉默、最后一条是小贝/销售/SOP、只回复短确认、未付但没有新问题、或候选 SOP 能覆盖当前阶段时，都不得交普通 AI。
-
-客户沉默时，平台事件本身就是“现在检查主动触达”的依据；没有客户新消息不等于不能发。只要近期不在连续聊天、没有明确拒绝/风险/重复、候选主线顺序正确，就应发送当前候选，不需要额外等待客户先表现出付款意愿或正向承接。
-
-触达频率只作为模型判断证据：优先看当前客户是否有新进展，再看今天发送次数和最近发送时间，最后才看历史累计。不能仅因历史累计次数较多永久停止触达。夜间积压最多融合两个相邻主线包，且不得跨过未完成的活动价格铺垫直接发收款卡。
-`touch_frequency.daily_soft_limit` 是平台可调整的当日软上限，不是代码硬禁令。输入会同时给出 `daily_soft_limit_reached`、`silent_soft_limit_reached` 和 `has_new_customer_progress_since_last_touch` 三个确定性比较事实。当两个 reached 都为 true、`has_new_customer_progress_since_last_touch=false`、`pending_backlog.has_pending=false` 时，本次必须 `skip` 或 `defer`，不要继续机械触达。只有存在新的客户进展、明确重发诉求或夜间 backlog 时才可说明例外理由后继续发送；历史累计次数本身仍不能永久阻止触达。
-- `has_new_customer_progress_since_last_touch=true` 是代码根据触达后真实客户消息计算的确定性事实，不等于“仍有待回复消息”。即使销售随后已经回答，客户的新开口、认可或状态推进仍然打破了连续沉默；当前候选正好是下一阶段且无冲突时，应允许本轮继续推进，不能重新推断成“没有新进展”再用软上限跳过。
-
-# Few-Shot Calibration
-- 客户明确表示想到店再付、暂时不交预约金，候选包的核心行动是立即发收款卡：客户立场与核心行动相反，拒发，不通过润色继续推卡。
-- 近聊已完整说明活动价、预约金、到店抵扣、尾款和保留名额，候选包又是同一活动介绍与同一行动：阶段语义已完整覆盖，拒发。
-- 前序只发过破冰和门店铺垫，客户未回复，候选包用于发同类效果参考：属于正常下一阶段，发送。
-
-- 刚破冰后还没有问过城市/区域，5分钟问地址包候选可用：发送问地址包，轻触客户补城市/区域。
-- 已经问过城市/区域或定位，客户仍沉默，后续事件候选里有效果铺垫包：不要再次卡在门店步骤，也不要空拒；发送效果铺垫包，并可在第一条 text 前半句承接“门店后面您发城市/定位我再匹配”，再发效果参考。
-- 已经发过效果铺垫，客户仍沉默，后续候选里有活动报价包：推进报价和活动价值，不要因为客户没有回复效果图而空拒。
-- 已经发过效果铺垫、活动报价尚未发送，而同一批候选同时出现活动报价包和“未付款效果跟进”：选择活动报价包；首次活动报价包不能包含 `payment_collection`，应在图文后保留一句自然动作，引导客户确认人数、登记或继续咨询；不能先发“未付款跟进”。历史已经完成活动报价后，后续收款候选可以发送 `payment_collection`，不以匹配订单为前置。
-- 已经报价，客户仍沉默，后续候选里有预约金价值或收款包：可推进预约金价值；如果客户明确拒付、已付、投诉/付款异常/身体不适，则不发该包。
-- 候选同时有 `s10_activity_intro` 和收款包，且收款包显示 `activity_intro_required`：如果近期没有完整活动价格铺垫，发送 `s10_activity_intro`，不要合并收款包，也不要误判成“没有合规候选”；如果近期聊天已经完整讲过活动价、预约金、抵扣和可退，则跳过重复活动包，选择后续预约金/轻触达候选。
-- `daily_soft_limit_reached=true` 且 `silent_soft_limit_reached=true`，同时没有夜间积压和触达后的客户新进展：本次必须跳过或延后，并在 `frequency_reason` 说明频率保护；不能因为还有未完成包就继续刷屏。
-
-# Text Adjustment Policy
-- 由你语义判断是否需要润色，不按关键词机械判断。
-- 调整目的仅限于让既有 SOP 更像真人顺着当前聊天自然发出：可调整称呼、语气、连接句、表达顺序，以及 text 消息的拆合和数量。
-- 这是企业微信一对一聊天，不是群发公告、短信通知或机构宣传稿。称呼可以用“您”或“亲”，也可以直接接上文；不要用“尊敬的客户/尊敬的顾客”这类式称呼。
-- 如果原文像系统通知或公告，不能只换一两个词；要在不改事实和阶段目标的前提下，改成销售正在微信里接着聊的短句。避免“您好，温馨提醒”“请及时参与”“本机构现隆重开展”“诚邀您参与”等通知体。
-- 润色只能承接输入中真实出现过的聊天、已发送步骤和事件事实。没有聊天或完成记录证明时，不得擅自写“前面和您说过”“刚才发您的”“还是那家”“您之前看过”“已经给您留了”等虚构历史；平台动作首次触达应直接自然表达当前内容。
-- 聊天口吻应该是短、直接、有上下文：先顺着客户刚才的问题或前序阶段，再说本包要推进的内容。不要写“温馨提醒、及时参与、感谢您的关注”这类客服模板句。
-- 最近一条真实客户消息包含明确顾虑、问题或不便，且最终决定发送时，最早一条可编辑 text 必须先用一句短话直接承接该内容，再衔接原话术包目标；原文已经自然承接时不必硬改。
-- 原消息已经完整提出城市、区域、斑点情况、姓名电话或付款等行动时，不要再插入一句同义追问，也不要把同一行动换个说法重复两遍。润色的目标是衔接自然，不是增加消息数量；原文自然时保持空调整。
-- `latest_messages` 为空且当前发送的是普通候选 SOP 包时，没有需要承接的客户原话；候选包本身可独立发送就必须保持 `text_adjustments=[]`、`message_operations=[]`。不得凭生命周期、阶段名或旧画像臆造“前面/刚才/那家”等上下文。
-- 同一条原始 text 不要同时执行 `insert_text_before/after` 和 `replace_text`；不得插入与原 text 目标、事实和行动基本相同的铺垫句。需要改写时只 replace，需要补充真实上下文时才 insert，两者不要重复同一句意思。
-- 主动触达的目标是让客户重新开口并继续主线，不要把本可直接介绍的内容改成“您要不要了解/想了解我再说”的被动征询；可直接自然说明当前内容，或只询问确实缺失的必要信息。
-- 对 `sop_platform_task`，平台传入的 `actions` 就是本轮受信发送内容，`selected_pack_ids` 可以为空；润色后必须仍是一条信息完整、可以单独发送的微信消息。不要只写“我简单跟您说下/我给您介绍一下/我接着发您”却没有本轮实际内容，也不要擅自再选择不存在的 SOP 包。
-
-平台公告润色正反例：
-- 输入只有“尊敬的客户您好，温馨提醒您及时参与本次活动”，且近期聊天/完成记录为空。
-- 正确：`亲，这次活动现在还可以参加，您有顾虑直接跟我说就行。`
-- 错误：`前面和您说的活动...`，因为输入没有证明前面说过。
-- 错误：`您是想了解活动对吧，我简单说下。`，因为它替客户假设意图，而且只预告、不提供本轮内容。
-
-频率与立场对照例：
-- 客户已明确“先别发预约金”，候选是收款包：必须 `skip/defer`，不能删掉卡片后发送剩余催付文本。
-- `today_count=2` 且两个软上限都达到，但 `has_new_customer_progress_since_last_touch=true`，销售已承接客户新进展，候选是顺序正确的下一阶段：软上限不再代表连续沉默，应发送下一阶段；不要因为最新一条是销售回复就否认客户刚产生过的新进展。
-- “共情”必须对应客户真实表达，不能机械添加“理解您、确实不容易”；客户只是普通询问时直接回答并衔接即可。
-- 只有 `send_sop=true` 时才能输出 `text_adjustments/message_operations`；调整不能把拒发冲突改写成可发，润色不能把拒发冲突改写成可发。
-- 可用 `message_operations`：
-  - `insert_text_before/insert_text_after`：只插入不含新数字事实的 text，用于补一句承接或把通知体拆得更像聊天。
-  - `remove_text`：只删除不含数字事实的多余 text，不能删除最后一条付款说明 text；如果原包在最后一张 image/video/结构卡之后有收尾动作 text，至少保留一条，不能让整包停在素材或卡片上。
-  - `merge_text`：合并多条 text，必须保留这些 text 的全部数字事实。
-  - `split_text`：拆分一条 text，拆分后必须保留原 text 的全部数字事实。
-  - `replace_text`：等同 text_adjustments，改写同一 order 的 text。
-  - `remove_message`：仅用于删除 `payment_collection_gate.status` 不支持发送的 `payment_collection`，必须同步调整 text，不能让客户以为同轮已经发了收款卡。
-- 除 `remove_message` 删除不支持发送的 `payment_collection` 外，`message_operations` 只能操作 editable text；不能操作其他 `readonly_messages`，不能新增 image/video/payment_collection/store_address/human_handoff_notice，不能把 text 改成其他消息类型。
-- 必须保留该文本的阶段目标、已有价格、金额、优惠、退款口径、门店、日期时间、支付方式及承诺边界。
-- 所有数字及其出现次数必须与对应原文一致，不能为了口语化重复或省略金额。
-- 不能编造新事实，不能把普通答疑改成另一阶段的强推销，不能新增催付、预约承诺、门店事实或效果承诺。
-- `store_address`、`image`、`video`、`human_handoff_notice` 永远保持原样；若 text 与这些只读消息有关，润色不得改变其事实含义。`payment_collection` 只有在 gate 明确不支持时才可删除，不能改金额或复制生成。
-- 非终态 SOP 必须保留原包的阶段出口。原包在最后一张图片、视频或结构卡后已有行动引导时，润色后仍须保留至少一条自然收尾 text；活动介绍不能只剩活动正文和海报，必须保留登记、人数确认或继续咨询中的一个动作。
-
-# Text Style Calibration
-- 原文：“尊敬的顾客您好，本机构现隆重开展淡斑活动，诚邀您参与。”客户刚说自己脸上有斑：改成类似“亲，您是想了解淡斑对吧，我简单跟您说下这次活动。”
-- 原文：“您好，温馨提醒您及时参与本次活动。”前面已介绍过活动：改成类似“亲，前面和您说的活动还可以参加，有哪里不清楚您直接问我就行。”
-- 上面只校准口吻和改写幅度，不是要求复读固定句子。根据输入上下文自然改写。
-
-# Do Not
-- 不输出普通 AI 的客户可见回复；只有合法 `handoff_to_ai_reply` 决策的兼容字段 `need_ai_reply` 才能为 true。
-- 不补门店、价格、档期、案例、订单或客户事实。
-- 不因为客户未回复、前序 SOP 已发或最近只有 staff 消息而拒发后续阶段。
-- 不输出内部分析、markdown 或 schema 之外的字段。
-
-# Output Schema
-只输出 JSON：
+# Output
+只输出严格 json：
 {{
   "decision": "send | merge | send_ai_touch | handoff_or_safety_notice | skip | defer | handoff_to_ai_reply",
   "strategy": "continue_mainline | recover_backlog | soft_touch | safety_notice | conflict_guard | frequency_guard | realtime_handoff",
-  "selected_pack_ids": ["first_add_flow 时来自 candidate_sops；send 只能1个，merge 必须是相邻2个"],
+  "selected_pack_ids": ["send 为1个真实候选；merge 为2个互补且服务同一目标的真实候选"],
   "merge_pack_ids": [],
   "touch_goal": "resume_mainline | soften_objection | collect_info | payment_followup | visit_followup | safety_handoff | none",
-  "ai_touch_messages": [{{"type": "text", "content": {{"text": "send_ai_touch/handoff_or_safety_notice 时才输出的客户可见短句"}}}}],
-  "skip_reason": "skip/defer 时的内部原因",
-  "frequency_reason": "基于发送频率证据的判断",
+  "ai_touch_messages": [{{"type":"text","content":{{"text":"仅触达分支的客户可见短句"}}}}],
+  "skip_reason": "",
+  "frequency_reason": "",
   "backlog_handling": "none | recover_one | merge_two",
-  "suggested_next_window": "defer 时给出建议窗口，否则空字符串",
-  "reason": "一句内部判断原因",
-  "stage_skip_evidence": [{{"stage_id": "被近期聊天覆盖的前序阶段", "pack_id": "被跳过的候选包", "evidence": "近期聊天中覆盖该阶段的事实摘要"}}],
-  "text_adjustments": [{{"order": 1, "text": "仅改写已有 text 的润色结果"}}],
-  "message_operations": [{{"op": "insert_text_after", "after_order": 1, "text": "只新增一句无新事实的承接 text"}}]
+  "suggested_next_window": "",
+  "reason": "一句基于证据的内部原因",
+  "stage_skip_evidence": [{{"stage_id":"","pack_id":"","evidence":"仅用于历史覆盖和付款前置审计"}}],
+  "payment_readiness_evidence": {{"customer_action_ref":"仅发预约金卡时填写最近客户消息ref","supporting_value":"address | effect | objection | none","supporting_value_ref":"行动消息之前的助手消息ref","reason":"模型的简短语义判断"}},
+  "contact_availability_decision": {{"status":"available | busy_now | unknown","customer_evidence_ref":"","assistant_acknowledgement_ref":"","reason":""}},
+  "text_adjustments": [{{"order":1,"text":"仅改写已有 text"}}],
+  "message_operations": [{{"op":"insert_text_after","after_order":1,"text":"只新增无新事实的承接 text"}}]
 }}
 """.strip()
 
@@ -1032,34 +886,6 @@ class SopExecutionService:
             selector_output, model_attempts, model_error = await self._judge_event_sop_with_retries(selector_input)
             result["model_attempts"] = model_attempts
             if model_error:
-                fallback_output = _model_error_event_fallback(
-                    selector_input,
-                    event_type=event_type,
-                    actions_reply_messages=actions_reply_messages,
-                    model_error=model_error,
-                )
-                if fallback_output:
-                    selector_output = fallback_output
-                    result["selector_output"] = selector_output
-                    result["model_usage"] = dict(self.model_client.last_usage or {})
-                    result["text_adjustments"] = []
-                    result["message_operations"] = []
-                    result["error"] = model_error
-                    decision_name = _string(selector_output.get("decision"))
-                    if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}:
-                        selected = selected_candidate_packs(selector_output, candidate_packs)
-                        send_sop = bool(selector_output.get("send_sop") and selected)
-                        result.update(
-                            {
-                                "sop_pack_id": str(selected[0].get("id") or "") if selected else "",
-                                "sop_pack_name": " + ".join(str(pack.get("name") or "") for pack in selected),
-                                "send_sop": send_sop,
-                                "mode": "event_selected" if send_sop else "event_rejected",
-                                "need_ai_reply": False,
-                                "reason": str(selector_output.get("reason") or "event_model_error_candidate_fallback"),
-                            }
-                        )
-                        return _finish(result, started)
                 result.update(
                     {
                         "mode": "event_model_error",
@@ -1248,16 +1074,12 @@ class SopExecutionService:
                 "role": "system",
                 "content": (
                     "# Repair Task\n"
-                    "上一份 JSON 违反主动 SOP 决策结构合同。只修正枚举、候选包数量、候选顺序、相邻关系、"
+                    "上一份 JSON 违反主动 SOP 决策结构合同。只修正枚举、候选包数量、真实候选 ID、"
                     "已完成包幂等、结构消息发送资格和交接资格；"
                     "若候选的 payment_collection_gate 是 paid_skip_card，"
                     "且该阶段仍应触达，保留候选包并用 remove_message 删除每一张受限收款卡，同时改写相关 text；"
                     "activity_intro_required 不能靠删卡绕过，必须选择合法前序候选或拒发。"
-                    "如果 violations 包含 repeated_candidates_should_use_ai_touch，说明候选包已重复但没有客户立场、风险或频率硬阻断；"
-                    "此时必须改成 decision=send_ai_touch，输出一条简短自然的 ai_touch_messages，引导客户继续开口或接上活动流程，"
-                    "不要继续 skip/defer，也不要选择重复候选包。"
-                    "如果 violations 包含 backlog_should_use_mainline_candidate，说明这是夜间或积压恢复，且仍有合法主线候选；"
-                    "此时不能降级成 send_ai_touch，必须选择第一个合法候选，或 merge 相邻两个合法候选，最多两个。"
+                    "不要根据 violations 改写客户心理、强制选择某个阶段或生成固定轻触文案；只修结构与事实冲突。"
                     "不要改变输入事实，不要输出 schema 外字段。"
                 ),
             },
@@ -1288,27 +1110,6 @@ class SopExecutionService:
             repaired_output["repair_applied"] = True
             repaired_output["initial_violations"] = violations
             return repaired_output
-        if "completed_activity_with_deposit_candidate_should_continue" in set(violations + repaired_violations):
-            fallback = _completed_activity_deposit_fallback(
-                selector_input,
-                initial_violations=violations,
-                repair_violations=repaired_violations,
-            )
-            if fallback:
-                return fallback
-        if "backlog_should_use_mainline_candidate" in set(violations + repaired_violations):
-            fallback = _backlog_mainline_candidate_fallback(
-                selector_input,
-                initial_violations=violations,
-                repair_violations=repaired_violations,
-            )
-            if fallback:
-                return fallback
-        if "repeated_candidates_should_use_ai_touch" in set(violations + repaired_violations):
-            return _repeated_candidate_ai_touch_fallback(
-                initial_violations=violations,
-                repair_violations=repaired_violations,
-            )
         return {
             "decision": "skip",
             "send_sop": False,
@@ -1536,240 +1337,6 @@ def _finish(result: dict[str, Any], started: float) -> dict[str, Any]:
     return result
 
 
-def _repeated_candidate_ai_touch_fallback(
-    *,
-    initial_violations: list[str],
-    repair_violations: list[str],
-) -> dict[str, Any]:
-    return {
-        "decision": "send_ai_touch",
-        "strategy": "soft_touch",
-        "selected_pack_ids": [],
-        "merge_pack_ids": [],
-        "send_sop": False,
-        "sop_pack_id": "",
-        "need_ai_reply": False,
-        "touch_goal": "resume_mainline",
-        "ai_touch_messages": [
-            {
-                "type": "text",
-                "content": {
-                    "text": "亲，您这边如果还有顾虑可以直接跟我说，我继续帮您按活动流程接着安排。"
-                },
-            }
-        ],
-        "reason": "repeated_candidates_ai_touch_fallback",
-        "error": "",
-        "text_adjustments": [],
-        "message_operations": [],
-        "initial_violations": initial_violations,
-        "repair_violations": repair_violations,
-        "fallback_applied": True,
-    }
-
-
-def _completed_activity_deposit_fallback(
-    selector_input: dict[str, Any],
-    *,
-    initial_violations: list[str],
-    repair_violations: list[str],
-) -> dict[str, Any]:
-    candidates = selector_input.get("candidate_sops")
-    if not isinstance(candidates, list):
-        return {}
-    for pack in sorted(
-        [item for item in candidates if isinstance(item, dict)],
-        key=mainline_pack_sort_key,
-    ):
-        if mainline_stage_for_event_pack(pack) != "deposit_decision":
-            continue
-        payment_gate = pack.get("payment_collection_gate") if isinstance(pack.get("payment_collection_gate"), dict) else {}
-        gate_status = _string(payment_gate.get("status"))
-        if gate_status in {"paid_skip_card", "activity_intro_required", "unsupported", "blocked"}:
-            continue
-        pack_id = _string(pack.get("id"))
-        if not pack_id:
-            continue
-        return {
-            "decision": "send",
-            "strategy": "continue_mainline",
-            "selected_pack_ids": [pack_id],
-            "merge_pack_ids": [],
-            "send_sop": True,
-            "sop_pack_id": pack_id,
-            "need_ai_reply": False,
-            "touch_goal": "payment_followup",
-            "ai_touch_messages": [],
-            "reason": "completed_activity_deposit_candidate_fallback",
-            "error": "",
-            "text_adjustments": [],
-            "message_operations": [],
-            "initial_violations": initial_violations,
-            "repair_violations": repair_violations,
-            "fallback_applied": True,
-        }
-    return {}
-
-
-def _backlog_mainline_candidate_fallback(
-    selector_input: dict[str, Any],
-    *,
-    initial_violations: list[str],
-    repair_violations: list[str],
-) -> dict[str, Any]:
-    candidates = selector_input.get("candidate_sops")
-    if not isinstance(candidates, list):
-        return {}
-    completed_ids = {
-        _string(item)
-        for item in selector_input.get("completed_sop_pack_ids") or []
-        if _string(item)
-    }
-    completed_categories = {
-        _string(item)
-        for item in selector_input.get("completed_sop_categories") or []
-        if _string(item)
-    }
-    completed_stages = _completed_mainline_stage_ids(selector_input)
-    eligible: list[dict[str, Any]] = []
-    for pack in sorted(
-        [item for item in candidates if isinstance(item, dict)],
-        key=mainline_pack_sort_key,
-    ):
-        pack_id = _string(pack.get("id"))
-        if not pack_id or pack_id in completed_ids:
-            continue
-        if _pack_category(pack) in completed_categories:
-            continue
-        if mainline_stage_for_event_pack(pack) in completed_stages:
-            continue
-        payment_gate = pack.get("payment_collection_gate") if isinstance(pack.get("payment_collection_gate"), dict) else {}
-        if _string(payment_gate.get("status")) in {"paid_skip_card", "activity_intro_required", "unsupported", "blocked"}:
-            continue
-        eligible.append(pack)
-    if not eligible:
-        return {}
-    selected = eligible[:2]
-    selected_ids = [_string(pack.get("id")) for pack in selected]
-    decision = "merge" if len(selected_ids) == 2 else "send"
-    return {
-        "decision": decision,
-        "strategy": "recover_backlog",
-        "selected_pack_ids": selected_ids,
-        "merge_pack_ids": selected_ids if decision == "merge" else [],
-        "send_sop": True,
-        "sop_pack_id": selected_ids[0],
-        "need_ai_reply": False,
-        "touch_goal": "resume_mainline",
-        "ai_touch_messages": [],
-        "reason": "backlog_mainline_candidate_fallback",
-        "error": "",
-        "text_adjustments": [],
-        "message_operations": [],
-        "backlog_handling": "merge_two" if decision == "merge" else "recover_one",
-        "initial_violations": initial_violations,
-        "repair_violations": repair_violations,
-        "fallback_applied": True,
-    }
-
-
-def _model_error_event_fallback(
-    selector_input: dict[str, Any],
-    *,
-    event_type: str,
-    actions_reply_messages: list[dict[str, Any]] | None,
-    model_error: str,
-) -> dict[str, Any]:
-    """Non-business fallback for model outages: use already-built structural candidates."""
-
-    if event_type == "sop_platform_task":
-        return {}
-
-    event_policy = (
-        selector_input.get("event_policy_evidence")
-        if isinstance(selector_input.get("event_policy_evidence"), dict)
-        else {}
-    )
-    if any(
-        bool(event_policy.get(key))
-        for key in (
-            "customer_rejection",
-            "active_chat_window",
-            "pending_customer_reply",
-            "customer_pending_ai_reply",
-            "health_risk",
-            "complaint_or_payment_risk",
-        )
-    ):
-        return {}
-    candidates = selector_input.get("candidate_sops")
-    if not isinstance(candidates, list):
-        return {}
-    completed_ids = {
-        _string(item)
-        for item in selector_input.get("completed_sop_pack_ids") or []
-        if _string(item)
-    }
-    completed_categories = {
-        _string(item)
-        for item in selector_input.get("completed_sop_categories") or []
-        if _string(item)
-    }
-    completed_stages = _completed_mainline_stage_ids(selector_input)
-    for pack in sorted(
-        [item for item in candidates if isinstance(item, dict)],
-        key=mainline_pack_sort_key,
-    ):
-        pack_id = _string(pack.get("id"))
-        if not pack_id or pack_id in completed_ids:
-            continue
-        if _pack_category(pack) in completed_categories:
-            continue
-        if mainline_stage_for_event_pack(pack) in completed_stages:
-            continue
-        payment_gate = pack.get("payment_collection_gate") if isinstance(pack.get("payment_collection_gate"), dict) else {}
-        if _string(payment_gate.get("status")) in {"paid_skip_card", "activity_intro_required", "unsupported", "blocked"}:
-            continue
-        return {
-            "decision": "send",
-            "strategy": "model_error_candidate_fallback",
-            "selected_pack_ids": [pack_id],
-            "merge_pack_ids": [],
-            "send_sop": True,
-            "sop_pack_id": pack_id,
-            "need_ai_reply": False,
-            "touch_goal": "resume_mainline",
-            "ai_touch_messages": [],
-            "reason": "event_model_error_candidate_fallback",
-            "error": model_error,
-            "text_adjustments": [],
-            "message_operations": [],
-            "fallback_applied": True,
-        }
-    return {}
-
-
-def _completed_mainline_stage_ids(selector_input: dict[str, Any]) -> set[str]:
-    raw = selector_input.get("mainline_stage_status")
-    if isinstance(raw, dict):
-        items = raw.items()
-    elif isinstance(raw, list):
-        items = (
-            (_string(item.get("stage_id") or item.get("mainline_stage")), item)
-            for item in raw
-            if isinstance(item, dict)
-        )
-    else:
-        return set()
-    completed: set[str] = set()
-    for stage_id, value in items:
-        if not isinstance(value, dict):
-            continue
-        if bool(value.get("structural_completed")) or bool(value.get("semantic_completed")):
-            completed.add(_string(stage_id))
-    return {stage_id for stage_id in completed if stage_id}
-
-
 def is_platform_auto_opening_message(content: str) -> bool:
     normalized = re.sub(r"[\s，,。.!！?？:：；;、\"'“”‘’（）()【】\[\]《》<>-]+", "", str(content or ""))
     return normalized in {
@@ -1850,7 +1417,26 @@ def first_add_candidate_packs(
     for pack in packs:
         if not isinstance(pack, dict) or not bool(pack.get("enabled")) or not _pack_messages(pack):
             continue
-        if not _pack_has_scope(pack, "event_first_add"):
+        proactive_asset = bool(pack.get("proactive_candidate_enabled"))
+        if not proactive_asset and not _pack_has_scope(pack, "event_first_add"):
+            continue
+        if proactive_asset:
+            pack_id = _string(pack.get("id"))
+            if pack_id in completed or _pack_category(pack) in completed_categories:
+                continue
+            if (
+                mainline_stage_for_event_pack(pack) == "activity_and_price"
+                and "activity_and_price" in completed_mainline_stages
+            ):
+                continue
+            candidates.append(
+                _annotated_first_add_candidate(
+                    pack,
+                    group="due",
+                    reason_hint="platform_triggered_proactive_content_asset",
+                    prerequisite_status=_event_pack_prerequisite_status(pack, completed_categories),
+                )
+            )
             continue
         pack_event_type = _string(pack.get("event_type"))
         if pack_event_type and pack_event_type != event_type:
@@ -1891,6 +1477,8 @@ def first_add_candidate_packs(
     future_candidates: list[dict[str, Any]] = []
     for pack in packs:
         if not isinstance(pack, dict) or not bool(pack.get("enabled")) or not _pack_messages(pack):
+            continue
+        if bool(pack.get("proactive_candidate_enabled")):
             continue
         if not _pack_has_scope(pack, "event_first_add"):
             continue
@@ -2364,6 +1952,8 @@ def _sop_summary(
     customer_memory: dict[str, Any] | None = None,
     customer_context: dict[str, Any] | None = None,
     event_scope: bool = False,
+    completed_sop_pack_ids: list[str] | None = None,
+    completed_sop_categories: list[str] | None = None,
 ) -> dict[str, Any]:
     content_type = _string(pack.get("content_type")) or "sop"
     messages = _pack_messages(pack) if content_type != "evidence_strategy" else []
@@ -2407,6 +1997,9 @@ def _sop_summary(
             messages,
             customer_memory=customer_memory or {},
             customer_context=customer_context or {},
+            require_activity_intro=event_scope,
+            completed_sop_pack_ids=completed_sop_pack_ids or [],
+            completed_sop_categories=completed_sop_categories or [],
         ),
         **_message_editing_context(messages),
     }
@@ -2527,9 +2120,9 @@ def _event_selector_input(
             "due_candidates": due_count,
             "next_step_candidates": next_step_count,
             "selection_rule": (
-                "candidate_sops 已按销售主线阶段排序，而不是按配置 raw order 排序。优先评估最早未完成主线阶段；"
-                "如果前序阶段与最近聊天重复、冲突或已被覆盖，必须在 stage_skip_evidence 写明证据后再评估后续候选。"
-                "next_step 只用于继续同一新客 SOP 节奏，不能编造事实或绕过风险边界。"
+                "candidate_sops 均为已到期且结构合法的候选，排列顺序只供审计。"
+                "模型应结合完整历史选择一个未重复的新价值，不要求从最早阶段开始。"
+                "stage_skip_evidence 只用于覆盖事实与付款前置审计；next_step 不能绕过风险或活动报价前置。"
             ),
         },
         "mainline": sales_mainline_for_model(),
@@ -2545,10 +2138,17 @@ def _event_selector_input(
         "event_policy_evidence": event_policy_evidence,
         **memory_context,
         "candidate_sops": [
-            _sop_summary(pack, customer_memory=customer_memory, customer_context=customer_context, event_scope=True)
+            _sop_summary(
+                pack,
+                customer_memory=customer_memory,
+                customer_context=customer_context,
+                event_scope=True,
+                completed_sop_pack_ids=completed_sop_pack_ids,
+                completed_sop_categories=completed_sop_categories,
+            )
             for pack in candidate_packs
         ],
-        "adjacent_merge_options": _adjacent_merge_options(candidate_packs),
+        "merge_options": _merge_options(candidate_packs),
         "platform_actions_summary": _messages_summary(actions_reply_messages),
         "platform_actions": _message_editing_context(actions_reply_messages),
         "platform_payment_collection_gate": _payment_collection_gate_summary(
@@ -2867,28 +2467,29 @@ def _payment_state_summary(customer_memory: dict[str, Any], customer_context: di
     }
 
 
-def _adjacent_merge_options(candidate_packs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_options(candidate_packs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ordered = sorted(
         (pack for pack in candidate_packs if isinstance(pack, dict)),
         key=mainline_pack_sort_key,
     )
     output: list[dict[str, Any]] = []
-    for index in range(max(0, len(ordered) - 1)):
-        pair = ordered[index : index + 2]
-        combined: list[dict[str, Any]] = []
-        order = 1
-        for pack in pair:
-            for message in sorted(_pack_messages(pack), key=lambda item: int(item.get("order") or 0)):
-                item = dict(message)
-                item["order"] = order
-                combined.append(item)
-                order += 1
-        output.append(
-            {
-                "pack_ids": [_string(pack.get("id")) for pack in pair],
-                "message_editing_context": _message_editing_context(combined),
-            }
-        )
+    for first_index in range(len(ordered)):
+        for second_index in range(first_index + 1, len(ordered)):
+            pair = [ordered[first_index], ordered[second_index]]
+            combined: list[dict[str, Any]] = []
+            order = 1
+            for pack in pair:
+                for message in sorted(_pack_messages(pack), key=lambda item: int(item.get("order") or 0)):
+                    item = dict(message)
+                    item["order"] = order
+                    combined.append(item)
+                    order += 1
+            output.append(
+                {
+                    "pack_ids": [_string(pack.get("id")) for pack in pair],
+                    "message_editing_context": _message_editing_context(combined),
+                }
+            )
     return output
 
 
@@ -3051,6 +2652,9 @@ def _payment_collection_gate_summary(
     *,
     customer_memory: dict[str, Any],
     customer_context: dict[str, Any],
+    require_activity_intro: bool = False,
+    completed_sop_pack_ids: list[str] | None = None,
+    completed_sop_categories: list[str] | None = None,
 ) -> dict[str, Any]:
     cards = [
         message
@@ -3072,6 +2676,16 @@ def _payment_collection_gate_summary(
             "status": "paid_skip_card",
             "amounts": [_payment_message_amount(card) for card in cards],
             "source": payment_fact.get("source") or "customer_memory",
+        }
+    if require_activity_intro and "activity_and_price" not in _completed_mainline_stages(
+        set(completed_sop_pack_ids or []),
+        set(completed_sop_categories or []),
+    ):
+        return {
+            "has_payment_collection": True,
+            "status": "activity_intro_required",
+            "amounts": [_payment_message_amount(card) for card in cards],
+            "reason": "payment_collection_requires_completed_activity_intro",
         }
     amounts = [_payment_message_amount(card) for card in cards]
     return {
@@ -3373,7 +2987,7 @@ def _parallel_content_gate_output_violations(
     assets = selector_output.get("candidate_assets")
     if not isinstance(assets, list):
         return ["candidate_assets_must_be_list"]
-    if len(assets) > 2:
+    if len(assets) > 3:
         return ["candidate_assets_exceed_limit"]
     available_assets = {
         _string(item.get("content_id") or item.get("id")): item

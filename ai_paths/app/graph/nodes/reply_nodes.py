@@ -806,6 +806,16 @@ def _parallel_reply_fact_audit_input(
                 "sent_at": current_message.get("sent_at"),
             }
         )
+    recent_conversation = [
+        {
+            "ref": str(item.get("message_ref") or "").strip(),
+            "role": str(item.get("role") or "").strip(),
+            "content": str(item.get("content") or ""),
+            "sent_at": item.get("sent_at") or item.get("occurred_at"),
+        }
+        for item in conversation[-8:]
+        if str(item.get("content") or "").strip()
+    ]
 
     selected_ids = {
         str(item).strip()
@@ -860,6 +870,7 @@ def _parallel_reply_fact_audit_input(
             ),
         },
         "referenced_messages": referenced_messages,
+        "recent_conversation": recent_conversation,
         "authoritative_facts": shared.get("authoritative_facts") or {},
         "authoritative_claim_facts": _fact_audit_authoritative_claim_facts(rules),
         "tool_facts": {
@@ -900,6 +911,7 @@ def _fact_audit_authoritative_claim_facts(rules: dict[str, Any]) -> dict[str, An
             "customer_visible_evidence_policy",
             "health_risk_policy",
             "store_address_disclosure_policy",
+            "customer_charge_policy",
             "transaction_policy",
         )
         if facts.get(key) is not None
@@ -1666,11 +1678,25 @@ def _parallel_generic_reply_repair_messages(
         violations = [item.strip() for item in violation_codes if item.strip()]
         failure_class = "structure_or_provenance"
     required_changes = _parallel_repair_required_changes(violations)
+    fact_audit_repairs = [
+        {
+            "message_index": item.get("message_index"),
+            "quote": str(item.get("quote") or ""),
+            "reason": str(item.get("reason") or ""),
+            "instruction": (
+                "只删除或改写 quote 所在的 unsupported fact claim；"
+                "保留同一消息中其他事实、条件和语气。"
+            ),
+        }
+        for item in violations
+        if isinstance(item, dict)
+    ]
     repair_contract = {
         "schema_version": "parallel_reply_generic_repair_v2",
         "failure_class": failure_class,
         "violations": violations,
         "required_changes": required_changes,
+        "fact_audit_repairs": fact_audit_repairs,
         "rules": [
             "只修复列出的结构或事实冲突，保留其余合法业务判断和客户可见内容。",
             "不得新增权威事实中不存在的门店、素材、支付、预约、退款或效果结论。",
@@ -1686,8 +1712,11 @@ def _parallel_generic_reply_repair_messages(
             "violations 没有指向 sales_judgment 时，逐字段保留上一版 sales_judgment，不得改写其姿态或理由。",
             "结构或引用错误没有直接指出客户可见 text 冲突时，逐字保留原 text；只修改被点名的引用、资产 ID 或结构消息。",
             "事实审计错误只修改 violation.quote 所在的事实片段及其直接依赖句，不新增卖点、群体结论或销售理由。",
+            "事实审计指出未核验付款被写成登记、备注、到账或已付流程时，删除所有支付后动作，只保留付款核验；不得索要姓名、手机号、门店或到店时间。",
             "事实审计只点名 text 事实片段时，上一版 selected_content_ids、对应 content_asset 引用和已交付结构素材不属于被点名内容，必须逐字段原样保留；只有 violation 明确指出资产或结构素材本身不受支持时才能撤销。",
             "修复某一事实片段时，其余客户可见事实必须逐字保留，尤其不能删除或改写其中的条件、适用对象、时态和否定词；若必须重写整句，也要原样保留所有未被 violation 点名的事实限定。",
+            "修复 selected_content_delivery_missing 时必须二选一：采用资产就逐项交付 required message；不采用就删除该 selected_content_id 和对应 content_asset 引用，不能保留半套声明。",
+            "修复预约金证据时，supporting_key 只能是 address、effect、objection；若更早历史没有该维度的真实交付引用，就撤销 payment 和预约金卡，不能把 activity 自身重复当成第二把钥匙。",
         ],
         "output_schema_constraints": {
             "action": ["none", "ask", "offer", "payment", "registration"],
@@ -1772,6 +1801,19 @@ def _parallel_repair_required_changes(violations: Any) -> list[dict[str, str]]:
 
     required: list[dict[str, str]] = []
     for raw in violations if isinstance(violations, list) else []:
+        if isinstance(raw, dict):
+            code = str(raw.get("code") or "fact_audit_violation")
+            quote = str(raw.get("quote") or "").strip()
+            required.append(
+                {
+                    "violation": code,
+                    "required_change": (
+                        f"只修复客户可见原文片段“{quote}”。删除或改写其不受支持的事实含义，"
+                        "保留其余客户可见内容、销售姿态、结构消息和合法引用；不得新增支付后登记动作。"
+                    ),
+                }
+            )
+            continue
         code = str(raw or "")
         if code.startswith("selected_content_delivery_missing:"):
             required.append(

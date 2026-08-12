@@ -363,6 +363,26 @@ def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[s
                 allowed.add(key)
                 independently_authorized.add(key)
 
+    # A media URL that is already present in the authoritative conversation is
+    # a real prior delivery. Reply may quote or resend it without pretending the
+    # current Gate candidate was newly selected. This is provenance validation,
+    # not a decision about whether repeating the asset is persuasive.
+    shared = _parallel_shared_context(state)
+    for item in shared.get("conversation") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "").strip().lower() not in {
+            "assistant",
+            "staff",
+            "ai",
+        }:
+            continue
+        image_url = extract_image_url_from_text(str(item.get("content") or ""))
+        if image_url:
+            key = f"image:{image_url}"
+            allowed.add(key)
+            independently_authorized.add(key)
+
     unsupported = sorted(emitted - allowed)
     if unsupported:
         raise ValueError(f"unsupported_parallel_media_fact:{','.join(unsupported)}")
