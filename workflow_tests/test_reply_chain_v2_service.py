@@ -88,6 +88,13 @@ def test_v2_workflow_route_accepts_ip_restricted_nginx_proxy(monkeypatch) -> Non
     asyncio.run(main.require_v2_workflow_api_key(_request(), None, "1"))
 
 
+def test_v2_workflow_route_accepts_local_nginx_compatibility_proxy_without_custom_header(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "ai_paths_api_key", "existing-v1-token")
+    monkeypatch.setattr(main.settings, "ai_external_api_key", "v2-external-token")
+
+    asyncio.run(main.require_v2_workflow_api_key(_request(), None, None))
+
+
 def test_v2_workflow_route_rejects_spoofed_proxy_header_from_remote_host(monkeypatch) -> None:
     monkeypatch.setattr(main.settings, "ai_paths_api_key", "existing-v1-token")
     monkeypatch.setattr(main.settings, "ai_external_api_key", "v2-external-token")
