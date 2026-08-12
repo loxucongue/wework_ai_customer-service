@@ -191,6 +191,9 @@ def test_v2_prompts_forbid_inventing_customer_concerns_and_valueless_questions()
     assert "若 `primary_objective` 是活动介绍、证据交付或门店匹配，必须在本轮实际完成" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "您如果愿意我再讲" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "自然收住即可" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "用能力边界而不是固定句式判断" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得把助手自己继续说话包装成推进" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "谁需要行动" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "再检查一次行动兑现" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "结构证据已经回答当前问题后，默认不要再追加" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不得新增一个假设性顾虑来索取客户回复" in PARALLEL_REPLY_SYSTEM_PROMPT
