@@ -8,6 +8,7 @@ type JsonValue = unknown;
 
 type RunItem = {
   request_id: string;
+  interface_version?: string;
   conversation_id?: string;
   customer_id?: string;
   input_snapshot?: Record<string, JsonValue>;
@@ -242,7 +243,10 @@ export function RunLogViewer() {
               }`}
             >
               <div className="flex items-center justify-between gap-3">
-                <span className="truncate font-mono text-xs text-slate-500">{run.request_id}</span>
+                <div className="flex min-w-0 items-center gap-2">
+                  <InterfaceVersionBadge run={run} />
+                  <span className="truncate font-mono text-xs text-slate-500">{run.request_id}</span>
+                </div>
                 <span className="shrink-0 text-xs text-slate-500">{formatTime(run.created_at)}</span>
               </div>
               <div className="mt-2 line-clamp-2 text-sm">{contentSnippet(run)}</div>
@@ -292,7 +296,10 @@ function RunDetailPanel({
       <section className="rounded-lg border bg-white p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h2 className="font-mono text-sm font-semibold">{run.request_id}</h2>
+            <div className="flex items-center gap-2">
+              <InterfaceVersionBadge run={run} />
+              <h2 className="font-mono text-sm font-semibold">{run.request_id}</h2>
+            </div>
             <p className="mt-1 text-sm text-slate-500">
               customer: {run.customer_id || "-"} / conversation: {run.conversation_id || "-"}
             </p>
@@ -623,6 +630,26 @@ function parseJsonString(value: string): { ok: true; value: JsonValue } | { ok: 
 
 function contentSnippet(run: RunItem) {
   return stringField(run.input_snapshot?.content) || stringField(run.input_snapshot?.current_message) || "无文本输入";
+}
+
+function InterfaceVersionBadge({ run }: { run: RunItem }) {
+  const version = runInterfaceVersion(run);
+  const className =
+    version === "v2"
+      ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
+      : "bg-slate-200 text-slate-700 ring-slate-300";
+  return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase ring-1 ${className}`}>{version}</span>;
+}
+
+function runInterfaceVersion(run: RunItem) {
+  const direct = String(run.interface_version || "").trim().toLowerCase();
+  if (direct === "v2") return "v2";
+  const context = run.input_snapshot?.request_context;
+  if (isRecord(context)) {
+    const values = [context.interface_version, context.api_version, context.source_protocol];
+    if (values.some((item) => String(item || "").toLowerCase().includes("v2"))) return "v2";
+  }
+  return "v1";
 }
 
 function errorMessage(data: Record<string, JsonValue>, fallback: string) {

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from app import main
+from app.schemas import ChatRequest
+from app.services.storage.serialization import interface_version_from_run
 from app.services.workflow_compat import normalize_workflow_request
 
 
@@ -43,4 +46,23 @@ def test_workflow_location_payload_preserves_raw_location_fields() -> None:
     assert (
         context["raw_workflow_payload"]["parameters"]["content"]["location_address"]
         == "福建省厦门市湖里区禾山街道岭下社区岐山北二路1000号"
+    )
+
+
+def test_workflow_interface_version_is_attached_to_request_context() -> None:
+    request = ChatRequest(customer_id="c1", corp_id="corp")
+
+    main._attach_request_interface_version(request, "v2")
+
+    assert request.request_context["interface_version"] == "v2"
+    assert request.request_context["api_version"] == "v2"
+
+
+def test_run_interface_version_defaults_to_v1_and_detects_v2() -> None:
+    assert interface_version_from_run({"input_snapshot": {"request_context": {}}}) == "v1"
+    assert (
+        interface_version_from_run(
+            {"input_snapshot": {"request_context": {"interface_version": "v2", "source_protocol": "workflow-compatible"}}}
+        )
+        == "v2"
     )

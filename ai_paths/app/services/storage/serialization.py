@@ -44,6 +44,7 @@ def decode_run(row: dict[str, Any]) -> dict[str, Any]:
     for key in ["intents", "tags"]:
         row[key] = loads_list(row.get(key))
     row["token_usage"] = loads_dict(row.get("token_usage"))
+    row["interface_version"] = interface_version_from_run(row)
     return row
 
 
@@ -89,3 +90,27 @@ def tags_from_state(state: dict[str, Any]) -> list[str]:
     elif async_status in {"skipped", "superseded", "error"}:
         tags.append("async_skipped" if async_status in {"skipped", "superseded"} else "async_error")
     return list(dict.fromkeys(tags))
+
+
+def interface_version_from_run(run: dict[str, Any]) -> str:
+    input_snapshot = run.get("input_snapshot") if isinstance(run.get("input_snapshot"), dict) else {}
+    output_snapshot = run.get("output_snapshot") if isinstance(run.get("output_snapshot"), dict) else {}
+    request_context = input_snapshot.get("request_context") if isinstance(input_snapshot.get("request_context"), dict) else {}
+    raw_http = output_snapshot.get("http_response_body") if isinstance(output_snapshot.get("http_response_body"), dict) else {}
+    candidates = [
+        run.get("interface_version"),
+        input_snapshot.get("interface_version"),
+        output_snapshot.get("interface_version"),
+        request_context.get("interface_version"),
+        request_context.get("api_version"),
+        raw_http.get("interface_version"),
+        raw_http.get("api_version"),
+        request_context.get("source_protocol"),
+    ]
+    for value in candidates:
+        text = str(value or "").strip().lower()
+        if text == "v2" or text.endswith("-v2") or "/v2" in text:
+            return "v2"
+        if text == "v1":
+            return "v1"
+    return "v1"
