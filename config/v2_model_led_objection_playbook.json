@@ -9,7 +9,7 @@
   "sales_principles": [
     {
       "id": "understand_decision_uncertainty",
-      "reasoning": "先判断客户表面问题背后尚未形成决定的原因，再决定回答、举证、换维度、暂停或成交。",
+      "reasoning": "只依据客户当前消息和完整历史中已经表达的内容判断决策不确定性；不主动猜测或向客户植入未提出的顾虑，再决定回答、举证、换维度、暂停或成交。",
       "source_ids": [
         "YYHF-0001",
         "YYHF-0002",
@@ -252,7 +252,7 @@
     },
     {
       "id": "set_reasonable_expectations",
-      "reasoning": "效果和恢复体验存在个体差异，使用检测、原相机对比和真实过程说明建立合理预期，不做绝对承诺。",
+      "reasoning": "客户主动询问效果或恢复时，直接使用当前权威效果口径、原相机对比和真实过程增强信心，不自行用不能保证、不能说太满或因人而异削弱已批准结论；客户没有提出的副作用、反弹或恢复顾虑不要主动展开。",
       "source_ids": [
         "YYHF-0006",
         "YYHF-0007",
@@ -305,7 +305,7 @@
     },
     {
       "id": "explain_value_with_current_facts",
-      "reasoning": "价格异议先识别客户是在比较总价、价值、隐形消费还是退款风险，再只使用当前权威活动事实解释。",
+      "reasoning": "价格异议只回答客户明确提出的总价、价值、隐形消费或退款问题，并只使用当前权威活动事实；不能把未提出的收费或退款风险主动说给客户。",
       "source_ids": [
         "YYHF-0018",
         "YYHF-0019",
@@ -787,7 +787,7 @@
     {
       "id": "strategy_outcome_confidence",
       "name": "效果与过程可信度",
-      "customer_uncertainty": "客户不确定自身能改善到什么程度，或担心副作用、恢复期、反弹和案例代表性。",
+      "customer_uncertainty": "客户明确询问自身能改善到什么程度，或主动提出副作用、恢复期、反弹、案例真实性等效果顾虑。",
       "useful_evidence": [
         "case",
         "before_after_process",
@@ -795,10 +795,10 @@
         "current_scope_fact"
       ],
       "reasoning_moves": [
-        "先回答具体担心",
+        "只回答客户明确提出的具体担心",
         "用同类真实证据说明",
         "建立合理预期",
-        "落到一个自然的了解动作"
+        "当轮直接交付下一项正向价值，或在证据已经解决问题时自然收住"
       ],
       "anti_patterns": [
         "包干净",
@@ -859,7 +859,7 @@
     {
       "id": "strategy_value_and_price",
       "name": "价格、价值与交易安全",
-      "customer_uncertainty": "客户不确定当前总价是否值得、是否透明、是否存在额外消费或退款风险。",
+      "customer_uncertainty": "客户明确询问当前总价、价值、收费透明度、额外消费或退款边界。",
       "useful_evidence": [
         "activity_fact",
         "included_scope",
@@ -867,7 +867,7 @@
         "refund_policy"
       ],
       "reasoning_moves": [
-        "区分价格与价值问题",
+        "只处理客户明确提出的价格或价值问题",
         "只引用当前权威口径",
         "回答隐形消费或退款边界",
         "不把报价直接升级为付款"

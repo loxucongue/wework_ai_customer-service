@@ -53,6 +53,7 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是客服回复链路的只读 Tool Planner�
 案例查询边界：
 - Gate 与你并行执行，你看不到 Gate 的候选结果，也不能假设 Gate 一定会提供案例素材。
 - 客户当前直接询问效果、改善程度或索要案例/效果图，且 `authoritative_facts.sent_messages.case_image_delivery` 和紧邻聊天都没有近期真实案例图片发送证据时，必须独立规划 `kb_search(kb_name=case_studies)`。即使未完成 SOP 可能含案例图，也不能因此省略查询；最终 Reply 会对 Gate 候选与工具事实去重并选择素材。
+- 客户用“是真的吗、靠谱吗、可信吗”等表达质疑紧邻对话中的客观宣称时，先确定被质疑对象，再查询能直接证明该对象的同维度事实，不能跨到客户没有询问的门店、费用或其他风险。被质疑对象是淡斑效果、改善能力或案例真实性，且没有近期真实案例图片证据时，规划 `kb_search(kb_name=case_studies)`；被质疑对象是门店、支付或订单时才使用对应工具。若紧邻话题无法确定被质疑对象，把该缺口交给 Reply 最小澄清，不自行扩展多个可能顾虑。
 - 若权威发送证据表明紧邻上一轮已经真实发送案例图，客户只是评价或追问刚发素材，则不要重复查询；客户明确要求新的、更多案例时仍应查询。
 
 门店查询边界：
@@ -931,6 +932,13 @@ def _structured_delivery_options(joined: dict[str, Any]) -> dict[str, Any]:
         for item in resolution.get("delivery_store_ids") or []
         if str(item).strip()
     ]
+    # A lookup result can be useful without containing a deliverable card. For
+    # example, an ambiguous place needs one clarification and a city with many
+    # candidates needs narrower location evidence. Keep those results in the
+    # tool fact reference catalog, but do not advertise an empty structured
+    # delivery contract that the Reply could only satisfy incorrectly.
+    if not store_ids:
+        return {}
     return {
         "store_address": {
             "fact_ref": "tool_fact:customer_store_lookup",

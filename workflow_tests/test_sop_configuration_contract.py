@@ -106,6 +106,18 @@ def test_v2_overlay_changes_only_code_owned_candidate_metadata(tmp_path: Path) -
     assert v2_activity["purpose"] == base_activity["purpose"]
 
 
+def test_v2_effect_asset_can_finish_with_evidence_without_forced_diagnosis() -> None:
+    config = _load_config()
+    effect = _pack(config, "s10_need_and_case")
+
+    assert effect["render_strategy"] == "adaptable_evidence_first"
+    assert any("自然收住" in item for item in effect["reasoning_moves"])
+    assert any("脸上还是手上" in item for item in effect["anti_patterns"])
+    assert any("条件式预告" in item for item in effect["reasoning_moves"])
+    assert any("助手动作" in item for item in effect["anti_patterns"])
+    assert [item["type"] for item in effect["reply_messages"]] == ["text", "image", "image"]
+
+
 @pytest.mark.parametrize("field", ["reply_messages", "purpose", "enabled", "order"])
 def test_v2_overlay_rejects_business_content_fields(tmp_path: Path, field: str) -> None:
     base_path = tmp_path / "sop_reply_packs.json"

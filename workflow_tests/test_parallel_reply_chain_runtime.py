@@ -669,6 +669,71 @@ def test_parallel_reply_payload_surfaces_current_store_delivery_as_an_option() -
     assert "tool_fact:customer_store_lookup" in validation_state["reply_used_fact_refs"]
 
 
+def test_parallel_reply_payload_keeps_non_delivery_store_fact_without_empty_delivery_contract() -> None:
+    state = {
+        "evidence_join": {
+            "shared_context": {
+                "conversation": [],
+                "current_message": {"content": "谢岗"},
+            },
+            "tool_facts": {
+                "customer_store_lookup": {
+                    "status": "need_location_confirmation",
+                    "store_resolution_fact": {
+                        "status": "need_location_confirmation",
+                        "raw_place": "谢岗",
+                        "delivery_store_ids": [],
+                        "candidate_search_complete": True,
+                    },
+                }
+            },
+        }
+    }
+
+    payload = parallel_reply_payload(state)
+
+    assert payload["structured_delivery_options"] == {}
+    assert payload["tool_fact_reference_options"] == [
+        {
+            "ref": "tool_fact:customer_store_lookup",
+            "tool_name": "customer_store_lookup",
+        }
+    ]
+    validation_state = _reply_validation_state(
+        state,
+        {
+            "reply_messages": [{"type": "text", "content": "您说的是东莞谢岗镇吗？"}],
+            "used_fact_refs": ["current_message", "tool_fact:customer_store_lookup"],
+            "selected_content_ids": [],
+            "action": "ask",
+            "payment_assessment": {"status": "none", "evidence_refs": []},
+            "deposit_evidence": {},
+            "safety_assessment": {"status": "none", "evidence_refs": []},
+            "party_size_assessment": {
+                "status": "unknown",
+                "party_size": None,
+                "evidence_refs": [],
+            },
+            "sales_judgment": {
+                "customer_goal": "确认客户所说谢岗的行政归属",
+                "established_keys": [],
+                "primary_objective": "澄清同名地点",
+                "smallest_next_commitment": "确认是否为东莞谢岗镇",
+                "posture": "answer",
+            },
+            "structured_delivery_decisions": [],
+            "commit_actions": [],
+        },
+    )
+    assert "tool_fact:customer_store_lookup" in validation_state["reply_used_fact_refs"]
+
+
+def test_parallel_reply_prompt_does_not_reopen_established_sales_key_without_new_evidence() -> None:
+    assert "已经由真实对话建立并得到客户接受的销售钥匙" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要把它重新当成下一步任务" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "再检查一次销售钥匙一致性" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
 def test_parallel_reply_payload_summarizes_paid_registration_field_presence() -> None:
     state = _parallel_state("付好了")
     shared_context = {
@@ -2830,6 +2895,15 @@ def test_tool_planner_prompt_forbids_inventing_parent_for_raw_village_name() -> 
     assert "乌林镇乌林村" in prompt
     assert "不得补成“监利市乌林镇乌林村”" in prompt
     assert "行政归属交给门店工具解析" in prompt
+
+
+def test_tool_planner_prompt_maps_authenticity_doubt_to_same_dimension_evidence() -> None:
+    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+
+    assert "先确定被质疑对象，再查询能直接证明该对象的同维度事实" in prompt
+    assert "不能跨到客户没有询问的门店、费用或其他风险" in prompt
+    assert "淡斑效果、改善能力或案例真实性" in prompt
+    assert "规划 `kb_search(kb_name=case_studies)`" in prompt
 
 
 def test_parallel_reply_prompt_keeps_store_delivery_fact_based() -> None:

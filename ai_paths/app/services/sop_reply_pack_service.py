@@ -19,6 +19,11 @@ V2_OVERLAY_FIELDS = {
     "asset_role",
     "selection_constraints",
     "requires_prior_asset_roles",
+    "customer_uncertainty",
+    "useful_evidence",
+    "reasoning_moves",
+    "anti_patterns",
+    "render_strategy",
 }
 ALLOWED_SOP_CATEGORIES = {
     "opening",
@@ -553,6 +558,11 @@ class SopReplyPackService:
             "asset_role": _clean_identifier(item.get("asset_role")) or "supporting_content",
             "selection_constraints": _selection_constraints(item.get("selection_constraints")),
             "requires_prior_asset_roles": _identifier_list(item.get("requires_prior_asset_roles")),
+            "customer_uncertainty": _checked_text(item.get("customer_uncertainty"), ""),
+            "useful_evidence": _text_list(item.get("useful_evidence")),
+            "reasoning_moves": _text_list(item.get("reasoning_moves")),
+            "anti_patterns": _text_list(item.get("anti_patterns")),
+            "render_strategy": _clean_identifier(item.get("render_strategy")) or "adaptable",
             "name": _checked_text(item.get("name"), f"SOP {index + 1}"),
             "purpose": _checked_text(item.get("purpose"), ""),
             "order": _positive_int(item.get("order"), (index + 1) * 10),
@@ -634,6 +644,12 @@ def _checked_text(value: Any, default: str) -> str:
     if "{{" in text or "}}" in text:
         raise ValueError("SOP reply packs must use fixed content, not template placeholders")
     return text
+
+
+def _text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := _checked_text(item, ""))]
 
 
 def _audit_config(config: dict[str, Any]) -> dict[str, Any]:

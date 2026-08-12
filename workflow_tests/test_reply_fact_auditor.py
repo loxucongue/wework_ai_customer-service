@@ -252,6 +252,9 @@ def test_fact_auditor_contract_distinguishes_payment_and_registration_states() -
     assert "一般事实/流程说明" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "不表示本轮已经为当前客户完成拍摄或安排" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "回复没有改写成当前客户必然达到同样效果" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不得要求当前完成事件作为额外证据" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "审计对象是回复实际说出的完整命题" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "权威事实已经直接支持命题时必须通过" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
 def test_model_led_reply_repair_reserves_fact_audit_budget() -> None:
@@ -302,6 +305,10 @@ def test_parallel_reply_prompt_is_structured_sales_brain_not_scene_matcher() -> 
         "只有你负责理解客户、判断销售节奏",
         "这个选择属于你的销售判断",
         "代码只核验引用、结构和真实 ID",
+        "收缩客户的不确定性，不扩大问题空间",
+        "提问必须有决策价值",
+        "只有系统确实能根据答案提供不同的权威事实",
+        "`active_friction` 只记录客户已经表达的阻力",
     )
     for boundary in semantic_boundaries:
         assert boundary in PARALLEL_REPLY_SYSTEM_PROMPT

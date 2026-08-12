@@ -19,6 +19,7 @@ from app.schemas import ChatRequest
 ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOK_PATH = ROOT / "config" / "v2_model_led_objection_playbook.json"
 AUDIT_PATH = ROOT / "docs" / "reports" / "v2_appointment_blocker_distillation_audit_20260811.json"
+CONCERN_PROVENANCE_FIXTURE = ROOT / "workflow_tests" / "fixtures" / "v2_concern_provenance_cases_20260812.json"
 
 
 class _EmptyPackService:
@@ -175,6 +176,53 @@ def test_v2_prompts_do_not_restore_scene_matching_or_raw_reference_replies() -> 
     assert "reference_messages" not in active_prompts
     assert "客户说 X" not in active_prompts
     assert "104 条历史优秀销售内容的离线蒸馏" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_v2_prompts_forbid_inventing_customer_concerns_and_valueless_questions() -> None:
+    assert "收缩客户的不确定性，不扩大问题空间" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "业务事实是可调用知识，不是必须主动披露的风险清单" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "提问必须有决策价值" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不同答案必须会实质改变下一步" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能把内部 `active_friction` 猜测说给客户" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得自行追加“不能保证、不能说太满、要看个人、先判断再说”" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要索要照片、部位或斑点细分" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "身体部位不是默认获客问题" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "这种预防式排疑同样是在植入新顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "若 `primary_objective` 是活动介绍、证据交付或门店匹配，必须在本轮实际完成" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "您如果愿意我再讲" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "自然收住即可" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "再检查一次行动兑现" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "结构证据已经回答当前问题后，默认不要再追加" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得新增一个假设性顾虑来索取客户回复" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "现有证据能否同时覆盖所有合理解释" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不让客户替系统选择“效果还是案例、价格还是价值”等内部分类" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "以紧邻对话主题判断当前证据需求" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "证据策略只能服务客户已经明确表达且仍未解决的不确定性" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "不推测客户没有表达的潜在顾虑" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+
+
+def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:
+    config = json.loads(PLAYBOOK_PATH.read_text(encoding="utf-8"))
+    principles = {item["id"]: item["reasoning"] for item in config["sales_principles"]}
+    strategies = {item["id"]: item for item in config["evidence_strategies"]}
+
+    assert "不主动猜测或向客户植入未提出的顾虑" in principles["understand_decision_uncertainty"]
+    assert "客户没有提出的副作用、反弹或恢复顾虑不要主动展开" in principles["set_reasonable_expectations"]
+    assert "不自行用不能保证、不能说太满或因人而异削弱已批准结论" in principles["set_reasonable_expectations"]
+    assert "客户明确询问" in strategies["strategy_outcome_confidence"]["customer_uncertainty"]
+    assert "客户明确询问" in strategies["strategy_value_and_price"]["customer_uncertainty"]
+
+
+def test_v2_concern_provenance_fixture_covers_both_suppression_and_explicit_questions() -> None:
+    fixture = json.loads(CONCERN_PROVENANCE_FIXTURE.read_text(encoding="utf-8"))
+    scenarios = {item["id"]: item for item in fixture["scenarios"]}
+
+    assert len(scenarios) == 6
+    assert "隐形收费" in scenarios["trust_doubt_does_not_invent_fee_concern"]["expected"]["forbidden_phrases"]
+    assert "手和脸" in scenarios["face_total_price_does_not_invent_scope_ambiguity"]["expected"]["forbidden_phrases"]
+    assert "explicit_hidden_fee_question_still_answered" in scenarios
+    assert "explicit_rebound_question_still_answered" in scenarios
+    assert "explicit_hand_face_scope_still_answered" in scenarios
 
 
 def test_v2_does_not_apply_legacy_precision_mainline_warning() -> None:
