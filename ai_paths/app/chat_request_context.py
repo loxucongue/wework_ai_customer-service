@@ -29,6 +29,22 @@ def build_request_context(request: ChatRequest) -> dict[str, Any]:
     return context
 
 
+def is_isolated_v2_test_request(request: ChatRequest, context: dict[str, Any]) -> bool:
+    """Accept write-free platform smoke only for an explicit synthetic V2 identity."""
+    if not bool(context.get("test_isolated")):
+        return False
+    version = str(context.get("interface_version") or context.get("api_version") or "").strip().lower()
+    if version != "v2":
+        return False
+    identity_values = (
+        request.customer_id,
+        request.corp_id,
+        request.wechat,
+        request.external_userid,
+    )
+    return all(str(value or "").strip().lower().startswith("sim_") for value in identity_values)
+
+
 def _inject_debug_platform_context_if_needed(request: ChatRequest, context: dict[str, Any]) -> None:
     """Allow the local debug chat UI to exercise real platform store APIs.
 

@@ -7,7 +7,12 @@ from contextlib import suppress
 from typing import Any
 from uuid import uuid4
 
-from app.chat_request_context import build_request_context, conversation_id_from_request, conversation_title
+from app.chat_request_context import (
+    build_request_context,
+    conversation_id_from_request,
+    conversation_title,
+    is_isolated_v2_test_request,
+)
 from app.chat_runtime_helpers import failed_state_from_exception, safe_repository_call
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
 from app.config import Settings
@@ -112,7 +117,8 @@ class ChatRuntime:
     ) -> ChatResponse:
         request_id = str(uuid4())
         request_context = build_request_context(request)
-        request_context["memory_persist_allowed"] = True
+        request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
+        request_context["memory_persist_allowed"] = not request_context["test_isolated"]
         conversation_id = self._prepare_conversation(request, request_id, request_context)
         decision = (
             await self._platform_reply_coordinator.begin(request, request_id=request_id, request_context=request_context)

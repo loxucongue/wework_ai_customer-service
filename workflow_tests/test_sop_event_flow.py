@@ -3684,6 +3684,36 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicate["send_sop"])
         self.assertEqual(len(repository.tasks), 2)
 
+    async def test_isolated_platform_opening_skips_platform_facts_and_task_writes(self) -> None:
+        repository = _Repo()
+        customer_context = _CustomerContextService()
+        service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=_DualScopeOpeningPackService(),
+            model_client=_PromptCaptureModel({}),
+            customer_context_service=customer_context,
+        )
+        request = ChatRequest(
+            content="我已经添加了你，现在我们可以开始聊天了。",
+            customer_id="sim_customer",
+            corp_id="sim_corp",
+            wechat="sim_wechat",
+            external_userid="sim_external",
+        )
+
+        result = await service.evaluate_chat_gate(
+            request,
+            request_id="sim_opening_request",
+            request_context={"test_isolated": True, "interface_version": "v2"},
+        )
+
+        self.assertEqual(result["mode"], "platform_auto_opening_sop")
+        self.assertTrue(result["send_sop"])
+        self.assertEqual(result["reply_messages"][0]["content"]["text"], "新客破冰话术")
+        self.assertEqual(result["task"]["test_isolated"], True)
+        self.assertEqual(customer_context.load_calls, [])
+        self.assertEqual(repository.tasks, [])
+
     async def test_chat_gate_hands_workflow_customer_message_to_ai(self) -> None:
         class _PackService:
             def load(self) -> dict[str, Any]:

@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.config import Settings
+from app.chat_request_context import is_isolated_v2_test_request
 from app import main
 
 
@@ -64,6 +65,21 @@ def test_workflow_interface_version_is_attached_to_request_context() -> None:
 
     assert request.request_context["interface_version"] == "v2"
     assert request.request_context["api_version"] == "v2"
+
+
+def test_isolated_v2_smoke_requires_all_synthetic_contact_ids() -> None:
+    context = {"test_isolated": True, "interface_version": "v2"}
+    synthetic = main.ChatRequest(
+        customer_id="sim_customer",
+        corp_id="sim_corp",
+        wechat="sim_wechat",
+        external_userid="sim_external",
+    )
+    real_contact = synthetic.model_copy(update={"external_userid": "real_external"})
+
+    assert is_isolated_v2_test_request(synthetic, context) is True
+    assert is_isolated_v2_test_request(real_contact, context) is False
+    assert is_isolated_v2_test_request(synthetic, {**context, "interface_version": "v1"}) is False
 
 
 def test_background_workers_can_be_disabled_for_shared_data_sidecar() -> None:

@@ -20,6 +20,7 @@ from app.policies.sales_flow import (
 )
 from app.prompts.global_contract import GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.prompts.sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
+from app.chat_request_context import is_isolated_v2_test_request
 from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
@@ -282,7 +283,7 @@ class SopExecutionService:
             "error": "",
         }
         try:
-            if is_platform_auto_opening_message(request.content) and record_task:
+            if is_platform_auto_opening_message(request.content):
                 identity = _chat_identity(request, request_context)
                 if not _string(identity.get("wechat")):
                     result.update(
@@ -294,21 +295,24 @@ class SopExecutionService:
                         }
                     )
                     return _finish(result, started)
-                customer_memory = self._load_chat_customer_memory(identity)
-                order_gate = self._load_chat_order_gate(
-                    request=request,
-                    request_context=request_context,
-                    identity=identity,
-                    customer_memory=customer_memory,
-                )
-                result["order_gate"] = order_gate.get("summary", {})
-                if _apply_chat_order_gate_block(result, order_gate):
-                    return _finish(result, started)
+                test_isolated = is_isolated_v2_test_request(request, request_context)
+                if not test_isolated:
+                    customer_memory = self._load_chat_customer_memory(identity)
+                    order_gate = self._load_chat_order_gate(
+                        request=request,
+                        request_context=request_context,
+                        identity=identity,
+                        customer_memory=customer_memory,
+                    )
+                    result["order_gate"] = order_gate.get("summary", {})
+                    if _apply_chat_order_gate_block(result, order_gate):
+                        return _finish(result, started)
                 self._handle_platform_auto_opening(
                     result=result,
                     request=request,
                     request_id=request_id,
                     request_context=request_context,
+                    record_task=record_task and not test_isolated,
                 )
                 return _finish(result, started)
             if request_context.get("skip_sop_gate"):
@@ -673,6 +677,7 @@ class SopExecutionService:
         request: ChatRequest,
         request_id: str,
         request_context: dict[str, Any],
+        record_task: bool = True,
     ) -> None:
         """Send the configured first-add opening for WeCom's automatic add-friend event."""
         pack = _platform_auto_opening_pack(self.sop_reply_pack_service.load())
@@ -709,14 +714,23 @@ class SopExecutionService:
             )
             return
 
-        task = self._record_chat_gate_task(
-            request=request,
-            request_id=request_id,
-            request_context=request_context,
-            identity=identity,
-            pack=pack,
-            reply_messages=messages,
-            trigger_source="platform_auto_opening",
+        task = (
+            self._record_chat_gate_task(
+                request=request,
+                request_id=request_id,
+                request_context=request_context,
+                identity=identity,
+                pack=pack,
+                reply_messages=messages,
+                trigger_source="platform_auto_opening",
+            )
+            if record_task
+            else {
+                "status": "sent",
+                "created": False,
+                "trigger_source": "platform_auto_opening",
+                "test_isolated": True,
+            }
         )
         if task.get("status") == "sent":
             result.update(

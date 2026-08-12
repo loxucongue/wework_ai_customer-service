@@ -89,7 +89,7 @@ V2 回复说明预约金并同轮交付一张真实付款卡。该场景已有�
 
 - `git diff --check`：通过。
 - `python -m compileall -q ai_paths/app`：通过。
-- `PYTHONPATH=ai_paths python -m pytest workflow_tests -q`：`1339 passed, 2 skipped`。
+- `PYTHONPATH=ai_paths python -m pytest workflow_tests -q`：`1342 passed, 2 skipped`。
 - Secret scan：未发现 API Key 或发送 Token 落盘。
 
 ### 低成本真实模型仿真
@@ -106,13 +106,14 @@ V2 回复说明预约金并同轮交付一张真实付款卡。该场景已有�
 - 首次部署后的 `sim_` 软拒绝 smoke 发现：Reply 首答正确选择了“整体约45～50分钟”作为新价值，但 Fact Auditor 的权威事实投影没有携带该新增字段，因而将其拦截；Repair 删除事实后退化成被动结束。
 - 根因是 Reply 与 Fact Auditor 的事实输入不对称，不是销售判断规则不足。
 - 已将 `service_duration / daily_life_impact / registered_visit_option / action_cost_fact_policy` 加入统一 `offer` 事实投影并增加合同测试；没有通过 Python 追加销售文案或关键词分流绕过审计。
+- 固定开场白隔离 smoke 还发现：`test_isolated=true` 曾被运行时覆盖为可持久化，并在开场前查询真实平台订单；`sim_` 客户查询失败后错误降级到普通 Reply。现已使隔离请求保持 `memory_persist_allowed=false`，固定开场在隔离模式直接读取 `s10_new_customer_opening`，不查询平台订单、不写 SOP 任务。真实生产开场仍保留实时订单已付保护和 send-once 记录。
 
 ## V1/V2 隔离发布
 
 - V1 继续使用 `/opt/ai-paths/shared/sop_reply_packs.json` 和生产 SOP worker。
 - V2 使用独立 `/opt/ai-paths-refactor/shared/sop_reply_packs.json`，只为 V2 Reply 提供本次验证后的活动/案例资产。
 - V2 sidecar 保持 `AI_PATHS_SERVICE_ROLE=reply_chain_refactor`、后台 worker 关闭。
-- V2 与 V1 共用业务数据库、门店、订单和发送事实，但 `sim_` smoke 设置 `test_isolated=true`，不写助手消息、客户记忆、发送记录或后台业务动作；为保证接口级审计，`sim_` 会话、入站消息和运行日志仍会写入共享运行数据库。
+- V2 与 V1 共用业务数据库、门店、订单和发送事实，但 `sim_` smoke 设置 `test_isolated=true`，不写助手消息、客户记忆、发送记录、SOP 任务或后台业务动作，也不为固定开场查询真实平台订单；为保证接口级审计，`sim_` 会话、入站消息和运行日志仍会写入共享运行数据库。
 - 本轮不替换 V1 current、不重启 V1、不更新 V1 `/sop` 配置。
 
 ## 残余风险
