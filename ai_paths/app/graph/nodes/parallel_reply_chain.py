@@ -17,6 +17,7 @@ from app.schemas import ChatRequest
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
+from app.services.payment_collection import activity_intro_completed_for_payment, payment_collection_content
 from app.services.sop_execution_service import SopExecutionService
 from app.services.trace_logger import TraceLogger
 from app.services.v2_sales_recall_service import V2SalesRecallService
@@ -791,7 +792,7 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
     ]
     registration_fact_status = _registration_fact_status(state, shared)
     store_fact_status = _store_fact_status(joined)
-    structured_delivery_options = _structured_delivery_options(joined)
+    structured_delivery_options = _structured_delivery_options(joined, state=state)
     reply_evidence = copy.deepcopy(joined)
     reply_shared = (
         reply_evidence.get("shared_context")
@@ -984,9 +985,10 @@ def _content_index_with_delivery_status(
     }
 
 
-def _structured_delivery_options(joined: dict[str, Any]) -> dict[str, Any]:
+def _structured_delivery_options(joined: dict[str, Any], *, state: AgentState) -> dict[str, Any]:
     """Surface current-turn structured options without deciding to use them."""
 
+    options: dict[str, Any] = {}
     tool_facts = joined.get("tool_facts") if isinstance(joined.get("tool_facts"), dict) else {}
     normalized_tool_facts = (
         joined.get("normalized_tool_facts")
@@ -1004,30 +1006,27 @@ def _structured_delivery_options(joined: dict[str, Any]) -> dict[str, Any]:
             pending.extend(item for item in value.values() if isinstance(item, (dict, list)))
         elif isinstance(value, list):
             pending.extend(item for item in value if isinstance(item, (dict, list)))
-    if not resolutions:
-        return {}
-    resolution = next(
-        (
-            item
-            for item in resolutions
-            if item.get("delivery_store_ids") or item.get("visible_candidate_ids")
-        ),
-        resolutions[0],
-    )
-    store_ids = [
-        str(item).strip()
-        for item in resolution.get("delivery_store_ids") or []
-        if str(item).strip()
-    ]
-    # A lookup result can be useful without containing a deliverable card. For
-    # example, an ambiguous place needs one clarification and a city with many
-    # candidates needs narrower location evidence. Keep those results in the
-    # tool fact reference catalog, but do not advertise an empty structured
-    # delivery contract that the Reply could only satisfy incorrectly.
-    if not store_ids:
-        return {}
-    return {
-        "store_address": {
+    if resolutions:
+        resolution = next(
+            (
+                item
+                for item in resolutions
+                if item.get("delivery_store_ids") or item.get("visible_candidate_ids")
+            ),
+            resolutions[0],
+        )
+        store_ids = [
+            str(item).strip()
+            for item in resolution.get("delivery_store_ids") or []
+            if str(item).strip()
+        ]
+        # A lookup result can be useful without containing a deliverable card. For
+        # example, an ambiguous place needs one clarification and a city with many
+        # candidates needs narrower location evidence. Keep those results in the
+        # tool fact reference catalog, but do not advertise an empty structured
+        # delivery contract that the Reply could only satisfy incorrectly.
+        if store_ids:
+            options["store_address"] = {
             "fact_ref": "tool_fact:customer_store_lookup",
             "status": str(resolution.get("status") or ""),
             "available_store_ids": list(dict.fromkeys(store_ids)),
@@ -1038,8 +1037,51 @@ def _structured_delivery_options(joined: dict[str, Any]) -> dict[str, Any]:
             "candidate_search_complete": resolution.get("candidate_search_complete"),
             "ranking_method": str(resolution.get("ranking_method") or ""),
             "source": "current_turn_tool_fact",
+            }
+    if _payment_collection_delivery_available(state):
+        options["payment_collection"] = {
+            "fact_ref": "authoritative_fact:payment_collection_option",
+            "status": "available",
+            "message_payloads": [
+                {
+                    "type": "payment_collection",
+                    "content": payment_collection_content({}, state=state),
+                }
+            ],
+            "source": "system_payment_collection_contract",
+            "constraints": [
+                "reply_must_choose_action_payment",
+                "reply_must_provide_deposit_evidence",
+                "same_turn_max_one_payment_collection",
+            ],
         }
-    }
+    return options
+
+
+def _payment_collection_delivery_available(state: AgentState) -> bool:
+    """Expose the payment card as material only after structural quote evidence.
+
+    This does not decide that the customer wants to pay. It only tells Reply
+    that a real card can be delivered if its own sales judgment and deposit
+    evidence satisfy the payment contract.
+    """
+
+    if not activity_intro_completed_for_payment(state):
+        return False
+    if is_paid_deposit_state(state.get("payment_state")):
+        return False
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    existing_state, existing_source, existing_fact = _authoritative_existing_payment(state)
+    resolved = resolved_payment_fact(
+        orders=context.get("orders") or [],
+        image_info=state.get("image_info"),
+        existing_state=existing_state,
+        existing_source=existing_source,
+        existing_fact=existing_fact,
+    )
+    if is_paid_deposit_state(resolved.get("deposit_state")):
+        return False
+    return True
 
 
 def _store_fact_status(joined: dict[str, Any]) -> dict[str, Any]:

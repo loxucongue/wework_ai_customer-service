@@ -660,18 +660,16 @@ def test_parallel_reply_payload_surfaces_current_store_delivery_as_an_option() -
         "source": "normalized_tool_facts",
     }
 
-    assert payload["structured_delivery_options"] == {
-        "store_address": {
-            "fact_ref": "tool_fact:customer_store_lookup",
-            "status": "send_single",
-            "available_store_ids": ["601"],
-            "message_payloads": [
-                {"type": "store_address", "content": {"store_id": "601"}},
-            ],
-            "candidate_search_complete": True,
-            "ranking_method": "haversine",
-            "source": "current_turn_tool_fact",
-        }
+    assert payload["structured_delivery_options"]["store_address"] == {
+        "fact_ref": "tool_fact:customer_store_lookup",
+        "status": "send_single",
+        "available_store_ids": ["601"],
+        "message_payloads": [
+            {"type": "store_address", "content": {"store_id": "601"}},
+        ],
+        "candidate_search_complete": True,
+        "ranking_method": "haversine",
+        "source": "current_turn_tool_fact",
     }
     assert payload["tool_fact_reference_options"] == [
         {
@@ -761,6 +759,43 @@ def test_parallel_reply_payload_keeps_non_delivery_store_fact_without_empty_deli
         },
     )
     assert "tool_fact:customer_store_lookup" in validation_state["reply_used_fact_refs"]
+
+
+def test_parallel_reply_payload_does_not_surface_payment_card_before_activity_intro() -> None:
+    state = _parallel_state("多少钱")
+    state["evidence_join"] = {
+        "shared_context": {"conversation": [], "current_message": {"content": "多少钱"}},
+        "content_candidates": [],
+        "tool_facts": {},
+    }
+
+    assert "payment_collection" not in parallel_reply_payload(state)["structured_delivery_options"]
+
+
+def test_parallel_reply_payload_surfaces_payment_card_after_activity_intro_without_deciding_to_send() -> None:
+    state = _parallel_state("行，怎么付款")
+    state["conversation_history"] = [
+        "用户: 长沙雨花区",
+        "小贝: 现在这边周年庆淡斑活动价是268元，包含淡斑、皮肤检测、基础清洁和补水。",
+        "用户: 看着可以",
+    ]
+    state["evidence_join"] = {
+        "shared_context": {
+            "conversation": [],
+            "current_message": {"content": "行，怎么付款"},
+            "authoritative_facts": {},
+        },
+        "content_candidates": [],
+        "tool_facts": {},
+    }
+
+    option = parallel_reply_payload(state)["structured_delivery_options"]["payment_collection"]
+
+    assert option["fact_ref"] == "authoritative_fact:payment_collection_option"
+    assert option["message_payloads"] == [
+        {"type": "payment_collection", "content": {"amount": 10, "remark": ""}}
+    ]
+    assert "reply_must_choose_action_payment" in option["constraints"]
 
 
 def test_parallel_reply_prompt_does_not_reopen_established_sales_key_without_new_evidence() -> None:
