@@ -356,7 +356,8 @@ async def require_v2_workflow_api_key(
 ) -> None:
     """Accept V1/V2 tokens or the IP-restricted Nginx compatibility proxy."""
     client_host = str(request.client.host if request.client else "").strip()
-    if client_host in {"127.0.0.1", "::1"}:
+    trusted_proxy_hosts = {"127.0.0.1", "::1", "120.26.43.96", "121.199.0.182"}
+    if x_ai_paths_v2_trusted_proxy == "1" and client_host in trusted_proxy_hosts:
         return
     accepted_tokens = {
         token

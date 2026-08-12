@@ -88,11 +88,21 @@ def test_v2_workflow_route_accepts_ip_restricted_nginx_proxy(monkeypatch) -> Non
     asyncio.run(main.require_v2_workflow_api_key(_request(), None, "1"))
 
 
-def test_v2_workflow_route_accepts_local_nginx_compatibility_proxy_without_custom_header(monkeypatch) -> None:
+def test_v2_workflow_route_accepts_nginx_injected_proxy_header_with_forwarded_client(monkeypatch) -> None:
     monkeypatch.setattr(main.settings, "ai_paths_api_key", "existing-v1-token")
     monkeypatch.setattr(main.settings, "ai_external_api_key", "v2-external-token")
 
-    asyncio.run(main.require_v2_workflow_api_key(_request(), None, None))
+    asyncio.run(main.require_v2_workflow_api_key(_request("120.26.43.96"), None, "1"))
+
+
+def test_v2_workflow_route_rejects_local_request_without_proxy_header_or_token(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "ai_paths_api_key", "existing-v1-token")
+    monkeypatch.setattr(main.settings, "ai_external_api_key", "v2-external-token")
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(main.require_v2_workflow_api_key(_request(), None, None))
+
+    assert exc_info.value.status_code == 401
 
 
 def test_v2_workflow_route_rejects_spoofed_proxy_header_from_remote_host(monkeypatch) -> None:
