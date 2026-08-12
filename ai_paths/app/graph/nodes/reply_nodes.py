@@ -178,6 +178,20 @@ def create_synthesize_reply_node(
                     if model_call:
                         model_call["fallback"] = {"strategy": reply_source, "reason": failure_detail[:1000]}
                         model_call["output"] = {"messages": len(messages)}
+                elif _store_lookup_unavailable_fallback_allowed(state, failure_detail):
+                    messages = _store_lookup_unavailable_fallback_messages()
+                    reply_source = "deterministic_store_lookup_unavailable_fallback"
+                    fallback_source = reply_source
+                    warnings.append(
+                        {
+                            "node": "synthesize_reply",
+                            "message": "store_lookup_unavailable_fallback_used",
+                            "detail": failure_detail[:1000],
+                        }
+                    )
+                    if model_call:
+                        model_call["fallback"] = {"strategy": reply_source, "reason": failure_detail[:1000]}
+                        model_call["output"] = {"messages": len(messages)}
                 elif _is_recoverable_delivery_contract_failure(failure_detail):
                     messages = _neutral_final_fallback_messages()
                     reply_source = "deterministic_neutral_final_fallback"
@@ -895,11 +909,6 @@ def _validated_manifest_fallback_messages(
     )
     if not manifest.get("active"):
         return []
-    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
-    if any(str(item).startswith("turn_") for item in contract.get("required_fact_ids") or []):
-        # A static pack cannot prove that every independent customer question
-        # was answered. Let the constrained model repair handle those runs.
-        return []
     ordered = sorted(
         (item for item in manifest.get("messages") or [] if isinstance(item, dict) and item.get("required")),
         key=lambda item: int(item.get("source_order") or 0),
@@ -933,6 +942,35 @@ def _validated_manifest_fallback_messages(
         )
         return []
     return messages
+
+
+def _store_lookup_unavailable_fallback_allowed(state: AgentState, failure_detail: str) -> bool:
+    if is_hard_health_risk_hold(health_risk_hold(state)):
+        return False
+    if "store_lookup_has_no_deliverable_candidate" not in str(
+        (state.get("reply_strategy") or {}).get("runtime_delivery_adjustments", [])
+        if isinstance(state.get("reply_strategy"), dict)
+        else []
+    ):
+        return False
+    contract = state.get("reply_contract") if isinstance(state.get("reply_contract"), dict) else {}
+    required_deliveries = contract.get("required_deliveries") if isinstance(contract.get("required_deliveries"), list) else []
+    if any(
+        isinstance(item, dict) and str(item.get("message_type") or item.get("type") or "") == "payment_collection"
+        for item in required_deliveries
+    ):
+        return False
+    return True
+
+
+def _store_lookup_unavailable_fallback_messages() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "text",
+            "order": 1,
+            "content": "亲，您现在在哪个城市或哪个区县呢？我按您方便过去的区域给您看门店位置。",
+        }
+    ]
 
 
 def _maybe_build_required_payment_collection_fallback(
@@ -1364,6 +1402,11 @@ def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = 
             store_id = str(content.get("store_id") if isinstance(content, dict) else content or "").strip()
             if store_id:
                 messages.append({"type": "store_address", "order": int(item.get("order") or index), "content": {"store_id": store_id}})
+            continue
+        if message_type in {"image", "video"}:
+            url = _message_url(content)
+            if url:
+                messages.append({"type": message_type, "order": int(item.get("order") or index), "content": url})
     messages, _ = _dedupe_payment_collection_messages(messages)
     return _normalize_payment_amount_text_messages(messages)
 

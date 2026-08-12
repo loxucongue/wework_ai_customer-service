@@ -259,6 +259,71 @@ class FakeNearbyStoreActivityRepairModelClient:
 
 
 class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_planner_direct_reply_preserves_authorized_manifest_images_when_model_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=None,
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-planner-direct-image-preserved",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "这个活动多少钱",
+                "normalized_content": "这个活动多少钱",
+                "planner_decision": "direct_reply",
+                "planner_reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "亲，我把活动完整发您看下。"}},
+                    {"type": "image", "order": 2, "content": {"url": "https://example.test/activity.png"}},
+                    {"type": "text", "order": 3, "content": {"text": "到店时间可以按您方便安排。"}},
+                ],
+                "fact_envelope": {},
+                "required_tools": [],
+                "authorized_sop_delivery_manifest": {
+                    "active": True,
+                    "core_fact_contract": "",
+                    "messages": [
+                        {
+                            "source_order": 1,
+                            "message_type": "text",
+                            "required": True,
+                            "content": {"text": "亲，我把活动完整发您看下。"},
+                        },
+                        {
+                            "source_order": 2,
+                            "message_type": "image",
+                            "required": True,
+                            "content": {"url": "https://example.test/activity.png"},
+                        },
+                        {
+                            "source_order": 3,
+                            "message_type": "text",
+                            "required": True,
+                            "content": {"text": "到店时间可以按您方便安排。"},
+                        },
+                    ],
+                },
+                "reply_contract": {
+                    "required_deliveries": [
+                        {"message_type": "text"},
+                        {"message_type": "image"},
+                        {"message_type": "text"},
+                    ]
+                },
+            }
+
+            output = await node(state)
+
+        self.assertFalse(output["reply_blocked"])
+        self.assertEqual(output["reply_source"], "planner_direct_reply_model_unavailable_fallback")
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "image", "text"])
+        self.assertEqual(output["reply_messages"][1]["content"], "https://example.test/activity.png")
+
     async def test_nearby_store_repair_preserves_authorized_activity_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             model = FakeNearbyStoreActivityRepairModelClient()
@@ -457,6 +522,103 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(output["reply_blocked"])
         self.assertEqual(output["reply_source"], "deterministic_authorized_sop_manifest_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "image", "text"])
+
+    async def test_model_failure_uses_complete_activity_manifest_even_with_turn_question_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=FakeAlwaysFailReplyModelClient(),
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            manifest_messages = [
+                {
+                    "source_order": 1,
+                    "message_type": "text",
+                    "required": True,
+                    "content": {
+                        "text": (
+                            "现在我们是线上抢购活动，前30名抢到的顾客到店可以享受268元淡斑特惠价，我把活动给您发一下。\n"
+                            "抖音合作线上秒杀活动（淡斑套餐）\n"
+                            "①268元活动价格仅限30名，套餐包括淡斑、检测皮肤、基础清洁和肌肤补水。"
+                        )
+                    },
+                },
+                {
+                    "source_order": 2,
+                    "message_type": "image",
+                    "required": True,
+                    "content": {"url": "https://example.test/activity.png"},
+                },
+                {
+                    "source_order": 3,
+                    "message_type": "text",
+                    "required": True,
+                    "content": {
+                        "text": (
+                            "②线上预定每位10元并登记姓名电话，到店抵扣10元，做的话再付258元；"
+                            "未做或不满意可退，实际按付款记录核对。\n"
+                            "③仅限线上报名客户有效，名额满活动结束并恢复原价；线下客户到店按原价。"
+                            "预定后到店时间可以按您方便安排。"
+                        )
+                    },
+                },
+            ]
+            state: dict[str, Any] = {
+                "request_id": "test-complete-activity-manifest-with-turn-question",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "做这个要多少钱",
+                "normalized_content": "做这个要多少钱",
+                "planner_decision": "direct_reply",
+                "planner_reply_messages": [],
+                "fact_envelope": {},
+                "required_tools": [],
+                "authorized_sop_delivery_manifest": {
+                    "active": True,
+                    "core_fact_contract": "activity_intro_v1",
+                    "required_fact_ids": [
+                        "activity_price",
+                        "package_items",
+                        "quota",
+                        "deposit_redemption",
+                        "refund_policy",
+                        "visit_flexibility",
+                    ],
+                    "messages": manifest_messages,
+                },
+                "reply_contract": {
+                    "required_deliveries": [
+                        {"message_type": item["message_type"]}
+                        for item in manifest_messages
+                    ],
+                    "required_fact_ids": [
+                        "turn_question_1",
+                        "activity_price",
+                        "package_items",
+                        "quota",
+                        "deposit_redemption",
+                        "refund_policy",
+                        "visit_flexibility",
+                    ],
+                },
+                "governance_flags": {"semantic_contract_enabled": True},
+            }
+
+            output = await node(state)
+
+        self.assertFalse(output["reply_blocked"])
+        self.assertEqual(output["reply_source"], "deterministic_authorized_sop_manifest_fallback")
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "image", "text"])
+        combined = "".join(str(item.get("content") or "") for item in output["reply_messages"])
+        self.assertIn("268", combined)
+        self.assertIn("到店抵扣", combined)
 
     async def test_low_round_budget_skips_primary_and_runs_compact_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -887,6 +1049,56 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text"])
+
+    async def test_store_lookup_timeout_uses_safe_area_question_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=FakeAlwaysFailReplyModelClient(),
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-store-lookup-timeout-fallback",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "你们在哪里",
+                "normalized_content": "你们在哪里",
+                "planner_decision": "need_tools",
+                "planner_reply_messages": [],
+                "fact_envelope": {
+                    "structured_facts": {
+                        "store_resolution_fact": {
+                            "status": "need_location",
+                            "delivery_store_ids": [],
+                        }
+                    }
+                },
+                "customer_store_knowledge": {"error": "timeout_after_5s"},
+                "required_tools": [{"name": "customer_store_lookup", "purpose": "location"}],
+                "reply_contract": {
+                    "required_deliveries": [{"message_type": "store_address"}],
+                    "required_fact_ids": ["turn_question_1"],
+                },
+            }
+
+            output = await node(state)
+
+        self.assertFalse(output["reply_blocked"])
+        self.assertEqual(output["reply_source"], "deterministic_store_lookup_unavailable_fallback")
+        self.assertEqual(output["reply_messages"], [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "亲，您现在在哪个城市或哪个区县呢？我按您方便过去的区域给您看门店位置。",
+            }
+        ])
 
     async def test_handoff_notice_fallback_when_reply_model_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

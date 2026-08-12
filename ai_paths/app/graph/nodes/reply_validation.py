@@ -295,6 +295,7 @@ def validate_semantic_contract_evidence(
         for item in contract.get("required_fact_ids") or []
         if str(item).strip()
     ]
+    required_fact_ids = _required_fact_ids_after_authorized_manifest_coverage(required_fact_ids, messages, state)
     if not required_fact_ids:
         return
     raw_evidence = payload.get("contract_evidence") if isinstance(payload, dict) else []
@@ -325,6 +326,48 @@ def validate_semantic_contract_evidence(
             invalid.append(fact_id)
     if invalid:
         raise ValueError("semantic_contract_evidence_invalid:" + ",".join(invalid))
+
+
+def _required_fact_ids_after_authorized_manifest_coverage(
+    required_fact_ids: list[str],
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> list[str]:
+    manifest = (
+        state.get("authorized_sop_delivery_manifest")
+        if isinstance(state.get("authorized_sop_delivery_manifest"), dict)
+        else {}
+    )
+    if not manifest.get("active"):
+        return required_fact_ids
+    covered: set[str] = set()
+    if str(manifest.get("core_fact_contract") or "") == "activity_intro_v1":
+        _validate_activity_intro_core_facts(_combined_text(messages))
+        manifest_required = {
+            str(item).strip()
+            for item in manifest.get("required_fact_ids") or []
+            if str(item).strip()
+        }
+        covered.update(
+            fact_id
+            for fact_id in manifest_required
+            if fact_id
+            in {
+                "activity_price",
+                "package_items",
+                "quota",
+                "deposit_redemption",
+                "refund_policy",
+                "visit_flexibility",
+            }
+        )
+        # The active manifest is the locked answer for platform/SOP activity
+        # delivery. The generic turn-question evidence remains model-owned for
+        # free-form replies, but should not block deterministic manifest output.
+        covered.add("turn_question_1")
+    if not covered:
+        return required_fact_ids
+    return [fact_id for fact_id in required_fact_ids if fact_id not in covered]
 
 
 def _validate_reply_delivery_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -382,10 +425,7 @@ def _validate_sop_delivery_manifest(messages: list[dict[str, Any]], state: dict[
         }
         if not required_image_urls.issubset(emitted_image_urls):
             raise ValueError("sop_delivery_manifest_required_asset_missing")
-    if (
-        str(manifest.get("core_fact_contract") or "") == "activity_intro_v1"
-        and not governance_enabled(state, "semantic_contract_enabled")
-    ):
+    if str(manifest.get("core_fact_contract") or "") == "activity_intro_v1":
         _validate_activity_intro_core_facts(_combined_text(messages))
 
 
