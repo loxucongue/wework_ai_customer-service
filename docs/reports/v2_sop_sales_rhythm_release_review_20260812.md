@@ -101,6 +101,12 @@ V2 回复说明预约金并同轮交付一张真实付款卡。该场景已有�
 
 本轮模型仿真使用 `skip_review`，因此只能证明硬结构、事实来源和链路可运行，不能将其表述为“总体语义通过率达到 90%”。客户可见回复已做人工抽样，正式扩大真实流量前仍需在 V2 sidecar 使用隔离客户审核。
 
+### Sidecar smoke 修复
+
+- 首次部署后的 `sim_` 软拒绝 smoke 发现：Reply 首答正确选择了“整体约45～50分钟”作为新价值，但 Fact Auditor 的权威事实投影没有携带该新增字段，因而将其拦截；Repair 删除事实后退化成被动结束。
+- 根因是 Reply 与 Fact Auditor 的事实输入不对称，不是销售判断规则不足。
+- 已将 `service_duration / daily_life_impact / registered_visit_option / action_cost_fact_policy` 加入统一 `offer` 事实投影并增加合同测试；没有通过 Python 追加销售文案或关键词分流绕过审计。
+
 ## V1/V2 隔离发布
 
 - V1 继续使用 `/opt/ai-paths/shared/sop_reply_packs.json` 和生产 SOP worker。

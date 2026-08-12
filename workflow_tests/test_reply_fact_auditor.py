@@ -729,6 +729,28 @@ def test_fact_audit_input_surfaces_claim_bearing_business_facts() -> None:
     }
 
 
+def test_parallel_offer_facts_expose_optional_action_cost_evidence_to_reply_and_auditor() -> None:
+    from app.policies.business_rules import parallel_reply_business_rules_for_model
+
+    rules = parallel_reply_business_rules_for_model()
+    offer = rules["AUTHORITATIVE FACTS"]["offer"]
+
+    assert offer["service_duration"].startswith("整体过程约45～50分钟")
+    assert offer["daily_life_impact"].startswith("做完不影响正常工作和生活")
+    assert offer["registered_visit_option"].startswith("完成线上活动登记后")
+    assert "可选销售证据" in offer["action_cost_fact_policy"]
+
+    state = _state()
+    state["evidence_join"]["shared_context"]["rules"] = rules
+    audit_input = _parallel_reply_fact_audit_input(
+        state=state,
+        messages=[{"type": "text", "content": "整个过程大概45～50分钟。"}],
+        payload={"used_fact_refs": [], "selected_content_ids": []},
+    )
+
+    assert audit_input["authoritative_claim_facts"]["offer"]["service_duration"] == offer["service_duration"]
+
+
 def test_fact_auditor_separates_package_includes_from_registered_store_service() -> None:
     prompt = REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
