@@ -188,8 +188,8 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 你是第三方平台 SOP 到期任务的客户触达决策与文案生成节点。
 
 # 核心目标
-本节点处理所有 `dispatchMode=ai_service` 的第三方任务，不区分首日或客户是否已经开口。
-第三方平台只负责告诉系统“现在有一个 AI 客服任务到期”。平台原始待发送内容只是候选目标和审计信息，不是必须发送的成品；真正要发什么，必须基于：
+本节点只处理经过事实路由后仍需模型判断的 `dispatchMode=ai_service` 第三方任务。未真实开口客户和首日已真实开口客户已在进入本节点前分别完成“平台原文直发”和“消费不发送”。
+第三方平台告诉系统“现在有一个触达任务到期”，其原始消息代表本次任务优先希望交付的营销意图和素材组合。你必须结合以下信息决定最终发送内容：
 1. 客户完整聊天记录和最新状态；
 2. 平台客户触达知识库；
 3. 当前权威业务事实。
@@ -198,33 +198,34 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 
 # 决策原则
 1. 先判断硬边界。只有硬边界才允许 `no_send`。
-2. 如果客户有明确卡点，从 `knowledge_base.items` 中选择最贴近的知识组和段落，直接解决这个卡点，不得借机重复活动介绍或预约金催付。
-3. 如果客户没有明确卡点，必须先判断信息充分度：
-   - 客户从未真实开口，或历史只有自动欢迎语、简短问候、表情、图片等少量信息，无法可靠判断需求和卡点时，默认选择低压力触达。优先从知识库选择带真实效果图片/视频的效果展示段落，只输出 1 条自然短文本和该段落的效果媒体；短文本用于轻承接或问候，不得再追加销售 CTA。不要主动发送完整活动规则，不要催预约金，不要连续追问隐私或症状。
-   - 若知识库没有可用的效果媒体，只发送 1 条自然问候或低压力开放式承接，给客户一个容易回复的入口；不得用大段营销文案填充。
-   - 只有聊天历史已经提供明确兴趣、卡点或成交进度时，才允许推进与该进度匹配的活动价格或预约金内容。
-   - 常规优先输出“一段自然短文本 + 一张与场景匹配的真实图片”。知识库有合适图片时必须保留图片类型；只有当前场景确实不适合图片或知识库没有合法图片时，才允许纯文本。
-4. 知识库话术是参考方向，不是必须原样照抄。你必须结合最新聊天自然改写。
-5. 知识库中的性别称谓必须统一改为中性称谓，如“亲、您、顾客、很多客户”，禁止“美女、姐妹、姐姐、哥哥、小姐姐、女士、先生、男士、女孩子”等。
-6. 知识库中的旧价格、旧活动、旧项目必须改成当前权威业务事实：
+2. 如果客户有明确卡点，优先从 `knowledge_base.items` 中选择最贴近的知识组和段落。目标是让客户重新开口并继续沟通，不要求一次回复彻底解决全部顾虑。你可以正面处理卡点，也可以在不回避客户明确问题的前提下，用真实效果、活动价值或平台任务携带的成交内容从侧面建立信心、推进决策。
+3. 平台原始消息是优先候选，不是仅供审计的废弃文案：
+   - 内容与最新聊天不冲突、未重复、事实仍有效时，应优先保留其业务方向、文本与图片组合，并做必要的自然改写。
+   - 只有原文与客户当前状态冲突、近期已经发送、包含过时事实，或知识库存在明显更适合当前卡点的内容时，才替换或调整。
+   - 不得因为原文营销性较强就自动 `no_send`；应调整为自然短聊表达或选择更合适的效果/活动内容。
+   - “平台原文优先”不能覆盖去重：近期已经完整发送相同活动价格、预约金规则或同一素材时，严禁换句话重复；必须改选知识库中尚未交付的效果证据、信任价值或其他场景。
+4. 如果客户没有明确卡点，必须发送能促使客户开口的新价值。优先选择平台任务当前内容；若该内容重复或不适合，则选择带真实图片/视频的效果展示，或与当前进度匹配的活动价格内容。常规优先输出“一段自然短文本 + 一张与场景匹配的真实图片”。
+5. 知识库话术是参考方向，不是必须原样照抄。你必须结合最新聊天自然改写。
+6. 知识库中的性别称谓必须统一改为中性称谓，如“亲、您、顾客、很多客户”，禁止“美女、姐妹、姐姐、哥哥、小姐姐、女士、先生、男士、女孩子”等。
+7. 知识库中的旧价格、旧活动、旧项目必须改成当前权威业务事实：
    - 当前淡斑活动价 268 元；
    - 10 元预约金，到店抵扣，做的话再付 258 元；
    - 当前项目围绕淡斑、检测皮肤、基础清洁、肌肤补水；
    - 当前活动包含送一次价值180元的美白管理，也可表达为赠送美白小气泡；
    - 不主动强调具体原价金额，只能说名额满后恢复原价。
-7. 不得继承知识库或平台原文里的其他旧赠品、旧加项、旧价值金额或未确认促销利益点。除“价值180元的美白管理/赠送美白小气泡”外，遇到其他“免费赠送某项目”“价值XXX元服务”等内容时，直接删除，并改成当前权威活动事实。
-8. 风险承诺和退款口径由模型结合知识库与权威事实自然处理，本节点不因为话术中存在强销售表达就自动阻断；但不得编造当前事实中不存在的项目、门店、订单、支付成功、预约成功、赠品或额外服务。
-9. 图片/视频是重要消息类型。若选中段落包含 image/video，输出中要保留对应消息类型和 URL；不要把图片视频变成纯文本描述。
-10. 文案要像微信短聊，直接解决卡点或推进下一步，不要写内部分析、流程解释、模型判断。
-11. 必须逐条对照最近聊天和近期已发送的第三方 SOP：已经完整讲过的活动规则、268 元价格、10 元预约金、退款口径、效果说明或同一素材，不得换句话重复。应改选尚未交付的新价值；若客户信息不足，宁可轻问候并发送不同的真实效果素材，也不要重复营销。
-12. `task.original_message_content` 中的 `payment_collection` 只表示平台候选内容包含预约卡意图。是否发送预约卡、改用文本推进或选择其他知识库内容，必须根据最新聊天和硬事实判断；不得生成虚假支付或预约成功事实。
+8. 不得继承知识库或平台原文里的其他旧赠品、旧加项、旧价值金额或未确认促销利益点。除“价值180元的美白管理/赠送美白小气泡”外，遇到其他“免费赠送某项目”“价值XXX元服务”等内容时，直接删除，并改成当前权威活动事实。
+9. 风险承诺和退款口径由模型结合知识库与权威事实自然处理，本节点不因为话术中存在强销售表达就自动阻断；但不得编造当前事实中不存在的项目、门店、订单、支付成功、预约成功、赠品或额外服务。
+10. 图片/视频是重要消息类型。若选中段落包含 image/video，输出中要保留对应消息类型和 URL；不要把图片视频变成纯文本描述。
+11. 文案要像微信短聊，直接解决卡点或推进下一步，不要写内部分析、流程解释、模型判断。
+12. 必须逐条对照最近聊天和近期已发送的第三方 SOP：已经完整讲过的活动规则、268 元价格、10 元预约金、退款口径、效果说明或同一素材，不得换句话重复。应改选尚未交付的新价值，而不是 `no_send`。
+13. `task.original_message_content` 中的 `payment_collection` 只表示平台候选内容包含预约卡意图。只有平台原始消息或最终选中的知识库段落本身包含 `payment_collection`，并且最新聊天适合推进付款时，才允许保留该消息类型；不得凭空新增预约金卡。是否保留预约卡、改用文本推进或选择其他知识库内容，必须根据最新聊天和硬事实判断；不得生成虚假支付或预约成功事实。
 
 # 知识库选择规则
 - `knowledge_base.items[].id` 是 knowledgeId。
 - `paragraphs[].paragraphNo` 是 knowledgeParagraphNo。
 - 选择某个段落时，必须把该段落所有合适的 text/image/video 按原顺序输出；文本可以改写，媒体 URL 不得改。
 - 如果同一段落有明显旧价格、性别称谓、旧项目，改写文本即可，媒体仍可保留。
-- 如果知识库没有合适卡点段落，信息充分时可使用 `authoritative_business_facts` 生成与当前进度匹配的内容；信息不足时只能生成轻问候/低压力承接。两种情况都把 `knowledgeId` 和 `knowledgeParagraphNo` 置空。
+- 如果知识库没有合适卡点段落，可优先使用不冲突且不重复的平台原始消息，或使用 `authoritative_business_facts` 生成效果/活动价值内容。两种情况都把 `knowledgeId` 和 `knowledgeParagraphNo` 置空。
 
 # no_send 边界
 只允许以下原因：
@@ -236,6 +237,12 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 - `human_takeover`：人工正在连续接待，发送会插话。
 
 普通沉默、普通价格/效果/距离/时间顾虑、客户说考虑一下，都必须 `send`。
+
+# 校准示例
+1. 平台任务携带“活动价 + 活动图”，历史尚未介绍活动，客户没有更优先卡点：保留活动方向并自然改写，通常输出一段文本加活动图。
+2. 平台任务携带“活动价 + 活动图”，但最近一轮已经完整发送 268 元、10 元抵扣和退款规则：不得再次发送活动或追加预约金卡；改选知识库中尚未发送的真实效果图或其他新价值。
+3. 客户担心效果，平台任务原本是催预约金：先回应效果卡点并优先发送真实效果素材；不要求一次彻底说服客户，但不能回避问题后机械催款。
+4. 客户明确投诉并要求不要再联系：输出 `no_send`，不得用其他营销内容绕开停止联系要求。
 
 # 输出 JSON
 只返回 JSON，不要 Markdown，不要解释。Schema：
@@ -258,7 +265,7 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 
 `send` 时 `reply_messages` 必须非空。`no_send` 时 `reply_messages` 必须为空，但也必须输出 sceneName、sceneCode、reason_code 和 remark 用于回写。
 命中知识库时：`sceneName = 分类名 + "｜" + 知识库名称`，`sceneCode = "kb_" + categoryId + "_" + knowledgeId`。
-无卡点兜底发送时：信息不足使用 `正常推进｜轻触达效果展示` 或 `正常推进｜轻问候`，`sceneCode` 使用 `normal_light_effect` 或 `normal_light_greeting`；仅当历史足以支持活动推进时，才可使用 `正常推进｜活动价格` / `normal_activity_price`。
+无卡点发送时：使用 `正常推进｜平台任务内容`、`正常推进｜轻触达效果展示` 或 `正常推进｜活动价格`，`sceneCode` 使用 `normal_platform_intent`、`normal_light_effect` 或 `normal_activity_price`。
 """.strip()
 
 # Backward-compatible export; the retired pre-dispatch prompt must not be used.
@@ -1155,9 +1162,93 @@ class SopPlatformTaskService:
                 context = await self._load_context(platform_task, identity=identity)
                 self._observe("context", time.perf_counter() - started)
                 context["dispatch_mode"] = dispatch_mode
-                started = time.perf_counter()
-                decision = await self._decide(platform_task, context=context)
-                self._observe("model", time.perf_counter() - started)
+                relation = (
+                    context.get("customer_relation")
+                    if isinstance(context.get("customer_relation"), dict)
+                    else {}
+                )
+                opening_state = (
+                    context.get("opening_state")
+                    if isinstance(context.get("opening_state"), dict)
+                    else {}
+                )
+                delivery_conflict = _paid_or_appointment_delivery_conflict(
+                    context.get("business_state")
+                    if isinstance(context.get("business_state"), dict)
+                    else {}
+                )
+                if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+                    decision = await self._decide(platform_task, context=context)
+                elif delivery_conflict:
+                    decision = {
+                        "decision": "no_send",
+                        "reason": delivery_conflict,
+                        "reason_code": "paid_or_appointment_conflict",
+                        "sceneName": "不发送｜已付或已预约冲突",
+                        "sceneCode": "no_send_paid_or_appointment_conflict",
+                        "knowledgeId": 0,
+                        "knowledgeParagraphNo": 0,
+                        "remark": "权威订单或预约事实显示本次自动触达与已完成状态冲突",
+                        "reply_messages": [],
+                    }
+                elif opening_state.get("has_real_customer_message") is False:
+                    original_messages = _platform_messages(platform_task)
+                    message_error = _platform_message_error(platform_task)
+                    if original_messages and not message_error:
+                        decision = {
+                            "decision": "send",
+                            "reason": "ai_service_unopened_platform_passthrough",
+                            "reason_code": "send",
+                            "sceneName": "平台原文｜客户未开口",
+                            "sceneCode": "ai_service_unopened_passthrough",
+                            "knowledgeId": 0,
+                            "knowledgeParagraphNo": 0,
+                            "remark": "客户尚未真实开口，按平台消息原类型、原内容、原顺序发送",
+                            "reply_messages": original_messages,
+                        }
+                        context["source"] = "ai_service_unopened_platform_passthrough"
+                        context["knowledge_loaded"] = False
+                        context["model_called"] = False
+                        context["first_day_platform_sop_route"] = {
+                            "route_checked": True,
+                            "opening_state": opening_state,
+                            "route_reason": "ai_service_unopened_platform_passthrough",
+                        }
+                    else:
+                        decision = {
+                            "decision": "no_send",
+                            "reason": message_error or "invalid_message_content",
+                            "reason_code": "invalid_message_content",
+                            "sceneName": "不发送｜平台内容无效",
+                            "sceneCode": "no_send_invalid_message_content",
+                            "knowledgeId": 0,
+                            "knowledgeParagraphNo": 0,
+                            "remark": f"客户未开口但平台任务没有可原样发送的合法消息：{message_error or 'empty_messages'}",
+                            "reply_messages": [],
+                        }
+                elif opening_state.get("first_added_today") is True:
+                    decision = {
+                        "decision": "no_send",
+                        "reason": "first_day_opened_platform_sop_consumed_no_send",
+                        "reason_code": "customer_already_opened",
+                        "sceneName": "不发送｜首日客户已开口",
+                        "sceneCode": "first_day_opened_no_send",
+                        "knowledgeId": 0,
+                        "knowledgeParagraphNo": 0,
+                        "remark": "客户在加微当日已经真实开口，平台任务消费但不发送，交由首日沉默触达链路承接",
+                        "reply_messages": [],
+                    }
+                    context["source"] = "first_day_opened_platform_sop_route"
+                    context["model_called"] = False
+                    context["first_day_platform_sop_route"] = {
+                        "route_checked": True,
+                        "opening_state": opening_state,
+                        "route_reason": "first_day_opened_platform_sop_consumed_no_send",
+                    }
+                else:
+                    started = time.perf_counter()
+                    decision = await self._decide(platform_task, context=context)
+                    self._observe("model", time.perf_counter() - started)
             if self.settings.sop_platform_shadow_mode:
                 status = f"shadow_{decision['decision']}"
                 self.repository.update_sop_send_task(
@@ -1255,6 +1346,7 @@ class SopPlatformTaskService:
                     near_duplicate.get("found")
                     and near_duplicate.get("match_type") == "duplicate_media"
                     and dispatch_mode == "ai_service"
+                    and context.get("model_called") is not False
                 ):
                     repaired_decision = await self._repair_duplicate_media_decision(
                         platform_task,
@@ -1543,12 +1635,26 @@ class SopPlatformTaskService:
         )
         messages = data.get("messages") if isinstance(data.get("messages"), list) else []
         timeline = _conversation_timeline(messages[-80:])
+        opening_state = _conversation_opening_state(
+            messages,
+            conversation_added_at=data.get("added_at"),
+        )
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
             return {
                 "customer_relation": relation,
                 "conversation_timeline": timeline,
                 "conversation_count": len(messages),
+                "opening_state": opening_state,
                 "business_state": {"source": "skipped_customer_deleted"},
+                "task_timing": task_timing,
+            }
+        if opening_state.get("has_real_customer_message") is True and opening_state.get("first_added_today") is True:
+            return {
+                "customer_relation": relation,
+                "conversation_timeline": timeline,
+                "conversation_count": len(messages),
+                "opening_state": opening_state,
+                "business_state": {"source": "skipped_by_opening_route"},
                 "task_timing": task_timing,
             }
         request_context = {
@@ -1571,6 +1677,7 @@ class SopPlatformTaskService:
             "customer_relation": relation,
             "conversation_timeline": timeline,
             "conversation_count": len(messages),
+            "opening_state": opening_state,
             "business_state": _compact_business_state(customer_context),
             "task_timing": task_timing,
         }
@@ -1712,7 +1819,7 @@ class SopPlatformTaskService:
                 "scene_role": "supporting_context",
                 "dispatch_mode": _dispatch_mode(platform_task),
                 "original_message_content": original_messages,
-                "original_message_content_role": "candidate_and_audit_only_model_may_replace",
+                "original_message_content_role": "prioritized_campaign_intent_model_may_adapt_or_replace_when_needed",
                 "platform_metadata": {
                     "rule_id": platform_task.get("ruleId") or platform_task.get("rule_id"),
                     "rule_name": platform_task.get("ruleName") or platform_task.get("rule_name"),
@@ -2444,7 +2551,7 @@ def _task_preflight_no_send_reason(
     if mode == "direct":
         return "invalid_message_content" if _platform_message_error(platform_task) or not _platform_messages(platform_task) else ""
     scheduled = _task_scheduled_epoch(platform_task)
-    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 21600) or 0))
+    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 600) or 0))
     if mode == "ai_service" and scheduled and max_age and time.time() - scheduled > max_age:
         return "stale_task"
     live_not_before = _parse_epoch(getattr(settings, "sop_platform_live_not_before", ""))
@@ -2534,6 +2641,49 @@ def _quiet_hours_activity(messages: list[Any], *, before_epoch: float) -> dict[s
         "customer_pending_reply": bool(latest_customer and not assistant_after_customer),
         "inactivity_minutes": inactivity_minutes,
         "unknown_time_message_count": unknown_time_count,
+    }
+
+
+def _conversation_opening_state(
+    messages: list[Any],
+    *,
+    conversation_added_at: Any,
+    now_epoch: float | None = None,
+) -> dict[str, Any]:
+    real_customer_messages: list[dict[str, Any]] = []
+    auto_opening_count = 0
+    for item in messages:
+        if not isinstance(item, dict) or _raw_message_role(item) != "customer":
+            continue
+        content = _timeline_message_content(item.get("content"))
+        if is_platform_auto_opening_message(content):
+            auto_opening_count += 1
+            continue
+        real_customer_messages.append(item)
+
+    first_added_epoch = _parse_epoch(conversation_added_at)
+    reference_epoch = now_epoch if now_epoch is not None else time.time()
+    first_added_today: bool | None = None
+    if first_added_epoch:
+        first_added_today = (
+            datetime.fromtimestamp(first_added_epoch, tz=_BEIJING_TZ).date()
+            == datetime.fromtimestamp(reference_epoch, tz=_BEIJING_TZ).date()
+        )
+    latest_real_customer_epoch = max(
+        (_raw_message_epoch(item) for item in real_customer_messages),
+        default=0.0,
+    )
+    return {
+        "has_real_customer_message": bool(real_customer_messages),
+        "real_customer_message_count": len(real_customer_messages),
+        "auto_opening_message_count": auto_opening_count,
+        "first_added_at_reliable": bool(first_added_epoch),
+        "first_added_today": first_added_today,
+        "latest_real_customer_at_beijing": (
+            datetime.fromtimestamp(latest_real_customer_epoch, tz=_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            if latest_real_customer_epoch
+            else ""
+        ),
     }
 
 
@@ -3062,6 +3212,43 @@ def _compact_business_state(context: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in output.items() if value not in (None, "", [], {})}
 
 
+def _paid_or_appointment_delivery_conflict(business_state: dict[str, Any]) -> str:
+    appointment = (
+        business_state.get("appointment")
+        if isinstance(business_state.get("appointment"), dict)
+        else {}
+    )
+    appointment_status = str(appointment.get("status") or "").strip().lower()
+    if appointment.get("has_active") is True or appointment_status in {
+        "confirmed",
+        "waiting_schedule",
+        "scheduled",
+    }:
+        return "active_appointment_conflict"
+
+    for order in business_state.get("orders") or []:
+        if not isinstance(order, dict):
+            continue
+        protection_status = str(order.get("paid_protection_status") or "").strip().lower()
+        if protection_status in {
+            "expired",
+            "inactive_order_expired",
+            "completed_order_expired",
+        }:
+            continue
+        paid = order.get("prepay_paid")
+        try:
+            paid_amount = float(paid or 0)
+        except (TypeError, ValueError):
+            paid_amount = 0.0
+        deposit_state = str(order.get("deposit_state") or "").strip().lower()
+        if paid_amount > 0 or deposit_state == "paid_by_order":
+            return "active_paid_order_conflict"
+        if str(order.get("status") or "").strip().lower() in {"waiting_schedule", "scheduled"}:
+            return "active_appointment_order_conflict"
+    return ""
+
+
 def _material_catalog_for_model(service: Any | None) -> list[dict[str, Any]]:
     if service is None:
         return []
@@ -3253,5 +3440,6 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
         "customer_context_error": customer_context.get("error"),
         "task_timing": context.get("task_timing") if isinstance(context.get("task_timing"), dict) else {},
         "quiet_hours": quiet_hours,
+        "opening_state": context.get("opening_state") if isinstance(context.get("opening_state"), dict) else {},
         "first_day_platform_sop_route": first_day_route,
     }

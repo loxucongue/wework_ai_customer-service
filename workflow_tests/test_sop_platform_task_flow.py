@@ -32,6 +32,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Settings.model_fields["sop_platform_quiet_start_hour"].default, 0)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_end_hour"].default, 8)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_first_add_grace_minutes"].default, 30)
+        self.assertEqual(Settings.model_fields["sop_platform_max_task_age_seconds"].default, 600)
 
     async def test_user_wechat_scope_no_longer_filters_ai_service_tasks(self) -> None:
         model = _Model([{"decision": "send", "reason": "handled", "reply_messages": [_text("模型回复")]}])
@@ -108,18 +109,20 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_platform_knowledge_prompt_has_current_business_contract(self) -> None:
         required = (
-            "本节点处理所有 `dispatchMode=ai_service`",
-            "平台原始待发送内容只是候选目标和审计信息",
+            "本节点只处理经过事实路由后仍需模型判断的 `dispatchMode=ai_service`",
+            "原始消息代表本次任务优先希望交付的营销意图和素材组合",
             "只有硬边界才允许 `no_send`",
             "普通沉默、普通价格/效果/距离/时间顾虑、客户说考虑一下，都必须 `send`",
-            "客户从未真实开口",
-            "优先从知识库选择带真实效果图片/视频的效果展示段落",
-            "只输出 1 条自然短文本和该段落的效果媒体",
-            "不得再追加销售 CTA",
-            "不要主动发送完整活动规则，不要催预约金",
+            "不要求一次回复彻底解决全部顾虑",
+            "从侧面建立信心、推进决策",
+            "平台原始消息是优先候选",
+            "不冲突、未重复、事实仍有效时，应优先保留",
+            "不得因为原文营销性较强就自动 `no_send`",
+            "一段自然短文本 + 一张与场景匹配的真实图片",
             "不得换句话重复",
             "只表示平台候选内容包含预约卡意图",
-            "是否发送预约卡、改用文本推进或选择其他知识库内容",
+            "是否保留预约卡、改用文本推进或选择其他知识库内容",
+            "不得凭空新增预约金卡",
             "性别称谓必须统一改为中性称谓",
             "当前淡斑活动价 268 元",
             "10 元预约金，到店抵扣，做的话再付 258 元",
@@ -134,7 +137,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         for item in required:
             self.assertIn(item, SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT)
 
-    async def test_model_input_labels_original_content_as_audit_only_and_supporting_scene(self) -> None:
+    async def test_model_input_labels_original_content_as_prioritized_campaign_intent(self) -> None:
         model = _Model([{"decision": "send", "reason": "test", "reply_messages": [_text("知识库生成")]}])
         service, _repo, _platform, _system = _service(model=model)
         task = _task(use_ai_copy=True)
@@ -153,7 +156,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(model.calls), 1)
         payload = json.loads(model.calls[0][1]["content"])
-        self.assertEqual(payload["task"]["original_message_content_role"], "candidate_and_audit_only_model_may_replace")
+        self.assertEqual(
+            payload["task"]["original_message_content_role"],
+            "prioritized_campaign_intent_model_may_adapt_or_replace_when_needed",
+        )
         self.assertEqual(payload["task"]["dispatch_mode"], "ai_service")
         self.assertEqual(payload["task"]["scene_role"], "supporting_context")
         self.assertEqual(payload["task"]["platform_metadata"]["rule_id"], 81)
@@ -296,6 +302,33 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.conversation_calls, 0)
         self.assertEqual(system.send_calls, [])
 
+    async def test_ai_service_task_nine_minutes_late_is_still_processed(self) -> None:
+        model = _Model([{"decision": "send", "reason": "within grace", "reply_messages": [_text("正常发送")]}])
+        service, _repo, platform, system = _service(model=model)
+        task = _task()
+        task["scheduledAt"] = time.time() - 9 * 60
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("正常发送")])
+
+    async def test_ai_service_task_more_than_ten_minutes_late_is_consumed_without_send(self) -> None:
+        model = _Model([])
+        service, _repo, platform, system = _service(model=model)
+        task = _task()
+        task["scheduledAt"] = time.time() - 10 * 60 - 1
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.send_calls, [])
+
     async def test_manual_resend_pre_cutover_task_sends_original_without_reclaiming_platform(self) -> None:
         model = _Model(
             [
@@ -382,8 +415,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
 
-    async def test_quiet_hours_allows_recent_first_add_auto_opening(self) -> None:
-        model = _Model([{"decision": "send", "reason": "recent first add", "reply_messages": [_text("模型触达")]}])
+    async def test_quiet_hours_allows_recent_first_add_auto_opening_then_sends_platform_original(self) -> None:
+        model = _Model([])
         settings = _settings(quiet_hours_enabled=True)
         settings.sop_platform_max_task_age_seconds = 0
         service, _repo, platform, system = _service(model=model, settings=settings)
@@ -402,6 +435,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
                 "msgtime": (scheduled_at - timedelta(minutes=29)).timestamp() * 1000,
             }
         ]
+        system.conversation_payload["data"]["added_at"] = scheduled_at.isoformat()
 
         result = await service.process_task(task)
 
@@ -409,8 +443,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         self.assertGreaterEqual(system.conversation_calls, 2)
         self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型触达")])
-        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(len(model.calls), 0)
 
     async def test_direct_first_add_sends_original_content_without_model(self) -> None:
         model = _Model([])
@@ -547,18 +581,45 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             [_text("我给您说明一下预约卡片怎么使用。")],
         )
 
-    async def test_second_day_add_wecom_uses_knowledge_model_chain(self) -> None:
-        model = _Model([{"decision": "send", "reason": "second day light effect", "reply_messages": [_text("轻触达效果")] }])
+    async def test_second_day_unopened_ai_service_still_sends_platform_original(self) -> None:
+        model = _Model([])
         service, _repo, platform, system = _service(model=model)
         task = _task(use_ai_copy=False)
         task["triggerEvent"] = "add_wecom"
         task["operateTime"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
         task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["added_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=25)
+        ).isoformat()
         system.conversation_payload["data"]["messages"] = [
             {
                 "direction": "customer",
                 "content": "我已经添加了你，现在我们可以开始聊天了。",
                 "msgtime": int(time.time() * 1000),
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(len(model.calls), 0)
+
+    async def test_second_day_opened_ai_service_uses_knowledge_model_chain(self) -> None:
+        model = _Model([{"decision": "send", "reason": "second day effect", "reply_messages": [_text("轻触达效果")] }])
+        service, _repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["added_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=25)
+        ).isoformat()
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "之前咨询过效果",
+                "msgtime": int((time.time() - 24 * 60 * 60) * 1000),
             }
         ]
 
@@ -595,6 +656,9 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         task["triggerEvent"] = "add_wecom"
         task["operateTime"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
         task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["added_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=25)
+        ).isoformat()
 
         result = await service.process_task(task)
 
@@ -603,7 +667,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["task"]["original_message_content"][1], payment_message)
         self.assertEqual(
             payload["task"]["original_message_content_role"],
-            "candidate_and_audit_only_model_may_replace",
+            "prioritized_campaign_intent_model_may_adapt_or_replace_when_needed",
         )
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("活动规则已经给您说明了。"), payment_message])
 
@@ -638,6 +702,9 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         task["triggerEvent"] = "add_wecom"
         task["operateTime"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
         task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["added_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=25)
+        ).isoformat()
 
         result = await service.process_task(task)
 
@@ -645,13 +712,14 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("活动规则已经给您说明了。")])
 
-    async def test_first_day_ai_service_with_real_customer_message_still_uses_model(self) -> None:
-        model = _Model([{"decision": "send", "reason": "resolve current context", "reply_messages": [_text("模型承接")]}])
+    async def test_first_day_ai_service_with_real_customer_message_is_consumed_without_send(self) -> None:
+        model = _Model([])
         service, repo, platform, system = _service(model=model)
         task = _task(use_ai_copy=True)
         task["triggerEvent"] = "add_wecom"
         task["operateTime"] = datetime.now(timezone.utc).isoformat()
         task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["added_at"] = datetime.now(timezone.utc).isoformat()
         system.conversation_payload["data"]["messages"] = [
             {
                 "direction": "customer",
@@ -662,15 +730,73 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(task)
 
-        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型承接")])
-        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(len(model.calls), 0)
         payload = next(iter(repo.tasks.values()))["send_payload"]
         self.assertEqual(
             payload["decision"]["reason"],
-            "resolve current context",
+            "first_day_opened_platform_sop_consumed_no_send",
         )
+        self.assertTrue(payload["context"]["opening_state"]["first_added_today"])
+
+    async def test_ai_service_without_real_customer_message_sends_platform_original_without_model(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        original_messages = [
+            {"type": "text", "content": "平台未开口原文"},
+            {"type": "image", "content": "https://cdn.example/unopened.jpg"},
+        ]
+        task = _task(use_ai_copy=True, message_content=original_messages)
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["added_at"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "我已经添加了你，现在我们可以开始聊天了。",
+                "msgtime": int(time.time() * 1000),
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(
+            system.send_calls[0]["reply_messages"],
+            [_text("平台未开口原文"), _image("https://cdn.example/unopened.jpg", order=2)],
+        )
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(payload["decision"]["reason"], "ai_service_unopened_platform_passthrough")
+
+    async def test_unopened_ai_service_with_active_paid_order_is_consumed_without_send(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        service.customer_context_service.payload = {
+            "source": "platform_agent",
+            "orders": [
+                {
+                    "id": 88,
+                    "status": "pending",
+                    "prepay_paid": 10,
+                    "paid_protection_status": "protected",
+                }
+            ],
+            "appointment": {},
+        }
+        system.conversation_payload["data"]["messages"] = []
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(payload["decision"]["reason_code"], "paid_or_appointment_conflict")
+        self.assertEqual(payload["decision"]["reason"], "active_paid_order_conflict")
 
     async def test_ai_service_conversation_failure_remains_recoverable(self) -> None:
         model = _Model([])
@@ -1699,7 +1825,7 @@ def _settings(*, shadow_mode: bool = False, quiet_hours_enabled: bool = False):
         sop_platform_recovery_batch_size=10,
         sop_platform_shadow_mode=shadow_mode,
         sop_platform_model_timeout_seconds=10,
-        sop_platform_max_task_age_seconds=21600,
+        sop_platform_max_task_age_seconds=600,
         sop_platform_live_not_before="",
         sop_platform_quiet_hours_enabled=quiet_hours_enabled,
         sop_platform_quiet_start_hour=0,
@@ -1923,8 +2049,13 @@ class _System:
 
 
 class _CustomerContext:
+    def __init__(self):
+        self.calls = 0
+        self.payload = {"source": "test", "orders": [], "appointment": {}}
+
     def load(self, **_kwargs):
-        return {"source": "test", "orders": [], "appointment": {}}
+        self.calls += 1
+        return self.payload
 
 
 class _Materials:
