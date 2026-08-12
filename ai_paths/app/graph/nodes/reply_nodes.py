@@ -1227,8 +1227,9 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
     )
     delivery_refs = {
         str(option.get("fact_ref") or "").strip()
-        for option in delivery_options.values()
-        if isinstance(option, dict)
+        for key, option in delivery_options.items()
+        if str(key or "").strip() in {"store_address"}
+        and isinstance(option, dict)
         and option.get("message_payloads")
         and str(option.get("fact_ref") or "").strip()
     }
@@ -1251,6 +1252,11 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
         str(item).strip() for item in payload.get("used_fact_refs") or [] if str(item).strip()
     ]
     valid_fact_refs = _fact_audit_reference_set(reply_payload)
+    for option in delivery_options.values():
+        if isinstance(option, dict):
+            fact_ref = str(option.get("fact_ref") or "").strip()
+            if fact_ref:
+                valid_fact_refs.add(fact_ref)
     valid_fact_refs.add("current_message")
     invalid_fact_refs = sorted(set(reply_used_fact_refs) - valid_fact_refs)
     if invalid_fact_refs:
