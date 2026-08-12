@@ -29,7 +29,6 @@ from app.services.sop_execution_service import SopExecutionService
 from app.services.sop_objection_material_service import SopObjectionMaterialService
 from app.services.sop_platform_client import SopPlatformClient
 from app.services.sop_platform_task_service import SopPlatformTaskService
-from app.services.sop_platform_wechat_scope_service import SopPlatformWechatScopeService
 from app.services.storage import AppRepository, build_store
 from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
@@ -63,7 +62,6 @@ store_service = StoreService(platform_agent_client)
 sop_reply_pack_service = SopReplyPackService(settings)
 precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
 sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
-sop_platform_wechat_scope_service = SopPlatformWechatScopeService(settings)
 outreach_service = OutreachService(
     repository=repository,
     model_client=model_client,
@@ -117,7 +115,6 @@ sop_platform_task_service = SopPlatformTaskService(
     model_client=model_client,
     customer_context_service=customer_context_service,
     objection_material_service=sop_objection_material_service,
-    wechat_scope_service=sop_platform_wechat_scope_service,
 )
 reply_graphs = build_reply_graphs(
     coze_client,
@@ -466,26 +463,6 @@ async def admin_sop_platform_tasks(
         customer_id=customer_id,
         refresh_platform=refresh_platform,
     )
-
-
-@app.get("/admin/sop-platform-wechat-scope", dependencies=[Depends(require_api_key)])
-async def admin_sop_platform_wechat_scope(days: int = 2) -> dict[str, Any]:
-    try:
-        return sop_platform_wechat_scope_service.view(repository, days=days)
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.put("/admin/sop-platform-wechat-scope", dependencies=[Depends(require_api_key)])
-async def admin_update_sop_platform_wechat_scope(
-    payload: dict[str, Any] = Body(...),
-    days: int = 2,
-) -> dict[str, Any]:
-    try:
-        sop_platform_wechat_scope_service.save(payload)
-        return sop_platform_wechat_scope_service.view(repository, days=days)
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/admin/sop-platform-tasks/{task_id}/resend", dependencies=[Depends(require_api_key)])

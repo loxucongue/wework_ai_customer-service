@@ -188,8 +188,8 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 你是第三方平台 SOP 到期任务的客户触达决策与文案生成节点。
 
 # 核心目标
-本节点只处理首次加微满 24 小时后的任务，以及其他非首日任务。首日未开口任务已由代码原样发送，首日已开口任务已由代码消费但不发送，不会进入本节点。
-第三方平台只负责告诉系统“现在有一个任务到期”。你必须忽略平台原始待发送话术，把它只当审计信息；真正要发什么，必须基于：
+本节点处理所有 `dispatchMode=ai_service` 的第三方任务，不区分首日或客户是否已经开口。
+第三方平台只负责告诉系统“现在有一个 AI 客服任务到期”。平台原始待发送内容只是候选目标和审计信息，不是必须发送的成品；真正要发什么，必须基于：
 1. 客户完整聊天记录和最新状态；
 2. 平台客户触达知识库；
 3. 当前权威业务事实。
@@ -203,6 +203,7 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
    - 客户从未真实开口，或历史只有自动欢迎语、简短问候、表情、图片等少量信息，无法可靠判断需求和卡点时，默认选择低压力触达。优先从知识库选择带真实效果图片/视频的效果展示段落，只输出 1 条自然短文本和该段落的效果媒体；短文本用于轻承接或问候，不得再追加销售 CTA。不要主动发送完整活动规则，不要催预约金，不要连续追问隐私或症状。
    - 若知识库没有可用的效果媒体，只发送 1 条自然问候或低压力开放式承接，给客户一个容易回复的入口；不得用大段营销文案填充。
    - 只有聊天历史已经提供明确兴趣、卡点或成交进度时，才允许推进与该进度匹配的活动价格或预约金内容。
+   - 常规优先输出“一段自然短文本 + 一张与场景匹配的真实图片”。知识库有合适图片时必须保留图片类型；只有当前场景确实不适合图片或知识库没有合法图片时，才允许纯文本。
 4. 知识库话术是参考方向，不是必须原样照抄。你必须结合最新聊天自然改写。
 5. 知识库中的性别称谓必须统一改为中性称谓，如“亲、您、顾客、很多客户”，禁止“美女、姐妹、姐姐、哥哥、小姐姐、女士、先生、男士、女孩子”等。
 6. 知识库中的旧价格、旧活动、旧项目必须改成当前权威业务事实：
@@ -216,7 +217,7 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 9. 图片/视频是重要消息类型。若选中段落包含 image/video，输出中要保留对应消息类型和 URL；不要把图片视频变成纯文本描述。
 10. 文案要像微信短聊，直接解决卡点或推进下一步，不要写内部分析、流程解释、模型判断。
 11. 必须逐条对照最近聊天和近期已发送的第三方 SOP：已经完整讲过的活动规则、268 元价格、10 元预约金、退款口径、效果说明或同一素材，不得换句话重复。应改选尚未交付的新价值；若客户信息不足，宁可轻问候并发送不同的真实效果素材，也不要重复营销。
-12. `task.original_message_content` 中的 `payment_collection` 是平台用精确文本“预约卡片”声明的结构化消息意图，不是普通参考文案。若最终决定 `send`，且不存在已付、付款冲突或其他硬边界，必须按原顺序保留该 `payment_collection`；不得改写成“预约卡片”文字，也不得生成虚假支付成功事实。
+12. `task.original_message_content` 中的 `payment_collection` 只表示平台候选内容包含预约卡意图。是否发送预约卡、改用文本推进或选择其他知识库内容，必须根据最新聊天和硬事实判断；不得生成虚假支付或预约成功事实。
 
 # 知识库选择规则
 - `knowledge_base.items[].id` 是 knowledgeId。
@@ -260,6 +261,9 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 无卡点兜底发送时：信息不足使用 `正常推进｜轻触达效果展示` 或 `正常推进｜轻问候`，`sceneCode` 使用 `normal_light_effect` 或 `normal_light_greeting`；仅当历史足以支持活动推进时，才可使用 `正常推进｜活动价格` / `normal_activity_price`。
 """.strip()
 
+# Backward-compatible export; the retired pre-dispatch prompt must not be used.
+SOP_PLATFORM_TASK_SYSTEM_PROMPT = SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT
+
 
 class SopPlatformTaskService:
     RECOVERY_STATUSES = [
@@ -281,7 +285,6 @@ class SopPlatformTaskService:
         model_client: Any,
         customer_context_service: Any,
         objection_material_service: Any | None = None,
-        wechat_scope_service: Any | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -290,7 +293,6 @@ class SopPlatformTaskService:
         self.model_client = model_client
         self.customer_context_service = customer_context_service
         self.objection_material_service = objection_material_service
-        self.wechat_scope_service = wechat_scope_service
         self._locks: dict[str, asyncio.Lock] = {}
         queue_size = max(1, int(getattr(settings, "sop_platform_queue_size", 24) or 24))
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=queue_size)
@@ -644,13 +646,6 @@ class SopPlatformTaskService:
         platform_task = payload.get("platform_task") if isinstance(payload.get("platform_task"), dict) else {}
         if not platform_task:
             raise ValueError("platform task payload is missing")
-        platform_user_wechat = _platform_user_wechat(platform_task)
-        if self.wechat_scope_service is not None:
-            if not self.wechat_scope_service.is_configured():
-                raise RuntimeError("task cannot be resent: wechat_scope_config_required")
-            if not self.wechat_scope_service.is_enabled(platform_user_wechat):
-                raise RuntimeError("task cannot be resent: wechat_not_enabled")
-
         event_status = str(event.get("status") or "")
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
         if not local_task:
@@ -803,7 +798,7 @@ class SopPlatformTaskService:
             "task": {
                 "task_id": _task_id(platform_task),
                 "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
-                "use_ai_copy": True,
+                "dispatch_mode": _dispatch_mode(platform_task),
                 "original_message_content": original_messages,
             },
             "latest_context": {
@@ -840,8 +835,8 @@ class SopPlatformTaskService:
         raw = _normalize_knowledge_decision_callback_fields(raw)
         if str(raw.get("decision") or "").strip() != "send":
             return {}
-        error = _decision_error(raw, original_messages=original_messages, use_ai_copy=True)
-        policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
+        error = _decision_error(raw)
+        policy_error = "" if error else _decision_policy_error(raw)
         if error or policy_error:
             return {}
         return {
@@ -986,49 +981,13 @@ class SopPlatformTaskService:
             status="platform_received",
         )
         local_status = str(local_task.get("status") or "")
-        platform_user_wechat = _platform_user_wechat(platform_task)
-        if self.wechat_scope_service is not None:
-            if not self.wechat_scope_service.is_configured():
-                self.repository.update_sop_send_task(
-                    str(local_task.get("id") or ""),
-                    status="scope_config_required",
-                    send_payload={
-                        "decision": {
-                            "decision": "no_send",
-                            "reason": "wechat_scope_config_required",
-                            "reply_messages": [],
-                        },
-                        "context": {
-                            "source": "platform_user_wechat_scope",
-                            "user_wechat": platform_user_wechat,
-                            "scope_configured": False,
-                            "conversation_loaded": False,
-                            "model_called": False,
-                        },
-                    },
-                )
-                self.repository.update_sop_event_status(event_id, status="platform_scope_config_required")
-                self._counters["wechat_scope_config_required"] += 1
-                return {
-                    "processed": False,
-                    "status": "scope_config_required",
-                    "task_id": task_id,
-                }
-            if not self.wechat_scope_service.is_enabled(platform_user_wechat):
-                return await self._complete_disabled_wechat_task(
-                    platform_task,
-                    task_id=task_id,
-                    event_id=event_id,
-                    local_task=local_task,
-                    recovery_status=recovery_status,
-                    user_wechat=platform_user_wechat,
-                )
+        dispatch_mode = _dispatch_mode(platform_task)
         duplicate_reason = _duplicate_platform_task_reason(
             self.repository,
             local_task=local_task,
             task_id=task_id,
         )
-        if duplicate_reason:
+        if duplicate_reason and dispatch_mode != "direct":
             decision = {"decision": "no_send", "reason": duplicate_reason, "reply_messages": []}
             context = {
                 "source": "duplicate_platform_task_content",
@@ -1084,9 +1043,10 @@ class SopPlatformTaskService:
             platform_task,
             identity=identity,
             settings=self.settings,
+            dispatch_mode=dispatch_mode,
         )
         quiet_hours: dict[str, Any] = {}
-        if not preflight_reason:
+        if not preflight_reason and dispatch_mode != "direct":
             quiet_hours = await self._quiet_hours_guard(platform_task, identity=identity)
             if quiet_hours.get("blocked"):
                 preflight_reason = str(quiet_hours.get("reason") or "quiet_hours_blocked")
@@ -1107,15 +1067,15 @@ class SopPlatformTaskService:
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
-        use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
-        processing_status = "platform_judging"
+        processing_status = "platform_processing" if dispatch_mode == "direct" else "platform_judging"
         self.repository.update_sop_event_status(event_id, status=processing_status)
         self.repository.update_sop_send_task(
             str(local_task.get("id") or ""),
             status="judging",
             send_payload={
                 "platform_task_id": task_id,
-                "phase": "loading_latest_context",
+                "phase": "direct_delivery" if dispatch_mode == "direct" else "loading_latest_context",
+                "dispatch_mode": dispatch_mode,
             },
         )
 
@@ -1164,35 +1124,40 @@ class SopPlatformTaskService:
             if preflight_reason:
                 context = {
                     "source": "preflight",
+                    "dispatch_mode": dispatch_mode,
                     "task_timing": _task_timing(platform_task),
                     "quiet_hours": quiet_hours,
                 }
                 decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
                 self._counters[preflight_reason] += 1
+            elif dispatch_mode == "direct":
+                decision = {
+                    "decision": "send",
+                    "reason": "platform_direct_passthrough",
+                    "reason_code": "send",
+                    "sceneName": "平台直发",
+                    "sceneCode": "platform_direct",
+                    "knowledgeId": 0,
+                    "knowledgeParagraphNo": 0,
+                    "remark": "dispatchMode=direct，按平台消息原类型、原内容、原顺序发送",
+                    "reply_messages": _platform_messages(platform_task),
+                }
+                context = {
+                    "source": "platform_direct_passthrough",
+                    "dispatch_mode": dispatch_mode,
+                    "conversation_loaded": False,
+                    "knowledge_loaded": False,
+                    "model_called": False,
+                    "task_timing": _task_timing(platform_task),
+                }
             else:
                 started = time.perf_counter()
-                first_day_route = await self._first_day_opening_route(
-                    platform_task,
-                    identity=identity,
-                )
+                context = await self._load_context(platform_task, identity=identity)
                 self._observe("context", time.perf_counter() - started)
-                if first_day_route.get("decision"):
-                    decision = first_day_route["decision"]
-                    context = {
-                        "source": "first_day_platform_sop_route",
-                        **{
-                            key: value
-                            for key, value in first_day_route.items()
-                            if key != "decision"
-                        },
-                    }
-                else:
-                    context = await self._load_context(platform_task, identity=identity)
-                    if first_day_route.get("route_checked"):
-                        context["first_day_platform_sop_route"] = first_day_route
-                    started = time.perf_counter()
-                    decision = await self._decide(platform_task, context=context)
-                    self._observe("model", time.perf_counter() - started)
+                context["dispatch_mode"] = dispatch_mode
+                started = time.perf_counter()
+                decision = await self._decide(platform_task, context=context)
+                self._observe("model", time.perf_counter() - started)
             if self.settings.sop_platform_shadow_mode:
                 status = f"shadow_{decision['decision']}"
                 self.repository.update_sop_send_task(
@@ -1229,7 +1194,11 @@ class SopPlatformTaskService:
                     "original": _platform_media_refs(_platform_messages(platform_task)),
                     "final": _platform_media_refs(decision["reply_messages"]),
                 }
-                existing_delivery = await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
+                existing_delivery = (
+                    {}
+                    if dispatch_mode == "direct"
+                    else await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
+                )
                 if existing_delivery.get("found"):
                     duplicate_decision = {
                         "decision": "no_send",
@@ -1272,23 +1241,20 @@ class SopPlatformTaskService:
                         "decision": duplicate_decision,
                         "platform_response": completed,
                     }
-                first_day_original_delivery = (
-                    context.get("source") == "first_day_platform_sop_route"
-                    and context.get("opening_state") == "unopened"
-                    and context.get("route_reason") == "first_add_unopened_original_platform_content"
-                )
-                near_duplicate = await self._recent_near_duplicate_platform_delivery(
-                    identity=identity,
-                    task_id=task_id,
-                    reply_messages=decision["reply_messages"],
+                near_duplicate = (
+                    {"found": False, "match_type": "direct_passthrough"}
+                    if dispatch_mode == "direct"
+                    else await self._recent_near_duplicate_platform_delivery(
+                        identity=identity,
+                        task_id=task_id,
+                        reply_messages=decision["reply_messages"],
+                    )
                 )
                 duplicate_repair: dict[str, Any] = {}
-                use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
                 if (
                     near_duplicate.get("found")
                     and near_duplicate.get("match_type") == "duplicate_media"
-                    and use_ai_copy
-                    and not first_day_original_delivery
+                    and dispatch_mode == "ai_service"
                 ):
                     repaired_decision = await self._repair_duplicate_media_decision(
                         platform_task,
@@ -1317,7 +1283,7 @@ class SopPlatformTaskService:
                     if media_duplicate:
                         duplicate_reason = (
                             "duplicate_media_exhausted"
-                            if use_ai_copy and not first_day_original_delivery
+                            if dispatch_mode == "ai_service"
                             else "duplicate_media_delivery"
                         )
                     else:
@@ -1378,7 +1344,59 @@ class SopPlatformTaskService:
                     },
                 )
                 started = time.perf_counter()
-                send_result = await self.system_client.send(**send_payload)
+                try:
+                    send_result = await self.system_client.send(**send_payload)
+                except Exception as exc:
+                    delivery_failure = _terminal_delivery_failure(exc)
+                    if not delivery_failure:
+                        raise
+                    self._observe("send", time.perf_counter() - started)
+                    failed_decision = {
+                        **decision,
+                        "decision": "no_send",
+                        "reason": "downstream_delivery_rejected",
+                        "reason_code": "delivery_rejected",
+                        "remark": (
+                            f"{str(decision.get('remark') or '').strip()} "
+                            f"Delivery rejected by downstream system: HTTP {delivery_failure['http_status']}."
+                        ).strip(),
+                        "reply_messages": [],
+                    }
+                    rule_data_response = await self._report_rule_data(
+                        platform_task,
+                        decision=failed_decision,
+                        sent=False,
+                    )
+                    self.repository.update_sop_send_task(
+                        str(local_task.get("id") or ""),
+                        status="completed_without_send",
+                        send_payload={
+                            "decision": failed_decision,
+                            "attempted_decision": decision,
+                            "request": send_payload,
+                            "context": {
+                                **_context_audit(context),
+                                "media_delivery": media_delivery_audit,
+                                "duplicate_media_repair": duplicate_repair,
+                            },
+                            "delivery_failure": delivery_failure,
+                            "rule_data_response": rule_data_response,
+                        },
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+                    completed = await self.platform_client.consume(task_id=task_id, status=30)
+                    _require_platform_status(completed, 30)
+                    self.repository.update_sop_event_status(event_id, status="platform_completed")
+                    self._counters["terminal_delivery_rejected"] += 1
+                    return {
+                        "processed": True,
+                        "status": "completed_without_send",
+                        "task_id": task_id,
+                        "decision": failed_decision,
+                        "delivery_failure": delivery_failure,
+                        "platform_response": completed,
+                    }
                 self._observe("send", time.perf_counter() - started)
                 send_status = str((send_result.get("data") or {}).get("send_status") or send_result.get("msg") or "")
                 if send_status == "accepted_no_response":
@@ -1438,88 +1456,6 @@ class SopPlatformTaskService:
                     error=f"{type(exc).__name__}: {exc}",
                 )
             raise
-
-    async def _complete_disabled_wechat_task(
-        self,
-        platform_task: dict[str, Any],
-        *,
-        task_id: str,
-        event_id: str,
-        local_task: dict[str, Any],
-        recovery_status: str,
-        user_wechat: str,
-    ) -> dict[str, Any]:
-        decision = {
-            "decision": "no_send",
-            "reason": "wechat_not_enabled",
-            "reason_code": "wechat_not_enabled",
-            "sceneName": "不发送｜企微号未启用",
-            "sceneCode": "no_send_wechat_not_enabled",
-            "knowledgeId": 0,
-            "knowledgeParagraphNo": 0,
-            "remark": f"user_wechat={user_wechat or '[missing]'} 未在已确认处理范围内",
-            "reply_messages": [],
-        }
-        context = {
-            "source": "platform_user_wechat_scope",
-            "user_wechat": user_wechat,
-            "scope_enabled": False,
-            "conversation_loaded": False,
-            "model_called": False,
-        }
-        self._counters["wechat_not_enabled"] += 1
-        local_task_id = str(local_task.get("id") or "")
-        if self.settings.sop_platform_shadow_mode:
-            self.repository.update_sop_send_task(
-                local_task_id,
-                status="shadow_no_send",
-                send_payload={"decision": decision, "context": context},
-            )
-            self.repository.update_sop_event_status(event_id, status="shadow_no_send")
-            return {
-                "processed": True,
-                "status": "shadow_no_send",
-                "task_id": task_id,
-                "decision": decision,
-            }
-
-        already_claimed = recovery_status in {
-            "platform_processing",
-            "platform_processing_retry",
-            "platform_send_uncertain",
-            "platform_complete_pending",
-        }
-        if not already_claimed:
-            self.repository.update_sop_event_status(event_id, status="platform_claiming")
-            started = time.perf_counter()
-            claimed = await self.platform_client.consume(task_id=task_id, status=20)
-            self._observe("claim", time.perf_counter() - started)
-            _require_platform_status(claimed, 20)
-        rule_data_response = await self._report_rule_data(
-            platform_task,
-            decision=decision,
-            sent=False,
-        )
-        self.repository.update_sop_send_task(
-            local_task_id,
-            status="completed_without_send",
-            send_payload={
-                "decision": decision,
-                "context": context,
-                "rule_data_response": rule_data_response,
-            },
-        )
-        self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
-        completed = await self.platform_client.consume(task_id=task_id, status=30)
-        _require_platform_status(completed, 30)
-        self.repository.update_sop_event_status(event_id, status="platform_completed")
-        return {
-            "processed": True,
-            "status": "completed_without_send",
-            "task_id": task_id,
-            "decision": decision,
-            "platform_response": completed,
-        }
 
     async def _quiet_hours_guard(
         self,
@@ -1592,127 +1528,16 @@ class SopPlatformTaskService:
             "reason": "quiet_hours_recent_first_add_allowed",
         }
 
-    async def _first_day_opening_route(
-        self,
-        platform_task: dict[str, Any],
-        *,
-        identity: dict[str, str],
-    ) -> dict[str, Any]:
-        if _task_type(platform_task) != "add_wecom":
-            return {}
-        missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
-        if missing:
-            return {}
-        first_add_epoch = _first_add_epoch(platform_task)
-        if not first_add_epoch:
-            return {}
-        now_epoch = time.time()
-        age_seconds = now_epoch - first_add_epoch
-        if age_seconds < -300 or age_seconds > 24 * 60 * 60:
-            return {}
-        try:
-            conversation = await self.system_client.conversation(**identity, limit=80)
-        except Exception as exc:
-            return {
-                "decision": {
-                    "decision": "no_send",
-                    "reason": "first_add_opening_state_unavailable_consumed_no_send",
-                    "reason_code": "opening_state_unavailable",
-                    "reply_messages": [],
-                },
-                "route_checked": True,
-                "opening_state": "unavailable",
-                "conversation_error": f"{type(exc).__name__}: {exc}",
-                "first_add_age_seconds": round(age_seconds, 3),
-            }
-        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
-        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
-        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
-            return {
-                "decision": {
-                    "decision": "no_send",
-                    "reason": "customer_relation_deleted",
-                    "reason_code": "customer_relation_deleted",
-                    "reply_messages": [],
-                },
-                "route_checked": True,
-                "opening_state": "blocked",
-                "customer_relation": _compact_customer_relation(relation),
-                "first_add_age_seconds": round(age_seconds, 3),
-            }
-        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
-        activity = _real_customer_opening_activity(messages[-80:])
-        if activity["real_customer_message_count"] > 0:
-            return {
-                "decision": {
-                    "decision": "no_send",
-                    "reason": "first_add_opened_platform_sop_consumed_no_send",
-                    "reason_code": "customer_already_opened",
-                    "reply_messages": [],
-                },
-                "route_checked": True,
-                "opening_state": "opened",
-                "first_add_age_seconds": round(age_seconds, 3),
-                "activity": activity,
-            }
-        if activity["unknown_customer_time_count"] > 0:
-            return {
-                "decision": {
-                    "decision": "no_send",
-                    "reason": "first_add_opening_state_unavailable_consumed_no_send",
-                    "reason_code": "opening_state_unavailable",
-                    "reply_messages": [],
-                },
-                "route_checked": True,
-                "opening_state": "unavailable",
-                "first_add_age_seconds": round(age_seconds, 3),
-                "activity": activity,
-            }
-        original_messages = _platform_messages(platform_task)
-        if not original_messages:
-            return {
-                "decision": {
-                    "decision": "no_send",
-                    "reason": "first_add_unopened_platform_content_empty",
-                    "reason_code": "invalid_task",
-                    "sceneName": "不发送｜首日平台内容为空",
-                    "sceneCode": "no_send_invalid_first_day_content",
-                    "knowledgeId": 0,
-                    "knowledgeParagraphNo": 0,
-                    "remark": "首日未开口任务要求原样发送，但平台未提供可发送消息",
-                    "reply_messages": [],
-                },
-                "route_checked": True,
-                "opening_state": "unopened",
-                "route_reason": "first_add_unopened_platform_content_empty",
-                "first_add_age_seconds": round(age_seconds, 3),
-                "activity": activity,
-            }
-        return {
-            "decision": {
-                "decision": "send",
-                "reason": "first_add_unopened_original_platform_content",
-                "reason_code": "send",
-                "sceneName": "首日未开口｜平台原始SOP",
-                "sceneCode": "first_day_unopened_original_sop",
-                "knowledgeId": 0,
-                "knowledgeParagraphNo": 0,
-                "remark": "首日客户未真实开口，按平台配置原消息、原类型、原顺序发送",
-                "reply_messages": original_messages,
-            },
-            "route_checked": True,
-            "opening_state": "unopened",
-            "route_reason": "first_add_unopened_original_platform_content",
-            "first_add_age_seconds": round(age_seconds, 3),
-            "activity": activity,
-        }
-
     async def _load_context(self, platform_task: dict[str, Any], *, identity: dict[str, str]) -> dict[str, Any]:
         missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
         if missing:
             raise RuntimeError(f"platform task missing identity: {','.join(missing)}")
         conversation = await self.system_client.conversation(**identity, limit=80)
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        task_timing = _task_timing(
+            platform_task,
+            conversation_added_at=data.get("added_at"),
+        )
         relation = _compact_customer_relation(
             data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
         )
@@ -1724,7 +1549,7 @@ class SopPlatformTaskService:
                 "conversation_timeline": timeline,
                 "conversation_count": len(messages),
                 "business_state": {"source": "skipped_customer_deleted"},
-                "task_timing": _task_timing(platform_task),
+                "task_timing": task_timing,
             }
         request_context = {
             "source_protocol": "third_party_sop_pending",
@@ -1747,7 +1572,7 @@ class SopPlatformTaskService:
             "conversation_timeline": timeline,
             "conversation_count": len(messages),
             "business_state": _compact_business_state(customer_context),
-            "task_timing": _task_timing(platform_task),
+            "task_timing": task_timing,
         }
 
     async def _load_knowledge_base_context(self) -> dict[str, Any]:
@@ -1852,7 +1677,6 @@ class SopPlatformTaskService:
                 "reply_messages": [],
             }
         original_messages = _platform_messages(platform_task)
-        use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
         knowledge_base = await self._load_knowledge_base_context()
         recent_media_lookup = await self._recent_near_duplicate_platform_delivery(
             identity=_task_identity(platform_task),
@@ -1886,21 +1710,19 @@ class SopPlatformTaskService:
                 ),
                 "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
                 "scene_role": "supporting_context",
-                "use_ai_copy": use_ai_copy,
+                "dispatch_mode": _dispatch_mode(platform_task),
                 "original_message_content": original_messages,
-                "original_message_content_role": (
-                    "exact_send_payload_if_approved"
-                    if not use_ai_copy
-                    else "audit_only_except_structured_payment_collection"
-                    if any(message.get("type") == "payment_collection" for message in original_messages)
-                    else "audit_only_ignore_for_generation"
-                ),
+                "original_message_content_role": "candidate_and_audit_only_model_may_replace",
                 "platform_metadata": {
                     "rule_id": platform_task.get("ruleId") or platform_task.get("rule_id"),
                     "rule_name": platform_task.get("ruleName") or platform_task.get("rule_name"),
                     "scene_id": platform_task.get("sceneId") or platform_task.get("scene_id"),
                 },
-                "timing": _task_timing(platform_task),
+                "timing": (
+                    context.get("task_timing")
+                    if isinstance(context.get("task_timing"), dict)
+                    else _task_timing(platform_task)
+                ),
             },
             "latest_context": {
                 "customer_relation": context.get("customer_relation") or {},
@@ -1939,8 +1761,8 @@ class SopPlatformTaskService:
             max_parallel_candidates=1,
         )
         raw = _normalize_knowledge_decision_callback_fields(raw)
-        error = _decision_error(raw, original_messages=original_messages, use_ai_copy=use_ai_copy)
-        policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
+        error = _decision_error(raw)
+        policy_error = "" if error else _decision_policy_error(raw)
         if error:
             repair_messages = [
                 *messages,
@@ -1960,8 +1782,8 @@ class SopPlatformTaskService:
                 max_parallel_candidates=1,
             )
             raw = _normalize_knowledge_decision_callback_fields(raw)
-            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=use_ai_copy)
-            policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
+            error = _decision_error(raw)
+            policy_error = "" if error else _decision_policy_error(raw)
         if not error and policy_error:
             repair_messages = [
                 *messages,
@@ -1984,8 +1806,8 @@ class SopPlatformTaskService:
                 max_parallel_candidates=1,
             )
             raw = _normalize_knowledge_decision_callback_fields(raw)
-            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=use_ai_copy)
-            policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
+            error = _decision_error(raw)
+            policy_error = "" if error else _decision_policy_error(raw)
         if error:
             raise RuntimeError(f"invalid_sop_platform_model_output: {error}")
         if policy_error:
@@ -2006,11 +1828,7 @@ class SopPlatformTaskService:
                 "remark": str(raw.get("remark") or raw.get("reason") or ""),
                 "reply_messages": [],
             }
-        output_messages = (
-            raw.get("reply_messages")
-            if use_ai_copy and isinstance(raw.get("reply_messages"), list)
-            else original_messages
-        )
+        output_messages = raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else []
         return {
             "decision": decision,
             "reason": str(raw.get("reason") or ""),
@@ -2027,7 +1845,7 @@ class SopPlatformTaskService:
         }
 
 
-def _decision_error(raw: Any, *, original_messages: list[dict[str, Any]], use_ai_copy: bool) -> str:
+def _decision_error(raw: Any) -> str:
     if not isinstance(raw, dict):
         return "output must be an object"
     unexpected = set(raw).difference(
@@ -2130,25 +1948,8 @@ def _normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
     return output
 
 
-def _decision_policy_error(raw: dict[str, Any], *, platform_task: dict[str, Any]) -> str:
+def _decision_policy_error(raw: dict[str, Any]) -> str:
     if str(raw.get("decision") or "").strip() == "send":
-        required_cards = [
-            (message.get("order"), (message.get("content") or {}).get("amount"))
-            for message in _platform_messages(platform_task)
-            if isinstance(message, dict) and message.get("type") == "payment_collection"
-        ]
-        if not required_cards:
-            return ""
-        output_cards = [
-            (message.get("order"), (message.get("content") or {}).get("amount"))
-            for message in raw.get("reply_messages") or []
-            if isinstance(message, dict) and message.get("type") == "payment_collection"
-        ]
-        if output_cards != required_cards:
-            return (
-                "platform payment_collection markers must be preserved at the same order and amount; "
-                f"required={required_cards}, output={output_cards}"
-            )
         return ""
     code = str(raw.get("reason_code") or "").strip()
     if code in SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES:
@@ -2612,7 +2413,6 @@ def _platform_duplicate_paragraphs(text: str) -> list[str]:
 
 
 def _manual_resend_messages(local_task: dict[str, Any], platform_task: dict[str, Any]) -> list[dict[str, Any]]:
-    use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
     send_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
     request_payload = send_payload.get("request") if isinstance(send_payload.get("request"), dict) else {}
     request_messages = request_payload.get("reply_messages")
@@ -2622,7 +2422,7 @@ def _manual_resend_messages(local_task: dict[str, Any], platform_task: dict[str,
     decision_messages = decision_payload.get("reply_messages")
     if isinstance(decision_messages, list) and decision_messages:
         return decision_messages
-    if use_ai_copy:
+    if _dispatch_mode(platform_task) == "ai_service":
         return []
     stored_messages = local_task.get("reply_messages")
     if isinstance(stored_messages, list) and stored_messages:
@@ -2635,22 +2435,17 @@ def _task_preflight_no_send_reason(
     *,
     identity: dict[str, str],
     settings: Any,
+    dispatch_mode: str | None = None,
 ) -> str:
     missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
     if missing:
         return "invalid_identity"
-    payload_error = _platform_message_error(platform_task)
-    if payload_error:
-        return "invalid_message_content"
-    messages = _platform_messages(platform_task)
-    use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
-    if not messages and not use_ai_copy:
-        return "invalid_message_content"
-    if not messages and not _has_trusted_ai_copy_source(platform_task):
-        return "missing_trusted_platform_content"
+    mode = dispatch_mode or _dispatch_mode(platform_task)
+    if mode == "direct":
+        return "invalid_message_content" if _platform_message_error(platform_task) or not _platform_messages(platform_task) else ""
     scheduled = _task_scheduled_epoch(platform_task)
     max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 21600) or 0))
-    if use_ai_copy and scheduled and max_age and time.time() - scheduled > max_age:
+    if mode == "ai_service" and scheduled and max_age and time.time() - scheduled > max_age:
         return "stale_task"
     live_not_before = _parse_epoch(getattr(settings, "sop_platform_live_not_before", ""))
     if live_not_before and (not scheduled or scheduled < live_not_before):
@@ -2742,41 +2537,6 @@ def _quiet_hours_activity(messages: list[Any], *, before_epoch: float) -> dict[s
     }
 
 
-def _real_customer_opening_activity(messages: list[Any]) -> dict[str, Any]:
-    real_customer_times: list[float] = []
-    auto_opening_times: list[float] = []
-    unknown_time_count = 0
-    for item in messages:
-        if not isinstance(item, dict) or _raw_message_role(item) != "customer":
-            continue
-        message_epoch = _raw_message_epoch(item)
-        if not message_epoch:
-            unknown_time_count += 1
-            continue
-        content = _timeline_message_content(item.get("content"))
-        if is_platform_auto_opening_message(content):
-            auto_opening_times.append(message_epoch)
-        else:
-            real_customer_times.append(message_epoch)
-    latest_customer = max(real_customer_times, default=0.0)
-    latest_auto_opening = max(auto_opening_times, default=0.0)
-    return {
-        "real_customer_message_count": len(real_customer_times),
-        "auto_opening_message_count": len(auto_opening_times),
-        "unknown_customer_time_count": unknown_time_count,
-        "latest_real_customer_message_at": (
-            datetime.fromtimestamp(latest_customer, tz=timezone.utc).isoformat()
-            if latest_customer
-            else ""
-        ),
-        "latest_auto_opening_at": (
-            datetime.fromtimestamp(latest_auto_opening, tz=timezone.utc).isoformat()
-            if latest_auto_opening
-            else ""
-        ),
-    }
-
-
 def _raw_message_role(item: dict[str, Any]) -> str:
     value = str(
         item.get("direction")
@@ -2799,41 +2559,6 @@ def _raw_message_epoch(item: dict[str, Any]) -> float:
     return 0.0
 
 
-def _first_add_epoch(task: dict[str, Any]) -> float:
-    explicit_keys = (
-        "firstAddedAt",
-        "first_added_at",
-        "firstAddAt",
-        "first_add_at",
-        "addWechatTime",
-        "add_wechat_time",
-        "friendAddedAt",
-        "friend_added_at",
-    )
-    platform_event_keys = (
-        "operateTime",
-        "operate_time",
-        "createTime",
-        "create_time",
-        "created_at",
-        "upstream_created_at",
-    )
-    for key in (*explicit_keys, *platform_event_keys):
-        epoch = _parse_epoch(task.get(key))
-        if epoch:
-            return epoch
-    # scene.createTime is the SOP scene configuration time, not the customer's add time.
-    for container_key in ("customer", "sop", "metadata", "extra"):
-        container = task.get(container_key)
-        if not isinstance(container, dict):
-            continue
-        for key in (*explicit_keys, *platform_event_keys):
-            epoch = _parse_epoch(container.get(key))
-            if epoch:
-                return epoch
-    return 0.0
-
-
 def _task_type(task: dict[str, Any]) -> str:
     return str(
         task.get("triggerEvent")
@@ -2842,6 +2567,27 @@ def _task_type(task: dict[str, Any]) -> str:
         or task.get("event_type")
         or ""
     ).strip().lower()
+
+
+def _dispatch_mode(task: dict[str, Any]) -> str:
+    value = str(task.get("dispatchMode") or task.get("dispatch_mode") or "").strip().lower()
+    return "direct" if value == "direct" else "ai_service"
+
+
+def _terminal_delivery_failure(exc: Exception) -> dict[str, Any]:
+    message = str(exc)
+    matched = re.search(r"outreach_system_http_(\d{3})\s*:\s*(.*)", message, flags=re.DOTALL)
+    if not matched:
+        return {}
+    status = int(matched.group(1))
+    if status < 400 or status >= 500 or status in {408, 429}:
+        return {}
+    return {
+        "kind": "downstream_http_rejection",
+        "http_status": status,
+        "detail": matched.group(2).strip()[:2000],
+        "retryable": False,
+    }
 
 
 def _bounded_hour(value: Any, *, default: int) -> int:
@@ -2906,11 +2652,6 @@ def _task_identity(task: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _platform_user_wechat(task: dict[str, Any]) -> str:
-    """Return only the platform's reception-account field used for scope checks."""
-    return str(task.get("user_wechat") or task.get("userWechat") or "").strip()
-
-
 def _task_id(task: dict[str, Any]) -> str:
     return str(task.get("task_id") or task.get("taskId") or task.get("id") or "").strip()
 
@@ -2946,10 +2687,21 @@ def _parse_epoch(value: Any) -> float:
     return parsed.timestamp()
 
 
-def _task_timing(task: dict[str, Any]) -> dict[str, Any]:
+def _task_timing(
+    task: dict[str, Any],
+    *,
+    conversation_added_at: Any = None,
+) -> dict[str, Any]:
     scheduled = _task_scheduled_epoch(task)
+    first_add_epoch = _parse_epoch(conversation_added_at)
     return {
         "scheduled_at": task.get("scheduledAt") or task.get("scheduled_at") or "",
+        "first_added_at": (
+            datetime.fromtimestamp(first_add_epoch, tz=_BEIJING_TZ).isoformat()
+            if first_add_epoch
+            else ""
+        ),
+        "first_added_at_source": "conversation.added_at" if first_add_epoch else "",
         "pulled_at": task.get("_aics_pulled_at") or "",
         "lateness_seconds": round(max(0.0, time.time() - scheduled), 3) if scheduled else None,
     }
@@ -3006,6 +2758,12 @@ def _platform_task_log_item(
     bucket = _platform_task_bucket(event_status=event_status, task_status=task_status, has_local=bool(local_record))
     send_payload = local_record.get("send_payload") if isinstance(local_record.get("send_payload"), dict) else {}
     decision_payload = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
+    context_payload = send_payload.get("context") if isinstance(send_payload.get("context"), dict) else {}
+    timing_payload = (
+        context_payload.get("task_timing")
+        if isinstance(context_payload.get("task_timing"), dict)
+        else {}
+    )
     decision = str(decision_payload.get("decision") or "")
     if not decision and task_status in {"shadow_send", "sending", "sent"}:
         decision = "send"
@@ -3046,7 +2804,9 @@ def _platform_task_log_item(
         "wechat": identity["wechat"],
         "rule_name": str(platform_task.get("ruleName") or platform_task.get("sceneName") or local_record.get("sop_pack_name") or ""),
         "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
-        "use_ai_copy": _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy"))),
+        "dispatch_mode": _dispatch_mode(platform_task),
+        "first_added_at": str(timing_payload.get("first_added_at") or ""),
+        "first_added_at_source": str(timing_payload.get("first_added_at_source") or ""),
         "scheduled_at": scheduled_at,
         "pulled_at": str(platform_task.get("_aics_pulled_at") or received_at),
         "updated_at": str(local_record.get("task_updated_at") or local_record.get("event_updated_at") or ""),
@@ -3120,27 +2880,6 @@ def _bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _has_trusted_ai_copy_source(task: dict[str, Any]) -> bool:
-    scene = task.get("scene") if isinstance(task.get("scene"), dict) else {}
-    engine = scene.get("engine") if isinstance(scene.get("engine"), dict) else {}
-    return bool(
-        str(
-            task.get("triggerEvent")
-            or task.get("trigger_event")
-            or task.get("eventType")
-            or task.get("event_type")
-            or ""
-        ).strip()
-    ) or any(
-        str(value or "").strip()
-        for value in (
-            scene.get("sceneDesc"),
-            scene.get("knowledgeText"),
-            engine.get("generateNote"),
-        )
-    )
 
 
 def _require_platform_status(response: dict[str, Any], expected: int) -> None:
@@ -3507,6 +3246,7 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
         }
     return {
         "source": str(context.get("source") or ""),
+        "dispatch_mode": str(context.get("dispatch_mode") or ""),
         "conversation_count": int(context.get("conversation_count") or 0),
         "customer_relation": relation,
         "customer_context_source": customer_context.get("source"),
