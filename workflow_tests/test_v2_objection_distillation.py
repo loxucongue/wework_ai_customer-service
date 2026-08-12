@@ -180,6 +180,8 @@ def test_v2_prompts_forbid_inventing_customer_concerns_and_valueless_questions()
     assert "不要把销售推进写成" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "本轮能直接交付，就直接交付" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不防御式降调" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "暂停高压成交" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不表示把服务动作完全交还给客户" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "客户多次说时间不确定" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "有没有引入客户没提的新顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "有没有把可直接交付的内容写成" in PARALLEL_REPLY_SYSTEM_PROMPT
