@@ -134,8 +134,25 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized[0]["role"], "system")
         self.assertIn("Return valid json only.", normalized[0]["content"])
         self.assertIn("Business contract", normalized[0]["content"])
-        self.assertEqual(normalized[1], {"role": "user", "content": "hello"})
+        self.assertEqual(normalized[1]["role"], "user")
+        self.assertIn("Return valid json only.", normalized[1]["content"])
+        self.assertIn("hello", normalized[1]["content"])
         self.assertEqual(normalized[2], {"role": "system", "content": "Final gate"})
+
+    def test_json_marker_is_preserved_in_user_input_for_responses_relay_validation(self) -> None:
+        messages = [
+            {"role": "system", "content": "Business contract"},
+            {"role": "user", "content": [{"type": "text", "text": "Extract profile."}]},
+        ]
+
+        normalized = ModelClient._prepare_json_messages(messages)
+
+        self.assertEqual(normalized[0]["role"], "system")
+        self.assertIn("Return valid json only.", normalized[0]["content"])
+        self.assertEqual(normalized[1]["role"], "user")
+        content = normalized[1]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0], {"type": "text", "text": "Return valid json only."})
 
     def test_round_budget_shadow_records_without_blocking_retry(self) -> None:
         now = time.monotonic()

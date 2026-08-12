@@ -735,9 +735,10 @@ class ModelClient:
 
     @staticmethod
     def _prepare_json_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return ModelClient._ensure_json_marker(
+        prepared = ModelClient._ensure_json_marker(
             ModelClient._merge_adjacent_system_messages(ModelClient._ensure_json_marker(messages))
         )
+        return ModelClient._ensure_json_user_marker(prepared)
 
     @staticmethod
     def _ensure_json_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -764,6 +765,44 @@ class ModelClient:
             return messages
         marker = {"role": "system", "content": marker_text}
         return [marker, *messages]
+
+    @staticmethod
+    def _ensure_json_user_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep the lowercase marker after relay system-to-input conversion.
+
+        Some OpenAI-compatible relays convert Chat Completions messages to a
+        Responses-style payload and validate only the converted user/input text
+        before accepting response_format=json_object.  The system marker remains
+        the model contract; this duplicate marker only preserves protocol syntax.
+        """
+
+        marker_text = ModelClient._JSON_MODE_MARKER
+        for index, message in enumerate(messages):
+            if str(message.get("role") or "").lower() != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                if marker_text in content:
+                    return messages
+                updated = list(messages)
+                item = dict(message)
+                item["content"] = f"{marker_text}\n\n{content}".strip()
+                updated[index] = item
+                return updated
+            if isinstance(content, list):
+                if any(
+                    isinstance(part, dict)
+                    and str(part.get("type") or "") in {"text", "input_text"}
+                    and marker_text in str(part.get("text") or "")
+                    for part in content
+                ):
+                    return messages
+                updated = list(messages)
+                item = dict(message)
+                item["content"] = [{"type": "text", "text": marker_text}, *content]
+                updated[index] = item
+                return updated
+        return [*messages, {"role": "user", "content": marker_text}]
 
     @staticmethod
     def _merge_adjacent_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
