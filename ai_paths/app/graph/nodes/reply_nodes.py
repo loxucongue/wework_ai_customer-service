@@ -740,11 +740,17 @@ async def _run_parallel_reply_fact_audit(
                 "input": {"tier": audit_tier, "messages": repair_messages},
                 "validation_error": str(validation_exc),
             }
+            # The first audit may use most of its budget before returning a
+            # schema-invalid reference. Give the schema-only correction a
+            # fresh bounded attempt instead of the exhausted first deadline.
+            round_limit = model_deadline_monotonic(state, tier=audit_tier)
+            fresh_node_deadline = max(time.monotonic() + budget, deadline + 1e-6)
+            repair_deadline = _capped_deadline(fresh_node_deadline, round_limit)
             repaired_raw = await _chat_json_with_deadline(
                 model_client,
                 repair_messages,
                 tier=audit_tier,
-                deadline_monotonic=deadline,
+                deadline_monotonic=repair_deadline,
             )
             audit_call["validation_retry"]["raw_json_output"] = repaired_raw
             result = _validated_parallel_reply_fact_audit(
@@ -1225,7 +1231,17 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
         if isinstance(reply_payload.get("structured_delivery_options"), dict)
         else {}
     )
-    delivery_refs = {
+    valid_delivery_refs = {
+        str(option.get("fact_ref") or "").strip()
+        for option in delivery_options.values()
+        if isinstance(option, dict)
+        and option.get("message_payloads")
+        and str(option.get("fact_ref") or "").strip()
+    }
+    # A current-turn store lookup must be explicitly delivered or deferred so
+    # the model cannot promise a card and silently omit it. Other options, such
+    # as a payment card, only need a decision when Reply actually adopts them.
+    required_delivery_refs = {
         str(option.get("fact_ref") or "").strip()
         for key, option in delivery_options.items()
         if str(key or "").strip() in {"store_address"}
@@ -1237,12 +1253,12 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
         payload.get("structured_delivery_decisions")
     )
     decision_refs = {item["fact_ref"] for item in delivery_decisions}
-    missing_delivery_refs = sorted(delivery_refs - decision_refs)
+    missing_delivery_refs = sorted(required_delivery_refs - decision_refs)
     if missing_delivery_refs:
         raise ValueError(
             "structured_delivery_decision_required: " + ", ".join(missing_delivery_refs)
         )
-    invalid_delivery_refs = sorted(decision_refs - delivery_refs)
+    invalid_delivery_refs = sorted(decision_refs - valid_delivery_refs)
     if invalid_delivery_refs:
         raise ValueError(
             "invalid_structured_delivery_fact_ref: " + ", ".join(invalid_delivery_refs)
@@ -1264,11 +1280,6 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
             "invalid_parallel_used_fact_refs: " + ", ".join(invalid_fact_refs)
         )
     validation_state["reply_used_fact_refs"] = reply_used_fact_refs
-    for item in delivery_decisions:
-        if item["decision"] == "deliver" and item["fact_ref"] not in reply_used_fact_refs:
-            raise ValueError(
-                "structured_delivery_requires_used_fact_ref:" + item["fact_ref"]
-            )
     return validation_state
 
 
@@ -1675,6 +1686,8 @@ def _parallel_generic_reply_repair_messages(
             "violations 没有指向 sales_judgment 时，逐字段保留上一版 sales_judgment，不得改写其姿态或理由。",
             "结构或引用错误没有直接指出客户可见 text 冲突时，逐字保留原 text；只修改被点名的引用、资产 ID 或结构消息。",
             "事实审计错误只修改 violation.quote 所在的事实片段及其直接依赖句，不新增卖点、群体结论或销售理由。",
+            "事实审计只点名 text 事实片段时，上一版 selected_content_ids、对应 content_asset 引用和已交付结构素材不属于被点名内容，必须逐字段原样保留；只有 violation 明确指出资产或结构素材本身不受支持时才能撤销。",
+            "修复某一事实片段时，其余客户可见事实必须逐字保留，尤其不能删除或改写其中的条件、适用对象、时态和否定词；若必须重写整句，也要原样保留所有未被 violation 点名的事实限定。",
         ],
         "output_schema_constraints": {
             "action": ["none", "ask", "offer", "payment", "registration"],
@@ -1778,6 +1791,16 @@ def _parallel_repair_required_changes(violations: Any) -> list[dict[str, str]]:
                     "required_change": (
                         "纯引用修复：只能从 valid_reference_contract 逐字选择真实引用。"
                         "引用不足时删除无支持的声明或资产选择；不得编造引用，不得顺带改变未冲突的客户可见内容。"
+                    ),
+                }
+            )
+        elif code.startswith("parallel_content_media_requires_selected_asset:"):
+            required.append(
+                {
+                    "violation": code,
+                    "required_change": (
+                        "结构来源二选一：若继续发送该候选专属媒体，保留对应 selected_content_id 和 "
+                        "content_asset 引用；若撤销资产选择，同时删除该资产专属媒体。不得留下无资产来源的孤立图片或视频。"
                     ),
                 }
             )
@@ -1910,10 +1933,7 @@ def _reply_structural_repair_guard(
                 "required_non_text_messages": non_text_messages,
             }
         )
-    if (
-        "payment_collection_requires_prior_supporting_key_evidence" in error
-        or "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
-    ):
+    if "payment_collection_requires_prior_supporting_key_evidence" in error:
         deposit = (
             previous_payload.get("deposit_evidence")
             if isinstance(previous_payload.get("deposit_evidence"), dict)
@@ -1921,41 +1941,40 @@ def _reply_structural_repair_guard(
         )
         allowed_refs = {
             str(item or "").strip()
-            for item in validation_context.get("prior_customer_message_refs") or []
+            for item in validation_context.get("prior_assistant_message_refs") or []
             if str(item or "").strip()
         }
-        customer_options = [
+        delivery_options = [
             {
                 "ref": str(item.get("ref") or "").strip(),
+                "role": str(item.get("role") or "").strip().lower(),
                 "content": str(item.get("content") or ""),
             }
             for item in validation_context.get("prior_message_options") or []
             if isinstance(item, dict)
-            and str(item.get("role") or "").strip().lower() in {"customer", "user"}
+            and str(item.get("role") or "").strip().lower() in {"assistant", "staff", "ai"}
             and str(item.get("ref") or "").strip() in allowed_refs
         ]
         tasks.append(
             {
-                "violation": "missing_customer_engagement_reference",
+                "violation": "missing_prior_supporting_delivery_reference",
                 "previous_supporting_key": str(deposit.get("supporting_key") or "").strip(),
                 "previous_supporting_refs": [
                     str(item or "").strip()
                     for item in deposit.get("supporting_refs") or []
                     if str(item or "").strip()
                 ],
-                "allowed_customer_message_options": customer_options,
-                "customer_engagement_definition": (
-                    "客户对该维度主动提问、描述自己的情况、表达顾虑、比较或认可，均属于客户参与；"
-                    "不要求客户必须先表示认可。逐条阅读 allowed_customer_message_options，"
-                    "只要原文直接涉及 previous_supporting_key，就应使用该真实 ref。"
+                "allowed_prior_delivery_options": delivery_options,
+                "structured_delivered_assets": (
+                    validation_context.get("structured_delivered_assets") or []
                 ),
                 "choice_keep_payment": (
-                    "由你阅读原文；仅当某条客户原话确实参与 previous_supporting_key 对应维度时，"
-                    "把该 ref 逐字加入 supporting_refs，并保持其余合法付款结构。"
-                    "不得因为客户原话是疑问句而判定为未参与。"
+                    "由你阅读历史交付；仅当更早客服消息或结构化已完成资产确实交付了"
+                    " previous_supporting_key 对应维度时，把真实 ref 加入 supporting_refs，"
+                    "并保持其余合法付款结构。客户无需另行确认该交付。"
                 ),
                 "choice_cancel_payment": {
-                    "when": "没有任何语义匹配的客户原话",
+                    "when": "没有任何更早的真实交付证据",
                     "action": "改为真实的非付款动作",
                     "selected_content_ids": [],
                     "deposit_evidence": {
@@ -2139,13 +2158,12 @@ def _reply_structural_repair_guard(
         if isinstance(previous_payload.get("payment_assessment"), dict)
         else {}
     )
-    engagement_evidence_violation = (
+    supporting_delivery_violation = (
         "payment_collection_requires_prior_supporting_key_evidence" in error
-        or "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
     )
     if (
         str(assessment.get("status") or "").strip() == "payment_request"
-        and not engagement_evidence_violation
+        and not supporting_delivery_violation
     ):
         tasks.append(
             {
@@ -2244,6 +2262,9 @@ def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
         "valid_customer_message_refs": payload.get("valid_customer_message_refs") or [],
         "valid_deposit_evidence_refs": payload.get("valid_deposit_evidence_refs") or [],
         "structured_prior_activity_refs": payload.get("structured_prior_activity_refs") or [],
+        "structured_prior_supporting_refs": (
+            payload.get("structured_prior_supporting_refs") or []
+        ),
         "prior_assistant_message_refs": (
             payload.get("prior_assistant_message_refs") or prior_assistant_refs
         ),
@@ -2515,10 +2536,7 @@ def _reply_repair_hint(error: str) -> str:
         raw = error.split(aggregate_marker, 1)[1]
         combined_asset_deposit_error = (
             "selected_content_delivery_missing" in raw
-            and (
-                "payment_collection_requires_prior_supporting_key_evidence" in raw
-                or "payment_collection_requires_customer_engaged_supporting_key_evidence" in raw
-            )
+            and "payment_collection_requires_prior_supporting_key_evidence" in raw
         )
         hints: list[str] = [_reply_repair_hint(raw)] if combined_asset_deposit_error else []
         for violation in (item.strip() for item in raw.split(";;")):
@@ -2527,7 +2545,6 @@ def _reply_repair_hint(error: str) -> str:
             if combined_asset_deposit_error and (
                 "selected_content_delivery_missing" in violation
                 or "payment_collection_requires_prior_supporting_key_evidence" in violation
-                or "payment_collection_requires_customer_engaged_supporting_key_evidence" in violation
             ):
                 continue
             hint = _reply_repair_hint(violation)
@@ -2630,42 +2647,35 @@ def _reply_repair_hint(error: str) -> str:
         )
     if (
         "selected_content_delivery_missing" in error
-        and (
-            "payment_collection_requires_prior_supporting_key_evidence" in error
-            or "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
-        )
+        and "payment_collection_requires_prior_supporting_key_evidence" in error
     ):
         return (
             "组合修复：上一版已经同时声明采用内容资产和发送预约金，但结构素材与预约金证据没有一次补齐。"
             "先重新阅读 current_message 并按支付位置的信息特异性核对上一版 payment_assessment：已付/转好待核对声明和"
             "人工转账选择优先于一般 payment_request，不能为了补候选素材而保留错误的小程序通道。只有复核后仍是"
             "一般付款请求或明确索要收款卡，才保留上一版 payment_request 和支付动作；不要把真实索要收款卡误改成人工转账。"
-            "再用 validation_context.prior_message_options 逐条核对历史原文，由你判断哪一组真实消息"
-            "属于 address、effect 或 objection；若另一把钥匙确实成立，supporting_refs 必须同时包含该维度的"
-            "历史客户 ref（取自 prior_customer_message_refs）以及相关客服/交付 ref，不能只引用客服发过的内容。"
+            "再用 validation_context.prior_message_options 和 structured_delivered_assets 核对更早真实交付，"
+            "由你判断哪条客服消息或已完成资产属于 address、effect 或 objection；若另一把钥匙确实已交付，"
+            "supporting_refs 引用对应客服消息或结构资产即可，不要求客户另行确认。"
             "然后二选一：如果继续采用 selected_content_ids 中的候选，严格按"
             " content_candidate_delivery_requirements 一次输出它要求的全部 image/video/store_address/"
             "payment_collection，并补齐 content_asset:<id>；如果不采用整套候选，就删除该 ID，但仍可在真实证据"
-            "成立时保留 action=payment、自然文字和一张 payment_collection。若历史没有客户真实参与另一把钥匙，"
+            "成立时保留 action=payment、自然文字和一张 payment_collection。若历史没有真实交付另一把钥匙，"
             "则取消 payment、清空 deposit_evidence，改为补最有价值的缺口。当前未权威已付时，不得改成"
             " registration，也不得声称已经登记或已经留好名额。提交前一次性复核所有原错误，不要只修第一项。"
         )
-    if (
-        "payment_collection_requires_prior_supporting_key_evidence" in error
-        or "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
-    ):
+    if "payment_collection_requires_prior_supporting_key_evidence" in error:
         return (
-            "你决定发卡，但 supporting_refs 尚未证明地址、效果或卡点排疑中的另一把钥匙已被客户真实承接。"
+            "你决定发卡，但 supporting_refs 尚未证明地址、效果或卡点排疑中的另一把钥匙已在更早轮次真实交付。"
             "补证据前必须先由你重新阅读 current_message 核对支付位置：已付/转好待核对声明和人工转账选择优先于"
             "一般 payment_request；若上一版把更具体的支付位置误归成 payment_request，应纠正状态、撤销小程序卡并清空"
             " deposit_evidence。只有复核后仍是一般付款请求或明确索要收款卡，这才是单纯证据引用修复，此时必须保留"
             " payment_request 和支付通道，不得把‘把收款卡发我/发卡给我’改写成人工转账。"
-            "如果上一版 sales_assessment 已把与 supporting_key 相同的维度判为 engaged，且本次唯一相关错误只是缺少客户引用，"
+            "如果上一版 sales_judgment 已确认该维度更早完成交付，且本次唯一相关错误只是缺少引用，"
             "本次 repair 不得重新审理该业务结论，也不得仅因漏写 ref 改成 offer、pause 或取消收款卡；应从"
-            " validation_context.prior_message_options 中找到该维度已经存在的客户原话 ref，并追加到原 supporting_refs。"
-            "请从更早聊天中同时引用该维度的客服消息和客户参与消息；supporting_refs 至少包含一个"
-            " prior_customer_message_refs 中的历史客户引用，current_message 只证明本轮行动，不能替代另一把钥匙的历史承接。"
-            "只有 prior_message_options 中确实不存在任何与原 supporting_key 对应的历史客户原话时，才取消本轮发卡，补最有价值的一把钥匙。"
+            " validation_context.prior_message_options 或 structured_delivered_assets 中找到真实的更早交付 ref，"
+            "并追加到原 supporting_refs。current_message 只证明本轮行动，不能替代另一把钥匙的历史交付。"
+            "只有历史中确实不存在任何对应的真实交付时，才取消本轮发卡，先补最有价值的一把钥匙。"
         )
     if "payment_collection_requires_current_action_signal_evidence" in error:
         return (
@@ -2710,7 +2720,7 @@ def _reply_repair_hint(error: str) -> str:
             "保留任何候选时，还必须在 used_fact_refs 中加入对应的 content_asset:<id>；不要等下一次校验再补引用。"
             "如果你只是依据权威业务事实自行回答或发送合法预约金卡、并不准备交付候选的整套素材，优先删除该候选 ID；"
             "action=payment 仍可保留并输出 payment_collection，不需要为了发卡强行选择 deposit_close。"
-            "若你因此新增 payment_collection，还必须同时填写合法 deposit_evidence：更早活动引用、另一把钥匙及客户参与引用、"
+            "若你因此新增 payment_collection，还必须同时填写合法 deposit_evidence：更早活动引用、另一把钥匙的更早真实交付引用、"
             "current_message 行动信号。仅引用历史事实而不重发资产时，不要选择该资产。"
             "未付且本轮不发送 payment_collection 时，action 不能使用 registration；registration 只表示权威已付后的信息登记。"
             "首次活动介绍应使用 offer、ask 或 none 中与实际回复一致的动作，并且不得提前索要姓名或手机号。"
@@ -2750,12 +2760,13 @@ def _reply_repair_hint(error: str) -> str:
             "你已结构声明 action=payment，但本轮没有同时输出 payment_collection。先核验该 payment 是否真的成立："
             "offer_prior_turn_refs 必须来自 validation_context.structured_prior_activity_refs，或来自"
             " validation_context.prior_message_options 中当前消息之前且确实讲清活动与268元的客服原文；"
-            "当前轮的 content_asset:<id> 不能冒充更早活动证据。另一把钥匙还必须有历史客户参与引用。"
+            "当前轮的 content_asset:<id> 不能冒充更早活动证据。另一把钥匙还必须有 prior_assistant_message_refs 中的更早客服消息，"
+            "或 structured_prior_supporting_refs 中的结构化已完成资产作为真实交付引用。"
             "如果这些引用齐全且没有任何硬禁区，说明销售决定本身有效："
             "repair 必须保留 payment 并补齐卡片，不能改成 none/ask/offer 来逃避结构错误，也不能再问客户是否需要入口。"
             "如果 selected_content_ids 中采用了候选，还要一次输出 validation_context.content_candidate_delivery_requirements"
             " 中该候选要求的全部真实 image/video/store_address/payment_collection，并保持合法 deposit_evidence。"
-            "若更早活动引用无效、另一把钥匙未被客户承接或命中硬禁区，就撤销 payment，删除卡片和发卡承诺，"
+            "若更早活动引用无效、另一把钥匙没有更早真实交付或命中硬禁区，就撤销 payment，删除卡片和发卡承诺，"
             "清空 deposit_evidence，并按当前真实上下文选择合法 action；不能为了补结构而制造提前发卡。"
         )
     if "registration_action_requires_paid_context" in error:

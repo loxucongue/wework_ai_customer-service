@@ -786,7 +786,7 @@
       "id": "sales_motion_unique_close_ack",
       "category": "销售节奏",
       "critical": true,
-      "semantic_goal": "效果和活动已由客户参与承接，上一轮留下唯一的预约金确认命题后，客户明确回复可以，应减少解释并发送一张10元预约金卡。",
+      "semantic_goal": "效果和活动已在更早轮次真实交付，上一轮留下唯一的预约金确认命题后，客户明确回复可以，应减少解释并发送一张10元预约金卡。",
       "expected": {
         "must_reply": true,
         "required_types": ["text", "payment_collection"],

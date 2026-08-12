@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     model_reply_recovery_budget_seconds: float = 25.0
     model_fact_audit_enabled: bool = True
     model_fact_audit_timeout_seconds: float = 15.0
-    model_fact_audit_tier: str = "fast"
+    model_fact_audit_tier: str = "reply"
     model_round_budget_enforced: bool = True
     model_round_timeout_seconds: float = 120.0
     model_strong_round_timeout_seconds: float = 120.0

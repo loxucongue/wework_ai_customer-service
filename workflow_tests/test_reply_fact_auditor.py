@@ -216,6 +216,14 @@ def test_parallel_active_validation_has_no_semantic_text_checkers() -> None:
     assert "re.finditer" not in source
 
 
+def test_parallel_reply_prompt_treats_delivery_as_progress_without_permission_roundtrip() -> None:
+    assert "客户不会专门确认“这个顾虑已经解决”" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "最多增加一个新维度" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要用“能不能接受、是否方便、要不要继续”" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "“查看位置、考虑一下、需要再联系”不算动作" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户不需要专门确认此前交付" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
 def test_fact_auditor_contract_cannot_make_sales_decisions() -> None:
     assert "不是客服、销售、策略评审或回复改写器" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "不得评价销售力度、语气、主线、推进时机、资产选择或发卡资格" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
@@ -255,6 +263,10 @@ def test_fact_auditor_contract_distinguishes_payment_and_registration_states() -
     assert "不得要求当前完成事件作为额外证据" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "审计对象是回复实际说出的完整命题" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "权威事实已经直接支持命题时必须通过" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "先看看值不值得" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不是可独立验证的业务事实" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "多个字段共同支持" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "未登记客户不能被写成已经可以免费到店检测" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
 def test_model_led_reply_repair_reserves_fact_audit_budget() -> None:
@@ -296,6 +308,11 @@ def test_parallel_reply_prompt_is_structured_sales_brain_not_scene_matcher() -> 
     for contract in required_contracts:
         assert contract in PARALLEL_REPLY_SYSTEM_PROMPT
     assert '"structured_delivery_decisions": []' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '"fact_ref":"逐字复制 structured_delivery_options 中的真实 fact_ref"' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得使用 `type/content_id` 代替 `fact_ref`" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "只有输入已有完成线上活动登记的权威事实" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "活动包含皮肤检测" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得进一步写成“到店会先检测、到店先看皮肤、跑一趟就能先检测”" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "绝不能凭输出示例或经验虚构默认 fact_ref" in PARALLEL_REPLY_SYSTEM_PROMPT
 
     semantic_boundaries = (
@@ -509,6 +526,50 @@ def test_fact_audit_invalid_quote_gets_one_schema_only_retry() -> None:
     assert "不得输出 reply_messages" in retry_system
 
 
+def test_fact_audit_schema_retry_receives_fresh_deadline() -> None:
+    class _Client:
+        def __init__(self) -> None:
+            self.settings = SimpleNamespace(
+                model_fact_audit_enabled=True,
+                model_fact_audit_timeout_seconds=15.0,
+                model_fact_audit_tier="reply",
+            )
+            self.deadlines: list[float] = []
+
+        async def chat_json(self, _messages, *, tier, deadline_monotonic, **_kwargs):
+            assert tier == "reply"
+            self.deadlines.append(deadline_monotonic)
+            if len(self.deadlines) == 1:
+                await asyncio.sleep(0.01)
+                return {
+                    "status": "fail",
+                    "violations": [
+                        {
+                            "code": "wrong_temporality",
+                            "message_index": 0,
+                            "quote": "不存在的片段",
+                            "evidence_refs": [],
+                            "reason": "用于触发审计 schema 修复",
+                        }
+                    ],
+                }
+            return {"status": "pass", "violations": []}
+
+    client = _Client()
+    result, _ = asyncio.run(
+        _run_parallel_reply_fact_audit(
+            state=_state(),
+            model_client=client,
+            messages=[{"type": "text", "content": "本次活动价268元。"}],
+            payload={"used_fact_refs": ["history:1"], "selected_content_ids": []},
+        )
+    )
+
+    assert result["status"] == "pass"
+    assert len(client.deadlines) == 2
+    assert client.deadlines[1] > client.deadlines[0]
+
+
 def test_fact_audit_input_includes_reply_claims_as_non_authoritative_metadata() -> None:
     audit_input = _parallel_reply_fact_audit_input(
         state=_state(),
@@ -612,6 +673,7 @@ def test_generic_repair_contract_exposes_authoritative_paid_without_deciding_cus
     assert "不得评价或重做销售策略" in repair_contract
     assert "逐字保留原 text" in repair_contract
     assert "事实审计错误只修改 violation.quote" in repair_contract
+    assert "不能删除或改写其中的条件、适用对象、时态和否定词" in repair_contract
 
 
 def test_fact_audit_input_surfaces_claim_bearing_business_facts() -> None:
@@ -637,6 +699,59 @@ def test_fact_audit_input_surfaces_claim_bearing_business_facts() -> None:
             "effect_confidence": "绝大多数客户都是一次就好",
         },
     }
+
+
+def test_fact_auditor_separates_package_includes_from_registered_store_service() -> None:
+    prompt = REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+
+    assert "必须区分“套餐包含什么”和“客户何时可以到店享受某项服务”" in prompt
+    assert "`offer.includes` 直接支持" in prompt
+    assert "不得用后者的登记条件否定前者的套餐包含范围" in prompt
+
+
+def test_reply_and_fact_auditor_do_not_treat_admin_scope_as_distance_fact() -> None:
+    assert "同一城市或行政区" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能据此写成“更近、更方便、最近、过去方便”" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "同城市、同区县或门店范围匹配只支持行政归属" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "上层查询摘要的 district 为空不能反向否定更具体的门店事实" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+
+
+def test_reply_requires_direct_text_answer_before_structured_supplement() -> None:
+    assert "先在 text 中直接说出足够识别该答案的事实" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能代替文字回答本身" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能只写“给您发这家/这是门店地址”" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_candidate_only_media_requires_its_selected_asset_provenance() -> None:
+    state = {
+        "reply_selected_content_ids": [],
+        "evidence_join": {
+            "content_candidates": [
+                {
+                    "content_id": "s10_activity_intro",
+                    "delivery_status": "available",
+                    "messages": [
+                        {"type": "text", "content": "活动价268元。"},
+                        {"type": "image", "content": "https://example.invalid/activity.jpg"},
+                    ],
+                }
+            ],
+            "normalized_tool_facts": {"structured_facts": {"case_facts": []}},
+        },
+    }
+
+    with pytest.raises(ValueError, match="parallel_content_media_requires_selected_asset"):
+        _validate_parallel_reply_consistency(
+            [{"type": "image", "content": "https://example.invalid/activity.jpg"}],
+            state,
+        )
+
+    state["reply_selected_content_ids"] = ["s10_activity_intro"]
+    state["reply_used_fact_refs"] = ["content_asset:s10_activity_intro"]
+    _validate_parallel_reply_consistency(
+        [{"type": "image", "content": "https://example.invalid/activity.jpg"}],
+        state,
+    )
 
 
 def test_fact_audit_failure_gets_one_generic_reply_repair() -> None:

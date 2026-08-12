@@ -9,6 +9,7 @@ import pytest
 
 from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs
 from app.services.sop_reply_pack_service import SopReplyPackService
+from app.prompts.sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
 
 OPENING_EFFICACY_IMAGE = (
@@ -116,6 +117,24 @@ def test_v2_effect_asset_can_finish_with_evidence_without_forced_diagnosis() -> 
     assert any("条件式预告" in item for item in effect["reasoning_moves"])
     assert any("助手动作" in item for item in effect["anti_patterns"])
     assert [item["type"] for item in effect["reply_messages"]] == ["text", "image", "image"]
+
+
+def test_v2_activity_asset_can_support_adjacent_value_without_fixed_stage_mapping() -> None:
+    activity = _pack(_load_config(), "s10_activity_intro")
+
+    assert activity["render_strategy"] == "adaptable"
+    assert "相邻决策价值" in activity["customer_uncertainty"]
+    assert any("相邻新价值" in item for item in activity["reasoning_moves"])
+    assert any("完整上下文" in item for item in activity["anti_patterns"])
+    assert any("许可式问题" in item for item in activity["anti_patterns"])
+    assert any("预约金卡" in item for item in activity["reasoning_moves"])
+    assert activity["reply_messages"][1]["type"] == "image"
+
+
+def test_parallel_gate_adjacent_value_must_cross_decision_dimension() -> None:
+    assert "不同决策维度的新价值" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "不能标成相邻 `supporting`" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "B 只能再考虑活动、地址或真实卡点中的一个" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize("field", ["reply_messages", "purpose", "enabled", "order"])

@@ -44,7 +44,7 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。�
 - 不判断客户心理、意向等级、成交阶段、是否回主线或是否发预约金卡。
 - 不选择 SOP、精准话术、销冠召回或成交理由。
 - 不规划写操作、发送动作、开单、手机号同步或排客。
-- 已在 authoritative_facts 中存在且没有冲突的事实，不重复查询。但 raw_visible_store_records 只证明客户可见哪些门店，不证明当前地名已经完成匹配、排序或最近推荐。
+- 已在 authoritative_facts 中存在且没有冲突的事实，不重复查询。但 visible_store_scope 只证明客户权限范围内的区域覆盖和数量，不是本轮地名匹配结果，也不提供具体门店名、地址、排序或最近推荐；客户索要具体门店或地址时仍需查询。
 - 工具参数只能来自当前消息、完整聊天或结构事实，并在 evidence_refs 引用真实 message_ref，例如 current_message、conv_001。
 
 # 允许工具
@@ -728,11 +728,48 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         for raw_content_id in sop_progress.get("completed_pack_ids") or []
         if (content_id := str(raw_content_id).strip()) in catalog_by_id
     ]
+    sent_messages = (
+        facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    )
+    store_delivery = (
+        sent_messages.get("store_address_delivery")
+        if isinstance(sent_messages.get("store_address_delivery"), dict)
+        else {}
+    )
+    store_delivery_request_id = str(store_delivery.get("request_id") or "").strip()
+    store_delivery_ids = [
+        str(item).strip()
+        for item in store_delivery.get("latest_batch_store_ids") or []
+        if str(item).strip()
+    ]
+    if (
+        str(store_delivery.get("batch_confidence") or "").strip() == "high"
+        and store_delivery_request_id
+        and store_delivery_ids
+    ):
+        structured_delivered_assets.append(
+            {
+                "ref": f"store_delivery:{store_delivery_request_id}",
+                "content_id": "",
+                "asset_role": "address_evidence",
+                "store_ids": list(dict.fromkeys(store_delivery_ids)),
+                "delivered_at": str(store_delivery.get("last_sent_at") or "").strip(),
+            }
+        )
     structured_delivery_refs = [item["ref"] for item in structured_delivered_assets]
     structured_deposit_refs = [
         item["ref"]
         for item in structured_delivered_assets
         if item.get("asset_role") == "activity_offer"
+    ]
+    structured_supporting_refs = [
+        item["ref"]
+        for item in structured_delivered_assets
+        if item.get("asset_role") in {
+            "address_evidence",
+            "effect_evidence",
+            "objection_support",
+        }
     ]
     prior_assistant_refs = [
         str(item.get("message_ref") or "").strip()
@@ -822,8 +859,18 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         "valid_message_refs": valid_message_refs,
         "valid_customer_message_refs": valid_customer_message_refs,
         "structured_delivered_assets": structured_delivered_assets,
-        "valid_deposit_evidence_refs": [*valid_message_refs, *structured_delivery_refs],
+        "valid_deposit_evidence_refs": list(
+            dict.fromkeys(
+                [
+                    *prior_assistant_message_refs,
+                    *structured_deposit_refs,
+                    *structured_supporting_refs,
+                    "current_message",
+                ]
+            )
+        ),
         "structured_prior_activity_refs": structured_deposit_refs,
+        "structured_prior_supporting_refs": structured_supporting_refs,
         # Neutral provenance pools. Their names intentionally do not label any
         # message as an activity offer or a supporting sales key.
         "prior_assistant_message_refs": prior_assistant_message_refs,
@@ -869,8 +916,14 @@ def _shared_context(
     ]
     authoritative_facts = {
         "orders_and_payment": _authoritative_order_payment_facts(state),
-        "visible_store_scope": build_store_scope_summary(store_knowledge, location_hints=location_hints),
-        "raw_visible_store_records": copy.deepcopy(store_knowledge.get("stores") or []),
+        # This is a permission/coverage summary, not a current-turn lookup
+        # result. Store names, IDs and addresses stay out of model context so
+        # neither Tool Planner nor Reply can mistake the visibility inventory
+        # for a resolved customer location. The executor and validators keep
+        # using customer_store_knowledge directly for permission checks.
+        "visible_store_scope": _store_scope_for_models(
+            build_store_scope_summary(store_knowledge, location_hints=location_hints)
+        ),
         "sop_progress": copy.deepcopy(sop_progress),
         "sent_messages": sent_message_summary_for_model(state),
         "image_or_transfer_fact": copy.deepcopy(state.get("image_info") or {}),
@@ -935,6 +988,12 @@ def _tool_planner_shared_context(state: AgentState) -> dict[str, Any]:
     shared = copy.deepcopy(state.get("shared_context") or {})
     shared.pop("content_indexes", None)
     shared.pop("sales_guidance", None)
+    facts = (
+        shared.get("authoritative_facts")
+        if isinstance(shared.get("authoritative_facts"), dict)
+        else {}
+    )
+    facts.pop("raw_visible_store_records", None)
     rules = shared.get("rules") if isinstance(shared.get("rules"), dict) else {}
     shared["rules"] = {
         key: copy.deepcopy(rules.get(key))
@@ -942,6 +1001,49 @@ def _tool_planner_shared_context(state: AgentState) -> dict[str, Any]:
         if rules.get(key) not in (None, "", [], {})
     }
     return shared
+
+
+def _store_scope_for_models(value: dict[str, Any]) -> dict[str, Any]:
+    """Keep coverage evidence while withholding store answers from models."""
+
+    if not isinstance(value, dict):
+        return {}
+    output = {
+        key: copy.deepcopy(value.get(key))
+        for key in (
+            "source",
+            "store_count",
+            "snapshot_generated_at",
+            "store_scope_error",
+            "cache",
+            "missing_snapshot_store_ids",
+            "province_counts",
+            "city_counts",
+            "district_counts",
+        )
+        if value.get(key) not in (None, "", [], {})
+    }
+    regions: list[dict[str, Any]] = []
+    for raw in value.get("relevant_regions") or []:
+        if not isinstance(raw, dict):
+            continue
+        region = {
+            key: copy.deepcopy(raw.get(key))
+            for key in (
+                "province",
+                "city",
+                "store_count",
+                "district_counts",
+                "requested_areas",
+                "exact_area_store_count",
+            )
+            if raw.get(key) not in (None, "", [], {})
+        }
+        if region:
+            regions.append(region)
+    if regions:
+        output["relevant_regions"] = regions
+    return output
 
 
 def _content_index_with_delivery_status(
@@ -1027,16 +1129,16 @@ def _structured_delivery_options(joined: dict[str, Any], *, state: AgentState) -
         # delivery contract that the Reply could only satisfy incorrectly.
         if store_ids:
             options["store_address"] = {
-            "fact_ref": "tool_fact:customer_store_lookup",
-            "status": str(resolution.get("status") or ""),
-            "available_store_ids": list(dict.fromkeys(store_ids)),
-            "message_payloads": [
-                {"type": "store_address", "content": {"store_id": store_id}}
-                for store_id in dict.fromkeys(store_ids)
-            ],
-            "candidate_search_complete": resolution.get("candidate_search_complete"),
-            "ranking_method": str(resolution.get("ranking_method") or ""),
-            "source": "current_turn_tool_fact",
+                "fact_ref": "tool_fact:customer_store_lookup",
+                "status": str(resolution.get("status") or ""),
+                "available_store_ids": list(dict.fromkeys(store_ids)),
+                "message_payloads": [
+                    {"type": "store_address", "content": {"store_id": store_id}}
+                    for store_id in dict.fromkeys(store_ids)
+                ],
+                "candidate_search_complete": resolution.get("candidate_search_complete"),
+                "ranking_method": str(resolution.get("ranking_method") or ""),
+                "source": "current_turn_tool_fact",
             }
     if _payment_collection_delivery_available(state):
         options["payment_collection"] = {
@@ -1477,6 +1579,23 @@ def _commit_value_has_evidence(
 
 
 def _visible_store_ids(state: AgentState) -> set[str]:
+    store_knowledge = (
+        state.get("customer_store_knowledge")
+        if isinstance(state.get("customer_store_knowledge"), dict)
+        else {}
+    )
+    stores = (
+        store_knowledge.get("stores")
+        if isinstance(store_knowledge.get("stores"), list)
+        else []
+    )
+    if stores:
+        return {
+            str(item.get("store_id") or item.get("id") or "").strip()
+            for item in stores
+            if isinstance(item, dict)
+            and str(item.get("store_id") or item.get("id") or "").strip()
+        }
     shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
     facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
     stores = facts.get("raw_visible_store_records") if isinstance(facts.get("raw_visible_store_records"), list) else []

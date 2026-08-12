@@ -337,28 +337,50 @@ def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[s
         return
 
     allowed: set[str] = set()
+    candidate_media_owners: dict[str, set[str]] = {}
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
     for candidate in joined.get("content_candidates") or []:
         if not isinstance(candidate, dict):
             continue
+        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
         for item in candidate.get("messages") or []:
             if isinstance(item, dict) and str(item.get("type") or "") in {"image", "video"}:
                 key = _parallel_structured_message_key(item)
                 if key:
                     allowed.add(key)
+                    if content_id:
+                        candidate_media_owners.setdefault(key, set()).add(content_id)
 
     structured = _structured_facts(state)
+    independently_authorized: set[str] = set()
     for item in structured.get("case_facts") or []:
         if not isinstance(item, dict):
             continue
         for field, message_type in (("image_url", "image"), ("video_url", "video")):
             url = str(item.get(field) or "").strip()
             if url:
-                allowed.add(f"{message_type}:{url}")
+                key = f"{message_type}:{url}"
+                allowed.add(key)
+                independently_authorized.add(key)
 
     unsupported = sorted(emitted - allowed)
     if unsupported:
         raise ValueError(f"unsupported_parallel_media_fact:{','.join(unsupported)}")
+
+    selected_ids = {
+        str(item or "").strip()
+        for item in state.get("reply_selected_content_ids") or []
+        if str(item or "").strip()
+    }
+    orphaned = []
+    for key in sorted(emitted - independently_authorized):
+        owners = candidate_media_owners.get(key) or set()
+        if owners and not owners.intersection(selected_ids):
+            orphaned.append(f"{key};owners={','.join(sorted(owners))}")
+    if orphaned:
+        raise ValueError(
+            "parallel_content_media_requires_selected_asset:" + "|".join(orphaned)
+        )
 
 
 def _validate_parallel_selected_content_delivery(
@@ -704,21 +726,10 @@ def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
     }
     shared = _parallel_shared_context(state)
     conversation = [item for item in shared.get("conversation") or [] if isinstance(item, dict)]
-    prior_refs = {
-        str(item.get("message_ref") or "").strip()
-        for item in conversation
-        if str(item.get("message_ref") or "").strip()
-    }
     prior_assistant_refs = {
         str(item.get("message_ref") or "").strip()
         for item in conversation
-        if str(item.get("role") or "").strip().lower() in {"assistant", "staff"}
-        and str(item.get("message_ref") or "").strip()
-    }
-    prior_customer_refs = {
-        str(item.get("message_ref") or "").strip()
-        for item in conversation
-        if str(item.get("role") or "").strip().lower() in {"customer", "user"}
+        if str(item.get("role") or "").strip().lower() in {"assistant", "staff", "ai"}
         and str(item.get("message_ref") or "").strip()
     }
     facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
@@ -729,6 +740,11 @@ def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
         if isinstance(content_indexes.get("available_sop"), dict)
         else {}
     )
+    content_catalog_by_id = {
+        str(item.get("content_id") or "").strip(): item
+        for item in content_catalog.get("sop_packs") or []
+        if isinstance(item, dict) and str(item.get("content_id") or "").strip()
+    }
     activity_offer_ids = {
         str(item.get("content_id") or "").strip()
         for item in content_catalog.get("sop_packs") or []
@@ -741,11 +757,34 @@ def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
         for item in progress.get("completed_pack_ids") or []
         if str(item).strip() in activity_offer_ids
     }
-    all_completed_refs = {
+    supporting_completed_refs = {
         f"sop_completed:{str(item).strip()}"
         for item in progress.get("completed_pack_ids") or []
-        if str(item).strip()
+        if (content_catalog_item := content_catalog_by_id.get(str(item).strip()))
+        and str(content_catalog_item.get("asset_role") or "").strip()
+        in {"effect_evidence", "objection_support"}
     }
+    sent_messages = (
+        facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    )
+    store_delivery = (
+        sent_messages.get("store_address_delivery")
+        if isinstance(sent_messages.get("store_address_delivery"), dict)
+        else {}
+    )
+    store_delivery_request_id = str(store_delivery.get("request_id") or "").strip()
+    store_delivery_ids = [
+        str(item).strip()
+        for item in store_delivery.get("latest_batch_store_ids") or []
+        if str(item).strip()
+    ]
+    structured_store_delivery_refs = (
+        {f"store_delivery:{store_delivery_request_id}"}
+        if str(store_delivery.get("batch_confidence") or "").strip() == "high"
+        and store_delivery_request_id
+        and store_delivery_ids
+        else set()
+    )
     valid_offer_refs = prior_assistant_refs | completed_refs
     if (
         not offer_refs
@@ -754,10 +793,10 @@ def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
         raise ValueError("payment_collection_requires_prior_activity_evidence")
     if supporting_key not in {"address", "effect", "objection"}:
         raise ValueError("payment_collection_requires_supporting_sales_key")
-    if not supporting_refs or not supporting_refs.issubset(prior_refs | all_completed_refs):
+    if not supporting_refs or not supporting_refs.issubset(
+        prior_assistant_refs | supporting_completed_refs | structured_store_delivery_refs
+    ):
         raise ValueError("payment_collection_requires_prior_supporting_key_evidence")
-    if not supporting_refs.intersection(prior_customer_refs):
-        raise ValueError("payment_collection_requires_customer_engaged_supporting_key_evidence")
     if "current_message" not in action_refs:
         raise ValueError("payment_collection_requires_current_action_signal_evidence")
 

@@ -895,17 +895,34 @@ class SopExecutionService:
         *,
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
-        data = await self.model_client.chat_json(
-            build_sop_chat_gate_messages(selector_input),
-            tier="reply",
-            temperature=0,
-            deadline_monotonic=deadline_monotonic,
-        )
+        model_retry_applied = False
+        for attempt in range(2):
+            try:
+                data = await self.model_client.chat_json(
+                    build_sop_chat_gate_messages(selector_input),
+                    tier="reply",
+                    temperature=0,
+                    deadline_monotonic=deadline_monotonic,
+                )
+                break
+            except Exception:
+                if attempt > 0:
+                    raise
+                remaining_seconds = (
+                    deadline_monotonic - time.monotonic()
+                    if deadline_monotonic is not None
+                    else None
+                )
+                if remaining_seconds is not None and remaining_seconds < 1.0:
+                    raise
+                model_retry_applied = True
         output = data if isinstance(data, dict) else {}
         parallel_mode = _string(selector_input.get("reply_chain_mode")) == "parallel_candidate_only"
         validator = _parallel_content_gate_output_violations if parallel_mode else _chat_gate_output_violations
         violations = validator(output, selector_input)
         if not violations:
+            if model_retry_applied:
+                output["model_retry_applied"] = True
             return output
         repaired = await self.model_client.chat_json(
             build_sop_chat_gate_repair_messages(selector_input, output, violations),
@@ -918,6 +935,8 @@ class SopExecutionService:
         if not repaired_violations:
             repaired_output["repair_applied"] = True
             repaired_output["initial_violations"] = violations
+            if model_retry_applied:
+                repaired_output["model_retry_applied"] = True
             return repaired_output
         if parallel_mode:
             return {

@@ -18,6 +18,8 @@ from app.graph.nodes.parallel_reply_chain import (
     _normalize_read_only_tool_calls,
     _protocol_required_read_only_tools,
     _run_tool_planner,
+    _shared_context,
+    _tool_planner_shared_context,
     create_evidence_join_node,
     create_parallel_evidence_node,
     create_shared_context_node,
@@ -98,6 +100,16 @@ def test_parallel_gate_only_nominates_content_assets() -> None:
     assert "candidate_assets" in prompt
     assert "不回复客户" in prompt
     assert "不决定销售动作" in prompt
+    assert "相邻决策价值" in prompt
+    assert "最多一个" in prompt
+    assert "默认提名一个 `supporting`" in prompt
+    assert "目录里确实没有尚未交付且有意义的新价值" in prompt
+    assert "不要求客户先表示同意" in prompt
+    assert "不得按“门店后固定发活动”等场景映射" in prompt
+    assert "这不等于 Gate 必须返回空候选" in prompt
+    assert "两个互不替代的步骤" in prompt
+    assert "不能因为 A 没有直接资产，就把 B 一起判空" in prompt
+    assert "相邻价值不要求客户当前主动询问该资产" in prompt
     assert "selected_scene_id" not in prompt
     assert "reference_messages" not in prompt
 
@@ -108,6 +120,11 @@ def test_parallel_gate_asset_exposes_plain_text_without_legacy_routing_metadata(
         "name": "activity offer",
         "purpose": "explain the offer",
         "asset_role": "activity_offer",
+        "customer_uncertainty": "activity value is not established",
+        "useful_evidence": ["offer facts", "approved campaign image"],
+        "reasoning_moves": ["deliver one adjacent value without asking permission"],
+        "anti_patterns": ["fixed store-to-activity mapping"],
+        "render_strategy": "adaptable",
         "mainline_stage": "activity_and_price",
         "order": 150,
         "triggers": ["legacy trigger"],
@@ -129,6 +146,12 @@ def test_parallel_gate_asset_exposes_plain_text_without_legacy_routing_metadata(
 
     assert summary["approved_points"] == ["268 offer facts"]
     assert candidate["approved_points"] == ["268 offer facts"]
+    assert summary["customer_uncertainty"] == "activity value is not established"
+    assert summary["useful_evidence"] == ["offer facts", "approved campaign image"]
+    assert summary["reasoning_moves"] == ["deliver one adjacent value without asking permission"]
+    assert summary["anti_patterns"] == ["fixed store-to-activity mapping"]
+    assert candidate["customer_uncertainty"] == summary["customer_uncertainty"]
+    assert candidate["reasoning_moves"] == summary["reasoning_moves"]
     for legacy_key in ("mainline_stage", "order", "triggers", "prerequisites"):
         assert legacy_key not in summary
 
@@ -338,9 +361,11 @@ def test_parallel_shared_content_catalog_does_not_expose_mainline_routing() -> N
 
 
 def test_parallel_tool_planner_independently_queries_missing_case_images() -> None:
-    assert "Gate 与你并行执行" in parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
-    assert "必须独立规划 `kb_search(kb_name=case_studies)`" in parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
-    assert "最终 Reply 会对 Gate 候选与工具事实去重" in parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+
+    assert "只读 Tool Planner" in prompt
+    assert "不选择 SOP、精准话术、销冠召回或成交理由" in prompt
+    assert "规划 kb_search(kb_name=case_studies)" in prompt
 
 
 def test_parallel_content_gate_does_not_use_opening_asset_for_substantive_questions() -> None:
@@ -354,8 +379,12 @@ def test_parallel_reply_prompt_uses_history_without_fixed_short_ack_script() -> 
 
     assert "完整带时间对话" in prompt
     assert "不要继续追问" in prompt
-    assert "每轮只选择一个主要目标" in prompt
-    assert "可以只回答或暂停" in prompt
+    assert "每轮只做一个主要目标" in prompt
+    assert "answer：当前只适合答清楚" in prompt
+    assert "pause：客户正在工作" in prompt
+    assert "本轮只简短承接并停止" in prompt
+    assert "不重复已经讲过的活动、效果或门店" in prompt
+    assert "现实中断，不适用上一条软拒绝推进原则" in prompt
     assert "好/好的/嗯/可以" not in prompt
 
 
@@ -383,7 +412,7 @@ def test_parallel_reply_rule_view_keeps_unique_sections_without_repeating_layere
 
 def test_parallel_reply_treats_immediately_prior_complete_offer_as_prior_evidence() -> None:
     assert "当前消息之前已经真实介绍过本次活动与价格" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "已经说清" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户不需要专门确认此前交付" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_reply_assessments_use_real_customer_message_refs_for_amount() -> None:
@@ -520,6 +549,9 @@ def test_parallel_reply_payload_only_exposes_completed_activity_offer_as_deposit
     assert "sop_completed:s10_activity_intro" in payload["valid_deposit_evidence_refs"]
     assert "sop_completed:s10_need_and_case" in payload["valid_deposit_evidence_refs"]
     assert payload["structured_prior_activity_refs"] == ["sop_completed:s10_activity_intro"]
+    assert payload["structured_prior_supporting_refs"] == [
+        "sop_completed:s10_need_and_case"
+    ]
     assert payload["prior_assistant_message_refs"] == []
     assert payload["prior_message_and_delivery_refs"] == [
         "current_message",
@@ -539,6 +571,74 @@ def test_parallel_reply_payload_only_exposes_completed_activity_offer_as_deposit
         },
     ]
     assert "sop_completed:s10_need_and_case" in payload["prior_message_and_delivery_refs"]
+
+
+def test_parallel_reply_payload_exposes_high_confidence_store_card_delivery_as_supporting_evidence() -> None:
+    state = {
+        "evidence_join": {
+            "shared_context": {
+                "conversation": [],
+                "authoritative_facts": {
+                    "sop_progress": {"completed_pack_ids": ["s10_activity_intro"]},
+                    "sent_messages": {
+                        "store_address_delivery": {
+                            "latest_batch_store_ids": ["601"],
+                            "batch_confidence": "high",
+                            "request_id": "req_store_1",
+                            "last_sent_at": "2026-08-12T10:00:00+08:00",
+                        }
+                    },
+                },
+                "content_indexes": {
+                    "available_sop": {
+                        "sop_packs": [
+                            {
+                                "content_id": "s10_activity_intro",
+                                "asset_role": "activity_offer",
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+    }
+
+    payload = parallel_reply_payload(state)
+
+    assert "store_delivery:req_store_1" in payload["valid_deposit_evidence_refs"]
+    assert "store_delivery:req_store_1" in payload["structured_prior_supporting_refs"]
+    assert {
+        "ref": "store_delivery:req_store_1",
+        "content_id": "",
+        "asset_role": "address_evidence",
+        "store_ids": ["601"],
+        "delivered_at": "2026-08-12T10:00:00+08:00",
+    } in payload["structured_delivered_assets"]
+
+
+def test_parallel_payment_accepts_high_confidence_store_card_delivery_without_customer_approval() -> None:
+    state = _parallel_payment_validation_state()
+    state["evidence_join"]["shared_context"]["authoritative_facts"]["sent_messages"] = {
+        "store_address_delivery": {
+            "latest_batch_store_ids": ["601"],
+            "batch_confidence": "high",
+            "request_id": "req_store_1",
+        }
+    }
+    state["reply_deposit_evidence"] = {
+        "offer_prior_turn_refs": ["sop_completed:s10_activity_intro", "offer_001"],
+        "supporting_key": "address",
+        "supporting_refs": ["store_delivery:req_store_1"],
+        "current_intent_refs": ["current_message"],
+    }
+
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": "可以，每位10元预约金，我把入口发您。"},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
+        ],
+        state,
+    )
 
 
 def test_parallel_reply_payload_exposes_only_gate_nominated_content_ids() -> None:
@@ -798,10 +898,120 @@ def test_parallel_reply_payload_surfaces_payment_card_after_activity_intro_witho
     assert "reply_must_choose_action_payment" in option["constraints"]
 
 
-def test_parallel_reply_prompt_does_not_reopen_established_sales_key_without_new_evidence() -> None:
-    assert "已经由真实对话建立并得到客户接受的销售钥匙" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不要把它重新当成下一步任务" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "再检查一次销售钥匙一致性" in PARALLEL_REPLY_SYSTEM_PROMPT
+def test_parallel_reply_validation_accepts_delivery_decision_without_duplicate_used_fact_ref() -> None:
+    state = _parallel_state("行，怎么付款")
+    state["conversation_history"] = [
+        "小贝: 周年庆淡斑活动总价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。",
+        "小贝: 我们做前做后都会用原相机留对比。",
+        "用户: 行，怎么付款",
+    ]
+    state["evidence_join"] = {
+        "shared_context": {
+            "conversation": [
+                {
+                    "message_ref": "conv_001",
+                    "role": "assistant",
+                    "content": "周年庆淡斑活动总价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。",
+                },
+                {
+                    "message_ref": "conv_002",
+                    "role": "assistant",
+                    "content": "我们做前做后都会用原相机留对比。",
+                },
+            ],
+            "current_message": {"content": "行，怎么付款"},
+            "authoritative_facts": {},
+        },
+        "content_candidates": [],
+        "tool_facts": {},
+    }
+
+    validation_state = _reply_validation_state(
+        state,
+        {
+            "reply_messages": [
+                {"type": "text", "content": "先付10元预约金，到店抵扣。"},
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "used_fact_refs": [
+                "current_message",
+                "conv_001",
+                "conv_002",
+            ],
+            "selected_content_ids": [],
+            "structured_delivery_decisions": [
+                {
+                    "fact_ref": "authoritative_fact:payment_collection_option",
+                    "decision": "deliver",
+                    "reason": "本轮采用付款入口",
+                }
+            ],
+            "action": "payment",
+            "payment_assessment": {
+                "status": "payment_request",
+                "evidence_refs": ["current_message"],
+            },
+            "deposit_evidence": {
+                "offer_prior_turn_refs": ["conv_001"],
+                "supporting_key": "effect",
+                "supporting_refs": ["conv_002"],
+                "current_intent_refs": ["current_message"],
+            },
+            "safety_assessment": {"status": "none", "evidence_refs": []},
+            "party_size_assessment": {
+                "status": "unknown",
+                "party_size": None,
+                "evidence_refs": [],
+            },
+            "sales_judgment": {"posture": "close"},
+            "commit_actions": [],
+        },
+    )
+
+    assert validation_state["reply_action"] == "payment"
+    assert validation_state["reply_structured_delivery_decisions"][0]["decision"] == "deliver"
+    assert "authoritative_fact:payment_collection_option" not in validation_state["reply_used_fact_refs"]
+
+
+def test_parallel_model_context_exposes_store_coverage_without_store_answers() -> None:
+    state = {
+        "normalized_content": "我在厦门湖里区，门店地址发我",
+        "content": "我在厦门湖里区，门店地址发我",
+        "customer_store_knowledge": {
+            "source": "platform",
+            "stores": [
+                {
+                    "store_id": "601",
+                    "store_name": "厦门百星湖里店",
+                    "province": "福建省",
+                    "city": "厦门市",
+                    "district": "湖里区",
+                    "store_address": "福建省厦门市湖里区真实地址",
+                }
+            ],
+        },
+        "request_context": {},
+    }
+    shared = _shared_context(
+        state,
+        content_catalog={"sop_packs": []},
+        sop_progress={"completed_pack_ids": []},
+    )
+    planner_context = _tool_planner_shared_context({"shared_context": shared})
+    serialized = str(planner_context)
+
+    assert planner_context["authoritative_facts"]["visible_store_scope"]["store_count"] == 1
+    assert "厦门百星湖里店" not in serialized
+    assert "福建省厦门市湖里区真实地址" not in serialized
+    assert "raw_visible_store_records" not in serialized
+
+
+def test_parallel_reply_prompt_treats_delivered_key_as_foundation_without_customer_approval() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "默认它已经完成一次销售铺垫" in prompt
+    assert "不要再索要认可" in prompt
+    assert "客户重新质疑刚交付的维度时，再重新打开该问题" in prompt
 
 
 def test_parallel_reply_payload_summarizes_paid_registration_field_presence() -> None:
@@ -1065,7 +1275,7 @@ def test_plain_text_store_question_has_no_protocol_tool_recovery() -> None:
     assert _protocol_required_read_only_tools(state) == []
 
 
-def _parallel_payment_validation_state(*, supporting_role: str = "customer") -> dict:
+def _parallel_payment_validation_state(*, supporting_role: str = "assistant") -> dict:
     state = {
         "content": "可以，给我发吧",
         "normalized_content": "可以，给我发吧",
@@ -1125,7 +1335,7 @@ def _parallel_payment_validation_state(*, supporting_role: str = "customer") -> 
     )
 
 
-def test_parallel_payment_accepts_prior_offer_customer_engagement_and_current_intent() -> None:
+def test_parallel_payment_accepts_prior_offer_delivery_and_current_intent() -> None:
     state = _parallel_payment_validation_state()
 
     validate_reply_consistency(
@@ -1415,12 +1625,12 @@ def test_parallel_payment_accepts_prior_assistant_offer_when_no_structured_compl
     )
 
 
-def test_parallel_payment_rejects_supporting_key_without_prior_customer_engagement() -> None:
-    state = _parallel_payment_validation_state(supporting_role="assistant")
+def test_parallel_payment_rejects_customer_statement_as_supporting_delivery() -> None:
+    state = _parallel_payment_validation_state(supporting_role="customer")
 
     with pytest.raises(
         ValueError,
-        match="payment_collection_requires_customer_engaged_supporting_key_evidence",
+        match="payment_collection_requires_prior_supporting_key_evidence",
     ):
         validate_reply_consistency(
             [
@@ -1431,8 +1641,8 @@ def test_parallel_payment_rejects_supporting_key_without_prior_customer_engageme
         )
 
 
-def test_parallel_payment_aggregates_missing_card_and_invalid_evidence_for_one_repair() -> None:
-    state = _parallel_payment_validation_state(supporting_role="assistant")
+def test_parallel_payment_aggregates_missing_card_and_missing_delivery_for_one_repair() -> None:
+    state = _parallel_payment_validation_state(supporting_role="customer")
 
     with pytest.raises(ValueError) as exc_info:
         validate_reply_consistency(
@@ -1443,7 +1653,7 @@ def test_parallel_payment_aggregates_missing_card_and_invalid_evidence_for_one_r
     error = str(exc_info.value)
     assert "parallel_reply_hard_violations::" in error
     assert "payment_action_requires_payment_collection" in error
-    assert "payment_collection_requires_customer_engaged_supporting_key_evidence" in error
+    assert "payment_collection_requires_prior_supporting_key_evidence" in error
 
 
 def test_parallel_chain_rejects_duplicate_payment_cards_instead_of_silently_deduping() -> None:
@@ -1959,9 +2169,9 @@ def test_parallel_reply_repair_rechecks_root_action_before_fixing_structure() ->
     assert "action=registration 只能用于 authoritative_paid=true" in instruction
 
 
-def test_parallel_structural_repair_guard_exposes_exact_customer_ref_choices() -> None:
+def test_parallel_structural_repair_guard_exposes_exact_delivery_ref_choices() -> None:
     guard = _reply_structural_repair_guard(
-        "payment_collection_requires_customer_engaged_supporting_key_evidence",
+        "payment_collection_requires_prior_supporting_key_evidence",
         previous_payload={
             "action": "payment",
             "payment_assessment": {
@@ -1974,25 +2184,32 @@ def test_parallel_structural_repair_guard_exposes_exact_customer_ref_choices() -
             },
         },
         validation_context={
-            "prior_customer_message_refs": ["conv_001"],
+            "prior_assistant_message_refs": ["conv_002"],
             "prior_message_options": [
                 {"ref": "conv_001", "role": "customer", "content": "我这个斑有五六年了。"},
                 {"ref": "conv_002", "role": "assistant", "content": "我先给您看效果。"},
+            ],
+            "structured_delivered_assets": [
+                {
+                    "ref": "sop_completed:s10_need_and_case",
+                    "content_id": "s10_need_and_case",
+                    "asset_role": "effect_evidence",
+                }
             ],
         },
     )
 
     assert "parallel_reply_structural_repair_v1" in guard
     assert '"previous_supporting_key":"effect"' in guard
-    assert '"ref":"conv_001"' in guard
-    assert "我这个斑有五六年了" in guard
-    assert '"ref":"conv_002"' not in guard
-    assert "没有任何语义匹配的客户原话" in guard
-    assert "主动提问" in guard
-    assert "不得因为客户原话是疑问句" in guard
+    assert '"ref":"conv_002"' in guard
+    assert "我先给您看效果" in guard
+    assert '"ref":"conv_001"' not in guard
+    assert "sop_completed:s10_need_and_case" in guard
+    assert "没有任何更早的真实交付证据" in guard
+    assert "客户无需另行确认" in guard
     assert "payment_request_decision_must_remain_structurally_consistent" not in guard
     assert '"choice_cancel_payment"' in guard
-    assert "没有任何语义匹配的客户原话" in guard
+    assert "没有任何更早的真实交付证据" in guard
 
 
 def test_parallel_structural_repair_guard_preserves_tool_store_delivery() -> None:
@@ -2196,7 +2413,7 @@ def test_parallel_structural_repair_guard_is_last_repair_contract() -> None:
         [{"role": "system", "content": "FULL SALES PROMPT MUST NOT BE REPEATED"}],
         ValueError(
             "selected_content_delivery_missing:content_id=s10_deposit_close;;"
-            "payment_collection_requires_customer_engaged_supporting_key_evidence"
+            "payment_collection_requires_prior_supporting_key_evidence"
         ),
         previous_payload={
             "selected_content_ids": ["s10_deposit_close"],
@@ -2204,9 +2421,9 @@ def test_parallel_structural_repair_guard_is_last_repair_contract() -> None:
         },
         validation_context={
             "current_message": {"content": "那我参加", "message_type": "text"},
-            "prior_customer_message_refs": ["conv_001"],
+            "prior_assistant_message_refs": ["conv_001"],
             "prior_message_options": [
-                {"ref": "conv_001", "role": "customer", "content": "有五六年了"}
+                {"ref": "conv_001", "role": "assistant", "content": "我给您发过真实效果案例"}
             ],
             "content_candidate_delivery_requirements": [
                 {
@@ -2224,7 +2441,7 @@ def test_parallel_structural_repair_guard_is_last_repair_contract() -> None:
     assert checklist_at < output_at
     assert "本次只修复校验器明确指出的结构或事实表达错误" in instruction
     assert "然后再按以下通用一致性合同复核整份输出" not in instruction
-    assert "missing_customer_engagement_reference" in instruction[checklist_at:output_at]
+    assert "missing_prior_supporting_delivery_reference" in instruction[checklist_at:output_at]
     assert "selected_content_delivery_incomplete" in instruction[checklist_at:output_at]
     assert len(messages) == 4
     assert "JSON 结构修复器" in messages[0]["content"]
@@ -2331,13 +2548,13 @@ def test_missing_supporting_evidence_repair_preserves_payment_assessment() -> No
     assert "不得把‘把收款卡发我/发卡给我’改写成人工转账" in hint
     assert "不得重新审理该业务结论" in hint
     assert "追加到原 supporting_refs" in hint
-    assert "确实不存在任何与原 supporting_key 对应" in hint
+    assert "确实不存在任何对应的真实交付" in hint
 
 
 def test_combined_asset_and_supporting_evidence_repair_preserves_payment_channel() -> None:
     hint = _reply_repair_hint(
         "selected_content_delivery_missing:content_id=s10_deposit_close;required=image:x;;"
-        "payment_collection_requires_customer_engaged_supporting_key_evidence"
+        "payment_collection_requires_prior_supporting_key_evidence"
     )
 
     assert "先重新阅读 current_message" in hint
@@ -2358,7 +2575,7 @@ def test_nearby_store_repair_does_not_create_optional_store_step() -> None:
 def test_parallel_reply_health_policy_distinguishes_assessment_from_operation() -> None:
     assert "当前明确健康风险" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不得发送预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "可以只回答或暂停" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户当前有健康风险时先暂停营销" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_amount_conflict_repair_rejects_tail_amount_as_deduction() -> None:
@@ -2947,40 +3164,40 @@ def test_tool_planner_rejects_missing_required_read_only_arguments() -> None:
 def test_tool_planner_prompt_requires_distance_for_parent_scope_location_fallback() -> None:
     prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
 
-    assert "同时规划 `customer_store_lookup` 与 `distance_calculate`" in prompt
-    assert "不要求客户必须先说“最近”" in prompt
+    assert "本级无门店且父级范围有多候选" in prompt
+    assert "可同时规划 customer_store_lookup 和 distance_calculate" in prompt
+    assert "用真实排序支持 Reply" in prompt
 
 
 def test_tool_planner_prompt_composes_recent_parent_city_with_current_district() -> None:
     prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
 
+    assert "结合完整历史中的父级城市组成查询词" in prompt
     assert "广州市番禺区" in prompt
-    assert "证据同时引用当前消息和历史中的“广州”" in prompt
-    assert "这不是普通短确认" in prompt
+    assert "evidence_refs 引用真实 message_ref" in prompt
 
 
 def test_tool_planner_prompt_forbids_inventing_parent_for_raw_village_name() -> None:
     prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
 
-    assert "乌林镇乌林村" in prompt
-    assert "不得补成“监利市乌林镇乌林村”" in prompt
-    assert "行政归属交给门店工具解析" in prompt
+    assert "只有客户原话、完整历史或定位事实能提供父级行政区时才能补全父级" in prompt
+    assert "保持客户原始地名，交给门店工具解析" in prompt
+    assert "不凭常识补省市县" in prompt
 
 
 def test_tool_planner_prompt_maps_authenticity_doubt_to_same_dimension_evidence() -> None:
     prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
 
-    assert "先确定被质疑对象，再查询能直接证明该对象的同维度事实" in prompt
-    assert "不能跨到客户没有询问的门店、费用或其他风险" in prompt
-    assert "淡斑效果、改善能力或案例真实性" in prompt
-    assert "规划 `kb_search(kb_name=case_studies)`" in prompt
+    assert "先判断紧邻话题被质疑对象" in prompt
+    assert "若对象是效果或案例真实性" in prompt
+    assert "规划案例查询" in prompt
 
 
 def test_parallel_reply_prompt_keeps_store_delivery_fact_based() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "门店必须属于客户当前可见范围" in prompt
-    assert "事实不足时只问一个会实质改变回答的最小问题" in prompt
+    assert "只有答案会实质改变下一步事实、工具、证据或动作时" in prompt
     assert "应视为当前门店匹配请求" not in prompt
 
 
@@ -2988,9 +3205,9 @@ def test_parallel_reply_prompt_separates_activity_from_deposit() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "预约金是一项独立成交动作" in prompt
-    assert "活动介绍与预约金不得在客户第一次了解活动或价格时绑定发送" in prompt
-    assert "Gate 候选是可选证据与素材，不是模板" in prompt
-    assert "采用 Gate 候选时" in prompt
+    assert "第一次询价或第一次问活动" in prompt
+    assert "不能同轮顺手发预约金卡" in prompt
+    assert "Gate 候选是可选资产" in prompt
 
 
 def test_parallel_reply_requires_a_prior_offer_and_current_action_signal_for_payment() -> None:
@@ -2998,8 +3215,8 @@ def test_parallel_reply_requires_a_prior_offer_and_current_action_signal_for_pay
 
     assert "当前消息之前已经真实介绍过本次活动与价格" in prompt
     assert "地址、效果、卡点排疑中至少另一把销售钥匙" in prompt
-    assert "当前轮存在明确行动信号" in prompt
-    assert "action=registration` 只用于权威已付后的资料登记" in prompt
+    assert "当前轮有明确行动信号" in prompt
+    assert "action=registration` 只用于权威已付后资料登记" in prompt
     assert "订单不是发卡前置" in prompt
 
 
@@ -3028,14 +3245,17 @@ def test_parallel_reply_prompt_keeps_paid_registration_fact_without_slot_script(
 
 def test_parallel_reply_prompt_requires_full_deposit_explanation_before_unpaid_registration() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+    rules = parallel_reply_business_rules_for_model()
+    offer = rules["AUTHORITATIVE FACTS"]["offer"]
 
     assert "未付客户要求“登记、预约、留名额、报名”" in prompt
     assert "不要只索要姓名和手机号" in prompt
-    assert "每位10元预约金" in prompt
-    assert "到店抵扣10元" in prompt
-    assert "做的话再付258元" in prompt
-    assert "未做或不满意可退" in prompt
-    assert "若更早活动介绍、另一把销售钥匙和当前行动信号已满足预约金条件" in prompt
+    assert offer["prepay_amount"] == 10
+    assert offer["tail_amount"] == 258
+    assert "未做或不满意可退" in offer["refund_rule"]
+    assert "每位10元预约金卡" in offer["reservation_completion_rule"]
+    assert "当前消息之前已经真实介绍过本次活动与价格" in prompt
+    assert "当前轮有明确行动信号" in prompt
 
 
 def test_parallel_prompts_keep_paid_decision_in_reply_not_gate() -> None:
@@ -3061,6 +3281,8 @@ def test_parallel_gate_uses_history_only_to_rank_optional_assets() -> None:
     assert "依赖未满足时不能提名" in prompt
     assert "客户当前问题和仍然真实存在的紧邻问题" in prompt
     assert "最多一个 `direct`" in prompt
+    assert "最终是否采用、采用哪个维度以及是否暂停仍由 Reply 决定" in prompt
+    assert "门店后发活动" in prompt
     assert "客户答“番禺区”" not in prompt
 
 
@@ -3853,6 +4075,62 @@ def test_one_parallel_branch_failure_preserves_the_other_branch(monkeypatch) -> 
     assert result["tool_plan"]["tool_calls"][0]["name"] == "kb_search"
 
 
+def test_parallel_content_gate_retries_one_transient_model_failure() -> None:
+    class _ModelClient:
+        last_usage = None
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat_json(self, messages, **kwargs):
+            del messages, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise ConnectionError("relay reset")
+            return {
+                "candidate_assets": [
+                    {
+                        "content_id": "s10_activity_intro",
+                        "evidence_purpose": "交付当前活动价值",
+                        "relevance": "direct",
+                        "evidence_refs": ["current_message"],
+                        "render_strategy": "adaptable",
+                    }
+                ],
+                "reason": "当前询问活动价格",
+            }
+
+    model_client = _ModelClient()
+    service = object.__new__(SopExecutionService)
+    service.model_client = model_client
+    result = asyncio.run(
+        service._select_chat_sop(
+            {
+                "reply_chain_mode": "parallel_candidate_only",
+                "content_assets": [
+                    {
+                        "content_id": "s10_activity_intro",
+                        "asset_role": "activity_offer",
+                        "delivery_status": "unfinished",
+                    }
+                ],
+                "conversation_evidence": [
+                    {
+                        "message_ref": "current_message",
+                        "direction": "customer",
+                        "content": "多少钱",
+                    }
+                ],
+            },
+            deadline_monotonic=time.monotonic() + 10,
+        )
+    )
+
+    assert model_client.calls == 2
+    assert result["candidate_assets"][0]["content_id"] == "s10_activity_intro"
+    assert result["model_retry_applied"] is True
+
+
 def test_shared_context_contains_scoped_sop_progress_before_parallel_branches() -> None:
     class _SopService:
         def reply_chain_content_catalog(self):
@@ -4050,7 +4328,7 @@ def test_parallel_repair_hint_combines_asset_delivery_and_deposit_provenance() -
     hint = _reply_repair_hint(
         "parallel_reply_hard_violations::"
         "selected_content_delivery_missing:content_id=s10_deposit_close;required=image:x,payment_collection:10;;"
-        "payment_collection_requires_customer_engaged_supporting_key_evidence"
+        "payment_collection_requires_prior_supporting_key_evidence"
     )
 
     assert "组合修复" in hint
@@ -4060,8 +4338,10 @@ def test_parallel_repair_hint_combines_asset_delivery_and_deposit_provenance() -
 
 
 def test_tool_planner_requires_current_turn_store_lookup_even_when_scope_is_visible() -> None:
-    assert "即使 `visible_store_scope` 已列出 1–3 家" in parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
-    assert "权限列表本身不能替代本轮匹配" in parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+
+    assert "visible_store_scope 只证明客户权限范围内的区域覆盖和数量" in prompt
+    assert "客户索要具体门店或地址时仍需查询" in prompt
 
 
 def test_deterministic_join_does_not_expose_legacy_fact_envelope() -> None:
