@@ -553,7 +553,7 @@ async def chat_workflow_compatible(
     payload: dict[str, Any] = Body(...),
     _: None = Depends(require_api_key),
 ) -> JSONResponse:
-    return await workflow_compatible_reply(payload)
+    return await workflow_compatible_reply(payload, interface_version="v1")
 
 
 @app.post("/reply/workflow-compatible")
@@ -562,7 +562,7 @@ async def reply_workflow_compatible(
     background_tasks: BackgroundTasks = None,
     _: None = Depends(require_external_api_key),
 ) -> JSONResponse:
-    return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks)
+    return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks, interface_version="v1")
 
 
 @app.post("/reply/workflow-compatible-v2")
@@ -573,7 +573,7 @@ async def reply_workflow_compatible_v2(
 ) -> JSONResponse:
     if settings.service_role != "reply_chain_refactor":
         raise HTTPException(status_code=404, detail="Reply chain v2 is not enabled on this service")
-    return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks)
+    return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks, interface_version="v2")
 
 
 async def workflow_compatible_reply(
@@ -581,11 +581,13 @@ async def workflow_compatible_reply(
     *,
     platform_async: bool = False,
     background_tasks: BackgroundTasks | None = None,
+    interface_version: str = "v1",
 ) -> JSONResponse:
     try:
         request = normalize_workflow_request(payload)
     except ValueError as exc:
         return JSONResponse(status_code=400, content=workflow_error_response(str(exc)))
+    _attach_request_interface_version(request, interface_version)
     request = (
         await platform_voice_batch_coordinator.prepare(request, voice_transcription_client)
         if platform_async
@@ -599,6 +601,14 @@ async def workflow_compatible_reply(
     response_body = workflow_response_from_chat(response)
     _record_http_response_body(response.request_id, response_body)
     return JSONResponse(content=response_body)
+
+
+def _attach_request_interface_version(request: ChatRequest, interface_version: str) -> None:
+    version = "v2" if str(interface_version).strip().lower() == "v2" else "v1"
+    context = dict(request.request_context or {})
+    context["interface_version"] = version
+    context["api_version"] = version
+    request.request_context = context
 
 
 async def run_chat(request: ChatRequest) -> ChatResponse:

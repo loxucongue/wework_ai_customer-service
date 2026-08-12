@@ -54,6 +54,16 @@ def test_refactor_v2_route_is_explicit_and_does_not_replace_primary_route() -> N
     assert "/reply/workflow-compatible" in paths
     assert "/reply/workflow-compatible-v2" in paths
     assert "reply_chain_refactor" in inspect.getsource(main.reply_workflow_compatible_v2)
+    assert 'interface_version="v2"' in inspect.getsource(main.reply_workflow_compatible_v2)
+
+
+def test_workflow_interface_version_is_attached_to_request_context() -> None:
+    request = main.ChatRequest(customer_id="c1", corp_id="corp")
+
+    main._attach_request_interface_version(request, "v2")
+
+    assert request.request_context["interface_version"] == "v2"
+    assert request.request_context["api_version"] == "v2"
 
 
 def test_background_workers_can_be_disabled_for_shared_data_sidecar() -> None:
