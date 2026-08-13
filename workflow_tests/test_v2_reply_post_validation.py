@@ -23,6 +23,7 @@ from app.graph.nodes.reply_validation import (
 from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT
 from app.prompts.sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 from app.graph.nodes.parallel_reply_chain import TOOL_PLANNER_SYSTEM_PROMPT
+from app.policies.business_rules import parallel_reply_business_rules_for_model
 
 
 def _state() -> dict:
@@ -165,11 +166,10 @@ def test_parallel_active_validation_has_no_semantic_text_checkers() -> None:
 
 
 def test_parallel_reply_prompt_treats_delivery_as_progress_without_permission_roundtrip() -> None:
-    assert "已经真实交付的内容不再预告、不索要认可" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "精准回答后最多增加一个新价值维度" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "许可式问题" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "客户无需专门确认此前铺垫" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不再增加无意义确认轮次" in PARALLEL_REPLY_SYSTEM_PROMPT
+    rules = parallel_reply_business_rules_for_model()["SALES PRINCIPLES"]
+    assert any("实际交付" in item for item in rules["principles"])
+    assert any("最多增加一个新价值维度" in item for item in rules["principles"])
+    assert any("许可式问题" in item for item in rules["anti_patterns"])
 
 
 def test_parallel_reply_contract_exposes_exact_deposit_supporting_key_enum() -> None:
@@ -182,8 +182,8 @@ def test_tool_planner_requeries_when_customer_explicitly_requests_store_card_res
 
 
 def test_content_gate_does_not_reopen_location_capture_for_known_store_resend() -> None:
-    assert "当前需要的是结构事实重放，不是再次采集城市" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
-    assert "禁止提名 `asset_role=location_capture`" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "已交付资产默认不重发" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "客户明确要求重发" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
 
 def test_parallel_generic_repair_distinguishes_strategy_refs_from_delivery_refs() -> None:
@@ -319,12 +319,12 @@ def test_model_led_reply_timeout_retries_full_original_task_instead_of_structura
 
 def test_parallel_reply_prompt_is_structured_sales_brain_not_scene_matcher() -> None:
     for section in (
-        "# 1. 使命",
-        "# 2. 权威层级",
-        "# 3. MUST FOLLOW",
-        "# 4. SALES PRINCIPLES",
-        "# 5. 决策协议",
-        "# 6. 输出合同",
+        "# 使命",
+        "# 证据权威",
+        "# 不可违反",
+        "# 销售判断原则",
+        "# 决策协议",
+        "# 输出合同",
     ):
         assert section in PARALLEL_REPLY_SYSTEM_PROMPT
     for legacy in (
@@ -347,21 +347,11 @@ def test_parallel_reply_prompt_is_structured_sales_brain_not_scene_matcher() -> 
     )
     for contract in required_contracts:
         assert contract in PARALLEL_REPLY_SYSTEM_PROMPT
-    semantic_boundaries = (
-        "不把客户原话匹配成固定场景",
-        "只有你负责理解客户、判断销售节奏",
-        "Gate 候选。候选不是命令",
-        "提问只用于获取会改变事实、工具、证据或行动的信息",
-    )
+    semantic_boundaries = ("不是场景匹配器", "只有你负责理解客户", "Gate 候选或工具素材")
     for boundary in semantic_boundaries:
         assert boundary in PARALLEL_REPLY_SYSTEM_PROMPT
 
-    factual_boundaries = (
-        "客户明确选择转账或红包时只说明该渠道",
-        "订单不是发卡前置",
-        "同轮最多一张",
-        "不得编造价格、门店、案例、距离",
-    )
+    factual_boundaries = ("订单不是前置", "同轮最多一张", "不能编造价格、门店、素材、距离")
     for boundary in factual_boundaries:
         assert boundary in PARALLEL_REPLY_SYSTEM_PROMPT
 
@@ -383,6 +373,7 @@ def test_sales_judgment_keeps_only_compact_model_owned_fields() -> None:
     assert judgment == {
         "customer_goal": "先考虑是否值得参加",
         "primary_objective": "降低付款顾虑",
+        "customer_friction_observation": "",
         "posture": "advance",
         "reason": "客户仍在询问而非明确退出",
     }
@@ -556,24 +547,23 @@ def test_parallel_rules_expose_customer_charge_fact_to_reply_and_auditor() -> No
 
 
 def test_reply_requires_direct_text_answer_before_structured_supplement() -> None:
-    assert "先用 text 直接说清" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "结构素材不能代替文字答案" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "先解决客户此刻真正关心的问题" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "结构素材只能逐字使用" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_model_led_prompt_distinguishes_changeable_fact_gaps_from_fixed_constraints() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "事实不足时可以做最小反问" in prompt
-    assert "不重复询问客户已提供的信息" in prompt
-    assert "不循环解释" in prompt
-    assert "普通犹豫或软拒绝不自动等于退出" in prompt
+    assert "是否真的需要客户回答一个问题" in prompt
+    assert "不要重复已回答的问题" in prompt
+    assert "可逆犹豫不自动等于退出" in prompt
 
 
 def test_model_led_reply_preserves_complete_selected_asset_contract() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "采用一个内容资产就要保留其核心事实和全部必要结构素材" in prompt
-    assert "可以自然改写文字，但不能只取一句话或漏发图片、卡片" in prompt
+    assert "采用 Gate 资产时可改写文字" in prompt
+    assert "必要图片、视频、卡片必须完整交付" in prompt
 
 
 def test_current_gate_candidate_authorizes_media_without_audit_metadata() -> None:

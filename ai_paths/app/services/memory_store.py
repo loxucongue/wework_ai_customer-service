@@ -191,6 +191,65 @@ class CustomerMemoryStore:
                 pass
         return {"status": "recorded", "image_url": clean_url}
 
+    def record_v2_reply_model_observation(
+        self,
+        customer_id: str,
+        *,
+        request_id: str,
+        primary_objective: str,
+        customer_friction_observation: str,
+    ) -> dict[str, Any]:
+        """Persist a short model self-observation as low-authority evidence.
+
+        The event is never merged into the customer profile and no code uses it
+        for routing. Keeping the original model wording makes the observation
+        auditable without creating a classifier or state machine.
+        """
+
+        objective = str(primary_objective or "").strip()[:500]
+        friction = str(customer_friction_observation or "").strip()[:500]
+        if not objective and not friction:
+            return {"status": "skipped", "reason": "empty_model_observation"}
+        data = self.load(customer_id)
+        now = self._now()
+        event_id = f"v2_reply_model_observation_{request_id or uuid4()}"
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        if not any(
+            isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+            for item in events
+        ):
+            events.append(
+                {
+                    "event_id": event_id,
+                    "event_type": "v2_reply_model_observation",
+                    "event_time": now,
+                    "facts": {
+                        "primary_objective": objective,
+                        "customer_friction_observation": friction,
+                        "request_id": str(request_id or ""),
+                    },
+                    "source": "v2_reply_model",
+                    "confidence": 0.5,
+                }
+            )
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "event_id": event_id}
+
     def record_sop_pack_sent(
         self,
         customer_id: str,

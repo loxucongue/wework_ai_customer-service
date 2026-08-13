@@ -5,6 +5,7 @@ import json
 import re
 import time
 from copy import deepcopy
+import os
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -419,6 +420,7 @@ class SopExecutionService:
             )
             if shared_state is not None:
                 selector_input["reply_chain_mode"] = "parallel_candidate_only"
+                selector_input["candidate_limit"] = _parallel_gate_candidate_limit()
                 selector_input["content_assets"] = selector_input.pop("unfinished_sops", [])
                 selector_input["candidate_boundary"] = {
                     "purpose": "nominate relevant approved content or distilled evidence guidance for final Reply",
@@ -2837,7 +2839,7 @@ def _candidate_packs(selector_output: dict[str, Any], packs: list[dict[str, Any]
         candidate_ids.insert(0, primary_id)
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
-    limit = 2 if isinstance(requested_assets, list) else 3
+    limit = _parallel_gate_candidate_limit() if isinstance(requested_assets, list) else 3
     for pack_id in candidate_ids[: max(3, limit + 1)]:
         if pack_id in seen or pack_id not in available:
             continue
@@ -3001,7 +3003,8 @@ def _parallel_content_gate_output_violations(
     assets = selector_output.get("candidate_assets")
     if not isinstance(assets, list):
         return ["candidate_assets_must_be_list"]
-    if len(assets) > 3:
+    limit = _parallel_gate_candidate_limit(selector_input.get("candidate_limit"))
+    if len(assets) > limit:
         return ["candidate_assets_exceed_limit"]
     available_assets = {
         _string(item.get("content_id") or item.get("id")): item
@@ -3102,6 +3105,17 @@ def _parallel_content_gate_output_violations(
     if direct_count > 1:
         violations.append("candidate_assets_multiple_direct")
     return violations
+
+
+def _parallel_gate_candidate_limit(value: Any = None) -> int:
+    """Expose a bounded retrieval budget for offline 2/3/4 recall tests."""
+
+    raw = value if value not in (None, "") else os.getenv("V2_CONTENT_GATE_CANDIDATE_LIMIT", "2")
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        parsed = 2
+    return parsed if parsed in {2, 3, 4} else 2
 
 
 def _chat_gate_active_task(value: Any) -> dict[str, str]:

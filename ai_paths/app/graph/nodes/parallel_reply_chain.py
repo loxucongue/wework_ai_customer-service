@@ -11,13 +11,14 @@ from zoneinfo import ZoneInfo
 from app.graph.nodes.common import json_dumps, model_usage_snapshot
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
+from app.graph.nodes.v2_derived_observations import build_v2_derived_observations
 from app.graph.state import AgentState
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.schemas import ChatRequest
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
-from app.services.payment_collection import activity_intro_completed_for_payment, payment_collection_content
+from app.services.payment_collection import payment_collection_content
 from app.services.sop_execution_service import SopExecutionService
 from app.services.trace_logger import TraceLogger
 from app.services.v2_sales_recall_service import V2SalesRecallService
@@ -399,7 +400,7 @@ async def _run_content_gate(
             request_id=str(state.get("request_id") or ""),
             request_context=dict(state.get("request_context") or {}),
             record_task=False,
-            shared_state={"shared_context": copy.deepcopy(state.get("shared_context") or {})},
+            shared_state={"shared_context": _content_gate_shared_context(state)},
         )
         content_candidates = _dict_list(result.get("candidate_packs"))
         candidate_ids = [
@@ -435,6 +436,21 @@ async def _run_content_gate(
             "error": f"{type(exc).__name__}: {exc}",
             "duration_ms": int((time.perf_counter() - started) * 1000),
         }
+
+
+def _content_gate_shared_context(state: AgentState) -> dict[str, Any]:
+    """Give Gate delivery facts, never prior model sales observations."""
+
+    shared = copy.deepcopy(state.get("shared_context") or {})
+    observations = (
+        shared.get("derived_observations")
+        if isinstance(shared.get("derived_observations"), dict)
+        else {}
+    )
+    if observations:
+        observations.pop("prior_model_observations", None)
+        shared["derived_observations"] = observations
+    return shared
 
 
 async def _run_sales_recall(state: AgentState, coze_client: CozeClient | None) -> dict[str, Any]:
@@ -904,8 +920,8 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
             "action": "none | ask | offer | payment | registration",
             "action_reason": "brief model reasoning for audit; never customer-visible",
             "sales_judgment": (
-                "compact model-owned current-turn judgment: customer_goal, primary_objective, posture and reason; "
-                "never persisted"
+                "model-owned current-turn judgment: customer_goal, primary_objective, explicit friction observation, "
+                "posture and reason; only the last two observations may be replayed as low-authority evidence"
             ),
             "payment_assessment": "ephemeral Reply-owned payment context with evidence refs; never persisted",
             "deposit_evidence": "required evidence references only when a payment card is sent",
@@ -929,6 +945,14 @@ def _shared_context(
         (state.get("location_card") or {}).get("title") if isinstance(state.get("location_card"), dict) else "",
         (state.get("location_card") or {}).get("address") if isinstance(state.get("location_card"), dict) else "",
     ]
+    conversation = _conversation(state)
+    current_message = {
+        "content": str(state.get("normalized_content") or state.get("content") or ""),
+        "raw_content": str(state.get("content") or ""),
+        "message_type": _message_type(state),
+        "msgid": str(request_context.get("msgid") or ""),
+        "sent_at": request_context.get("msgtime") or request_context.get("created_at"),
+    }
     authoritative_facts = {
         "orders_and_payment": _authoritative_order_payment_facts(state),
         # This is a permission/coverage summary, not a current-turn lookup
@@ -958,14 +982,13 @@ def _shared_context(
             "iso": datetime.now(BEIJING_TZ).isoformat(),
             "timezone": "Asia/Shanghai",
         },
-        "current_message": {
-            "content": str(state.get("normalized_content") or state.get("content") or ""),
-            "raw_content": str(state.get("content") or ""),
-            "message_type": _message_type(state),
-            "msgid": str(request_context.get("msgid") or ""),
-            "sent_at": request_context.get("msgtime") or request_context.get("created_at"),
-        },
-        "conversation": _conversation(state),
+        "current_message": current_message,
+        "derived_observations": build_v2_derived_observations(
+            conversation=conversation,
+            history_events=list(state.get("history_events") or []),
+            current_message=current_message,
+        ),
+        "conversation": conversation,
         "customer_scope": copy.deepcopy(state.get("customer_scope") or {}),
         "authoritative_facts": authoritative_facts,
         "content_indexes": {
@@ -1003,6 +1026,7 @@ def _tool_planner_shared_context(state: AgentState) -> dict[str, Any]:
     shared = copy.deepcopy(state.get("shared_context") or {})
     shared.pop("content_indexes", None)
     shared.pop("sales_guidance", None)
+    shared.pop("derived_observations", None)
     facts = (
         shared.get("authoritative_facts")
         if isinstance(shared.get("authoritative_facts"), dict)
@@ -1183,7 +1207,6 @@ def _payment_collection_delivery_available(state: AgentState) -> bool:
     evidence satisfy the payment contract.
     """
 
-    payment_fact_state: dict[str, Any] = dict(state)
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
     shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
     authoritative = (
@@ -1196,9 +1219,15 @@ def _payment_collection_delivery_available(state: AgentState) -> bool:
         if isinstance(authoritative.get("sop_progress"), dict)
         else {}
     )
-    if sop_progress:
-        payment_fact_state["sop_progress_evidence"] = copy.deepcopy(sop_progress)
-    if not activity_intro_completed_for_payment(payment_fact_state):
+    if not _v2_activity_offer_delivered(
+        sop_progress=sop_progress,
+        sent_messages=(
+            authoritative.get("sent_messages")
+            if isinstance(authoritative.get("sent_messages"), dict)
+            else {}
+        ),
+        history_events=state.get("history_events") or [],
+    ):
         return False
     if is_paid_deposit_state(state.get("payment_state")):
         return False
@@ -1214,6 +1243,70 @@ def _payment_collection_delivery_available(state: AgentState) -> bool:
     if is_paid_deposit_state(resolved.get("deposit_state")):
         return False
     return True
+
+
+def _v2_activity_offer_delivered(
+    *,
+    sop_progress: dict[str, Any],
+    sent_messages: dict[str, Any],
+    history_events: list[Any],
+) -> bool:
+    """Use append-only delivery facts, never visible-text interpretation.
+
+    This is an execution prerequisite for exposing the payment card as an
+    available structure. It does not decide whether Reply should use the card.
+    """
+
+    completed_ids = {
+        str(item).strip()
+        for item in sop_progress.get("completed_pack_ids") or []
+        if str(item).strip()
+    }
+    completed_categories = {
+        str(item).strip()
+        for item in sop_progress.get("completed_categories") or []
+        if str(item).strip()
+    }
+    if "s10_activity_intro" in completed_ids or completed_categories.intersection(
+        {"s10_activity_intro", "activity_intro", "price_quote"}
+    ):
+        return True
+    try:
+        payment_collection_count = int(sent_messages.get("payment_collection_count") or 0)
+    except (TypeError, ValueError):
+        payment_collection_count = 0
+    if (
+        sent_messages.get("activity_intro_image_sent")
+        or sent_messages.get("payment_collection_sent")
+        or payment_collection_count > 0
+    ):
+        return True
+    for raw_event in history_events:
+        if not isinstance(raw_event, dict):
+            continue
+        event_type = str(raw_event.get("event_type") or "").strip().lower()
+        pack_id = str(
+            raw_event.get("pack_id")
+            or raw_event.get("sop_pack_id")
+            or raw_event.get("send_once_key")
+            or ""
+        ).strip().lower()
+        category = str(
+            raw_event.get("sop_category") or raw_event.get("category") or ""
+        ).strip().lower()
+        if event_type in {
+            "activity_intro_image_sent",
+            "offer_explained",
+            "payment_collection_sent",
+        }:
+            return True
+        if pack_id == "s10_activity_intro" or category in {
+            "activity_intro",
+            "s10_activity_intro",
+            "price_quote",
+        }:
+            return True
+    return False
 
 
 def _store_fact_status(joined: dict[str, Any]) -> dict[str, Any]:

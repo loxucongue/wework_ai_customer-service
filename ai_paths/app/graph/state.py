@@ -86,6 +86,7 @@ class AgentState(TypedDict, total=False):
     evidence_join: dict[str, Any]
     used_fact_refs: list[str]
     selected_content_ids: list[str]
+    content_selection_metrics: dict[str, Any]
     reply_action: str
     reply_action_reason: str
     # Ephemeral Reply-owned audit only. These fields are never persisted as

@@ -169,19 +169,17 @@ def test_v2_prompts_do_not_restore_scene_matching_or_raw_reference_replies() -> 
     assert "appointment_blocker_reference" not in active_prompts
     assert "最终 Reply 销售大脑" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "销冠经验" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不照抄 SOP 或销冠原话" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不是场景匹配器" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "第一次询价或第一次完整了解活动" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不能同轮发预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不同轮发预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "reference_messages" not in active_prompts
     assert "客户说 X" not in active_prompts
 
 
 def test_v2_prompts_forbid_inventing_customer_concerns_and_valueless_questions() -> None:
-    assert "不主动植入未表达的顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "能直接发送真实案例、门店卡或活动资产时，不先问客户是否需要" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "提问只用于获取会改变事实、工具、证据或行动的信息" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "是否引入客户没提的新顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "是否把可直接交付的内容写成许可式问句" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不主动植入客户没有提出的顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "直接发，不先问客户要不要看" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "提问只用于获得会改变事实、工具、证据或行动的信息" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:

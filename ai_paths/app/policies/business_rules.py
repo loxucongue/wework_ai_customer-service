@@ -107,6 +107,7 @@ def parallel_reply_business_rules_for_model() -> dict[str, Any]:
             "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
             "transaction_policy": transaction,
         },
+        "SALES PRINCIPLES": _model_led_sales_principles(rules),
         "TOOL FACT BOUNDARIES": _tool_policy(rules).get("boundaries") or {},
     }
 

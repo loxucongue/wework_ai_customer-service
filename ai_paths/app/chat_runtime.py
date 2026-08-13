@@ -520,6 +520,20 @@ class ChatRuntime:
                     customer_id=str(final_state.get("sales_contact_key") or ""),
                     reply_messages=reply_message_dicts,
                 )
+                try:
+                    _record_v2_reply_model_observation(
+                        self._memory_store,
+                        final_state,
+                        customer_id=str(final_state.get("sales_contact_key") or ""),
+                    )
+                except Exception as exc:
+                    final_state.setdefault("warnings", []).append(
+                        {
+                            "node": "v2_reply_model_observation",
+                            "message": "observation_persistence_failed",
+                            "detail": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
         elif reply_messages:
             final_state["case_image_send_record"] = {
                 "status": "skipped",
@@ -576,6 +590,7 @@ class ChatRuntime:
                 "reply_sales_judgment": final_state.get("reply_sales_judgment", {}),
                 "reply_deposit_evidence": final_state.get("reply_deposit_evidence", {}),
                 "selected_content_ids": final_state.get("selected_content_ids", []),
+                "content_selection_metrics": final_state.get("content_selection_metrics", {}),
                 "parallel_branch_metrics": final_state.get("parallel_branch_metrics", {}),
                 "fallback_source": final_state.get("fallback_source", ""),
                 "postprocess_changed": bool(final_state.get("postprocess_changed")),
@@ -1001,6 +1016,31 @@ def _record_activity_intro_image(
         record["error"] = f"{type(exc).__name__}: {exc}"
     state["activity_intro_image_send_record"] = record
     _append_activity_intro_image_trace(state, record)
+
+
+def _record_v2_reply_model_observation(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+) -> None:
+    """Append Reply's own short observation after a successful visible reply."""
+
+    if not memory_store or not state.get("evidence_join") or not customer_id:
+        return
+    judgment = (
+        state.get("reply_sales_judgment")
+        if isinstance(state.get("reply_sales_judgment"), dict)
+        else {}
+    )
+    memory_store.record_v2_reply_model_observation(
+        customer_id,
+        request_id=str(state.get("request_id") or ""),
+        primary_objective=str(judgment.get("primary_objective") or ""),
+        customer_friction_observation=str(
+            judgment.get("customer_friction_observation") or ""
+        ),
+    )
 
 
 def _activity_intro_image_record_plan(

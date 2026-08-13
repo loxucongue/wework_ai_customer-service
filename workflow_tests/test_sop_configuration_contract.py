@@ -132,9 +132,9 @@ def test_v2_activity_asset_can_support_adjacent_value_without_fixed_stage_mappin
 
 
 def test_parallel_gate_adjacent_value_must_cross_decision_dimension() -> None:
-    assert "不同决策维度的新价值" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
-    assert "不能标成相邻 `supporting`" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
-    assert "B 只能再考虑活动、地址或真实卡点中的一个" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "不同维度且尚未重复的 `supporting` 资产" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "跨维度 supporting 资产" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "不能植入" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize("field", ["reply_messages", "purpose", "enabled", "order"])

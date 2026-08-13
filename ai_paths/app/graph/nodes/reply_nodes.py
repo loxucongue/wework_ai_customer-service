@@ -14,10 +14,12 @@ from app.graph.nodes.reply_validation import (
     _parallel_shared_context,
     extract_image_url_from_text,
     message_content_text,
+    completed_parallel_selected_content_ids,
     validate_reply_consistency,
 )
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.graph.nodes.parallel_reply_chain import parallel_reply_payload
+from app.graph.nodes.v2_reply_admission import validate_v2_reply_admission
 from app.prompts.reply_synthesizer import build_parallel_reply_messages
 from app.graph.nodes.common import json_dumps
 from app.services.payment_collection import (
@@ -197,10 +199,21 @@ def create_synthesize_reply_node(
                 or ""
             )[:500]
             reply_metadata = _reply_metadata_from_model_call(model_call) if state.get("evidence_join") else {}
+            content_selection_metrics = (
+                _parallel_content_selection_metrics(
+                    state,
+                    messages=messages,
+                    selected_ids=reply_metadata.get("selected_content_ids", []),
+                    used_fact_refs=reply_metadata.get("used_fact_refs", []),
+                )
+                if state.get("evidence_join")
+                else {}
+            )
             output = {
                 "reply_messages": messages,
                 "used_fact_refs": reply_metadata.get("used_fact_refs", []),
                 "selected_content_ids": reply_metadata.get("selected_content_ids", []),
+                "content_selection_metrics": content_selection_metrics,
                 "reply_action": reply_metadata.get("action", "none"),
                 "reply_action_reason": reply_metadata.get("action_reason", ""),
                 "reply_sales_judgment": reply_metadata.get("sales_judgment", {}),
@@ -238,6 +251,41 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
+
+
+def _parallel_content_selection_metrics(
+    state: AgentState,
+    *,
+    messages: list[dict[str, Any]],
+    selected_ids: list[str],
+    used_fact_refs: list[str],
+) -> dict[str, Any]:
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    nominated_ids = [
+        str(item.get("content_id") or item.get("id") or "").strip()
+        for item in joined.get("content_candidates") or []
+        if isinstance(item, dict)
+        and str(item.get("content_id") or item.get("id") or "").strip()
+    ]
+    adopted_ids = [str(item).strip() for item in selected_ids if str(item).strip()]
+    metric_state: AgentState = dict(state)
+    metric_state["reply_used_fact_refs"] = [
+        str(item).strip() for item in used_fact_refs if str(item).strip()
+    ]
+    delivered_ids = completed_parallel_selected_content_ids(
+        messages,
+        metric_state,
+        adopted_ids,
+    )
+    return {
+        "schema_version": "v2_content_selection_metrics_v1",
+        "nominated_ids": list(dict.fromkeys(nominated_ids)),
+        "adopted_ids": list(dict.fromkeys(adopted_ids)),
+        "delivered_ids": list(dict.fromkeys(delivered_ids)),
+        "nominated_count": len(set(nominated_ids)),
+        "adopted_count": len(set(adopted_ids)),
+        "delivered_count": len(set(delivered_ids)),
+    }
 
 
 def _planner_direct_reply_is_valid(
@@ -640,7 +688,7 @@ def _validated_parallel_reply_payload(
     validation_state = _reply_validation_state(state, payload)
     messages = validated_model_messages(payload, validation_state)
     messages = _prepare_structural_messages(messages, validation_state, warnings)
-    validate_reply_consistency(messages, validation_state)
+    validate_v2_reply_admission(messages, validation_state)
     return messages
 
 
@@ -869,6 +917,10 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
     # answer. Deterministic payment/store/write boundaries below still use
     # authoritative facts and actual structured messages.
     safety["evidence_refs"] = _valid_customer_refs(safety.get("evidence_refs"), valid_refs)
+    if safety.get("status") != "none" and not safety["evidence_refs"]:
+        # A model label without a real customer citation is not an
+        # authoritative safety fact and must not block an external action.
+        safety = {"status": "none", "evidence_refs": []}
     party_size["evidence_refs"] = _valid_customer_refs(party_size.get("evidence_refs"), valid_refs)
     validation_state["reply_safety_assessment"] = safety
     validation_state["reply_party_size_assessment"] = party_size
@@ -980,6 +1032,9 @@ def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
     return {
         "customer_goal": str(raw.get("customer_goal") or "")[:500],
         "primary_objective": str(raw.get("primary_objective") or "")[:500],
+        "customer_friction_observation": str(
+            raw.get("customer_friction_observation") or ""
+        )[:500],
         "posture": posture,
         "reason": str(raw.get("reason") or "")[:500],
     }
@@ -1299,8 +1354,12 @@ def _parallel_generic_reply_repair_messages(
     """Repair schema, structural delivery, or deterministic fact conflicts only."""
 
     raw_error = str(exc)
-    marker = "parallel_reply_hard_violations::"
-    violation_codes = raw_error.split(marker, 1)[1].split(";;") if marker in raw_error else [raw_error]
+    markers = (
+        "v2_reply_admission_violations::",
+        "parallel_reply_hard_violations::",
+    )
+    marker = next((item for item in markers if item in raw_error), "")
+    violation_codes = raw_error.split(marker, 1)[1].split(";;") if marker else [raw_error]
     violations = [item.strip() for item in violation_codes if item.strip()]
     failure_class = _parallel_repair_failure_class(violations)
     required_changes = _parallel_repair_required_changes(violations)
