@@ -342,6 +342,7 @@ def _dedupe_platform_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
     seen_refs: set[str] = set()
     previous_signature = ""
     previous_timestamp: float | None = None
+    previous_ref = ""
     for index, item in enumerate(messages, start=1):
         ref = _message_ref(item, index=index)
         if ref and not ref.startswith("conv_") and ref in seen_refs:
@@ -362,13 +363,21 @@ def _dedupe_platform_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
             or previous_timestamp is None
             or abs(timestamp - previous_timestamp) <= 30
         )
-        if output and signature == previous_signature and close_in_time:
+        current_has_stable_ref = bool(ref and not ref.startswith("conv_"))
+        previous_has_stable_ref = bool(previous_ref and not previous_ref.startswith("conv_"))
+        if (
+            output
+            and signature == previous_signature
+            and close_in_time
+            and not (current_has_stable_ref and previous_has_stable_ref)
+        ):
             continue
         if ref and not ref.startswith("conv_"):
             seen_refs.add(ref)
         output.append(item)
         previous_signature = signature
         previous_timestamp = timestamp
+        previous_ref = ref
     return output
 
 
