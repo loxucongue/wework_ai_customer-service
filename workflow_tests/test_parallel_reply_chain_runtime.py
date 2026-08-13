@@ -395,6 +395,8 @@ def test_parallel_reply_prompt_does_not_turn_incomplete_store_scope_into_activit
     assert "store_scope_unavailable" in prompt
     assert "门店覆盖和活动资格是两类独立事实" in prompt
     assert "绝不能扩大为" in prompt
+    assert "门店信息正在更新、同步或维护中" in prompt
+    assert "不必评价尚未查明的门店状态" in prompt
 
 
 def test_parallel_content_gate_does_not_reopen_completed_fact_collection_from_progress_gaps() -> None:
