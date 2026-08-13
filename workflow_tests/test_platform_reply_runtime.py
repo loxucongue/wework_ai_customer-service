@@ -315,6 +315,26 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(gate.confirmed)
         self.assertTrue(gate.failed)
 
+    async def test_authorized_manifest_fallback_confirms_chat_gate_task(self) -> None:
+        repository = _Repository()
+        gate = _PrecisionSopGate()
+        graph = _AuthorizedManifestFallbackGraph()
+        runtime = ChatRuntime(
+            full_graph=_NeedToolsPlannerGraph(),
+            planner_graph=_NeedToolsPlannerGraph(),
+            finalize_graph=graph,
+            trace_logger=_TraceLogger(),
+            repository=repository,
+            sop_execution_service=gate,
+        )
+
+        response = await runtime.run_platform_reply(_request("我主要不是斑点，就是想提亮美白肤色"))
+
+        self.assertEqual([message.type for message in response.reply_messages], ["text", "image"])
+        self.assertTrue(gate.confirmed)
+        self.assertFalse(gate.failed)
+        self.assertEqual(repository.saved_states[-1]["reply_source"], "deterministic_authorized_sop_manifest_fallback")
+
     async def test_finalize_empty_reply_is_recovered_and_returned_synchronously(self) -> None:
         repository = _Repository()
         outreach = _OutreachSendClient()
@@ -653,6 +673,34 @@ class _PrecisionReplyGraph:
             }
         )
         return output
+
+
+class _AuthorizedManifestFallbackGraph:
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        manifest = dict(state.get("sop_delivery_manifest") or {})
+        return {
+            **state,
+            "reply_source": "deterministic_authorized_sop_manifest_fallback",
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": "鎴戠粰鎮ㄥ彂涓€缁勫悓绫绘渚嬪弬鑰冦€?",
+                },
+                {
+                    "type": "image",
+                    "order": 2,
+                    "content": {"url": "https://example.invalid/sop-case.jpg"},
+                },
+            ],
+            "authorized_sop_delivery_manifest": {
+                **manifest,
+                "active": True,
+                "delivery_decision": {"action": "deliver_now"},
+            },
+            "trace": [],
+            "errors": [{"node": "synthesize_reply", "message": "final_reply_failed"}],
+        }
 
 
 class _TraceLogger:

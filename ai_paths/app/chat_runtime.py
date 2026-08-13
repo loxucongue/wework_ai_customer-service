@@ -1108,17 +1108,22 @@ class ChatRuntime:
                 if isinstance(final_state.get("authorized_sop_delivery_manifest"), dict)
                 else {}
             )
+            manifest_fallback_sent = (
+                reply_source == "deterministic_authorized_sop_manifest_fallback"
+                and raw_reply_messages
+                and authorized_manifest.get("active")
+            )
             if (
                 bool(final_state.get("reply_blocked"))
-                or final_state.get("errors")
-                or reply_source.startswith("deterministic_")
+                or (final_state.get("errors") and not manifest_fallback_sent)
+                or (reply_source.startswith("deterministic_") and not manifest_fallback_sent)
             ):
                 _fail_deferred_chat_sop_task(
                     self._sop_execution_service,
                     final_state,
                     error=str(final_state.get("recovery_reason") or reply_source or "unified_reply_chain_failed"),
                 )
-            elif raw_reply_messages and authorized_manifest.get("active"):
+            elif manifest_fallback_sent or (raw_reply_messages and authorized_manifest.get("active")):
                 _confirm_deferred_chat_sop_task(
                     self._sop_execution_service,
                     final_state,
