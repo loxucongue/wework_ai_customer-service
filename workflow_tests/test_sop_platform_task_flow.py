@@ -845,6 +845,21 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "processing_retry")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_processing_retry")
 
+    async def test_downstream_conversation_not_found_remains_recoverable(self) -> None:
+        model = _Model([{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}])
+        service, repo, platform, system = _service(model=model)
+        system.send_error = RuntimeError(
+            'outreach_system_http_404: {"code":40402,"msg":"conversation not found","data":{}}'
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "conversation not found"):
+            await service.process_task(_task())
+
+        self.assertEqual(platform.consume_calls, [("101", 20)])
+        self.assertEqual(next(iter(repo.tasks.values()))["status"], "processing_retry")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_processing_retry")
+        self.assertEqual(len(system.send_calls), 1)
+
     async def test_ai_service_customer_message_without_time_still_uses_model(self) -> None:
         model = _Model([{"decision": "send", "reason": "model owns semantics", "reply_messages": [_text("自然承接")]}])
         service, repo, platform, system = _service(model=model)

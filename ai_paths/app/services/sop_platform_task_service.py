@@ -2730,12 +2730,16 @@ def _terminal_delivery_failure(exc: Exception) -> dict[str, Any]:
     if not matched:
         return {}
     status = int(matched.group(1))
+    detail = matched.group(2).strip()
+    normalized_detail = detail.lower()
+    if status == 404 and ("40402" in normalized_detail or "conversation not found" in normalized_detail):
+        return {}
     if status < 400 or status >= 500 or status in {408, 429}:
         return {}
     return {
         "kind": "downstream_http_rejection",
         "http_status": status,
-        "detail": matched.group(2).strip()[:2000],
+        "detail": detail[:2000],
         "retryable": False,
     }
 
