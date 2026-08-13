@@ -19,6 +19,10 @@ type RunItem = {
   token_usage?: Record<string, JsonValue>;
   error?: string;
   created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  runtime_status?: string;
+  runtime_phase?: string;
 };
 
 type NodeTrace = {
@@ -77,14 +81,15 @@ export function RunLogViewer() {
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const selectedRun = useMemo(
     () => detail?.run || runs.find((item) => item.request_id === selectedId) || null,
     [detail, runs, selectedId]
   );
 
-  const loadRuns = useCallback(async () => {
-    setLoading(true);
+  const loadRuns = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     const search = new URLSearchParams();
     for (const [key, value] of Object.entries(filters)) {
@@ -103,7 +108,7 @@ export function RunLogViewer() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载日志失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [filters]);
 
@@ -136,6 +141,17 @@ export function RunLogViewer() {
       void loadDetail(selectedId);
     }
   }, [loadDetail, selectedId]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setNowMs(Date.now());
+      void loadRuns(true);
+      if (selectedId && runs.some((run) => run.request_id === selectedId && isRunning(run))) {
+        void loadDetail(selectedId);
+      }
+    }, 2000);
+    return () => window.clearInterval(interval);
+  }, [loadDetail, loadRuns, runs, selectedId]);
 
   return (
     <main className="flex h-screen bg-slate-50 text-slate-950">
@@ -172,7 +188,7 @@ export function RunLogViewer() {
             <Database className="h-5 w-5" />
             运行日志
           </h1>
-          <p className="mt-1 text-sm text-slate-500">重点查看单次大模型调用的耗时、输入 messages 和 JSON 输出。</p>
+          <p className="mt-1 text-sm text-slate-500">实时查看正在执行的 AI 任务、开始时间、总耗时和节点详情。</p>
         </header>
 
         <section className="border-b p-4">
@@ -252,6 +268,10 @@ export function RunLogViewer() {
               <div className="mt-2 line-clamp-2 text-sm">{contentSnippet(run)}</div>
               {replySnippet(run) ? <div className="mt-1 line-clamp-1 text-xs text-slate-500">{replySnippet(run)}</div> : null}
               <div className="mt-2 flex flex-wrap gap-1">
+                <RuntimeStatusBadge run={run} />
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                  {isRunning(run) ? `已耗时 ${formatDuration(runDurationMs(run, nowMs))}` : `总耗时 ${formatDuration(run.duration_ms || 0)}`}
+                </span>
                 {(run.tags || []).slice(0, 4).map((tag) => (
                   <span key={tag} className="rounded-full bg-slate-200 px-2 py-0.5 text-xs text-slate-700">
                     {tag}
@@ -267,7 +287,7 @@ export function RunLogViewer() {
 
       <section className="min-w-0 flex-1 overflow-y-auto p-6">
         {selectedRun ? (
-          <RunDetailPanel run={selectedRun} traces={detail?.node_traces || []} loading={detailLoading} rawLog={detail?.raw_log} />
+          <RunDetailPanel run={selectedRun} traces={detail?.node_traces || []} loading={detailLoading} rawLog={detail?.raw_log} nowMs={nowMs} />
         ) : (
           <div className="rounded-lg border bg-white p-8 text-sm text-slate-500">请选择一条运行日志。</div>
         )}
@@ -281,11 +301,13 @@ function RunDetailPanel({
   traces,
   loading,
   rawLog,
+  nowMs,
 }: {
   run: RunItem;
   traces: NodeTrace[];
   loading: boolean;
   rawLog?: JsonValue;
+  nowMs: number;
 }) {
   const modelCalls = useMemo(() => collectModelCalls(traces), [traces]);
   const modelTotalMs = modelCalls.reduce((sum, item) => sum + (item.durationMs || 0), 0);
@@ -306,7 +328,9 @@ function RunDetailPanel({
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
             <Clock className="h-4 w-4" />
-            总耗时 {run.duration_ms ?? "-"}ms
+            开始 {formatTime(run.started_at || run.created_at)}
+            <span className="text-slate-300">|</span>
+            {isRunning(run) ? `已耗时 ${formatDuration(runDurationMs(run, nowMs))}` : `总耗时 ${formatDuration(run.duration_ms || 0)}`}
             <span className="text-slate-300">|</span>
             模型 {modelCalls.length} 次 / {modelTotalMs || 0}ms
             <span className="text-slate-300">|</span>
@@ -639,6 +663,49 @@ function InterfaceVersionBadge({ run }: { run: RunItem }) {
       ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
       : "bg-slate-200 text-slate-700 ring-slate-300";
   return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase ring-1 ${className}`}>{version}</span>;
+}
+
+function RuntimeStatusBadge({ run }: { run: RunItem }) {
+  const status = String(run.runtime_status || "completed");
+  if (status === "running") {
+    return <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700">运行中 · {phaseLabel(run.runtime_phase)}</span>;
+  }
+  if (status === "interrupted") {
+    return <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">已中断</span>;
+  }
+  if (status === "completed_with_errors") {
+    return <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-700">已完成 · 有错误</span>;
+  }
+  return <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">已完成</span>;
+}
+
+function isRunning(run: RunItem) {
+  return run.runtime_status === "running";
+}
+
+function runDurationMs(run: RunItem, nowMs: number) {
+  const start = new Date(run.started_at || run.created_at || "").getTime();
+  return Number.isFinite(start) ? Math.max(0, nowMs - start) : Number(run.duration_ms || 0);
+}
+
+function formatDuration(value: number) {
+  if (value < 1000) return `${Math.max(0, Math.round(value))}ms`;
+  const seconds = Math.floor(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s`;
+}
+
+function phaseLabel(phase?: string) {
+  const labels: Record<string, string> = {
+    request_received: "请求已接收",
+    sop_gate: "SOP Gate",
+    planner: "Planner",
+    reply: "Reply",
+    full: "AI 全链路",
+    commit: "提交结果",
+  };
+  return labels[String(phase || "")] || String(phase || "处理中");
 }
 
 function runInterfaceVersion(run: RunItem) {

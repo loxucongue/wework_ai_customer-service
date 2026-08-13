@@ -10,6 +10,7 @@ from app.graph.planner.runtime_plan import planner_task_views
 
 
 logger = logging.getLogger(__name__)
+_RUNNING_STALE_AFTER_SECONDS = 15 * 60
 
 
 def utc_now_iso() -> str:
@@ -45,6 +46,18 @@ def decode_run(row: dict[str, Any]) -> dict[str, Any]:
         row[key] = loads_list(row.get(key))
     row["token_usage"] = loads_dict(row.get("token_usage"))
     row["interface_version"] = interface_version_from_run(row)
+    output_snapshot = row.get("output_snapshot") if isinstance(row.get("output_snapshot"), dict) else {}
+    runtime_status = str(output_snapshot.get("runtime_status") or "").strip()
+    started_at = str(output_snapshot.get("runtime_started_at") or row.get("created_at") or "")
+    finished_at = str(output_snapshot.get("runtime_finished_at") or "")
+    if not runtime_status:
+        runtime_status = "completed_with_errors" if str(row.get("error") or "") else "completed"
+    if runtime_status == "running" and _age_seconds(started_at) > _RUNNING_STALE_AFTER_SECONDS:
+        runtime_status = "interrupted"
+    row["runtime_status"] = runtime_status
+    row["runtime_phase"] = str(output_snapshot.get("runtime_phase") or "")
+    row["started_at"] = started_at
+    row["finished_at"] = finished_at
     return row
 
 
@@ -114,3 +127,13 @@ def interface_version_from_run(run: dict[str, Any]) -> str:
         if text == "v1":
             return "v1"
     return "v1"
+
+
+def _age_seconds(value: str) -> float:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+    except (TypeError, ValueError):
+        return float("inf")

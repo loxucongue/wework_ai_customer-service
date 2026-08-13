@@ -17,10 +17,73 @@ from app.services.trace_logger import compact
 
 
 class RunRepositoryMixin:
+    def start_run(
+        self,
+        *,
+        request_id: str,
+        conversation_id: str,
+        customer_id: str,
+        input_snapshot: dict[str, Any],
+        interface_version: str = "v1",
+    ) -> None:
+        """Persist the request before model execution so it is visible live."""
+
+        started_at = utc_now_iso()
+        output_snapshot = {
+            "runtime_status": "running",
+            "runtime_phase": "request_received",
+            "runtime_started_at": started_at,
+            "runtime_updated_at": started_at,
+            "interface_version": "v2" if str(interface_version).lower() == "v2" else "v1",
+        }
+        with self.store.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO runs
+                    (request_id, conversation_id, customer_id, input_snapshot, output_snapshot, intents, tags,
+                     duration_ms, token_usage, error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    conversation_id,
+                    customer_id,
+                    dumps(compact(input_snapshot)),
+                    dumps(output_snapshot),
+                    "[]",
+                    "[]",
+                    0,
+                    "{}",
+                    "",
+                    started_at,
+                ),
+            )
+
+    def update_run_progress(self, *, request_id: str, phase: str) -> None:
+        """Update only observability metadata; never alter business state."""
+
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT output_snapshot FROM runs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if not row:
+                return
+            output_snapshot = loads_dict(row["output_snapshot"])
+            if str(output_snapshot.get("runtime_status") or "") not in {"", "running"}:
+                return
+            output_snapshot["runtime_status"] = "running"
+            output_snapshot["runtime_phase"] = str(phase or "running")
+            output_snapshot["runtime_updated_at"] = utc_now_iso()
+            conn.execute(
+                "UPDATE runs SET output_snapshot=? WHERE request_id=?",
+                (dumps(compact(output_snapshot)), request_id),
+            )
+
     def save_run(self, *, conversation_id: str, final_state: dict[str, Any], token_usage: dict[str, Any]) -> None:
         request_id = str(final_state.get("request_id") or "")
         trace = final_state.get("trace") or []
-        duration_ms = sum(int(item.get("duration_ms") or 0) for item in trace if isinstance(item, dict))
+        trace_duration_ms = sum(int(item.get("duration_ms") or 0) for item in trace if isinstance(item, dict))
         errors = final_state.get("errors") or []
         error = dumps(errors) if errors else ""
         input_snapshot = {
@@ -67,12 +130,29 @@ class RunRepositoryMixin:
             "event_updates": final_state.get("event_updates", []),
         }
         with self.store.connect() as conn:
-            existing = conn.execute("SELECT output_snapshot FROM runs WHERE request_id=?", (request_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT output_snapshot, created_at FROM runs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            existing_output: dict[str, Any] = {}
+            started_at = ""
             if existing:
                 existing_output = loads_dict(existing["output_snapshot"])
                 for key in ("http_response_body", "http_response_reply_messages"):
                     if key in existing_output and key not in output_snapshot:
                         output_snapshot[key] = existing_output[key]
+                started_at = str(existing_output.get("runtime_started_at") or existing["created_at"] or "")
+            finished_at = utc_now_iso()
+            duration_ms = _elapsed_ms(started_at, finished_at) if started_at else trace_duration_ms
+            output_snapshot = {
+                "runtime_status": "completed_with_errors" if errors else "completed",
+                "runtime_phase": "completed",
+                "runtime_started_at": started_at or finished_at,
+                "runtime_updated_at": finished_at,
+                "runtime_finished_at": finished_at,
+                "interface_version": str(existing_output.get("interface_version") or "v1"),
+                **output_snapshot,
+            }
             conn.execute(
                 """
                 INSERT OR REPLACE INTO runs
@@ -91,7 +171,7 @@ class RunRepositoryMixin:
                     duration_ms,
                     dumps(token_usage),
                     error,
-                    utc_now_iso(),
+                    started_at or finished_at,
                 ),
             )
             for index, entry in enumerate(trace):
@@ -203,3 +283,16 @@ def _reply_messages_from_http_response(response_body: dict[str, Any]) -> list[An
         return messages
     messages = response_body.get("reply_messages") if isinstance(response_body.get("reply_messages"), list) else []
     return messages
+
+
+def _elapsed_ms(started_at: str, finished_at: str) -> int:
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        finished = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=timezone.utc)
+        return max(0, int((finished - started).total_seconds() * 1000))
+    except (TypeError, ValueError):
+        return 0
