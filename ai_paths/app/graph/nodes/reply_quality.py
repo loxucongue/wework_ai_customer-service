@@ -51,6 +51,33 @@ def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str,
     return warnings
 
 
+def collect_reply_observation_metrics(
+    messages: list[dict[str, Any]], state: dict[str, Any]
+) -> dict[str, Any]:
+    """Record reconstructable measurements without grading or changing Reply."""
+
+    current_text = _combined_text(messages)
+    previous_text = _last_assistant_text(state)
+    similarity = None
+    if (
+        current_text
+        and previous_text
+        and all(
+            str(item.get("type") or "") == "text"
+            for item in messages
+            if isinstance(item, dict)
+        )
+    ):
+        similarity = round(SequenceMatcher(None, previous_text, current_text).ratio(), 4)
+    return {
+        "schema_version": "reply_observation_metrics_v1",
+        "previous_assistant_text_similarity": similarity,
+        "current_text_length": len(current_text),
+        "previous_text_length": len(previous_text),
+        "measurement_only": True,
+    }
+
+
 def _validate_case_image_required_for_effect_turn(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     if not _is_case_or_effect_turn(state) or not _has_visible_case_image_fact(state):
         return

@@ -8,10 +8,15 @@ from app.graph.nodes.parallel_reply_chain import (
     _v2_activity_offer_delivered,
 )
 from app.graph.nodes.v2_derived_observations import build_v2_derived_observations
+from app.graph.nodes.reply_quality import collect_reply_observation_metrics
 from app.graph.nodes.v2_reply_admission import validate_v2_reply_admission
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT
-from app.prompts.sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+from app.prompts.sop_chat_gate import (
+    PARALLEL_CONTENT_GATE_SYSTEM_PROMPT,
+    SOP_CHAT_GATE_SYSTEM_PROMPT,
+    build_sop_chat_gate_messages,
+)
 
 
 def test_parallel_reply_receives_model_led_sales_principles_without_scene_catalog() -> None:
@@ -103,6 +108,21 @@ def test_content_gate_receives_delivery_observations_but_not_prior_model_judgmen
     assert "prior_model_observations" not in observations
 
 
+def test_parallel_content_gate_uses_the_retrieval_prompt_not_the_legacy_scene_prompt() -> None:
+    messages = build_sop_chat_gate_messages(
+        {
+            "reply_chain_mode": "parallel_candidate_only",
+            "content_assets": [],
+            "candidate_limit": 2,
+        }
+    )
+
+    assert messages[0]["content"] == PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert messages[0]["content"] != SOP_CHAT_GATE_SYSTEM_PROMPT
+    assert "selected_scene_id" not in messages[0]["content"]
+    assert "不回复客户" in messages[0]["content"]
+
+
 def test_v2_admission_has_no_visible_text_or_semantic_regex_logic() -> None:
     source = inspect.getsource(validate_v2_reply_admission)
 
@@ -142,3 +162,23 @@ def test_prompts_preserve_node_power_boundaries_without_scene_matching() -> None
 def test_reply_prompt_requires_real_progress_and_complete_deposit_facts() -> None:
     assert "推进是本轮实际完成交付" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "每位先付10元锁活动资格、到店抵扣、做再付258元、未做或不满意可退" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_reply_authoritative_facts_rank_above_historical_assistant_text() -> None:
+    authority_line = next(
+        line for line in PARALLEL_REPLY_SYSTEM_PROMPT.splitlines() if line.startswith("冲突时依次相信")
+    )
+    assert authority_line.index("`rules.AUTHORITATIVE FACTS`") < authority_line.index("完整聊天")
+    assert "历史聊天只证明" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_v2_repeat_similarity_is_measurement_only() -> None:
+    metrics = collect_reply_observation_metrics(
+        [{"type": "text", "content": "活动价是268元，我给您说清楚。"}],
+        {
+            "conversation_history": ["小贝: 活动价是268元，我给您说清楚。"],
+            "evidence_join": {"schema_version": "parallel_reply_input_v2"},
+        },
+    )
+    assert metrics["previous_assistant_text_similarity"] == 1.0
+    assert metrics["measurement_only"] is True

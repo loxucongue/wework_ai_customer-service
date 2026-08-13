@@ -7,7 +7,10 @@ from typing import Any, Callable
 
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
-from app.graph.nodes.reply_quality import collect_reply_soft_warnings
+from app.graph.nodes.reply_quality import (
+    collect_reply_observation_metrics,
+    collect_reply_soft_warnings,
+)
 from app.graph.nodes.reply_validation import (
     _paid_deposit_context,
     _parallel_paid_deposit_context,
@@ -209,11 +212,17 @@ def create_synthesize_reply_node(
                 if state.get("evidence_join")
                 else {}
             )
+            reply_observation_metrics = (
+                collect_reply_observation_metrics(messages, state)
+                if state.get("evidence_join")
+                else {}
+            )
             output = {
                 "reply_messages": messages,
                 "used_fact_refs": reply_metadata.get("used_fact_refs", []),
                 "selected_content_ids": reply_metadata.get("selected_content_ids", []),
                 "content_selection_metrics": content_selection_metrics,
+                "reply_observation_metrics": reply_observation_metrics,
                 "reply_action": reply_metadata.get("action", "none"),
                 "reply_action_reason": reply_metadata.get("action_reason", ""),
                 "reply_sales_judgment": reply_metadata.get("sales_judgment", {}),
