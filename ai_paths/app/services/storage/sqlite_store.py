@@ -138,7 +138,15 @@ class SQLiteStore:
             )
             claimed.add(key)
         conn.execute("DROP INDEX IF EXISTS idx_first_day_runs_fingerprint")
-        conn.execute("DROP INDEX IF EXISTS idx_first_day_runs_contact_fingerprint")
+        index_row = conn.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type='index' AND name='idx_first_day_runs_contact_fingerprint'
+            """
+        ).fetchone()
+        index_sql = str(index_row["sql"] or "").lower() if index_row else ""
+        if index_sql and "lower(wechat)" not in index_sql.replace(" ", ""):
+            conn.execute("DROP INDEX IF EXISTS idx_first_day_runs_contact_fingerprint")
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_first_day_runs_contact_fingerprint
