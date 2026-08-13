@@ -662,12 +662,12 @@ class SopPlatformTaskService:
             raise RuntimeError("task already sent or sending")
 
         identity = _task_identity(platform_task)
-        preflight_reason = _task_preflight_no_send_reason(
+        preflight_reason = _manual_resend_preflight_block_reason(
             platform_task,
             identity=identity,
             settings=self.settings,
         )
-        if preflight_reason and preflight_reason != "pre_cutover_task":
+        if preflight_reason:
             raise RuntimeError(f"task cannot be resent: {preflight_reason}")
 
         await self._manual_resend_relation_guard(identity)
@@ -2558,6 +2558,22 @@ def _task_preflight_no_send_reason(
     if live_not_before and (not scheduled or scheduled < live_not_before):
         return "pre_cutover_task"
     return ""
+
+
+def _manual_resend_preflight_block_reason(
+    platform_task: dict[str, Any],
+    *,
+    identity: dict[str, str],
+    settings: Any,
+) -> str:
+    reason = _task_preflight_no_send_reason(
+        platform_task,
+        identity=identity,
+        settings=settings,
+    )
+    if reason in {"", "stale_task", "pre_cutover_task"}:
+        return ""
+    return reason
 
 
 def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -> dict[str, Any]:

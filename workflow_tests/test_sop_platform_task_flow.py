@@ -378,6 +378,26 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "already sent"):
             await service.admin_resend_task("101")
 
+    async def test_manual_resend_allows_stale_failed_task(self) -> None:
+        model = _Model([{"decision": "send", "reason": "resend", "reply_messages": [_text("补发内容")]}])
+        service, repo, platform, system = _service(model=model)
+        settings = service.settings
+        settings.sop_platform_max_task_age_seconds = 1
+        task = _task(use_ai_copy=False)
+        task["scheduledAt"] = time.time() - 3600
+
+        _event, local_task = service._ensure_local_task(task, status="completed_without_send")
+        repo.update_sop_send_task(str(local_task["id"]), status="completed_without_send", error="downstream_delivery_rejected")
+        repo.update_sop_event_status("platform_sop_task:101", status="platform_completed")
+
+        result = await service.admin_resend_task("101")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(system.send_calls), 1)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("补发内容")])
+        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(repo.tasks["platform-sop:101"]["status"], "sent")
+
     async def test_direct_ignores_quiet_hours_and_sends_original(self) -> None:
         model = _Model([])
         settings = _settings(quiet_hours_enabled=True)
