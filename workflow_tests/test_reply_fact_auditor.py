@@ -12,6 +12,7 @@ from app.graph.nodes.reply_nodes import (
     _parallel_reply_fact_audit_input,
     _parallel_reply_repair_context,
     _reply_validation_state,
+    _schedule_parallel_reply_fact_audit,
     _run_parallel_reply_fact_audit,
     _validated_parallel_reply_fact_audit,
     create_synthesize_reply_node,
@@ -228,21 +229,17 @@ def test_parallel_reply_prompt_treats_delivery_as_progress_without_permission_ro
     assert "不要把已经讲过的活动、门店、检测或到店流程再复述一遍" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
-def test_parallel_reply_and_fact_auditor_forbid_invented_external_price_explanations() -> None:
+def test_parallel_reply_forbids_invented_external_price_explanations_without_fact_auditor_policy() -> None:
     assert "只能证明客户看到了这个数字" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "引流价、单项价、其他门店价格、其他项目价格" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "只能作为“客户看到了该数字”的客户转述" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "引流价、单项价、其他门店价、其他项目价" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "外部价格" not in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
-def test_fact_auditor_does_not_redecide_payment_timing_and_checks_amount_meaning() -> None:
-    assert "不得重新判断客户行动信号够不够强" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "客户只问流程、尚未再次明确留名额" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "把10元写成“直接抵258元尾款”" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "10元到店抵扣，再付258元" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "都是条件规则或一般付款流程" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不得因当前客户尚未支付而拦截合法的付款说明和付款卡" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不得把“按活动内容核对、不需要接受额外推荐”误解" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+def test_fact_auditor_does_not_redecide_payment_timing_or_sales_language() -> None:
+    assert "不判断客户心理、行动信号" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不审计一般业务介绍、条件规则" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "先付10元预约金，到店抵扣，再付258元" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "普通效果描述、群体经验和销售表达" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
 def test_parallel_reply_contract_exposes_exact_deposit_supporting_key_enum() -> None:
@@ -269,8 +266,8 @@ def test_parallel_generic_repair_distinguishes_strategy_refs_from_delivery_refs(
     )
 
     repair_prompt = repaired[-1]["content"]
-    assert "内容策略或 Gate 候选使用 selected_content_ids" in repair_prompt
-    assert "若当前没有结构选项，设为空数组" in repair_prompt
+    assert '"failure_class":"structure_and_provenance"' in repair_prompt
+    assert "只使用 valid_reference_contract 中的合法枚举、真实引用和结构选项" in repair_prompt
 
 
 def test_parallel_generic_repair_does_not_replace_external_fact_guess_with_another_guess() -> None:
@@ -282,8 +279,8 @@ def test_parallel_generic_repair_does_not_replace_external_fact_guess_with_anoth
     )
 
     repair_prompt = repaired[-1]["content"]
-    assert "不得换一种说法继续猜测" in repair_prompt
-    assert "只准确说明本系统已有权威事实" in repair_prompt
+    assert '"failure_class":"deterministic_fact_conflict"' in repair_prompt
+    assert "不得编造事实或按错误码补写销售话术" in repair_prompt
 
 
 def test_parallel_generic_repair_exposes_exact_payment_card_payload() -> None:
@@ -317,62 +314,29 @@ def test_parallel_generic_repair_exposes_exact_payment_card_payload() -> None:
     repair_prompt = repaired[-1]["content"]
     assert "exact_payment_delivery_contract" in repair_prompt
     assert '"amount":10' in repair_prompt
-    assert "payment_collection.content 必须是输入提供的对象" in repair_prompt
+    assert "所有 ID、URL、金额、结构消息" in repair_prompt
 
 
 def test_fact_auditor_contract_cannot_make_sales_decisions() -> None:
-    assert "不是客服、销售、策略评审或回复改写器" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不得评价销售力度、语气、主线、推进时机、资产选择或发卡资格" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不是客服、销售、策略评审、回复改写器或主链路校验器" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不判断是否应该推进、暂停、换维度、发卡" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert '"reply_messages"' not in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
 def test_fact_auditor_contract_distinguishes_payment_and_registration_states() -> None:
-    for section in (
-        "# 1. 唯一职责",
-        "# 2. 证据层级",
-        "# 3. 可以审计的内容",
-        "# 4. 语言行为与时态",
-        "# 5. 一致性边界",
-        "# 6. 输出合同",
-    ):
+    for section in ("# 唯一职责", "# 明确禁止", "# 证据边界", "# 输出合同"):
         assert section in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "未来动作/能力说明" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "条件规则" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "提问/邀请/资料请求" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "先登记再到店" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不表示已经登记或已经到店" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "咨询、口头意向、资料收集、活动登记、到店意向、后台订单、预约成功和正式排客是不同状态" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "承诺后续查询哪家更近不属于当前比较结论" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "单纯说“可以给您看、下一步给您介绍、需要的话再发”不是已交付声明" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不得截取“最近、已经、确认、登记、报名、发送”等孤立词" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "就必须通过" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "审计采用闭世界原则" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "找不到才报告 `unsupported_claim` 或 `wrong_temporality`" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "找不到就报告 `unfulfilled_delivery`" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "输出必须自洽" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "就不得保留该 violation" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "所有证据来源必须合并判断，而不是互斥选择" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不得把声明引用当成该句话唯一允许使用的证据" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "一般事实/流程说明" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不表示本轮已经为当前客户完成拍摄或安排" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "回复没有改写成当前客户必然达到同样效果" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不得要求当前完成事件作为额外证据" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "审计对象是回复实际说出的完整命题" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "权威事实已经直接支持命题时必须通过" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "先看看值不值得" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不是可独立验证的业务事实" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "payment_assessment.payment_channel" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不得因为你认为另一渠道更合适而改变销售决定" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "同轮混用小程序卡、转账和红包" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "多个字段共同支持" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "未登记客户不能被写成已经可以免费到店检测" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "完成态：已到账、已退款、已登记、已预约、已排客" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "未来动作、能力说明" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "条件句、否定句" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
-def test_model_led_reply_repair_reserves_fact_audit_budget() -> None:
+def test_model_led_reply_does_not_reserve_or_wait_for_fact_audit_budget() -> None:
     source = inspect.getsource(_run_model_led_reply_pipeline)
 
-    assert '"model_fact_audit_timeout_seconds"' in source
-    assert "round_deadline - fact_audit_budget" in source
+    assert '"model_fact_audit_timeout_seconds"' not in source
+    assert "await _run_parallel_reply_fact_audit" not in source
+    assert "_schedule_parallel_reply_fact_audit" in source
 
 
 def test_model_led_reply_timeout_retries_full_original_task_instead_of_structural_repair() -> None:
@@ -693,7 +657,7 @@ def test_fact_audit_invalid_quote_gets_one_schema_only_retry() -> None:
     assert result["status"] == "fail"
     assert call["validation_retry"]["validation_error"] == "reply_fact_audit_quote_not_in_message"
     retry_system = call["validation_retry"]["input"]["messages"][0]["content"]
-    assert "不得输出 reply_messages" in retry_system
+    assert "不得输出客户回复" in retry_system
 
 
 def test_fact_audit_schema_retry_receives_fresh_deadline() -> None:
@@ -863,13 +827,9 @@ def test_generic_repair_contract_exposes_authoritative_paid_without_deciding_cus
     assert '"ref":"payment_fact:authoritative_paid"' in repair_contract
     assert '"status":"authoritative_paid"' in repair_contract
     assert '"sales_judgment_posture":["answer","advance","switch","pause","close"]' in repair_contract
-    assert "逐字段保留上一版 sales_judgment" in repair_contract
-    assert "语义判断仍由 Reply" in repair_contract
-    assert "不得评价或重做销售策略" in repair_contract
-    assert "逐字保留原 text" in repair_contract
-    assert "事实审计错误只修改 violation.quote" in repair_contract
-    assert "不能删除或改写其中的条件、适用对象、时态和否定词" in repair_contract
-    assert "不得索要姓名、手机号、门店或到店时间" in repair_contract
+    assert '"failure_class":"deterministic_fact_conflict"' in repair_contract
+    assert "不重新判断客户心理、成交阶段或销售节奏" in repair_contract
+    assert "不得编造事实或按错误码补写销售话术" in repair_contract
 
 
 def test_fact_audit_input_surfaces_claim_bearing_business_facts() -> None:
@@ -921,23 +881,19 @@ def test_parallel_offer_facts_expose_optional_action_cost_evidence_to_reply_and_
     assert audit_input["authoritative_claim_facts"]["offer"]["service_duration"] == offer["service_duration"]
 
 
-def test_fact_auditor_separates_package_includes_from_registered_store_service() -> None:
+def test_fact_auditor_does_not_audit_package_copy_or_general_service_language() -> None:
     prompt = REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
-    assert "必须区分“套餐包含什么”和“客户何时可以到店享受某项服务”" in prompt
-    assert "`offer.includes` 直接支持" in prompt
-    assert "不得用后者的登记条件否定前者的套餐包含范围" in prompt
-    assert "遗漏其他项目不是事实冲突" in prompt
-    assert "最近历史确有案例图片时，不得要求本轮重复交付" in prompt
+    assert "不审计一般业务介绍" in prompt
+    assert "普通效果描述、群体经验和销售表达" in prompt
+    assert "套餐包含什么" not in prompt
 
 
-def test_fact_auditor_requires_claim_strength_to_match_authoritative_evidence() -> None:
+def test_fact_auditor_does_not_judge_effect_claim_strength() -> None:
     prompt = REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
-    assert "证据强度只能等量使用" in prompt
-    assert "真实案例只能支持该案例的可见变化和可参考方向" in prompt
-    assert "不能单独支持“绝对安全、完全无风险、不伤皮肤、一定有效、一次彻底解决”" in prompt
-    assert "应报告 `unsupported_claim`" in prompt
+    assert "不判断效果表达强弱" in prompt
+    assert "普通效果描述、群体经验和销售表达" in prompt
 
 
 def test_parallel_rules_expose_customer_charge_fact_to_reply_and_auditor() -> None:
@@ -954,8 +910,7 @@ def test_parallel_rules_expose_customer_charge_fact_to_reply_and_auditor() -> No
 def test_reply_and_fact_auditor_do_not_treat_admin_scope_as_distance_fact() -> None:
     assert "同一城市或行政区" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不能据此写成“更近、更方便、最近、过去方便”" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "同城市、同区县或门店范围匹配只支持行政归属" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "上层查询摘要的 district 为空不能反向否定更具体的门店事实" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "确定的距离或远近排序" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
 def test_reply_requires_direct_text_answer_before_structured_supplement() -> None:
@@ -987,8 +942,7 @@ def test_model_led_reply_preserves_complete_selected_asset_contract() -> None:
 
 def test_unverified_payment_cannot_collect_post_paid_registration_fields() -> None:
     assert "只做付款核验，不收姓名手机号" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "支付后登记资料的收集资格" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
-    assert "不得要求其先提交姓名、手机号做登记" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "已到账、已退款、已登记" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
 
 def test_candidate_only_media_requires_its_selected_asset_provenance() -> None:
@@ -1055,7 +1009,7 @@ def test_recently_delivered_media_is_valid_history_provenance_without_reselectin
     )
 
 
-def test_fact_audit_failure_gets_one_generic_reply_repair() -> None:
+def test_fact_audit_failure_is_shadow_warning_and_keeps_original_reply() -> None:
     class _TraceLogger:
         class _Node:
             def __init__(self, state: dict) -> None:
@@ -1157,7 +1111,8 @@ def test_fact_audit_failure_gets_one_generic_reply_repair() -> None:
 
     output = asyncio.run(node(state))
 
-    assert client.calls == 4
-    assert output["reply_source"] == "single_targeted_repair_model"
-    assert output["reply_messages"][0]["content"] == "我先把活动内容给您说清楚。"
-    assert output["reply_fact_audit"]["status"] == "pass"
+    assert client.calls == 2
+    assert output["reply_source"] == "main_model"
+    assert output["reply_messages"][0]["content"] == "已经给您预约成功了。"
+    assert output["reply_fact_audit"]["status"] == "scheduled"
+    assert output["reply_fact_audit"]["blocking"] is False

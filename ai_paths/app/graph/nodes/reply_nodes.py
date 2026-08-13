@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import logging
 import time
 from typing import Any, Callable
 
@@ -56,23 +58,16 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 """
 
 
+logger = logging.getLogger(__name__)
+_FACT_AUDIT_SHADOW_TASKS: set[asyncio.Task[Any]] = set()
+
+
 class ReplyModelPipelineError(RuntimeError):
     """Keep failed model payloads available to local traces and release audits."""
 
     def __init__(self, message: str, *, model_call: dict[str, Any]) -> None:
         super().__init__(message)
         self.model_call = model_call
-
-
-class ReplyFactAuditViolation(ValueError):
-    """A valid audit found unsupported customer-visible factual claims."""
-
-    def __init__(self, audit_result: dict[str, Any]) -> None:
-        self.audit_result = audit_result
-        super().__init__(
-            "reply_fact_audit_failed::"
-            + json.dumps(audit_result, ensure_ascii=False, separators=(",", ":"))
-        )
 
 
 class ReplyFactAuditUnavailable(RuntimeError):
@@ -516,11 +511,6 @@ async def _run_model_led_reply_pipeline(
     tier = _reply_model_tier(state)
     primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
     repair_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 25.0)
-    fact_audit_budget = _model_budget_seconds(
-        model_client,
-        "model_fact_audit_timeout_seconds",
-        15.0,
-    )
     started_at = time.monotonic()
     round_deadline = model_deadline_monotonic(state, tier=tier)
     repair_reserve_seconds = min(repair_budget, 9.0)
@@ -560,15 +550,12 @@ async def _run_model_led_reply_pipeline(
                 validated_model_messages=validated_model_messages,
                 warnings=warnings,
             )
-            audit_result, audit_call = await _run_parallel_reply_fact_audit(
+            model_call["fact_audit"] = _schedule_parallel_reply_fact_audit(
                 state=state,
                 model_client=model_client,
                 messages=messages,
                 payload=payload,
             )
-            model_call["fact_audit"] = audit_call
-            if audit_result.get("status") != "pass":
-                raise ReplyFactAuditViolation(audit_result)
             model_call["validated_json_output"] = payload
             model_call["draft_messages"] = debug_message_contents(messages)
             model_call["output"] = {"messages": len(messages)}
@@ -577,15 +564,6 @@ async def _run_model_led_reply_pipeline(
         except Exception as exc:
             primary_error = exc
             model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
-            if isinstance(exc, ReplyFactAuditUnavailable):
-                model_call["fact_audit"] = exc.audit_call
-
-    if isinstance(primary_error, ReplyFactAuditUnavailable):
-        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise ReplyModelPipelineError(
-            f"reply fact audit unavailable: {primary_error}",
-            model_call=model_call,
-        ) from primary_error
 
     if not can_start_model_retry(state, tier=tier):
         model_call["repair"] = {
@@ -624,7 +602,7 @@ async def _run_model_led_reply_pipeline(
         second_attempt_budget = repair_budget
     repair_deadline = _capped_deadline(
         time.monotonic() + second_attempt_budget,
-        round_deadline - fact_audit_budget if round_deadline is not None else None,
+        round_deadline,
     )
     repair_payload: dict[str, Any] | None = None
     try:
@@ -647,15 +625,12 @@ async def _run_model_led_reply_pipeline(
             validated_model_messages=validated_model_messages,
             warnings=warnings,
         )
-        audit_result, audit_call = await _run_parallel_reply_fact_audit(
+        model_call["retry"]["fact_audit"] = _schedule_parallel_reply_fact_audit(
             state=state,
             model_client=model_client,
             messages=messages,
             payload=repair_payload,
         )
-        model_call["retry"]["fact_audit"] = audit_call
-        if audit_result.get("status") != "pass":
-            raise ReplyFactAuditViolation(audit_result)
         model_call["validated_json_output"] = repair_payload
     except Exception as repair_error:
         model_call["retry"] = {
@@ -699,6 +674,86 @@ def _validated_parallel_reply_payload(
     validate_reply_consistency(messages, validation_state)
     _raise_repairable_reply_quality_issues(messages, validation_state)
     return messages
+
+
+def _schedule_parallel_reply_fact_audit(
+    *,
+    state: AgentState,
+    model_client: ModelClient,
+    messages: list[dict[str, Any]],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Run fact audit out of band; it can never alter the accepted Reply."""
+
+    settings = getattr(model_client, "settings", None)
+    if settings is None or not bool(getattr(settings, "model_fact_audit_enabled", False)):
+        return {"status": "disabled", "blocking": False}
+
+    request_id = str(state.get("request_id") or "")
+    shadow_state: AgentState = {
+        "request_id": request_id,
+        "evidence_join": copy.deepcopy(state.get("evidence_join") or {}),
+        "runtime_budget": copy.deepcopy(state.get("runtime_budget") or {}),
+    }
+    task = asyncio.create_task(
+        _record_parallel_reply_fact_audit_warning(
+            state=shadow_state,
+            model_client=model_client,
+            messages=copy.deepcopy(messages),
+            payload=copy.deepcopy(payload),
+        ),
+        name=f"reply-fact-audit-shadow:{request_id or 'unknown'}",
+    )
+    _FACT_AUDIT_SHADOW_TASKS.add(task)
+    task.add_done_callback(_FACT_AUDIT_SHADOW_TASKS.discard)
+    return {
+        "status": "scheduled",
+        "mode": "shadow_warning_only",
+        "blocking": False,
+        "request_id": request_id,
+    }
+
+
+async def _record_parallel_reply_fact_audit_warning(
+    *,
+    state: AgentState,
+    model_client: ModelClient,
+    messages: list[dict[str, Any]],
+    payload: dict[str, Any],
+) -> None:
+    request_id = str(state.get("request_id") or "")
+    try:
+        result, call = await _run_parallel_reply_fact_audit(
+            state=state,
+            model_client=model_client,
+            messages=messages,
+            payload=payload,
+        )
+        warning = {
+            "node": "reply_fact_auditor_shadow",
+            "request_id": request_id,
+            "status": str(result.get("status") or ""),
+            "violations": result.get("violations") or [],
+            "model": str((call.get("usage") or {}).get("model") or ""),
+            "elapsed_ms": int((call.get("deadline") or {}).get("elapsed_ms") or 0),
+        }
+        if warning["status"] != "pass":
+            logger.warning(
+                "reply_fact_audit_shadow_warning %s",
+                json.dumps(warning, ensure_ascii=False, separators=(",", ":")),
+            )
+    except Exception as exc:
+        logger.warning(
+            "reply_fact_audit_shadow_unavailable %s",
+            json.dumps(
+                {
+                    "request_id": request_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
 
 
 async def _run_parallel_reply_fact_audit(
@@ -1227,6 +1282,13 @@ def _final_fact_audit_from_model_call(model_call: dict[str, Any]) -> dict[str, A
     call = retry.get("fact_audit") if isinstance(retry.get("fact_audit"), dict) else model_call.get("fact_audit")
     if not isinstance(call, dict):
         return {}
+    if str(call.get("mode") or "") == "shadow_warning_only":
+        return {
+            "status": str(call.get("status") or "scheduled"),
+            "mode": "shadow_warning_only",
+            "blocking": False,
+            "request_id": str(call.get("request_id") or ""),
+        }
     output = call.get("output") if isinstance(call.get("output"), dict) else {}
     return {
         "status": str(output.get("status") or ""),
@@ -1734,17 +1796,13 @@ def _parallel_generic_reply_repair_messages(
     previous_payload: dict[str, Any] | None,
     validation_context: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Repair only explicit structure/fact violations on the model-led path."""
+    """Repair schema, structural delivery, or deterministic fact conflicts only."""
 
-    if isinstance(exc, ReplyFactAuditViolation):
-        violations: Any = exc.audit_result.get("violations") or []
-        failure_class = "fact_audit"
-    else:
-        raw_error = str(exc)
-        marker = "parallel_reply_hard_violations::"
-        violation_codes = raw_error.split(marker, 1)[1].split(";;") if marker in raw_error else [raw_error]
-        violations = [item.strip() for item in violation_codes if item.strip()]
-        failure_class = "structure_or_provenance"
+    raw_error = str(exc)
+    marker = "parallel_reply_hard_violations::"
+    violation_codes = raw_error.split(marker, 1)[1].split(";;") if marker in raw_error else [raw_error]
+    violations = [item.strip() for item in violation_codes if item.strip()]
+    failure_class = _parallel_repair_failure_class(violations)
     required_changes = _parallel_repair_required_changes(violations)
     structured_delivery_options = (
         validation_context.get("structured_delivery_options")
@@ -1756,46 +1814,18 @@ def _parallel_generic_reply_repair_messages(
         if isinstance(structured_delivery_options.get("payment_collection"), dict)
         else {}
     )
-    fact_audit_repairs = [
-        {
-            "message_index": item.get("message_index"),
-            "quote": str(item.get("quote") or ""),
-            "reason": str(item.get("reason") or ""),
-            "instruction": (
-                "只删除或改写 quote 所在的 unsupported fact claim；"
-                "保留同一消息中其他事实、条件和语气。"
-            ),
-        }
-        for item in violations
-        if isinstance(item, dict)
-    ]
     repair_contract = {
-        "schema_version": "parallel_reply_generic_repair_v2",
+        "schema_version": "parallel_reply_generic_repair_v3",
         "failure_class": failure_class,
         "violations": violations,
         "required_changes": required_changes,
-        "fact_audit_repairs": fact_audit_repairs,
         "rules": [
-            "只修复列出的结构或事实冲突，保留其余合法业务判断和客户可见内容。",
-            "不得新增权威事实中不存在的门店、素材、支付、预约、退款或效果结论。",
-            "不得评价或重做销售策略。原动作因事实或结构冲突无法成立时，由 Reply 阅读原始完整证据后选择合法动作。",
-            "selected_content_ids、used_fact_refs、结构消息和 action 必须彼此一致。",
-            "保留某个 selected_content_id 时，仅对 repeat_delivery_required=true 的资产逐项交付全部非文本结构消息；image/video 的 content 使用原始 URL 字符串。delivery_status=completed 的资产可作为历史证据引用，不强制重发旧素材。不能完整交付当前要求的资产时删除该资产 ID 和对应 content_asset 引用。",
-            "selected_content_delivery_missing 不代表候选一定应被采用。若上一版客户可见回复没有使用该候选的事实或素材，或候选不能解决上一版 sales_judgment.customer_goal，优先只删除错误声明的 selected_content_id 和 content_asset 引用，逐字保留原客户可见回复；不得为了补结构素材而把原回复替换成无关资产。",
-            "action 只能是 none、ask、offer、payment、registration；close 只属于 sales_judgment.posture。纯文字回答、暂停或切换维度使用 action=none；确实提出最小问题时才使用 ask。",
-            "所有 evidence_refs 只能逐字取自 valid_reference_contract 提供的真实引用。若证据不足，不得由代码或模型补造引用；应删除无证据的声明，或由 Reply 基于完整证据选择仍然成立的动作。",
-            "assessment、action 与结构消息发生冲突时，只修复被 violation 指出的不一致；语义判断仍由 Reply 根据 current_message、prior_message_options 和权威事实完成。",
-            "输出完整严格 json，不解释错误，不输出 markdown 或内部分析。",
-            "不得原样返回仍包含 violations 的上一版 JSON；逐项完成 required_changes 后再输出。",
-            "violations 没有指向 sales_judgment 时，逐字段保留上一版 sales_judgment，不得改写其姿态或理由。",
-            "结构或引用错误没有直接指出客户可见 text 冲突时，逐字保留原 text；只修改被点名的引用、资产 ID 或结构消息。",
-            "事实审计错误只修改 violation.quote 所在的事实片段及其直接依赖句，不新增卖点、群体结论或销售理由。",
-            "事实审计指出客户转述的外部价格、门店、项目或页面信息缺少权威支持时，删除 Reply 对该外部事实的来源、套餐、项目和差异原因解释；不得换一种说法继续猜测。客户原话可以保留为转述，只准确说明本系统已有权威事实。",
-            "事实审计指出未核验付款被写成登记、备注、到账或已付流程时，删除所有支付后动作，只保留付款核验；不得索要姓名、手机号、门店或到店时间。",
-            "事实审计只点名 text 事实片段时，上一版 selected_content_ids、对应 content_asset 引用和已交付结构素材不属于被点名内容，必须逐字段原样保留；只有 violation 明确指出资产或结构素材本身不受支持时才能撤销。",
-            "修复某一事实片段时，其余客户可见事实必须逐字保留，尤其不能删除或改写其中的条件、适用对象、时态和否定词；若必须重写整句，也要原样保留所有未被 violation 点名的事实限定。",
-            "修复 selected_content_delivery_missing 时必须二选一：采用资产就逐项交付 required message；不采用就删除该 selected_content_id 和对应 content_asset 引用，不能保留半套声明。",
-            "修复预约金证据时，supporting_key 只能是 address、effect、objection；若更早历史没有该维度的真实交付引用，就撤销 payment 和预约金卡，不能把 activity 自身重复当成第二把钥匙。",
+            "只修复 violations 指出的 schema、结构素材/引用或确定性事实冲突。",
+            "保留上一版未冲突的客户可见回复、销售判断和动作，不重新判断客户心理、成交阶段或销售节奏。",
+            "所有 ID、URL、金额、结构消息和 evidence_refs 只能逐字取自 valid_reference_contract。",
+            "选择内容资产时完整交付其要求的结构素材；不采用时删除该 ID 和对应 content_asset 引用，不得半选半发。",
+            "结构选项不足以支持原动作时，删除不受支持的结构声明；不得编造事实或按错误码补写销售话术。",
+            "只输出完整严格 json，不解释错误，不输出 markdown 或内部分析。",
         ],
         "output_schema_constraints": {
             "action": ["none", "ask", "offer", "payment", "registration"],
@@ -1860,9 +1890,9 @@ def _parallel_generic_reply_repair_messages(
         {
             "role": "system",
             "content": (
-                "你是最终 Reply 的最小事实与结构修复器，不重新规划销售策略。"
-                "阅读完整证据和上一版 JSON，只修复 repair_contract 列出的冲突。"
-                "保留所有未冲突的客户可见内容与业务判断；只输出完整严格 json。"
+                "你是最终 Reply 的通用校验修复器，不是第二个销售大脑。"
+                "只处理 schema、结构素材/引用或确定性事实冲突。"
+                "不得按场景生成新销售策略；保留所有未冲突内容，只输出完整严格 json。"
             ),
         },
         *evidence_messages,
@@ -1878,107 +1908,50 @@ def _parallel_generic_reply_repair_messages(
 
 
 def _parallel_repair_required_changes(violations: Any) -> list[dict[str, str]]:
-    """Expose generic repair obligations without prescribing business intent."""
+    """Describe one of three generic repair obligations, never sales intent."""
 
     required: list[dict[str, str]] = []
     for raw in violations if isinstance(violations, list) else []:
-        if isinstance(raw, dict):
-            code = str(raw.get("code") or "fact_audit_violation")
-            quote = str(raw.get("quote") or "").strip()
-            required.append(
-                {
-                    "violation": code,
-                    "required_change": (
-                        f"只修复客户可见原文片段“{quote}”。删除或改写其不受支持的事实含义，"
-                        "保留其余客户可见内容、销售姿态、结构消息和合法引用；不得新增支付后登记动作。"
-                    ),
-                }
-            )
-            continue
         code = str(raw or "")
-        if code.startswith("selected_content_delivery_missing:"):
-            required.append(
-                {
-                    "violation": code,
-                    "required_change": (
-                        "二选一：按 violation 中的 required 原样补齐全部结构消息；"
-                        "或删除该 selected_content_id 及其 content_asset 引用。若上一版客户可见回复没有实际使用"
-                        "该候选，选择删除并逐字保留原回复，不得用候选正文替换原回答。"
-                    ),
-                }
-            )
-        elif "evidence_ref" in code or code.startswith("selected_content_requires_used_fact_ref:"):
-            required.append(
-                {
-                    "violation": code,
-                    "required_change": (
-                        "纯引用修复：只能从 valid_reference_contract 逐字选择真实引用。"
-                        "引用不足时删除无支持的声明或资产选择；不得编造引用，不得顺带改变未冲突的客户可见内容。"
-                    ),
-                }
-            )
-        elif code.startswith("parallel_content_media_requires_selected_asset:"):
-            required.append(
-                {
-                    "violation": code,
-                    "required_change": (
-                        "结构来源二选一：若继续发送该候选专属媒体，保留对应 selected_content_id 和 "
-                        "content_asset 引用；若撤销资产选择，同时删除该资产专属媒体。不得留下无资产来源的孤立图片或视频。"
-                    ),
-                }
-            )
-        elif (
-            "invalid_parallel_reply_message_content" in code
-            and "payment_collection" in code
-        ) or "payment_action_requires_payment_collection" in code:
-            required.append(
-                {
-                    "violation": code,
-                    "required_change": (
-                        "先判断上一版合法付款决定是否仍成立。若保留 payment_request、payment_card 和 action=payment，"
-                        "必须逐项原样复制 exact_payment_delivery_contract.message_payloads，尤其"
-                        " payment_collection.content 必须是输入提供的对象，不能写成文字或金额字符串；"
-                        "若付款决定不成立，则成组撤销付款 action、channel、卡片和 deposit_evidence。"
-                    ),
-                }
-            )
-        elif (
-            "invalid_parallel_reply_message_content" in code
-            and (":image" in code or ":video" in code)
-        ):
-            required.append(
-                {
-                    "violation": code,
-                    "required_change": (
-                        "客户可见 image/video 只能逐字复制 Gate 候选或结构交付选项提供的真实 URL。"
-                        "若当前候选没有 media/messages URL，则删除该无来源媒体并保留其余合法文字与销售判断；"
-                        "不得自行生成 URL，也不得因删除媒体而撤销仍合法的文字回答。"
-                    ),
-                }
-            )
-        elif code.startswith("invalid_structured_delivery_fact_ref:"):
-            required.append(
-                {
-                    "violation": code,
-                    "required_change": (
-                        "structured_delivery_decisions.fact_ref 只能逐字取自"
-                        " valid_reference_contract.structured_delivery_options 中真实结构选项的 fact_ref。"
-                        "内容策略或 Gate 候选使用 selected_content_ids 与 content_asset 引用，不能写进"
-                        " structured_delivery_decisions；若当前没有结构选项，设为空数组。"
-                    ),
-                }
-            )
-        else:
-            required.append(
-                {
-                    "violation": code,
-                    "required_change": (
-                        "按 violation 指出的事实或结构冲突做最小修复。只使用 valid_reference_contract 中的"
-                        "权威事实、允许枚举、真实 ID 和结构选项；若原动作无法成立，由 Reply 基于完整证据选择合法动作。"
-                    ),
-                }
-            )
+        required.append(
+            {
+                "violation": code,
+                "repair_class": _parallel_repair_failure_class([code]),
+                "required_change": (
+                    "按 violation 做最小修复；只使用 valid_reference_contract 中的合法枚举、真实引用和结构选项。"
+                    "无法支持时删除冲突字段或结构声明，保留其他客户可见内容与销售判断。"
+                ),
+            }
+        )
     return required
+
+
+def _parallel_repair_failure_class(violations: list[str]) -> str:
+    text = " ".join(violations).lower()
+    schema_markers = (
+        "schema",
+        "json",
+        "missing reply_messages",
+        "reply_messages are empty",
+        "invalid_parallel_reply_action",
+        "invalid_parallel_reply_list_field",
+    )
+    structure_markers = (
+        "selected_content",
+        "structured_delivery",
+        "message_content",
+        "evidence_ref",
+        "payment_collection",
+        "store_address",
+        "media",
+        "image",
+        "video",
+    )
+    if any(marker in text for marker in schema_markers):
+        return "schema"
+    if any(marker in text for marker in structure_markers):
+        return "structure_and_provenance"
+    return "deterministic_fact_conflict"
 
 
 def _reply_payment_repair_guard(previous_payload: dict[str, Any] | None) -> str:
