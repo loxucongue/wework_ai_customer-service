@@ -1929,6 +1929,19 @@ def test_parallel_raw_schema_accepts_external_media_url_shape_without_rewrite() 
         {"type": "image", "content": {"url": "https://example.test/case.jpg"}},
     ]
     _validate_parallel_raw_reply_schema(payload)
+    assert payload["reply_messages"][0]["content"] == "https://example.test/case.jpg"
+
+    payload["reply_messages"] = [
+        {"type": "image", "content": {"image_url": "https://example.test/case.jpg"}},
+    ]
+    _validate_parallel_raw_reply_schema(payload)
+    assert payload["reply_messages"][0]["content"] == "https://example.test/case.jpg"
+
+    payload["reply_messages"] = [
+        {"type": "video", "content": {"video_url": "https://example.test/guide.mp4"}},
+    ]
+    _validate_parallel_raw_reply_schema(payload)
+    assert payload["reply_messages"][0]["content"] == "https://example.test/guide.mp4"
 
 
 @pytest.mark.parametrize(
@@ -3214,7 +3227,10 @@ def test_tool_planner_calls_require_real_evidence_refs() -> None:
     )
 
     assert [item["name"] for item in calls] == ["customer_store_lookup"]
-    assert violations == ["tool_call_invalid_evidence_ref:kb_search"]
+    assert violations == [
+        "tool_call_invalid_evidence_ref:kb_search",
+        "tool_call_missing_evidence_ref:kb_search",
+    ]
 
 
 def test_tool_planner_evidence_field_paths_are_syntax_normalized() -> None:
@@ -3231,6 +3247,25 @@ def test_tool_planner_evidence_field_paths_are_syntax_normalized() -> None:
 
     assert violations == []
     assert calls[0]["evidence_refs"] == ["current_message", "conv_001"]
+
+
+def test_tool_planner_keeps_valid_read_only_call_when_one_real_evidence_ref_remains() -> None:
+    calls, violations = _normalize_read_only_tool_calls(
+        [
+            {
+                "name": "customer_store_lookup",
+                "arguments": {"query": "武汉市汉口"},
+                "purpose": "客户补充所在区域",
+                "evidence_refs": ["prior_wuhan_message", "hallucinated_current_ref"],
+            }
+        ],
+        valid_evidence_refs={"current_message", "prior_wuhan_message"},
+    )
+
+    assert [item["name"] for item in calls] == ["customer_store_lookup"]
+    assert calls[0]["query"] == "武汉市汉口"
+    assert calls[0]["evidence_refs"] == ["prior_wuhan_message"]
+    assert violations == ["tool_call_invalid_evidence_ref:customer_store_lookup"]
 
 
 def test_tool_planner_rejects_missing_required_read_only_arguments() -> None:

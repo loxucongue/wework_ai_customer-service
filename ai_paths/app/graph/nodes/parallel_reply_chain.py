@@ -62,6 +62,7 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。�
 - 当前消息问某地门店、索要地址，或消息本身是省、市、区县、县级市、乡镇、村、地标名时，除非紧邻历史已经真实发送了对应门店卡且客户只是在确认/选择该卡，否则规划 customer_store_lookup。
 - 客户明确要求重发地址、位置、导航或门店卡时，若本轮 authoritative_facts 没有可直接重放的真实 store_id 与结构消息，必须重新规划 customer_store_lookup；历史文字地址只能帮助组成 query，不能替代本轮真实门店卡事实。客户只说“这家、收到、可以”则不重查。
 - 客户补充下级地名时，结合完整历史中的父级城市组成查询词。例如历史刚确认“广州”，当前回复“番禺区”，查询“广州市番禺区”。
+- 客户在回答上一轮地区问题时，当前短地名必须结合紧邻历史形成查询词交给 customer_store_lookup；不能因为地名短就改为继续追问。
 - 只有客户原话、完整历史或定位事实能提供父级行政区时才能补全父级；否则保持客户原始地名，交给门店工具解析，不凭常识补省市县。
 - 县城、乡镇、村、地标或定位卡本级无门店且父级范围有多候选时，可同时规划 customer_store_lookup 和 distance_calculate，用真实排序支持 Reply。
 - 客户问“更近/最近”但没有真实位置原点时，不自行挑门店，把缺少位置原点写入 missing_facts。
@@ -1702,12 +1703,16 @@ def _normalize_read_only_tool_calls(
         ]
         evidence_refs = [ref for ref in dict.fromkeys(evidence_refs) if ref]
         if valid_evidence_refs is not None:
+            invalid_refs = [ref for ref in evidence_refs if ref not in valid_evidence_refs]
+            if invalid_refs:
+                violations.append(f"tool_call_invalid_evidence_ref:{name}")
+                evidence_refs = [ref for ref in evidence_refs if ref in valid_evidence_refs]
             if not evidence_refs:
                 violations.append(f"tool_call_missing_evidence_ref:{name}")
                 continue
-            if any(ref not in valid_evidence_refs for ref in evidence_refs):
-                violations.append(f"tool_call_invalid_evidence_ref:{name}")
-                continue
+            # Keep a valid read-only lookup when at least one real source
+            # remains. Extra malformed refs stay observable but cannot erase
+            # the supported tool plan.
         normalized = {
             "name": name,
             **copy.deepcopy(arguments),
@@ -1834,11 +1839,16 @@ def _conversation_ends_with(messages: list[dict[str, Any]], content: str) -> boo
 
 
 def _branch_trace_output(result: dict[str, Any]) -> dict[str, Any]:
-    return {
+    output = {
         "status": result.get("status"),
         "duration_ms": result.get("duration_ms"),
         "error": result.get("error"),
     }
+    for key in ("violations", "initial_violations", "repair_attempted", "repair_error"):
+        value = result.get(key)
+        if value not in (None, "", [], False):
+            output[key] = copy.deepcopy(value)
+    return output
 
 
 def _completed_parallel_branch(

@@ -719,11 +719,21 @@ def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
             if extract_image_url_from_text(content):
                 raise ValueError(f"parallel_text_must_not_embed_image_url:{index}")
         elif message_type in {"image", "video"}:
-            media_url = (
-                str(content.get("url") or "").strip()
-                if isinstance(content, dict)
-                else str(content or "").strip()
-            )
+            if isinstance(content, dict):
+                media_url = str(
+                    content.get("url")
+                    or content.get("image_url")
+                    or content.get("video_url")
+                    or ""
+                ).strip()
+                if media_url:
+                    # Providers commonly emit OpenAI-style media aliases. The
+                    # platform protocol uses the URL string itself, so this is
+                    # lossless schema normalization rather than reply editing.
+                    item["content"] = media_url
+                    content = media_url
+            else:
+                media_url = str(content or "").strip()
             if not media_url.lower().startswith(("http://", "https://")):
                 raise ValueError(f"invalid_parallel_reply_message_content:{index}:{message_type}")
         elif message_type == "store_address":
