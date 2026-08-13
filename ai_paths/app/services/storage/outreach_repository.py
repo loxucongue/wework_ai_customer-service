@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -780,6 +781,72 @@ class OutreachRepositoryMixin:
             )
         )
         return items[:result_limit]
+
+    def list_first_day_sop_contact_candidates(
+        self,
+        *,
+        limit: int = 200,
+        since: str = "",
+    ) -> list[dict[str, Any]]:
+        since_value = since or (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        safe_limit = max(1, min(int(limit or 200), 2000))
+        try:
+            with self.store.connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT customer_id, external_userid, corp_id, user_id, wechat,
+                           MIN(created_at) AS sales_contact_started_at,
+                           MAX(updated_at) AS updated_at,
+                           MAX(created_at) AS latest_sop_task_at
+                    FROM sop_send_tasks
+                    WHERE created_at>=?
+                      AND customer_id<>''
+                      AND external_userid<>''
+                      AND corp_id<>''
+                      AND wechat<>''
+                      AND (
+                        sop_pack_name LIKE '%加微%'
+                        OR sop_pack_id LIKE '%add_wecom%'
+                        OR trigger_source IN ('third_party_sop_pending', 'platform_auto_opening')
+                      )
+                    GROUP BY corp_id, lower(wechat), external_userid, customer_id
+                    ORDER BY latest_sop_task_at DESC
+                    LIMIT ?
+                    """,
+                    (since_value, safe_limit),
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower():
+                raise
+            rows = []
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item.update(
+                {
+                    "title": "",
+                    "platform_customer_name": "",
+                    "portrait": {},
+                    "basic_info": {},
+                    "lifecycle_stage": "",
+                    "last_customer_message": "",
+                    "last_customer_message_at": "",
+                    "last_staff_message_at": "",
+                    "last_ai_reply_at": "",
+                    "latest_outbound_message_at": "",
+                    "last_manual_takeover_at": "",
+                    "last_outreach_at": "",
+                    "outreach_status": "none",
+                    "outreach_plan_id": "",
+                    "latest_event_summary": "",
+                    "silent_minutes": 0,
+                    "reply_wait_minutes": 0,
+                    "awaiting_customer_reply": False,
+                    "candidate_source": "sop_send_tasks",
+                }
+            )
+            items.append(item)
+        return items
 
     def outreach_dashboard_stats(self, *, now: str | None = None) -> dict[str, Any]:
         current = _parse_iso(now) if now else datetime.now(timezone.utc)

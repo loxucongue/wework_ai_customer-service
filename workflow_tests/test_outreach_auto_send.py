@@ -193,6 +193,31 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("plan-1", "completed"), repository.plan_statuses)
         self.assertEqual(repository.events[-1]["event_type"], "plan_cycle_completed")
 
+    async def test_terminal_send_contract_failure_cancels_plan(self) -> None:
+        repository = _ExecutionRepository(order_status="no_order")
+        system = _SystemClient(
+            send_error=RuntimeError(
+                "outreach_system_http_422: contract validation failed: "
+                "Additional properties are not allowed ('external_userid' was unexpected)"
+            )
+        )
+        service = OutreachService(
+            repository=repository,
+            model_client=_MessageModelClient(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn(("task-1", "failed"), repository.task_statuses)
+        self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
+        self.assertEqual(repository.skipped_remaining[-1]["reason"], "send_contract_validation_failed")
+        self.assertEqual(repository.outreach_state_updates[-1]["outreach_status"], "cancelled")
+        self.assertEqual(repository.outreach_state_updates[-1]["outreach_plan_id"], "")
+        self.assertEqual(repository.events[-1]["event_type"], "task_failed_terminal")
+
     async def test_auto_approved_task_is_skipped_when_order_became_booked(self) -> None:
         repository = _ExecutionRepository(order_status="no_order")
         system = _SystemClient()
@@ -983,10 +1008,12 @@ class _SystemClient:
         messages: list[dict[str, Any]] | None = None,
         *,
         deleted: bool = False,
+        send_error: Exception | None = None,
     ) -> None:
         self.sent: list[dict[str, Any]] = []
         self.messages = messages or []
         self.deleted = deleted
+        self.send_error = send_error
 
     async def conversation(self, **_kwargs: Any) -> dict[str, Any]:
         return {
@@ -1002,6 +1029,8 @@ class _SystemClient:
         }
 
     async def send(self, **kwargs: Any) -> dict[str, Any]:
+        if self.send_error:
+            raise self.send_error
         self.sent.append(kwargs)
         return {"code": 0, "data": {"send_status": "accepted", "system_msgid": "msg-1"}}
 
@@ -1061,6 +1090,7 @@ class _ExecutionRepository:
         self.events: list[dict[str, Any]] = []
         self.reschedules: list[dict[str, Any]] = []
         self.skipped_remaining: list[dict[str, str]] = []
+        self.outreach_state_updates: list[dict[str, Any]] = []
 
     def get_outreach_task(self, task_id: str) -> dict[str, Any]:
         return {
@@ -1116,8 +1146,8 @@ class _ExecutionRepository:
     def touch_customer_message_time(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
-    def update_customer_outreach_state(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
+    def update_customer_outreach_state(self, *_args: Any, **kwargs: Any) -> None:
+        self.outreach_state_updates.append(kwargs)
 
     def update_outreach_task(self, task_id: str, *, status: str, **_kwargs: Any) -> dict[str, Any]:
         self.task_statuses.append((task_id, status))

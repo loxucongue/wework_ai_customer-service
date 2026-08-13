@@ -58,7 +58,6 @@ class OutreachSystemClient:
             json_body={
                 "corp_id": corp_id,
                 "customer_id": customer_id,
-                "external_userid": external_userid,
                 "user_id": user_id,
                 "wechat": wechat,
                 "plan_id": plan_id,

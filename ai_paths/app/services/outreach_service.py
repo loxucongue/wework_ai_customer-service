@@ -411,6 +411,36 @@ def _conversation_activity_from_context(
     return activity
 
 
+def _dedupe_outreach_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for candidate in candidates:
+        key = (
+            _string(candidate.get("corp_id")).lower(),
+            _string(candidate.get("wechat")).lower(),
+            _string(candidate.get("external_userid")).lower(),
+            _string(candidate.get("customer_id")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(candidate)
+    return output
+
+
+def _terminal_outreach_send_failure_reason(error: str) -> str:
+    normalized = _string(error).lower()
+    if "outreach_system_http_422" in normalized or "contract validation failed" in normalized:
+        return "send_contract_validation_failed"
+    if "outreach_system_http_409" in normalized:
+        if "manual handoff" in normalized or "ai_mode_manual" in normalized:
+            return "manual_handoff_active"
+        if "outside enabled ai scope" in normalized or "40908" in normalized:
+            return "ai_outreach_scope_blocked"
+        return "outreach_system_conflict"
+    return ""
+
+
 def _conversation_fingerprint(
     *,
     corp_id: str,
@@ -4348,6 +4378,13 @@ class OutreachService:
         }
         scan_limit = max(200, min(2000, max(1, int(limit)) * 200))
         candidates = self.list_candidates(limit=scan_limit, silent_minutes_min=0)
+        sop_candidate_loader = getattr(self.repository, "list_first_day_sop_contact_candidates", None)
+        if callable(sop_candidate_loader):
+            since = (
+                datetime.now(timezone.utc) - timedelta(minutes=FIRST_DAY_WINDOW_MINUTES)
+            ).isoformat()
+            candidates.extend(sop_candidate_loader(limit=scan_limit, since=since))
+            candidates = _dedupe_outreach_candidates(candidates)
         stats["candidate_count"] = len(candidates)
         effective_limit = max(1, int(limit))
         threshold_minutes = max(1, int(silent_minutes))
@@ -4428,6 +4465,8 @@ class OutreachService:
     def _rough_first_day_silence_candidate_reason(candidate: dict[str, Any], *, silent_minutes: int) -> str:
         if not _is_within_first_day(_string(candidate.get("sales_contact_started_at"))):
             return "not_first_day"
+        if _string(candidate.get("candidate_source")) == "sop_send_tasks":
+            return ""
         if not _string(candidate.get("last_customer_message_at")):
             return "customer_never_spoke"
         if not bool(candidate.get("awaiting_customer_reply")):
@@ -4498,6 +4537,13 @@ class OutreachService:
                 existing_run,
                 latest_customer_message_at=candidate_customer_at,
             )
+            if (
+                existing_run
+                and not retry_reason
+                and _string(candidate.get("candidate_source")) == "sop_send_tasks"
+                and not candidate_customer_at
+            ):
+                retry_reason = "sop_candidate_requires_platform_refresh"
             if existing_run and not retry_reason:
                 return {
                     "status": "skipped",
@@ -5519,20 +5565,40 @@ class OutreachService:
         except Exception as exc:
             message = str(exc)
             self.repository.update_outreach_task(task_id, status="failed", error_message=message)
+            terminal_reason = _terminal_outreach_send_failure_reason(message)
+            if terminal_reason:
+                self.repository.skip_remaining_outreach_tasks(
+                    str(task["plan_id"]),
+                    reason=terminal_reason,
+                    exclude_task_id=task_id,
+                )
+                self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+                scope = build_customer_scope(
+                    corp_id=task.get("corp_id") or plan.get("corp_id"),
+                    wechat=task.get("wechat") or plan.get("wechat"),
+                    external_userid=task.get("external_userid") or plan.get("external_userid"),
+                    customer_id=task.get("customer_id"),
+                )
+                if scope.persistence_allowed:
+                    self.repository.update_customer_outreach_state(
+                        scope.sales_contact_key,
+                        outreach_status="cancelled",
+                        outreach_plan_id="",
+                    )
             self.repository.add_outreach_event(
                 plan_id=str(task["plan_id"]),
                 task_id=task_id,
                 customer_id=str(task["customer_id"]),
-                event_type="task_failed",
+                event_type="task_failed_terminal" if terminal_reason else "task_failed",
                 event_summary=message[:240],
-                payload={"error": message},
+                payload={"error": message, "terminal_reason": terminal_reason},
             )
             self._sync_first_day_run_for_task(
                 plan=plan,
                 task=task,
-                status="failed",
-                reason_code="task_failed",
-                final_decision="failed",
+                status="blocked" if terminal_reason else "failed",
+                reason_code=terminal_reason or "task_failed",
+                final_decision="blocked" if terminal_reason else "failed",
                 terminal=True,
                 error=exc,
             )
