@@ -452,11 +452,12 @@ async def _finish_sales_recall(
     wait_seconds = float(getattr(settings, "v2_sales_recall_wait_seconds", 2.5) or 0)
     if task.done():
         return await task
-    if wait_seconds <= 0:
+    remaining_wait = wait_seconds - max(0.0, time.perf_counter() - started)
+    if remaining_wait <= 0:
         task.cancel()
         return _sales_recall_timeout(started, "kb_recall_not_ready")
     try:
-        return await asyncio.wait_for(task, timeout=wait_seconds)
+        return await asyncio.wait_for(task, timeout=remaining_wait)
     except asyncio.TimeoutError:
         task.cancel()
         return _sales_recall_timeout(started, "kb_recall_timeout")

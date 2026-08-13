@@ -4283,6 +4283,40 @@ def test_gate_and_tool_planner_execute_concurrently(monkeypatch) -> None:
     assert result["parallel_branch_metrics"]["parallel_expected_elapsed_ms"] == 80
 
 
+def test_sales_recall_wait_window_is_measured_from_parallel_start(monkeypatch) -> None:
+    class _Settings:
+        v2_sales_recall_wait_seconds = 0.02
+
+    class _Client:
+        settings = _Settings()
+
+    async def scenario():
+        task = asyncio.create_task(asyncio.sleep(1))
+        await asyncio.sleep(0.03)
+        started = time.perf_counter() - 0.03
+        return await parallel_reply_chain._finish_sales_recall(
+            task,
+            coze_client=_Client(),
+            started=started,
+        )
+
+    started = time.perf_counter()
+    result = asyncio.run(scenario())
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.2
+    assert result["status"] == "timeout"
+    assert result["reason"] == "kb_recall_not_ready"
+
+
+def test_parallel_reply_prompt_obeys_store_resolution_delivery_contract() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "严格执行 `store_fact_status/store_resolution_fact`" in prompt
+    assert "只有 `send_single` 或 `send_multiple`" in prompt
+    assert "这是工具结果的交付边界，不代表固定销售顺序" in prompt
+
+
 def test_one_parallel_branch_failure_preserves_the_other_branch(monkeypatch) -> None:
     async def failed_gate(state, service):
         del state, service
