@@ -18,7 +18,13 @@ class ModelLedObjectionPlaybookService:
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"version": 1, "sales_principles": [], "evidence_strategies": [], "assets": []}
+            return {
+                "version": 1,
+                "sales_principles": [],
+                "runtime_sales_principles": [],
+                "evidence_strategies": [],
+                "assets": [],
+            }
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -28,7 +34,7 @@ class ModelLedObjectionPlaybookService:
     def sales_principles(self) -> list[dict[str, Any]]:
         return [
             {"id": item["id"], "reasoning": item["reasoning"]}
-            for item in self.load()["sales_principles"]
+            for item in self.load()["runtime_sales_principles"]
         ]
 
     def gate_assets(self) -> list[dict[str, Any]]:
@@ -104,12 +110,18 @@ class ModelLedObjectionPlaybookService:
         if not isinstance(payload, dict):
             raise ValueError("V2 objection playbook must be an object")
         principles = _unique_objects(payload.get("sales_principles"), "id", _normalize_principle)
+        runtime_principles = _unique_objects(
+            payload.get("runtime_sales_principles") or payload.get("sales_principles"),
+            "id",
+            _normalize_principle,
+        )
         strategies = _unique_objects(payload.get("evidence_strategies"), "id", _normalize_strategy)
         assets = _unique_objects(payload.get("assets"), "asset_id", _normalize_asset)
         return {
             "version": max(1, _positive_int(payload.get("version"), 1)),
             "source": deepcopy(payload.get("source") or {}),
             "sales_principles": principles,
+            "runtime_sales_principles": runtime_principles,
             "evidence_strategies": strategies,
             "assets": assets,
         }

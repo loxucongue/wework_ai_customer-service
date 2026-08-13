@@ -904,8 +904,8 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
             "action": "none | ask | offer | payment | registration",
             "action_reason": "brief model reasoning for audit; never customer-visible",
             "sales_judgment": (
-                "ephemeral current-turn judgment including friction, decision opportunity and one smallest next commitment; "
-                "model-owned and never persisted"
+                "compact model-owned current-turn judgment: customer_goal, primary_objective, posture and reason; "
+                "never persisted"
             ),
             "payment_assessment": "ephemeral Reply-owned payment context with evidence refs; never persisted",
             "deposit_evidence": "required evidence references only when a payment card is sent",

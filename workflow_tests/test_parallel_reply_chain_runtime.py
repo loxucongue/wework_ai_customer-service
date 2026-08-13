@@ -101,22 +101,15 @@ def test_authoritative_registration_facts_do_not_treat_platform_display_name_as_
 def test_parallel_gate_only_nominates_content_assets() -> None:
     prompt = PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
-    assert "0-3" in prompt
+    assert "默认提名 1-2 个" in prompt
     assert "candidate_assets" in prompt
     assert "不回复客户" in prompt
     assert "不决定销售动作" in prompt
     assert "新价值" in prompt
-    assert "总数最多三个" in prompt
-    assert "默认提名一个 `supporting`" in prompt
-    assert "目录里确实没有尚未交付且有意义的新价值" in prompt
-    assert "不要求客户先表示同意" in prompt
-    assert "不得按“门店后固定发活动”等场景映射" in prompt
+    assert "才允许 3 个" in prompt
+    assert "通常最多一个 `direct` 和一个 `supporting`" in prompt
+    assert "不要按词语命中或配置顺序补流程" in prompt
     assert "这不等于 Gate 必须返回空候选" in prompt
-    assert "两个互不替代的步骤" in prompt
-    assert "不能因为 A 没有直接资产，就把 B 一起判空" in prompt
-    assert "相邻价值不要求客户当前主动询问该资产" in prompt
-    assert "相关性来自“在当前事实任务完成后，是否仍能用未重复的真实证据帮助这个客户继续形成判断”" in prompt
-    assert "不能仅以“客户只提供了位置/只问了当前问题”为由把 B 留空" in prompt
     assert "selected_scene_id" not in prompt
     assert "reference_messages" not in prompt
 
@@ -386,21 +379,13 @@ def test_parallel_content_gate_does_not_use_opening_asset_for_substantive_questi
 def test_parallel_reply_prompt_uses_history_without_fixed_short_ack_script() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "完整带时间对话" in prompt
-    assert "不要继续追问" in prompt
-    assert "每轮只做一个主要目标" in prompt
-    assert "answer：当前只适合答清楚" in prompt
-    assert "pause：客户当前确实无法继续接收沟通" in prompt
-    assert "客户当前明确正在工作" in prompt
-    assert "延后购买或到店决定不是沟通中止" in prompt
-    assert "不得用想象的忙碌、工作或现实事务补出暂停理由" in prompt
-    assert "不得把“改天、考虑、再看看”改写成“您先忙" in prompt
-    assert "`smallest_next_commitment` 所声明的新证据、新价值或客户动作必须" in prompt
-    assert "客户可见回复必须完成它" in prompt
-    assert "提醒客户记住之前已经讲过的价格、活动、案例或门店，不是新价值" in prompt
-    assert "本轮只简短承接并停止" in prompt
-    assert "不重复已经讲过的活动、效果或门店" in prompt
-    assert "客户正在工作" in prompt
+    assert "完整带时间聊天" in prompt
+    assert "不重复询问客户已提供的信息" in prompt
+    assert "每轮只有一个主要目标" in prompt
+    assert "answer、advance、switch、pause 或 close" in prompt
+    assert "工作中、健康风险、投诉、明确拒绝或停止联系时暂停" in prompt
+    assert "普通犹豫或软拒绝不自动等于退出" in prompt
+    assert "已经真实交付的内容不再预告、不索要认可" in prompt
     assert "好/好的/嗯/可以" not in prompt
 
 
@@ -441,6 +426,8 @@ def test_tool_planner_does_not_turn_truncated_history_into_a_new_location_questi
 def test_parallel_reply_rule_view_keeps_unique_sections_without_repeating_layered_facts() -> None:
     rules = parallel_reply_business_rules_for_model()
 
+    assert set(rules) == {"version", "MUST FOLLOW", "AUTHORITATIVE FACTS", "TOOL FACT BOUNDARIES"}
+
     assert rules["AUTHORITATIVE FACTS"]["offer"]["new_customer_price"] == 268
     assert "不能靠口头免费保留" in rules["AUTHORITATIVE FACTS"]["offer"]["reservation_completion_rule"]
     assert rules["AUTHORITATIVE FACTS"]["transaction_policy"]["appointment_flow_mode"] == "registration_only"
@@ -451,19 +438,14 @@ def test_parallel_reply_rule_view_keeps_unique_sections_without_repeating_layere
     assert rules["AUTHORITATIVE FACTS"]["customer_visible_evidence_policy"]["effect_confidence"]
     assert "面对面皮肤检测和评估" in rules["AUTHORITATIVE FACTS"]["health_risk_policy"]["in_store_assessment"]
     assert rules["TOOL FACT BOUNDARIES"]["customer_store_lookup"]
-    assert rules["CONTENT ASSET POLICY"]["gate_candidates_are_optional_evidence"] is True
-    principles = rules["SALES PRINCIPLES"]
-    assert principles["source"] == "shared_context.sales_guidance.principles"
-    assert "no raw source replies" in principles["runtime_contract"]
-    assert rules["CONTENT ASSET POLICY"]["precision_examples_are_offline_only"] is True
     assert "offer_facts" not in rules
     assert "transaction_policy" not in rules
     assert "conversion_psychology" not in rules
 
 
 def test_parallel_reply_treats_immediately_prior_complete_offer_as_prior_evidence() -> None:
-    assert "当前消息之前已经真实介绍过本次活动与价格" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "客户不需要专门确认此前交付" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "更早活动介绍" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户无需专门确认此前铺垫" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_reply_assessments_use_real_customer_message_refs_for_amount() -> None:
@@ -1106,9 +1088,8 @@ def test_parallel_model_context_exposes_store_coverage_without_store_answers() -
 def test_parallel_reply_prompt_treats_delivered_key_as_foundation_without_customer_approval() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "默认它已经完成一次销售铺垫" in prompt
-    assert "不要再索要认可" in prompt
-    assert "客户重新质疑刚交付的维度时，再重新打开该问题" in prompt
+    assert "已经真实交付的内容不再预告、不索要认可" in prompt
+    assert "客户继续质疑、明确要求重发或提供冲突信息时才重新打开" in prompt
 
 
 def test_parallel_reply_payload_summarizes_paid_registration_field_presence() -> None:
@@ -2690,9 +2671,9 @@ def test_nearby_store_repair_does_not_create_optional_store_step() -> None:
 
 
 def test_parallel_reply_health_policy_distinguishes_assessment_from_operation() -> None:
-    assert "当前明确健康风险" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不得发送预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "客户当前有健康风险时先暂停营销" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "当前健康风险" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "禁止发预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "只处理该边界，不做营销推进" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_amount_conflict_repair_rejects_tail_amount_as_deduction() -> None:
@@ -3312,49 +3293,48 @@ def test_parallel_reply_prompt_keeps_store_delivery_fact_based() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "门店必须属于客户当前可见范围" in prompt
-    assert "只有客户答案会实质改变下一步事实、工具、证据或动作时" in prompt
+    assert "提问只用于获取会改变事实、工具、证据或行动的信息" in prompt
     assert "应视为当前门店匹配请求" not in prompt
 
 
 def test_parallel_reply_prompt_separates_activity_from_deposit() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "预约金是一项独立成交动作" in prompt
-    assert "第一次询价或第一次问活动" in prompt
-    assert "不能同轮顺手发预约金卡" in prompt
-    assert "Gate 候选是可选资产" in prompt
+    assert "活动介绍与预约金成交是两个独立动作" in prompt
+    assert "第一次询价或第一次完整了解活动" in prompt
+    assert "不能同轮发预约金卡" in prompt
+    assert "Gate 候选。候选不是命令" in prompt
 
 
 def test_parallel_reply_requires_a_prior_offer_and_current_action_signal_for_payment() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "当前消息之前已经真实介绍过本次活动与价格" in prompt
-    assert "地址、效果、卡点排疑中至少另一把销售钥匙" in prompt
-    assert "当前轮有明确行动信号" in prompt
-    assert "action=registration` 只用于权威已付后资料登记" in prompt
+    assert "更早活动介绍" in prompt
+    assert "地址、效果或卡点中的另一项真实交付" in prompt
+    assert "当前存在报名、预约或付款行动信号" in prompt
+    assert "权威已付后才登记姓名、电话、门店和宽泛到店意向" in prompt
     assert "订单不是发卡前置" in prompt
 
 
 def test_parallel_reply_prompt_forbids_placeholder_commit_actions() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "`commit_actions` 只允许在输入明确提供权威已付" in prompt
-    assert "不得在客户回复中声称后台写入已经成功" in prompt
+    assert "`commit_actions` 只允许权威已付后" in prompt
+    assert "后台执行结果不得提前告知客户" in prompt
 
 
 def test_parallel_reply_prompt_requires_visible_reply_when_parallel_inputs_are_empty() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "`reply_messages` 必须非空" in prompt
-    assert "不采用就不要声明采用" in prompt
+    assert "`reply_messages` 至少一条" in prompt
+    assert "不采用就不引用" in prompt
 
 
 def test_parallel_reply_prompt_keeps_paid_registration_fact_without_slot_script() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "只有权威支付事实才算已付" in prompt
-    assert "已付" in prompt and "不得发送预约金卡" in prompt
-    assert "资料登记" in prompt
+    assert "权威已付后才登记姓名、电话、门店和宽泛到店意向" in prompt
+    assert "已付" in prompt and "禁止发预约金卡" in prompt
     assert "已付登记每轮只补一个字段组" not in prompt
 
 
@@ -3363,20 +3343,18 @@ def test_parallel_reply_prompt_requires_full_deposit_explanation_before_unpaid_r
     rules = parallel_reply_business_rules_for_model()
     offer = rules["AUTHORITATIVE FACTS"]["offer"]
 
-    assert "未付客户要求“登记、预约、留名额、报名”" in prompt
-    assert "不要只索要姓名和手机号" in prompt
     assert offer["prepay_amount"] == 10
     assert offer["tail_amount"] == 258
     assert "未做或不满意可退" in offer["refund_rule"]
     assert "每位10元预约金卡" in offer["reservation_completion_rule"]
-    assert "当前消息之前已经真实介绍过本次活动与价格" in prompt
-    assert "当前轮有明确行动信号" in prompt
+    assert "更早活动介绍" in prompt
+    assert "当前存在报名、预约或付款行动信号" in prompt
 
 
 def test_parallel_prompts_keep_paid_decision_in_reply_not_gate() -> None:
     assert "不决定销售动作" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
-    assert "只有权威支付事实才算已付" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "已付" in PARALLEL_REPLY_SYSTEM_PROMPT and "不得发送预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "权威已付后才登记" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "已付" in PARALLEL_REPLY_SYSTEM_PROMPT and "禁止发预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_parallel_reply_prompt_allows_in_store_assessment_without_promising_operation() -> None:
@@ -3402,8 +3380,8 @@ def test_parallel_gate_uses_history_only_to_rank_optional_assets() -> None:
 
 
 def test_parallel_gate_filters_channel_incompatible_asset_but_reply_owns_action() -> None:
-    assert "人工转账" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不能与小程序收款卡并存" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "转账或红包时只说明该渠道" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "只能使用一个付款渠道" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "payment_assessment" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "manual_transfer" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "unverified_paid_claim" in PARALLEL_REPLY_SYSTEM_PROMPT
@@ -3411,11 +3389,9 @@ def test_parallel_gate_filters_channel_incompatible_asset_but_reply_owns_action(
 
 def test_parallel_reply_prompt_forbids_reoffering_delivered_content() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "已经实际交付的地址、门店卡、案例、活动、排疑和付款方式" in prompt
-    assert "不能再写成未来承诺或许可式出口" in prompt
-    assert "客户明确要求重发、表示没有收到" in prompt
-    assert "自身参与路径" in prompt
-    assert "不是固定关键词匹配" in prompt
+    assert "已经真实交付的内容不再预告、不索要认可" in prompt
+    assert "明确要求重发" in prompt
+    assert "不把客户原话匹配成固定场景" in prompt
 
 
 @pytest.mark.parametrize("channel", ["transfer", "red_packet"])

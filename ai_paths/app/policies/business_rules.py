@@ -84,7 +84,7 @@ def reply_business_rules_for_model(*, stage: str = "", sub_rule_id: str = "") ->
 
 
 def parallel_reply_business_rules_for_model() -> dict[str, Any]:
-    """Return principles and facts, never the legacy scene/stage playbook."""
+    """Return compact node-owned rules, never the legacy scene/stage playbook."""
 
     rules = load_business_rules()
     offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
@@ -94,31 +94,18 @@ def parallel_reply_business_rules_for_model() -> dict[str, Any]:
         "MUST FOLLOW": {
             "hard_forbidden": rules.get("forbidden") or [],
             "payment_hard_blocks": transaction.get("payment_hard_blocks") or [],
-            "validation_owner": "code validates only facts, structure, permissions, arithmetic, idempotency and explicit model assessments",
+            "validation_owner": (
+                "code validates only facts, structure, permissions, arithmetic and idempotency; "
+                "Reply owns customer psychology and sales rhythm"
+            ),
         },
         "AUTHORITATIVE FACTS": {
-            "identity": _selected_dict_fields(rules.get("identity"), ("public_role", "style", "goal")),
-            "brand_trust": _selected_dict_fields(
-                rules.get("brand_trust_policy"),
-                ("allowed_points", "forbidden_points"),
-            ),
             "offer": _offer_facts(offer),
             "health_risk_policy": rules.get("health_risk_policy") or {},
             "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
             "customer_charge_policy": rules.get("customer_charge_policy") or {},
             "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
             "transaction_policy": transaction,
-        },
-        "SALES PRINCIPLES": {
-            "source": "shared_context.sales_guidance.principles",
-            "scope": "V2 ordinary reply only",
-            "runtime_contract": "high-level distilled reasoning only; no raw source replies or scene matching",
-        },
-        "CONTENT ASSET POLICY": {
-            "gate_candidates_are_optional_evidence": True,
-            "adaptable_text_may_be_rewritten": True,
-            "structured_media_and_facts_must_not_be_invented_or_mutated": True,
-            "precision_examples_are_offline_only": True,
         },
         "TOOL FACT BOUNDARIES": _tool_policy(rules).get("boundaries") or {},
     }

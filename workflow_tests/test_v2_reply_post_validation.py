@@ -165,20 +165,15 @@ def test_parallel_active_validation_has_no_semantic_text_checkers() -> None:
 
 
 def test_parallel_reply_prompt_treats_delivery_as_progress_without_permission_roundtrip() -> None:
-    assert "客户不会专门确认“这个顾虑已经解决”" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "最多增加一个新维度" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不要用“能不能接受、是否方便、要不要继续”" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "“查看位置、考虑一下、需要再联系”不算动作" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "客户不需要专门确认此前交付" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "默认成交动作是直接说明10元预约金规则并发送一张小程序预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不要把已经讲过的活动、门店、检测或到店流程再复述一遍" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "预约金不能以“半截成交”出现" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "到店抵扣10元、做的话再付258元、未做或不满意可退" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "已经真实交付的内容不再预告、不索要认可" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "精准回答后最多增加一个新价值维度" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "许可式问题" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户无需专门确认此前铺垫" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不再增加无意义确认轮次" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_parallel_reply_contract_exposes_exact_deposit_supporting_key_enum() -> None:
     assert '"supporting_key":"address | effect | objection | 空字符串"' in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不能写组合标签" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_tool_planner_requeries_when_customer_explicitly_requests_store_card_resend() -> None:
@@ -326,8 +321,8 @@ def test_parallel_reply_prompt_is_structured_sales_brain_not_scene_matcher() -> 
     for section in (
         "# 1. 使命",
         "# 2. 权威层级",
-        "# 3. 不可违反边界",
-        "# 4. 销售原则",
+        "# 3. MUST FOLLOW",
+        "# 4. SALES PRINCIPLES",
         "# 5. 决策协议",
         "# 6. 输出合同",
     ):
@@ -342,49 +337,36 @@ def test_parallel_reply_prompt_is_structured_sales_brain_not_scene_matcher() -> 
         assert legacy not in PARALLEL_REPLY_SYSTEM_PROMPT
     required_contracts = (
         "sales_judgment",
-        "tool_fact_reference_options",
-        "authoritative_fact_reference_options",
-        "registration_fact_status",
-        "store_fact_status",
-        "smallest_next_commitment",
-        "active_friction",
-        "decision_opportunity",
+        "used_fact_refs",
+        "selected_content_ids",
+        "payment_assessment",
+        "deposit_evidence",
+        "safety_assessment",
+        "party_size_assessment",
+        "commit_actions",
     )
     for contract in required_contracts:
         assert contract in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不要求额外填写一套“发/不发”审计字段" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "只有输入已有完成线上活动登记的权威事实" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "活动包含皮肤检测" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不得进一步写成“到店会先检测、到店先看皮肤、跑一趟就能先检测”" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "绝不能凭输出示例或经验虚构默认 fact_ref" in PARALLEL_REPLY_SYSTEM_PROMPT
-
     semantic_boundaries = (
-        "不能靠关键词",
-        "匹配固定场景",
-        "不是业务事实、固定场景、客户标签或成品话术",
+        "不把客户原话匹配成固定场景",
         "只有你负责理解客户、判断销售节奏",
-        "这个选择属于你的销售判断",
-        "代码只核验引用、结构和真实 ID",
-        "收缩客户的不确定性，不扩大问题空间",
-        "提问必须有决策价值",
-        "只有系统确实能根据答案提供不同的权威事实",
-        "`active_friction` 只记录客户已经表达的阻力",
+        "Gate 候选。候选不是命令",
+        "提问只用于获取会改变事实、工具、证据或行动的信息",
     )
     for boundary in semantic_boundaries:
         assert boundary in PARALLEL_REPLY_SYSTEM_PROMPT
 
     factual_boundaries = (
-        "人工转账是允许的付款方式",
+        "客户明确选择转账或红包时只说明该渠道",
         "订单不是发卡前置",
         "同轮最多一张",
-        "不能提前保证未知结果",
-        "不得因为原始消息类型含糊而把已知状态降级",
+        "不得编造价格、门店、案例、距离",
     )
     for boundary in factual_boundaries:
         assert boundary in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
-def test_sales_judgment_keeps_model_owned_motion_fields_without_interpreting_them() -> None:
+def test_sales_judgment_keeps_only_compact_model_owned_fields() -> None:
     judgment = _normalized_sales_judgment(
         {
             "customer_goal": "先考虑是否值得参加",
@@ -400,11 +382,7 @@ def test_sales_judgment_keeps_model_owned_motion_fields_without_interpreting_the
 
     assert judgment == {
         "customer_goal": "先考虑是否值得参加",
-        "established_keys": ["effect", "activity"],
-        "active_friction": "担心预约金是不是额外收费",
-        "decision_opportunity": "澄清预约金用途后确认是否保留名额",
         "primary_objective": "降低付款顾虑",
-        "smallest_next_commitment": "确认是否接受10元抵扣机制",
         "posture": "advance",
         "reason": "客户仍在询问而非明确退出",
     }
@@ -578,30 +556,24 @@ def test_parallel_rules_expose_customer_charge_fact_to_reply_and_auditor() -> No
 
 
 def test_reply_requires_direct_text_answer_before_structured_supplement() -> None:
-    assert "先在 text 中直接说出足够识别该答案的事实" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不能代替文字回答本身" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不能只写“给您发这家/这是门店地址”" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "先用 text 直接说清" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "结构素材不能代替文字答案" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_model_led_prompt_distinguishes_changeable_fact_gaps_from_fixed_constraints() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "只有前者值得提问" in prompt
-    assert "不能因为客户不满意结果就重新索要同一信息" in prompt
-    assert "不要用“您方便再联系我、考虑好再找我”" in prompt
-    assert "不要立即重复发送同一素材" in prompt
-    assert "不能自动等同于当前无法继续接收沟通" in prompt
-    assert "当前窗口没有重复携带原始位置" in prompt
-    assert "不要把历史素材声明成当前新选择" in prompt
+    assert "事实不足时可以做最小反问" in prompt
+    assert "不重复询问客户已提供的信息" in prompt
+    assert "不循环解释" in prompt
+    assert "普通犹豫或软拒绝不自动等于退出" in prompt
 
 
 def test_model_led_reply_preserves_complete_selected_asset_contract() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "表示采用它的证据目的、核心事实和结构素材" in prompt
-    assert "不能遗漏候选 `approved_points/messages` 中构成该资产核心含义的事实" in prompt
-    assert "首次采用 `asset_role=activity_offer`" in prompt
-    assert "为了控制消息数量，可以把多段核心文本自然合并成一段" in prompt
+    assert "采用一个内容资产就要保留其核心事实和全部必要结构素材" in prompt
+    assert "可以自然改写文字，但不能只取一句话或漏发图片、卡片" in prompt
 
 
 def test_current_gate_candidate_authorizes_media_without_audit_metadata() -> None:

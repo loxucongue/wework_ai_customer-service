@@ -977,20 +977,9 @@ def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
     posture = str(raw.get("posture") or "answer").strip()
     if posture not in {"answer", "advance", "switch", "pause", "close"}:
         posture = "answer"
-    established_keys: list[str] = []
-    for item in raw.get("established_keys") or []:
-        key = str(item or "").strip()
-        if key not in {"address", "effect", "activity", "objection"}:
-            continue
-        if key not in established_keys:
-            established_keys.append(key)
     return {
         "customer_goal": str(raw.get("customer_goal") or "")[:500],
-        "established_keys": established_keys,
-        "active_friction": str(raw.get("active_friction") or "")[:500],
-        "decision_opportunity": str(raw.get("decision_opportunity") or "")[:500],
         "primary_objective": str(raw.get("primary_objective") or "")[:500],
-        "smallest_next_commitment": str(raw.get("smallest_next_commitment") or "")[:500],
         "posture": posture,
         "reason": str(raw.get("reason") or "")[:500],
     }
@@ -1342,16 +1331,11 @@ def _parallel_generic_reply_repair_messages(
             "action": ["none", "ask", "offer", "payment", "registration"],
             "sales_judgment_required_fields": [
                 "customer_goal",
-                "established_keys",
-                "active_friction",
-                "decision_opportunity",
                 "primary_objective",
-                "smallest_next_commitment",
                 "posture",
                 "reason",
             ],
             "sales_judgment_posture": ["answer", "advance", "switch", "pause", "close"],
-            "sales_judgment_established_keys": ["address", "effect", "activity", "objection"],
             "payment_assessment_status": [
                 "none",
                 "manual_transfer",

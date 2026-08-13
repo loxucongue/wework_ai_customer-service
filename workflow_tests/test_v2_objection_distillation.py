@@ -82,7 +82,7 @@ def test_v2_content_catalog_contains_guidance_but_no_unreviewed_media() -> None:
 
     assert len(items) == 4
     assert all(item["content_type"] == "evidence_strategy" for item in items)
-    assert len(catalog["sales_principles"]) == 10
+    assert len(catalog["sales_principles"]) == 8
     assert not any(item["content_type"] == "reviewed_media" for item in items)
 
 
@@ -167,24 +167,21 @@ def test_v2_prompts_do_not_restore_scene_matching_or_raw_reference_replies() -> 
 
     assert "selected_scene_id" not in active_prompts
     assert "appointment_blocker_reference" not in active_prompts
-    assert "像成熟销冠一样" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "销冠经验素材" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "客户可见内容不能照抄" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "第一次询价或第一次问活动" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "活动介绍的一部分" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "最终 Reply 销售大脑" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "销冠经验" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不照抄 SOP 或销冠原话" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "第一次询价或第一次完整了解活动" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能同轮发预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "reference_messages" not in active_prompts
     assert "客户说 X" not in active_prompts
 
 
 def test_v2_prompts_forbid_inventing_customer_concerns_and_valueless_questions() -> None:
-    assert "不要把销售推进写成" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "本轮能直接交付，就直接交付" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不防御式降调" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "暂停高压成交" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不表示把服务动作完全交还给客户" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "客户多次说时间不确定" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "有没有引入客户没提的新顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "有没有把可直接交付的内容写成" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不主动植入未表达的顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "能直接发送真实案例、门店卡或活动资产时，不先问客户是否需要" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "提问只用于获取会改变事实、工具、证据或行动的信息" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "是否引入客户没提的新顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "是否把可直接交付的内容写成许可式问句" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:
@@ -209,7 +206,9 @@ def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:
     assert any("不重复活动价格、案例或门店" in item for item in time_moves)
     assert any("尚未交付" in item and "降低行动成本" in item for item in time_moves)
     assert any("旧活动或旧价格不算新价值" in item for item in time_moves)
-    assert "不得因为活动价格容易复述" in PARALLEL_REPLY_SYSTEM_PROMPT
+    runtime_principles = {item["id"]: item["reasoning"] for item in config["runtime_sales_principles"]}
+    assert len(runtime_principles) == 8
+    assert "不循环辩解" in runtime_principles["acknowledge_then_switch"]
 
 
 def test_v2_concern_provenance_fixture_covers_both_suppression_and_explicit_questions() -> None:
