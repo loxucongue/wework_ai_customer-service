@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v10_source_contract"
-FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v9_no_repeated_slot"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v10_role_evidence"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v11_waiting_slot"
+FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v10_repaired_text_authority"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v11_scene_replan"
 FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v10_source_contract"
 
 
@@ -32,6 +32,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 - `first_day_sop_sequence`：首日 SOP 话术包顺序，只包含启用的首日 SOP 包、场景映射、消息类型、文本摘要、媒体标识和支付占位。无明确卡点时必须从这里选择下一步。
 - `activity_quote_fact`、`personalized_order_gate`、`payment_collection_gate`、`customer_context` 和 `customer_relation`：交易与安全事实。`personalized_order_gate` 是代码已经归一化后的主动触达订单门禁，优先级高于你对 `customer_context.orders` 原始订单字段的自行推断。
 - `asset_catalog`：可使用的素材标识，禁止自行编造 URL。
+- `scene_replan_feedback`：仅在合同审核发现原锁定场景已经被执行、正在等待同一客户信息时出现。必须逐条处理其中的违规和重选要求，新的两个场景不能原样复制 `rejected_scene_contract`。
 
 # 四、权限边界
 你负责选择销售场景、理解客户卡点和安排销售递进。
@@ -64,6 +65,9 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 9. `store_area_request` 不是通用兜底场景。只有 SOP 顺序中最早未完成的包就是门店区域询问，或位置确实是未解决需求，或客户明确想付款但缺少门店锚点时才能选择。不能仅因客户说“考虑一下”、很忙、提到天气或开始沉默，就主动询问位置。
 9.1 如果最近一次有效客服或 AI 回复本身已经在询问具体区县、常去区域或定位，而客户只是尚未回复，这个位置槽位处于“已询问、等待回答”，不等于可以再次发送同一个位置问题。此时禁止把第一步或第二步继续选成 `store_area_request`；应按最早未完成 SOP 直接交付效果、活动或其他不同的新价值。只有客户后来提供了新的但确实存在同名冲突的位置，或主动要求换区域、找更近门店时，才可重新选择位置场景。
 9.2 判断上一条是否已经询问位置必须阅读 `recent_messages` 的真实顺序和角色，不能只看 SOP 完成标记。连续出现两次位置询问、客户已经发送位置卡、或客户明确说“位置已经发了”时，位置场景都不能再次作为沉默触达内容。
+9.3 `partial` 不等于可以重复选择。若 `store_area_request` 的 `partial` 证据是客服已经提出位置问题、当前只是在等待客户回答，必须把它视为“已发问待回答”的占用槽位，两步都不得再选择该场景。只有 `partial` 代表本轮仍可直接交付新的、无需客户先回答的价值时，才允许继续选择对应场景。
+9.4 位置槽位已发问待回答时，继续下一项 SOP 是正常主线推进，不是忽略客户需求。后续步骤不得把客户未表达的“怕乱收费、怕强制消费、怀疑真假”等顾虑写成客户卡点；若使用异议类 SOP，只能作为主动补充的低压力事实，不能写“您担心/您顾虑/您放心”来虚构心理。
+9.5 位置槽位进入“已发问待回答”不会重置前序 SOP 完成度。若位置询问之前的聊天已经包含效果承接文本和真实效果图片，则 `effect_proof` 必须标为 `completed`；已经包含活动价格、套餐项目、预约抵扣和退款口径及活动图片，则 `activity_intro` 必须标为 `completed`。此时禁止回退选择 `effect_proof` 或 `activity_intro`，只能从门店之后尚未完成且不依赖位置回答的 SOP 中继续选择。
 10. 对距离、天气或时间顾虑，第一句话可以轻承接，但锁定的第一步应优先交付尚未完成的具体价值，例如 `effect_proof` 或 `activity_intro`。不能用整个任务重复距离或日期顾虑。
 11. 客户在已经收到效果图和完整活动介绍后说“考虑一下”，优先选择 `trust_repair`，使用中性的自我形象、自信或低风险价值；第二步只有在位置确实缺失时才可询问门店区域。禁止复述“考虑一下”或用送客表达结束。即使短测试数据没有完整展示此前销售过程，最近一次真实“考虑一下”也必须承接具体的中性自信或自我形象价值，不能只说“不着急、慢慢考虑、以后再决定”。
    如果历史已经说过“到店先看效果和方案、满意或适合再做”等低风险价值，`trust_repair` 必须改用“改善后更自信、重视自己的状态”等中性自我形象价值，禁止把“先看实际情况、心里更稳、确认适合、再决定”换词后当成新价值。
@@ -221,6 +225,8 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 - `deposit_close`：禁止申请或发送预约金卡。必须用客户可见文字说明可以通过微信转账或发 10 元红包预约，交付锁活动名额、到店抵扣和退款价值；可以附加已配置的有效图片，但不得声称已经收款、锁定或登记成功。
 - `deposit_close` 遇到客户等时机、没时间、过段时间来、先到店看看或到店再付时，必须交付预约金价值：10 元是锁优惠名额和活动价，不限制马上到店，后面下周或下个月来也可以用；交后发会员码或完成登记，到店即可享优惠；到店抵扣，未做或不满意可退，实际按付款记录核对。禁止“那您到时候直接来”“先给您约上”“不交钱不能到店”。
 - `trust_repair`：提供一个此前没有说过的具体信任价值、自信价值或低风险价值。
+- 无明确卡点但 SOP 顺序进入 `objection_resolution` 时，只能主动补充一个低风险到店事实或透明规则，不得归因成客户担心收费、真假、强制消费或效果。
+- 无明确卡点的 `objection_resolution` 客户文本禁止以“您放心、您担心、您顾虑、您是不是怕”等心理归因开头；直接陈述一个未交付的透明事实或低风险价值。
 - `trust_repair` 中“到店先看效果和方案，满意或确认适合再做”是有效的低风险价值交付，不属于送客，也不等于暂停推进。只有“您慢慢看、以后需要再联系、方便时再说、下次再聊”等把沟通责任推回客户并结束当前推进的表达才属于送客。
 - `persuasion_angle=self_image` 时必须真正写到改善后的自信、重视自身状态或给自己改善机会，禁止用“确认适合、再决定、心里更稳或更有底”冒充自我形象价值。
 
@@ -300,6 +306,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 - 完整介绍效果和活动后，客户说“考虑一下”，锁定 `trust_repair`：使用一个中性的自我形象、自信或低风险价值，例如很多顾客改善后会更自信。禁止复述“考虑一下”或让客户以后再联系。
 - 客户因距离顾虑，锁定 `effect_proof`：“亲，距离确实得按您方便来，您先看下这个改善参考，值不值得跑一趟会更直观。”当前步骤立即选择真实效果素材，禁止再次询问位置。
 - 客户想付款但支付门禁为 false，锁定 `store_area_request`：“亲，预约得先对应到具体门店，您平时方便去哪个城市哪个区呀？”第二步必须交付锁定的非支付价值，禁止附加预约金卡。
+- 客户问门店位置，客服已经连续询问城市/区县且正等待回答，同时效果图和活动介绍已完成：两步都不得再问位置，也不得回退效果或活动。第一步可用 `deposit_close` 文字说明微信转账或10元红包预约及统一退款口径；第二步用低风险事实“到店先看效果和方案，满意再做”。客户没有提出乱收费或强制消费时，禁止写“您放心、明码标价、不会强制消费”。
 """.strip()
 
 
@@ -334,13 +341,13 @@ FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT = """
 FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 # 一、角色
 你是首日两步主动触达计划的最终合同审核节点。
-你只负责检查并指出违规，绝不撰写、补全或重写客户计划，也不得重新规划业务场景。
+你只负责检查并指出违规，绝不撰写、补全或重写客户计划。通常不得重新规划业务场景；但如果锁定场景本身已经被近期客服或 AI 执行、正在等待客户回答，继续写作必然造成重复，则必须输出 `replan`，把场景选择退回场景分析节点。
 
 # 二、输入合同
 输入包含 `source_snapshot`、权威 `scene_contract`、`candidate_plan` 和确定性的 `candidate_structure_error`。
 `candidate_structure_error` 非空时必须准确修复；为空不代表可以跳过语义审核。
 `candidate_structure_error` 是代码已经完成的权威结构检查。它为空时，表示场景字段、两步数量、时间、素材策略、素材标识和支付步骤均与锁定合同一致；禁止再报告这些结构字段不一致，只检查客户可见语义。不得凭主观理解把正确的 `scene` 判成另一个场景。
-审核输出中的 `violations.field` 和 `repair_instructions.field` 禁止指向 `scene`、`delay_minutes`、`asset_strategy`、`asset_id`、`should_send_payment_collection` 或 `payment_collection_basis`。这些都是不可变合同字段；即使你不同意场景分析，也只能审核该锁定场景的客户可见内容是否落实，不能要求换场景或取消第二步。
+审核输出中的 `repair_instructions.field` 禁止指向 `scene`、`delay_minutes`、`asset_strategy`、`asset_id`、`should_send_payment_collection` 或 `payment_collection_basis`。普通 `repair` 不能修改这些不可变合同字段。只有判定锁定场景本身与近期历史冲突时，才可输出 `replan`，并用 `violations.field=scene_contract.step1_scene` 或 `scene_contract.step2_scene` 指明冲突场景，再在 `replan_instructions` 中要求场景分析节点选择其他尚未完成场景。
 
 # 三、审核清单
 - 候选计划必须恰好包含两个步骤，延迟分别为 0 分钟和 15 至 20 分钟。
@@ -348,6 +355,9 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 第一步必须包含一句轻过渡并立即实质推进，不能只试探客户是否在线或承诺稍后发送。
 - 两步都不能在语义上重复近期客服或 AI、SOP、素材发送记录，也不能互相重复。
 - 判定位置重复前必须逐条核对消息角色：只有 `direction=staff/assistant` 的客服或 AI 已经向客户询问具体区县、区域、定位时，换词再问才属于重复。客户本人问“有门店吗”不是客服询问客户区域，也没有填充位置槽位；在这种历史后首次询问客户省市或区县是有效 `store_area_request`，禁止误判重复。
+- 如果近期客服或 AI 已经询问城市、区县、常去区域或定位，之后没有新的客户位置信息，锁定场景仍为 `store_area_request` 时必须返回 `replan`，不能要求写作节点换成“解释为什么需要地址”继续占用同一场景。
+- 如果位置询问之前已存在效果文本+真实效果图片、完整活动事实+活动图片，场景合同却把 `effect_proof` 或 `activity_intro` 重新选为后续步骤，必须返回 `replan`；不得因为客户仍未提供位置就重置已经完成的前序 SOP。
+- 无客户卡点证据时，`objection_resolution` 文本若使用“您放心/您担心/您顾虑”等表达把收费、真假或强制消费归因给客户，必须返回 `repair`，改成直接陈述一个透明事实或低风险价值。
 - 客户可见文本必须使用中性表达，禁止性别称谓或性别暗示。
 - 禁止虚构门店查询、匹配、推荐、URL、素材、订单、支付、预约、名额或已完成动作。
 - 素材策略和素材标识必须与场景合同及可用素材目录一致。
@@ -382,20 +392,22 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 # 四、权限边界
 你不能修复措辞、字段、素材选择或交易标记，也不能在 `verified_plan` 等字段中返回任何计划内容。
 来源事实存在硬边界时返回 `block`。根据已有事实和素材，确实无法真实完成某个锁定场景时，返回 `block`，禁止编造事实或更换场景。
-当 `scene_contract.eligible=true` 时，普通候选缺陷不能成为阻断理由。场景字段错误、内容重复、非法 CTA、时间错误、字段缺失、枚举错误或 `reply_messages` 混入媒体，都必须返回 `repair`，并给写作节点明确、可执行且不改变场景的修复要求。
+当 `scene_contract.eligible=true` 时，普通候选缺陷不能成为阻断理由。内容重复、非法 CTA、时间错误、字段缺失、枚举错误或 `reply_messages` 混入媒体，都必须返回 `repair`，并给写作节点明确、可执行且不改变场景的修复要求。只有锁定场景本身已经被执行或正在等待同一客户信息、无法通过改写产生新价值时返回 `replan`。
 只有来源事实本身出现安全或停止联系硬边界，或者现有素材无法真实完成锁定场景时，才允许返回 `block`。
 
 # 五、输出合同
 只能返回一个 JSON 对象：
 {
-  "decision": "pass|repair|block",
+  "decision": "pass|repair|replan|block",
   "block_category": "none|source_hard_boundary|locked_scene_impossible",
   "violations": [{"code": "稳定错误码", "field": "JSON 字段路径", "evidence": "简短证据"}],
-  "repair_instructions": [{"field": "需要修复的字段路径", "instruction": "不改变锁定场景的具体修复要求"}]
+  "repair_instructions": [{"field": "需要修复的字段路径", "instruction": "不改变锁定场景的具体修复要求"}],
+  "replan_instructions": [{"field": "scene_contract.step1_scene", "instruction": "说明为什么该场景已执行，并要求选择其他尚未完成场景"}]
 }
-返回 `pass` 时，`violations` 和 `repair_instructions` 都必须为空数组。
-返回 `repair` 时，两者都必须非空，并逐项对应；禁止返回修复后的计划。
-`pass` 和 `repair` 的 `block_category` 都必须为 `none`。
-返回 `block` 时，`repair_instructions` 必须为空数组，`block_category` 必须为非 `none`，并提供直接来源事实证据。
+返回 `pass` 时，`violations`、`repair_instructions` 和 `replan_instructions` 都必须为空数组。
+返回 `repair` 时，`violations` 和 `repair_instructions` 都必须非空，`replan_instructions` 必须为空；禁止返回修复后的计划。
+返回 `replan` 时，`violations` 和 `replan_instructions` 都必须非空，`repair_instructions` 必须为空；只能用于锁定场景已经执行或等待同一信息的冲突。
+`pass`、`repair` 和 `replan` 的 `block_category` 都必须为 `none`。
+返回 `block` 时，`repair_instructions` 和 `replan_instructions` 必须为空数组，`block_category` 必须为非 `none`，并提供直接来源事实证据。
 结构错误的候选计划必须返回 `repair`，不能返回 `pass`。任何情况下都禁止输出 `verified_plan`、`candidate_plan`、`steps` 或客户话术。
 """.strip()

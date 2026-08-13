@@ -3,6 +3,26 @@
   "version": "2026-08-13",
   "cases": [
     {
+      "id": "first_day_location_already_asked_waiting",
+      "description": "客户询问门店后客服已经连续询问区域，客户没有新位置回复，沉默计划不得再次询问地址或重复预约图片",
+      "trigger_context": {"trigger_type": "first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","content":"去斑","msgtype":"text","created_at":"2026-08-13T19:48:00+08:00"},
+        {"direction":"staff","sender_type":"staff","content":"亲，您看一下这个是参加活动进来的顾客做完后的参考。","msgtype":"text","created_at":"2026-08-13T19:49:00+08:00"},
+        {"direction":"staff","sender_type":"staff","content":{"url":"https://oss.example.invalid/case-a.png"},"msgtype":"image","created_at":"2026-08-13T19:49:01+08:00"},
+        {"direction":"staff","sender_type":"staff","content":"现在是线上活动，前30名到店享268元淡斑活动，包含淡斑、检测皮肤、基础清洁和肌肤补水。线上10元预约，到店抵扣；未做或不满意可退，实际按付款记录核对。","msgtype":"text","created_at":"2026-08-13T19:50:00+08:00"},
+        {"direction":"staff","sender_type":"staff","content":{"url":"https://oss.example.invalid/activity.png"},"msgtype":"image","created_at":"2026-08-13T19:50:01+08:00"},
+        {"direction":"customer","sender_type":"customer","content":"发下位置","msgtype":"text","created_at":"2026-08-13T19:54:00+08:00"},
+        {"direction":"staff","sender_type":"staff","content":"亲，您方便跟我说下您现在在哪个城市或区吗？","msgtype":"text","created_at":"2026-08-13T19:55:00+08:00"},
+        {"direction":"staff","sender_type":"staff","content":"亲，您把所在城市和区发我一下，我马上帮您看最近的门店位置。","msgtype":"text","created_at":"2026-08-13T19:58:00+08:00"}
+      ],
+      "recent_media_delivery": {"urls":["https://oss.example.invalid/case-a.png","https://oss.example.invalid/activity.png"],"document_ids":[]},
+      "conversation_activity": {"real_customer_message_count":2,"reply_wait_minutes":101,"customer_silence_minutes":104},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "两步都不得再选择 store_area_request，不得解释为什么需要地址。应推进尚未完成的异议、信任或文字预约场景，媒体不得与历史已发送素材重复。"
+    },
+    {
       "id": "first_day_completed_effect_activity_store_then_deposit",
       "description": "效果图与活动已完整交付，客户询问门店但没有提供区域，沉默后先问区域再做文字预约推进",
       "trigger_context": {

@@ -822,22 +822,41 @@ class OutreachRepositoryMixin:
             with self.store.connect() as conn:
                 rows = conn.execute(
                     """
-                    SELECT customer_id, external_userid, corp_id, user_id, wechat,
-                           MIN(created_at) AS sales_contact_started_at,
-                           MAX(updated_at) AS updated_at,
-                           MAX(created_at) AS latest_sop_task_at
-                    FROM sop_send_tasks
-                    WHERE created_at>=?
-                      AND customer_id<>''
-                      AND external_userid<>''
-                      AND corp_id<>''
-                      AND wechat<>''
-                      AND (
-                        sop_pack_name LIKE '%加微%'
-                        OR sop_pack_id LIKE '%add_wecom%'
-                        OR trigger_source IN ('third_party_sop_pending', 'platform_auto_opening')
-                      )
-                    GROUP BY corp_id, lower(wechat), external_userid, customer_id
+                    WITH candidates AS (
+                        SELECT customer_id, external_userid, corp_id, user_id, wechat,
+                               MIN(created_at) AS sales_contact_started_at,
+                               MAX(updated_at) AS updated_at,
+                               MAX(created_at) AS latest_sop_task_at
+                        FROM sop_send_tasks
+                        WHERE created_at>=?
+                          AND customer_id<>''
+                          AND external_userid<>''
+                          AND corp_id<>''
+                          AND wechat<>''
+                          AND (
+                            sop_pack_name LIKE '%加微%'
+                            OR sop_pack_id LIKE '%add_wecom%'
+                            OR trigger_source IN ('third_party_sop_pending', 'platform_auto_opening')
+                          )
+                        GROUP BY corp_id, lower(wechat), external_userid, customer_id
+                    )
+                    SELECT COALESCE(
+                               (
+                                   SELECT c.customer_id
+                                   FROM conversations c
+                                   WHERE c.corp_id=candidates.corp_id
+                                     AND lower(c.wechat)=lower(candidates.wechat)
+                                     AND lower(c.external_userid)=lower(candidates.external_userid)
+                                     AND c.customer_id<>''
+                                     AND lower(c.customer_id)<>lower(candidates.external_userid)
+                                   ORDER BY c.updated_at DESC
+                                   LIMIT 1
+                               ),
+                               candidates.customer_id
+                           ) AS customer_id,
+                           external_userid, corp_id, user_id, wechat,
+                           sales_contact_started_at, updated_at, latest_sop_task_at
+                    FROM candidates
                     ORDER BY latest_sop_task_at DESC
                     LIMIT ?
                     """,

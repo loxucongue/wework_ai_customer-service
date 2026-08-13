@@ -418,6 +418,113 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.sent[0]["reply_messages"][0]["content"]["text"], pack_text)
         self.assertEqual(system.sent[0]["reply_messages"][1]["type"], "image")
 
+    async def test_first_day_task_removes_media_already_sent_by_another_chain(self) -> None:
+        media_path = "https://oss.example/appointment.png"
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+            task_reply_messages=[
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "亲，可以微信转账或发10元红包预约。"},
+                },
+                {
+                    "type": "image",
+                    "order": 2,
+                    "content": {"url": f"{media_path}?Expires=200&Signature=new"},
+                },
+            ],
+            task_content_sources=[
+                "appointment-blocker:deposit",
+                {"should_send_payment_collection": False},
+                {
+                    "outreach_task_metadata": {
+                        "scene": "deposit_close",
+                        "preserve_sop_pack_messages": True,
+                    }
+                },
+            ],
+        )
+        system = _SystemClient(
+            messages=[
+                {
+                    "direction": "staff",
+                    "sender_type": "ai",
+                    "msgtype": "image",
+                    "mediaUrl": f"{media_path}?Expires=100&Signature=old",
+                    "created_at": "2026-08-13T21:55:00+08:00",
+                }
+            ]
+        )
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-2")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(
+            system.sent[0]["reply_messages"],
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "亲，可以微信转账或发10元红包预约。"},
+                }
+            ],
+        )
+        self.assertIn(
+            "first_day_duplicate_media_removed",
+            [event["event_type"] for event in repository.events],
+        )
+
+    async def test_first_day_sop_task_uses_fresh_platform_text_for_repeat_check(self) -> None:
+        repeated = "亲，您现在在哪个省市、区县呢？"
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+            task_reply_messages=[
+                {"type": "text", "order": 1, "content": {"text": repeated}},
+            ],
+            task_content_sources=[
+                "sop-pack:s10_store_prompt",
+                {"should_send_payment_collection": False},
+                {
+                    "outreach_task_metadata": {
+                        "scene": "store_area_request",
+                        "preserve_sop_pack_messages": True,
+                    }
+                },
+            ],
+        )
+        system = _SystemClient(
+            messages=[
+                {
+                    "direction": "staff",
+                    "sender_type": "ai",
+                    "msgtype": "text",
+                    "content": repeated,
+                    "created_at": "2026-08-13T21:40:00+08:00",
+                }
+            ]
+        )
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "first_day_message_too_similar_to_history")
+        self.assertEqual(system.sent, [])
+
     async def test_first_day_gendered_customer_language_is_rewritten_to_neutral(self) -> None:
         repository = _ExecutionRepository(
             order_status="no_order",
@@ -550,6 +657,54 @@ class OutreachSendClientIdentityTests(unittest.TestCase):
 
 
 class OutreachRepositoryDueTaskTests(unittest.TestCase):
+    def test_first_day_sop_candidate_uses_authoritative_conversation_customer_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            now = datetime.now(timezone.utc).isoformat()
+            request = SimpleNamespace(
+                customer_id="22420394",
+                external_userid="external-22420394",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+            )
+            repository.upsert_conversation(
+                conversation_id="conversation-22420394",
+                request=request,
+                title="客户",
+            )
+            with store.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO sop_events
+                        (event_id, event_type, source, received_at, updated_at)
+                    VALUES ('event-first-day-id', 'sop_friend_added_schedule_batch', 'test', ?, ?)
+                    """,
+                    (now, now),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO sop_send_tasks
+                        (id, event_id, idempotency_key, customer_id, external_userid, corp_id,
+                         user_id, wechat, sop_pack_id, sop_pack_name, sop_category,
+                         reply_messages_json, status, trigger_source, created_at, updated_at)
+                    VALUES
+                        ('task-first-day-id', 'event-first-day-id', 'idem-first-day-id',
+                         'external-22420394', 'external-22420394', 'corp', '7294', 'DY258',
+                         'add_wecom', '加微开场', 'opening', '[]', 'sent',
+                         'platform_auto_opening', ?, ?)
+                    """,
+                    (now, now),
+                )
+
+            candidates = repository.list_first_day_sop_contact_candidates(limit=10)
+
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0]["customer_id"], "22420394")
+            self.assertEqual(candidates[0]["external_userid"], "external-22420394")
+
     def test_active_plan_lookup_is_case_insensitive_for_wechat(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))

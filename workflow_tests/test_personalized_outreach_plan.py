@@ -144,7 +144,9 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("一条或多条非空 `reply_messages`", writer)
         self.assertIn("不得重新规划业务场景", verifier)
         self.assertIn("语义上重复", verifier)
-        self.assertIn("pass|repair|block", verifier)
+        self.assertIn("pass|repair|replan|block", verifier)
+        self.assertIn("已发问待回答", analyst)
+        self.assertIn("把场景选择退回场景分析节点", verifier)
         self.assertIn("允许以前一步 `activity_intro` 作为本计划内报价证据", verifier)
         self.assertIn("不得因为超过两句就要求修复", verifier)
         self.assertIn("已询问、等待回答", analyst)
@@ -702,6 +704,30 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             ),
             "first-day verifier must not return customer plan content",
         )
+
+        self.assertEqual(
+            _first_day_verifier_error(
+                {
+                    "decision": "replan",
+                    "block_category": "none",
+                    "violations": [
+                        {
+                            "code": "location_slot_already_waiting",
+                            "field": "scene_contract.step1_scene",
+                            "evidence": "客服已两次询问区县，客户没有新位置回复",
+                        }
+                    ],
+                    "repair_instructions": [],
+                    "replan_instructions": [
+                        {
+                            "field": "scene_contract.step1_scene",
+                            "instruction": "选择其他尚未完成场景，不得解释或重复询问位置",
+                        }
+                    ],
+                }
+            ),
+            "",
+        )
         self.assertEqual(
             _first_day_verifier_error(
                 {
@@ -1088,6 +1114,19 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             deposit_messages[0]["content"]["text"],
             "亲，可以微信转账或发10元红包预约，到店抵扣。",
         )
+
+        signed_duplicate = _first_day_materialized_sop_messages(
+            [
+                {
+                    "type": "image",
+                    "order": 1,
+                    "url": "https://oss.example/asset.png?Expires=200&Signature=new",
+                }
+            ],
+            allow_payment_collection=False,
+            sent_urls={"https://oss.example/asset.png?Expires=100&Signature=old"},
+        )
+        self.assertEqual(signed_duplicate, [])
 
     def test_mainline_sop_source_resolves_all_configured_media(self) -> None:
         source_id = "sop-pack:s10_need_and_case"

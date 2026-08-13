@@ -294,10 +294,10 @@ def _message_items(message: dict[str, Any]) -> list[dict[str, Any]]:
 def _message_url(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, dict):
-        value = _string(content.get("url"))
+        value = _string(content.get("url") or content.get("media_url") or content.get("mediaUrl"))
         if _is_http_url(value):
             return value
-    value = _string(message.get("url"))
+    value = _string(message.get("url") or message.get("media_url") or message.get("mediaUrl"))
     if _is_http_url(value):
         return value
     if isinstance(content, str):

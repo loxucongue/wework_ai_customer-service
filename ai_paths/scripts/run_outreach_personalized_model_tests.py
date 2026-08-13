@@ -60,6 +60,7 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - asset_catalog 只证明可选择的素材。素材不是每轮必需，没有合适素材时 asset_strategy=none 应按正确选择评分。
 - 对没有具体斑点类型的客户，`case_search` 使用“淡斑效果案例/斑点改善案例”等通用查询，并提供真实 fallback_asset_id，属于素材匹配正确；文字直接承接将附素材时，asset_fit 不应低于4分。
 - 这是客户沉默后的递进触达计划，不是对当前消息的即时客服回复；首轮可立即到 12 小时，后续至少间隔 6 小时。
+- 首日客户已经被客服询问位置、当前正等待其回答时，不重复询问位置并继续下一项未完成 SOP 是正确主线推进，conversation_continuity 和 barrier_accuracy 均不得因此低于4分。只有把客户未表达的收费、真假或强制消费顾虑明确归因给客户时，才降低 barrier_accuracy；直接陈述一个透明事实不属于虚构卡点。
 - `trigger_context.trigger_type=first_day_opened_silence` 时改用首日合同：固定2步，第一步立即，第二步在15–20分钟后；两步必须推进不同场景，第一步不得与近期客服/AI内容高度重合，且两步都只能使用中性称谓，不得推断性别。
 - 首日门店场景没有门店查询工具和权威门店事实时，只能询问省市、区县或常去区域；出现“我给您查、帮您匹配、推荐附近门店、往就近门店看”等无法执行的承诺应判 hard_error。
 - 只有事实、安全、支付、结构或明显违背场景目标的问题才算 hard_error；轻微措辞偏好只能影响分数。
@@ -194,6 +195,10 @@ ALLOWED_ANGLES = {
 ALLOWED_ASSET_STRATEGIES = {"none", "configured_image", "operation_video", "case_search"}
 
 FIRST_DAY_EXPECTED_SCENES: dict[str, dict[str, Any]] = {
+    "first_day_location_already_asked_waiting": {
+        "step1": {"objection_resolution", "deposit_close", "trust_repair"},
+        "step2": {"objection_resolution", "deposit_close", "trust_repair"},
+    },
     "first_day_completed_effect_activity_store_then_deposit": {
         "step1": {"store_area_request"},
         "step2": {"deposit_close"},
@@ -636,6 +641,85 @@ async def _run_first_day_workflow(
     if verifier_error:
         raise RuntimeError(f"verifier_invalid: {verifier_error}")
     artifacts["verifier_result"] = verifier_result
+    if str(verifier_result.get("decision") or "") == "replan":
+        rejected_scene_analysis = scene_analysis
+        payload["scene_replan_feedback"] = {
+            "rejected_scene_contract": rejected_scene_analysis,
+            "violations": list(verifier_result.get("violations") or []),
+            "instructions": list(verifier_result.get("replan_instructions") or []),
+            "require_different_scenes": True,
+        }
+        scene_analysis = await _first_day_chat_json(
+            client,
+            [
+                {"role": "system", "content": FIRST_DAY_SCENE_ANALYST_PROMPT},
+                {"role": "user", "content": json.dumps({"source_snapshot": payload}, ensure_ascii=False)},
+            ],
+        )
+        scene_analysis = _normalize_first_day_scene_analysis(
+            scene_analysis,
+            message_count=len(payload.get("recent_messages") or []),
+            source_snapshot=payload,
+        )
+        scene_error = _first_day_scene_analysis_error(scene_analysis, source_snapshot=payload)
+        if scene_error:
+            raise RuntimeError(f"scene_replan_invalid: {scene_error}")
+        if (
+            str(scene_analysis.get("step1_scene") or "")
+            == str(rejected_scene_analysis.get("step1_scene") or "")
+            and str(scene_analysis.get("step2_scene") or "")
+            == str(rejected_scene_analysis.get("step2_scene") or "")
+        ):
+            raise RuntimeError("scene_replan_unchanged")
+        artifacts["scene_analysis_before_replan"] = rejected_scene_analysis
+        artifacts["scene_analysis"] = scene_analysis
+        writer_result = await _first_day_chat_json(
+            client,
+            [
+                {"role": "system", "content": FIRST_DAY_PLAN_WRITER_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        _first_day_writer_payload(
+                            payload,
+                            scene_analysis,
+                            appointment_material_catalog=appointment_material_catalog,
+                        ),
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        normalized_writer_result = _normalize_outreach_plan_response(dict(writer_result))
+        writer_structure_error = _first_day_final_plan_error(
+            normalized_writer_result,
+            scene_analysis=scene_analysis,
+            source_snapshot=payload,
+        )
+        verifier_result = await _first_day_chat_json(
+            client,
+            [
+                {"role": "system", "content": FIRST_DAY_CONTRACT_VERIFIER_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "source_snapshot": payload,
+                            "scene_contract": scene_analysis,
+                            "candidate_plan": writer_result,
+                            "candidate_structure_error": writer_structure_error,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        verifier_error = _first_day_verifier_error(verifier_result)
+        if verifier_error or str(verifier_result.get("decision") or "") == "replan":
+            raise RuntimeError(f"verifier_after_replan_invalid: {verifier_error or 'replan_exhausted'}")
+        artifacts["writer_result_after_replan"] = writer_result
+        artifacts["writer_structure_error"] = writer_structure_error
+        artifacts["verifier_result"] = verifier_result
     if str(verifier_result.get("decision") or "") == "block":
         return (
             {
