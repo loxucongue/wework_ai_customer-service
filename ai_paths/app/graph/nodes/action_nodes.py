@@ -2068,7 +2068,7 @@ def _distance_origin_is_broad_lookup_scope(tool_results: dict[str, Any], *, cand
     resolved_level = str(lookup.get("resolved_admin_level") or "").strip()
     if resolved_level == "province":
         return True
-    if resolved_level != "city" or candidate_count <= 3:
+    if resolved_level != "city" or candidate_count <= 5:
         return False
     if str(location_evidence.get("district") or "").strip() or str(location_evidence.get("township") or "").strip():
         return False

@@ -1197,7 +1197,7 @@ def test_parallel_reply_payload_surfaces_store_candidate_regions_for_clarificati
                 },
                 "store_resolution_fact": {
                     "status": "need_location",
-                    "visible_candidate_count": 4,
+                    "visible_candidate_count": 6,
                     "location_evidence": {"province": "广东省", "city": "广州市"},
                 },
                 "store_facts": [
@@ -1211,7 +1211,7 @@ def test_parallel_reply_payload_surfaces_store_candidate_regions_for_clarificati
 
     status = parallel_reply_payload(state)["store_fact_status"]
 
-    assert status["candidate_store_count"] == 4
+    assert status["candidate_store_count"] == 6
     assert [item["district"] for item in status["store_candidate_regions"]] == ["天河区", "番禺区"]
     constraints = parallel_reply_payload(state)["current_turn_structural_constraints"]
     assert constraints[0]["code"] == "store_location_clarification_required"
@@ -1251,6 +1251,34 @@ def test_parallel_reply_payload_reads_store_delivery_from_normalized_tool_facts(
         "ranking_method": "haversine",
         "source": "current_turn_tool_fact",
     }
+
+
+def test_parallel_reply_payload_exposes_all_five_city_store_cards() -> None:
+    store_ids = ["149", "218", "344", "365", "590"]
+    state = {
+        "evidence_join": {
+            "shared_context": {"conversation": [], "current_message": {"content": "Wuhan stores?"}},
+            "tool_facts": {"customer_store_lookup": {"status": "ok"}},
+            "normalized_tool_facts": {
+                "structured_facts": {
+                    "store_resolution_fact": {
+                        "status": "send_multiple",
+                        "delivery_store_ids": store_ids,
+                        "candidate_search_complete": True,
+                        "ranking_method": "scope_match",
+                    }
+                }
+            },
+        }
+    }
+
+    payload = parallel_reply_payload(state)
+
+    assert payload["structured_delivery_options"]["store_address"]["available_store_ids"] == store_ids
+    assert payload["structured_delivery_options"]["store_address"]["message_payloads"] == [
+        {"type": "store_address", "content": {"store_id": store_id}}
+        for store_id in store_ids
+    ]
 
 
 def test_parallel_gate_rejects_location_capture_when_location_card_is_authoritative() -> None:

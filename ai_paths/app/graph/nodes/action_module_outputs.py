@@ -41,9 +41,9 @@ def _store_resolution_status(
         return "no_valid_candidate" if resolved_level != "province" else "need_location"
     if tool_status == "ok" and visible_candidate_count == 1:
         return "send_single"
-    if tool_status == "ok" and 2 <= visible_candidate_count <= 3:
+    if tool_status == "ok" and 2 <= visible_candidate_count <= 5:
         return "send_multiple"
-    if tool_status == "ok" and visible_candidate_count > 3:
+    if tool_status == "ok" and visible_candidate_count > 5:
         return "need_location"
     return "no_valid_candidate"
 
@@ -325,7 +325,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             delivery_store_ids = (
                 [ranked_recommended_store_id]
                 if v2_status == "send_single" and ranked_recommended_store_id
-                else candidate_store_ids[:3] if v2_status == "send_multiple" else []
+                else candidate_store_ids[:5] if v2_status == "send_multiple" else []
             )
             structured_facts["store_resolution_fact"] = _drop_empty(
                 {

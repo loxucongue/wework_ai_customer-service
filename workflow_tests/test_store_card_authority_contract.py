@@ -49,6 +49,40 @@ def test_store_resolution_fact_does_not_force_card_delivery() -> None:
     )
 
 
+def test_five_authorized_city_store_cards_are_preserved_and_valid() -> None:
+    store_ids = ["149", "218", "344", "365", "590"]
+    stores = [
+        {"store_id": store_id, "store_name": f"store-{store_id}", "city": "Wuhan"}
+        for store_id in store_ids
+    ]
+    state = {
+        "evidence_join": {"schema_version": "reply_chain_evidence_join_v1"},
+        "customer_store_knowledge": {"stores": stores},
+        "fact_envelope": {
+            "structured_facts": {
+                "store_resolution_fact": {
+                    "status": "send_multiple",
+                    "delivery_store_ids": store_ids,
+                    "visible_candidate_ids": store_ids,
+                },
+                "store_facts": stores,
+            }
+        },
+    }
+    messages = [
+        {"type": "text", "order": 1, "content": "Wuhan has five visible stores. Choose the area that suits you."},
+        *[
+            {"type": "store_address", "order": index + 2, "content": {"store_id": store_id}}
+            for index, store_id in enumerate(store_ids)
+        ],
+    ]
+
+    prepared = _prepare_structural_messages(messages, state, [])
+    validate_reply_consistency(prepared, state)
+
+    assert [item["content"]["store_id"] for item in prepared if item["type"] == "store_address"] == store_ids
+
+
 def test_emitted_store_card_must_match_current_authoritative_facts() -> None:
     with pytest.raises(ValueError):
         validate_reply_consistency(

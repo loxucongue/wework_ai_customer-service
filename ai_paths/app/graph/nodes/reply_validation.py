@@ -175,7 +175,7 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
             for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
             if str(item or "").strip()
         }
-        if 1 <= len(resolution_ids) <= 3:
+        if 1 <= len(resolution_ids) <= 5:
             output.append(resolution_ids)
 
     for region in _store_scope_summary_regions(state):
@@ -184,7 +184,7 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
         except (TypeError, ValueError):
             store_count = 0
         requested_areas = region.get("requested_areas") if isinstance(region.get("requested_areas"), list) else []
-        if requested_areas or not (1 <= store_count <= 3):
+        if requested_areas or not (1 <= store_count <= 5):
             continue
         ids = {
             str(store.get("store_id") or store.get("id") or "").strip()
@@ -204,7 +204,7 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
             candidate_count = int(lookup.get("candidate_count") or 0)
         except (TypeError, ValueError):
             candidate_count = 0
-        if not (1 <= candidate_count <= 3):
+        if not (1 <= candidate_count <= 5):
             return output
     scope_value = str(lookup.get(level) or "").strip()
     if not scope_value:
@@ -1136,7 +1136,7 @@ def _validate_store_delivery_text_matches_cards(messages: list[dict[str, Any]], 
         candidate_count = int(lookup.get("candidate_count") or 0)
     except (TypeError, ValueError):
         candidate_count = 0
-    if candidate_count > 3 and _promises_store_info_delivery_without_cards(text):
+    if candidate_count > 5 and _promises_store_info_delivery_without_cards(text):
         raise ValueError("multi_store_info_text_without_scope_or_cards")
 
 
@@ -1210,7 +1210,7 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
             raise ValueError("store_resolution_send_single_contract_violation")
         return
     if status == "send_multiple":
-        if emitted and (not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids):
+        if emitted and (not 2 <= len(delivery_ids) <= 5 or emitted != delivery_ids):
             raise ValueError("store_resolution_send_multiple_contract_violation")
 
 
@@ -1336,7 +1336,7 @@ def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
             for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
             if str(item or "").strip()
         }
-        if 1 <= len(ids) <= 3:
+        if 1 <= len(ids) <= 5:
             return ids
 
     lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
@@ -1352,7 +1352,7 @@ def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
             candidate_count = 0
         if (
             str(lookup.get("resolved_admin_level") or "") != "province"
-            and 1 <= candidate_count <= 3
+            and 1 <= candidate_count <= 5
             and len(store_ids) == candidate_count
         ):
             return store_ids
@@ -1373,7 +1373,7 @@ def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
                 for item in exact_stores
                 if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
             }
-            if 1 <= len(ids) <= 3:
+            if 1 <= len(ids) <= 5:
                 matched_regions.append(ids)
             continue
         if not region_mentioned_in_text(city, current_text):
@@ -1383,7 +1383,7 @@ def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
             for item in region.get("stores") or []
             if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
         }
-        if 1 <= len(ids) <= 3:
+        if 1 <= len(ids) <= 5:
             matched_regions.append(ids)
     return matched_regions[0] if len(matched_regions) == 1 else set()
 

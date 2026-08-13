@@ -240,7 +240,7 @@ def test_distance_origin_rejects_city_level_lookup_even_with_junk_detail() -> No
                 },
             }
         },
-        candidate_count=4,
+        candidate_count=6,
     )
 
 
@@ -678,7 +678,41 @@ def test_planner_fact_output_emits_single_v2_delivery_contract() -> None:
     assert resolution["customer_claim_level"] == "relative_near"
 
 
-def test_city_fallback_distance_ranking_delivers_top_three_store_options() -> None:
+def test_city_lookup_delivers_all_five_visible_store_options() -> None:
+    stores = [
+        _store(str(store_id), f"store-{store_id}", district=district, location=location)
+        for store_id, district, location in (
+            (149, "Wuchang", "114.339542,30.557202"),
+            (218, "Jiangxia", "114.320528,30.388406"),
+            (344, "Jianghan", "114.275676,30.588601"),
+            (365, "Jiangan", "114.281782,30.649336"),
+            (590, "Guanggu", "114.412893,30.493390"),
+        )
+    ]
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "raw_query": "Wuhan",
+                "query": "Wuhan",
+                "province": "Hubei",
+                "city": "Wuhan",
+                "resolved_admin_level": "city",
+                "scope_match_level": "city",
+                "exact_scope_has_store": True,
+                "stores": stores,
+            }
+        },
+        {"customer_store_knowledge": {"stores": stores}, "guardrail_result": {}},
+    )
+    resolution = output["structured_facts"]["store_resolution_fact"]
+
+    assert resolution["status"] == "send_multiple"
+    assert resolution["delivery_store_ids"] == ["149", "218", "344", "365", "590"]
+    assert resolution["visible_candidate_count"] == 5
+
+
+def test_city_fallback_distance_ranking_delivers_all_four_store_options() -> None:
     stores = [
         {**_store(str(store_id), f"store-{store_id}", location=location, district=district), "distance_km": distance, "distance_source": "haversine"}
         for store_id, location, district, distance in (
@@ -722,7 +756,7 @@ def test_city_fallback_distance_ranking_delivers_top_three_store_options() -> No
 
     assert resolution["status"] == "send_multiple"
     assert resolution["recommended_store_id"] == "218"
-    assert resolution["delivery_store_ids"] == ["218", "344", "149"]
+    assert resolution["delivery_store_ids"] == ["218", "344", "149", "590"]
     assert resolution["visible_candidate_ids"] == ["218", "344", "149", "590"]
     assert resolution["ranking_method"] == "haversine"
     assert resolution["customer_claim_level"] == "relative_near"

@@ -2537,7 +2537,7 @@ def _reply_repair_hint(error: str) -> str:
     if "unsupported_store_address_message" in error:
         return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
     if "store_cards_not_allowed_when_location_clarification_required" in error:
-        return "本轮 store_resolution_fact 要求 clarify_location，说明客户只给了省份、候选超过3家或地点仍有歧义。删除所有 store_address，只问一个最小必要字段：具体城市、区县或定位。"
+        return "本轮 store_resolution_fact 要求 clarify_location，说明客户只给了省份、城市候选超过5家、查询不完整或地点仍有歧义。删除所有 store_address，只问一个最小必要字段：具体城市、区县或定位。"
     if "store_cards_not_allowed_for_province_only_scope" in error:
         return "客户当前只给了省份，且没有可靠的城市、区县或定位事实。删除所有 store_address，不按省中心猜门店；只自然追问具体城市、区县或请客户发定位。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
