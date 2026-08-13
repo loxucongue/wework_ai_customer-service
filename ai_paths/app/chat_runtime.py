@@ -64,6 +64,12 @@ class ChatRuntime:
         request_context = build_request_context(request)
         request_context["memory_persist_allowed"] = False
         conversation_id = self._prepare_conversation(request, request_id, request_context)
+        self._start_run_tracking(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            request_context=request_context,
+        )
         initial_state = self._initial_state(request, request_id, request_context)
 
         try:
@@ -120,6 +126,12 @@ class ChatRuntime:
         request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
         request_context["memory_persist_allowed"] = not request_context["test_isolated"]
         conversation_id = self._prepare_conversation(request, request_id, request_context)
+        self._start_run_tracking(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            request_context=request_context,
+        )
         decision = (
             await self._platform_reply_coordinator.begin(request, request_id=request_id, request_context=request_context)
             if self._platform_reply_coordinator
@@ -362,6 +374,7 @@ class ChatRuntime:
         *,
         phase: str,
     ) -> AgentState:
+        self._update_run_progress(str(state.get("request_id") or ""), phase)
         deadline = graph_deadline_monotonic(
             state,
             phase=phase,
@@ -376,6 +389,33 @@ class ChatRuntime:
             return await asyncio.wait_for(graph.ainvoke(state), timeout=remaining)
         except asyncio.TimeoutError as exc:
             raise TimeoutError(f"{phase} graph round deadline exhausted after {remaining:.1f}s") from exc
+
+    def _start_run_tracking(
+        self,
+        *,
+        request: ChatRequest,
+        request_id: str,
+        conversation_id: str,
+        request_context: dict[str, Any],
+    ) -> None:
+        start_run = getattr(self._repository, "start_run", None)
+        if not callable(start_run):
+            return
+        safe_repository_call(
+            start_run,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            customer_id=str(request.customer_id or ""),
+            input_snapshot=_run_tracking_input_snapshot(request, request_context),
+            interface_version=str(request_context.get("interface_version") or "v1"),
+        )
+
+    def _update_run_progress(self, request_id: str, phase: str) -> None:
+        if not request_id:
+            return
+        update_run_progress = getattr(self._repository, "update_run_progress", None)
+        if callable(update_run_progress):
+            safe_repository_call(update_run_progress, request_id=request_id, phase=phase)
 
     def _initial_state(self, request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> AgentState:
         test_isolated = bool(request_context.get("test_isolated"))
@@ -571,6 +611,20 @@ def _image_urls_from_request(request: ChatRequest, request_context: dict[str, An
         seen.add(url)
         output.append(url)
     return output[-3:]
+
+
+def _run_tracking_input_snapshot(request: ChatRequest, request_context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "content": request.content,
+        "customer_id": request.customer_id,
+        "corp_id": request.corp_id,
+        "conversation_history": request.conversation_history,
+        "file_image": bool(request.file_image),
+        "user_id": request.user_id,
+        "wechat": request.wechat,
+        "external_userid": request.external_userid,
+        "request_context": request_context,
+    }
 
 
 def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
