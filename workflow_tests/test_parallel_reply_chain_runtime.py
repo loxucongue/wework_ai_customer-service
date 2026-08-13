@@ -374,6 +374,8 @@ def test_parallel_content_gate_does_not_use_opening_asset_for_substantive_questi
     assert "`opening_context` 只提供初始开场素材" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
     assert "不要按词语命中或配置顺序补流程" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
     assert "不能替代客户当前实质问题所需的证据" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "必须把该资产提名为 `direct`" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "不能因为 Reply 同时拥有零散业务事实" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
 
 def test_parallel_reply_prompt_uses_history_without_fixed_short_ack_script() -> None:

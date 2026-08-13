@@ -227,6 +227,8 @@ def test_parallel_reply_prompt_treats_delivery_as_progress_without_permission_ro
     assert "客户不需要专门确认此前交付" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "默认成交动作是直接说明10元预约金规则并发送一张小程序预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不要把已经讲过的活动、门店、检测或到店流程再复述一遍" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "预约金不能以“半截成交”出现" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "到店抵扣10元、做的话再付258元、未做或不满意可退" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_parallel_reply_forbids_invented_external_price_explanations_without_fact_auditor_policy() -> None:
