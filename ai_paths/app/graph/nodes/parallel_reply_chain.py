@@ -60,6 +60,7 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。�
 
 # 门店查询
 - 当前消息问某地门店、索要地址，或消息本身是省、市、区县、县级市、乡镇、村、地标名时，除非紧邻历史已经真实发送了对应门店卡且客户只是在确认/选择该卡，否则规划 customer_store_lookup。
+- 客户明确要求重发地址、位置、导航或门店卡时，若本轮 authoritative_facts 没有可直接重放的真实 store_id 与结构消息，必须重新规划 customer_store_lookup；历史文字地址只能帮助组成 query，不能替代本轮真实门店卡事实。客户只说“这家、收到、可以”则不重查。
 - 客户补充下级地名时，结合完整历史中的父级城市组成查询词。例如历史刚确认“广州”，当前回复“番禺区”，查询“广州市番禺区”。
 - 只有客户原话、完整历史或定位事实能提供父级行政区时才能补全父级；否则保持客户原始地名，交给门店工具解析，不凭常识补省市县。
 - 县城、乡镇、村、地标或定位卡本级无门店且父级范围有多候选时，可同时规划 customer_store_lookup 和 distance_calculate，用真实排序支持 Reply。
@@ -1169,7 +1170,22 @@ def _payment_collection_delivery_available(state: AgentState) -> bool:
     evidence satisfy the payment contract.
     """
 
-    if not activity_intro_completed_for_payment(state):
+    payment_fact_state: dict[str, Any] = dict(state)
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
+    authoritative = (
+        shared.get("authoritative_facts")
+        if isinstance(shared.get("authoritative_facts"), dict)
+        else {}
+    )
+    sop_progress = (
+        authoritative.get("sop_progress")
+        if isinstance(authoritative.get("sop_progress"), dict)
+        else {}
+    )
+    if sop_progress:
+        payment_fact_state["sop_progress_evidence"] = copy.deepcopy(sop_progress)
+    if not activity_intro_completed_for_payment(payment_fact_state):
         return False
     if is_paid_deposit_state(state.get("payment_state")):
         return False

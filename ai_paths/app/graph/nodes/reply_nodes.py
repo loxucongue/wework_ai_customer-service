@@ -228,6 +228,7 @@ def create_synthesize_reply_node(
                 "reply_action_reason": reply_metadata.get("action_reason", ""),
                 "reply_sales_judgment": reply_metadata.get("sales_judgment", {}),
                 "reply_payment_assessment": reply_metadata.get("payment_assessment", {}),
+                "reply_payment_channel": reply_metadata.get("payment_channel", "none"),
                 "reply_deposit_evidence": reply_metadata.get("deposit_evidence", {}),
                 "reply_safety_assessment": reply_metadata.get("safety_assessment", {}),
                 "reply_party_size_assessment": reply_metadata.get("party_size_assessment", {}),
@@ -599,15 +600,30 @@ async def _run_model_led_reply_pipeline(
             model_call=model_call,
         ) from primary_error
 
-    repair_validation_context = _parallel_reply_repair_context(state)
-    repair_messages = _reply_retry_messages(
-        model_messages,
-        primary_error,
-        previous_payload=(model_call.get("raw_json_output") if isinstance(model_call.get("raw_json_output"), dict) else None),
-        validation_context=repair_validation_context,
+    previous_payload = (
+        model_call.get("raw_json_output")
+        if isinstance(model_call.get("raw_json_output"), dict)
+        else None
     )
+    repair_validation_context = _parallel_reply_repair_context(state)
+    if previous_payload is None:
+        # A transport timeout or protocol failure produced no business decision
+        # to repair. Re-run the complete Reply task with its full evidence rather
+        # than replacing it with the narrow structural-repair contract.
+        repair_messages = _reply_full_task_retry_messages(model_messages, primary_error)
+        retry_mode = "full_task_retry"
+        second_attempt_budget = primary_budget
+    else:
+        repair_messages = _reply_retry_messages(
+            model_messages,
+            primary_error,
+            previous_payload=previous_payload,
+            validation_context=repair_validation_context,
+        )
+        retry_mode = "targeted_repair"
+        second_attempt_budget = repair_budget
     repair_deadline = _capped_deadline(
-        time.monotonic() + repair_budget,
+        time.monotonic() + second_attempt_budget,
         round_deadline - fact_audit_budget if round_deadline is not None else None,
     )
     repair_payload: dict[str, Any] | None = None
@@ -619,6 +635,7 @@ async def _run_model_led_reply_pipeline(
             deadline_monotonic=repair_deadline,
         )
         model_call["retry"] = {
+            "mode": retry_mode,
             "reason": f"{type(primary_error).__name__}: {primary_error}",
             "messages": repair_messages,
             "raw_json_output": copy.deepcopy(repair_payload),
@@ -643,6 +660,7 @@ async def _run_model_led_reply_pipeline(
     except Exception as repair_error:
         model_call["retry"] = {
             **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
+            "mode": retry_mode,
             "reason": f"{type(primary_error).__name__}: {primary_error}",
             "error": f"{type(repair_error).__name__}: {repair_error}",
             "usage": model_usage_snapshot(model_client),
@@ -659,7 +677,12 @@ async def _run_model_led_reply_pipeline(
     model_call["draft_messages"] = debug_message_contents(messages)
     model_call["output"] = {"messages": len(messages)}
     model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-    return messages, model_call, "single_targeted_repair_model"
+    reply_source = (
+        "single_full_task_retry_model"
+        if retry_mode == "full_task_retry"
+        else "single_targeted_repair_model"
+    )
+    return messages, model_call, reply_source
 
 
 def _validated_parallel_reply_payload(
@@ -703,7 +726,7 @@ async def _run_parallel_reply_fact_audit(
     )
     audit_messages = build_reply_fact_audit_messages(audit_input, json_dumps=json_dumps)
     audit_tier = str(getattr(settings, "model_fact_audit_tier", "reply") or "reply").strip()
-    budget = _model_budget_seconds(model_client, "model_fact_audit_timeout_seconds", 15.0)
+    budget = _model_budget_seconds(model_client, "model_fact_audit_timeout_seconds", 25.0)
     deadline = _capped_deadline(
         time.monotonic() + budget,
         model_deadline_monotonic(state, tier=audit_tier),
@@ -1187,6 +1210,7 @@ def _reply_metadata_from_model_call(model_call: dict[str, Any] | None) -> dict[s
         "action_reason": str(payload.get("action_reason") or "")[:500],
         "sales_judgment": _normalized_sales_judgment(payload.get("sales_judgment")),
         "payment_assessment": _normalized_payment_assessment(payload.get("payment_assessment")),
+        "payment_channel": _normalized_payment_channel(payload.get("payment_assessment")),
         "deposit_evidence": _normalized_deposit_evidence(
             payload.get("deposit_evidence"),
             strict=action == "payment",
@@ -1227,6 +1251,13 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
     payment = _normalized_payment_assessment(payload.get("payment_assessment"))
     _validate_payment_assessment_refs(payment, valid_refs, authoritative_paid=_parallel_paid_deposit_context(state))
     validation_state["reply_payment_assessment"] = payment
+    validation_state["reply_payment_channel"] = _normalized_payment_channel(
+        payload.get("payment_assessment")
+    )
+    validation_state["reply_payment_channel_explicit"] = bool(
+        isinstance(payload.get("payment_assessment"), dict)
+        and "payment_channel" in payload["payment_assessment"]
+    )
     action = _normalized_reply_action(payload.get("action"))
     payload["action"] = action
     validation_state["reply_action"] = action
@@ -1403,9 +1434,29 @@ def _normalized_payment_assessment(value: Any) -> dict[str, Any]:
     }
 
 
+def _normalized_payment_channel(value: Any) -> str:
+    raw = value if isinstance(value, dict) else {}
+    status = str(raw.get("status") or "unknown").strip()
+    channel = str(raw.get("payment_channel") or "").strip()
+    if not channel:
+        # Backward-compatible enum normalization only. The existing status has
+        # already been chosen by Reply; this does not infer customer intent.
+        channel = {
+            "payment_request": "payment_card",
+            "manual_transfer": "transfer",
+        }.get(status, "none")
+    if channel not in {"none", "payment_card", "transfer", "red_packet"}:
+        raise ValueError("invalid_reply_payment_channel")
+    return channel
+
+
 def _normalized_party_size_assessment(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     status = str(raw.get("status") or "unknown").strip()
+    if status == "none":
+        # `none` and `unknown` both mean that Reply found no party-size fact.
+        # This is enum compatibility only and cannot create or change a count.
+        status = "unknown"
     if status not in {"unknown", "known", "over_limit"}:
         raise ValueError("invalid_reply_party_size_assessment")
     party_size: int | None = None
@@ -1552,6 +1603,23 @@ def _capped_deadline(node_deadline: float, round_deadline: float | None) -> floa
     return min(node_deadline, round_deadline) if round_deadline is not None else node_deadline
 
 
+def _reply_full_task_retry_messages(
+    messages: list[dict[str, Any]],
+    exc: Exception,
+) -> list[dict[str, Any]]:
+    """Retry the original Reply task when no candidate JSON was produced."""
+
+    retry_instruction = (
+        "上一次调用没有返回任何可校验的 json 对象，"
+        f"失败类型为 {type(exc).__name__}。"
+        "请基于以上完整聊天、权威事实、工具事实和内容候选，重新执行原始 Reply 任务。"
+        "这不是对某个旧答案的局部结构修复：请重新完成完整业务判断，并严格遵守原输出合同。"
+        "不要降级成占位回复，不要凭空补事实，也不要输出 markdown 或解释错误；"
+        "只输出一个完整、合法的严格 json 对象。"
+    )
+    return [*copy.deepcopy(messages), {"role": "user", "content": retry_instruction}]
+
+
 def _reply_retry_messages(
     messages: list[dict[str, Any]],
     exc: Exception,
@@ -1678,6 +1746,16 @@ def _parallel_generic_reply_repair_messages(
         violations = [item.strip() for item in violation_codes if item.strip()]
         failure_class = "structure_or_provenance"
     required_changes = _parallel_repair_required_changes(violations)
+    structured_delivery_options = (
+        validation_context.get("structured_delivery_options")
+        if isinstance(validation_context.get("structured_delivery_options"), dict)
+        else {}
+    )
+    payment_delivery_contract = (
+        structured_delivery_options.get("payment_collection")
+        if isinstance(structured_delivery_options.get("payment_collection"), dict)
+        else {}
+    )
     fact_audit_repairs = [
         {
             "message_index": item.get("message_index"),
@@ -1712,6 +1790,7 @@ def _parallel_generic_reply_repair_messages(
             "violations 没有指向 sales_judgment 时，逐字段保留上一版 sales_judgment，不得改写其姿态或理由。",
             "结构或引用错误没有直接指出客户可见 text 冲突时，逐字保留原 text；只修改被点名的引用、资产 ID 或结构消息。",
             "事实审计错误只修改 violation.quote 所在的事实片段及其直接依赖句，不新增卖点、群体结论或销售理由。",
+            "事实审计指出客户转述的外部价格、门店、项目或页面信息缺少权威支持时，删除 Reply 对该外部事实的来源、套餐、项目和差异原因解释；不得换一种说法继续猜测。客户原话可以保留为转述，只准确说明本系统已有权威事实。",
             "事实审计指出未核验付款被写成登记、备注、到账或已付流程时，删除所有支付后动作，只保留付款核验；不得索要姓名、手机号、门店或到店时间。",
             "事实审计只点名 text 事实片段时，上一版 selected_content_ids、对应 content_asset 引用和已交付结构素材不属于被点名内容，必须逐字段原样保留；只有 violation 明确指出资产或结构素材本身不受支持时才能撤销。",
             "修复某一事实片段时，其余客户可见事实必须逐字保留，尤其不能删除或改写其中的条件、适用对象、时态和否定词；若必须重写整句，也要原样保留所有未被 violation 点名的事实限定。",
@@ -1739,6 +1818,7 @@ def _parallel_generic_reply_repair_messages(
                 "payment_request",
                 "authoritative_paid",
             ],
+            "payment_channel": ["none", "payment_card", "transfer", "red_packet"],
         },
         "previous_reply_claims": {
             "action": str((previous_payload or {}).get("action") or ""),
@@ -1748,6 +1828,7 @@ def _parallel_generic_reply_repair_messages(
                 else {}
             ),
         },
+        "exact_payment_delivery_contract": payment_delivery_contract,
         "valid_reference_contract": {
             "current_message": validation_context.get("current_message") or {},
             "prior_message_options": validation_context.get("prior_message_options") or [],
@@ -1846,6 +1927,47 @@ def _parallel_repair_required_changes(violations: Any) -> list[dict[str, str]]:
                     ),
                 }
             )
+        elif (
+            "invalid_parallel_reply_message_content" in code
+            and "payment_collection" in code
+        ) or "payment_action_requires_payment_collection" in code:
+            required.append(
+                {
+                    "violation": code,
+                    "required_change": (
+                        "先判断上一版合法付款决定是否仍成立。若保留 payment_request、payment_card 和 action=payment，"
+                        "必须逐项原样复制 exact_payment_delivery_contract.message_payloads，尤其"
+                        " payment_collection.content 必须是输入提供的对象，不能写成文字或金额字符串；"
+                        "若付款决定不成立，则成组撤销付款 action、channel、卡片和 deposit_evidence。"
+                    ),
+                }
+            )
+        elif (
+            "invalid_parallel_reply_message_content" in code
+            and (":image" in code or ":video" in code)
+        ):
+            required.append(
+                {
+                    "violation": code,
+                    "required_change": (
+                        "客户可见 image/video 只能逐字复制 Gate 候选或结构交付选项提供的真实 URL。"
+                        "若当前候选没有 media/messages URL，则删除该无来源媒体并保留其余合法文字与销售判断；"
+                        "不得自行生成 URL，也不得因删除媒体而撤销仍合法的文字回答。"
+                    ),
+                }
+            )
+        elif code.startswith("invalid_structured_delivery_fact_ref:"):
+            required.append(
+                {
+                    "violation": code,
+                    "required_change": (
+                        "structured_delivery_decisions.fact_ref 只能逐字取自"
+                        " valid_reference_contract.structured_delivery_options 中真实结构选项的 fact_ref。"
+                        "内容策略或 Gate 候选使用 selected_content_ids 与 content_asset 引用，不能写进"
+                        " structured_delivery_decisions；若当前没有结构选项，设为空数组。"
+                    ),
+                }
+            )
         else:
             required.append(
                 {
@@ -1878,24 +2000,32 @@ def _reply_payment_repair_guard(previous_payload: dict[str, Any] | None) -> str:
     status = {
         "unverified_oral_paid_claim": "unverified_paid_claim",
     }.get(status, status)
+    channel = str(assessment.get("payment_channel") or "").strip()
     if status in {"manual_transfer", "unverified_paid_claim"}:
+        channel_rule = (
+            f"payment_channel 必须继续保持 {channel}；"
+            if channel in {"transfer", "red_packet"}
+            else "若为未核验已付声明，payment_channel 使用 none；若为客户明确选择的人工渠道，只能按原文选择 transfer 或 red_packet；"
+        )
         return (
             f"上一版 Reply 已将 payment_assessment.status 判断为 {status}。本次错误若未明确指出该状态或其引用非法，"
             "就必须保留这一更具体的非小程序支付判断，只修正冲突结构：action 使用 none/ask，"
-            "selected_content_ids=[]，deposit_evidence 全部清空，不发送 payment_collection，也不声称已到账或已登记。"
+            f"{channel_rule}selected_content_ids=[]，deposit_evidence 全部清空，不发送 payment_collection，也不声称已到账或已登记。"
         )
     if status == "payment_request":
         return (
             "上一版写了 payment_assessment.status=payment_request，但枚举合法不代表语义一定正确。"
             "修复前先由你重新阅读原始 current_message：普通文字声称已经付好/转好应改为 unverified_paid_claim；"
-            "客户选择人工转账或不用小程序应改为 manual_transfer；只有仍是一般报名付款请求或明确索要小程序收款卡时"
+            "客户明确选择人工转账应改为 manual_transfer + transfer，明确选择微信红包应改为 manual_transfer + red_packet；"
+            "只有仍是一般报名付款请求或明确索要小程序收款卡时"
             "才保留 payment_request。这个判断必须由你根据原文完成，代码没有替你做关键词判定。"
             "这是结构修复，不允许把 payment_request 改成含糊的 none 来逃避补卡、补素材或补引用。"
             "除非原文实际属于 manual_transfer/unverified_paid_claim，或输入存在硬禁区，否则必须保留"
             " payment_request，并让 action、deposit_evidence 和客户可见结构与它一致。"
-            "如果你把状态纠正为 manual_transfer 或 unverified_paid_claim，必须在同一个 JSON 中成组完成四项结构修复："
+            "如果你把状态纠正为 manual_transfer 或 unverified_paid_claim，必须在同一个 JSON 中成组完成结构修复："
             "action 改为 none/ask；selected_content_ids=[]；deposit_evidence 四个字段全部清空；删除候选图片和"
-            "payment_collection，只保留转账说明或待核对话术。不得只改 payment_assessment 枚举却保留发卡结构。"
+            "payment_collection；manual_transfer 保留客户明确选择的 transfer 或 red_packet，unverified_paid_claim 使用 none。"
+            "不得只改 payment_assessment 枚举却保留发卡结构，也不得把红包静默改成转账。"
         )
     return ""
 
@@ -2036,11 +2166,15 @@ def _reply_structural_repair_guard(
         else {}
     )
     repair_payment_status = str(repair_payment_assessment.get("status") or "").strip()
+    repair_payment_channel = str(repair_payment_assessment.get("payment_channel") or "").strip()
     if repair_payment_status in {"manual_transfer", "unverified_paid_claim"}:
         tasks.append(
             {
                 "violation": "non_card_payment_status_requires_structural_cleanup",
                 "payment_status": repair_payment_status,
+                "payment_channel": repair_payment_channel or (
+                    "none" if repair_payment_status == "unverified_paid_claim" else "transfer | red_packet"
+                ),
                 "required_structure": {
                     "action": "none 或确实需要客户补截图时 ask",
                     "selected_content_ids": [],
@@ -2054,7 +2188,8 @@ def _reply_structural_repair_guard(
                     "sales_assessment.dimension_decision": "stay | switch | pause | close",
                 },
                 "instruction": (
-                    "保持模型已经判断的具体支付状态，只清除小程序卡及冲突成交结构。"
+                    "保持模型已经判断的具体支付状态和客户已选择的人工付款渠道，只清除小程序卡及冲突成交结构；"
+                    "红包不得静默改成转账，未核验已付声明的 payment_channel 必须为 none。"
                     "客户可见 text 必须自然回答客户，不能原样复制 current_message。"
                 ),
             }
@@ -2642,14 +2777,39 @@ def _reply_repair_hint(error: str) -> str:
             "必须保持该真实判断：action 改为 none 或确有必要时 ask，selected_content_ids=[]，删除 payment_collection 和候选图片，"
             "并把 deposit_evidence 精确清空为 "
             "{\"offer_prior_turn_refs\":[],\"supporting_key\":\"\",\"supporting_refs\":[],\"current_intent_refs\":[]}。"
-            "人工转账只说明转好后告知或发截图核对；待核对声明只说明核对付款记录或请客户补成功截图。"
+            "人工转账或红包只说明客户明确选择的那个渠道，不能同时给多个付款方案；待核对声明的 payment_channel 使用 none，"
+            "只说明核对付款记录或请客户补成功截图。"
         )
     if "payment_collection_requires_payment_request_assessment" in error:
         return (
             "payment_collection 只能与 payment_assessment.status=payment_request 一致。"
             "重新根据客户原话判断：索要小程序收款卡、明确问报名/预约/付款可用 payment_request；"
-            "明确人工转账必须用 manual_transfer；普通文字称已转好但无权威事实必须用 unverified_paid_claim。"
+            "明确人工转账必须用 manual_transfer + transfer，明确红包必须用 manual_transfer + red_packet；"
+            "普通文字称已转好或红包已发但无权威事实必须用 unverified_paid_claim + none。"
             "不要为了保留卡片把后两类改写成 payment_request；若不是小程序付款请求，就撤销 payment、清空候选和 deposit_evidence。"
+        )
+    if "manual_transfer_requires_manual_payment_channel" in error:
+        return (
+            "payment_assessment.status=manual_transfer 时必须保留客户明确选择的唯一人工渠道："
+            "转账使用 payment_channel=transfer，微信红包使用 payment_channel=red_packet。"
+            "不得同时说明两个渠道，不得发送 payment_collection，也不得把红包静默改成转账。"
+        )
+    if "unverified_paid_claim_requires_no_channel" in error:
+        return (
+            "客户普通文字声称已经转账或已经发红包仍只是待核对声明。"
+            "保持 payment_assessment.status=unverified_paid_claim，payment_channel 改为 none；"
+            "不得发卡、不得重复提供付款渠道、不得声称到账或进入已付登记。"
+        )
+    if "payment_card_requires_payment_request_assessment" in error:
+        return (
+            "payment_channel=payment_card 只能与 payment_assessment.status=payment_request、action=payment "
+            "和同轮唯一一张 payment_collection 成组出现。只修复这组结构一致性，不新增成交事实。"
+        )
+    if "payment_request_requires_payment_collection" in error:
+        return (
+            "你已明确输出 payment_assessment.status=payment_request 且 payment_channel=payment_card，"
+            "必须同轮输出唯一一张 payment_collection；若重新阅读完整历史后判断当前并非付款行动信号，"
+            "则由 Reply 一并撤销 payment_request、payment_card、payment action 和 deposit_evidence，不能留下半套付款结构。"
         )
     if "registration_action_requires_authoritative_paid_assessment" in error:
         return (

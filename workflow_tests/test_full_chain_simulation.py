@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from app.config import Settings
+from app.services.customer_scope import customer_scope_from_identity
 from app.simulation.adapters import (
     SimulationCozeClient,
     SimulationModelClient,
@@ -34,7 +35,12 @@ from app.simulation.runner import (
     simulation_evaluation_scope,
     simulation_run_options,
 )
-from app.simulation.runtime import _hard_check, _provider_incidents, _unrecovered_infrastructure_errors
+from app.simulation.runtime import (
+    _hard_check,
+    _provider_incidents,
+    _sales_contact_key,
+    _unrecovered_infrastructure_errors,
+)
 
 
 def test_semantic_reviewer_reserves_critical_errors_for_release_blockers() -> None:
@@ -78,6 +84,20 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertTrue(configured_urls)
         self.assertTrue(all(url.startswith(("http://", "https://")) for url in configured_urls))
         self.assertEqual(len(configured_urls), len(set(configured_urls)))
+
+    def test_seeded_memory_uses_the_same_sales_contact_key_as_production(self) -> None:
+        identity = {
+            "corp_id": "sim_corp",
+            "wechat": "sim_wechat",
+            "external_userid": "sim_external",
+            "customer_id": "sim_customer",
+        }
+
+        self.assertEqual(
+            _sales_contact_key(identity),
+            customer_scope_from_identity(identity).sales_contact_key,
+        )
+        self.assertTrue(_sales_contact_key(identity).startswith("sales_contact:v2:"))
 
     def test_semantic_scores_accepts_nested_and_top_level_shapes(self) -> None:
         nested = {"scores": {"current_question": 4}}

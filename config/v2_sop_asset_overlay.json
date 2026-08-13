@@ -74,7 +74,7 @@
     },
     {
       "id": "s10_deposit_close",
-      "parallel_candidate_enabled": true,
+      "parallel_candidate_enabled": false,
       "proactive_candidate_enabled": true,
       "asset_role": "deposit_close",
       "requires_prior_asset_roles": [

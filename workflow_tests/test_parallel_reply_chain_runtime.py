@@ -438,7 +438,8 @@ def test_parallel_reply_rule_view_keeps_unique_sections_without_repeating_layere
     assert "不能靠口头免费保留" in rules["AUTHORITATIVE FACTS"]["offer"]["reservation_completion_rule"]
     assert rules["AUTHORITATIVE FACTS"]["transaction_policy"]["appointment_flow_mode"] == "registration_only"
     payment_blocks = rules["AUTHORITATIVE FACTS"]["transaction_policy"]["payment_hard_blocks"]
-    assert "manual_transfer_method" in payment_blocks
+    assert "manual_transfer_method" not in payment_blocks
+    assert "red_packet_method" not in payment_blocks
     assert "unverified_oral_paid_claim" in payment_blocks
     assert rules["AUTHORITATIVE FACTS"]["customer_visible_evidence_policy"]["effect_confidence"]
     assert "面对面皮肤检测和评估" in rules["AUTHORITATIVE FACTS"]["health_risk_policy"]["in_store_assessment"]
@@ -939,6 +940,52 @@ def test_parallel_reply_payload_surfaces_payment_card_after_activity_intro_witho
         {"type": "payment_collection", "content": {"amount": 10, "remark": ""}}
     ]
     assert "reply_must_choose_action_payment" in option["constraints"]
+
+
+def test_parallel_reply_payload_reads_activity_completion_from_shared_context() -> None:
+    state = _parallel_state("象我这样要什么流程")
+    state["evidence_join"] = {
+        "shared_context": {
+            "conversation": [],
+            "current_message": {"content": "象我这样要什么流程"},
+            "authoritative_facts": {
+                "sop_progress": {"completed_pack_ids": ["s10_activity_intro"]}
+            },
+        },
+        "content_candidates": [],
+        "tool_facts": {},
+    }
+
+    option = parallel_reply_payload(state)["structured_delivery_options"]["payment_collection"]
+
+    assert option["message_payloads"] == [
+        {"type": "payment_collection", "content": {"amount": 10, "remark": ""}}
+    ]
+
+
+def test_parallel_party_size_none_alias_normalizes_to_unknown() -> None:
+    validation_state = _reply_validation_state(
+        _parallel_state("象我这样要什么流程"),
+        {
+            "reply_messages": [{"type": "text", "content": "流程我给您说清楚。"}],
+            "used_fact_refs": ["current_message"],
+            "selected_content_ids": [],
+            "structured_delivery_decisions": [],
+            "action": "none",
+            "sales_judgment": {},
+            "payment_assessment": {"status": "none", "payment_channel": "none", "evidence_refs": []},
+            "deposit_evidence": {},
+            "safety_assessment": {"status": "none", "evidence_refs": []},
+            "party_size_assessment": {"status": "none", "party_size": None, "evidence_refs": []},
+            "commit_actions": [],
+        },
+    )
+
+    assert validation_state["reply_party_size_assessment"] == {
+        "status": "unknown",
+        "party_size": None,
+        "evidence_refs": [],
+    }
 
 
 def test_parallel_reply_validation_accepts_delivery_decision_without_duplicate_used_fact_ref() -> None:
@@ -1609,6 +1656,32 @@ def test_parallel_manual_transfer_allows_conditional_post_verification_reservati
                 "content": reply_text,
             }
         ],
+        state,
+    )
+
+
+@pytest.mark.parametrize("channel", ["transfer", "red_packet"])
+def test_parallel_manual_payment_channel_allows_offer_without_payment_card(channel: str) -> None:
+    state = _reply_validation_state(
+        _parallel_state("我用转账" if channel == "transfer" else "我发红包可以吗"),
+        {
+            "action": "offer",
+            "payment_assessment": {
+                "status": "manual_transfer",
+                "payment_channel": channel,
+                "evidence_refs": ["current_message"],
+            },
+            "deposit_evidence": {
+                "offer_prior_turn_refs": [],
+                "supporting_key": "",
+                "supporting_refs": [],
+                "current_intent_refs": [],
+            },
+        },
+    )
+
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "可以，按您选的方式付10元预约金就行。"}],
         state,
     )
 
@@ -2574,10 +2647,12 @@ def test_reply_repair_rechecks_generic_payment_request_against_original_message(
 
     instruction = messages[-1]["content"]
     assert "枚举合法不代表语义一定正确" in instruction
-    assert "客户选择人工转账或不用小程序应改为 manual_transfer" in instruction
+    assert "明确选择人工转账应改为 manual_transfer + transfer" in instruction
+    assert "明确选择微信红包应改为 manual_transfer + red_packet" in instruction
     assert "代码没有替你做关键词判定" in instruction
-    assert "必须在同一个 JSON 中成组完成四项结构修复" in instruction
+    assert "必须在同一个 JSON 中成组完成结构修复" in instruction
     assert "不得只改 payment_assessment 枚举却保留发卡结构" in instruction
+    assert "不得把红包静默改成转账" in instruction
     assert instruction.count("最高优先级结构要求") == 1
 
 
@@ -3335,6 +3410,102 @@ def test_parallel_gate_filters_channel_incompatible_asset_but_reply_owns_action(
     assert "payment_assessment" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "manual_transfer" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "unverified_paid_claim" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_parallel_reply_prompt_forbids_reoffering_delivered_content() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "已经实际交付的地址、门店卡、案例、活动、排疑和付款方式" in prompt
+    assert "不能再写成未来承诺或许可式出口" in prompt
+    assert "客户明确要求重发、表示没有收到" in prompt
+    assert "自身参与路径" in prompt
+    assert "不是固定关键词匹配" in prompt
+
+
+@pytest.mark.parametrize("channel", ["transfer", "red_packet"])
+def test_parallel_explicit_manual_payment_channel_cannot_include_card(channel: str) -> None:
+    state = _reply_validation_state(
+        _parallel_state("我想用这个方式付"),
+        {
+            "action": "none",
+            "payment_assessment": {
+                "status": "manual_transfer",
+                "payment_channel": channel,
+                "evidence_refs": ["current_message"],
+            },
+            "deposit_evidence": {
+                "offer_prior_turn_refs": [],
+                "supporting_key": "",
+                "supporting_refs": [],
+                "current_intent_refs": [],
+            },
+        },
+    )
+
+    validate_reply_consistency(
+        [{"type": "text", "content": "可以，按您选的付款方式处理。"}],
+        state,
+    )
+    with pytest.raises(ValueError, match="payment_assessment_blocks_payment_collection"):
+        validate_reply_consistency(
+            [
+                {"type": "text", "content": "可以，按您选的付款方式处理。"},
+                {"type": "payment_collection", "content": {"amount": 10}},
+            ],
+            state,
+        )
+
+
+def test_parallel_explicit_payment_card_channel_still_requires_card_structure() -> None:
+    state = _parallel_payment_validation_state()
+    state["reply_payment_channel"] = "payment_card"
+    state["reply_payment_channel_explicit"] = True
+
+    with pytest.raises(ValueError, match="payment_action_requires_payment_collection"):
+        validate_reply_consistency(
+            [{"type": "text", "content": "我把入口发您。"}],
+            state,
+        )
+
+
+def test_parallel_payment_request_cannot_claim_manual_channel_with_card() -> None:
+    state = _parallel_payment_validation_state()
+    state["reply_payment_channel"] = "transfer"
+    state["reply_payment_channel_explicit"] = True
+
+    with pytest.raises(ValueError, match="payment_request_requires_payment_card_channel"):
+        validate_reply_consistency(
+            [
+                {"type": "text", "content": "我把入口发您。"},
+                {"type": "payment_collection", "content": {"amount": 10}},
+            ],
+            state,
+        )
+
+
+def test_parallel_unverified_paid_claim_requires_no_explicit_channel() -> None:
+    state = _reply_validation_state(
+        _parallel_state("红包发了"),
+        {
+            "action": "ask",
+            "payment_assessment": {
+                "status": "unverified_paid_claim",
+                "payment_channel": "red_packet",
+                "evidence_refs": ["current_message"],
+            },
+            "deposit_evidence": {
+                "offer_prior_turn_refs": [],
+                "supporting_key": "",
+                "supporting_refs": [],
+                "current_intent_refs": [],
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="unverified_paid_claim_requires_no_channel"):
+        validate_reply_consistency(
+            [{"type": "text", "content": "我先结合付款记录核对。"}],
+            state,
+        )
     assert "与当前付款通道结构不兼容" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
     assert "这是结构兼容性过滤，不是替 Reply 决定成交动作" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
     assert "包含结构卡片的资产若与当前权威支付方式冲突，不得提名" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT

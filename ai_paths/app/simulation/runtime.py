@@ -19,6 +19,7 @@ from app.graph.graph_builder import build_reply_graphs
 from app.schemas import ChatRequest
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.customer_scope import customer_scope_from_identity
 from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
@@ -606,11 +607,34 @@ def _hard_check(
             visible_messages=step_messages,
             prefix=f"step[{int(step.get('index') or 0)}]",
         )
+        expected_channel = str(step_expected.get("payment_channel") or "").strip()
+        if expected_channel:
+            actual_channel = _step_reply_payment_channel(step)
+            if actual_channel != expected_channel:
+                errors.append(
+                    f"step[{int(step.get('index') or 0)}].payment_channel_mismatch:"
+                    f"expected={expected_channel}:actual={actual_channel or 'missing'}"
+                )
     expected = scenario.get("expected") if isinstance(scenario.get("expected"), dict) else {}
     if expected.get("must_reply") and not all_batches:
         errors.append("scenario.no_customer_visible_reply")
     if expected.get("must_reply") is False and visible_messages:
         errors.append("scenario.unexpected_customer_visible_reply")
+    expected_channel = str(expected.get("payment_channel") or "").strip()
+    if expected_channel:
+        actual_channel = next(
+            (
+                channel
+                for step in reversed(step_results)
+                if (channel := _step_reply_payment_channel(step))
+            ),
+            "",
+        )
+        if actual_channel != expected_channel:
+            errors.append(
+                f"scenario.payment_channel_mismatch:expected={expected_channel}:"
+                f"actual={actual_channel or 'missing'}"
+            )
 
     visible_types = [str(message.get("type") or "") for message in visible_messages]
     required_types = {str(item) for item in expected.get("required_types") or [] if str(item)}
@@ -676,6 +700,17 @@ def _step_visible_messages(step: dict[str, Any]) -> list[dict[str, Any]]:
             if isinstance(item, dict)
         )
     return messages
+
+
+def _step_reply_payment_channel(step: dict[str, Any]) -> str:
+    run_detail = step.get("run") if isinstance(step.get("run"), dict) else {}
+    traces = run_detail.get("node_traces") if isinstance(run_detail.get("node_traces"), list) else []
+    for trace in reversed(traces):
+        if not isinstance(trace, dict) or str(trace.get("node_name") or "") != "synthesize_reply":
+            continue
+        output = trace.get("output_snapshot") if isinstance(trace.get("output_snapshot"), dict) else {}
+        return str(output.get("reply_payment_channel") or "").strip()
+    return ""
 
 
 def _check_expected_messages(
@@ -857,13 +892,9 @@ def _contains_unrecovered_provider_failure(text: str) -> bool:
 
 
 def _sales_contact_key(identity: dict[str, Any]) -> str:
-    return "|".join(
-        [
-            str(identity.get("corp_id") or "").lower(),
-            str(identity.get("wechat") or "").lower(),
-            str(identity.get("external_userid") or identity.get("customer_id") or "").lower(),
-        ]
-    )
+    """Use the production sales-contact boundary for seeded simulation memory."""
+
+    return customer_scope_from_identity(identity).sales_contact_key
 
 
 def _safe_name(value: str) -> str:

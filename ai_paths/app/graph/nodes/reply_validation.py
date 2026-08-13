@@ -577,14 +577,32 @@ def _validate_parallel_payment_boundaries(messages: list[dict[str, Any]], state:
         else {}
     )
     payment_status = str(payment_assessment.get("status") or "unknown")
+    payment_channel = str(state.get("reply_payment_channel") or "").strip()
+    channel_explicit = bool(state.get("reply_payment_channel_explicit"))
+    if not payment_channel:
+        # Compatibility for pre-channel fixtures and in-flight model retries.
+        # This maps an existing structural status; it does not read prose or
+        # decide which payment path the customer intended.
+        payment_channel = (
+            "payment_card"
+            if payment_status == "payment_request" and has_payment
+            else "transfer"
+            if payment_status == "manual_transfer"
+            else "none"
+        )
     deposit_evidence = (
         state.get("reply_deposit_evidence")
         if isinstance(state.get("reply_deposit_evidence"), dict)
         else {}
     )
     if payment_status in {"manual_transfer", "unverified_paid_claim"}:
-        if reply_action not in {"none", "ask"} or has_payment:
+        allowed_actions = {"none", "ask", "offer"} if payment_status == "manual_transfer" else {"none", "ask"}
+        if reply_action not in allowed_actions or has_payment:
             raise ValueError(f"payment_assessment_blocks_payment_collection:{payment_status}")
+    if channel_explicit and payment_status == "manual_transfer" and payment_channel not in {"transfer", "red_packet"}:
+        raise ValueError("manual_transfer_requires_manual_payment_channel")
+    if channel_explicit and payment_status == "unverified_paid_claim" and payment_channel != "none":
+        raise ValueError("unverified_paid_claim_requires_no_channel")
     if payment_status == "authoritative_paid" and not _parallel_paid_deposit_context(state):
         raise ValueError("payment_assessment_authoritative_paid_requires_fact")
     if _parallel_paid_deposit_context(state) and payment_status != "authoritative_paid":
@@ -596,6 +614,10 @@ def _validate_parallel_payment_boundaries(messages: list[dict[str, Any]], state:
     if not has_payment:
         if reply_action == "payment":
             raise ValueError("payment_action_requires_payment_collection")
+        if channel_explicit and (payment_status == "payment_request" or payment_channel == "payment_card"):
+            raise ValueError("payment_card_channel_requires_payment_collection")
+        if channel_explicit and payment_status in {"none", "unknown", "authoritative_paid"} and payment_channel != "none":
+            raise ValueError(f"payment_status_requires_no_channel:{payment_status}")
         return
     if _parallel_paid_deposit_context(state):
         raise ValueError("payment_collection_blocked_by_paid_deposit_context")
@@ -619,6 +641,8 @@ def _validate_parallel_payment_boundaries(messages: list[dict[str, Any]], state:
         raise ValueError("payment_collection_requires_reply_payment_action")
     if payment_status != "payment_request":
         raise ValueError("payment_collection_requires_payment_request_assessment")
+    if channel_explicit and payment_channel != "payment_card":
+        raise ValueError("payment_request_requires_payment_card_channel")
 
 
 def _validate_parallel_claimed_deposit_evidence(state: dict[str, Any]) -> None:

@@ -211,6 +211,8 @@ def test_activity_intro_is_offer_only_and_deposit_close_owns_payment_card() -> N
 
     assert activity["asset_role"] == "activity_offer"
     assert deposit["asset_role"] == "deposit_close"
+    assert deposit["parallel_candidate_enabled"] is False
+    assert deposit["proactive_candidate_enabled"] is True
     assert deposit["requires_prior_asset_roles"] == ["activity_offer"]
     assert [message.get("type") for message in activity_messages] == ["text", "image", "text"]
     assert all(message.get("type") != "payment_collection" for message in activity_messages)

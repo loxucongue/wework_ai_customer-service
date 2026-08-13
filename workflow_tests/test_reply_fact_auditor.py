@@ -26,6 +26,8 @@ from app.graph.nodes.reply_validation import (
 )
 from app.prompts.reply_fact_auditor import REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT
+from app.prompts.sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+from app.graph.nodes.parallel_reply_chain import TOOL_PLANNER_SYSTEM_PROMPT
 
 
 def _state() -> dict:
@@ -222,6 +224,100 @@ def test_parallel_reply_prompt_treats_delivery_as_progress_without_permission_ro
     assert "不要用“能不能接受、是否方便、要不要继续”" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "“查看位置、考虑一下、需要再联系”不算动作" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "客户不需要专门确认此前交付" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "默认成交动作是直接说明10元预约金规则并发送一张小程序预约金卡" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要把已经讲过的活动、门店、检测或到店流程再复述一遍" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_parallel_reply_and_fact_auditor_forbid_invented_external_price_explanations() -> None:
+    assert "只能证明客户看到了这个数字" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "引流价、单项价、其他门店价格、其他项目价格" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "只能作为“客户看到了该数字”的客户转述" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "引流价、单项价、其他门店价、其他项目价" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+
+
+def test_fact_auditor_does_not_redecide_payment_timing_and_checks_amount_meaning() -> None:
+    assert "不得重新判断客户行动信号够不够强" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "客户只问流程、尚未再次明确留名额" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "把10元写成“直接抵258元尾款”" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "10元到店抵扣，再付258元" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "都是条件规则或一般付款流程" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不得因当前客户尚未支付而拦截合法的付款说明和付款卡" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不得把“按活动内容核对、不需要接受额外推荐”误解" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+
+
+def test_parallel_reply_contract_exposes_exact_deposit_supporting_key_enum() -> None:
+    assert '"supporting_key":"address | effect | objection | 空字符串"' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能写组合标签" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_tool_planner_requeries_when_customer_explicitly_requests_store_card_resend() -> None:
+    assert "明确要求重发地址、位置、导航或门店卡" in TOOL_PLANNER_SYSTEM_PROMPT
+    assert "历史文字地址只能帮助组成 query" in TOOL_PLANNER_SYSTEM_PROMPT
+
+
+def test_content_gate_does_not_reopen_location_capture_for_known_store_resend() -> None:
+    assert "当前需要的是结构事实重放，不是再次采集城市" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "禁止提名 `asset_role=location_capture`" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+
+
+def test_parallel_generic_repair_distinguishes_strategy_refs_from_delivery_refs() -> None:
+    repaired = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "完整证据"}],
+        ValueError("invalid_structured_delivery_fact_ref: strategy_value_and_price"),
+        previous_payload={"action": "none"},
+        validation_context={"current_message": {"content": "我看其他是199啊"}},
+    )
+
+    repair_prompt = repaired[-1]["content"]
+    assert "内容策略或 Gate 候选使用 selected_content_ids" in repair_prompt
+    assert "若当前没有结构选项，设为空数组" in repair_prompt
+
+
+def test_parallel_generic_repair_does_not_replace_external_fact_guess_with_another_guess() -> None:
+    repaired = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "完整证据"}],
+        Exception("事实错误"),
+        previous_payload={"action": "none"},
+        validation_context={"current_message": {"content": "我看其他是199啊"}},
+    )
+
+    repair_prompt = repaired[-1]["content"]
+    assert "不得换一种说法继续猜测" in repair_prompt
+    assert "只准确说明本系统已有权威事实" in repair_prompt
+
+
+def test_parallel_generic_repair_exposes_exact_payment_card_payload() -> None:
+    repaired = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "完整证据"}],
+        ValueError("invalid_parallel_reply_message_content:1:payment_collection"),
+        previous_payload={
+            "action": "payment",
+            "payment_assessment": {
+                "status": "payment_request",
+                "payment_channel": "payment_card",
+                "evidence_refs": ["current_message"],
+            },
+        },
+        validation_context={
+            "current_message": {"content": "怎么参加"},
+            "structured_delivery_options": {
+                "payment_collection": {
+                    "fact_ref": "authoritative_fact:payment_collection_option",
+                    "message_payloads": [
+                        {
+                            "type": "payment_collection",
+                            "content": {"amount": 10, "remark": ""},
+                        }
+                    ],
+                }
+            },
+        },
+    )
+
+    repair_prompt = repaired[-1]["content"]
+    assert "exact_payment_delivery_contract" in repair_prompt
+    assert '"amount":10' in repair_prompt
+    assert "payment_collection.content 必须是输入提供的对象" in repair_prompt
 
 
 def test_fact_auditor_contract_cannot_make_sales_decisions() -> None:
@@ -265,6 +361,9 @@ def test_fact_auditor_contract_distinguishes_payment_and_registration_states() -
     assert "权威事实已经直接支持命题时必须通过" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "先看看值不值得" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "不是可独立验证的业务事实" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "payment_assessment.payment_channel" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "不得因为你认为另一渠道更合适而改变销售决定" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
+    assert "同轮混用小程序卡、转账和红包" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "多个字段共同支持" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
     assert "未登记客户不能被写成已经可以免费到店检测" in REPLY_FACT_AUDITOR_SYSTEM_PROMPT
 
@@ -274,6 +373,77 @@ def test_model_led_reply_repair_reserves_fact_audit_budget() -> None:
 
     assert '"model_fact_audit_timeout_seconds"' in source
     assert "round_deadline - fact_audit_budget" in source
+
+
+def test_model_led_reply_timeout_retries_full_original_task_instead_of_structural_repair() -> None:
+    original_messages = [
+        {"role": "system", "content": "完整销售大脑合同；只输出 json。"},
+        {"role": "user", "content": '{"current_message":"怎么参加"}'},
+    ]
+    valid_reply = {
+        "reply_messages": [{"type": "text", "content": "参加流程我给您接着说明清楚。"}],
+        "used_fact_refs": ["current_message"],
+        "selected_content_ids": [],
+        "action": "offer",
+        "action_reason": "回答客户当前问题",
+        "sales_judgment": {
+            "customer_goal": "参加活动",
+            "established_keys": [],
+            "primary_objective": "说明参加流程",
+            "posture": "answer",
+            "reason": "先完整回答当前问题",
+        },
+        "payment_assessment": {"status": "none", "payment_channel": "none", "evidence_refs": []},
+        "deposit_evidence": {
+            "offer_prior_turn_refs": [],
+            "supporting_key": "",
+            "supporting_refs": [],
+            "current_intent_refs": [],
+        },
+        "safety_assessment": {"status": "none", "evidence_refs": []},
+        "party_size_assessment": {"status": "unknown", "party_size": None, "evidence_refs": []},
+        "commit_actions": [],
+    }
+
+    class _Client:
+        available = True
+        last_usage = None
+
+        def __init__(self) -> None:
+            self.settings = SimpleNamespace(model_fact_audit_enabled=False)
+            self.calls: list[list[dict]] = []
+
+        async def chat_json(self, messages, **_kwargs):
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                raise TimeoutError("provider timeout")
+            return valid_reply
+
+    client = _Client()
+    state = {
+        **_state(),
+        "model_deadline": {"deadline_monotonic": None},
+    }
+
+    messages, model_call, source = asyncio.run(
+        _run_model_led_reply_pipeline(
+            state=state,
+            model_client=client,
+            model_messages=original_messages,
+            validated_model_messages=lambda payload, _state: payload["reply_messages"],
+            debug_message_contents=lambda items: [str(item.get("content") or "") for item in items],
+            warnings=[],
+        )
+    )
+
+    assert len(client.calls) == 2
+    assert client.calls[1][:2] == original_messages
+    assert "重新执行原始 Reply 任务" in client.calls[1][-1]["content"]
+    assert "局部结构修复" in client.calls[1][-1]["content"]
+    assert "最小修复" not in client.calls[1][-1]["content"]
+    assert model_call["retry"]["mode"] == "full_task_retry"
+    assert source == "single_full_task_retry_model"
+    assert messages[0]["content"] == valid_reply["reply_messages"][0]["content"]
 
 
 def test_parallel_reply_prompt_is_structured_sales_brain_not_scene_matcher() -> None:

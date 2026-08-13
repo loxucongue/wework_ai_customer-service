@@ -93,6 +93,8 @@ class AgentState(TypedDict, total=False):
     reply_sales_assessment: dict[str, Any]
     reply_sales_judgment: dict[str, Any]
     reply_payment_assessment: dict[str, Any]
+    reply_payment_channel: str
+    reply_payment_channel_explicit: bool
     reply_deposit_evidence: dict[str, Any]
     reply_safety_assessment: dict[str, Any]
     reply_party_size_assessment: dict[str, Any]
