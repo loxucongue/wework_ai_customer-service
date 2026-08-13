@@ -574,7 +574,6 @@ class ChatRuntime:
                 "reply_action": final_state.get("reply_action", "none"),
                 "reply_action_reason": final_state.get("reply_action_reason", ""),
                 "reply_sales_judgment": final_state.get("reply_sales_judgment", {}),
-                "reply_fact_audit": final_state.get("reply_fact_audit", {}),
                 "reply_deposit_evidence": final_state.get("reply_deposit_evidence", {}),
                 "selected_content_ids": final_state.get("selected_content_ids", []),
                 "parallel_branch_metrics": final_state.get("parallel_branch_metrics", {}),

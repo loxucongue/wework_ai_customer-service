@@ -351,8 +351,21 @@ def create_commit_coordinator_node(
             result["write_results"] = copy.deepcopy(state.get("commit_tool_results") or {})
             if sop_execution_service is not None:
                 try:
+                    # A Reply may use only part of a Gate candidate. Preserve
+                    # that customer-visible answer, but record SOP completion
+                    # only when all required structured payloads were sent.
+                    from app.graph.nodes.reply_validation import (
+                        completed_parallel_selected_content_ids,
+                    )
+
+                    commit_state = dict(state)
+                    commit_state["selected_content_ids"] = completed_parallel_selected_content_ids(
+                        list(state.get("reply_messages") or []),
+                        state,
+                        list(state.get("selected_content_ids") or []),
+                    )
                     result["sop"] = sop_execution_service.commit_reply_selected_chat_gate_candidate(
-                        state=state,
+                        state=commit_state,
                         reply_messages=list(state.get("reply_messages") or []),
                     )
                 except Exception as exc:

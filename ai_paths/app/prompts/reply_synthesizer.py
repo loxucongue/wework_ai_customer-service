@@ -141,7 +141,6 @@ Tool Planner 给出的 `normalized_tool_facts` 和 `structured_delivery_options`
   ],
   "used_fact_refs": [],
   "selected_content_ids": [],
-  "structured_delivery_decisions": [],
   "action": "none | ask | offer | payment | registration",
   "action_reason": "仅供审计的一句话",
   "sales_judgment": {
@@ -168,8 +167,7 @@ Tool Planner 给出的 `normalized_tool_facts` 和 `structured_delivery_options`
 - 采用 Gate 候选时，在 `selected_content_ids` 写真实 ID，并在 `used_fact_refs` 加 `content_asset:<id>`。
 - Gate 候选是可选资产：采用就完整交付并声明采用，不采用就不要声明采用。
 - 采用 `sales_recall` 时，不写入 `selected_content_ids`；可在 `used_fact_refs` 引用 `sales_recall:<source_id>`，但客户可见内容不能照抄，也不能引用其风险事实。
-- `structured_delivery_decisions` 没有可交付选项时必须是空数组；有选项时每个元素严格使用 `{"fact_ref":"逐字复制 structured_delivery_options 中的真实 fact_ref","decision":"deliver | defer","reason":"选择 defer 时说明原因"}`。不得使用 `type/content_id` 代替 `fact_ref`，不得虚构输入中不存在的选项。
-- `structured_delivery_options.message_payloads` 中的可交付结构消息，如果你选择使用，必须在 `structured_delivery_decisions` 写 `deliver` 并实际输出对应结构消息；不用则写 `defer` 和原因。
+- `structured_delivery_options.message_payloads` 是本轮可直接采用的真实结构消息；是否采用由你根据完整历史决定。实际输出后系统只校验 ID、权限和事实来源，不要求额外填写一套“发/不发”审计字段。
 - `action=payment` 必须同轮包含预约金卡和完整 `deposit_evidence`。
 - `action=payment` 的客户可见文字必须完整包含每位10元预约金、到店抵扣10元、做的话再付258元、未做或不满意可退；同时实际交付唯一合法付款方式。不得只说“留名额、到店抵扣”而遗漏尾款、退款条件或支付入口。
 - `deposit_evidence.supporting_key` 是严格结构枚举，只能逐字填写 `address`、`effect`、`objection` 三者之一；不成交时填写空字符串。不能写组合标签、中文解释、`activity` 或自定义值。它只标记活动之外的另一把已交付钥匙；对应的历史真实引用放入 `supporting_refs`。

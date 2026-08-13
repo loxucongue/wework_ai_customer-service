@@ -45,7 +45,12 @@ from app.graph.nodes.reply_nodes import (
 from app.prompts.sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT, SOP_CHAT_GATE_SYSTEM_PROMPT
 from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT
 from app.policies.business_rules import parallel_reply_business_rules_for_model
-from app.graph.nodes.reply_validation import debug_message_contents, validate_reply_consistency, validated_model_messages
+from app.graph.nodes.reply_validation import (
+    completed_parallel_selected_content_ids,
+    debug_message_contents,
+    validate_reply_consistency,
+    validated_model_messages,
+)
 from app.services.payment_collection import payment_collection_context
 from app.services.sop_execution_service import (
     SopExecutionService,
@@ -482,7 +487,7 @@ def test_reply_assessments_use_real_customer_message_refs_for_amount() -> None:
     }
 
 
-def test_reply_assessment_rejects_hallucinated_message_ref() -> None:
+def test_reply_assessment_drops_hallucinated_message_ref_without_rejecting_reply() -> None:
     state = _parallel_state("我和朋友两个人")
     payload = {
         "action": "payment",
@@ -494,8 +499,9 @@ def test_reply_assessment_rejects_hallucinated_message_ref() -> None:
         },
     }
 
-    with pytest.raises(ValueError, match="party_size_assessment_has_invalid_evidence_ref"):
-        _reply_validation_state(state, payload)
+    validation_state = _reply_validation_state(state, payload)
+
+    assert validation_state["reply_party_size_assessment"]["evidence_refs"] == []
 
 
 def test_parallel_reply_payload_lists_exact_customer_message_refs() -> None:
@@ -990,7 +996,7 @@ def test_parallel_party_size_none_alias_normalizes_to_unknown() -> None:
     }
 
 
-def test_parallel_reply_validation_accepts_delivery_decision_without_duplicate_used_fact_ref() -> None:
+def test_parallel_reply_validation_ignores_legacy_delivery_audit_metadata() -> None:
     state = _parallel_state("行，怎么付款")
     state["conversation_history"] = [
         "小贝: 周年庆淡斑活动总价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。",
@@ -1061,7 +1067,6 @@ def test_parallel_reply_validation_accepts_delivery_decision_without_duplicate_u
     )
 
     assert validation_state["reply_action"] == "payment"
-    assert validation_state["reply_structured_delivery_decisions"][0]["decision"] == "deliver"
     assert "authoritative_fact:payment_collection_option" not in validation_state["reply_used_fact_refs"]
 
 
@@ -1504,18 +1509,17 @@ def test_parallel_payment_assessment_blocks_card_for_non_card_payment_context(st
         )
 
 
-def test_parallel_payment_card_requires_reply_owned_payment_request_assessment() -> None:
+def test_parallel_payment_card_is_validated_by_structure_not_audit_status() -> None:
     state = _parallel_payment_validation_state()
     state["reply_payment_assessment"] = {"status": "unknown", "evidence_refs": []}
 
-    with pytest.raises(ValueError, match="payment_collection_requires_payment_request_assessment"):
-        validate_reply_consistency(
-            [
-                {"type": "text", "order": 1, "content": "我把入口发您。"},
-                {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
-            ],
-            state,
-        )
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": "我把入口发您。"},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
+        ],
+        state,
+    )
 
 
 def test_parallel_unverified_paid_assessment_without_card_is_consistent() -> None:
@@ -1583,24 +1587,25 @@ def test_parallel_payment_assessment_prunes_invalid_ref_when_valid_customer_ref_
     assert state["reply_payment_assessment"]["evidence_refs"] == ["current_message"]
 
 
-def test_parallel_payment_assessment_rejects_when_no_valid_customer_ref_remains() -> None:
-    with pytest.raises(ValueError, match="payment_assessment_requires_customer_message_evidence"):
-        _reply_validation_state(
-            _parallel_state("已经转好了"),
-            {
-                "action": "ask",
-                "payment_assessment": {
-                    "status": "unverified_paid_claim",
-                    "evidence_refs": ["conv_assistant_003"],
-                },
-                "deposit_evidence": {
-                    "offer_prior_turn_refs": [],
-                    "supporting_key": "",
-                    "supporting_refs": [],
-                    "current_intent_refs": [],
-                },
+def test_parallel_payment_assessment_drops_invalid_audit_refs() -> None:
+    state = _reply_validation_state(
+        _parallel_state("已经转好了"),
+        {
+            "action": "ask",
+            "payment_assessment": {
+                "status": "unverified_paid_claim",
+                "evidence_refs": ["conv_assistant_003"],
             },
-        )
+            "deposit_evidence": {
+                "offer_prior_turn_refs": [],
+                "supporting_key": "",
+                "supporting_refs": [],
+                "current_intent_refs": [],
+            },
+        },
+    )
+
+    assert state["reply_payment_assessment"]["evidence_refs"] == []
 
 
 def test_parallel_deposit_evidence_normalizes_none_supporting_key_to_empty() -> None:
@@ -1759,19 +1764,13 @@ def test_parallel_payment_rejects_customer_statement_as_supporting_delivery() ->
         )
 
 
-def test_parallel_payment_aggregates_missing_card_and_missing_delivery_for_one_repair() -> None:
+def test_parallel_payment_metadata_without_card_does_not_reject_visible_reply() -> None:
     state = _parallel_payment_validation_state(supporting_role="customer")
 
-    with pytest.raises(ValueError) as exc_info:
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": "可以，我把收款卡发您。"}],
-            state,
-        )
-
-    error = str(exc_info.value)
-    assert "parallel_reply_hard_violations::" in error
-    assert "payment_action_requires_payment_collection" in error
-    assert "payment_collection_requires_prior_supporting_key_evidence" in error
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "可以，我把收款卡发您。"}],
+        state,
+    )
 
 
 def test_parallel_chain_rejects_duplicate_payment_cards_instead_of_silently_deduping() -> None:
@@ -1909,7 +1908,7 @@ def test_parallel_raw_schema_rejects_silent_handoff_rewrites() -> None:
         )
 
 
-def test_parallel_raw_schema_rejects_lossy_action_and_message_compatibility() -> None:
+def test_parallel_raw_schema_normalizes_audit_action_but_rejects_bad_messages() -> None:
     base = {
         "reply_messages": [{"type": "text", "content": "收到。"}],
         "used_fact_refs": [],
@@ -1917,8 +1916,8 @@ def test_parallel_raw_schema_rejects_lossy_action_and_message_compatibility() ->
         "action": "continue_sales",
         "commit_actions": [],
     }
-    with pytest.raises(ValueError, match="invalid_parallel_reply_action"):
-        _validate_parallel_raw_reply_schema(base)
+    _validate_parallel_raw_reply_schema(base)
+    assert base["action"] == "none"
 
     base["action"] = "none"
     base["reply_messages"] = ["收到。"]
@@ -2076,7 +2075,7 @@ def test_parallel_unknown_party_size_does_not_use_python_keyword_inference() -> 
     }
 
 
-def test_parallel_payment_action_requires_matching_payment_structure() -> None:
+def test_parallel_payment_action_metadata_does_not_require_card_structure() -> None:
     state = _reply_validation_state(
         _parallel_state("怎么付费"),
         {
@@ -2090,11 +2089,10 @@ def test_parallel_payment_action_requires_matching_payment_structure() -> None:
         state,
     )
 
-    with pytest.raises(ValueError, match="payment_action_requires_payment_collection"):
-        validate_reply_consistency(messages, state)
+    validate_reply_consistency(messages, state)
 
 
-def test_parallel_registration_action_requires_authoritative_paid_fact() -> None:
+def test_parallel_registration_action_metadata_does_not_reject_visible_reply() -> None:
     state = _reply_validation_state(
         _parallel_state("可以，给我预约"),
         {
@@ -2108,11 +2106,10 @@ def test_parallel_registration_action_requires_authoritative_paid_fact() -> None
         state,
     )
 
-    with pytest.raises(ValueError, match="registration_action_requires_paid_context"):
-        validate_reply_consistency(messages, state)
+    validate_reply_consistency(messages, state)
 
 
-def test_parallel_visible_registration_language_is_deferred_to_fact_audit() -> None:
+def test_parallel_visible_registration_language_is_model_owned_not_regex_blocked() -> None:
     state = _reply_validation_state(
         _parallel_state("活动怎么参加"),
         {
@@ -2725,7 +2722,7 @@ def test_parallel_registration_claim_text_is_not_decided_from_legacy_profile_by_
     validate_reply_consistency(messages, state)
 
 
-def test_parallel_unpaid_completion_claim_is_deferred_to_fact_audit() -> None:
+def test_parallel_unpaid_completion_claim_is_model_owned_not_regex_blocked() -> None:
     state = _reply_validation_state(
         _parallel_state("可以先把活动留着"),
         {
@@ -2772,11 +2769,12 @@ def test_parallel_conditional_and_completed_language_is_not_regex_parsed() -> No
     validate_reply_consistency(messages, state)
 
 
-def test_parallel_paid_registration_completion_language_is_fact_audited_not_regex_parsed() -> None:
+def test_parallel_paid_registration_completion_language_is_not_regex_parsed() -> None:
     state = _parallel_state("张三 13800138000")
     state["shared_context"]["authoritative_facts"] = {"orders_and_payment": {
         "resolved_payment": {"deposit_state": "paid_by_platform_transfer_event"}
     }}
+    state["evidence_join"]["shared_context"] = state["shared_context"]
     state = _reply_validation_state(
         state,
         {
@@ -2796,30 +2794,32 @@ def test_parallel_paid_registration_completion_language_is_fact_audited_not_rege
     )
 
 
-def test_parallel_authoritative_paid_fact_cannot_be_downgraded_to_unverified_claim() -> None:
+def test_parallel_authoritative_paid_fact_still_blocks_actual_duplicate_card_not_metadata() -> None:
     state = _parallel_state("付好了")
     state["shared_context"]["authoritative_facts"] = {"orders_and_payment": {
         "resolved_payment": {"deposit_state": "paid_by_platform_transfer_event"}
     }}
+    state["evidence_join"]["shared_context"] = state["shared_context"]
     state = _reply_validation_state(
         state,
         {
             "action": "ask",
             "payment_assessment": {
-                "status": "unverified_paid_claim",
-                "evidence_refs": ["current_message"],
+                "status": "authoritative_paid",
+                "evidence_refs": ["payment_fact:authoritative_paid"],
             },
             "safety_assessment": {"status": "none", "evidence_refs": []},
             "party_size_assessment": {"status": "unknown", "party_size": None, "evidence_refs": []},
         },
     )
 
-    with pytest.raises(
-        ValueError,
-        match="authoritative_paid_fact_requires_matching_payment_assessment",
-    ):
+    validate_reply_consistency(
+        [{"type": "text", "content": "收到，我先核对一下。"}],
+        state,
+    )
+    with pytest.raises(ValueError, match="payment_collection_blocked_by_paid_deposit_context"):
         validate_reply_consistency(
-            [{"type": "text", "content": "收到，我先核对一下。"}],
+            [{"type": "payment_collection", "content": {"amount": 10}}],
             state,
         )
 
@@ -2865,7 +2865,7 @@ def test_parallel_existing_appointment_record_does_not_block_deposit_card() -> N
     )
 
 
-def test_parallel_appointment_claim_is_fact_audited_not_regex_parsed() -> None:
+def test_parallel_appointment_claim_is_model_owned_not_regex_parsed() -> None:
     state = _reply_validation_state(
         {**_parallel_state("那就明天下午"), "appointment_id": "legacy-appt"},
         {
@@ -3009,7 +3009,7 @@ def test_parallel_store_lookup_fact_does_not_force_model_to_send_card() -> None:
     validate_reply_consistency([{"type": "store_address", "content": {"store_id": "601"}}], state)
 
 
-def test_parallel_reply_using_current_store_lookup_must_deliver_resolved_cards() -> None:
+def test_parallel_reply_validates_actual_store_cards_without_audit_decision() -> None:
     base = {
         **_parallel_state("浦东"),
         "fact_envelope": {
@@ -3050,14 +3050,10 @@ def test_parallel_reply_using_current_store_lookup_must_deliver_resolved_cards()
         },
     )
 
-    with pytest.raises(
-        ValueError,
-        match="planned_store_lookup_requires_store_delivery:required_store_ids=152,405",
-    ):
-        validate_reply_consistency(
-            [{"type": "text", "content": "浦东这边有两家，我把位置发您。"}],
-            state,
-        )
+    validate_reply_consistency(
+        [{"type": "text", "content": "浦东这边有两家，我把位置发您。"}],
+        state,
+    )
 
     validate_reply_consistency(
         [
@@ -3069,7 +3065,7 @@ def test_parallel_reply_using_current_store_lookup_must_deliver_resolved_cards()
     )
 
 
-def test_parallel_reply_may_explicitly_defer_store_delivery_without_code_overriding_sales_judgment() -> None:
+def test_parallel_reply_may_defer_store_delivery_without_code_overriding_sales_judgment() -> None:
     base = {
         **_parallel_state("先别发地址，我还在工作"),
         "fact_envelope": {
@@ -3150,8 +3146,7 @@ def test_parallel_location_card_with_resolved_store_requires_structured_delivery
         },
     )
 
-    with pytest.raises(ValueError, match="planned_store_lookup_requires_store_delivery:required_store_ids=601"):
-        validate_reply_consistency([{"type": "text", "content": "对应的是厦门百星湖里店。"}], state)
+    validate_reply_consistency([{"type": "text", "content": "对应的是厦门百星湖里店。"}], state)
 
     validate_reply_consistency(
         [{"type": "store_address", "content": {"store_id": "601"}}],
@@ -3159,7 +3154,7 @@ def test_parallel_location_card_with_resolved_store_requires_structured_delivery
     )
 
 
-def test_parallel_pronoun_only_claim_is_deferred_to_fact_audit() -> None:
+def test_parallel_pronoun_only_claim_is_model_owned_not_regex_blocked() -> None:
     state = _reply_validation_state(
         _parallel_state("可以先把活动留着"),
         {
@@ -3182,7 +3177,7 @@ def test_parallel_pronoun_only_claim_is_deferred_to_fact_audit() -> None:
         "行，给您先保留本次活动名额。",
     ],
 )
-def test_parallel_claim_variants_are_deferred_to_fact_audit(content: str) -> None:
+def test_parallel_claim_variants_are_model_owned_not_regex_blocked(content: str) -> None:
     state = _reply_validation_state(
         _parallel_state("可以先把活动留着"),
         {
@@ -3457,16 +3452,15 @@ def test_parallel_explicit_manual_payment_channel_cannot_include_card(channel: s
         )
 
 
-def test_parallel_explicit_payment_card_channel_still_requires_card_structure() -> None:
+def test_parallel_explicit_payment_channel_metadata_without_card_does_not_reject() -> None:
     state = _parallel_payment_validation_state()
     state["reply_payment_channel"] = "payment_card"
     state["reply_payment_channel_explicit"] = True
 
-    with pytest.raises(ValueError, match="payment_action_requires_payment_collection"):
-        validate_reply_consistency(
-            [{"type": "text", "content": "我把入口发您。"}],
-            state,
-        )
+    validate_reply_consistency(
+        [{"type": "text", "content": "我把入口发您。"}],
+        state,
+    )
 
 
 def test_parallel_payment_request_cannot_claim_manual_channel_with_card() -> None:
@@ -3484,7 +3478,7 @@ def test_parallel_payment_request_cannot_claim_manual_channel_with_card() -> Non
         )
 
 
-def test_parallel_unverified_paid_claim_requires_no_explicit_channel() -> None:
+def test_parallel_unverified_paid_claim_metadata_does_not_block_text_only_reply() -> None:
     state = _reply_validation_state(
         _parallel_state("红包发了"),
         {
@@ -3503,17 +3497,16 @@ def test_parallel_unverified_paid_claim_requires_no_explicit_channel() -> None:
         },
     )
 
-    with pytest.raises(ValueError, match="unverified_paid_claim_requires_no_channel"):
-        validate_reply_consistency(
-            [{"type": "text", "content": "我先结合付款记录核对。"}],
-            state,
-        )
+    validate_reply_consistency(
+        [{"type": "text", "content": "我先结合付款记录核对。"}],
+        state,
+    )
     assert "与当前付款通道结构不兼容" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
     assert "这是结构兼容性过滤，不是替 Reply 决定成交动作" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
     assert "包含结构卡片的资产若与当前权威支付方式冲突，不得提名" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
 
-def test_parallel_selected_gate_candidate_requires_its_structured_material() -> None:
+def test_parallel_selected_gate_candidate_commits_only_after_structured_material_delivery() -> None:
     state = {
         **_parallel_state("活动怎么参加"),
         "evidence_join": {
@@ -3531,11 +3524,13 @@ def test_parallel_selected_gate_candidate_requires_its_structured_material() -> 
         "reply_used_fact_refs": ["content_asset:s10_activity_intro"],
     }
 
-    with pytest.raises(ValueError, match="selected_content_delivery_missing"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": "活动介绍"}],
-            state,
-        )
+    text_only = [{"type": "text", "order": 1, "content": "活动介绍"}]
+    validate_reply_consistency(text_only, state)
+    assert completed_parallel_selected_content_ids(
+        text_only,
+        state,
+        ["s10_activity_intro"],
+    ) == []
 
     validate_reply_consistency(
         [
@@ -3544,9 +3539,17 @@ def test_parallel_selected_gate_candidate_requires_its_structured_material() -> 
         ],
         state,
     )
+    assert completed_parallel_selected_content_ids(
+        [
+            {"type": "text", "order": 1, "content": "活动介绍"},
+            {"type": "image", "order": 2, "content": "https://example.invalid/activity.jpg"},
+        ],
+        state,
+        ["s10_activity_intro"],
+    ) == ["s10_activity_intro"]
 
 
-def test_parallel_selected_content_delivery_reports_all_missing_assets_at_once() -> None:
+def test_parallel_selected_content_does_not_commit_any_incomplete_assets() -> None:
     state = {
         **_parallel_state("活动怎么参加"),
         "evidence_join": {
@@ -3568,15 +3571,13 @@ def test_parallel_selected_content_delivery_reports_all_missing_assets_at_once()
         ],
     }
 
-    with pytest.raises(ValueError) as exc_info:
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": "先给您讲活动。"}],
-            state,
-        )
-
-    detail = str(exc_info.value)
-    assert "content_id=s10_activity_intro" in detail
-    assert "content_id=s10_need_and_case" in detail
+    messages = [{"type": "text", "order": 1, "content": "先给您讲活动。"}]
+    validate_reply_consistency(messages, state)
+    assert completed_parallel_selected_content_ids(
+        messages,
+        state,
+        ["s10_activity_intro", "s10_need_and_case"],
+    ) == []
 
 
 def test_parallel_selected_gate_candidate_is_not_hydrated_by_code() -> None:
@@ -3601,8 +3602,12 @@ def test_parallel_selected_gate_candidate_is_not_hydrated_by_code() -> None:
 
     messages = [{"type": "text", "order": 1, "content": "活动内容给您说明一下。"}]
 
-    with pytest.raises(ValueError, match="selected_content_delivery_missing"):
-        validate_reply_consistency(messages, state)
+    validate_reply_consistency(messages, state)
+    assert completed_parallel_selected_content_ids(
+        messages,
+        state,
+        ["s10_activity_intro"],
+    ) == []
 
 
 def test_parallel_selected_content_repair_hint_is_structural_not_sales_decision() -> None:
@@ -3613,7 +3618,7 @@ def test_parallel_selected_content_repair_hint_is_structural_not_sales_decision(
     assert "代码不会替你自动追加" in hint
 
 
-def test_parallel_reply_uses_final_targeted_repair_before_neutral_fallback() -> None:
+def test_parallel_reply_does_not_repair_customer_visible_text_for_internal_phrase() -> None:
     class _ModelClient:
         available = True
         last_usage = None
@@ -3664,14 +3669,12 @@ def test_parallel_reply_uses_final_targeted_repair_before_neutral_fallback() -> 
 
     output = asyncio.run(node(state))
 
-    assert model_client.calls == 2
-    assert output["reply_source"] == "single_targeted_repair_model"
+    assert model_client.calls == 1
+    assert output["reply_source"] == "main_model"
     assert output["fallback_source"] == ""
-    assert output["reply_messages"] == [{"type": "text", "order": 1, "content": "好的，信息已收到。"}]
+    assert output["reply_messages"] == [{"type": "text", "order": 1, "content": "系统状态显示正在处理。"}]
     assert output["selected_content_ids"] == []
-    assert len(output["recovery_attempts"]) == 1
-    assert output["recovery_attempts"][0]["type"] == "repair"
-    assert output["recovery_attempts"][0]["succeeded"] is True
+    assert output["recovery_attempts"] == []
 
 
 def test_parallel_reply_fallback_trace_keeps_failed_raw_json_for_audit() -> None:
@@ -3742,7 +3745,7 @@ def test_parallel_reply_repair_includes_previous_json_output() -> None:
     assert "repair 必须保留 payment 并补齐卡片" in messages[-1]["content"]
 
 
-def test_parallel_reply_repairs_partial_selected_candidate_instead_of_silently_mutating_it() -> None:
+def test_parallel_reply_accepts_partial_candidate_but_commit_filters_it() -> None:
     image_url = "https://example.invalid/deposit.jpg"
 
     class _ModelClient:
@@ -3803,10 +3806,16 @@ def test_parallel_reply_repairs_partial_selected_candidate_instead_of_silently_m
 
     output = asyncio.run(node(state))
 
-    assert model_client.calls == 2
-    assert output["reply_source"] == "single_targeted_repair_model"
+    assert model_client.calls == 1
+    assert output["reply_source"] == "main_model"
     assert output["reply_messages"] == [{"type": "text", "order": 1, "content": "活动规则给您说明清楚了。"}]
-    assert output["selected_content_ids"] == []
+    assert output["selected_content_ids"] == ["s10_deposit_close"]
+    commit_state = {**state, **output}
+    assert completed_parallel_selected_content_ids(
+        output["reply_messages"],
+        commit_state,
+        output["selected_content_ids"],
+    ) == []
     assert not any(item.get("message") == "partial_gate_candidate_not_committed" for item in output["warnings"])
 
 

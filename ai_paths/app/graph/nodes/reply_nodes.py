@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 import json
-import logging
 import time
 from typing import Any, Callable
 
@@ -21,10 +19,6 @@ from app.graph.nodes.reply_validation import (
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.graph.nodes.parallel_reply_chain import parallel_reply_payload
 from app.prompts.reply_synthesizer import build_parallel_reply_messages
-from app.prompts.reply_fact_auditor import (
-    build_reply_fact_audit_messages,
-    build_reply_fact_audit_repair_messages,
-)
 from app.graph.nodes.common import json_dumps
 from app.services.payment_collection import (
     normalize_payment_amount_text,
@@ -58,24 +52,12 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 """
 
 
-logger = logging.getLogger(__name__)
-_FACT_AUDIT_SHADOW_TASKS: set[asyncio.Task[Any]] = set()
-
-
 class ReplyModelPipelineError(RuntimeError):
     """Keep failed model payloads available to local traces and release audits."""
 
     def __init__(self, message: str, *, model_call: dict[str, Any]) -> None:
         super().__init__(message)
         self.model_call = model_call
-
-
-class ReplyFactAuditUnavailable(RuntimeError):
-    """The audit itself could not produce a trustworthy structured result."""
-
-    def __init__(self, message: str, *, audit_call: dict[str, Any]) -> None:
-        self.audit_call = audit_call
-        super().__init__(message)
 
 
 def create_synthesize_reply_node(
@@ -198,7 +180,7 @@ def create_synthesize_reply_node(
                     warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
                     if model_call:
                         model_call["handoff_notice_appended"] = True
-            if messages:
+            if messages and not state.get("evidence_join"):
                 warnings.extend(collect_reply_soft_warnings(messages, state))
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
@@ -227,7 +209,6 @@ def create_synthesize_reply_node(
                 "reply_deposit_evidence": reply_metadata.get("deposit_evidence", {}),
                 "reply_safety_assessment": reply_metadata.get("safety_assessment", {}),
                 "reply_party_size_assessment": reply_metadata.get("party_size_assessment", {}),
-                "reply_fact_audit": reply_metadata.get("fact_audit", {}),
                 "commit_actions": reply_metadata.get("commit_actions", []),
                 "reply_source": reply_source,
                 "postprocess_changed": False,
@@ -550,12 +531,6 @@ async def _run_model_led_reply_pipeline(
                 validated_model_messages=validated_model_messages,
                 warnings=warnings,
             )
-            model_call["fact_audit"] = _schedule_parallel_reply_fact_audit(
-                state=state,
-                model_client=model_client,
-                messages=messages,
-                payload=payload,
-            )
             model_call["validated_json_output"] = payload
             model_call["draft_messages"] = debug_message_contents(messages)
             model_call["output"] = {"messages": len(messages)}
@@ -625,12 +600,6 @@ async def _run_model_led_reply_pipeline(
             validated_model_messages=validated_model_messages,
             warnings=warnings,
         )
-        model_call["retry"]["fact_audit"] = _schedule_parallel_reply_fact_audit(
-            state=state,
-            model_client=model_client,
-            messages=messages,
-            payload=repair_payload,
-        )
         model_call["validated_json_output"] = repair_payload
     except Exception as repair_error:
         model_call["retry"] = {
@@ -672,331 +641,10 @@ def _validated_parallel_reply_payload(
     messages = validated_model_messages(payload, validation_state)
     messages = _prepare_structural_messages(messages, validation_state, warnings)
     validate_reply_consistency(messages, validation_state)
-    _raise_repairable_reply_quality_issues(messages, validation_state)
     return messages
 
 
-def _schedule_parallel_reply_fact_audit(
-    *,
-    state: AgentState,
-    model_client: ModelClient,
-    messages: list[dict[str, Any]],
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Run fact audit out of band; it can never alter the accepted Reply."""
-
-    settings = getattr(model_client, "settings", None)
-    if settings is None or not bool(getattr(settings, "model_fact_audit_enabled", False)):
-        return {"status": "disabled", "blocking": False}
-
-    request_id = str(state.get("request_id") or "")
-    shadow_state: AgentState = {
-        "request_id": request_id,
-        "evidence_join": copy.deepcopy(state.get("evidence_join") or {}),
-        "runtime_budget": copy.deepcopy(state.get("runtime_budget") or {}),
-    }
-    task = asyncio.create_task(
-        _record_parallel_reply_fact_audit_warning(
-            state=shadow_state,
-            model_client=model_client,
-            messages=copy.deepcopy(messages),
-            payload=copy.deepcopy(payload),
-        ),
-        name=f"reply-fact-audit-shadow:{request_id or 'unknown'}",
-    )
-    _FACT_AUDIT_SHADOW_TASKS.add(task)
-    task.add_done_callback(_FACT_AUDIT_SHADOW_TASKS.discard)
-    return {
-        "status": "scheduled",
-        "mode": "shadow_warning_only",
-        "blocking": False,
-        "request_id": request_id,
-    }
-
-
-async def _record_parallel_reply_fact_audit_warning(
-    *,
-    state: AgentState,
-    model_client: ModelClient,
-    messages: list[dict[str, Any]],
-    payload: dict[str, Any],
-) -> None:
-    request_id = str(state.get("request_id") or "")
-    try:
-        result, call = await _run_parallel_reply_fact_audit(
-            state=state,
-            model_client=model_client,
-            messages=messages,
-            payload=payload,
-        )
-        warning = {
-            "node": "reply_fact_auditor_shadow",
-            "request_id": request_id,
-            "status": str(result.get("status") or ""),
-            "violations": result.get("violations") or [],
-            "model": str((call.get("usage") or {}).get("model") or ""),
-            "elapsed_ms": int((call.get("deadline") or {}).get("elapsed_ms") or 0),
-        }
-        if warning["status"] != "pass":
-            logger.warning(
-                "reply_fact_audit_shadow_warning %s",
-                json.dumps(warning, ensure_ascii=False, separators=(",", ":")),
-            )
-    except Exception as exc:
-        logger.warning(
-            "reply_fact_audit_shadow_unavailable %s",
-            json.dumps(
-                {
-                    "request_id": request_id,
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-        )
-
-
-async def _run_parallel_reply_fact_audit(
-    *,
-    state: AgentState,
-    model_client: ModelClient,
-    messages: list[dict[str, Any]],
-    payload: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Audit customer-visible factual claims without making sales decisions."""
-
-    settings = getattr(model_client, "settings", None)
-    if settings is None or not bool(getattr(settings, "model_fact_audit_enabled", False)):
-        result = {"status": "pass", "violations": [], "audit_skipped": True}
-        return result, {
-            "name": "reply_fact_auditor_model",
-            "input": {"enabled": False},
-            "output": result,
-        }
-
-    audit_input = _parallel_reply_fact_audit_input(
-        state=state,
-        messages=messages,
-        payload=payload,
-    )
-    audit_messages = build_reply_fact_audit_messages(audit_input, json_dumps=json_dumps)
-    audit_tier = str(getattr(settings, "model_fact_audit_tier", "reply") or "reply").strip()
-    budget = _model_budget_seconds(model_client, "model_fact_audit_timeout_seconds", 25.0)
-    deadline = _capped_deadline(
-        time.monotonic() + budget,
-        model_deadline_monotonic(state, tier=audit_tier),
-    )
-    audit_call: dict[str, Any] = {
-        "name": "reply_fact_auditor_model",
-        "input": {"tier": audit_tier, "messages": audit_messages},
-        "deadline": {"budget_seconds": budget},
-    }
-    started_at = time.monotonic()
-    try:
-        raw = await _chat_json_with_deadline(
-            model_client,
-            audit_messages,
-            tier=audit_tier,
-            deadline_monotonic=deadline,
-        )
-        audit_call["raw_json_output"] = raw
-        audit_call["usage"] = model_usage_snapshot(model_client)
-        try:
-            result = _validated_parallel_reply_fact_audit(
-                raw,
-                messages=messages,
-                valid_refs=set(audit_input.get("valid_fact_refs") or []),
-            )
-        except ValueError as validation_exc:
-            repair_messages = build_reply_fact_audit_repair_messages(
-                audit_input,
-                raw,
-                str(validation_exc),
-                json_dumps=json_dumps,
-            )
-            audit_call["validation_retry"] = {
-                "input": {"tier": audit_tier, "messages": repair_messages},
-                "validation_error": str(validation_exc),
-            }
-            # The first audit may use most of its budget before returning a
-            # schema-invalid reference. Give the schema-only correction a
-            # fresh bounded attempt instead of the exhausted first deadline.
-            round_limit = model_deadline_monotonic(state, tier=audit_tier)
-            fresh_node_deadline = max(time.monotonic() + budget, deadline + 1e-6)
-            repair_deadline = _capped_deadline(fresh_node_deadline, round_limit)
-            repaired_raw = await _chat_json_with_deadline(
-                model_client,
-                repair_messages,
-                tier=audit_tier,
-                deadline_monotonic=repair_deadline,
-            )
-            audit_call["validation_retry"]["raw_json_output"] = repaired_raw
-            result = _validated_parallel_reply_fact_audit(
-                repaired_raw,
-                messages=messages,
-                valid_refs=set(audit_input.get("valid_fact_refs") or []),
-            )
-            audit_call["validation_retry"]["output"] = result
-        audit_call["output"] = result
-        audit_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        return result, audit_call
-    except Exception as exc:
-        audit_call["error"] = f"{type(exc).__name__}: {exc}"
-        audit_call["usage"] = model_usage_snapshot(model_client)
-        audit_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise ReplyFactAuditUnavailable(
-            f"{type(exc).__name__}: {exc}",
-            audit_call=audit_call,
-        ) from exc
-
-
-def _parallel_reply_fact_audit_input(
-    *,
-    state: AgentState,
-    messages: list[dict[str, Any]],
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
-    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
-    conversation = [item for item in shared.get("conversation") or [] if isinstance(item, dict)]
-    current_message = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
-    used_refs = {
-        str(item).strip()
-        for item in payload.get("used_fact_refs") or []
-        if str(item).strip()
-    }
-    referenced_messages = [
-        {
-            "ref": str(item.get("message_ref") or "").strip(),
-            "role": str(item.get("role") or "").strip(),
-            "content": str(item.get("content") or ""),
-            "sent_at": item.get("sent_at"),
-        }
-        for item in conversation
-        if str(item.get("message_ref") or "").strip() in used_refs
-    ]
-    if "current_message" in used_refs:
-        referenced_messages.append(
-            {
-                "ref": "current_message",
-                "role": "customer",
-                "content": str(current_message.get("content") or ""),
-                "sent_at": current_message.get("sent_at"),
-            }
-        )
-    recent_conversation = [
-        {
-            "ref": str(item.get("message_ref") or "").strip(),
-            "role": str(item.get("role") or "").strip(),
-            "content": str(item.get("content") or ""),
-            "sent_at": item.get("sent_at") or item.get("occurred_at"),
-        }
-        for item in conversation[-8:]
-        if str(item.get("content") or "").strip()
-    ]
-
-    selected_ids = {
-        str(item).strip()
-        for item in payload.get("selected_content_ids") or []
-        if str(item).strip()
-    }
-    selected_candidates = [
-        item
-        for item in joined.get("content_candidates") or []
-        if isinstance(item, dict)
-        and str(item.get("content_id") or item.get("id") or "").strip() in selected_ids
-    ]
-    reply_payload = parallel_reply_payload(state)
-    valid_refs = _fact_audit_reference_set(reply_payload)
-    valid_refs.add("current_message")
-    rules = shared.get("rules") if isinstance(shared.get("rules"), dict) else {}
-    return {
-        "schema_version": "reply_fact_audit_input_v1",
-        "current_message": {
-            "content": str(current_message.get("content") or ""),
-            "message_type": str(current_message.get("message_type") or ""),
-            "sent_at": current_message.get("sent_at"),
-        },
-        "reply_messages": [
-            {"type": str(item.get("type") or ""), "content": item.get("content")}
-            for item in messages
-            if isinstance(item, dict)
-        ],
-        "used_fact_refs": sorted(used_refs),
-        "reply_audit_metadata": {
-            "authority": "reply_owned_non_authoritative_claims",
-            "action": str(payload.get("action") or ""),
-            "payment_assessment": (
-                payload.get("payment_assessment")
-                if isinstance(payload.get("payment_assessment"), dict)
-                else {}
-            ),
-            "deposit_evidence": (
-                payload.get("deposit_evidence")
-                if isinstance(payload.get("deposit_evidence"), dict)
-                else {}
-            ),
-            "safety_assessment": (
-                payload.get("safety_assessment")
-                if isinstance(payload.get("safety_assessment"), dict)
-                else {}
-            ),
-            "party_size_assessment": (
-                payload.get("party_size_assessment")
-                if isinstance(payload.get("party_size_assessment"), dict)
-                else {}
-            ),
-        },
-        "referenced_messages": referenced_messages,
-        "recent_conversation": recent_conversation,
-        "authoritative_facts": shared.get("authoritative_facts") or {},
-        "authoritative_claim_facts": _fact_audit_authoritative_claim_facts(rules),
-        "tool_facts": {
-            "raw": joined.get("tool_facts") or {},
-            "normalized": joined.get("normalized_tool_facts") or {},
-        },
-        "store_fact_status": reply_payload.get("store_fact_status") or {},
-        "registration_fact_status": reply_payload.get("registration_fact_status") or {},
-        "structured_delivery_options": reply_payload.get("structured_delivery_options") or {},
-        "selected_content_assets": selected_candidates,
-        "rules": {
-            "must_follow": rules.get("MUST FOLLOW") or rules.get("must_follow") or [],
-            "authoritative_facts": (
-                rules.get("AUTHORITATIVE FACTS")
-                or rules.get("authoritative_facts")
-                or []
-            ),
-        },
-        "actual_structured_deliveries": [
-            {"message_index": index, "type": str(item.get("type") or ""), "content": item.get("content")}
-            for index, item in enumerate(messages)
-            if isinstance(item, dict) and str(item.get("type") or "") != "text"
-        ],
-        "valid_fact_refs": sorted(valid_refs),
-    }
-
-
-def _fact_audit_authoritative_claim_facts(rules: dict[str, Any]) -> dict[str, Any]:
-    """Expose claim-bearing business facts without selecting a reply strategy."""
-
-    facts = rules.get("AUTHORITATIVE FACTS") or rules.get("authoritative_facts") or {}
-    if not isinstance(facts, dict):
-        return {}
-    return {
-        key: facts.get(key)
-        for key in (
-            "offer",
-            "customer_visible_evidence_policy",
-            "health_risk_policy",
-            "store_address_disclosure_policy",
-            "customer_charge_policy",
-            "transaction_policy",
-        )
-        if facts.get(key) is not None
-    }
-
-
-def _fact_audit_reference_set(value: Any) -> set[str]:
+def _reply_reference_set(value: Any) -> set[str]:
     refs: set[str] = set()
 
     def visit(item: Any, *, key: str = "") -> None:
@@ -1018,67 +666,6 @@ def _fact_audit_reference_set(value: Any) -> set[str]:
     return refs
 
 
-def _validated_parallel_reply_fact_audit(
-    payload: dict[str, Any],
-    *,
-    messages: list[dict[str, Any]],
-    valid_refs: set[str],
-) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise ValueError("invalid_reply_fact_audit_payload")
-    status = str(payload.get("status") or "").strip()
-    if status not in {"pass", "fail"}:
-        raise ValueError("invalid_reply_fact_audit_status")
-    raw_violations = payload.get("violations")
-    if not isinstance(raw_violations, list):
-        raise ValueError("invalid_reply_fact_audit_violations")
-    allowed_codes = {
-        "unsupported_claim",
-        "contradicted_claim",
-        "wrong_temporality",
-        "unfulfilled_delivery",
-    }
-    violations: list[dict[str, Any]] = []
-    for item in raw_violations:
-        if not isinstance(item, dict):
-            raise ValueError("invalid_reply_fact_audit_violation")
-        code = str(item.get("code") or "").strip()
-        if code not in allowed_codes:
-            raise ValueError("invalid_reply_fact_audit_code")
-        try:
-            message_index = int(item.get("message_index"))
-        except (TypeError, ValueError):
-            raise ValueError("invalid_reply_fact_audit_message_index") from None
-        if not 0 <= message_index < len(messages):
-            raise ValueError("invalid_reply_fact_audit_message_index")
-        if str(messages[message_index].get("type") or "") != "text":
-            raise ValueError("reply_fact_audit_must_quote_text_message")
-        quote = str(item.get("quote") or "").strip()
-        message_text = message_content_text(messages[message_index].get("content"))
-        if not quote or quote not in message_text:
-            raise ValueError("reply_fact_audit_quote_not_in_message")
-        evidence_refs = _normalized_evidence_refs(item.get("evidence_refs"))
-        if any(ref not in valid_refs for ref in evidence_refs):
-            raise ValueError("reply_fact_audit_has_invalid_evidence_ref")
-        reason = str(item.get("reason") or "").strip()
-        if not reason:
-            raise ValueError("reply_fact_audit_reason_required")
-        violations.append(
-            {
-                "code": code,
-                "message_index": message_index,
-                "quote": quote,
-                "evidence_refs": evidence_refs,
-                "reason": reason[:500],
-            }
-        )
-    if status == "pass" and violations:
-        raise ValueError("reply_fact_audit_pass_requires_no_violations")
-    if status == "fail" and not violations:
-        raise ValueError("reply_fact_audit_fail_requires_violations")
-    return {"status": status, "violations": violations}
-
-
 def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
     """Reject lossy compatibility before customer-visible normalization."""
 
@@ -1089,17 +676,13 @@ def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
     if payload.get("commit_actions") is None:
         payload["commit_actions"] = []
 
-    if payload.get("structured_delivery_decisions") is None:
-        payload["structured_delivery_decisions"] = []
-
     for field in (
         "used_fact_refs",
         "selected_content_ids",
-        "structured_delivery_decisions",
         "commit_actions",
     ):
         if not isinstance(payload.get(field), list):
-            raise ValueError(f"invalid_parallel_reply_list_field:{field}")
+            payload[field] = []
 
     messages = payload.get("reply_messages")
     if not isinstance(messages, list) or not messages:
@@ -1167,7 +750,8 @@ def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
 def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state: AgentState) -> None:
     # Style and phrasing diagnostics are observations only.  Promoting them
     # to hard repair would let Python overrule Reply's sales judgement.
-    collect_reply_soft_warnings(messages, state)
+    if not state.get("evidence_join"):
+        collect_reply_soft_warnings(messages, state)
 
 
 def _prepare_structural_messages(
@@ -1258,9 +842,6 @@ def _reply_metadata_from_model_call(model_call: dict[str, Any] | None) -> dict[s
         "selected_content_ids": [
             str(item).strip() for item in payload.get("selected_content_ids") or [] if str(item).strip()
         ],
-        "structured_delivery_decisions": _normalized_structured_delivery_decisions(
-            payload.get("structured_delivery_decisions")
-        ),
         "action": action,
         "action_reason": str(payload.get("action_reason") or "")[:500],
         "sales_judgment": _normalized_sales_judgment(payload.get("sales_judgment")),
@@ -1268,33 +849,11 @@ def _reply_metadata_from_model_call(model_call: dict[str, Any] | None) -> dict[s
         "payment_channel": _normalized_payment_channel(payload.get("payment_assessment")),
         "deposit_evidence": _normalized_deposit_evidence(
             payload.get("deposit_evidence"),
-            strict=action == "payment",
+            strict=False,
         ),
         "safety_assessment": _normalized_safety_assessment(payload.get("safety_assessment")),
         "party_size_assessment": _normalized_party_size_assessment(payload.get("party_size_assessment")),
-        "fact_audit": _final_fact_audit_from_model_call(model_call),
         "commit_actions": [item for item in payload.get("commit_actions") or [] if isinstance(item, dict)],
-    }
-
-
-def _final_fact_audit_from_model_call(model_call: dict[str, Any]) -> dict[str, Any]:
-    retry = model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}
-    call = retry.get("fact_audit") if isinstance(retry.get("fact_audit"), dict) else model_call.get("fact_audit")
-    if not isinstance(call, dict):
-        return {}
-    if str(call.get("mode") or "") == "shadow_warning_only":
-        return {
-            "status": str(call.get("status") or "scheduled"),
-            "mode": "shadow_warning_only",
-            "blocking": False,
-            "request_id": str(call.get("request_id") or ""),
-        }
-    output = call.get("output") if isinstance(call.get("output"), dict) else {}
-    return {
-        "status": str(output.get("status") or ""),
-        "violations": [item for item in output.get("violations") or [] if isinstance(item, dict)],
-        "model": str((call.get("usage") or {}).get("model") or ""),
-        "elapsed_ms": int((call.get("deadline") or {}).get("elapsed_ms") or 0),
     }
 
 
@@ -1305,13 +864,27 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
     safety = _normalized_safety_assessment(payload.get("safety_assessment"))
     party_size = _normalized_party_size_assessment(payload.get("party_size_assessment"))
     valid_refs = _customer_message_refs(state)
-    _validate_assessment_refs(safety, valid_refs, field="safety_assessment")
-    _validate_assessment_refs(party_size, valid_refs, field="party_size_assessment")
+    # Assessments are Reply's ephemeral business judgement. Invalid citation
+    # metadata is discarded instead of rejecting an otherwise valid visible
+    # answer. Deterministic payment/store/write boundaries below still use
+    # authoritative facts and actual structured messages.
+    safety["evidence_refs"] = _valid_customer_refs(safety.get("evidence_refs"), valid_refs)
+    party_size["evidence_refs"] = _valid_customer_refs(party_size.get("evidence_refs"), valid_refs)
     validation_state["reply_safety_assessment"] = safety
     validation_state["reply_party_size_assessment"] = party_size
     validation_state["reply_sales_judgment"] = _normalized_sales_judgment(payload.get("sales_judgment"))
     payment = _normalized_payment_assessment(payload.get("payment_assessment"))
-    _validate_payment_assessment_refs(payment, valid_refs, authoritative_paid=_parallel_paid_deposit_context(state))
+    if str(payment.get("status") or "") == "authoritative_paid":
+        if not _parallel_paid_deposit_context(state):
+            # This field is explanatory model metadata, not a second source of
+            # truth. Ignore an unsupported label instead of rejecting an
+            # otherwise valid customer-visible reply. Actual paid-only writes
+            # and payment-card boundaries still use authoritative state.
+            payment = {"status": "unknown", "evidence_refs": []}
+        else:
+            payment["evidence_refs"] = ["payment_fact:authoritative_paid"]
+    else:
+        payment["evidence_refs"] = _valid_customer_refs(payment.get("evidence_refs"), valid_refs)
     validation_state["reply_payment_assessment"] = payment
     validation_state["reply_payment_channel"] = _normalized_payment_channel(
         payload.get("payment_assessment")
@@ -1325,7 +898,7 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
     validation_state["reply_action"] = action
     validation_state["reply_deposit_evidence"] = _normalized_deposit_evidence(
         payload.get("deposit_evidence"),
-        strict=action == "payment",
+        strict=False,
     )
     validation_state["reply_selected_content_ids"] = [
         str(item).strip() for item in payload.get("selected_content_ids") or [] if str(item).strip()
@@ -1336,55 +909,19 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
         if isinstance(reply_payload.get("structured_delivery_options"), dict)
         else {}
     )
-    valid_delivery_refs = {
-        str(option.get("fact_ref") or "").strip()
-        for option in delivery_options.values()
-        if isinstance(option, dict)
-        and option.get("message_payloads")
-        and str(option.get("fact_ref") or "").strip()
-    }
-    # A current-turn store lookup must be explicitly delivered or deferred so
-    # the model cannot promise a card and silently omit it. Other options, such
-    # as a payment card, only need a decision when Reply actually adopts them.
-    required_delivery_refs = {
-        str(option.get("fact_ref") or "").strip()
-        for key, option in delivery_options.items()
-        if str(key or "").strip() in {"store_address"}
-        and isinstance(option, dict)
-        and option.get("message_payloads")
-        and str(option.get("fact_ref") or "").strip()
-    }
-    delivery_decisions = _normalized_structured_delivery_decisions(
-        payload.get("structured_delivery_decisions")
-    )
-    decision_refs = {item["fact_ref"] for item in delivery_decisions}
-    missing_delivery_refs = sorted(required_delivery_refs - decision_refs)
-    if missing_delivery_refs:
-        raise ValueError(
-            "structured_delivery_decision_required: " + ", ".join(missing_delivery_refs)
-        )
-    invalid_delivery_refs = sorted(decision_refs - valid_delivery_refs)
-    if invalid_delivery_refs:
-        raise ValueError(
-            "invalid_structured_delivery_fact_ref: " + ", ".join(invalid_delivery_refs)
-        )
-    validation_state["reply_structured_delivery_decisions"] = delivery_decisions
     reply_used_fact_refs = [
         str(item).strip() for item in payload.get("used_fact_refs") or [] if str(item).strip()
     ]
-    valid_fact_refs = _fact_audit_reference_set(reply_payload)
+    valid_fact_refs = _reply_reference_set(reply_payload)
     for option in delivery_options.values():
         if isinstance(option, dict):
             fact_ref = str(option.get("fact_ref") or "").strip()
             if fact_ref:
                 valid_fact_refs.add(fact_ref)
     valid_fact_refs.add("current_message")
-    invalid_fact_refs = sorted(set(reply_used_fact_refs) - valid_fact_refs)
-    if invalid_fact_refs:
-        raise ValueError(
-            "invalid_parallel_used_fact_refs: " + ", ".join(invalid_fact_refs)
-        )
-    validation_state["reply_used_fact_refs"] = reply_used_fact_refs
+    validation_state["reply_used_fact_refs"] = [
+        ref for ref in reply_used_fact_refs if ref in valid_fact_refs
+    ]
     return validation_state
 
 
@@ -1396,29 +933,27 @@ def _normalized_reply_action(value: Any) -> str:
         # it does not alter customer text or choose a sales move.
         return "none"
     if action not in {"none", "ask", "offer", "payment", "registration"}:
-        raise ValueError("invalid_parallel_reply_action")
+        return "none"
     return action
 
 
-def _normalized_structured_delivery_decisions(value: Any) -> list[dict[str, str]]:
-    if value is None:
-        return []
+def _legacy_normalized_structured_delivery_decisions(value: Any) -> list[dict[str, str]]:
+    """Normalize the old V1 repair payload without entering the V2 contract."""
+
     if not isinstance(value, list):
-        raise ValueError("invalid_structured_delivery_decisions")
+        return []
     normalized: list[dict[str, str]] = []
     seen: set[str] = set()
-    for index, item in enumerate(value):
+    for item in value:
         if not isinstance(item, dict):
-            raise ValueError(f"invalid_structured_delivery_decision:{index}")
+            continue
         fact_ref = str(item.get("fact_ref") or "").strip()
         decision = str(item.get("decision") or "").strip()
         reason = str(item.get("reason") or "").strip()
-        if not fact_ref or decision not in {"deliver", "defer"}:
-            raise ValueError(f"invalid_structured_delivery_decision:{index}")
-        if fact_ref in seen:
-            raise ValueError("duplicate_structured_delivery_decision:" + fact_ref)
+        if not fact_ref or decision not in {"deliver", "defer"} or fact_ref in seen:
+            continue
         if decision == "defer" and not reason:
-            raise ValueError("structured_delivery_defer_requires_reason:" + fact_ref)
+            continue
         seen.add(fact_ref)
         normalized.append(
             {"fact_ref": fact_ref, "decision": decision, "reason": reason[:500]}
@@ -1430,7 +965,7 @@ def _normalized_safety_assessment(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     status = str(raw.get("status") or "none").strip()
     if status not in {"none", "health_risk", "complaint_refund", "explicit_reject"}:
-        raise ValueError("invalid_reply_safety_assessment")
+        status = "none"
     return {
         "status": status,
         "evidence_refs": _normalized_evidence_refs(raw.get("evidence_refs")),
@@ -1441,12 +976,12 @@ def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     posture = str(raw.get("posture") or "answer").strip()
     if posture not in {"answer", "advance", "switch", "pause", "close"}:
-        raise ValueError("invalid_reply_sales_posture")
+        posture = "answer"
     established_keys: list[str] = []
     for item in raw.get("established_keys") or []:
         key = str(item or "").strip()
         if key not in {"address", "effect", "activity", "objection"}:
-            raise ValueError("invalid_reply_established_key")
+            continue
         if key not in established_keys:
             established_keys.append(key)
     return {
@@ -1489,7 +1024,7 @@ def _normalized_payment_assessment(value: Any) -> dict[str, Any]:
         "payment_request",
         "authoritative_paid",
     }:
-        raise ValueError("invalid_reply_payment_assessment")
+        status = "unknown"
     return {
         "status": status,
         "evidence_refs": _normalized_evidence_refs(raw.get("evidence_refs")),
@@ -1508,7 +1043,7 @@ def _normalized_payment_channel(value: Any) -> str:
             "manual_transfer": "transfer",
         }.get(status, "none")
     if channel not in {"none", "payment_card", "transfer", "red_packet"}:
-        raise ValueError("invalid_reply_payment_channel")
+        return "none"
     return channel
 
 
@@ -1520,17 +1055,20 @@ def _normalized_party_size_assessment(value: Any) -> dict[str, Any]:
         # This is enum compatibility only and cannot create or change a count.
         status = "unknown"
     if status not in {"unknown", "known", "over_limit"}:
-        raise ValueError("invalid_reply_party_size_assessment")
+        status = "unknown"
     party_size: int | None = None
     if status in {"known", "over_limit"}:
         try:
             party_size = int(raw.get("party_size"))
         except (TypeError, ValueError):
-            raise ValueError("invalid_reply_party_size") from None
-        if status == "known" and not 1 <= party_size <= 4:
-            raise ValueError("invalid_reply_party_size")
-        if status == "over_limit" and party_size <= 4:
-            raise ValueError("invalid_reply_party_size")
+            status = "unknown"
+            party_size = None
+        if status == "known" and party_size is not None and not 1 <= party_size <= 4:
+            status = "unknown"
+            party_size = None
+        if status == "over_limit" and party_size is not None and party_size <= 4:
+            status = "unknown"
+            party_size = None
     return {
         "status": status,
         "party_size": party_size,
@@ -1557,41 +1095,6 @@ def _customer_message_refs(state: AgentState) -> set[str]:
     return refs
 
 
-def _validate_assessment_refs(assessment: dict[str, Any], valid_refs: set[str], *, field: str) -> None:
-    status = str(assessment.get("status") or "")
-    refs = _canonical_assessment_refs(assessment.get("evidence_refs"), valid_refs)
-    assessment["evidence_refs"] = refs
-    requires_evidence = status not in {"none", "unknown"}
-    if requires_evidence and not refs:
-        raise ValueError(f"{field}_requires_customer_message_evidence")
-    if any(ref not in valid_refs for ref in refs):
-        raise ValueError(f"{field}_has_invalid_evidence_ref")
-
-
-def _validate_payment_assessment_refs(
-    assessment: dict[str, Any],
-    valid_customer_refs: set[str],
-    *,
-    authoritative_paid: bool,
-) -> None:
-    status = str(assessment.get("status") or "unknown")
-    refs = _canonical_assessment_refs(assessment.get("evidence_refs"), valid_customer_refs)
-    # Citation lists are audit metadata. Drop fabricated/non-customer refs
-    # without changing Reply's payment status, action, or visible wording. A
-    # non-neutral status still fails below when no valid customer ref remains.
-    refs = [ref for ref in refs if ref in valid_customer_refs]
-    assessment["evidence_refs"] = refs
-    if status in {"unknown", "none"}:
-        return
-    if status == "authoritative_paid":
-        if not authoritative_paid:
-            raise ValueError("payment_assessment_authoritative_paid_requires_fact")
-        assessment["evidence_refs"] = ["payment_fact:authoritative_paid"]
-        return
-    if not refs:
-        raise ValueError("payment_assessment_requires_customer_message_evidence")
-
-
 def _canonical_assessment_refs(value: Any, valid_refs: set[str]) -> list[str]:
     """Normalize unambiguous reference notation without inferring semantics."""
 
@@ -1614,6 +1117,14 @@ def _canonical_assessment_refs(value: Any, valid_refs: set[str]) -> list[str]:
         if ref not in output:
             output.append(ref)
     return output
+
+
+def _valid_customer_refs(value: Any, valid_refs: set[str]) -> list[str]:
+    return [
+        ref
+        for ref in _canonical_assessment_refs(value, valid_refs)
+        if ref in valid_refs
+    ]
 
 
 def _compact_recovery_value(value: Any, *, depth: int = 0) -> Any:
@@ -2196,7 +1707,7 @@ def _reply_structural_repair_guard(
         if isinstance(item, dict)
     ]
     if store_payloads:
-        prior_decisions = _normalized_structured_delivery_decisions(
+        prior_decisions = _legacy_normalized_structured_delivery_decisions(
             previous_payload.get("structured_delivery_decisions")
         )
         prior_store_decision = next(

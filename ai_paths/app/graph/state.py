@@ -98,7 +98,6 @@ class AgentState(TypedDict, total=False):
     reply_deposit_evidence: dict[str, Any]
     reply_safety_assessment: dict[str, Any]
     reply_party_size_assessment: dict[str, Any]
-    reply_fact_audit: dict[str, Any]
     commit_actions: list[dict[str, Any]]
     commit_tool_results: dict[str, Any]
     commit_fact_envelope: dict[str, Any]

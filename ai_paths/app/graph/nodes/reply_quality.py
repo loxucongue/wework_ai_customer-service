@@ -20,13 +20,11 @@ from app.graph.nodes.reply_validation import (
 
 def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, str]]:
     if state.get("evidence_join"):
-        # The model-led chain owns sales rhythm and wording. Runtime warnings are
-        # limited to observable repetition and an unsupported location claim;
-        # they must not require a fixed next action, message count, or tone.
-        checks = (
-            _validate_repeat_similarity,
-            _validate_nearby_store_claim_has_fact,
-        )
+        # V2 Reply owns wording, rhythm and semantic interpretation. Post-model
+        # quality checks must not grade that decision, even as warnings. Actual
+        # cards, media, amounts and writes are validated in deterministic
+        # structure/provenance checks instead.
+        checks = ()
     else:
         checks = (
             _validate_case_image_required_for_effect_turn,

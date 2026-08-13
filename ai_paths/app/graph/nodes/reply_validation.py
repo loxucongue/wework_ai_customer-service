@@ -293,22 +293,18 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
 def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     """Validate structure and provenance without interpreting visible prose.
 
-    Natural-language factual meaning is audited by the Reply fact-auditor
-    model after these deterministic checks.  Keep this list deliberately
-    free of phrase matching and semantic regular expressions.
+    Keep this list deliberately free of phrase matching, semantic regular
+    expressions, and audit-metadata requirements. Only customer-visible
+    structures and authoritative state boundaries may reject a Reply.
     """
 
     checks = (
         lambda: _validate_handoff_notice_text(messages),
-        lambda: _validate_no_customer_visible_internal_language(messages),
         lambda: _validate_single_payment_collection(messages),
-        lambda: _validate_parallel_selected_content_delivery(messages, state),
-        lambda: _validate_parallel_selected_content_provenance(state),
-        lambda: _validate_parallel_claimed_deposit_evidence(state),
+        lambda: _validate_parallel_claimed_deposit_evidence(messages, state),
         lambda: _validate_parallel_payment_boundaries(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_store_resolution_v2_contract(messages, state),
-        lambda: _validate_parallel_location_card_delivery(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),
     )
@@ -337,22 +333,17 @@ def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[s
         return
 
     allowed: set[str] = set()
-    candidate_media_owners: dict[str, set[str]] = {}
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
     for candidate in joined.get("content_candidates") or []:
         if not isinstance(candidate, dict):
             continue
-        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
         for item in candidate.get("messages") or []:
             if isinstance(item, dict) and str(item.get("type") or "") in {"image", "video"}:
                 key = _parallel_structured_message_key(item)
                 if key:
                     allowed.add(key)
-                    if content_id:
-                        candidate_media_owners.setdefault(key, set()).add(content_id)
 
     structured = _structured_facts(state)
-    independently_authorized: set[str] = set()
     for item in structured.get("case_facts") or []:
         if not isinstance(item, dict):
             continue
@@ -361,7 +352,6 @@ def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[s
             if url:
                 key = f"{message_type}:{url}"
                 allowed.add(key)
-                independently_authorized.add(key)
 
     # Conversation media proves prior delivery only. It remains visible to Reply
     # for continuity and dedupe decisions, but cannot authorize a new structured
@@ -371,117 +361,10 @@ def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[s
     if unsupported:
         raise ValueError(f"unsupported_parallel_media_fact:{','.join(unsupported)}")
 
-    selected_ids = {
-        str(item or "").strip()
-        for item in state.get("reply_selected_content_ids") or []
-        if str(item or "").strip()
-    }
-    orphaned = []
-    for key in sorted(emitted - independently_authorized):
-        owners = candidate_media_owners.get(key) or set()
-        if owners and not owners.intersection(selected_ids):
-            orphaned.append(f"{key};owners={','.join(sorted(owners))}")
-    if orphaned:
-        raise ValueError(
-            "parallel_content_media_requires_selected_asset:" + "|".join(orphaned)
-        )
-
-
-def _validate_parallel_selected_content_delivery(
-    messages: list[dict[str, Any]],
-    state: dict[str, Any],
-) -> None:
-    """Require the structures that Reply explicitly says it adopted from Gate."""
-
-    selected_ids = {
-        str(item or "").strip()
-        for item in state.get("reply_selected_content_ids") or []
-        if str(item or "").strip()
-    }
-    if not selected_ids:
-        return
-    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
-    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
-    candidate_ids = {
-        str(item.get("content_id") or item.get("id") or "").strip()
-        for item in candidates
-        if isinstance(item, dict) and str(item.get("content_id") or item.get("id") or "").strip()
-    }
-    unknown_ids = sorted(selected_ids - candidate_ids)
-    if unknown_ids:
-        raise ValueError(
-            "selected_content_id_not_in_gate_candidates:"
-            f"{','.join(unknown_ids)}"
-        )
-    emitted = {_parallel_structured_message_key(item) for item in messages if isinstance(item, dict)}
-    missing_by_content: list[str] = []
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
-        if content_id not in selected_ids:
-            continue
-        # A completed asset may be cited as prior evidence without replaying
-        # its old media. Provenance validation below still requires the
-        # current customer message when Reply deliberately reuses it.
-        if str(candidate.get("delivery_status") or "").strip() == "completed":
-            continue
-        candidate_messages = candidate.get("messages")
-        if not isinstance(candidate_messages, list):
-            candidate_messages = candidate.get("reply_messages") if isinstance(candidate.get("reply_messages"), list) else []
-        required = {
-            _parallel_structured_message_key(item)
-            for item in candidate_messages
-            if isinstance(item, dict) and str(item.get("type") or "") != "text"
-        }
-        required.discard("")
-        missing = sorted(required - emitted)
-        if missing:
-            missing_by_content.append(f"content_id={content_id};required={','.join(missing)}")
-    if missing_by_content:
-        raise ValueError("selected_content_delivery_missing:" + "|".join(missing_by_content))
-
-
-def _validate_parallel_selected_content_provenance(state: dict[str, Any]) -> None:
-    """Verify Reply's asset citations without deciding whether the asset was persuasive."""
-
-    selected_ids = {
-        str(item or "").strip()
-        for item in state.get("reply_selected_content_ids") or []
-        if str(item or "").strip()
-    }
-    if not selected_ids:
-        return
-    used_refs = {
-        str(item or "").strip()
-        for item in state.get("reply_used_fact_refs") or []
-        if str(item or "").strip()
-    }
-    missing_asset_refs = sorted(
-        content_id
-        for content_id in selected_ids
-        if f"content_asset:{content_id}" not in used_refs
-    )
-    if missing_asset_refs:
-        raise ValueError(
-            "selected_content_requires_used_fact_ref:"
-            f"{','.join(missing_asset_refs)}"
-        )
-
-    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
-    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
-    repeated_ids = sorted(
-        str(item.get("content_id") or item.get("id") or "").strip()
-        for item in candidates
-        if isinstance(item, dict)
-        and str(item.get("content_id") or item.get("id") or "").strip() in selected_ids
-        and str(item.get("delivery_status") or "").strip() == "completed"
-    )
-    if repeated_ids and "current_message" not in used_refs:
-        raise ValueError(
-            "completed_content_repeat_requires_current_customer_ref:"
-            f"{','.join(repeated_ids)}"
-        )
+    # A real current-turn candidate authorizes its media even when Reply omits
+    # the optional selected_content_ids audit metadata. Commit records only
+    # fully delivered assets, so accepting the message cannot falsely advance
+    # SOP progress.
 
 
 def completed_parallel_selected_content_ids(
@@ -496,13 +379,55 @@ def completed_parallel_selected_content_ids(
     remains a valid independent Reply, but is not recorded as a completed SOP.
     """
 
-    requested = [str(item or "").strip() for item in selected_ids if str(item or "").strip()]
-    if not requested:
-        return []
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
     candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
     emitted = {_parallel_structured_message_key(item) for item in messages if isinstance(item, dict)}
+    requested = [str(item or "").strip() for item in selected_ids if str(item or "").strip()]
+    # selected_content_ids is optional audit metadata. When Reply actually
+    # emits every non-text payload of a current Gate candidate, that delivery
+    # is an objective send fact and should be recorded even if the model
+    # omitted the ID. This prevents the same image/card from being offered
+    # again on the next turn without making Python choose sales content.
+    candidate_required_by_id: dict[str, set[str]] = {}
+    all_candidate_keys: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
+        if not content_id or str(candidate.get("delivery_status") or "").strip() == "completed":
+            continue
+        candidate_messages = candidate.get("messages")
+        if not isinstance(candidate_messages, list):
+            candidate_messages = (
+                candidate.get("reply_messages")
+                if isinstance(candidate.get("reply_messages"), list)
+                else []
+            )
+        required = {
+            _parallel_structured_message_key(item)
+            for item in candidate_messages
+            if isinstance(item, dict) and str(item.get("type") or "") != "text"
+        }
+        required.discard("")
+        if required:
+            candidate_required_by_id[content_id] = required
+            all_candidate_keys.update(required)
+    emitted_candidate_keys = emitted & all_candidate_keys
+    inferred_ids = [
+        content_id
+        for content_id, required in candidate_required_by_id.items()
+        if required == emitted_candidate_keys
+    ]
+    if len(inferred_ids) == 1:
+        requested.append(inferred_ids[0])
+    if not requested:
+        return []
     complete: list[str] = []
+    used_refs = {
+        str(item or "").strip()
+        for item in state.get("reply_used_fact_refs") or []
+        if str(item or "").strip()
+    }
     for content_id in dict.fromkeys(requested):
         candidate = next(
             (
@@ -528,6 +453,11 @@ def completed_parallel_selected_content_ids(
             if isinstance(item, dict) and str(item.get("type") or "") != "text"
         }
         required.discard("")
+        if not required and f"content_asset:{content_id}" not in used_refs:
+            # Text-only assets cannot be matched against a rewritten customer
+            # sentence deterministically. Require Reply's explicit asset ref
+            # for commit bookkeeping, but never reject or rewrite the reply.
+            continue
         if required.issubset(emitted):
             complete.append(content_id)
     return complete
@@ -579,6 +509,11 @@ def _validate_parallel_payment_boundaries(messages: list[dict[str, Any]], state:
         if isinstance(state.get("reply_deposit_evidence"), dict)
         else {}
     )
+    if not has_payment:
+        # Action/payment/safety assessments are explanatory model metadata.
+        # They cannot reject a customer-visible answer when no payment card or
+        # write is actually being executed.
+        return
     if payment_status in {"manual_transfer", "unverified_paid_claim"}:
         allowed_actions = {"none", "ask", "offer"} if payment_status == "manual_transfer" else {"none", "ask"}
         if reply_action not in allowed_actions or has_payment:
@@ -587,49 +522,38 @@ def _validate_parallel_payment_boundaries(messages: list[dict[str, Any]], state:
         raise ValueError("manual_transfer_requires_manual_payment_channel")
     if channel_explicit and payment_status == "unverified_paid_claim" and payment_channel != "none":
         raise ValueError("unverified_paid_claim_requires_no_channel")
-    if payment_status == "authoritative_paid" and not _parallel_paid_deposit_context(state):
-        raise ValueError("payment_assessment_authoritative_paid_requires_fact")
-    if _parallel_paid_deposit_context(state) and payment_status != "authoritative_paid":
-        raise ValueError("authoritative_paid_fact_requires_matching_payment_assessment")
-    if reply_action == "registration" and not _parallel_paid_deposit_context(state):
-        raise ValueError("registration_action_requires_paid_context")
-    if reply_action == "registration" and payment_status != "authoritative_paid":
-        raise ValueError("registration_action_requires_authoritative_paid_assessment")
-    if not has_payment:
-        if reply_action == "payment":
-            raise ValueError("payment_action_requires_payment_collection")
-        if channel_explicit and (payment_status == "payment_request" or payment_channel == "payment_card"):
-            raise ValueError("payment_card_channel_requires_payment_collection")
-        if channel_explicit and payment_status in {"none", "unknown", "authoritative_paid"} and payment_channel != "none":
-            raise ValueError(f"payment_status_requires_no_channel:{payment_status}")
-        return
     if _parallel_paid_deposit_context(state):
         raise ValueError("payment_collection_blocked_by_paid_deposit_context")
     safety = state.get("reply_safety_assessment")
     safety_status = str(safety.get("status") or "none") if isinstance(safety, dict) else "none"
     if safety_status in {"health_risk", "complaint_refund", "explicit_reject"}:
+        # This does not parse customer prose. It enforces Reply's own explicit
+        # safety conclusion only when the same output also emits a payment
+        # card. Missing or malformed assessment metadata never blocks a reply.
         raise ValueError(f"payment_collection_blocked_by_{safety_status}")
     party = state.get("reply_party_size_assessment")
     party_status = str(party.get("status") or "unknown") if isinstance(party, dict) else "unknown"
+    party_refs = party.get("evidence_refs") if isinstance(party, dict) else []
     if party_status == "over_limit":
         raise ValueError("payment_participant_count_confirm_required")
     payment_content = payment_messages[0].get("content") if payment_messages else {}
     payment_amount = int(payment_content.get("amount") or 0) if isinstance(payment_content, dict) else 0
     if party_status == "known":
+        if not party_refs:
+            raise ValueError("payment_party_size_requires_customer_evidence")
         expected_amount = payment_amount_for_party_size(party.get("party_size") if isinstance(party, dict) else None)
         if expected_amount is None or payment_amount != expected_amount:
             raise ValueError("payment_collection_amount_conflicts_with_party_size_assessment")
     elif payment_amount != 10:
         raise ValueError("multi_person_payment_requires_known_party_size_assessment")
-    if reply_action != "payment":
-        raise ValueError("payment_collection_requires_reply_payment_action")
-    if payment_status != "payment_request":
-        raise ValueError("payment_collection_requires_payment_request_assessment")
     if channel_explicit and payment_channel != "payment_card":
         raise ValueError("payment_request_requires_payment_card_channel")
 
 
-def _validate_parallel_claimed_deposit_evidence(state: dict[str, Any]) -> None:
+def _validate_parallel_claimed_deposit_evidence(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
     """Validate claimed payment provenance independently of card delivery.
 
     Keeping this as a separate aggregate check lets one repair see both an
@@ -637,95 +561,12 @@ def _validate_parallel_claimed_deposit_evidence(state: dict[str, Any]) -> None:
     infer whether payment is appropriate; Reply already made that decision.
     """
 
-    evidence = (
-        state.get("reply_deposit_evidence")
-        if isinstance(state.get("reply_deposit_evidence"), dict)
-        else {}
-    )
-    if str(state.get("reply_action") or "none") != "payment":
-        return
-    _validate_parallel_deposit_evidence(state)
-
-
-def _validate_parallel_unpaid_registration_request(
-    messages: list[dict[str, Any]],
-    state: dict[str, Any],
-) -> None:
-    """Keep post-payment identity collection behind the authoritative payment fact."""
-
-    if _parallel_paid_deposit_context(state):
-        return
-    if any(
+    if not any(
         isinstance(item, dict) and str(item.get("type") or "") == "payment_collection"
         for item in messages
     ):
         return
-    compact = re.sub(r"\s+", "", _combined_text(messages))
-    if not compact:
-        return
-    identity_fields = (
-        r"(?:姓名|名字|手机号|手机号码|联系电话)"
-        r"(?:和|、|及|跟|\+|/)?(?:手机号|手机号码|联系电话|电话)?"
-    )
-    request_patterns = (
-        re.compile(
-            rf"(?:请|麻烦)?(?:您|你)?(?:把|将)?(?:您的|你的)?{identity_fields}"
-            r"(?:发我|告诉我|提供给我|回复我)"
-        ),
-        re.compile(
-            rf"(?:直接)?(?:发我|回我|告诉我|提供给我|回复我)(?:一下)?"
-            rf"(?:您的|你的)?{identity_fields}"
-        ),
-    )
-    conditional_markers = (
-        "支付后",
-        "付款后",
-        "付好后",
-        "转好后",
-        "付完后",
-        "核对后",
-        "核对到",
-        "核对到后",
-        "确认后",
-        "确认到账后",
-        "查到付款后",
-        "看到账后",
-    )
-    def has_payment_verification_condition(prefix: str) -> bool:
-        if any(marker in prefix for marker in conditional_markers):
-            return True
-        return bool(
-            re.search(
-                r"(?:核对|确认|核实|查到|看到|对上).{0,6}(?:后|再|就)",
-                prefix,
-            )
-        )
-
-    for request_pattern in request_patterns:
-        for match in request_pattern.finditer(compact):
-            prefix = compact[max(0, match.start() - 10) : match.start()]
-            if has_payment_verification_condition(prefix):
-                continue
-            raise ValueError("unpaid_registration_details_requested_before_payment")
-    reservation_verbs = r"(?:登记|记上|记下|保留|留住|留着|留意上)"
-    activity_slot = r"(?:(?:这个|本次|当前)?活动)?名额"
-    claim_pattern = re.compile(
-        rf"(?:活动名额)?我(?:这边)?(?:先)?帮您{reservation_verbs}(?:这个|本次)?(?:活动)?(?:名额)?"
-        rf"|我(?:这边)?(?:先)?给您{reservation_verbs}(?:这个|本次)?(?:活动)?(?:名额)?"
-        rf"|给您(?:先)?{reservation_verbs}(?:这个|本次)?(?:活动)?(?:名额)?"
-        rf"|给您(?:先)?留(?:下)?(?:这个|本次)?(?:活动)?名额"
-        rf"|(?:我)?先(?:帮您|给您)留(?:下)?(?:这个|本次)?(?:活动)?名额"
-        rf"|(?:我)?先帮您(?:把)?{activity_slot}(?:给您)?{reservation_verbs}"
-        rf"|(?:我)?先给您(?:把)?{activity_slot}(?:给您)?{reservation_verbs}"
-        rf"|(?:我)?先(?:帮您|给您){reservation_verbs}(?:这个|本次)?(?:活动)?(?:名额)?"
-        rf"|(?:我)?先把{activity_slot}(?:给您)?{reservation_verbs}"
-        r"|(?:直接)?(?:回我|回复我|回复)[“\"']?登记[”\"']?"
-    )
-    for match in claim_pattern.finditer(compact):
-        prefix = compact[max(0, match.start() - 12) : match.start()]
-        if has_payment_verification_condition(prefix):
-            continue
-        raise ValueError("unpaid_registration_claim_before_payment")
+    _validate_parallel_deposit_evidence(state)
 
 
 def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
@@ -1371,65 +1212,6 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
     if status == "send_multiple":
         if emitted and (not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids):
             raise ValueError("store_resolution_send_multiple_contract_violation")
-
-
-def _validate_parallel_location_card_delivery(
-    messages: list[dict[str, Any]],
-    state: dict[str, Any],
-) -> None:
-    """Complete a current-turn store lookup with resolved store cards.
-
-    Reply still decides whether a store lookup is relevant. Once it explicitly
-    cites the current lookup fact and that fact has resolved 1-3 deliverable
-    stores, omitting the cards would leave the factual action incomplete. A
-    real inbound location card has the same delivery requirement even if Reply
-    accidentally omitted the tool reference.
-    """
-
-    shared = _parallel_shared_context(state)
-    current = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
-    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
-    location_card = facts.get("location_card") if isinstance(facts.get("location_card"), dict) else {}
-    is_location_card_request = str(current.get("message_type") or "").strip().lower() == "location" and any(
-        str(location_card.get(key) or "").strip()
-        for key in ("location", "coordinates", "title", "address", "location_title", "location_address")
-    )
-    decisions = {
-        str(item.get("fact_ref") or "").strip(): str(item.get("decision") or "").strip()
-        for item in state.get("reply_structured_delivery_decisions") or []
-        if isinstance(item, dict) and str(item.get("fact_ref") or "").strip()
-    }
-    store_decision = decisions.get("tool_fact:customer_store_lookup", "")
-    if not is_location_card_request and store_decision != "deliver":
-        return
-
-    structured = _structured_facts(state)
-    resolution = (
-        structured.get("store_resolution_fact")
-        if isinstance(structured.get("store_resolution_fact"), dict)
-        else {}
-    )
-    if str(resolution.get("status") or "") not in {"send_single", "send_multiple"}:
-        return
-    required_ids = {
-        str(item or "").strip()
-        for item in resolution.get("delivery_store_ids") or []
-        if str(item or "").strip()
-    }
-    if not required_ids:
-        return
-    emitted_ids = _emitted_store_address_ids(messages)
-    required_text = ",".join(sorted(required_ids))
-    if not emitted_ids:
-        raise ValueError(
-            "planned_store_lookup_requires_store_delivery:"
-            f"required_store_ids={required_text}"
-        )
-    if emitted_ids != required_ids:
-        raise ValueError(
-            "planned_store_lookup_delivery_ids_mismatch:"
-            f"required_store_ids={required_text}"
-        )
 
 
 def _validate_incomplete_store_scope_reply(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:

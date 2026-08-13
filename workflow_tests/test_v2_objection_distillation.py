@@ -234,4 +234,4 @@ def test_v2_does_not_apply_legacy_precision_mainline_warning() -> None:
 
     warnings = collect_reply_soft_warnings(messages, state)
 
-    assert not any("precision_reply" in item.get("detail", "") for item in warnings)
+    assert warnings == []
