@@ -43,7 +43,7 @@ from app.graph.nodes.reply_nodes import (
     create_synthesize_reply_node,
 )
 from app.prompts.sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT, SOP_CHAT_GATE_SYSTEM_PROMPT
-from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT
+from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT, build_parallel_reply_messages
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.graph.nodes.reply_validation import (
     completed_parallel_selected_content_ids,
@@ -1213,6 +1213,10 @@ def test_parallel_reply_payload_surfaces_store_candidate_regions_for_clarificati
 
     assert status["candidate_store_count"] == 4
     assert [item["district"] for item in status["store_candidate_regions"]] == ["天河区", "番禺区"]
+    constraints = parallel_reply_payload(state)["current_turn_structural_constraints"]
+    assert constraints[0]["code"] == "store_location_clarification_required"
+    assert "不得发送 store_address" in constraints[0]["instruction"]
+    assert "不得解释为系统更新/同步/维护" in constraints[0]["instruction"]
 
 
 def test_parallel_reply_payload_reads_store_delivery_from_normalized_tool_facts() -> None:
@@ -4315,6 +4319,23 @@ def test_parallel_reply_prompt_obeys_store_resolution_delivery_contract() -> Non
     assert "严格执行 `store_fact_status/store_resolution_fact`" in prompt
     assert "只有 `send_single` 或 `send_multiple`" in prompt
     assert "这是工具结果的交付边界，不代表固定销售顺序" in prompt
+
+
+def test_parallel_reply_messages_repeat_current_structural_constraints_at_output_time() -> None:
+    payload = {
+        "current_turn_structural_constraints": [
+            {
+                "code": "store_location_clarification_required",
+                "instruction": "不得发送 store_address。",
+            }
+        ]
+    }
+
+    messages = build_parallel_reply_messages(payload, json_dumps=lambda value: str(value))
+
+    assert len(messages) == 3
+    assert "output_time_structural_check" in messages[-1]["content"]
+    assert "不要据此改变销售目标" in messages[-1]["content"]
 
 
 def test_one_parallel_branch_failure_preserves_the_other_branch(monkeypatch) -> None:

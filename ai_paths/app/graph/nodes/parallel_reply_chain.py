@@ -873,6 +873,10 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         "registration_fact_status": registration_fact_status,
         "store_fact_status": store_fact_status,
         "evidence": reply_evidence,
+        "current_turn_structural_constraints": _current_turn_structural_constraints(
+            store_fact_status=store_fact_status,
+            structured_delivery_options=structured_delivery_options,
+        ),
         "valid_message_refs": valid_message_refs,
         "valid_customer_message_refs": valid_customer_message_refs,
         "structured_delivered_assets": structured_delivered_assets,
@@ -916,6 +920,59 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
             "commit_actions": "optional validated deferred writes; never execute before reply validation",
         },
     }
+
+
+def _current_turn_structural_constraints(
+    *,
+    store_fact_status: dict[str, Any],
+    structured_delivery_options: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Expose compact executor-owned delivery boundaries without sales semantics."""
+
+    constraints: list[dict[str, str]] = []
+    status = str(store_fact_status.get("status") or "").strip()
+    if status in {"need_location", "need_location_confirmation", "ambiguous_location"}:
+        constraints.append(
+            {
+                "code": "store_location_clarification_required",
+                "instruction": (
+                    "本轮只能用文字说明已确认的门店范围，并询问一个会改变查询结果的必要位置；"
+                    "不得发送 store_address，不得解释为系统更新/同步/维护，也不得扩大为活动未覆盖。"
+                ),
+            }
+        )
+    elif status == "no_valid_candidate" and not bool(
+        store_fact_status.get("candidate_search_complete")
+    ):
+        constraints.append(
+            {
+                "code": "store_scope_incomplete",
+                "instruction": (
+                    "本轮门店权限事实不完整；不得断言当地没有门店或活动，不得编造系统更新/同步/维护原因。"
+                ),
+            }
+        )
+    elif status in {"send_single", "send_multiple"}:
+        store_delivery = (
+            structured_delivery_options.get("store_address")
+            if isinstance(structured_delivery_options.get("store_address"), dict)
+            else {}
+        )
+        available_ids = [
+            str(item).strip()
+            for item in store_delivery.get("available_store_ids") or []
+            if str(item).strip()
+        ]
+        constraints.append(
+            {
+                "code": "store_delivery_required",
+                "instruction": (
+                    "若本轮采用门店事实，只能按 structured_delivery_options 交付 store_address；"
+                    f"允许的 store_id 为 {available_ids}。"
+                ),
+            }
+        )
+    return constraints
 
 
 def _shared_context(

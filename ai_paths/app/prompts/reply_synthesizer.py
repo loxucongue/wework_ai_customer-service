@@ -103,7 +103,21 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是企微淡斑业务 V2 的最终 Reply �
 
 
 def build_parallel_reply_messages(user_payload: dict[str, Any], *, json_dumps) -> list[dict[str, str]]:
-    return [
+    messages = [
         {"role": "system", "content": PARALLEL_REPLY_SYSTEM_PROMPT},
         {"role": "user", "content": json_dumps(user_payload)},
     ]
+    constraints = user_payload.get("current_turn_structural_constraints")
+    if isinstance(constraints, list) and constraints:
+        messages.append(
+            {
+                "role": "user",
+                "content": json_dumps(
+                    {
+                        "output_time_structural_check": constraints,
+                        "instruction": "输出前仅核对这些当前轮事实与消息结构边界；不要据此改变销售目标。",
+                    }
+                ),
+            }
+        )
+    return messages
