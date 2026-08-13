@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+from app.services.outreach_send_client import OutreachSendClient
 from app.services.outreach_service import OutreachService
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.customer_scope import build_customer_scope
@@ -198,7 +200,7 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         system = _SystemClient(
             send_error=RuntimeError(
                 "outreach_system_http_422: contract validation failed: "
-                "Additional properties are not allowed ('external_userid' was unexpected)"
+                "reply_messages must not be empty"
             )
         )
         service = OutreachService(
@@ -481,6 +483,70 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
         self.assertEqual(repository.skipped_remaining[0]["reason"], "customer_deleted")
         self.assertEqual(repository.events[-1]["event_type"], "task_skipped_customer_deleted")
+
+    async def test_missing_external_userid_is_blocked_before_platform_send(self) -> None:
+        repository = _ExecutionRepository(order_status="no_order", external_userid="")
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=_MessageModelClient(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"], "invalid_outreach_identity")
+        self.assertEqual(result["missing"], ["external_userid"])
+        self.assertEqual(system.sent, [])
+        self.assertIn(("task-1", "failed"), repository.task_statuses)
+        self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
+        self.assertEqual(repository.skipped_remaining[-1]["reason"], "invalid_outreach_identity")
+        self.assertEqual(repository.events[-1]["event_type"], "task_failed_terminal")
+
+
+class OutreachSendClientIdentityTests(unittest.TestCase):
+    def test_payload_does_not_replace_customer_id_with_external_userid(self) -> None:
+        payload = OutreachSendClient._payload(
+            request_id="request-1",
+            request_context={"external_userid": "external-real"},
+            fallback_customer_id="15048961",
+            fallback_corp_id="corp",
+            fallback_user_id="7294",
+            fallback_wechat="WW0601",
+            fallback_external_userid="external-real",
+            reply_messages=[{"type": "text", "content": {"text": "hi"}}],
+        )
+
+        self.assertEqual(payload["customer_id"], "15048961")
+        self.assertEqual(payload["external_userid"], "external-real")
+
+    def test_fetch_conversation_params_require_external_userid_without_customer_fallback(self) -> None:
+        client = OutreachSendClient(
+            SimpleNamespace(
+                outreach_send_base_url="https://example.invalid",
+                outreach_send_agent_token="token",
+                outreach_send_timeout_seconds=1,
+            )
+        )
+
+        result = asyncio.run(
+            client.fetch_conversation(
+                corp_id="corp",
+                customer_id="15048961",
+                external_userid="",
+                user_id="7294",
+                wechat="WW0601",
+                limit=30,
+            )
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "missing_required_fields")
+        self.assertEqual(result["missing"], ["external_userid"])
+        self.assertEqual(result["request"]["customer_id"], "15048961")
+        self.assertEqual(result["request"]["external_userid"], "")
 
 
 class OutreachRepositoryDueTaskTests(unittest.TestCase):
@@ -1078,6 +1144,7 @@ class _ExecutionRepository:
         recent_messages: list[dict[str, Any]] | None = None,
         task_reply_messages: list[dict[str, Any]] | None = None,
         task_content_sources: list[Any] | None = None,
+        external_userid: str = "external-1",
     ) -> None:
         self.order_status = order_status
         self.remaining_tasks = remaining_tasks
@@ -1085,6 +1152,7 @@ class _ExecutionRepository:
         self.recent_messages = recent_messages or []
         self.task_reply_messages = task_reply_messages
         self.task_content_sources = task_content_sources
+        self.external_userid = external_userid
         self.task_statuses: list[tuple[str, str]] = []
         self.plan_statuses: list[tuple[str, str]] = []
         self.events: list[dict[str, Any]] = []
@@ -1100,7 +1168,7 @@ class _ExecutionRepository:
             "corp_id": "corp",
             "user_id": "7294",
             "wechat": "DY258",
-            "external_userid": "external-1",
+            "external_userid": self.external_userid,
             "status": "pending",
             "step_index": 2 if task_id == "task-2" else 1,
             "before_send_check": True,
@@ -1123,7 +1191,7 @@ class _ExecutionRepository:
                 "corp_id": "corp",
                 "user_id": "7294",
                 "wechat": "DY258",
-                "external_userid": "external-1",
+                "external_userid": self.external_userid,
                 "created_at": "2026-07-28T08:00:00+08:00",
                 "source_snapshot": {
                     "memory": {"last_customer_message_at": "2026-07-28T08:00:00+08:00"},

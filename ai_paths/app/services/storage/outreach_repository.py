@@ -155,32 +155,48 @@ class OutreachRepositoryMixin:
         wechat: str,
         external_userid: str,
         trigger_type: str,
+        conversation_fingerprint: str = "",
         input_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         workflow_run_id = str(uuid4())
         now = utc_now_iso()
-        with self.store.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO first_day_outreach_runs
-                    (workflow_run_id, corp_id, user_id, wechat, customer_id, external_userid,
-                     trigger_type, status, input_snapshot_json, started_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
-                """,
-                (
-                    workflow_run_id,
-                    corp_id,
-                    user_id,
-                    wechat,
-                    customer_id,
-                    external_userid,
-                    trigger_type,
-                    dumps(redact_first_day_log_value(input_snapshot or {})),
-                    now,
-                    now,
-                    now,
-                ),
+        fingerprint_value = _string(conversation_fingerprint) or None
+        try:
+            with self.store.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO first_day_outreach_runs
+                        (workflow_run_id, corp_id, user_id, wechat, customer_id, external_userid,
+                         trigger_type, conversation_fingerprint, status, input_snapshot_json,
+                         started_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
+                    """,
+                    (
+                        workflow_run_id,
+                        corp_id,
+                        user_id,
+                        wechat,
+                        customer_id,
+                        external_userid,
+                        trigger_type,
+                        fingerprint_value,
+                        dumps(redact_first_day_log_value(input_snapshot or {})),
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+        except Exception:
+            existing = self.find_first_day_outreach_run_by_fingerprint(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                conversation_fingerprint=_string(conversation_fingerprint),
             )
+            if existing:
+                return existing
+            raise
         return self.get_first_day_outreach_run(workflow_run_id, include_related=False)
 
     def find_first_day_outreach_run_by_fingerprint(
@@ -195,11 +211,23 @@ class OutreachRepositoryMixin:
         if not all((customer_id, corp_id, wechat, external_userid, conversation_fingerprint)):
             return {}
         with self.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM first_day_outreach_runs
+                WHERE customer_id=? AND corp_id=? AND lower(wechat)=lower(?)
+                  AND external_userid=? AND conversation_fingerprint=?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (customer_id, corp_id, wechat, external_userid, conversation_fingerprint),
+            ).fetchone()
+            if row:
+                return self._decode_first_day_outreach_run(dict(row))
             rows = conn.execute(
                 """
                 SELECT * FROM first_day_outreach_runs
                 WHERE customer_id=? AND corp_id=? AND lower(wechat)=lower(?)
-                  AND external_userid=?
+                  AND external_userid=? AND conversation_fingerprint IS NULL
                 ORDER BY started_at DESC
                 LIMIT 20
                 """,
@@ -366,7 +394,7 @@ class OutreachRepositoryMixin:
             "plan_id", "first_task_id", "second_task_id", "status", "reason_code",
             "final_decision", "first_scene", "second_scene", "model_attempt_count",
             "retry_count", "duration_ms", "error_node", "error_type", "error_message",
-            "finished_at", "raw_redacted_at",
+            "finished_at", "raw_redacted_at", "conversation_fingerprint", "next_retry_at",
         }
         json_fields = set(self._FIRST_DAY_RUN_JSON_FIELDS)
         assignments: list[str] = []
@@ -1754,6 +1782,87 @@ class OutreachRepositoryMixin:
             cursor = conn.execute(query, params)
         return int(cursor.rowcount or 0)
 
+    def cleanup_first_day_task_backlog(
+        self,
+        *,
+        older_than: str,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        trigger_expression = self.store.json_text(
+            "p.source_snapshot",
+            "$.trigger_context.trigger_type",
+        )
+        with self.store.connect() as conn:
+            broken_rows = conn.execute(
+                f"""
+                SELECT DISTINCT p.id AS plan_id, p.customer_id
+                FROM outreach_plans p
+                JOIN outreach_tasks failed ON failed.plan_id=p.id
+                JOIN outreach_tasks pending ON pending.plan_id=p.id
+                WHERE {trigger_expression}='first_day_opened_silence'
+                  AND failed.status IN ('failed','skipped','cancelled')
+                  AND pending.status IN ('pending','checking','check_failed')
+                  AND pending.step_index>failed.step_index
+                """
+            ).fetchall()
+            expired_rows = conn.execute(
+                f"""
+                SELECT DISTINCT p.id AS plan_id, p.customer_id
+                FROM outreach_plans p
+                JOIN outreach_tasks pending ON pending.plan_id=p.id
+                WHERE {trigger_expression}='first_day_opened_silence'
+                  AND p.created_at<?
+                  AND pending.status IN ('pending','checking','check_failed')
+                """,
+                (older_than,),
+            ).fetchall()
+        reasons: dict[str, str] = {
+            _string(row["plan_id"]): "preceding_first_day_task_not_sent"
+            for row in broken_rows
+        }
+        for row in expired_rows:
+            reasons.setdefault(_string(row["plan_id"]), "first_day_task_expired_24h")
+        changed_tasks = 0
+        if not dry_run:
+            for plan_id, reason in reasons.items():
+                changed_tasks += self.skip_remaining_outreach_tasks(plan_id, reason=reason)
+                self.update_outreach_plan_status(plan_id, "cancelled")
+                detail = self.get_outreach_plan(plan_id)
+                plan = detail.get("plan") if isinstance(detail.get("plan"), dict) else {}
+                source_snapshot = (
+                    plan.get("source_snapshot")
+                    if isinstance(plan.get("source_snapshot"), dict)
+                    else {}
+                )
+                workflow_run_id = _string(source_snapshot.get("workflow_run_id"))
+                if workflow_run_id:
+                    self.update_first_day_outreach_run(
+                        workflow_run_id,
+                        status="cancelled",
+                        reason_code=reason,
+                        final_decision="cancelled_by_cleanup",
+                        finished_at=utc_now_iso(),
+                    )
+                self.add_outreach_event(
+                    plan_id=plan_id,
+                    task_id="",
+                    customer_id=_string(plan.get("customer_id")),
+                    event_type="first_day_backlog_cleanup",
+                    event_summary="Cancelled an invalid or expired first-day outreach backlog",
+                    payload={"reason": reason, "older_than": older_than},
+                )
+        return {
+            "dry_run": dry_run,
+            "broken_plan_count": len(broken_rows),
+            "expired_plan_count": len(expired_rows),
+            "affected_plan_count": len(reasons),
+            "changed_task_count": changed_tasks,
+            "plans": [
+                {"plan_id": plan_id, "reason": reason}
+                for plan_id, reason in sorted(reasons.items())
+            ],
+        }
+
     def cancel_outreach_for_customer_reply(
         self,
         *,
@@ -1946,6 +2055,10 @@ class OutreachRepositoryMixin:
                 WHERE t.status='pending'
                   AND t.scheduled_at<=?
                   AND p.status IN ('active', 'waiting')
+                  AND COALESCE(
+                      {self.store.json_text('p.source_snapshot', '$.trigger_context.trigger_type')},
+                      ''
+                  )<>'first_day_opened_silence'
                   {auto_clause}
                   AND NOT EXISTS (
                       SELECT 1
@@ -1953,6 +2066,47 @@ class OutreachRepositoryMixin:
                       WHERE earlier.plan_id=t.plan_id
                         AND earlier.step_index<t.step_index
                         AND earlier.status IN ('pending', 'checking', 'check_failed')
+                  )
+                ORDER BY t.scheduled_at ASC
+                LIMIT ?
+                """,
+                (now_value, max(1, min(limit, 100))),
+            ).fetchall()
+        return [self._decode_outreach_task(dict(row)) for row in rows]
+
+    def list_due_first_day_tasks(
+        self,
+        *,
+        limit: int = 20,
+        now: str | None = None,
+    ) -> list[dict[str, Any]]:
+        now_value = now or utc_now_iso()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT t.*, p.corp_id, p.user_id, p.wechat, p.external_userid,
+                       p.status AS plan_status
+                FROM outreach_tasks t
+                JOIN outreach_plans p ON p.id=t.plan_id
+                WHERE t.status='pending'
+                  AND t.scheduled_at<=?
+                  AND p.status IN ('active', 'waiting')
+                  AND {self.store.json_text('p.source_snapshot', '$.trigger_context.trigger_type')}='first_day_opened_silence'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM outreach_tasks earlier
+                      WHERE earlier.plan_id=t.plan_id
+                        AND earlier.step_index<t.step_index
+                        AND earlier.status<>'sent'
+                  )
+                  AND (
+                      t.step_index=1 OR (
+                          SELECT COUNT(*)
+                          FROM outreach_tasks earlier
+                          WHERE earlier.plan_id=t.plan_id
+                            AND earlier.step_index<t.step_index
+                            AND earlier.status='sent'
+                      )=t.step_index-1
                   )
                 ORDER BY t.scheduled_at ASC
                 LIMIT ?

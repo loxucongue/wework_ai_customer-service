@@ -147,6 +147,7 @@ sop_platform_pull_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
 store_snapshot_refresh_worker: asyncio.Task[None] | None = None
 outreach_plan_monitor_worker: asyncio.Task[None] | None = None
+outreach_task_executor_worker: asyncio.Task[None] | None = None
 first_day_retention_last_date = ""
 
 
@@ -208,14 +209,25 @@ async def _run_outreach_plan_monitor_worker() -> None:
                     silent_minutes=settings.outreach_first_day_silence_minutes,
                     auto_activate=settings.outreach_plan_monitor_auto_activate,
                 )
-                await outreach_service.execute_due_first_day_tasks(
-                    limit=settings.outreach_auto_send_batch_size,
-                )
             if settings.outreach_plan_monitor_enabled:
                 await outreach_service.evaluate_silent_customers(
                     limit=settings.outreach_plan_monitor_batch_size,
                     silent_minutes=settings.outreach_plan_monitor_silent_minutes,
                     auto_activate=settings.outreach_plan_monitor_auto_activate,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Outreach plan monitor iteration failed")
+        await asyncio.sleep(max(5.0, float(settings.outreach_plan_monitor_poll_seconds)))
+
+
+async def _run_outreach_task_executor_worker() -> None:
+    while True:
+        try:
+            if settings.outreach_first_day_silence_enabled:
+                await outreach_service.execute_due_first_day_tasks(
+                    limit=settings.outreach_auto_send_batch_size,
                 )
             if settings.outreach_auto_send_enabled:
                 await outreach_service.execute_due_tasks(
@@ -225,17 +237,21 @@ async def _run_outreach_plan_monitor_worker() -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Outreach plan monitor iteration failed")
-        await asyncio.sleep(max(5.0, float(settings.outreach_plan_monitor_poll_seconds)))
+            logger.exception("Outreach task executor iteration failed")
+        await asyncio.sleep(max(1.0, float(settings.outreach_auto_send_poll_seconds)))
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
+    global outreach_plan_monitor_worker, outreach_task_executor_worker
     storage_store.initialize()
     backfill_result = await asyncio.to_thread(repository.backfill_first_day_outreach_runs)
     if backfill_result.get("created_runs"):
         logger.info("Backfilled first-day outreach run history: %s", backfill_result)
+    if not settings.background_workers_enabled:
+        logger.info("Background workers are disabled by AI_PATHS_BACKGROUND_WORKERS_ENABLED=false")
+        return
     if settings.sop_platform_pull_enabled and (
         sop_platform_pull_worker is None or sop_platform_pull_worker.done()
     ):
@@ -251,11 +267,17 @@ async def startup() -> None:
         or settings.outreach_plan_monitor_enabled
     ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
         outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
+    if (
+        settings.outreach_first_day_silence_enabled
+        or settings.outreach_auto_send_enabled
+    ) and (outreach_task_executor_worker is None or outreach_task_executor_worker.done()):
+        outreach_task_executor_worker = asyncio.create_task(_run_outreach_task_executor_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
+    global outreach_plan_monitor_worker, outreach_task_executor_worker
     if sop_platform_pull_worker is not None:
         sop_platform_pull_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -276,6 +298,11 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await outreach_plan_monitor_worker
         outreach_plan_monitor_worker = None
+    if outreach_task_executor_worker is not None:
+        outreach_task_executor_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await outreach_task_executor_worker
+        outreach_task_executor_worker = None
     await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()

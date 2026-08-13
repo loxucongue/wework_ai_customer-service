@@ -428,8 +428,18 @@ def _dedupe_outreach_candidates(candidates: list[dict[str, Any]]) -> list[dict[s
     return output
 
 
+def _missing_outreach_identity_fields(identity: dict[str, Any]) -> list[str]:
+    return [
+        key
+        for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat")
+        if not _string(identity.get(key))
+    ]
+
+
 def _terminal_outreach_send_failure_reason(error: str) -> str:
     normalized = _string(error).lower()
+    if "invalid_outreach_identity" in normalized:
+        return "invalid_outreach_identity"
     if "outreach_system_http_422" in normalized or "contract validation failed" in normalized:
         return "send_contract_validation_failed"
     if "outreach_system_http_409" in normalized:
@@ -461,6 +471,41 @@ def _conversation_fingerprint(
         )
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _conversation_response_data(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    data = payload.get("data")
+    return data if isinstance(data, dict) else payload
+
+
+def _authoritative_first_added_at(payload: Any) -> str:
+    data = _conversation_response_data(payload)
+    friend_added_event = data.get("friend_added_event")
+    if isinstance(friend_added_event, dict):
+        added_at = _string(friend_added_event.get("added_at"))
+        if added_at:
+            return added_at
+    return _string(data.get("added_at"))
+
+
+def _conversation_id_from_response(payload: Any) -> str:
+    return _string(_conversation_response_data(payload).get("conversation_id"))
+
+
+def _first_day_full_retry_delay_seconds(error: str, retry_count: int) -> int | None:
+    normalized = _string(error).lower()
+    if "first_day_scene_analysis_invalid" in normalized:
+        return 60 if retry_count < 1 else None
+    transient = any(
+        marker in normalized
+        for marker in ("timeout", "timed out", "http_500", "http_502", "http_503", "http_504", "5xx")
+    )
+    if not transient:
+        return None
+    delays = (60, 300)
+    return delays[retry_count] if retry_count < len(delays) else None
 
 
 def _completed_cycle_blocks_automatic_replan(
@@ -703,6 +748,42 @@ def _first_day_sop_source_aliases(source_snapshot: dict[str, Any] | None) -> dic
                 if prefixed not in aliases:
                     aliases[prefixed] = source_id
     return aliases
+
+
+def _first_day_available_sources_by_scene(source_snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    available: dict[str, list[dict[str, Any]]] = {
+        scene: [] for scene in FIRST_DAY_SCENES if scene not in {"suppress", "health_hold"}
+    }
+    for item in source_snapshot.get("first_day_sop_sequence") or []:
+        if not isinstance(item, dict):
+            continue
+        scene = _string(item.get("mapped_scene"))
+        source_id = _string(item.get("source_id"))
+        if scene in available and source_id:
+            available[scene].append(
+                {
+                    "source_id": source_id,
+                    "source_kind": "mainline_sop",
+                    "requires_customer_evidence": False,
+                }
+            )
+    for item in source_snapshot.get("appointment_blocker_scene_index") or []:
+        if not isinstance(item, dict):
+            continue
+        for source_id in item.get("source_ids") or []:
+            source_id = _string(source_id)
+            if not source_id:
+                continue
+            source = {
+                "source_id": source_id,
+                "source_kind": "appointment_blocker",
+                "applicable_scene": _string(item.get("applicable_scene")),
+                "blocker_types": _list_strings(item.get("blocker_types")),
+                "requires_customer_evidence": True,
+            }
+            available["objection_resolution"].append(dict(source))
+            available["trust_repair"].append(dict(source))
+    return available
 
 
 def _first_day_normalize_selected_source_ids(
@@ -1689,6 +1770,7 @@ def _first_day_scene_analysis_error(
         for item in source_snapshot.get("first_day_sop_sequence") or []
         if isinstance(item, dict) and _string(item.get("source_id"))
     }
+    sources_by_scene = source_snapshot.get("available_sources_by_scene") or {}
     for key in ("step1", "step2"):
         source_ids = selected_source_ids.get(key)
         if not isinstance(source_ids, list) or any(
@@ -1708,6 +1790,17 @@ def _first_day_scene_analysis_error(
             )
         if eligible and selected_main_sources:
             main_source = selected_main_sources[0]
+            locked_scene = _string(response.get(f"{key}_scene"))
+            legal_scene_sources = {
+                _string(item.get("source_id"))
+                for item in sources_by_scene.get(locked_scene) or []
+                if isinstance(item, dict) and _string(item.get("source_id"))
+            }
+            if sources_by_scene and main_source not in legal_scene_sources:
+                return (
+                    f"scene analysis selected_source_ids.{key} source is not available "
+                    f"for locked scene {locked_scene}"
+                )
             if (
                 _string(precedence_decision.get("row_id")) == "no_blocker_sop_progression"
                 and not main_source.startswith("sop-pack:")
@@ -2350,6 +2443,7 @@ def _normalize_first_day_repaired_plan(
     if len(steps) != 2:
         return response
     required_assets = scene_analysis.get("required_assets") or {}
+    selected_source_ids = scene_analysis.get("selected_source_ids") or {}
     payment_step = 0
     for index, step in enumerate(steps, start=1):
         step["step"] = index
@@ -2368,6 +2462,11 @@ def _normalize_first_day_repaired_plan(
         required_asset = required_assets.get(f"step{index}") or {}
         step["asset_strategy"] = _string(required_asset.get("strategy")) or "none"
         step["asset_id"] = _string(required_asset.get("asset_id"))
+        step["content_sources"] = [
+            _string(source_id)
+            for source_id in selected_source_ids.get(f"step{index}") or []
+            if _string(source_id)
+        ]
         should_pay = payment_step == index
         step["should_send_payment_collection"] = should_pay
         step["payment_collection_basis"] = (
@@ -2424,6 +2523,25 @@ def _first_day_verifier_error(response: dict[str, Any]) -> str:
         return "passing verifier response must not include violations or repair instructions"
     if decision == "repair" and (not violations or not repair_instructions):
         return "repair verifier response requires violations and repair instructions"
+    immutable_suffixes = (
+        ".scene",
+        ".delay_minutes",
+        ".asset_strategy",
+        ".asset_id",
+        ".should_send_payment_collection",
+        ".payment_collection_basis",
+    )
+    immutable_fields = [
+        _string(item.get("field"))
+        for item in [*violations, *repair_instructions]
+        if isinstance(item, dict)
+        and any(_string(item.get("field")).endswith(suffix) for suffix in immutable_suffixes)
+    ]
+    if immutable_fields:
+        return (
+            "first-day verifier cannot repair immutable contract fields: "
+            + ", ".join(dict.fromkeys(immutable_fields))
+        )
     return ""
 
 
@@ -2443,6 +2561,12 @@ def _first_day_existing_run_retry_reason(
     status = _string(existing_run.get("status"))
     reason_code = _string(existing_run.get("reason_code"))
     if status == "failed":
+        next_retry_at = _parse_iso(_string(existing_run.get("next_retry_at")))
+        current = now or datetime.now(timezone.utc)
+        if next_retry_at and next_retry_at.tzinfo is None:
+            next_retry_at = next_retry_at.replace(tzinfo=timezone.utc)
+        if not next_retry_at or next_retry_at > current:
+            return ""
         return "failed_retry"
     if reason_code in FIRST_DAY_NON_RETRYABLE_RUN_REASONS:
         return ""
@@ -2557,7 +2681,6 @@ class OutreachService:
                             reason_code="model_node_failed",
                             final_decision="failed",
                             model_attempt_count=int(current.get("model_attempt_count") or 0) + len(attempts),
-                            retry_count=int(current.get("retry_count") or 0) + max(0, len(attempts) - 1),
                             workflow_json=workflow,
                             error_node=node,
                             error_type=type(exc).__name__,
@@ -2724,12 +2847,22 @@ class OutreachService:
         results: list[dict[str, Any]] = []
         for candidate in candidates:
             try:
+                identity = {
+                    "customer_id": _string(candidate.get("customer_id")),
+                    "corp_id": _string(candidate.get("corp_id")),
+                    "user_id": _string(candidate.get("user_id")),
+                    "wechat": _string(candidate.get("wechat")),
+                    "external_userid": _string(candidate.get("external_userid")),
+                }
+                missing = _missing_outreach_identity_fields(identity)
+                if missing:
+                    raise ValueError(f"invalid_outreach_identity: missing {','.join(missing)}")
                 result = await self.generate_plan(
-                    customer_id=str(candidate.get("customer_id") or ""),
-                    corp_id=str(candidate.get("corp_id") or ""),
-                    user_id=str(candidate.get("user_id") or ""),
-                    wechat=str(candidate.get("wechat") or ""),
-                    external_userid=str(candidate.get("external_userid") or candidate.get("customer_id") or ""),
+                    customer_id=identity["customer_id"],
+                    corp_id=identity["corp_id"],
+                    user_id=identity["user_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
                     current_stage=str(candidate.get("lifecycle_stage") or ""),
                     business_goal=str(filters.get("business_goal") or "推进客户支付10元预约金并到店"),
                     sop_plan_id=sop_plan_id,
@@ -2771,16 +2904,28 @@ class OutreachService:
         external_userid: str = "",
         limit: int = 10,
     ) -> dict[str, Any]:
+        identity = {
+            "corp_id": corp_id,
+            "customer_id": customer_id,
+            "external_userid": external_userid,
+            "user_id": user_id,
+            "wechat": wechat,
+        }
+        missing = _missing_outreach_identity_fields(identity)
+        if missing:
+            raise ValueError(f"invalid_outreach_identity: missing {','.join(missing)}")
         payload = await self.system_client.conversation(
             corp_id=corp_id,
             customer_id=customer_id,
-            external_userid=external_userid or customer_id,
+            external_userid=external_userid,
             user_id=user_id,
             wechat=wechat,
             limit=limit,
         )
         messages = self._conversation_messages(payload)
         customer_relation = normalize_customer_relation(payload)
+        first_added_at = _authoritative_first_added_at(payload)
+        conversation_id = _conversation_id_from_response(payload)
         scope = build_customer_scope(
             corp_id=corp_id,
             wechat=wechat,
@@ -2811,6 +2956,8 @@ class OutreachService:
                 "latest_customer_message_at": latest_customer,
                 "message_count": len(messages),
                 "customer_relation": customer_relation,
+                "first_added_at": first_added_at,
+                "conversation_id": conversation_id,
             },
         )
         return {
@@ -2819,6 +2966,8 @@ class OutreachService:
             "latest_customer_message_at": latest_customer,
             "latest_staff_message_at": latest_staff,
             "customer_relation": customer_relation,
+            "first_added_at": first_added_at,
+            "conversation_id": conversation_id,
         }
 
     def cached_customer_conversation(
@@ -2872,6 +3021,7 @@ class OutreachService:
         first_day_trigger = _is_first_day_opened_silence_trigger(trigger_context)
         run_creator = getattr(self.repository, "create_first_day_outreach_run", None)
         if first_day_trigger and not workflow_run_id and callable(run_creator):
+            trigger = trigger_context if isinstance(trigger_context, dict) else {}
             run = run_creator(
                 customer_id=customer_id,
                 corp_id=corp_id,
@@ -2879,6 +3029,7 @@ class OutreachService:
                 wechat=wechat,
                 external_userid=external_userid,
                 trigger_type=FIRST_DAY_SILENCE_TRIGGER_TYPE,
+                conversation_fingerprint=_string(trigger.get("conversation_fingerprint")),
                 input_snapshot={"trigger_context": trigger_context or {}},
             )
             workflow_run_id = _string(run.get("workflow_run_id"))
@@ -2902,12 +3053,18 @@ class OutreachService:
                     workflow_run_id,
                     include_related=False,
                 )
-                if _string(current.get("status")) not in {"blocked", "sent", "cancelled", "failed", "completed"}:
+                retry_count = int(current.get("retry_count") or 0)
+                retry_delay = _first_day_full_retry_delay_seconds(str(exc), retry_count)
+                if _string(current.get("status")) not in {"blocked", "sent", "cancelled", "completed"}:
                     self.repository.update_first_day_outreach_run(
                         workflow_run_id,
                         status="failed",
-                        reason_code="workflow_failed",
-                        final_decision="failed",
+                        reason_code="workflow_retry_scheduled" if retry_delay else "workflow_failed",
+                        final_decision="retry_pending" if retry_delay else "failed",
+                        next_retry_at=(
+                            datetime.now(timezone.utc).astimezone(timezone.utc)
+                            + timedelta(seconds=retry_delay)
+                        ).isoformat() if retry_delay else "",
                         error_node=_string(current.get("error_node")) or "plan_generation",
                         error_type=_string(current.get("error_type")) or type(exc).__name__,
                         error_message=_string(current.get("error_message")) or str(exc)[:4000],
@@ -3077,6 +3234,9 @@ class OutreachService:
                 external_userid=external_userid,
                 hours=72,
             )
+        appointment_blocker_scene_index = build_appointment_blocker_scene_index(
+            appointment_playbook
+        )
         source_snapshot = {
             "workflow_run_id": workflow_run_id,
             "customer_id": customer_id,
@@ -3084,6 +3244,9 @@ class OutreachService:
             "user_id": user_id,
             "wechat": wechat,
             "external_userid": external_userid,
+            "conversation_id": _string(context.get("conversation_id")) or _string(
+                (trigger_context or {}).get("conversation_id")
+            ),
             "customer_fact_snapshot": outreach_customer_fact_snapshot(memory),
             "recent_messages": recent_messages,
             "conversation_activity": conversation_activity,
@@ -3115,10 +3278,11 @@ class OutreachService:
             "recent_media_delivery": recent_media,
             "recent_sop_delivery": recent_sop_delivery,
             "first_day_sop_sequence": first_day_sop_sequence,
-            "appointment_blocker_scene_index": build_appointment_blocker_scene_index(
-                appointment_playbook
-            ),
+            "appointment_blocker_scene_index": appointment_blocker_scene_index,
         }
+        source_snapshot["available_sources_by_scene"] = _first_day_available_sources_by_scene(
+            source_snapshot
+        )
         if workflow_run_id:
             self.repository.update_first_day_outreach_run(
                 workflow_run_id,
@@ -3174,6 +3338,13 @@ class OutreachService:
                         "source_snapshot": first_day_model_snapshot,
                         "invalid_scene_analysis": scene_analysis,
                         "schema_error": scene_error,
+                        "locked_scenes": {
+                            "step1": _string(scene_analysis.get("step1_scene")),
+                            "step2": _string(scene_analysis.get("step2_scene")),
+                        },
+                        "available_sources_by_scene": first_day_model_snapshot.get(
+                            "available_sources_by_scene"
+                        ) or {},
                         "instruction": "只修复 JSON 结构合同并返回完整场景分析，不得改变已有事实证据。",
                     },
                 )
@@ -3201,6 +3372,13 @@ class OutreachService:
                         "source_snapshot": first_day_model_snapshot,
                         "invalid_scene_analysis": scene_analysis,
                         "schema_error": scene_error,
+                        "locked_scenes": {
+                            "step1": _string(scene_analysis.get("step1_scene")),
+                            "step2": _string(scene_analysis.get("step2_scene")),
+                        },
+                        "available_sources_by_scene": first_day_model_snapshot.get(
+                            "available_sources_by_scene"
+                        ) or {},
                         "instruction": "再次只修复剩余 JSON 结构错误，保留已有业务判断并返回完整对象。",
                     },
                 )
@@ -4463,8 +4641,6 @@ class OutreachService:
 
     @staticmethod
     def _rough_first_day_silence_candidate_reason(candidate: dict[str, Any], *, silent_minutes: int) -> str:
-        if not _is_within_first_day(_string(candidate.get("sales_contact_started_at"))):
-            return "not_first_day"
         if _string(candidate.get("candidate_source")) == "sop_send_tasks":
             return ""
         if not _string(candidate.get("last_customer_message_at")):
@@ -4494,11 +4670,9 @@ class OutreachService:
             "external_userid": _string(candidate.get("external_userid")),
         }
         customer_id = identity["customer_id"]
-        first_added_at = _string(candidate.get("sales_contact_started_at"))
+        discovery_added_at = _string(candidate.get("sales_contact_started_at"))
         if not all((customer_id, identity["corp_id"], identity["wechat"], identity["external_userid"])):
             return {"status": "skipped", "customer_id": customer_id, "reason": "incomplete_sales_contact_identity"}
-        if not _is_within_first_day(first_added_at):
-            return {"status": "skipped", "customer_id": customer_id, "reason": "not_first_day"}
         candidate_customer_at = _string(candidate.get("last_customer_message_at"))
         candidate_staff_at = _string(
             candidate.get("latest_outbound_message_at") or candidate.get("last_staff_message_at")
@@ -4564,6 +4738,7 @@ class OutreachService:
                         error_type="",
                         error_message="",
                         finished_at="",
+                        next_retry_at="",
                         workflow={
                             **(
                                 existing_run.get("workflow")
@@ -4579,12 +4754,13 @@ class OutreachService:
                     run = run_creator(
                         **identity,
                         trigger_type=FIRST_DAY_SILENCE_TRIGGER_TYPE,
+                        conversation_fingerprint=candidate_fingerprint,
                         input_snapshot={
                             "trigger_context": {
                                 "source": "silence_monitor",
                                 "trigger_type": FIRST_DAY_SILENCE_TRIGGER_TYPE,
                                 "conversation_fingerprint": candidate_fingerprint,
-                                "first_added_at": first_added_at,
+                                "discovery_added_at": discovery_added_at,
                                 "latest_customer_message_at": candidate_customer_at,
                                 "latest_staff_message_at": candidate_staff_at,
                                 "monitor_silent_minutes": silent_minutes,
@@ -4601,32 +4777,6 @@ class OutreachService:
                 if workflow_run_id and callable(run_updater):
                     run_updater(workflow_run_id, **changes)
 
-            local_now = datetime.now(timezone.utc).astimezone(OUTREACH_BEIJING_TIMEZONE)
-            local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-            local_day_end = local_day_start + timedelta(days=1)
-            created_today = self.repository.count_outreach_plans_for_trigger_between(
-                customer_id=customer_id,
-                corp_id=identity["corp_id"],
-                wechat=identity["wechat"],
-                external_userid=identity["external_userid"],
-                trigger_type=FIRST_DAY_SILENCE_TRIGGER_TYPE,
-                started_at=local_day_start.astimezone(timezone.utc).isoformat(),
-                ended_at=local_day_end.astimezone(timezone.utc).isoformat(),
-            )
-            if created_today >= FIRST_DAY_DAILY_PLAN_LIMIT:
-                _update_run(
-                    status="blocked",
-                    reason_code="first_day_daily_plan_limit_reached",
-                    final_decision="no_plan",
-                    finished_at=utc_now_iso(),
-                )
-                return {
-                    "status": "skipped",
-                    "customer_id": customer_id,
-                    "reason": "first_day_daily_plan_limit_reached",
-                    "created_today": created_today,
-                    "daily_limit": FIRST_DAY_DAILY_PLAN_LIMIT,
-                }
             try:
                 refreshed = await self.refresh_customer_conversation(
                     customer_id=customer_id,
@@ -4696,6 +4846,67 @@ class OutreachService:
                     "customer_relation": customer_relation,
                 }
             messages = refreshed.get("messages") or []
+            first_added_at = _string(refreshed.get("first_added_at"))
+            authoritative_added_at = _parse_iso(first_added_at)
+            if not authoritative_added_at:
+                _update_run(
+                    status="blocked",
+                    reason_code="first_added_at_unavailable",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "first_added_at_unavailable",
+                }
+            if not _is_within_first_day(first_added_at):
+                _update_run(
+                    status="blocked",
+                    reason_code="not_first_day",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+                return {"status": "skipped", "customer_id": customer_id, "reason": "not_first_day"}
+            conversation_id = _string(refreshed.get("conversation_id"))
+            if not conversation_id:
+                _update_run(
+                    status="blocked",
+                    reason_code="conversation_id_unavailable",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "conversation_id_unavailable",
+                }
+            local_now = datetime.now(timezone.utc).astimezone(OUTREACH_BEIJING_TIMEZONE)
+            local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            local_day_end = local_day_start + timedelta(days=1)
+            created_today = self.repository.count_outreach_plans_for_trigger_between(
+                customer_id=customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+                trigger_type=FIRST_DAY_SILENCE_TRIGGER_TYPE,
+                started_at=local_day_start.astimezone(timezone.utc).isoformat(),
+                ended_at=local_day_end.astimezone(timezone.utc).isoformat(),
+            )
+            if created_today >= FIRST_DAY_DAILY_PLAN_LIMIT:
+                _update_run(
+                    status="blocked",
+                    reason_code="first_day_daily_plan_limit_reached",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "first_day_daily_plan_limit_reached",
+                    "created_today": created_today,
+                    "daily_limit": FIRST_DAY_DAILY_PLAN_LIMIT,
+                }
             real_customer_count = _real_customer_message_count(messages)
             latest_customer_text = _latest_real_customer_message_time(messages)
             latest_staff_text = self._latest_message_time(messages, sender="staff")
@@ -4755,6 +4966,35 @@ class OutreachService:
                 latest_customer_message_at=latest_customer_text,
                 latest_staff_message_at=latest_staff_text,
             )
+            authoritative_existing_run = (
+                run_finder(
+                    customer_id=customer_id,
+                    corp_id=identity["corp_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
+                    conversation_fingerprint=conversation_fingerprint,
+                )
+                if callable(run_finder)
+                else {}
+            )
+            if authoritative_existing_run and _string(
+                authoritative_existing_run.get("workflow_run_id")
+            ) != workflow_run_id:
+                _update_run(
+                    status="blocked",
+                    reason_code="authoritative_fingerprint_already_logged",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "conversation_fingerprint_already_logged",
+                    "workflow_run_id": _string(
+                        authoritative_existing_run.get("workflow_run_id")
+                    ),
+                }
+            _update_run(conversation_fingerprint=conversation_fingerprint)
             if self.repository.has_outreach_evaluation_fingerprint(
                 customer_id=customer_id,
                 corp_id=identity["corp_id"],
@@ -4824,6 +5064,7 @@ class OutreachService:
                     "awaiting_customer_reply": True,
                 },
                 "customer_context": customer_context,
+                "conversation_id": conversation_id,
             }
             result = await self.generate_plan(
                 **identity,
@@ -4836,6 +5077,7 @@ class OutreachService:
                     "trigger_type": FIRST_DAY_SILENCE_TRIGGER_TYPE,
                     "activation_policy": "auto_approved",
                     "conversation_fingerprint": conversation_fingerprint,
+                    "conversation_id": conversation_id,
                     "first_added_at": first_added_at,
                     "latest_customer_message_at": latest_customer_text,
                     "latest_staff_message_at": latest_staff_text,
@@ -5192,26 +5434,9 @@ class OutreachService:
         return {"count": len(results), "results": results}
 
     async def execute_due_first_day_tasks(self, *, limit: int = 20) -> dict[str, Any]:
-        tasks = self.repository.list_due_outreach_tasks(
-            limit=limit,
-            auto_approved_only=True,
-        )
+        tasks = self.repository.list_due_first_day_tasks(limit=limit)
         results = []
         for task in tasks:
-            plan_detail = self.repository.get_outreach_plan(str(task.get("plan_id") or ""))
-            plan = plan_detail.get("plan") if isinstance(plan_detail.get("plan"), dict) else {}
-            source_snapshot = (
-                plan.get("source_snapshot")
-                if isinstance(plan.get("source_snapshot"), dict)
-                else {}
-            )
-            trigger_context = (
-                source_snapshot.get("trigger_context")
-                if isinstance(source_snapshot.get("trigger_context"), dict)
-                else {}
-            )
-            if _string(trigger_context.get("trigger_type")) != FIRST_DAY_SILENCE_TRIGGER_TYPE:
-                continue
             results.append(await self.execute_task(task["id"]))
         return {"count": len(results), "results": results}
 
@@ -5235,7 +5460,72 @@ class OutreachService:
         is_first_day_plan = (
             _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
         )
+        conversation_id_send_support = getattr(
+            self.system_client,
+            "supports_conversation_id_send",
+            None,
+        )
+        if is_first_day_plan and conversation_id_send_support is False:
+            reason = "conversation_id_send_contract_disabled"
+            self.repository.update_outreach_task(task_id, status="skipped", error_message=reason)
+            self.repository.skip_remaining_outreach_tasks(
+                str(task["plan_id"]),
+                reason=reason,
+                exclude_task_id=task_id,
+            )
+            self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+            self._sync_first_day_run_for_task(
+                plan=plan,
+                task=task,
+                status="blocked",
+                reason_code=reason,
+                final_decision="no_send",
+                terminal=True,
+            )
+            return {"ok": True, "status": "skipped", "reason": reason}
+        identity = {
+            "customer_id": _string(task.get("customer_id")),
+            "corp_id": _string(task.get("corp_id") or plan.get("corp_id")),
+            "user_id": _string(task.get("user_id") or plan.get("user_id")),
+            "wechat": _string(task.get("wechat") or plan.get("wechat")),
+            "external_userid": _string(task.get("external_userid") or plan.get("external_userid")),
+        }
+        missing_identity = _missing_outreach_identity_fields(identity)
+        if missing_identity:
+            reason = "invalid_outreach_identity"
+            detail = {
+                "missing": missing_identity,
+                "identity": identity,
+                "note": "customer_id and external_userid are distinct upstream identities and must not fallback to each other",
+            }
+            self.repository.update_outreach_task(task_id, status="failed", error_message=reason)
+            self.repository.skip_remaining_outreach_tasks(
+                str(task["plan_id"]),
+                reason=reason,
+                exclude_task_id=task_id,
+            )
+            self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+            self.repository.add_outreach_event(
+                plan_id=str(task["plan_id"]),
+                task_id=task_id,
+                customer_id=str(task["customer_id"]),
+                event_type="task_failed_terminal",
+                event_summary=reason,
+                payload=detail,
+            )
+            self._sync_first_day_run_for_task(
+                plan=plan,
+                task=task,
+                status="blocked",
+                reason_code=reason,
+                final_decision="blocked",
+                terminal=True,
+            )
+            return {"ok": False, "status": "failed", "error": reason, **detail}
         fresh_conversation_messages: list[dict[str, Any]] = []
+        send_conversation_id = _string(source_snapshot.get("conversation_id")) or _string(
+            trigger_context.get("conversation_id")
+        )
         try:
             sent_today_loader = getattr(self.repository, "outreach_sent_today_count", None)
             if callable(sent_today_loader):
@@ -5321,6 +5611,7 @@ class OutreachService:
                         for message in refresh.get("messages") or []
                         if isinstance(message, dict)
                     ]
+                    send_conversation_id = _string(refresh.get("conversation_id")) or send_conversation_id
                     customer_relation = (
                         refresh.get("customer_relation")
                         if isinstance(refresh.get("customer_relation"), dict)
@@ -5438,6 +5729,8 @@ class OutreachService:
                     )
                     return {"ok": False, "status": "rescheduled", "error": message, "retryable": True}
             try:
+                if is_first_day_plan and conversation_id_send_support is True and not send_conversation_id:
+                    raise RuntimeError("first_day_conversation_id_unavailable")
                 reply_messages = await self._generate_task_messages(task=task, plan=plan)
             except OutreachMessagePolicyError as exc:
                 reason = _string(exc) or "first_day_message_policy_violation"
@@ -5553,26 +5846,31 @@ class OutreachService:
                 reply_messages=reply_messages,
             )
             send_result = await self.system_client.send(
-                corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
-                customer_id=str(task["customer_id"]),
-                external_userid=str(task.get("external_userid") or plan.get("external_userid") or task["customer_id"]),
-                user_id=str(task.get("user_id") or plan.get("user_id") or ""),
-                wechat=str(task.get("wechat") or plan.get("wechat") or ""),
+                corp_id=identity["corp_id"],
+                customer_id=identity["customer_id"],
+                external_userid=identity["external_userid"],
+                user_id=identity["user_id"],
+                wechat=identity["wechat"],
                 plan_id=str(task["plan_id"]),
                 task_id=task_id,
                 reply_messages=reply_messages,
+                conversation_id=send_conversation_id,
             )
         except Exception as exc:
             message = str(exc)
             self.repository.update_outreach_task(task_id, status="failed", error_message=message)
             terminal_reason = _terminal_outreach_send_failure_reason(message)
-            if terminal_reason:
+            cancel_reason = terminal_reason or (
+                "first_day_preceding_task_failed" if is_first_day_plan else ""
+            )
+            if cancel_reason:
                 self.repository.skip_remaining_outreach_tasks(
                     str(task["plan_id"]),
-                    reason=terminal_reason,
+                    reason=cancel_reason,
                     exclude_task_id=task_id,
                 )
                 self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+            if terminal_reason:
                 scope = build_customer_scope(
                     corp_id=task.get("corp_id") or plan.get("corp_id"),
                     wechat=task.get("wechat") or plan.get("wechat"),

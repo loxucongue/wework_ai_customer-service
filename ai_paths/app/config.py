@@ -185,6 +185,11 @@ class Settings(BaseSettings):
     outreach_system_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SYSTEM_BASE_URL")
     outreach_system_token: str = Field(default="", alias="OUTREACH_SYSTEM_TOKEN", repr=False)
     outreach_system_timeout_seconds: int = Field(default=12, alias="OUTREACH_SYSTEM_TIMEOUT_SECONDS")
+    outreach_system_send_conversation_id_enabled: bool = Field(
+        default=False,
+        alias="OUTREACH_SYSTEM_SEND_CONVERSATION_ID_ENABLED",
+    )
+    background_workers_enabled: bool = Field(default=True, alias="AI_PATHS_BACKGROUND_WORKERS_ENABLED")
     outreach_auto_send_enabled: bool = Field(default=False, alias="OUTREACH_AUTO_SEND_ENABLED")
     outreach_auto_send_poll_seconds: float = Field(default=5.0, alias="OUTREACH_AUTO_SEND_POLL_SECONDS")
     outreach_auto_send_batch_size: int = Field(default=20, alias="OUTREACH_AUTO_SEND_BATCH_SIZE")
@@ -197,7 +202,7 @@ class Settings(BaseSettings):
         default=True,
         alias="OUTREACH_PLAN_MONITOR_AUTO_ACTIVATE",
     )
-    outreach_first_day_silence_enabled: bool = Field(default=True, alias="OUTREACH_FIRST_DAY_SILENCE_ENABLED")
+    outreach_first_day_silence_enabled: bool = Field(default=False, alias="OUTREACH_FIRST_DAY_SILENCE_ENABLED")
     outreach_first_day_silence_minutes: int = Field(default=3, alias="OUTREACH_FIRST_DAY_SILENCE_MINUTES")
     debug_platform_context_enabled: bool = Field(default=False, alias="DEBUG_PLATFORM_CONTEXT_ENABLED")
     debug_platform_customer_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ID")

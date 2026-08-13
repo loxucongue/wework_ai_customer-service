@@ -57,7 +57,11 @@ class OutreachSendClient:
             fallback_external_userid=fallback_external_userid,
             reply_messages=reply_messages,
         )
-        missing = [key for key in ("corp_id", "customer_id", "user_id", "wechat") if not payload.get(key)]
+        missing = [
+            key
+            for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat")
+            if not payload.get(key)
+        ]
         if missing:
             return {"status": "skipped", "reason": "missing_required_fields", "missing": missing}
         if not reply_messages:
@@ -117,8 +121,8 @@ class OutreachSendClient:
             return {"status": "skipped", "reason": "outreach_send_not_configured"}
         params = {
             "corp_id": str(corp_id or "").strip(),
-            "customer_id": str(customer_id or external_userid or "").strip(),
-            "external_userid": str(external_userid or customer_id or "").strip(),
+            "customer_id": str(customer_id or "").strip(),
+            "external_userid": str(external_userid or "").strip(),
             "user_id": str(user_id or "").strip(),
             "wechat": str(wechat or "").strip(),
             "limit": str(max(1, min(int(limit or 30), 50))),
@@ -217,7 +221,7 @@ class OutreachSendClient:
         reply_messages: list[dict[str, Any]],
     ) -> dict[str, Any]:
         external_userid = str(request_context.get("external_userid") or fallback_external_userid or "").strip()
-        customer_id = external_userid or str(request_context.get("customer_id") or fallback_customer_id or "").strip()
+        customer_id = str(request_context.get("customer_id") or fallback_customer_id or "").strip()
         payload = {
             "corp_id": str(request_context.get("corp_id") or fallback_corp_id or "").strip(),
             "customer_id": customer_id,

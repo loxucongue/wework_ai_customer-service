@@ -32,6 +32,7 @@ from app.services.sop_platform_task_policy import personalized_payment_collectio
 from app.services.outreach_service import (
     FIRST_DAY_SILENCE_TRIGGER_TYPE,
     OutreachService,
+    _first_day_available_sources_by_scene,
     _first_day_final_plan_error,
     _first_day_scene_analysis_error,
     _first_day_scene_lock_error,
@@ -137,6 +138,8 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 
 FIRST_DAY_SEMANTIC_REVIEW_PROMPT = """
 你是首日微信沉默跟进的独立语义评审，只评价客户实际看到的两步消息，不检查程序结构。
+判定位置重复前必须核对消息角色：客户问“有门店吗”不等于客服已经询问客户省市或区县；此前客服只回答“有门店”时，后续首次询问客户常去城市或区县是有效推进，不得降低 `conversation_continuity`、`scene_execution` 或 `semantic_non_repeat`。
+活动介绍和预约推进是两个不同交付：前者说明活动规则，后者把 10 元规则转成微信转账或红包、锁名额、时间灵活的可执行动作。只要客户可见文本增加该行动价值，就不得仅因都出现 10 元、抵扣和退款而判为重复。
 
 输入包含测试案例、权威场景分析、候选计划、素材目录和 `runtime_delivery_view`。分别给以下五项 1 至 5 分，4 分表示可上线：
 - `workflow.scene_analysis` 是已经通过代码合同的权威场景锁。测试案例中的预期字段只用于离线统计，不能覆盖权威场景锁；不得仅因候选执行的锁定场景与测试案例预期不同而降低任何语义分数。
@@ -191,6 +194,10 @@ ALLOWED_ANGLES = {
 ALLOWED_ASSET_STRATEGIES = {"none", "configured_image", "operation_video", "case_search"}
 
 FIRST_DAY_EXPECTED_SCENES: dict[str, dict[str, Any]] = {
+    "first_day_completed_effect_activity_store_then_deposit": {
+        "step1": {"store_area_request"},
+        "step2": {"deposit_close"},
+    },
     "first_day_effect_next_scene": {"step1": {"activity_intro", "trust_repair", "objection_resolution"}, "step2": {"activity_intro", "store_area_request", "trust_repair", "objection_resolution"}},
     "first_day_price_already_explained": {"step1": {"effect_proof", "trust_repair", "objection_resolution", "store_area_request"}, "step2": {"effect_proof", "store_area_request", "trust_repair", "objection_resolution"}},
     "first_day_store_without_lookup": {"step1": {"store_area_request"}, "step2": {"effect_proof", "activity_intro"}},
@@ -434,6 +441,7 @@ async def _run_first_day_workflow(
     artifacts: dict[str, Any],
     appointment_material_catalog: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload["available_sources_by_scene"] = _first_day_available_sources_by_scene(payload)
     if int((payload.get("conversation_activity") or {}).get("real_customer_message_count") or 0) == 0:
         scene_analysis = _normalize_first_day_scene_analysis(
             {},
@@ -478,6 +486,14 @@ async def _run_first_day_workflow(
                             "source_snapshot": payload,
                             "invalid_scene_analysis": scene_analysis,
                             "schema_error": scene_error,
+                            "locked_scenes": {
+                                "step1": str(scene_analysis.get("step1_scene") or ""),
+                                "step2": str(scene_analysis.get("step2_scene") or ""),
+                            },
+                            "available_sources_by_scene": payload.get(
+                                "available_sources_by_scene"
+                            )
+                            or {},
                             "instruction": "只修复 JSON 结构合同，不改变已有业务判断。",
                         },
                         ensure_ascii=False,
@@ -509,6 +525,14 @@ async def _run_first_day_workflow(
                             "source_snapshot": payload,
                             "invalid_scene_analysis": scene_analysis,
                             "schema_error": scene_error,
+                            "locked_scenes": {
+                                "step1": str(scene_analysis.get("step1_scene") or ""),
+                                "step2": str(scene_analysis.get("step2_scene") or ""),
+                            },
+                            "available_sources_by_scene": payload.get(
+                                "available_sources_by_scene"
+                            )
+                            or {},
                             "instruction": "再次只修复剩余 JSON 结构错误，保留已有业务判断并返回完整对象。",
                         },
                         ensure_ascii=False,

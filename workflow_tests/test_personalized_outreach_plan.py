@@ -17,6 +17,7 @@ from app.services.outreach_service import (
     _first_day_materialized_sop_messages,
     _first_day_outreach_plan_error,
     _first_day_scene_analysis_error,
+    _first_day_available_sources_by_scene,
     _first_day_scene_lock_error,
     _first_day_verifier_error,
     _first_day_writer_payload,
@@ -44,6 +45,30 @@ from app.services.sop_platform_task_policy import personalized_payment_collectio
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_first_day_sources_are_explicitly_scoped_by_scene(self) -> None:
+        snapshot = {
+            "first_day_sop_sequence": [
+                {"source_id": "sop-pack:store", "mapped_scene": "store_area_request"},
+                {"source_id": "sop-pack:deposit", "mapped_scene": "deposit_close"},
+            ],
+            "appointment_blocker_scene_index": [
+                {
+                    "applicable_scene": "客户担心效果",
+                    "blocker_types": ["效果顾虑"],
+                    "source_ids": ["appointment-blocker:effect"],
+                }
+            ],
+        }
+
+        available = _first_day_available_sources_by_scene(snapshot)
+
+        self.assertEqual(available["store_area_request"][0]["source_id"], "sop-pack:store")
+        self.assertEqual(available["deposit_close"][0]["source_id"], "sop-pack:deposit")
+        self.assertEqual(
+            available["trust_repair"][0]["source_id"],
+            "appointment-blocker:effect",
+        )
+        self.assertTrue(available["trust_repair"][0]["requires_customer_evidence"])
     async def test_first_day_model_node_retries_one_timeout_and_records_trace(self) -> None:
         class _TimeoutThenSuccessModel:
             def __init__(self) -> None:
@@ -124,8 +149,9 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不得因为超过两句就要求修复", verifier)
         self.assertIn("已询问、等待回答", analyst)
         self.assertIn("不能只看 SOP 完成标记", analyst)
-        self.assertIn("换词后的位置问题都属于重复", verifier)
-        self.assertIn("审核节点只判断语义重复，不自行改选场景", verifier)
+        self.assertIn("判定位置重复前必须逐条核对消息角色", verifier)
+        self.assertIn("客户本人问", verifier)
+        self.assertIn("不得凭主观理解把正确的 `scene` 判成另一个场景", verifier)
         for prompt in (analyst, writer, verifier):
             self.assertNotIn("# 1. Role", prompt)
             self.assertNotIn("# 2. Objective", prompt)
@@ -688,6 +714,28 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
             "repair verifier response requires violations and repair instructions",
+        )
+        self.assertIn(
+            "immutable contract fields",
+            _first_day_verifier_error(
+                {
+                    "decision": "repair",
+                    "block_category": "none",
+                    "violations": [
+                        {
+                            "code": "scene_conflict",
+                            "field": "candidate_plan.steps[1].scene",
+                            "evidence": "错误地认为第二步场景不一致",
+                        }
+                    ],
+                    "repair_instructions": [
+                        {
+                            "field": "candidate_plan.steps[1].scene",
+                            "instruction": "修改第二步场景",
+                        }
+                    ],
+                }
+            ),
         )
         plan["steps"][1]["scene"] = "store_area_request"
         self.assertEqual(
@@ -2531,6 +2579,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.generate_plan(
             customer_id="22000001",
+            corp_id="corp-1",
+            user_id="7294",
+            wechat="DY258",
+            external_userid="external-1",
             source_context={"memory": {}, "recent_messages": []},
         )
 
@@ -2561,6 +2613,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.generate_plan(
             customer_id="22000001",
+            corp_id="corp-1",
+            user_id="7294",
+            wechat="DY258",
+            external_userid="external-1",
             source_context={"memory": {}, "recent_messages": []},
         )
 
@@ -2820,7 +2876,14 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             coze_client=_CozeClient(),
         )
 
-        await service.generate_plan(customer_id="22000001", source_context={"recent_messages": [], "memory": {}})
+        await service.generate_plan(
+            customer_id="22000001",
+            corp_id="corp-1",
+            user_id="7294",
+            wechat="DY258",
+            external_userid="external-1",
+            source_context={"recent_messages": [], "memory": {}},
+        )
 
         self.assertEqual(
             [item["type"] for item in repository.created_plan["tasks"][0]["reply_messages"]],
@@ -3133,7 +3196,14 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             coze_client=_FailingCozeClient(),
         )
 
-        await service.generate_plan(customer_id="22000001", source_context={"recent_messages": [], "memory": {}})
+        await service.generate_plan(
+            customer_id="22000001",
+            corp_id="corp-1",
+            user_id="7294",
+            wechat="DY258",
+            external_userid="external-1",
+            source_context={"recent_messages": [], "memory": {}},
+        )
 
         self.assertEqual(
             repository.created_plan["tasks"][1]["reply_messages"][1]["content"]["url"],
@@ -3503,6 +3573,8 @@ class _MonitorOutreachService(OutreachService):
     async def refresh_customer_conversation(self, **_kwargs: Any) -> dict[str, Any]:
         return {
             "messages": list(self.refreshed_messages),
+            "first_added_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            "conversation_id": "ww:staff:external",
             "customer_relation": {
                 "available": True,
                 "status": "deleted" if self.deleted else "active",

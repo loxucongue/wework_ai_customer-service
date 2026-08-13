@@ -17,6 +17,10 @@ class OutreachSystemClient:
     def available(self) -> bool:
         return bool(self.settings.outreach_system_token)
 
+    @property
+    def supports_conversation_id_send(self) -> bool:
+        return bool(self.settings.outreach_system_send_conversation_id_enabled)
+
     async def conversation(
         self,
         *,
@@ -51,19 +55,24 @@ class OutreachSystemClient:
         plan_id: str,
         task_id: str,
         reply_messages: list[dict[str, Any]],
+        conversation_id: str = "",
     ) -> dict[str, Any]:
+        body = {
+            "corp_id": corp_id,
+            "customer_id": customer_id,
+            "external_userid": external_userid,
+            "user_id": user_id,
+            "wechat": wechat,
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "reply_messages": reply_messages,
+        }
+        if self.settings.outreach_system_send_conversation_id_enabled and conversation_id:
+            body["conversation_id"] = conversation_id
         return await self._request(
             "POST",
             "/api/v1/platform-agent/ai-outreach/send",
-            json_body={
-                "corp_id": corp_id,
-                "customer_id": customer_id,
-                "user_id": user_id,
-                "wechat": wechat,
-                "plan_id": plan_id,
-                "task_id": task_id,
-                "reply_messages": reply_messages,
-            },
+            json_body=body,
         )
 
     async def _request(

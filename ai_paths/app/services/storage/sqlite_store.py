@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +23,7 @@ class SQLiteStore:
             conn.executescript(schema)
             self._ensure_customer_memory_columns(conn)
             self._ensure_outreach_plan_columns(conn)
+            self._ensure_first_day_outreach_run_columns(conn)
             self._ensure_sop_event_columns(conn)
             self._ensure_sop_send_task_columns(conn)
             self._ensure_sales_contact_indexes(conn)
@@ -66,6 +68,67 @@ class SQLiteStore:
             if name not in existing:
                 conn.execute(f"ALTER TABLE outreach_plans ADD COLUMN {name} {definition}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_outreach_plans_sop_plan_id ON outreach_plans(sop_plan_id, created_at)")
+
+    @staticmethod
+    def _ensure_first_day_outreach_run_columns(conn: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(first_day_outreach_runs)").fetchall()
+        }
+        columns = {
+            "conversation_fingerprint": "TEXT DEFAULT NULL",
+            "next_retry_at": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(
+                    f"ALTER TABLE first_day_outreach_runs ADD COLUMN {name} {definition}"
+                )
+        rows = conn.execute(
+            """
+            SELECT workflow_run_id, corp_id, wechat, external_userid, customer_id,
+                   trigger_type, input_snapshot_json
+            FROM first_day_outreach_runs
+            WHERE conversation_fingerprint IS NULL
+            ORDER BY started_at DESC, workflow_run_id DESC
+            """
+        ).fetchall()
+        claimed: set[tuple[str, str, str, str, str, str]] = set()
+        for row in rows:
+            try:
+                snapshot = json.loads(str(row["input_snapshot_json"] or "{}"))
+            except (TypeError, ValueError):
+                continue
+            trigger = snapshot.get("trigger_context") if isinstance(snapshot, dict) else {}
+            fingerprint = str(
+                trigger.get("conversation_fingerprint") if isinstance(trigger, dict) else ""
+            ).strip()
+            key = (
+                str(row["corp_id"] or ""),
+                str(row["wechat"] or "").lower(),
+                str(row["external_userid"] or ""),
+                str(row["customer_id"] or ""),
+                str(row["trigger_type"] or ""),
+                fingerprint,
+            )
+            if not fingerprint or key in claimed:
+                continue
+            conn.execute(
+                "UPDATE first_day_outreach_runs SET conversation_fingerprint=? WHERE workflow_run_id=?",
+                (fingerprint, row["workflow_run_id"]),
+            )
+            claimed.add(key)
+        conn.execute("DROP INDEX IF EXISTS idx_first_day_runs_fingerprint")
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_first_day_runs_contact_fingerprint
+            ON first_day_outreach_runs(
+                corp_id, wechat, external_userid, customer_id,
+                trigger_type, conversation_fingerprint
+            )
+            WHERE conversation_fingerprint IS NOT NULL AND conversation_fingerprint<>''
+            """
+        )
 
     @staticmethod
     def _ensure_sop_event_columns(conn: sqlite3.Connection) -> None:

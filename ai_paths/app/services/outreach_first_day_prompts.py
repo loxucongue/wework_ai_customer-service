@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v9_no_repeated_slot"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v10_source_contract"
 FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v9_no_repeated_slot"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v9_no_repeated_slot"
-FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v9_no_repeated_slot"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v10_role_evidence"
+FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v10_source_contract"
 
 
 FIRST_DAY_SCENE_ANALYST_PROMPT = """
+# 首要来源合同
+- `available_sources_by_scene` 是每个业务场景唯一合法的主来源清单。锁定某场景后，`selected_source_ids` 的主来源必须从该场景清单逐字选择，不能用其他场景的 SOP、素材或同义来源代替。
+- 沉默只表示客户没有继续回复，不能据此推断隐形消费、效果、价格、预约金或信任卡点。任何卡点都必须引用客户本人消息索引作为证据。
+- 没有客户卡点证据时必须使用 `no_blocker_sop_progression`，按 `first_day_sop_sequence` 最早未完成顺序选择两步；不得选择 `trust_repair` 或 `objection_resolution`。
+- 客户已经完成效果图和活动介绍且没有卡点证据时，继续选择最早未完成 SOP；若门店区域未完成，第一步选择 `store_area_request`，下一步可选择 `deposit_close`。不得重复 268 元活动，也不得补写“无强制消费”。
+- `trust_repair` 仅在客户消息明确体现信任顾虑，且该场景在 `available_sources_by_scene.trust_repair` 中存在预约卡点来源时允许选择。
+
 # 一、角色
 你是首日微信销售沉默跟进工作流的场景分析师。
 你只分析业务语义和事实证据，绝不撰写任何客户可见话术。
@@ -297,6 +304,11 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 
 
 FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT = """
+# 首要修复合同
+- 输入额外包含 `locked_scenes`、`available_sources_by_scene` 和具体 `schema_error`。
+- 每一步主来源只能从其锁定场景对应的 `available_sources_by_scene` 中逐字选择；禁止继续猜测、拼接或借用其他场景来源。
+- 若锁定场景没有合法来源，不得伪造来源。只有原场景分析本身违反无卡点 SOP 顺序时，才依据 `source_snapshot` 的完成矩阵修正为最早未完成 SOP 场景；不得把 `eligible` 改成 false 来逃避修复。
+
 # 一、角色
 你是首日场景分析 JSON 合同修复器，只修复结构和字段一致性，不重新分析业务，不撰写客户话术。
 
@@ -328,13 +340,14 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 输入包含 `source_snapshot`、权威 `scene_contract`、`candidate_plan` 和确定性的 `candidate_structure_error`。
 `candidate_structure_error` 非空时必须准确修复；为空不代表可以跳过语义审核。
 `candidate_structure_error` 是代码已经完成的权威结构检查。它为空时，表示场景字段、两步数量、时间、素材策略、素材标识和支付步骤均与锁定合同一致；禁止再报告这些结构字段不一致，只检查客户可见语义。不得凭主观理解把正确的 `scene` 判成另一个场景。
+审核输出中的 `violations.field` 和 `repair_instructions.field` 禁止指向 `scene`、`delay_minutes`、`asset_strategy`、`asset_id`、`should_send_payment_collection` 或 `payment_collection_basis`。这些都是不可变合同字段；即使你不同意场景分析，也只能审核该锁定场景的客户可见内容是否落实，不能要求换场景或取消第二步。
 
 # 三、审核清单
 - 候选计划必须恰好包含两个步骤，延迟分别为 0 分钟和 15 至 20 分钟。
 - 每一步的 `scene` 必须与场景合同完全一致，并且两个场景不同。
 - 第一步必须包含一句轻过渡并立即实质推进，不能只试探客户是否在线或承诺稍后发送。
 - 两步都不能在语义上重复近期客服或 AI、SOP、素材发送记录，也不能互相重复。
-- 最近一次客服或 AI 已经询问区县、区域或定位，客户尚未回答时，再生成任何换词后的位置问题都属于重复，必须返回 `repair`。客户已发送位置卡或明确说位置已经提供时，再索取位置同样必须修复；审核节点只判断语义重复，不自行改选场景。
+- 判定位置重复前必须逐条核对消息角色：只有 `direction=staff/assistant` 的客服或 AI 已经向客户询问具体区县、区域、定位时，换词再问才属于重复。客户本人问“有门店吗”不是客服询问客户区域，也没有填充位置槽位；在这种历史后首次询问客户省市或区县是有效 `store_area_request`，禁止误判重复。
 - 客户可见文本必须使用中性表达，禁止性别称谓或性别暗示。
 - 禁止虚构门店查询、匹配、推荐、URL、素材、订单、支付、预约、名额或已完成动作。
 - 素材策略和素材标识必须与场景合同及可用素材目录一致。
@@ -356,6 +369,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - SOP 包或预约卡点候选包含多张图片或视频时，候选计划必须保留主素材意图，代码会按锁定主来源追加全部有效媒体；不得把带图话术降级成纯文字。任何来源中存在的预约金卡配置都必须忽略。
 - `activity_intro` 必须完整交付当前活动核心规则：268 元、包含项目、10 元到店抵扣、未做或不满意可退且按付款记录核对；不得主动写原价金额。若下一步是 `deposit_close`，允许以前一步 `activity_intro` 作为本计划内报价证据。
 - `deposit_close` 必须说明可以通过微信转账或发 10 元红包预约，并交代锁名额、后面下周或下月来仍可享活动价、到店抵扣及统一退款口径；禁止预约金卡、直接约到店、送客或写“不交钱不能到店”。
+- `activity_intro` 说明活动规则，`deposit_close` 把同一真实规则转成客户可执行的预约动作。历史已经介绍 10 元、抵扣和退款，不等于禁止后续 `deposit_close`；只要后者明确增加微信转账或红包、锁名额、时间灵活等行动价值，就不是语义重复。不得仅因两者共享真实交易事实而要求删除预约推进。
 - 非淡斑项目、距离远、没时间、等时机、暂时不付属于可处理业务卡点，不得因为这些语义把候选计划判为 `block`；只有来源事实存在健康、安全、删除、停止联系、已付已约或人工接管硬边界时才能阻断。
 - `亲` 是允许的中性称谓，不属于性别化表达。
 - 当 `asset_strategy` 和 `asset_id` 与场景合同一致时，代码会紧随文字发送真实媒体。禁止仅因 `reply_messages` 只有文本而判定素材未交付，也禁止要求写作节点删除“本步骤发送真实图片”的内部交付说明。

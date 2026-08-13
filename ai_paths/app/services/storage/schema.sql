@@ -181,6 +181,8 @@ CREATE TABLE IF NOT EXISTS first_day_outreach_runs (
     customer_id TEXT NOT NULL DEFAULT '',
     external_userid TEXT NOT NULL DEFAULT '',
     trigger_type TEXT NOT NULL DEFAULT '',
+    conversation_fingerprint TEXT DEFAULT NULL,
+    next_retry_at TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'running',
     reason_code TEXT NOT NULL DEFAULT '',
     final_decision TEXT NOT NULL DEFAULT '',

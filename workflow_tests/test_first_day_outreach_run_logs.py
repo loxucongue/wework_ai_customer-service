@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -16,6 +17,62 @@ def _repository(tmp_path) -> AppRepository:
     store = SQLiteStore(SimpleNamespace(db_path=tmp_path / "runs.db"))
     store.initialize()
     return AppRepository(store)
+
+
+def test_sqlite_initialize_upgrades_legacy_first_day_run_table(tmp_path) -> None:
+    db_path = tmp_path / "legacy-runs.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE first_day_outreach_runs (
+                workflow_run_id TEXT PRIMARY KEY,
+                plan_id TEXT NOT NULL DEFAULT '',
+                first_task_id TEXT NOT NULL DEFAULT '',
+                second_task_id TEXT NOT NULL DEFAULT '',
+                corp_id TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL DEFAULT '',
+                wechat TEXT NOT NULL DEFAULT '',
+                external_userid TEXT NOT NULL DEFAULT '',
+                customer_id TEXT NOT NULL DEFAULT '',
+                trigger_type TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'running',
+                reason_code TEXT NOT NULL DEFAULT '',
+                final_decision TEXT NOT NULL DEFAULT '',
+                first_scene TEXT NOT NULL DEFAULT '',
+                second_scene TEXT NOT NULL DEFAULT '',
+                model_attempt_count INTEGER NOT NULL DEFAULT 0,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                workflow_json TEXT NOT NULL DEFAULT '{}',
+                final_plan_json TEXT NOT NULL DEFAULT '{}',
+                error_node TEXT NOT NULL DEFAULT '',
+                error_type TEXT NOT NULL DEFAULT '',
+                error_message TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL DEFAULT '',
+                finished_at TEXT NOT NULL DEFAULT '',
+                raw_redacted_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+
+    store = SQLiteStore(SimpleNamespace(db_path=db_path))
+    store.initialize()
+
+    with store.connect() as conn:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(first_day_outreach_runs)").fetchall()
+        }
+        indexes = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA index_list(first_day_outreach_runs)").fetchall()
+        }
+    assert "conversation_fingerprint" in columns
+    assert "next_retry_at" in columns
+    assert "idx_first_day_runs_contact_fingerprint" in indexes
 
 
 def _insert_conversation(
@@ -69,6 +126,113 @@ def test_redaction_removes_credentials_and_signed_url_values() -> None:
     assert "key" not in value["image"]
     assert "signed" not in value["image"]
     assert "width=800" in value["image"]
+
+
+def test_first_day_run_fingerprint_is_unique_and_reused(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    identity = {
+        "customer_id": "customer-dedupe",
+        "corp_id": "corp",
+        "user_id": "user",
+        "wechat": "staff",
+        "external_userid": "external-dedupe",
+        "trigger_type": "first_day_opened_silence",
+        "conversation_fingerprint": "fingerprint-1",
+    }
+
+    first = repository.create_first_day_outreach_run(**identity)
+    second = repository.create_first_day_outreach_run(**identity)
+
+    assert second["workflow_run_id"] == first["workflow_run_id"]
+    assert len(repository.list_first_day_outreach_runs(customer_id="customer-dedupe")["items"]) == 1
+
+
+def test_first_day_run_fingerprint_is_scoped_by_sales_contact(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    common = {
+        "customer_id": "customer-dedupe",
+        "corp_id": "corp",
+        "user_id": "user",
+        "external_userid": "external-dedupe",
+        "trigger_type": "first_day_opened_silence",
+        "conversation_fingerprint": "fingerprint-1",
+    }
+
+    first = repository.create_first_day_outreach_run(**common, wechat="staff-a")
+    second = repository.create_first_day_outreach_run(**common, wechat="staff-b")
+
+    assert second["workflow_run_id"] != first["workflow_run_id"]
+
+
+def test_due_first_day_tasks_require_all_prior_steps_sent(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    plan = repository.create_outreach_plan(
+        customer_id="customer-prior",
+        corp_id="corp",
+        user_id="user",
+        wechat="staff",
+        external_userid="external-prior",
+        customer_stage="opened",
+        stall_reason="silent",
+        customer_psychology="interested",
+        plan_goal="follow up",
+        source_snapshot={
+            "trigger_context": {
+                "trigger_type": "first_day_opened_silence",
+                "activation_policy": "auto_approved",
+            }
+        },
+        tasks=[
+            {"step_index": 1, "scheduled_at": now, "reply_messages": [{"type": "text", "content": "first"}]},
+            {"step_index": 2, "scheduled_at": now, "reply_messages": [{"type": "text", "content": "second"}]},
+        ],
+        sop_plan_id="first_day_opened_silence",
+    )
+    repository.update_outreach_plan_status(plan["plan"]["id"], "active")
+    repository.update_outreach_task(plan["tasks"][0]["id"], status="failed")
+
+    assert repository.list_due_first_day_tasks(limit=10, now=now) == []
+    assert repository.list_due_outreach_tasks(limit=10, now=now) == []
+
+
+def test_first_day_backlog_cleanup_cancels_failed_dependency_and_expired_plan(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    plan = repository.create_outreach_plan(
+        customer_id="customer-cleanup",
+        corp_id="corp",
+        user_id="user",
+        wechat="staff",
+        external_userid="external-cleanup",
+        customer_stage="opened",
+        stall_reason="silent",
+        customer_psychology="interested",
+        plan_goal="follow up",
+        source_snapshot={"trigger_context": {"trigger_type": "first_day_opened_silence"}},
+        tasks=[
+            {"step_index": 1, "scheduled_at": old, "reply_messages": [{"type": "text", "content": "first"}]},
+            {"step_index": 2, "scheduled_at": old, "reply_messages": [{"type": "text", "content": "second"}]},
+        ],
+        sop_plan_id="first_day_opened_silence",
+    )
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE outreach_plans SET created_at=?, status='active' WHERE id=?",
+            (old, plan["plan"]["id"]),
+        )
+    repository.update_outreach_task(plan["tasks"][0]["id"], status="failed")
+
+    result = repository.cleanup_first_day_task_backlog(
+        older_than=(datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),
+        dry_run=False,
+    )
+
+    assert result["affected_plan_count"] == 1
+    detail = repository.get_outreach_plan(plan["plan"]["id"])
+    assert detail["plan"]["status"] == "cancelled"
+    assert [task["status"] for task in detail["tasks"]] == ["failed", "skipped"]
+    assert any(event["event_type"] == "first_day_backlog_cleanup" for event in detail["events"])
 
 
 def test_first_day_run_list_detail_cursor_and_contact_boundary(tmp_path) -> None:
@@ -416,14 +580,15 @@ def test_first_day_monitor_logs_and_reuses_conversation_refresh_failure(tmp_path
     )
 
     assert first["status"] == "error"
-    assert second["status"] == "error"
+    assert second["status"] == "skipped"
+    assert second["reason"] == "conversation_fingerprint_already_logged"
     page = repository.list_first_day_outreach_runs(customer_id=candidate["customer_id"])
     assert len(page["items"]) == 1
     run = page["items"][0]
     assert run["status"] == "failed"
     assert run["reason_code"] == "conversation_refresh_failed"
     assert run["error_node"] == "conversation_refresh"
-    assert run["retry_count"] == 1
+    assert run["retry_count"] == 0
 
 
 def test_first_day_monitor_does_not_replan_completed_cycle_without_customer_reply(tmp_path) -> None:
@@ -457,6 +622,8 @@ def test_first_day_monitor_does_not_replan_completed_cycle_without_customer_repl
                     {"direction": "customer", "content": "hello", "created_at": customer_at},
                     {"direction": "staff", "content": "reply", "created_at": staff_at},
                 ],
+                "first_added_at": (now - timedelta(hours=1)).isoformat(),
+                "conversation_id": "ww:staff:external-completed-cycle",
                 "customer_relation": {"available": True, "status": "active", "is_deleted": False},
             }
 
