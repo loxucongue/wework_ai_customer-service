@@ -344,14 +344,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools=required_tools,
         state=state,
     )
-    decision, planner_reply_messages, required_tools = _enforce_declared_store_detail_lookup(
-        decision=decision,
-        sub_rule_id=sub_rule_id,
-        messages=planner_reply_messages,
-        required_tools=required_tools,
-        store_binding_decision=store_binding_decision,
-        state=state,
-    )
     effect_scene_id = "" if explicit_risk_reason or is_hard_health_risk_hold(risk_hold) else _selected_effect_trust_scene_id(
         precision_qa_decision=precision_qa_decision,
         state=state,
@@ -444,6 +436,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             sub_rule_id=sub_rule_id,
             messages=planner_reply_messages,
             required_tools=required_tools,
+            store_binding_decision=store_binding_decision,
             state=state,
         )
     order_decision, required_tools = _reconcile_existing_order_for_payment(
