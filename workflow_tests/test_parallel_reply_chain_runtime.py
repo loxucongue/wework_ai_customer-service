@@ -389,6 +389,14 @@ def test_parallel_reply_prompt_uses_history_without_fixed_short_ack_script() -> 
     assert "好/好的/嗯/可以" not in prompt
 
 
+def test_parallel_reply_prompt_does_not_turn_incomplete_store_scope_into_activity_coverage() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "store_scope_unavailable" in prompt
+    assert "门店覆盖和活动资格是两类独立事实" in prompt
+    assert "绝不能扩大为" in prompt
+
+
 def test_parallel_content_gate_does_not_reopen_completed_fact_collection_from_progress_gaps() -> None:
     prompt = PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
