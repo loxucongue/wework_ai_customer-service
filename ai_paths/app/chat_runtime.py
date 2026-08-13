@@ -832,7 +832,7 @@ def _record_sent_case_images(
         state["case_image_send_record"] = record
         _append_case_image_trace(state, record)
         return
-    if not record.get("document_ids"):
+    if not record.get("document_ids") and not record.get("image_urls"):
         record["status"] = "skipped"
         record["reason"] = record.get("reason") or "no_case_images_matched"
         state["case_image_send_record"] = record
@@ -855,6 +855,7 @@ def _record_sent_case_images(
 
 def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, Any]]) -> dict[str, Any]:
     case_by_url = _case_documents_by_image_url(state)
+    effect_asset_urls = _selected_effect_asset_image_urls(state)
     image_urls = [_message_image_url(message) for message in reply_messages if isinstance(message, dict)]
     image_urls = [url for url in image_urls if url]
     matched_ids: list[str] = []
@@ -866,6 +867,8 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
             if doc_id not in matched_ids:
                 matched_ids.append(doc_id)
             matched_urls.append(image_url)
+        elif _normalize_url(image_url) in effect_asset_urls:
+            matched_urls.append(image_url)
         else:
             unmatched_urls.append(image_url)
     return {
@@ -874,7 +877,44 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
         "image_urls": matched_urls,
         "unmatched_image_urls": unmatched_urls,
         "candidate_document_ids": sorted(set(case_by_url.values())),
+        "selected_effect_asset_ids": sorted(
+            {
+                asset_id
+                for asset_id in effect_asset_urls.values()
+                if str(asset_id or "").strip()
+            }
+        ),
     }
+
+
+def _selected_effect_asset_image_urls(state: AgentState) -> dict[str, str]:
+    selected_ids = {
+        str(item).strip()
+        for item in state.get("selected_content_ids") or state.get("reply_selected_content_ids") or []
+        if str(item or "").strip()
+    }
+    if not selected_ids:
+        return {}
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    output: dict[str, str] = {}
+    for candidate in joined.get("content_candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
+        if content_id not in selected_ids:
+            continue
+        if str(candidate.get("asset_role") or "").strip() != "effect_evidence":
+            continue
+        messages = candidate.get("messages")
+        if not isinstance(messages, list):
+            messages = candidate.get("reply_messages") if isinstance(candidate.get("reply_messages"), list) else []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            image_url = _message_image_url(message)
+            if image_url:
+                output[_normalize_url(image_url)] = content_id
+    return output
 
 
 def _case_documents_by_image_url(state: AgentState) -> dict[str, str]:

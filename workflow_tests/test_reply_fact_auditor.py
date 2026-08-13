@@ -977,7 +977,7 @@ def test_candidate_only_media_requires_its_selected_asset_provenance() -> None:
     )
 
 
-def test_recently_delivered_media_is_valid_history_provenance_without_reselecting_asset() -> None:
+def test_recently_delivered_media_does_not_authorize_current_resend() -> None:
     state = {
         "reply_selected_content_ids": [],
         "evidence_join": {
@@ -990,19 +990,28 @@ def test_recently_delivered_media_is_valid_history_provenance_without_reselectin
                     }
                 ]
             },
-            "content_candidates": [
-                {
-                    "content_id": "s10_need_and_case",
-                    "delivery_status": "completed",
-                    "messages": [
-                        {"type": "image", "content": "https://example.invalid/case.jpg"}
-                    ],
-                }
-            ],
+            "content_candidates": [],
             "normalized_tool_facts": {"structured_facts": {"case_facts": []}},
         },
     }
 
+    with pytest.raises(ValueError, match="unsupported_parallel_media_fact"):
+        _validate_parallel_reply_consistency(
+            [{"type": "image", "content": "https://example.invalid/case.jpg"}],
+            state,
+        )
+
+    state["evidence_join"]["content_candidates"] = [
+        {
+            "content_id": "s10_need_and_case",
+            "delivery_status": "completed",
+            "messages": [
+                {"type": "image", "content": "https://example.invalid/case.jpg"}
+            ],
+        }
+    ]
+    state["reply_selected_content_ids"] = ["s10_need_and_case"]
+    state["reply_used_fact_refs"] = ["current_message", "content_asset:s10_need_and_case"]
     _validate_parallel_reply_consistency(
         [{"type": "image", "content": "https://example.invalid/case.jpg"}],
         state,

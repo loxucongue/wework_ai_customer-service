@@ -96,8 +96,14 @@ class CustomerMemoryStore:
         image_urls: list[str] | None = None,
     ) -> dict[str, Any]:
         clean_ids = [str(item).strip() for item in document_ids if str(item).strip()]
-        if not clean_ids:
-            return {"status": "skipped", "reason": "empty_document_ids", "document_ids": []}
+        clean_urls = [str(item).strip() for item in image_urls or [] if str(item).strip()]
+        if not clean_ids and not clean_urls:
+            return {
+                "status": "skipped",
+                "reason": "empty_case_image_evidence",
+                "document_ids": [],
+                "image_urls": [],
+            }
         data = self.load(customer_id)
         portrait = data.setdefault("portrait", {})
         if not isinstance(portrait, dict):
@@ -108,7 +114,8 @@ class CustomerMemoryStore:
         for doc_id in [*existing, *clean_ids]:
             if doc_id not in merged:
                 merged.append(doc_id)
-        portrait["sent_case_document_ids"] = merged[-200:]
+        if clean_ids:
+            portrait["sent_case_document_ids"] = merged[-200:]
         now = self._now()
         data["customer_id"] = customer_id
         data["updated_at"] = now
@@ -121,7 +128,7 @@ class CustomerMemoryStore:
                     "event_time": now,
                     "facts": {
                         "document_ids": clean_ids,
-                        "image_urls": image_urls or [],
+                        "image_urls": clean_urls,
                         "request_id": request_id,
                     },
                     "source": "reply_delivery",
@@ -135,7 +142,12 @@ class CustomerMemoryStore:
                 self.repository.save_memory(customer_id, data)
             except Exception:
                 pass
-        return {"status": "recorded", "document_ids": clean_ids, "total_sent_case_document_ids": len(portrait["sent_case_document_ids"])}
+        return {
+            "status": "recorded",
+            "document_ids": clean_ids,
+            "image_urls": clean_urls,
+            "total_sent_case_document_ids": len(portrait.get("sent_case_document_ids") or []),
+        }
 
     def record_activity_intro_image_sent(
         self,

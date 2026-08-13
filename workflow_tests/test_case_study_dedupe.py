@@ -90,6 +90,50 @@ class CaseStudyDedupeTests(unittest.TestCase):
         self.assertEqual(record["document_ids"], ["doc-b"])
         self.assertEqual(record["unmatched_image_urls"], [])
 
+    def test_selected_effect_asset_image_is_recorded_without_kb_document_id(self) -> None:
+        state = {
+            "selected_content_ids": ["s10_need_and_case"],
+            "evidence_join": {
+                "content_candidates": [
+                    {
+                        "content_id": "s10_need_and_case",
+                        "asset_role": "effect_evidence",
+                        "messages": [
+                            {"type": "image", "content": "https://example.com/fixed-case.jpg"}
+                        ],
+                    }
+                ]
+            },
+        }
+        messages = [{"type": "image", "content": "https://example.com/fixed-case.jpg"}]
+
+        record = _case_image_send_record(state, messages)
+
+        self.assertEqual(record["document_ids"], [])
+        self.assertEqual(record["image_urls"], ["https://example.com/fixed-case.jpg"])
+        self.assertEqual(record["unmatched_image_urls"], [])
+        self.assertEqual(record["selected_effect_asset_ids"], ["s10_need_and_case"])
+
+    def test_memory_store_records_url_only_case_image_event(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            store = CustomerMemoryStore(Settings(memory_dir=temp_dir))
+
+            result = store.record_case_images_sent(
+                "customer-a",
+                document_ids=[],
+                image_urls=["https://example.com/fixed-case.jpg"],
+                request_id="request-a",
+            )
+            memory = store.load("customer-a")
+
+        self.assertEqual(result["status"], "recorded")
+        self.assertEqual(memory["history_events"][0]["event_type"], "case_image_sent")
+        self.assertEqual(
+            memory["history_events"][0]["facts"]["image_urls"],
+            ["https://example.com/fixed-case.jpg"],
+        )
+        self.assertNotIn("sent_case_document_ids", memory.get("portrait") or {})
+
     def test_activity_intro_image_message_maps_to_activity_record(self) -> None:
         state = {"business_rules": {"offer": {"activity_intro_image_url": "https://example.com/activity.jpg"}}}
         messages = [{"type": "image", "order": 1, "content": {"url": "https://example.com/activity.jpg"}}]
