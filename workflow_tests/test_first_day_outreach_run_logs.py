@@ -75,6 +75,64 @@ def test_sqlite_initialize_upgrades_legacy_first_day_run_table(tmp_path) -> None
     assert "idx_first_day_runs_contact_fingerprint" in indexes
 
 
+def test_sqlite_first_day_migration_is_reentrant_after_partial_backfill(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    identity = {
+        "customer_id": "customer-reentrant",
+        "corp_id": "corp",
+        "user_id": "user",
+        "wechat": "DY258",
+        "external_userid": "external-reentrant",
+        "trigger_type": "first_day_opened_silence",
+        "conversation_fingerprint": "fingerprint-reentrant",
+    }
+    existing = repository.create_first_day_outreach_run(**identity)
+    duplicate_run_id = str(uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    snapshot = (
+        '{"trigger_context":{"conversation_fingerprint":"fingerprint-reentrant"}}'
+    )
+    with repository.store.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO first_day_outreach_runs
+                (workflow_run_id, corp_id, user_id, wechat, customer_id, external_userid,
+                 trigger_type, conversation_fingerprint, input_snapshot_json,
+                 started_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            """,
+            (
+                duplicate_run_id,
+                identity["corp_id"],
+                identity["user_id"],
+                identity["wechat"].lower(),
+                identity["customer_id"],
+                identity["external_userid"],
+                identity["trigger_type"],
+                snapshot,
+                now,
+                now,
+                now,
+            ),
+        )
+
+    repository.store.initialize()
+
+    with repository.store.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT workflow_run_id, conversation_fingerprint
+            FROM first_day_outreach_runs
+            WHERE workflow_run_id IN (?, ?)
+            ORDER BY workflow_run_id
+            """,
+            (existing["workflow_run_id"], duplicate_run_id),
+        ).fetchall()
+    assert sorted(row["conversation_fingerprint"] for row in rows if row["conversation_fingerprint"]) == [
+        "fingerprint-reentrant"
+    ]
+
+
 def _insert_conversation(
     repository: AppRepository,
     *,

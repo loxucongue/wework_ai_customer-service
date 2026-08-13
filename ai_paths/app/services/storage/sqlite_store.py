@@ -84,6 +84,26 @@ class SQLiteStore:
                 conn.execute(
                     f"ALTER TABLE first_day_outreach_runs ADD COLUMN {name} {definition}"
                 )
+        populated_rows = conn.execute(
+            """
+            SELECT corp_id, wechat, external_userid, customer_id,
+                   trigger_type, conversation_fingerprint
+            FROM first_day_outreach_runs
+            WHERE conversation_fingerprint IS NOT NULL
+              AND conversation_fingerprint<>''
+            """
+        ).fetchall()
+        claimed: set[tuple[str, str, str, str, str, str]] = {
+            (
+                str(row["corp_id"] or ""),
+                str(row["wechat"] or "").lower(),
+                str(row["external_userid"] or ""),
+                str(row["customer_id"] or ""),
+                str(row["trigger_type"] or ""),
+                str(row["conversation_fingerprint"] or ""),
+            )
+            for row in populated_rows
+        }
         rows = conn.execute(
             """
             SELECT workflow_run_id, corp_id, wechat, external_userid, customer_id,
@@ -93,7 +113,6 @@ class SQLiteStore:
             ORDER BY started_at DESC, workflow_run_id DESC
             """
         ).fetchall()
-        claimed: set[tuple[str, str, str, str, str, str]] = set()
         for row in rows:
             try:
                 snapshot = json.loads(str(row["input_snapshot_json"] or "{}"))
@@ -119,11 +138,12 @@ class SQLiteStore:
             )
             claimed.add(key)
         conn.execute("DROP INDEX IF EXISTS idx_first_day_runs_fingerprint")
+        conn.execute("DROP INDEX IF EXISTS idx_first_day_runs_contact_fingerprint")
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_first_day_runs_contact_fingerprint
             ON first_day_outreach_runs(
-                corp_id, wechat, external_userid, customer_id,
+                corp_id, lower(wechat), external_userid, customer_id,
                 trigger_type, conversation_fingerprint
             )
             WHERE conversation_fingerprint IS NOT NULL AND conversation_fingerprint<>''
