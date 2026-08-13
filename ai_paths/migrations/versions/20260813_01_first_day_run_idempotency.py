@@ -16,26 +16,45 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "aics_first_day_outreach_runs",
-        sa.Column("conversation_fingerprint", sa.String(length=64), nullable=True),
-    )
-    op.add_column(
-        "aics_first_day_outreach_runs",
-        sa.Column("next_retry_at", sa.String(length=64), nullable=False, server_default=""),
-    )
     bind = op.get_bind()
-    rows = bind.execute(
+    inspector = sa.inspect(bind)
+    table_name = "aics_first_day_outreach_runs"
+    existing_columns = {
+        str(column["name"])
+        for column in inspector.get_columns(table_name)
+    }
+    if "conversation_fingerprint" not in existing_columns:
+        op.add_column(
+            table_name,
+            sa.Column("conversation_fingerprint", sa.String(length=64), nullable=True),
+        )
+    if "next_retry_at" not in existing_columns:
+        op.add_column(
+            table_name,
+            sa.Column("next_retry_at", sa.String(length=64), nullable=False, server_default=""),
+        )
+    rows = list(bind.execute(
         sa.text(
             """
             SELECT workflow_run_id, corp_id, wechat, external_userid, customer_id,
-                   trigger_type, input_snapshot_json
+                   trigger_type, conversation_fingerprint, input_snapshot_json
             FROM aics_first_day_outreach_runs
             ORDER BY started_at DESC, workflow_run_id DESC
             """
         )
-    ).mappings()
-    claimed: set[tuple[str, str, str, str, str, str]] = set()
+    ).mappings())
+    claimed: set[tuple[str, str, str, str, str, str]] = {
+        (
+            str(row.get("corp_id") or ""),
+            str(row.get("wechat") or "").lower(),
+            str(row.get("external_userid") or ""),
+            str(row.get("customer_id") or ""),
+            str(row.get("trigger_type") or ""),
+            str(row.get("conversation_fingerprint") or ""),
+        )
+        for row in rows
+        if str(row.get("conversation_fingerprint") or "").strip()
+    }
     for row in rows:
         raw_snapshot = row.get("input_snapshot_json")
         if isinstance(raw_snapshot, dict):
@@ -73,25 +92,27 @@ def upgrade() -> None:
             },
         )
         claimed.add(key)
-    op.create_index(
-        "idx_aics_first_day_runs_contact_fingerprint",
-        "aics_first_day_outreach_runs",
-        [
-            "corp_id",
-            "wechat",
-            "external_userid",
-            "customer_id",
-            "trigger_type",
-            "conversation_fingerprint",
-        ],
-        unique=True,
-        mysql_length={
-            "corp_id": 48,
-            "wechat": 48,
-            "external_userid": 48,
-            "customer_id": 48,
-        },
-    )
+    existing_indexes = {str(index["name"]) for index in inspector.get_indexes(table_name)}
+    if "idx_aics_first_day_runs_contact_fingerprint" not in existing_indexes:
+        op.create_index(
+            "idx_aics_first_day_runs_contact_fingerprint",
+            table_name,
+            [
+                "corp_id",
+                "wechat",
+                "external_userid",
+                "customer_id",
+                "trigger_type",
+                "conversation_fingerprint",
+            ],
+            unique=True,
+            mysql_length={
+                "corp_id": 48,
+                "wechat": 48,
+                "external_userid": 48,
+                "customer_id": 48,
+            },
+        )
 
 
 def downgrade() -> None:
