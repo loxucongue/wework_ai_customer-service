@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     build_git_commit: str = Field(default="unknown", alias="AI_PATHS_BUILD_GIT_COMMIT")
     build_dirty: bool = Field(default=False, alias="AI_PATHS_BUILD_DIRTY")
     build_config_revision: str = Field(default="unknown", alias="AI_PATHS_BUILD_CONFIG_REVISION")
+    v3_evaluation_dir: Path = Field(
+        default=Path(".tmp_runtime/v3_evaluations"),
+        alias="V3_EVALUATION_DIR",
+    )
     ai_paths_api_key: str = Field(default="", repr=False)
     ai_external_api_key: str = Field(default="", repr=False)
     allow_missing_external_api_key: bool = False

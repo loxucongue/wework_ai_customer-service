@@ -80,17 +80,15 @@ def _has_payment_card(result: dict[str, Any]) -> bool:
     return "payment_collection" in _message_types(result.get("reply_messages"))
 
 
-def _expected_pass(case: dict[str, Any]) -> bool:
-    annotation = case.get("annotation") if isinstance(case.get("annotation"), dict) else {}
-    quality = annotation.get("quality_expectations") if isinstance(annotation.get("quality_expectations"), dict) else {}
-    return not any(
-        bool(quality.get(key))
-        for key in (
-            "introduces_new_concern",
-            "incorrect_pause",
-            "incorrect_recovery",
-        )
-    )
+def _human_verdict(result: dict[str, Any]) -> str:
+    review = result.get("human_review")
+    if isinstance(review, dict):
+        status = str(review.get("status") or "").strip().lower()
+        verdict = str(review.get("verdict") or "").strip().lower()
+        if status in {"reviewed", "approved"} and verdict in {"pass", "fail"}:
+            return verdict
+    verdict = str(result.get("human_verdict") or "").strip().lower()
+    return verdict if verdict in {"pass", "fail"} else ""
 
 
 def _critic_status(result: dict[str, Any]) -> str:
@@ -153,6 +151,7 @@ def evaluate(golden: dict[str, Any], results: dict[str, Any]) -> dict[str, Any]:
                 "forbidden_action_hit": sorted(forbidden_hit),
                 "has_payment_card": _has_payment_card(result),
                 "critic_status": _critic_status(result),
+                "human_verdict": _human_verdict(result),
             }
         )
         rows.append(row)
@@ -195,26 +194,31 @@ def evaluate(golden: dict[str, Any], results: dict[str, Any]) -> dict[str, Any]:
     calibration_rows = [
         row
         for row in evaluated_rows
-        if row.get("partition") == "calibration" and row.get("critic_status")
+        if row.get("partition") == "calibration"
+        and row.get("critic_status")
+        and row.get("human_verdict")
     ]
     holdout_rows = [
         row
         for row in evaluated_rows
-        if row.get("partition") == "holdout" and row.get("critic_status")
+        if row.get("partition") == "holdout"
+        and row.get("critic_status")
+        and row.get("human_verdict")
     ]
     summary["critic"] = {
-        "calibration": _critic_agreement(cases, calibration_rows),
-        "holdout": _critic_agreement(cases, holdout_rows),
+        "status": "calibrated" if len(calibration_rows) == 15 else "pending_human_review",
+        "calibration": _critic_agreement(calibration_rows),
+        "holdout": _critic_agreement(holdout_rows),
     }
     return summary
 
 
-def _critic_agreement(cases: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _critic_agreement(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {"evaluated": 0, "accuracy": None, "false_positive_rate": None, "precision": None}
     true_positive = false_positive = true_negative = false_negative = 0
     for row in rows:
-        expected_pass = _expected_pass(cases[str(row["case_id"])])
+        expected_pass = row.get("human_verdict") == "pass"
         predicted_pass = row.get("critic_status") == "pass"
         if predicted_pass and expected_pass:
             true_positive += 1

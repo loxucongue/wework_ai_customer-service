@@ -32,14 +32,28 @@ They also must not generate Python keyword branches. If a case fails, fix contex
 
 ## Evaluation Flow
 
-1. Run V3 on approved offline cases and save a result JSON with per-case:
+1. Run V3 on approved offline cases through the isolated simulation runtime:
+
+```powershell
+$env:PYTHONPATH="ai_paths"
+python ai_paths/scripts/run_v3_trusted_golden.py `
+  --golden workflow_tests/fixtures/v3_trusted_golden_set_v1.json `
+  --output-root .tmp_runtime/v3_evaluations `
+  --concurrency 2
+```
+
+The command writes checkpoints, full simulation traces, `results.json`,
+`evaluation.json`, and `report.md`. It never calls a production reply, SOP,
+outreach, or send endpoint.
+
+2. Each result contains:
    - `case_id`
    - Gate candidate content IDs
    - Reply selected content IDs
    - delivered asset IDs
    - final `reply_messages`
    - optional offline Critic status
-2. Run:
+3. Recompute mechanical metrics after adding reviewed human verdicts:
 
 ```powershell
 PYTHONPATH=ai_paths python ai_paths/scripts/evaluate_v3_trusted_golden.py `
@@ -48,7 +62,7 @@ PYTHONPATH=ai_paths python ai_paths/scripts/evaluate_v3_trusted_golden.py `
   --output .tmp_runtime/v3_golden_evaluation.json
 ```
 
-3. Review:
+4. Review:
    - Gate Recall
    - False Nomination
    - Reply Adoption
@@ -71,6 +85,23 @@ It may evaluate whether a generated reply satisfies the approved case standard. 
 - decide sales rhythm
 
 The purpose is diagnosis: identify whether the failure belongs to Gate recall, Reply adoption, delivery completion, factual safety, or sales rhythm.
+
+Critic predictions are not calibration labels. Generated outputs start with
+`human_review.status=pending`. Calibration accuracy and holdout accuracy are
+only computed when a human reviewer records an explicit pass/fail verdict.
+Until all 15 calibration cases are reviewed, the report must show
+`pending_human_review`.
+
+## Read-only Review Page
+
+The V3 sidecar exposes evaluation artifacts through read-only admin endpoints:
+
+- `GET /admin/v3-evaluations`
+- `GET /admin/v3-evaluations/{run_id}`
+
+The frontend page is `/admin/v3-evaluations`. It shows final customer-visible
+messages, hard checks, Critic diagnosis, and calibration state. It does not edit
+prompts, business rules, golden labels, or production behavior.
 
 ## Why This Does Not Turn V3 Into A Matcher
 

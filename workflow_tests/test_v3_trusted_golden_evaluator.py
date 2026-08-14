@@ -72,8 +72,16 @@ def test_v3_golden_evaluator_reports_critic_holdout_metrics() -> None:
     }
     results = {
         "results": [
-            {"case_id": "ok", "critic": {"status": "pass"}},
-            {"case_id": "bad", "critic": {"status": "fail"}},
+            {
+                "case_id": "ok",
+                "critic": {"status": "pass"},
+                "human_review": {"status": "reviewed", "verdict": "pass"},
+            },
+            {
+                "case_id": "bad",
+                "critic": {"status": "fail"},
+                "human_review": {"status": "reviewed", "verdict": "fail"},
+            },
         ]
     }
 

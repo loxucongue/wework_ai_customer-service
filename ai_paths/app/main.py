@@ -36,6 +36,7 @@ from app.services.store_snapshot_service import StoreSnapshotService
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.trace_logger import TraceLogger
 from app.services.voice_transcription import DoubaoAsrClient, transcribe_voice_request
+from app.services.v3_evaluation_service import V3EvaluationService
 from app.services.workflow_compat import (
     normalize_workflow_request,
     workflow_error_response,
@@ -43,6 +44,7 @@ from app.services.workflow_compat import (
 )
 
 settings = get_settings()
+v3_evaluation_service = V3EvaluationService(settings.v3_evaluation_dir)
 trace_logger = TraceLogger(settings)
 storage_store = build_store(settings)
 repository = AppRepository(storage_store)
@@ -773,6 +775,25 @@ async def admin_runs(
             has_error=has_error,
         )
     }
+
+
+@app.get("/admin/v3-evaluations", dependencies=[Depends(require_api_key)])
+async def admin_v3_evaluations() -> dict[str, Any]:
+    if settings.service_role != "model_led_sales_brain_v3":
+        raise HTTPException(status_code=404, detail="V3 evaluation view is only available on the V3 sidecar")
+    return v3_evaluation_service.list_runs()
+
+
+@app.get("/admin/v3-evaluations/{run_id}", dependencies=[Depends(require_api_key)])
+async def admin_v3_evaluation(run_id: str) -> dict[str, Any]:
+    if settings.service_role != "model_led_sales_brain_v3":
+        raise HTTPException(status_code=404, detail="V3 evaluation view is only available on the V3 sidecar")
+    try:
+        return v3_evaluation_service.get_run(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="evaluation run not found") from exc
 
 
 @app.get("/admin/outreach/candidates", dependencies=[Depends(require_api_key)])

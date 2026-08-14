@@ -383,6 +383,26 @@ export async function getAiPathsRun(requestId: string) {
   });
 }
 
+export async function listV3Evaluations() {
+  return fetch(`${v3ApiBase()}/admin/v3-evaluations`, {
+    method: "GET",
+    headers: aiPathsAuthHeaders(),
+    cache: "no-store",
+  });
+}
+
+export async function getV3Evaluation(runId: string) {
+  return fetch(`${v3ApiBase()}/admin/v3-evaluations/${encodeURIComponent(runId)}`, {
+    method: "GET",
+    headers: aiPathsAuthHeaders(),
+    cache: "no-store",
+  });
+}
+
+function v3ApiBase() {
+  return (process.env.AI_PATHS_V3_API_BASE || "http://127.0.0.1:8013").replace(/\/$/, "");
+}
+
 export async function listAiPathsSopEvents(query: AiPathsSopEventsQuery) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const headers = aiPathsAuthHeaders();
