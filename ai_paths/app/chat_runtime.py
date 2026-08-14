@@ -1040,6 +1040,12 @@ def _record_v2_reply_model_observation(
         customer_friction_observation=str(
             judgment.get("customer_friction_observation") or ""
         ),
+        interface_version=str(
+            (state.get("request_context") if isinstance(state.get("request_context"), dict) else {}).get(
+                "interface_version"
+            )
+            or "v2"
+        ),
     )
 
 

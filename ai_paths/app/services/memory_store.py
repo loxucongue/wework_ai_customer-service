@@ -198,6 +198,7 @@ class CustomerMemoryStore:
         request_id: str,
         primary_objective: str,
         customer_friction_observation: str,
+        interface_version: str = "v2",
     ) -> dict[str, Any]:
         """Persist a short model self-observation as low-authority evidence.
 
@@ -210,9 +211,13 @@ class CustomerMemoryStore:
         friction = str(customer_friction_observation or "").strip()[:500]
         if not objective and not friction:
             return {"status": "skipped", "reason": "empty_model_observation"}
+        version = str(interface_version or "v2").strip().lower()
+        if version not in {"v2", "v3"}:
+            version = "v2"
         data = self.load(customer_id)
         now = self._now()
-        event_id = f"v2_reply_model_observation_{request_id or uuid4()}"
+        event_type = f"{version}_reply_model_observation"
+        event_id = f"{event_type}_{request_id or uuid4()}"
         events = data.setdefault("history_events", [])
         if not isinstance(events, list):
             events = []
@@ -224,14 +229,15 @@ class CustomerMemoryStore:
             events.append(
                 {
                     "event_id": event_id,
-                    "event_type": "v2_reply_model_observation",
+                    "event_type": event_type,
                     "event_time": now,
                     "facts": {
                         "primary_objective": objective,
                         "customer_friction_observation": friction,
                         "request_id": str(request_id or ""),
+                        "interface_version": version,
                     },
-                    "source": "v2_reply_model",
+                    "source": f"{version}_reply_model",
                     "confidence": 0.5,
                 }
             )

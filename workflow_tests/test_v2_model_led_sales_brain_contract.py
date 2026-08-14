@@ -68,10 +68,50 @@ def test_derived_observations_are_raw_rebuildable_values_without_predicates() ->
 
     serialized = str(result).lower()
     assert result["recent_asset_deliveries"][0]["source_refs"]
-    assert result["prior_model_observations"][0]["authority"] == "prior_model_observation_not_customer_fact"
+    assert result["prior_model_observations"][0]["authority"] == "v2_prior_model_observation_not_customer_fact"
     assert "high_intent" not in serialized
     assert "should_close" not in serialized
     assert "objection_resolved" not in serialized
+
+
+def test_derived_observations_keep_v2_and_v3_model_observations_separate() -> None:
+    history_events = [
+        {
+            "event_type": "v2_reply_model_observation",
+            "event_id": "v2_obs",
+            "created_at": "2026-08-13T10:00:00+08:00",
+            "facts": {
+                "primary_objective": "V2 目标",
+                "customer_friction_observation": "V2 阻力",
+            },
+        },
+        {
+            "event_type": "v3_reply_model_observation",
+            "event_id": "v3_obs",
+            "created_at": "2026-08-13T10:01:00+08:00",
+            "facts": {
+                "primary_objective": "V3 目标",
+                "customer_friction_observation": "V3 阻力",
+            },
+        },
+    ]
+
+    v2_result = build_v2_derived_observations(
+        conversation=[],
+        history_events=history_events,
+        current_message={"content": "继续", "sent_at": "2026-08-13T10:02:00+08:00"},
+        interface_version="v2",
+    )
+    v3_result = build_v2_derived_observations(
+        conversation=[],
+        history_events=history_events,
+        current_message={"content": "继续", "sent_at": "2026-08-13T10:02:00+08:00"},
+        interface_version="v3",
+    )
+
+    assert v2_result["prior_model_observations"][0]["primary_objective"] == "V2 目标"
+    assert v3_result["prior_model_observations"][0]["primary_objective"] == "V3 目标"
+    assert v3_result["prior_model_observations"][0]["authority"] == "v3_prior_model_observation_not_customer_fact"
 
 
 def test_tool_planner_cannot_receive_sales_observations() -> None:

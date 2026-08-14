@@ -91,3 +91,49 @@ def test_legacy_runs_decode_as_completed(tmp_path: Path) -> None:
     assert run["runtime_status"] == "completed"
     assert run["started_at"]
     assert run["finished_at"]
+
+
+def test_v3_runs_preserve_sidecar_interface_metadata(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _insert_conversation(repository, "conversation-v3")
+    repository.start_run(
+        request_id="request-live-v3",
+        conversation_id="conversation-v3",
+        customer_id="sim_customer",
+        interface_version="v3",
+        input_snapshot={
+            "content": "测试 v3",
+            "request_context": {
+                "interface_version": "v3",
+                "reply_chain_mode": "model_led_sales_brain_v3",
+                "v3_sidecar": True,
+            },
+        },
+    )
+
+    running = repository.get_run("request-live-v3")["run"]
+    assert running["interface_version"] == "v3"
+
+    repository.save_run(
+        conversation_id="conversation-v3",
+        final_state={
+            "request_id": "request-live-v3",
+            "customer_id": "sim_customer",
+            "content": "测试 v3",
+            "request_context": {
+                "interface_version": "v3",
+                "reply_chain_mode": "model_led_sales_brain_v3",
+                "v3_sidecar": True,
+            },
+            "reply_messages": [{"type": "text", "content": "v3 ok"}],
+            "trace": [],
+            "errors": [],
+        },
+        token_usage={},
+    )
+
+    completed = repository.get_run("request-live-v3")["run"]
+    output = completed["output_snapshot"]
+    assert completed["interface_version"] == "v3"
+    assert output["reply_chain_mode"] == "model_led_sales_brain_v3"
+    assert output["v3_sidecar"] is True

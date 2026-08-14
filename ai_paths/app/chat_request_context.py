@@ -30,11 +30,11 @@ def build_request_context(request: ChatRequest) -> dict[str, Any]:
 
 
 def is_isolated_v2_test_request(request: ChatRequest, context: dict[str, Any]) -> bool:
-    """Accept write-free platform smoke only for an explicit synthetic V2 identity."""
+    """Accept write-free platform smoke only for explicit synthetic V2/V3 identities."""
     if not bool(context.get("test_isolated")):
         return False
     version = str(context.get("interface_version") or context.get("api_version") or "").strip().lower()
-    if version != "v2":
+    if version not in {"v2", "v3"}:
         return False
     identity_values = (
         request.customer_id,

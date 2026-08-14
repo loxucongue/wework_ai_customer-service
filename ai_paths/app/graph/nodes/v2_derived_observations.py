@@ -13,6 +13,7 @@ def build_v2_derived_observations(
     conversation: list[dict[str, Any]],
     history_events: list[dict[str, Any]],
     current_message: dict[str, Any],
+    interface_version: str = "v2",
 ) -> dict[str, Any]:
     """Build source-referenced observations without creating business predicates.
 
@@ -26,7 +27,10 @@ def build_v2_derived_observations(
         "recent_asset_deliveries": _recent_asset_deliveries(history_events),
         "recent_assistant_messages": _recent_assistant_messages(conversation),
         "reply_timing": _reply_timing(conversation, current_message),
-        "prior_model_observations": _prior_model_observations(history_events),
+        "prior_model_observations": _prior_model_observations(
+            history_events,
+            interface_version=interface_version,
+        ),
         "authority": (
             "Raw measurements and prior model observations only. Current customer text and "
             "authoritative facts always override them. They never control routing or actions."
@@ -157,10 +161,18 @@ def _reply_timing(
     }
 
 
-def _prior_model_observations(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _prior_model_observations(
+    events: list[dict[str, Any]],
+    *,
+    interface_version: str,
+) -> list[dict[str, Any]]:
+    version = str(interface_version or "v2").strip().lower()
+    if version not in {"v2", "v3"}:
+        version = "v2"
+    expected_event_type = f"{version}_reply_model_observation"
     output: list[dict[str, Any]] = []
     for event in reversed(events or []):
-        if not isinstance(event, dict) or str(event.get("event_type") or "") != "v2_reply_model_observation":
+        if not isinstance(event, dict) or str(event.get("event_type") or "") != expected_event_type:
             continue
         facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
         event_id = str(event.get("event_id") or event.get("id") or "").strip()
@@ -172,7 +184,7 @@ def _prior_model_observations(events: list[dict[str, Any]]) -> list[dict[str, An
                 )[:500],
                 "observed_at": str(event.get("event_time") or event.get("created_at") or ""),
                 "source_ref": f"history_event:{event_id}" if event_id else "",
-                "authority": "prior_model_observation_not_customer_fact",
+                "authority": f"{version}_prior_model_observation_not_customer_fact",
             }
         )
         if len(output) == 2:

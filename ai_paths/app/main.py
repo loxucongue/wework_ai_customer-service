@@ -379,6 +379,22 @@ async def require_v2_workflow_api_key(
         )
 
 
+async def require_v3_workflow_api_key(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_ai_paths_v2_trusted_proxy: str | None = Header(default=None),
+    x_ai_paths_v3_trusted_proxy: str | None = Header(default=None),
+) -> None:
+    """V3 sidecar currently uses the same restricted workflow auth boundary as V2."""
+
+    await require_v2_workflow_api_key(
+        request,
+        authorization=authorization,
+        x_ai_paths_v2_trusted_proxy=x_ai_paths_v3_trusted_proxy
+        or x_ai_paths_v2_trusted_proxy,
+    )
+
+
 def _reject_legacy_outreach_mutation() -> None:
     raise HTTPException(status_code=410, detail="旧 Outreach 已转为历史只读")
 
@@ -576,6 +592,17 @@ async def reply_workflow_compatible_v2(
     return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks, interface_version="v2")
 
 
+@app.post("/reply/workflow-compatible-v3")
+async def reply_workflow_compatible_v3(
+    payload: dict[str, Any] = Body(...),
+    background_tasks: BackgroundTasks = None,
+    _: None = Depends(require_v3_workflow_api_key),
+) -> JSONResponse:
+    if settings.service_role != "model_led_sales_brain_v3":
+        raise HTTPException(status_code=404, detail="Reply chain v3 is not enabled on this service")
+    return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks, interface_version="v3")
+
+
 async def workflow_compatible_reply(
     payload: dict[str, Any],
     *,
@@ -604,10 +631,14 @@ async def workflow_compatible_reply(
 
 
 def _attach_request_interface_version(request: ChatRequest, interface_version: str) -> None:
-    version = "v2" if str(interface_version).strip().lower() == "v2" else "v1"
+    requested = str(interface_version).strip().lower()
+    version = requested if requested in {"v1", "v2", "v3"} else "v1"
     context = dict(request.request_context or {})
     context["interface_version"] = version
     context["api_version"] = version
+    if version == "v3":
+        context["reply_chain_mode"] = "model_led_sales_brain_v3"
+        context["v3_sidecar"] = True
     request.request_context = context
 
 

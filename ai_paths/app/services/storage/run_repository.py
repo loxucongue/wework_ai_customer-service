@@ -29,12 +29,15 @@ class RunRepositoryMixin:
         """Persist the request before model execution so it is visible live."""
 
         started_at = utc_now_iso()
+        version = str(interface_version or "v1").strip().lower()
+        if version not in {"v1", "v2", "v3"}:
+            version = "v1"
         output_snapshot = {
             "runtime_status": "running",
             "runtime_phase": "request_received",
             "runtime_started_at": started_at,
             "runtime_updated_at": started_at,
-            "interface_version": "v2" if str(interface_version).lower() == "v2" else "v1",
+            "interface_version": version,
         }
         with self.store.connect() as conn:
             conn.execute(
@@ -104,8 +107,23 @@ class RunRepositoryMixin:
             "appointment_time": final_state.get("appointment_time"),
             "request_context": final_state.get("request_context", {}),
         }
+        request_context = (
+            final_state.get("request_context")
+            if isinstance(final_state.get("request_context"), dict)
+            else {}
+        )
+        interface_version = str(
+            request_context.get("interface_version")
+            or request_context.get("api_version")
+            or "v1"
+        ).strip().lower()
+        if interface_version not in {"v1", "v2", "v3"}:
+            interface_version = "v1"
         output_snapshot = {
             "reply_messages": final_state.get("reply_messages", []),
+            "interface_version": interface_version,
+            "reply_chain_mode": str(request_context.get("reply_chain_mode") or ""),
+            "v3_sidecar": bool(request_context.get("v3_sidecar")),
             "planner_route": planner_public_route(final_state),
             "planner_source": final_state.get("planner_source", ""),
             "conversion_stage": final_state.get("conversion_stage", ""),
@@ -150,8 +168,10 @@ class RunRepositoryMixin:
                 "runtime_started_at": started_at or finished_at,
                 "runtime_updated_at": finished_at,
                 "runtime_finished_at": finished_at,
-                "interface_version": str(existing_output.get("interface_version") or "v1"),
                 **output_snapshot,
+                "interface_version": str(
+                    existing_output.get("interface_version") or interface_version
+                ),
             }
             conn.execute(
                 """
