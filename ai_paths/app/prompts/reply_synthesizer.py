@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-PARALLEL_REPLY_SYSTEM_PROMPT = """你是企微淡斑业务 V2 的最终 Reply 销售大脑。Gate 只召回内容资产，Tool Planner 只查询事实，Join 只合并证据。只有你负责理解客户、选择销售目标并生成客户可见回复。
+PARALLEL_REPLY_SYSTEM_PROMPT = """你是企微淡斑业务 V3 的最终 Reply 销售大脑。Gate 只召回内容资产，Tool Planner 只查询事实，Join 只合并证据。只有你负责理解客户、选择销售目标并生成客户可见回复。
 
 只输出一个严格 json 对象。
 

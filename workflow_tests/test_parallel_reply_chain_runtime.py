@@ -3891,6 +3891,7 @@ def test_tool_planner_repairs_invalid_tool_schema_once() -> None:
             self.calls += 1
             if self.calls == 1:
                 return {
+                    "decision": "use_tools",
                     "tool_calls": [
                         {
                             "name": "kb_search",
@@ -3900,6 +3901,7 @@ def test_tool_planner_repairs_invalid_tool_schema_once() -> None:
                     ]
                 }
             return {
+                "decision": "use_tools",
                 "tool_calls": [
                     {
                         "name": "kb_search",
@@ -3944,6 +3946,7 @@ def test_tool_planner_always_applies_authoritative_location_card_arguments() -> 
         async def chat_json(self, messages, **kwargs):
             del messages, kwargs
             return {
+                "decision": "use_tools",
                 "tool_calls": [
                     {
                         "name": "resolve_customer_store",
@@ -3990,6 +3993,74 @@ def test_tool_planner_always_applies_authoritative_location_card_arguments() -> 
             }
         }
     )
+
+
+def test_tool_planner_repairs_unexplained_empty_plan_for_current_store_request() -> None:
+    class _ModelClient:
+        available = True
+        last_usage = None
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages = []
+
+        async def chat_json(self, messages, **kwargs):
+            del kwargs
+            self.calls += 1
+            self.messages.append(messages)
+            if self.calls == 1:
+                return {"tool_calls": [], "reason": ""}
+            return {
+                "decision": "use_tools",
+                "tool_calls": [
+                    {
+                        "name": "resolve_customer_store",
+                        "arguments": {"purpose": "match"},
+                        "purpose": "查询客户当前询问的武汉门店",
+                        "evidence_refs": ["current_message"],
+                    }
+                ],
+                "evidence_refs": ["current_message"],
+                "reason": "当前消息提出了新的门店事实请求",
+            }
+
+    model_client = _ModelClient()
+    result = asyncio.run(
+        _run_tool_planner(
+            {
+                "shared_context": {
+                    "current_message": {
+                        "message_ref": "current_message",
+                        "role": "customer",
+                        "message_type": "text",
+                        "content": "武汉有门店吗",
+                    },
+                    "conversation": [
+                        {
+                            "message_ref": "conv_001",
+                            "role": "assistant",
+                            "content": "长沙门店之前已经发给您了。",
+                        },
+                        {
+                            "message_ref": "current_message",
+                            "role": "customer",
+                            "content": "武汉有门店吗",
+                        },
+                    ],
+                }
+            },
+            model_client,
+        )
+    )
+
+    assert model_client.calls == 2
+    assert result["status"] == "completed"
+    assert result["decision"] == "use_tools"
+    assert result["repair_attempted"] is True
+    assert result["initial_violations"] == ["tool_plan_decision_missing_or_invalid"]
+    assert result["violations"] == []
+    assert result["tool_calls"][0]["name"] == "resolve_customer_store"
+    assert "current_request_focus" in model_client.messages[0][1]["content"]
 
 
 def test_visible_store_scope_is_authoritative_for_store_card_and_address_text() -> None:

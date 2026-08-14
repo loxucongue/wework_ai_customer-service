@@ -33,7 +33,7 @@ READ_ONLY_TOOL_NAMES = {
 DEFERRED_COMMIT_TOOL_NAMES = {"create_work_order", "add_customer_mobile"}
 
 
-TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。你不是客服，也不是销售策略模型。
+TOOL_PLANNER_SYSTEM_PROMPT = """你是 V3 回复链路的只读 Tool Planner。你不是客服，也不是销售策略模型。
 
 你的唯一任务：根据 shared_context 判断最终 Reply 在回答当前消息前是否缺少实时事实，并规划最少的只读工具调用。
 
@@ -46,6 +46,7 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。�
 - 不规划写操作、发送动作、开单、手机号同步或排客。
 - 已在 authoritative_facts 中存在且没有冲突的事实，不重复查询。但 visible_store_scope 只证明客户权限范围内的区域覆盖和数量，不是本轮地名匹配结果，也不提供具体门店名、地址、排序或最近推荐；客户索要具体门店或地址时仍需查询。
 - 工具参数只能来自当前消息、完整聊天或结构事实，并在 evidence_refs 引用真实 message_ref，例如 current_message、conv_001。
+- 当前消息是本轮绑定任务。历史已完成的其他城市、门店或销售任务，不能替代客户当前提出的新事实请求。
 
 # 允许工具
 1. resolve_customer_store：所有门店、地址、定位、区县、县级市、乡镇、村、地标、远近、营业信息和门店详情场景统一调用。不要自行拼接最终地址；完整聊天和当前消息会交给工具内的地点解析模型。参数只需 purpose，可选 destination_hint。
@@ -66,6 +67,7 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。�
 
 输出格式：
 {
+  "decision": "use_tools | facts_sufficient",
   "tool_calls": [{"name":"resolve_customer_store","arguments":{},"purpose":"","evidence_refs":[]}],
   "missing_facts": [{"field":"","reason":"","evidence_refs":[]}],
   "evidence_refs": [],
@@ -214,6 +216,11 @@ def create_parallel_evidence_node(
                 "gate_route_advice": gate_result.get("route_advice"),
                 "selected_content_ids": gate_result.get("content_candidate_ids") or [],
                 "tool_names": [item.get("name") for item in tool_plan.get("tool_calls") or []],
+                "tool_plan_status": tool_plan.get("status"),
+                "tool_plan_reason": tool_plan.get("reason"),
+                "tool_plan_violations": tool_plan.get("violations") or [],
+                "tool_plan_initial_violations": tool_plan.get("initial_violations") or [],
+                "tool_plan_decision": tool_plan.get("decision"),
                 "sales_recall_status": sales_recall.get("status"),
                 "sales_recall_candidates": sales_recall.get("candidate_count"),
                 "missing_fact_count": len(tool_plan.get("missing_facts") or []),
@@ -526,7 +533,17 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
     try:
         messages = [
             {"role": "system", "content": TOOL_PLANNER_SYSTEM_PROMPT},
-            {"role": "user", "content": json_dumps({"shared_context": _tool_planner_shared_context(state)})},
+            {
+                "role": "user",
+                "content": json_dumps(
+                    {
+                        "current_request_focus": copy.deepcopy(
+                            (state.get("shared_context") or {}).get("current_message") or {}
+                        ),
+                        "shared_context": _tool_planner_shared_context(state),
+                    }
+                ),
+            },
         ]
         payload = await model_client.chat_json(
             messages,
@@ -538,6 +555,7 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
             valid_evidence_refs=_shared_context_evidence_refs(state),
         )
         violations.extend(_protocol_tool_plan_violations(state, tool_calls))
+        violations.extend(_tool_plan_decision_violations(payload, tool_calls))
         initial_violations = list(violations)
         repair_attempted = False
         repair_error = ""
@@ -570,6 +588,9 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
                 repaired_violations.extend(
                     _protocol_tool_plan_violations(state, repaired_calls)
                 )
+                repaired_violations.extend(
+                    _tool_plan_decision_violations(repaired_payload, repaired_calls)
+                )
                 payload = repaired_payload
                 tool_calls = repaired_calls
                 violations = repaired_violations
@@ -600,6 +621,7 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
                 else "completed" if not violations else "completed_with_violations"
             ),
             "tool_calls": tool_calls,
+            "decision": str(payload.get("decision") or ""),
             "missing_facts": _dict_list(payload.get("missing_facts")),
             "evidence_refs": _string_list(payload.get("evidence_refs")),
             "reason": str(payload.get("reason") or ""),
@@ -670,6 +692,25 @@ def _protocol_tool_plan_violations(
         f"protocol_required_tool_missing:{name}"
         for name in sorted(required_names - planned_names)
     ]
+
+
+def _tool_plan_decision_violations(
+    payload: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+) -> list[str]:
+    """Validate an explicit tool decision without deciding its business meaning."""
+
+    decision = str(payload.get("decision") or "").strip()
+    planned_tool_calls = _dict_list(payload.get("tool_calls"))
+    if decision not in {"use_tools", "facts_sufficient"}:
+        return ["tool_plan_decision_missing_or_invalid"]
+    if decision == "use_tools" and not planned_tool_calls:
+        return ["tool_plan_decision_requires_tool_calls"]
+    if decision == "facts_sufficient" and (planned_tool_calls or tool_calls):
+        return ["tool_plan_facts_sufficient_with_tool_calls"]
+    if decision == "facts_sufficient" and not _string_list(payload.get("evidence_refs")):
+        return ["tool_plan_facts_sufficient_missing_evidence_refs"]
+    return []
 
 
 def _merge_tool_calls(
