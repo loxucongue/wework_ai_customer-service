@@ -13,6 +13,7 @@ from app.graph.nodes.action_nodes import (
     _first_geocode_candidate,
     _resolve_customer_store_workflow,
 )
+from app.prompts.store_destination_resolver import STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
 from app.services.model_selection import model_names
 from app.services.store_destination_resolver import _normalize_resolution, resolve_active_store_destination
 
@@ -135,6 +136,67 @@ def test_named_store_detail_is_a_valid_location_anchor() -> None:
 
     assert violations == []
     assert normalized["named_store"] == "上海浦东二店"
+
+
+def test_store_destination_prompt_does_not_treat_colloquial_region_as_district() -> None:
+    assert "历史地名、口语城市片区或商圈不等于现行行政区" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+    assert "不能填入 administrative_context.district" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+
+
+def test_store_workflow_honors_model_location_clarification_before_geocode() -> None:
+    class _Model:
+        available = True
+
+        async def chat_json(self, messages, **kwargs):
+            del messages, kwargs
+            return {
+                "request_kind": "clarify",
+                "destination_query": "武汉汉口",
+                "destination_precision": "unknown",
+                "administrative_context": {"province": "湖北省", "city": "武汉市"},
+                "destination_subject": "customer",
+                "named_store": "",
+                "detail_kind": "none",
+                "evidence_refs": ["current_message", "conv_001"],
+                "superseded_location_refs": [],
+                "confidence": "high",
+                "needs_clarification": True,
+                "geocode_before_clarification": False,
+                "reason": "汉口是城市片区，仍需现行区县或定位才能准确匹配",
+            }
+
+    class _Client:
+        settings = SimpleNamespace(geocode_workflow_id="geo")
+
+        async def run_workflow(self, workflow_id, parameters):
+            del workflow_id, parameters
+            raise AssertionError("clarification must stop before geocode")
+
+    result = asyncio.run(
+        _resolve_customer_store_workflow(
+            {"name": "resolve_customer_store", "purpose": "nearest"},
+            {
+                "normalized_content": "汉口",
+                "shared_context": {
+                    "current_message": {"message_type": "text", "content": "汉口"},
+                    "conversation": [
+                        {
+                            "message_ref": "conv_001",
+                            "role": "customer",
+                            "content": "武汉有门店吗",
+                        }
+                    ],
+                    "authoritative_facts": {},
+                },
+            },
+            _Client(),
+            model_client=_Model(),
+        )
+    )
+
+    assert result["status"] == "need_location_confirmation"
+    assert result["destination_resolution"]["destination_query"] == "武汉汉口"
+    assert result["customer_store_lookup"]["missing"] == ["confirmed_location"]
 
 
 def test_distance_ranks_all_visible_stores_across_district_boundary() -> None:

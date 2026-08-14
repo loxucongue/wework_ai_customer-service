@@ -1402,7 +1402,10 @@ async def _resolve_customer_store_workflow(
         tool=tool,
     )
     query = str(destination.get("destination_query") or destination.get("named_store") or "").strip()
-    if not query:
+    if not query or (
+        bool(destination.get("needs_clarification"))
+        and not bool(destination.get("geocode_before_clarification", True))
+    ):
         lookup = {
             "status": "need_location_confirmation",
             "raw_query": query,

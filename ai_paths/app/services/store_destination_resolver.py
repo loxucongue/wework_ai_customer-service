@@ -184,6 +184,7 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
         "superseded_location_refs": [],
         "confidence": "high" if coordinates else "low",
         "needs_clarification": not bool(destination),
+        "geocode_before_clarification": bool(destination),
         "reason": "protocol_or_explicit_tool_hint_fallback",
         "source_query": str(current.get("content") or destination).strip(),
     }
@@ -233,6 +234,7 @@ def _normalize_resolution(
         if str(administrative_context.get(key) or "").strip()
     }
     needs_clarification = bool(raw.get("needs_clarification"))
+    geocode_before_clarification = bool(raw.get("geocode_before_clarification", True))
     if not destination and not named_store and not needs_clarification:
         violations.append("missing_destination_without_clarification")
     return (
@@ -248,6 +250,7 @@ def _normalize_resolution(
             "superseded_location_refs": list(dict.fromkeys(superseded)),
             "confidence": confidence,
             "needs_clarification": needs_clarification,
+            "geocode_before_clarification": geocode_before_clarification,
             "reason": str(raw.get("reason") or "").strip()[:500],
         },
         violations,
