@@ -160,6 +160,44 @@ class CaseStudyDedupeTests(unittest.TestCase):
         self.assertEqual(memory["history_events"][0]["facts"]["image_url"], "https://example.com/activity.jpg")
         self.assertEqual(memory["history_events"][0]["facts"]["send_mode"], "async")
 
+    def test_v3_delivery_facts_are_shared_but_version_attributed(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            store = CustomerMemoryStore(Settings(memory_dir=temp_dir))
+
+            store.record_case_images_sent(
+                "customer-v3",
+                document_ids=["case-1"],
+                image_urls=["https://example.com/case-1.jpg"],
+                request_id="request-case-v3",
+                interface_version="v3",
+            )
+            store.record_activity_intro_image_sent(
+                "customer-v3",
+                image_url="https://example.com/activity.jpg",
+                request_id="request-activity-v3",
+                send_mode="sync",
+                interface_version="v3",
+            )
+            store.record_store_fact(
+                "customer-v3",
+                store={"store_id": "store-1", "store_name": "测试门店", "city": "上海市"},
+                event_type="store_address_sent",
+                request_id="request-store-v3",
+                interface_version="v3",
+            )
+            store.record_authoritative_payment_fact(
+                "customer-v3",
+                deposit_state="paid_by_platform_transfer_event",
+                source="platform.unknown_message_transfer",
+                request_id="request-payment-v3",
+                interface_version="v3",
+            )
+            memory = store.load("customer-v3")
+
+        events = memory["history_events"]
+        self.assertEqual(len(events), 4)
+        self.assertTrue(all(event["facts"]["interface_version"] == "v3" for event in events))
+
     def test_planner_rejects_sales_talk_as_selectable_kb(self) -> None:
         plan = build_planner_plan_v2(
             {"normalized_content": "compare"},

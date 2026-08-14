@@ -11,6 +11,11 @@ from app.config import Settings
 from app.services.storage.repositories import AppRepository
 
 
+def _normalized_interface_version(value: str) -> str:
+    version = str(value or "v1").strip().lower()
+    return version if version in {"v1", "v2", "v3"} else "v1"
+
+
 def _store_event_facts(store: dict[str, Any], *, request_id: str = "") -> dict[str, Any]:
     parking = str(store.get("parking") or store.get("parking_name") or store.get("parking_address") or "").strip()
     return {
@@ -94,6 +99,7 @@ class CustomerMemoryStore:
         document_ids: list[str],
         request_id: str = "",
         image_urls: list[str] | None = None,
+        interface_version: str = "v1",
     ) -> dict[str, Any]:
         clean_ids = [str(item).strip() for item in document_ids if str(item).strip()]
         clean_urls = [str(item).strip() for item in image_urls or [] if str(item).strip()]
@@ -130,6 +136,7 @@ class CustomerMemoryStore:
                         "document_ids": clean_ids,
                         "image_urls": clean_urls,
                         "request_id": request_id,
+                        "interface_version": _normalized_interface_version(interface_version),
                     },
                     "source": "reply_delivery",
                 }
@@ -156,6 +163,7 @@ class CustomerMemoryStore:
         image_url: str,
         request_id: str = "",
         send_mode: str = "",
+        interface_version: str = "v1",
     ) -> dict[str, Any]:
         clean_url = str(image_url or "").strip()
         if not clean_url:
@@ -177,6 +185,7 @@ class CustomerMemoryStore:
                             "image_url": clean_url,
                             "request_id": request_id,
                             "send_mode": send_mode,
+                            "interface_version": _normalized_interface_version(interface_version),
                         },
                         "source": "sop_delivery",
                     }
@@ -321,6 +330,7 @@ class CustomerMemoryStore:
         store: dict[str, Any],
         event_type: str,
         request_id: str = "",
+        interface_version: str = "v1",
     ) -> dict[str, Any]:
         store_id = str(store.get("store_id") or store.get("id") or "").strip()
         store_name = str(store.get("store_name") or store.get("name") or "").strip()
@@ -330,6 +340,7 @@ class CustomerMemoryStore:
             event_type = "store_matched"
 
         facts = _store_event_facts(store, request_id=request_id)
+        facts["interface_version"] = _normalized_interface_version(interface_version)
         data = self.load(customer_id)
         basic_info = data.setdefault("basic_info", {})
         if not isinstance(basic_info, dict):
@@ -386,6 +397,7 @@ class CustomerMemoryStore:
         amount: Any = None,
         order_id: str = "",
         order_no: str = "",
+        interface_version: str = "v1",
     ) -> dict[str, Any]:
         """Persist only payment facts proven by a structured runtime source."""
         clean_state = str(deposit_state or "").strip()
@@ -403,6 +415,7 @@ class CustomerMemoryStore:
             "order_id": str(order_id or "").strip(),
             "order_no": str(order_no or "").strip(),
             "updated_at": now,
+            "interface_version": _normalized_interface_version(interface_version),
         }
         event_id = f"deposit_payment_confirmed_{request_id or uuid4()}"
         saved = self.save_update(

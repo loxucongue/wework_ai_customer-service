@@ -787,6 +787,7 @@ def _record_authoritative_payment_fact(
                 amount=fact.get("amount"),
                 order_id=str(fact.get("order_id") or ""),
                 order_no=str(fact.get("order_no") or ""),
+                interface_version=_interface_version_from_state(state),
             )
             record.update(saved)
         except Exception as exc:
@@ -858,6 +859,7 @@ def _record_sent_case_images(
             document_ids=record["document_ids"],
             image_urls=record["image_urls"],
             request_id=str(state.get("request_id") or ""),
+            interface_version=_interface_version_from_state(state),
         )
         record.update(saved)
     except Exception as exc:
@@ -1009,6 +1011,7 @@ def _record_activity_intro_image(
             image_url=str(record["image_url"]),
             request_id=str(state.get("request_id") or ""),
             send_mode=send_mode,
+            interface_version=_interface_version_from_state(state),
         )
         record.update(saved)
     except Exception as exc:
@@ -1123,6 +1126,7 @@ def _record_visible_store_facts(
                 store=item.get("store") if isinstance(item.get("store"), dict) else {},
                 event_type=str(item.get("event_type") or ""),
                 request_id=str(state.get("request_id") or ""),
+                interface_version=_interface_version_from_state(state),
             )
             saved_records.append(saved)
         record["status"] = "recorded" if any(item.get("status") == "recorded" for item in saved_records) else "skipped"
@@ -1292,3 +1296,9 @@ def _customer_store_knowledge_meta(value: Any) -> dict[str, Any]:
         "source": value.get("source", ""),
         "error": value.get("error", ""),
     }
+
+
+def _interface_version_from_state(state: AgentState) -> str:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    version = str(request_context.get("interface_version") or "v1").strip().lower()
+    return version if version in {"v1", "v2", "v3"} else "v1"

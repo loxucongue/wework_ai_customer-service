@@ -1,0 +1,18 @@
+[Unit]
+Description=AI Paths V3 Model-led Sales Brain Service
+After=network-online.target ai-paths.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai-paths-v3/current
+EnvironmentFile=/opt/ai-paths/.env
+EnvironmentFile=/opt/ai-paths-v3/v3.env
+ExecStart=/opt/ai-paths/venv/bin/python -m uvicorn app.main:app --app-dir ai_paths --host 127.0.0.1 --port 8013
+Restart=always
+RestartSec=3
+StandardOutput=append:/opt/ai-paths-v3/logs/service.log
+StandardError=append:/opt/ai-paths-v3/logs/service.err.log
+
+[Install]
+WantedBy=multi-user.target

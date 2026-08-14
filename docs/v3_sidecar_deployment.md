@@ -39,6 +39,15 @@ AI_PATHS_SERVICE_ROLE=model_led_sales_brain_v3
 AI_PATHS_BACKGROUND_WORKERS_ENABLED=false
 ```
 
+Install these overrides in `/opt/ai-paths-v3/v3.env` and load that file after
+the shared `/opt/ai-paths/.env`. The shared environment currently enables
+background workers for V1, so a plain `Environment=...false` line in systemd
+is not sufficient when the environment file overrides it. The health response
+must show both:
+
+- `service_role=model_led_sales_brain_v3`
+- `background_workers_enabled=false`
+
 `AI_PATHS_BACKGROUND_WORKERS_ENABLED=false` is required because V3 shares business data but must not run duplicate SOP, outreach, retention, or snapshot workers.
 
 ## Nginx Routing
@@ -78,6 +87,11 @@ V3 runtime observations must be versioned:
 - `interface_version=v3`
 - `reply_chain_mode=model_led_sales_brain_v3`
 - `v3_sidecar=true`
+
+Customer-visible delivery facts remain shared because the delivery actually
+happened and every version must avoid sending the same asset again. Each V3
+delivery fact must include `interface_version=v3` for attribution. Model
+self-observations remain version-specific (`v3_reply_model_observation`).
 
 Persistence keys for V3 sidecar data must include:
 
