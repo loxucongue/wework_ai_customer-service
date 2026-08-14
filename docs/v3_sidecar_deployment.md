@@ -4,9 +4,9 @@
 
 Run V3 as an independent grey-release service without replacing the existing V1/V2 service.
 
-V3 keeps the platform workflow-compatible request shape, but uses its own URL:
+V3 keeps the platform workflow-compatible request shape, but uses its own public URL:
 
-- `POST /reply/workflow-compatible-v3`
+- `POST /api/ai/reply/workflow-compatible-v3`
 - `GET /health-v3`
 
 The normal V1/V2 service keeps using:
@@ -46,7 +46,7 @@ AI_PATHS_BACKGROUND_WORKERS_ENABLED=false
 Add V3 routes without changing existing V1/V2 routes:
 
 ```nginx
-location = /reply/workflow-compatible-v3 {
+location = /api/ai/reply/workflow-compatible-v3 {
     proxy_pass http://127.0.0.1:8013/reply/workflow-compatible-v3;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -101,7 +101,7 @@ Expected health release fields must show the V3 release identity.
 Then send an isolated workflow-compatible request to:
 
 ```text
-POST http://47.252.81.104/reply/workflow-compatible-v3
+POST http://47.252.81.104/api/ai/reply/workflow-compatible-v3
 ```
 
 The request must use synthetic or approved grey customer IDs only. Confirm in run logs:
