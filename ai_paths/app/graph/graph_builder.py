@@ -146,6 +146,7 @@ def _build_nodes(
             state,
             _extract_city,
         ),
+        model_client=model_client,
         execution_mode="readonly",
     )
     evidence_join = create_evidence_join_node(trace_logger=trace_logger)

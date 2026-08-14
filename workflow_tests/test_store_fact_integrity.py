@@ -129,7 +129,7 @@ def test_distance_rejects_invalid_candidates_before_ranking() -> None:
     assert output["filtered_invalid_stores"][0]["store_id"] == "129"
 
 
-def test_distance_preselects_from_all_candidates_before_ranking() -> None:
+def test_distance_ranks_all_visible_candidates_before_recommending() -> None:
     candidates = [
         {
             "store_id": str(index),
@@ -168,7 +168,8 @@ def test_distance_preselects_from_all_candidates_before_ranking() -> None:
 
     assert output["status"] == "ok"
     assert output["candidate_store_count"] == 13
-    assert output["ranked_candidate_count"] == 12
+    assert output["ranked_candidate_count"] == 13
+    assert output["ranking_complete"] is True
     assert output["ranked_stores"][0]["store_id"] == "99"
 
 

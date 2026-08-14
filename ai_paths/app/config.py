@@ -55,17 +55,20 @@ class Settings(BaseSettings):
     model_strong: str = "gpt-5.4"
     model_reply: str = "gpt-5.4"
     model_vision: str = "qwen-vl-plus"
+    model_store_destination: str = "claude-haiku-4-5-20251001"
     model_fast_fallbacks: str = "gpt-5.4"
     model_planner_fallbacks: str = "gpt-5.4-mini"
     model_balanced_fallbacks: str = "gpt-5.4"
     model_strong_fallbacks: str = "gpt-5.4-mini"
     model_reply_fallbacks: str = "gpt-5.4-mini"
     model_vision_fallbacks: str = ""
+    model_store_destination_fallbacks: str = "gpt-5.4,gpt-5.4-mini"
+    model_emergency_fallbacks: str = "gpt-5.4,gpt-5.4-mini"
     model_timeout_seconds: int = 45
     model_hedge_delay_seconds: float = 3.0
     model_planner_hedge_delay_seconds: float = 10.0
     model_reply_hedge_delay_seconds: float = 10.0
-    model_hedge_max_parallel: int = 2
+    model_hedge_max_parallel: int = 3
     model_planner_total_timeout_seconds: float = 35.0
     model_reply_total_timeout_seconds: float = 45.0
     model_planner_primary_budget_seconds: float = 25.0
@@ -78,6 +81,8 @@ class Settings(BaseSettings):
     model_reply_reserve_seconds: float = 30.0
     model_min_retry_remaining_seconds: float = 8.0
     model_vision_total_timeout_seconds: float = 15.0
+    model_store_destination_total_timeout_seconds: float = 25.0
+    model_store_destination_hedge_delay_seconds: float = 3.0
     model_request_retry_attempts: int = 2
     model_request_retry_delay_seconds: float = 0.5
     sop_event_model_retry_attempts: int = Field(default=3, alias="SOP_EVENT_MODEL_RETRY_ATTEMPTS")

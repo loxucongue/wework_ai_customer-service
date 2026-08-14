@@ -26,8 +26,7 @@ from app.services.v2_sales_recall_service import V2SalesRecallService
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 READ_ONLY_TOOL_NAMES = {
-    "customer_store_lookup",
-    "distance_calculate",
+    "resolve_customer_store",
     "kb_search",
     "appointment_record_query",
 }
@@ -49,10 +48,9 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。�
 - 工具参数只能来自当前消息、完整聊天或结构事实，并在 evidence_refs 引用真实 message_ref，例如 current_message、conv_001。
 
 # 允许工具
-1. customer_store_lookup：门店、地址、定位、区县、县级市、乡镇、村、地标、营业信息或门店详情查询。参数可含 query、purpose。
-2. distance_calculate：客户明确比较远近且已有合法候选时排序。参数可含 origin、candidate_source。
-3. kb_search：查询真实案例等素材。案例使用 kb_name=case_studies，query 来自客户原话或聊天原文。
-4. appointment_record_query：只读查询已有预约记录；普通登记流程不得规划档期查询或开单。
+1. resolve_customer_store：所有门店、地址、定位、区县、县级市、乡镇、村、地标、远近、营业信息和门店详情场景统一调用。不要自行拼接最终地址；完整聊天和当前消息会交给工具内的地点解析模型。参数只需 purpose，可选 destination_hint。
+2. kb_search：查询真实案例等素材。案例使用 kb_name=case_studies，query 来自客户原话或聊天原文。
+3. appointment_record_query：只读查询已有预约记录；普通登记流程不得规划档期查询或开单。
 
 # 案例查询
 - 客户当前直接问效果、改善程度、一次效果、案例或效果图，且近期没有真实案例图片发送证据时，规划 kb_search(kb_name=case_studies)。
@@ -60,17 +58,15 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V2 回复链路的只读 Tool Planner。�
 - 上一轮刚发过真实案例图且客户只是评价/追问该素材时，不重复查询；客户明确要新的或更多案例时仍可查询。
 
 # 门店查询
-- 当前消息问某地门店、索要地址，或消息本身是省、市、区县、县级市、乡镇、村、地标名时，除非紧邻历史已经真实发送了对应门店卡且客户只是在确认/选择该卡，否则规划 customer_store_lookup。
-- 客户明确要求重发地址、位置、导航或门店卡时，若本轮 authoritative_facts 没有可直接重放的真实 store_id 与结构消息，必须重新规划 customer_store_lookup；历史文字地址只能帮助组成 query，不能替代本轮真实门店卡事实。客户只说“这家、收到、可以”则不重查。
-- 客户补充下级地名时，结合完整历史中的父级城市组成查询词。例如历史刚确认“广州”，当前回复“番禺区”，查询“广州市番禺区”。
-- 只有客户原话、完整历史或定位事实能提供父级行政区时才能补全父级；否则保持客户原始地名，交给门店工具解析，不凭常识补省市县。
-- 县城、乡镇、村、地标或定位卡本级无门店且父级范围有多候选时，可同时规划 customer_store_lookup 和 distance_calculate，用真实排序支持 Reply。
-- 客户问“更近/最近”但没有真实位置原点时，不自行挑门店，把缺少位置原点写入 missing_facts。
+- 当前消息问某地门店、索要地址、远近、导航、停车、营业时间，或消息本身是省、市、区县、县级市、乡镇、村、道路、地标、定位卡时，除非紧邻历史已经真实发送对应门店卡且客户只是在确认该卡，否则规划 resolve_customer_store。
+- 客户补充下级地名、改口到新地点或反复比较区域时，不在 Tool Planner 里重建最终目的地；完整历史交给 resolve_customer_store 内的地点解析模型处理。
+- 客户明确要求重发地址、位置、导航或门店卡时，若本轮 authoritative_facts 没有可直接重放的真实 store_id 与结构消息，必须重新规划 resolve_customer_store。客户只说“这家、收到、可以”则不重查。
+- 客户问“更近/最近”但历史与当前消息没有可解析的位置原点时，仍调用 resolve_customer_store，由工具返回缺失事实，不自行挑门店。
 - `missing_facts` 只记录回答客户当前明确请求不可缺少的事实，不能记录可选销售机会。完整历史已经说明门店是按客户位置匹配或相对合适，并已交付门店结果时，当前窗口没有再次携带原始位置不等于该事实从未收集；客户只是评价远近、没有主动要求重新匹配、没有提供新位置也没有指出原位置错误时，不得把位置写成缺失事实。
 
 输出格式：
 {
-  "tool_calls": [{"name":"customer_store_lookup","arguments":{},"purpose":"","evidence_refs":[]}],
+  "tool_calls": [{"name":"resolve_customer_store","arguments":{},"purpose":"","evidence_refs":[]}],
   "missing_facts": [{"field":"","reason":"","evidence_refs":[]}],
   "evidence_refs": [],
   "reason": ""
@@ -646,25 +642,14 @@ def _protocol_required_read_only_tools(state: AgentState) -> list[dict[str, Any]
         query = coordinates
     if not query:
         return []
-    calls = [
+    return [
         {
-            "name": "customer_store_lookup",
-            "query": query,
+            "name": "resolve_customer_store",
+            "destination_hint": query,
             "purpose": "protocol_location_card_resolution",
             "evidence_refs": ["current_message"],
         }
     ]
-    if coordinates:
-        calls.append(
-            {
-                "name": "distance_calculate",
-                "origin": coordinates,
-                "candidate_source": "customer_store_lookup",
-                "purpose": "protocol_location_card_distance_ranking",
-                "evidence_refs": ["current_message"],
-            }
-        )
-    return calls
 
 
 def _protocol_tool_plan_violations(
@@ -987,6 +972,7 @@ def _shared_context(
             conversation=conversation,
             history_events=list(state.get("history_events") or []),
             current_message=current_message,
+            interface_version=str(request_context.get("interface_version") or "v2"),
         ),
         "conversation": conversation,
         "customer_scope": copy.deepcopy(state.get("customer_scope") or {}),

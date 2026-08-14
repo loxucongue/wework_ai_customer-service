@@ -178,7 +178,7 @@ def test_parallel_reply_contract_exposes_exact_deposit_supporting_key_enum() -> 
 
 def test_tool_planner_requeries_when_customer_explicitly_requests_store_card_resend() -> None:
     assert "明确要求重发地址、位置、导航或门店卡" in TOOL_PLANNER_SYSTEM_PROMPT
-    assert "历史文字地址只能帮助组成 query" in TOOL_PLANNER_SYSTEM_PROMPT
+    assert "完整历史交给 resolve_customer_store 内的地点解析模型处理" in TOOL_PLANNER_SYSTEM_PROMPT
 
 
 def test_content_gate_does_not_reopen_location_capture_for_known_store_resend() -> None:

@@ -29,7 +29,7 @@ from app.services.runtime_budget import (
 
 
 def _settings(**overrides: Any) -> Settings:
-    return Settings(_env_file=None, **overrides)
+    return Settings(_env_file=None, model_emergency_fallbacks="", **overrides)
 
 
 class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):

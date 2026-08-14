@@ -13,7 +13,7 @@ from app.config import Settings
 from app.services import model_response, model_selection
 
 
-ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision"]
+ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision", "store_destination"]
 T = TypeVar("T")
 
 
@@ -294,7 +294,7 @@ class ModelClient:
             if max_parallel_candidates is None
             else max_parallel_candidates
         )
-        max_parallel = max(1, min(2, int(configured_parallel or 1)))
+        max_parallel = max(1, min(3, int(configured_parallel or 1)))
         hedge_delay = self._hedge_delay_for_tier(tier)
         configured_total_timeout = self._total_timeout_for_tier(tier)
         started_at = time.perf_counter()
@@ -612,6 +612,14 @@ class ModelClient:
             payload["max_tokens"] = max_tokens
 
     def _total_timeout_for_tier(self, tier: ModelTier) -> float:
+        if tier == "store_destination":
+            return max(
+                1.0,
+                float(
+                    self.settings.model_store_destination_total_timeout_seconds
+                    or self.settings.model_timeout_seconds
+                ),
+            )
         if tier == "planner":
             return max(1.0, float(self.settings.model_planner_total_timeout_seconds or self.settings.model_timeout_seconds))
         if tier in {"reply", "strong"}:
@@ -621,6 +629,8 @@ class ModelClient:
         return max(1.0, float(self.settings.model_timeout_seconds))
 
     def _hedge_delay_for_tier(self, tier: ModelTier) -> float:
+        if tier == "store_destination":
+            return max(0.0, float(self.settings.model_store_destination_hedge_delay_seconds or 0.0))
         if tier == "planner":
             return max(0.0, float(self.settings.model_planner_hedge_delay_seconds or 0.0))
         if tier in {"reply", "strong"}:

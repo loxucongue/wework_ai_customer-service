@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from app.graph.nodes.reply_nodes import _prepare_structural_messages
+from app.graph.nodes.reply_nodes import (
+    _prepare_structural_messages,
+    _store_fact_recovery_messages,
+)
 from app.graph.nodes.reply_validation import validate_reply_consistency
 from app.services.store_resolution_v2 import customer_location_hint_texts
 
@@ -47,6 +50,60 @@ def test_store_resolution_fact_does_not_force_card_delivery() -> None:
         [{"type": "text", "order": 1, "content": "发货时间需要按订单进度核对。"}],
         _store_state(),
     )
+
+
+def test_v3_current_turn_store_delivery_materializes_verified_cards() -> None:
+    state = {
+        **_store_state(),
+        "evidence_join": {
+            "schema_version": "reply_chain_evidence_join_v1",
+            "tool_facts": {"store_resolution_fact": {"status": "send_multiple"}},
+        },
+    }
+    warnings: list[dict] = []
+
+    prepared = _prepare_structural_messages(
+        [{"type": "text", "content": "门店位置发您，您看哪家方便。"}],
+        state,
+        warnings,
+    )
+
+    assert [item["type"] for item in prepared] == [
+        "text",
+        "store_address",
+        "store_address",
+    ]
+    assert [
+        item["content"]["store_id"]
+        for item in prepared
+        if item["type"] == "store_address"
+    ] == ["241", "242"]
+    assert warnings == [
+        {
+            "node": "synthesize_reply",
+            "message": "store_delivery_materialized_from_tool_fact",
+        }
+    ]
+
+
+def test_v3_store_fact_recovery_uses_cards_instead_of_neutral_fallback() -> None:
+    state = {
+        **_store_state(),
+        "evidence_join": {
+            "schema_version": "reply_chain_evidence_join_v1",
+            "tool_facts": {"store_resolution_fact": {"status": "send_multiple"}},
+        },
+    }
+
+    recovered = _store_fact_recovery_messages(state)
+
+    assert recovered[0]["content"] == "门店位置发您。"
+    assert [item["type"] for item in recovered] == [
+        "text",
+        "store_address",
+        "store_address",
+    ]
+    assert all(item.get("content") != "您稍等一下" for item in recovered)
 
 
 def test_emitted_store_card_must_match_current_authoritative_facts() -> None:

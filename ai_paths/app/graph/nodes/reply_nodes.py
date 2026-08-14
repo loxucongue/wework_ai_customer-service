@@ -155,6 +155,27 @@ def create_synthesize_reply_node(
                 if model_call:
                     model_call["stale_handoff_notice_removed"] = True
             fallback_source = ""
+            if not messages and errors and state.get("evidence_join"):
+                messages = _store_fact_recovery_messages(state)
+                if messages:
+                    validate_v2_reply_admission(messages, state)
+                    reply_source = "deterministic_store_fact_recovery"
+                    fallback_source = reply_source
+                    recovered_error = errors.pop() if errors else None
+                    warnings.append(
+                        {
+                            "node": "synthesize_reply",
+                            "message": "final_reply_recovered_from_store_facts",
+                            "detail": str(
+                                recovered_error.get("detail")
+                                if isinstance(recovered_error, dict)
+                                else recovered_error or ""
+                            )[:500],
+                        }
+                    )
+                    if model_call:
+                        model_call["fallback"] = {"strategy": reply_source}
+                        model_call["output"] = {"messages": len(messages)}
             if not messages and errors:
                 messages = _neutral_final_fallback_messages()
                 reply_source = "deterministic_neutral_final_fallback"
@@ -817,9 +838,21 @@ def _prepare_structural_messages(
     warnings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     if state.get("evidence_join"):
-        # The model-led chain never silently edits customer-visible output.
-        # Hard fact/schema violations are returned to Reply for one repair.
-        return _renumber(messages)
+        # Reply owns wording and sales judgement. Current-turn tool structures
+        # are factual delivery artifacts, so materialize the exact verified
+        # store cards without rewriting Reply's text or action.
+        prepared, store_delivery_materialized = _materialize_required_store_delivery(
+            messages,
+            state,
+        )
+        if store_delivery_materialized:
+            warnings.append(
+                {
+                    "node": "synthesize_reply",
+                    "message": "store_delivery_materialized_from_tool_fact",
+                }
+            )
+        return _renumber(prepared)
     prepared = _filter_unsupported_images(messages, state, warnings)
     prepared = append_activity_intro_image(prepared, state, warnings)
     prepared, duplicate_payment_removed = _dedupe_payment_collection_messages(prepared)
@@ -2695,6 +2728,112 @@ def _renumber(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for index, item in enumerate(messages, start=1):
         result.append({**item, "order": index})
     return result
+
+
+def _materialize_required_store_delivery(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Materialize only current-turn verified store-card structures.
+
+    The tool has already resolved and permission-checked these IDs. This helper
+    does not choose a store, alter Reply text or infer customer intent.
+    """
+
+    resolution = _structured_facts(state).get("store_resolution_fact")
+    if not isinstance(resolution, dict):
+        return list(messages), False
+    status = str(resolution.get("status") or "")
+    if status not in {"send_single", "send_multiple"}:
+        return list(messages), False
+    required_ids = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in resolution.get("delivery_store_ids") or []
+            if str(item or "").strip()
+        )
+    )
+    expected_count = 1 if status == "send_single" else min(3, len(required_ids))
+    required_ids = required_ids[:expected_count]
+    if len(required_ids) != expected_count or not required_ids:
+        return list(messages), False
+
+    emitted_ids = [
+        str((item.get("content") or {}).get("store_id") or "").strip()
+        for item in messages
+        if isinstance(item, dict)
+        and str(item.get("type") or "") == "store_address"
+        and isinstance(item.get("content"), dict)
+    ]
+    if emitted_ids == required_ids:
+        return list(messages), False
+
+    first_card_index = next(
+        (
+            index
+            for index, item in enumerate(messages)
+            if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
+        ),
+        -1,
+    )
+    without_cards = [
+        item
+        for item in messages
+        if not (isinstance(item, dict) and str(item.get("type") or "") == "store_address")
+    ]
+    if first_card_index < 0:
+        first_text_index = next(
+            (
+                index
+                for index, item in enumerate(without_cards)
+                if isinstance(item, dict) and str(item.get("type") or "") == "text"
+            ),
+            -1,
+        )
+        insert_at = first_text_index + 1 if first_text_index >= 0 else 0
+    else:
+        insert_at = min(first_card_index, len(without_cards))
+    cards = [
+        {"type": "store_address", "content": {"store_id": store_id}}
+        for store_id in required_ids
+    ]
+    return [*without_cards[:insert_at], *cards, *without_cards[insert_at:]], True
+
+
+def _store_fact_recovery_messages(state: AgentState) -> list[dict[str, Any]]:
+    """Return a factual store delivery when Reply failed after tools succeeded."""
+
+    resolution = _structured_facts(state).get("store_resolution_fact")
+    if not isinstance(resolution, dict):
+        return []
+    status = str(resolution.get("status") or "")
+    if status not in {"send_single", "send_multiple"}:
+        return []
+    required_ids = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in resolution.get("delivery_store_ids") or []
+            if str(item or "").strip()
+        )
+    )
+    expected_count = 1 if status == "send_single" else min(3, len(required_ids))
+    required_ids = required_ids[:expected_count]
+    if len(required_ids) != expected_count or not required_ids:
+        return []
+    intro = (
+        "按您这个位置，相对近的门店位置发您。"
+        if str(resolution.get("ranking_method") or "") == "haversine"
+        else "门店位置发您。"
+    )
+    return _renumber(
+        [
+            {"type": "text", "content": intro},
+            *[
+                {"type": "store_address", "content": {"store_id": store_id}}
+                for store_id in required_ids
+            ],
+        ]
+    )
 
 
 def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = None) -> list[dict[str, Any]]:

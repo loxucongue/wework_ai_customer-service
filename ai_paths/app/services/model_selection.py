@@ -7,7 +7,7 @@ import httpx
 from app.config import Settings
 
 
-ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision"]
+ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision", "store_destination"]
 
 
 def api_key(settings: Settings, model: str | None = None) -> str:
@@ -41,6 +41,8 @@ def model_name(settings: Settings, tier: ModelTier) -> str:
         return settings.model_reply or settings.model_fast
     if tier == "vision":
         return settings.model_vision
+    if tier == "store_destination":
+        return settings.model_store_destination
     return settings.model_balanced
 
 
@@ -56,12 +58,16 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
         fallback_text = settings.model_reply_fallbacks
     elif tier == "vision":
         fallback_text = settings.model_vision_fallbacks
+    elif tier == "store_destination":
+        fallback_text = settings.model_store_destination_fallbacks
     else:
         fallback_text = settings.model_balanced_fallbacks
     models = [primary]
     for name in split_models(fallback_text):
         if name:
             models.append(name)
+    if settings.model_provider.lower() in {"relay", "openai_compatible", "openai-compatible"}:
+        models.extend(split_models(settings.model_emergency_fallbacks))
     if tier == "planner" and settings.model_provider.lower() == "aliyun" and "qwen-turbo" not in models:
         models.append("qwen-turbo")
     return _dedupe_models(models)

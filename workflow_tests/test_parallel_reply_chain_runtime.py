@@ -1283,40 +1283,24 @@ def test_location_card_protocol_recovers_required_read_only_tools() -> None:
 
     calls = _protocol_required_read_only_tools(state)
 
-    assert [item["name"] for item in calls] == [
-        "customer_store_lookup",
-        "distance_calculate",
-    ]
-    assert calls[0]["query"] == "福建省厦门市湖里区岐山北二路1000号 萤火虫大厦"
-    assert calls[1]["origin"] == "24.535414,118.152077"
+    assert [item["name"] for item in calls] == ["resolve_customer_store"]
+    assert calls[0]["destination_hint"] == "福建省厦门市湖里区岐山北二路1000号 萤火虫大厦"
     assert all(item["evidence_refs"] == ["current_message"] for item in calls)
 
 
 def test_location_card_protocol_facts_override_model_tool_arguments() -> None:
     planned = [
         {
-            "name": "customer_store_lookup",
-            "query": "萤火虫大厦",
+            "name": "resolve_customer_store",
+            "destination_hint": "萤火虫大厦",
             "evidence_refs": ["current_message"],
-        },
-        {
-            "name": "distance_calculate",
-            "origin": "model-invented-origin",
-            "candidate_source": "customer_store_lookup",
         },
     ]
     required = [
         {
-            "name": "customer_store_lookup",
-            "query": "福建省厦门市湖里区岐山北二路1000号 萤火虫大厦",
+            "name": "resolve_customer_store",
+            "destination_hint": "福建省厦门市湖里区岐山北二路1000号 萤火虫大厦",
             "purpose": "protocol_location_card_resolution",
-            "evidence_refs": ["current_message"],
-        },
-        {
-            "name": "distance_calculate",
-            "origin": "24.535414,118.152077",
-            "candidate_source": "customer_store_lookup",
-            "purpose": "protocol_location_card_distance_ranking",
             "evidence_refs": ["current_message"],
         },
     ]
@@ -3187,8 +3171,8 @@ def test_tool_planner_calls_require_real_evidence_refs() -> None:
     calls, violations = _normalize_read_only_tool_calls(
         [
             {
-                "name": "customer_store_lookup",
-                "arguments": {"query": "洪湖市"},
+                "name": "resolve_customer_store",
+                "arguments": {"destination_hint": "洪湖市"},
                 "evidence_refs": ["current_message"],
             },
             {
@@ -3200,7 +3184,7 @@ def test_tool_planner_calls_require_real_evidence_refs() -> None:
         valid_evidence_refs={"current_message"},
     )
 
-    assert [item["name"] for item in calls] == ["customer_store_lookup"]
+    assert [item["name"] for item in calls] == ["resolve_customer_store"]
     assert violations == ["tool_call_invalid_evidence_ref:kb_search"]
 
 
@@ -3208,8 +3192,8 @@ def test_tool_planner_evidence_field_paths_are_syntax_normalized() -> None:
     calls, violations = _normalize_read_only_tool_calls(
         [
             {
-                "name": "customer_store_lookup",
-                "arguments": {"query": "武平"},
+                "name": "resolve_customer_store",
+                "arguments": {"destination_hint": "武平"},
                 "evidence_refs": ["current_message.content", "conversation.conv_001.content"],
             }
         ],
@@ -3229,7 +3213,7 @@ def test_tool_planner_rejects_missing_required_read_only_arguments() -> None:
                 "evidence_refs": ["current_message"],
             },
             {
-                "name": "customer_store_lookup",
+                "name": "resolve_customer_store",
                 "arguments": {"purpose": "lookup"},
                 "evidence_refs": ["current_message"],
             },
@@ -3237,35 +3221,31 @@ def test_tool_planner_rejects_missing_required_read_only_arguments() -> None:
         valid_evidence_refs={"current_message"},
     )
 
-    assert calls == []
-    assert violations == [
-        "tool_call_missing_argument:kb_search:query",
-        "tool_call_missing_location_argument:customer_store_lookup",
-    ]
+    assert [item["name"] for item in calls] == ["resolve_customer_store"]
+    assert violations == ["tool_call_missing_argument:kb_search:query"]
 
 
 def test_tool_planner_prompt_requires_distance_for_parent_scope_location_fallback() -> None:
     prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
 
-    assert "本级无门店且父级范围有多候选" in prompt
-    assert "可同时规划 customer_store_lookup 和 distance_calculate" in prompt
-    assert "用真实排序支持 Reply" in prompt
+    assert "所有门店、地址、定位" in prompt
+    assert "统一调用" in prompt
+    assert "resolve_customer_store" in prompt
 
 
 def test_tool_planner_prompt_composes_recent_parent_city_with_current_district() -> None:
     prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
 
-    assert "结合完整历史中的父级城市组成查询词" in prompt
-    assert "广州市番禺区" in prompt
+    assert "客户补充下级地名" in prompt
+    assert "不在 Tool Planner 里重建最终目的地" in prompt
     assert "evidence_refs 引用真实 message_ref" in prompt
 
 
 def test_tool_planner_prompt_forbids_inventing_parent_for_raw_village_name() -> None:
     prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
 
-    assert "只有客户原话、完整历史或定位事实能提供父级行政区时才能补全父级" in prompt
-    assert "保持客户原始地名，交给门店工具解析" in prompt
-    assert "不凭常识补省市县" in prompt
+    assert "改口到新地点" in prompt
+    assert "地点解析模型处理" in prompt
 
 
 def test_tool_planner_prompt_maps_authenticity_doubt_to_same_dimension_evidence() -> None:
@@ -3673,6 +3653,76 @@ def test_parallel_reply_fallback_trace_keeps_failed_raw_json_for_audit() -> None
     assert model_call["retry"]["raw_json_output"] == {"reply_messages": []}
 
 
+def test_parallel_reply_failure_recovers_verified_store_card_instead_of_neutral_text() -> None:
+    class _ModelClient:
+        available = True
+        last_usage = None
+
+        async def chat_json(self, messages, **kwargs):
+            del messages, kwargs
+            return {"reply_messages": []}
+
+    node = create_synthesize_reply_node(
+        trace_logger=_TraceLogger(),
+        model_client=_ModelClient(),
+        debug_message_contents=debug_message_contents,
+        reply_messages_for_model=lambda _state: [
+            {"role": "system", "content": "output json"},
+            {"role": "user", "content": "{}"},
+        ],
+        should_use_model_reply=lambda _state: True,
+        validated_model_messages=validated_model_messages,
+    )
+    store = {
+        "store_id": "241",
+        "store_name": "荆州万达店",
+        "province": "湖北省",
+        "city": "荆州市",
+        "district": "荆州区",
+        "store_address": "湖北省荆州市荆州区万达广场",
+        "scope_authorized": True,
+        "store_fact_integrity": "valid",
+    }
+    state = {
+        **_parallel_state("门店地址发我"),
+        "request_id": "parallel-store-fact-recovery",
+        "trace": [],
+        "errors": [],
+        "warnings": [],
+        "required_tools": [{"name": "resolve_customer_store", "purpose": "nearest"}],
+        "customer_store_knowledge": {"stores": [store]},
+        "fact_envelope": {
+            "structured_facts": {
+                "store_resolution_fact": {
+                    "status": "send_single",
+                    "delivery_store_ids": ["241"],
+                    "visible_candidate_ids": ["241"],
+                    "ranking_method": "haversine",
+                },
+                "store_facts": [store],
+            }
+        },
+        "evidence_join": {
+            "schema_version": "reply_chain_evidence_join_v1",
+            "content_candidates": [],
+            "tool_facts": {
+                "store_resolution_fact": {
+                    "status": "send_single",
+                    "delivery_store_ids": ["241"],
+                }
+            },
+        },
+    }
+
+    output = asyncio.run(node(state))
+
+    assert output["reply_source"] == "deterministic_store_fact_recovery"
+    assert output["fallback_source"] == "deterministic_store_fact_recovery"
+    assert [item["type"] for item in output["reply_messages"]] == ["text", "store_address"]
+    assert output["reply_messages"][1]["content"] == {"store_id": "241"}
+    assert all(item.get("content") != "您稍等一下" for item in output["reply_messages"])
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -3896,16 +3946,8 @@ def test_tool_planner_always_applies_authoritative_location_card_arguments() -> 
             return {
                 "tool_calls": [
                     {
-                        "name": "customer_store_lookup",
-                        "arguments": {"query": "萤火虫大厦"},
-                        "evidence_refs": ["current_message"],
-                    },
-                    {
-                        "name": "distance_calculate",
-                        "arguments": {
-                            "origin": "model-shortened-origin",
-                            "candidate_source": "customer_store_lookup",
-                        },
+                        "name": "resolve_customer_store",
+                        "arguments": {"destination_hint": "萤火虫大厦"},
                         "evidence_refs": ["current_message"],
                     },
                 ]
