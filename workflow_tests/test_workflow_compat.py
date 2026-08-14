@@ -58,11 +58,24 @@ def test_workflow_interface_version_is_attached_to_request_context() -> None:
     assert request.request_context["api_version"] == "v2"
 
 
-def test_run_interface_version_defaults_to_v1_and_detects_v2() -> None:
+def test_run_interface_version_defaults_to_v1_and_detects_newer_versions() -> None:
     assert interface_version_from_run({"input_snapshot": {"request_context": {}}}) == "v1"
     assert (
         interface_version_from_run(
             {"input_snapshot": {"request_context": {"interface_version": "v2", "source_protocol": "workflow-compatible"}}}
         )
         == "v2"
+    )
+    assert (
+        interface_version_from_run(
+            {
+                "input_snapshot": {
+                    "request_context": {
+                        "interface_version": "v3",
+                        "source_protocol": "workflow-compatible",
+                    }
+                }
+            }
+        )
+        == "v3"
     )

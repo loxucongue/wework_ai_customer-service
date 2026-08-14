@@ -122,6 +122,8 @@ def interface_version_from_run(run: dict[str, Any]) -> str:
     ]
     for value in candidates:
         text = str(value or "").strip().lower()
+        if text == "v3" or text.endswith("-v3") or "/v3" in text:
+            return "v3"
         if text == "v2" or text.endswith("-v2") or "/v2" in text:
             return "v2"
         if text == "v1":
