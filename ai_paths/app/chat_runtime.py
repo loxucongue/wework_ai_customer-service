@@ -12,6 +12,7 @@ from app.chat_request_context import (
     conversation_id_from_request,
     conversation_title,
     is_isolated_v2_test_request,
+    is_platform_recalled_message,
 )
 from app.chat_runtime_helpers import failed_state_from_exception, safe_repository_call
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
@@ -170,6 +171,30 @@ class ChatRuntime:
         initial_state = self._initial_state(effective_request, request_id, effective_context)
         if decision and self._platform_reply_coordinator:
             initial_state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
+
+        # A recalled customer message is a platform protocol event, not a
+        # customer utterance. It must not consume model capacity or produce a
+        # customer-visible reply.
+        if is_platform_recalled_message(effective_request.content):
+            initial_state["reply_messages"] = []
+            initial_state["reply_source"] = "platform_recalled_message"
+            initial_state.setdefault("trace", []).append(
+                {
+                    "node": "platform_protocol_filter",
+                    "decision": "no_reply",
+                    "reason": "customer_message_recalled",
+                }
+            )
+            _set_sync_return(initial_state, "empty", [])
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=initial_state,
+                allow_empty_reply=True,
+            )
 
         # WeCom's automatic opening remains a protocol-level special case.
         # Every ordinary customer message enters the same parallel evidence

@@ -378,7 +378,7 @@ def test_parallel_reply_prompt_uses_history_without_fixed_short_ack_script() -> 
     assert "完整聊天" in prompt
     assert "不要重复已回答的问题" in prompt
     assert "每轮只选一个主要目标" in prompt
-    assert "客户工作中、健康风险、投诉或明确停止时暂停" in prompt
+    assert "客户正在工作、开车或处理现实事务" in prompt
     assert "可逆犹豫不自动等于退出" in prompt
     assert "好/好的/嗯/可以" not in prompt
 
@@ -763,13 +763,14 @@ def test_parallel_reply_payload_surfaces_current_store_delivery_as_an_option() -
 
     payload = parallel_reply_payload(state)
 
-    assert list(payload)[:7] == [
+    assert list(payload)[:8] == [
         "schema_version",
         "structured_delivery_options",
         "tool_fact_reference_options",
         "authoritative_fact_reference_options",
         "registration_fact_status",
         "store_fact_status",
+        "current_turn_structural_constraints",
         "evidence",
     ]
     assert payload["store_fact_status"] == {
@@ -1900,6 +1901,19 @@ def test_parallel_raw_schema_accepts_external_media_url_shape_without_rewrite() 
         {"type": "image", "content": {"url": "https://example.test/case.jpg"}},
     ]
     _validate_parallel_raw_reply_schema(payload)
+    assert payload["reply_messages"][0]["content"] == "https://example.test/case.jpg"
+
+    payload["reply_messages"] = [
+        {"type": "image", "content": {"image_url": "https://example.test/case.jpg"}},
+    ]
+    _validate_parallel_raw_reply_schema(payload)
+    assert payload["reply_messages"][0]["content"] == "https://example.test/case.jpg"
+
+    payload["reply_messages"] = [
+        {"type": "video", "content": {"video_url": "https://example.test/guide.mp4"}},
+    ]
+    _validate_parallel_raw_reply_schema(payload)
+    assert payload["reply_messages"][0]["content"] == "https://example.test/guide.mp4"
 
 
 @pytest.mark.parametrize(
@@ -3185,7 +3199,10 @@ def test_tool_planner_calls_require_real_evidence_refs() -> None:
     )
 
     assert [item["name"] for item in calls] == ["resolve_customer_store"]
-    assert violations == ["tool_call_invalid_evidence_ref:kb_search"]
+    assert violations == [
+        "tool_call_invalid_evidence_ref:kb_search",
+        "tool_call_missing_evidence_ref:kb_search",
+    ]
 
 
 def test_tool_planner_evidence_field_paths_are_syntax_normalized() -> None:
@@ -3202,6 +3219,24 @@ def test_tool_planner_evidence_field_paths_are_syntax_normalized() -> None:
 
     assert violations == []
     assert calls[0]["evidence_refs"] == ["current_message", "conv_001"]
+
+
+def test_tool_planner_keeps_supported_lookup_when_an_extra_ref_is_invalid() -> None:
+    calls, violations = _normalize_read_only_tool_calls(
+        [
+            {
+                "name": "resolve_customer_store",
+                "arguments": {"destination_hint": "汉口"},
+                "purpose": "客户补充上一轮询问的区域",
+                "evidence_refs": ["prior_wuhan_message", "hallucinated_ref"],
+            }
+        ],
+        valid_evidence_refs={"current_message", "prior_wuhan_message"},
+    )
+
+    assert [item["name"] for item in calls] == ["resolve_customer_store"]
+    assert calls[0]["evidence_refs"] == ["prior_wuhan_message"]
+    assert violations == ["tool_call_invalid_evidence_ref:resolve_customer_store"]
 
 
 def test_tool_planner_rejects_missing_required_read_only_arguments() -> None:
@@ -3238,7 +3273,60 @@ def test_tool_planner_prompt_composes_recent_parent_city_with_current_district()
 
     assert "客户补充下级地名" in prompt
     assert "不在 Tool Planner 里重建最终目的地" in prompt
+    assert "汉口" in prompt
+    assert "必须规划 resolve_customer_store" in prompt
+    assert "不能因为当前消息没有重复说" in prompt
     assert "evidence_refs 引用真实 message_ref" in prompt
+
+
+def test_sales_recall_wait_is_measured_from_parallel_start(monkeypatch) -> None:
+    class _Settings:
+        v2_sales_recall_wait_seconds = 0.02
+
+    class _Client:
+        settings = _Settings()
+
+    async def scenario():
+        task = asyncio.create_task(asyncio.sleep(1))
+        await asyncio.sleep(0.03)
+        return await parallel_reply_chain._finish_sales_recall(
+            task,
+            coze_client=_Client(),
+            started=time.perf_counter() - 0.03,
+        )
+
+    started = time.perf_counter()
+    result = asyncio.run(scenario())
+
+    assert time.perf_counter() - started < 0.2
+    assert result["status"] == "timeout"
+    assert result["reason"] == "kb_recall_not_ready"
+
+
+def test_parallel_reply_exposes_store_delivery_as_structure_not_sales_decision() -> None:
+    constraints = parallel_reply_chain._current_turn_structural_constraints(
+        store_fact_status={"status": "send_multiple"},
+        structured_delivery_options={
+            "store_address": {"available_store_ids": ["601", "602"]}
+        },
+    )
+
+    assert constraints == [
+        {
+            "code": "store_delivery_available",
+            "instruction": constraints[0]["instruction"],
+        }
+    ]
+    assert "601" in constraints[0]["instruction"]
+    assert "实际交付" in constraints[0]["instruction"]
+
+
+def test_v3_prompts_treat_customer_reply_as_open_channel_without_forcing_pause_cases() -> None:
+    assert "客户每次主动开口" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能把准确回答当成终点" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "当前健康风险、投诉退款、明确强拒绝" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "只要目录中存在" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "低信息承接不代表付款或预约同意" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
 
 def test_tool_planner_prompt_forbids_inventing_parent_for_raw_village_name() -> None:

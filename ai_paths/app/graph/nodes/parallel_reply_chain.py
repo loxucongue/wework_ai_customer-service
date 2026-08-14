@@ -61,6 +61,8 @@ TOOL_PLANNER_SYSTEM_PROMPT = """你是 V3 回复链路的只读 Tool Planner。�
 # 门店查询
 - 当前消息问某地门店、索要地址、远近、导航、停车、营业时间，或消息本身是省、市、区县、县级市、乡镇、村、道路、地标、定位卡时，除非紧邻历史已经真实发送对应门店卡且客户只是在确认该卡，否则规划 resolve_customer_store。
 - 客户补充下级地名、改口到新地点或反复比较区域时，不在 Tool Planner 里重建最终目的地；完整历史交给 resolve_customer_store 内的地点解析模型处理。
+- 客户正在回答上一轮的城市、区县、商圈或定位追问时，当前即使只有“汉口”“番禺”“武平”这类短地点，也代表新的门店查询条件，必须规划 resolve_customer_store。历史门店文字、上一轮候选列表或普通助手回复不能替代本轮结构化门店工具事实。
+- 客户每次补充、纠正或切换地点，都可能改变可见候选和距离结果；除非紧邻历史已经真实发送唯一对应门店卡且客户只是确认该卡，否则必须重新查询，不能因为当前消息没有重复说“门店/地址”而跳过。
 - 客户明确要求重发地址、位置、导航或门店卡时，若本轮 authoritative_facts 没有可直接重放的真实 store_id 与结构消息，必须重新规划 resolve_customer_store。客户只说“这家、收到、可以”则不重查。
 - 客户问“更近/最近”但历史与当前消息没有可解析的位置原点时，仍调用 resolve_customer_store，由工具返回缺失事实，不自行挑门店。
 - `missing_facts` 只记录回答客户当前明确请求不可缺少的事实，不能记录可选销售机会。完整历史已经说明门店是按客户位置匹配或相对合适，并已交付门店结果时，当前窗口没有再次携带原始位置不等于该事实从未收集；客户只是评价远近、没有主动要求重新匹配、没有提供新位置也没有指出原位置错误时，不得把位置写成缺失事实。
@@ -470,11 +472,12 @@ async def _finish_sales_recall(
     wait_seconds = float(getattr(settings, "v2_sales_recall_wait_seconds", 2.5) or 0)
     if task.done():
         return await task
-    if wait_seconds <= 0:
+    remaining_wait = wait_seconds - max(0.0, time.perf_counter() - started)
+    if remaining_wait <= 0:
         task.cancel()
         return _sales_recall_timeout(started, "kb_recall_not_ready")
     try:
-        return await asyncio.wait_for(task, timeout=wait_seconds)
+        return await asyncio.wait_for(task, timeout=remaining_wait)
     except asyncio.TimeoutError:
         task.cancel()
         return _sales_recall_timeout(started, "kb_recall_timeout")
@@ -912,6 +915,10 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         "authoritative_fact_reference_options": authoritative_fact_reference_options,
         "registration_fact_status": registration_fact_status,
         "store_fact_status": store_fact_status,
+        "current_turn_structural_constraints": _current_turn_structural_constraints(
+            store_fact_status=store_fact_status,
+            structured_delivery_options=structured_delivery_options,
+        ),
         "evidence": reply_evidence,
         "valid_message_refs": valid_message_refs,
         "valid_customer_message_refs": valid_customer_message_refs,
@@ -956,6 +963,61 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
             "commit_actions": "optional validated deferred writes; never execute before reply validation",
         },
     }
+
+
+def _current_turn_structural_constraints(
+    *,
+    store_fact_status: dict[str, Any],
+    structured_delivery_options: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Expose executor-owned delivery boundaries without choosing sales behavior."""
+
+    constraints: list[dict[str, str]] = []
+    status = str(store_fact_status.get("status") or "").strip()
+    if status in {"need_location", "need_location_confirmation", "ambiguous_location"}:
+        constraints.append(
+            {
+                "code": "store_location_clarification_required",
+                "instruction": (
+                    "本轮只能说明工具已经确认的范围，并询问一个会改变查询结果的必要位置；"
+                    "不得发送 store_address，不得编造系统更新、同步或维护原因，也不得推导活动未覆盖。"
+                ),
+            }
+        )
+    elif status == "no_valid_candidate" and not bool(
+        store_fact_status.get("candidate_search_complete")
+    ):
+        constraints.append(
+            {
+                "code": "store_scope_incomplete",
+                "instruction": (
+                    "本轮门店查询范围不完整；不得断言当地没有门店或活动，"
+                    "不得编造系统更新、同步或维护原因。"
+                ),
+            }
+        )
+    elif status in {"send_single", "send_multiple"}:
+        store_delivery = (
+            structured_delivery_options.get("store_address")
+            if isinstance(structured_delivery_options.get("store_address"), dict)
+            else {}
+        )
+        available_ids = [
+            str(item).strip()
+            for item in store_delivery.get("available_store_ids") or []
+            if str(item).strip()
+        ]
+        constraints.append(
+            {
+                "code": "store_delivery_available",
+                "instruction": (
+                    "本轮门店工具已经给出可交付结果；回答当前门店问题时应实际交付 "
+                    f"structured_delivery_options 中 store_id 属于 {available_ids} 的 store_address，"
+                    "不能只列名称或再次索要已经足够的位置。"
+                ),
+            }
+        )
+    return constraints
 
 
 def _shared_context(
@@ -1822,12 +1884,15 @@ def _normalize_read_only_tool_calls(
         ]
         evidence_refs = [ref for ref in dict.fromkeys(evidence_refs) if ref]
         if valid_evidence_refs is not None:
+            invalid_refs = [ref for ref in evidence_refs if ref not in valid_evidence_refs]
+            if invalid_refs:
+                violations.append(f"tool_call_invalid_evidence_ref:{name}")
+                evidence_refs = [ref for ref in evidence_refs if ref in valid_evidence_refs]
             if not evidence_refs:
                 violations.append(f"tool_call_missing_evidence_ref:{name}")
                 continue
-            if any(ref not in valid_evidence_refs for ref in evidence_refs):
-                violations.append(f"tool_call_invalid_evidence_ref:{name}")
-                continue
+            # A malformed extra ref remains observable, but it must not erase
+            # an otherwise supported read-only query.
         normalized = {
             "name": name,
             **copy.deepcopy(arguments),
