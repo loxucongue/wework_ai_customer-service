@@ -9,6 +9,10 @@ MODEL_LED_PLAN_PATH = ROOT / "docs" / "model_led_top_sales_brain_refactor_plan.m
 MATRIX_PATH = ROOT / "docs" / "rule_ownership_matrix.md"
 GRAPH_BUILDER_PATH = ROOT / "ai_paths" / "app" / "graph" / "graph_builder.py"
 PARALLEL_CHAIN_PATH = ROOT / "ai_paths" / "app" / "graph" / "nodes" / "parallel_reply_chain.py"
+PARALLEL_GATE_PROMPT_PATH = ROOT / "ai_paths" / "app" / "prompts" / "sop_chat_gate.py"
+PARALLEL_REPLY_PROMPT_PATH = ROOT / "ai_paths" / "app" / "prompts" / "reply_synthesizer.py"
+BUSINESS_RULES_PATH = ROOT / "ai_paths" / "app" / "policies" / "business_rules.json"
+V2_PLAYBOOK_PATH = ROOT / "config" / "v2_model_led_objection_playbook.json"
 
 
 def test_refactor_plan_keeps_node_ownership_boundaries() -> None:
@@ -96,6 +100,20 @@ def test_model_led_plan_requires_post_completion_architecture_review() -> None:
         "任一 `semantic_intrusion` 或未解释的 `over_protection` 未清零",
     ):
         assert marker in text
+
+
+def test_non_pause_progress_contract_requires_actual_delivery() -> None:
+    gate_prompt = PARALLEL_GATE_PROMPT_PATH.read_text(encoding="utf-8")
+    reply_prompt = PARALLEL_REPLY_PROMPT_PATH.read_text(encoding="utf-8")
+    business_rules = BUSINESS_RULES_PATH.read_text(encoding="utf-8")
+    playbook = V2_PLAYBOOK_PATH.read_text(encoding="utf-8")
+
+    assert "必须提名一个 `supporting`" in gate_prompt
+    assert "低信息短确认也不属于这里的暂停边界" in gate_prompt
+    assert "本轮必须实际交付一个相关的新价值或完成一个真实行动" in reply_prompt
+    assert "未来承诺、许可式出口或被动结束不算新价值" in reply_prompt
+    assert "也不得把它当成暂停或对话终点" in business_rules
+    assert "未来承诺、许可式出口和有需要再联系不算推进" in playbook
 
 
 def test_rule_matrix_active_rules_have_target_owner_and_tests() -> None:
