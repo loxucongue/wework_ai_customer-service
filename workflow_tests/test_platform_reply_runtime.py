@@ -166,6 +166,28 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workflow_body["code"], 0)
         self.assertEqual(len(workflow_body["data"]["reply_messages"]), 1)
 
+    async def test_platform_recalled_message_returns_empty_before_model_graph(self) -> None:
+        graph = _UnexpectedGraph()
+        repository = _Repository()
+        runtime = ChatRuntime(
+            full_graph=graph,
+            trace_logger=_TraceLogger(),
+            repository=repository,
+        )
+
+        response = await runtime.run_platform_reply(_request("[消息已撤回]"))
+
+        self.assertEqual(response.reply_messages, [])
+        self.assertFalse(graph.called)
+        self.assertTrue(repository.saved_states)
+        state = repository.saved_states[-1]
+        self.assertEqual(state["reply_source"], "platform_recalled_message")
+        self.assertEqual(state["reply_control"]["sync_return"]["type"], "empty")
+        self.assertEqual(state["trace"][-1]["reason"], "customer_message_recalled")
+        workflow_body = workflow_response_from_chat(response)
+        self.assertEqual(workflow_body["code"], 0)
+        self.assertEqual(workflow_body["data"]["reply_messages"], [])
+
     async def test_runtime_does_not_merge_gate_content_outside_parallel_graph(self) -> None:
         repository = _Repository()
         gate = _PrecisionSopGate()

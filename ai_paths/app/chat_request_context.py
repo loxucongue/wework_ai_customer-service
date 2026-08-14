@@ -45,6 +45,12 @@ def is_isolated_v2_test_request(request: ChatRequest, context: dict[str, Any]) -
     return all(str(value or "").strip().lower().startswith("sim_") for value in identity_values)
 
 
+def is_platform_recalled_message(content: str) -> bool:
+    """Recognize WeCom's customer-message recall protocol sentinel."""
+
+    return str(content or "").strip() in {"[消息已撤回]", "【消息已撤回】"}
+
+
 def _inject_debug_platform_context_if_needed(request: ChatRequest, context: dict[str, Any]) -> None:
     """Allow the local debug chat UI to exercise real platform store APIs.
 
