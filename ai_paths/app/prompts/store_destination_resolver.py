@@ -45,3 +45,11 @@ STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT = """你是门店查询工作流中的�
   "reason": "简述地点证据如何承接，不做销售判断"
 }
 """
+
+STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT += """
+
+# 行政区证据补充约束
+- `administrative_context` 只能填写客户原话、定位卡或紧邻历史中明确出现的行政区。POI 名称、机场名、车站名、商圈名中碰巧包含行政区字样，不等于客户声明了该行政区。
+- 客户只给出具体 POI 时，保留完整 POI 作为 `destination_query`，已明确的城市可以填写，未明确的区县留空，交给 `poi_to_geocode` 返回真实行政归属。
+- 例如“广州白云国际机场T2”中的“白云”是 POI 名称的一部分，不能据此填写 district="白云区"；“上海虹桥国际枢纽”也不能仅凭常识填写 district，除非客户原话同时明确说了区县。
+"""

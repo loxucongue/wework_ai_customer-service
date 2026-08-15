@@ -188,17 +188,18 @@ async def _run_case(
         if str(item or "").strip()
     ]
     resolution_status = str(resolution_fact.get("status") or "")
-    if resolution_status in {"send_single", "send_multiple"} and cards != required_card_ids:
-        violations.append("required_store_delivery_mismatch")
-    elif candidates and not cards:
-        violations.append("resolved_store_not_delivered")
-    if resolution_status in {
+    clarification_statuses = {
         "need_location",
         "need_location_confirmation",
         "ambiguous_location",
         "no_valid_candidate",
         "reuse_confirmed_store",
-    } and cards:
+    }
+    if resolution_status in {"send_single", "send_multiple"} and cards != required_card_ids:
+        violations.append("required_store_delivery_mismatch")
+    elif candidates and not cards and resolution_status not in clarification_statuses:
+        violations.append("resolved_store_not_delivered")
+    if resolution_status in clarification_statuses and cards:
         violations.append("store_card_not_allowed_for_resolution_status")
     if str(workflow.get("status") or "") in {"error", "store_scope_unavailable"}:
         violations.append("store_tool_failed")
@@ -215,7 +216,9 @@ async def _run_case(
         "tool_plan": deepcopy(final_state.get("tool_plan") or {}),
         "store_resolution": {
             "status": workflow.get("status"),
+            "workflow_error": workflow.get("error"),
             "query": lookup.get("query") or distance.get("geocode_origin"),
+            "lookup_error": lookup.get("error"),
             "destination": workflow.get("destination_resolution") or {},
             "geocode": lookup.get("geocode") or distance.get("origin_geocode") or {},
             "candidate_search_complete": lookup.get("candidate_search_complete"),

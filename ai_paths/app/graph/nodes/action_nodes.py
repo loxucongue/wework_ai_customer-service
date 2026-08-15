@@ -1514,6 +1514,10 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         raw_scope_stores,
         known_stores=[*_snapshot_store_values(), *raw_scope_stores],
     )
+    expected_admin = {
+        **_explicit_parent_admin_from_store_scope(query, stores),
+        **_normalized_expected_admin(tool.get("expected_admin")),
+    }
     scope_unavailable = _customer_store_scope_unavailable(state) or bool(raw_scope_stores and not stores)
     if not query:
         return {
@@ -1568,7 +1572,6 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     resolved_query = query
     selected_candidate: dict[str, Any] = {}
     if workflow_id:
-        expected_admin = _normalized_expected_admin(tool.get("expected_admin"))
         geocode_results = await asyncio.gather(
             *(
                 _geocode_address(
@@ -1586,7 +1589,12 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         valid_geocodes: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for candidate, result in zip(geocode_queries, geocode_results):
             candidate_geocode = result if isinstance(result, dict) else {}
-            explicit_conflict = _geocode_explicit_region_conflict(candidate["query"], candidate_geocode, stores)
+            explicit_conflict = _geocode_explicit_region_conflict(
+                candidate["query"],
+                candidate_geocode,
+                stores,
+                expected_admin=expected_admin,
+            )
             consistency = _geocode_query_consistency(candidate["query"], candidate_geocode)
             if (
                 consistency.get("status") == "conflict"
@@ -1797,7 +1805,12 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "missing": ["confirmed_location"],
         }
 
-    explicit_region_conflict = _geocode_explicit_region_conflict(resolved_query, geocode, stores)
+    explicit_region_conflict = _geocode_explicit_region_conflict(
+        resolved_query,
+        geocode,
+        stores,
+        expected_admin=expected_admin,
+    )
     if explicit_region_conflict:
         return {
             "status": "geocode_query_conflict",
@@ -2037,9 +2050,45 @@ def _store_normalization_evidence(selected: dict[str, Any], attempts: list[dict[
     }
 
 
-def _geocode_explicit_region_conflict(query: str, geocode: dict[str, Any], stores: list[dict[str, Any]]) -> bool:
+def _explicit_parent_admin_from_store_scope(
+    query: str,
+    stores: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Recover only province/city names explicitly present in customer text."""
+
+    query_text = _compact_text(query)
+    if not query_text:
+        return {}
+    result: dict[str, str] = {}
+    for field in ("province", "city"):
+        matches = {
+            str(store.get(field) or "").strip()
+            for store in stores
+            if str(store.get(field) or "").strip()
+            and _region_value_explicit_at_level(
+                query_text=query_text,
+                value=str(store.get(field) or ""),
+                field=field,
+                geocode={},
+            )
+        }
+        if len(matches) == 1:
+            result[field] = next(iter(matches))
+    return result
+
+
+def _geocode_explicit_region_conflict(
+    query: str,
+    geocode: dict[str, Any],
+    stores: list[dict[str, Any]],
+    *,
+    expected_admin: dict[str, Any] | None = None,
+) -> bool:
     if not isinstance(geocode, dict) or not geocode.get("location"):
         return False
+    normalized_expected = _normalized_expected_admin(expected_admin)
+    if normalized_expected:
+        return not _geocode_matches_expected_admin(geocode, normalized_expected)
     text = _compact_text(query)
     if not text:
         return False
@@ -2453,6 +2502,41 @@ def _query_looks_like_specific_geocode_place(query: str, geocode: dict[str, Any]
     city = str(geocode.get("city") or "").strip()
     district = str(geocode.get("district") or "").strip()
     township = str(geocode.get("township") or "").strip()
+    # A city-qualified POI is still a concrete origin. Previously, seeing the
+    # city name returned False before considering the remaining POI text, so
+    # places such as "上海虹桥国际枢纽中心" were downgraded to a broad city query.
+    detail = text
+    for admin_value in (province, city, district, township):
+        full = _compact_text(admin_value)
+        base = _strip_admin_suffix(full)
+        for candidate in (full, base):
+            if candidate and len(candidate) >= 2:
+                detail = detail.replace(candidate, "")
+    if any(
+        marker in detail
+        for marker in (
+            "枢纽",
+            "机场",
+            "车站",
+            "火车站",
+            "高铁站",
+            "地铁站",
+            "码头",
+            "大厦",
+            "广场",
+            "商场",
+            "中心",
+            "医院",
+            "学校",
+            "大学",
+            "公园",
+            "景区",
+            "路",
+            "街",
+            "大道",
+        )
+    ):
+        return True
     if township and _admin_name_mentioned_in_query(
         query,
         township,

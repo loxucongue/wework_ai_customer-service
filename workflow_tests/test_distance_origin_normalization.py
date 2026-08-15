@@ -6,6 +6,7 @@ from app.graph.nodes.action_nodes import (
     _distance_candidate_stores,
     _geocode_for_query_scope,
     _haversine_km,
+    _query_looks_like_specific_geocode_place,
     _store_lookup_item,
     _stores_for_geocode,
     _stores_for_text_query,
@@ -84,6 +85,33 @@ class DistanceOriginNormalizationTests(unittest.TestCase):
         )
 
         self.assertEqual(scoped.get("district"), "\u756a\u79ba\u533a")
+
+    def test_city_qualified_poi_keeps_geocoded_admin_context(self) -> None:
+        query = "\u4e0a\u6d77\u8679\u6865\u56fd\u9645\u67a2\u7ebd\u4e2d\u5fc3"
+        geocode = {
+                "province": "\u4e0a\u6d77\u5e02",
+                "city": "\u4e0a\u6d77\u5e02",
+                "district": "\u95f5\u884c\u533a",
+                "location": "121.384604,31.177394",
+        }
+        scoped = _geocode_for_query_scope(query, geocode)
+
+        self.assertTrue(_query_looks_like_specific_geocode_place(query, geocode))
+        self.assertEqual(scoped.get("city"), "\u4e0a\u6d77\u5e02")
+        self.assertEqual(scoped.get("district"), "\u95f5\u884c\u533a")
+
+    def test_city_and_district_only_query_is_not_treated_as_poi(self) -> None:
+        query = "\u4e0a\u6d77\u5e02\u6d66\u4e1c\u65b0\u533a"
+        geocode = {
+                "province": "\u4e0a\u6d77\u5e02",
+                "city": "\u4e0a\u6d77\u5e02",
+                "district": "\u6d66\u4e1c\u65b0\u533a",
+                "location": "121.544346,31.221461",
+        }
+        scoped = _geocode_for_query_scope(query, geocode)
+
+        self.assertFalse(_query_looks_like_specific_geocode_place(query, geocode))
+        self.assertEqual(scoped.get("district"), "\u6d66\u4e1c\u65b0\u533a")
 
     def test_nearby_geocode_prefers_district_matches_before_city_scope(self) -> None:
         stores = [

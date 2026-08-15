@@ -10,7 +10,9 @@ from app.graph.nodes.action_module_outputs import _distance_city_fallback_should
 from app.graph.nodes.action_nodes import (
     _distance_calculate,
     _distance_origin_is_broad_lookup_scope,
+    _explicit_parent_admin_from_store_scope,
     _first_geocode_candidate,
+    _geocode_explicit_region_conflict,
     _resolve_customer_store_workflow,
 )
 from app.prompts.store_destination_resolver import STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
@@ -347,6 +349,50 @@ def test_geocode_candidate_prefers_structured_admin_match() -> None:
     assert result["city"] == "武汉市"
     assert result["district"] == "硚口区"
     assert result["expected_admin_conflict"] is False
+
+
+def test_explicit_parent_admin_does_not_infer_district_from_poi_name() -> None:
+    stores = [
+        {
+            "province": "\u5e7f\u4e1c\u7701",
+            "city": "\u5e7f\u5dde\u5e02",
+            "district": "\u767d\u4e91\u533a",
+        },
+        {
+            "province": "\u5e7f\u4e1c\u7701",
+            "city": "\u5e7f\u5dde\u5e02",
+            "district": "\u82b1\u90fd\u533a",
+        },
+    ]
+
+    expected = _explicit_parent_admin_from_store_scope(
+        "\u5e7f\u5dde\u767d\u4e91\u56fd\u9645\u673a\u573aT2\u5230\u8fbe\u5385",
+        stores,
+    )
+
+    assert expected == {"city": "\u5e7f\u5dde\u5e02"}
+
+
+def test_poi_name_district_token_does_not_conflict_with_authoritative_city() -> None:
+    conflict = _geocode_explicit_region_conflict(
+        "\u5e7f\u5dde\u767d\u4e91\u56fd\u9645\u673a\u573aT2\u5230\u8fbe\u5385",
+        {
+            "province": "\u5e7f\u4e1c\u7701",
+            "city": "\u5e7f\u5dde\u5e02",
+            "district": "\u82b1\u90fd\u533a",
+            "location": "113.306585,23.389258",
+        },
+        [
+            {
+                "province": "\u5e7f\u4e1c\u7701",
+                "city": "\u5e7f\u5dde\u5e02",
+                "district": "\u767d\u4e91\u533a",
+            }
+        ],
+        expected_admin={"city": "\u5e7f\u5dde\u5e02"},
+    )
+
+    assert conflict is False
 
 
 def test_geocode_candidate_rejects_cross_city_result() -> None:
