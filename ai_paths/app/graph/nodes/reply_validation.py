@@ -374,12 +374,18 @@ def _validate_parallel_selected_content_delivery(
 ) -> None:
     """Validate Reply's explicit asset-adoption contract without choosing content."""
 
-    selected_ids = {
+    adopted_ids = {
         str(item or "").strip()
         for item in state.get("reply_selected_content_ids") or []
         if str(item or "").strip()
     }
-    if not selected_ids:
+    adopted_ids.update(
+        str(ref).split(":", 1)[1].strip()
+        for ref in state.get("reply_used_fact_refs") or []
+        if str(ref or "").startswith("content_asset:")
+        and str(ref).split(":", 1)[1].strip()
+    )
+    if not adopted_ids:
         return
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
     candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
@@ -394,7 +400,9 @@ def _validate_parallel_selected_content_delivery(
         if not isinstance(candidate, dict):
             continue
         content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
-        if not content_id or content_id not in selected_ids:
+        if not content_id or content_id not in adopted_ids:
+            continue
+        if str(candidate.get("delivery_status") or "").strip() == "completed":
             continue
         candidate_messages = candidate.get("messages")
         if not isinstance(candidate_messages, list):

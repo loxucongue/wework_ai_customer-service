@@ -3646,6 +3646,32 @@ def test_parallel_selected_content_repair_hint_is_structural_not_sales_decision(
     assert "代码不会替你自动追加" in hint
 
 
+def test_parallel_content_fact_ref_requires_current_candidate_structured_delivery() -> None:
+    state = {
+        **_parallel_state("地址发我"),
+        "evidence_join": {
+            "content_candidates": [
+                {
+                    "content_id": "s10_activity_intro",
+                    "delivery_status": "available",
+                    "messages": [
+                        {"type": "text", "content": "活动介绍"},
+                        {"type": "image", "content": "https://example.invalid/activity.jpg"},
+                    ],
+                }
+            ]
+        },
+        "reply_selected_content_ids": [],
+        "reply_used_fact_refs": ["content_asset:s10_activity_intro"],
+    }
+
+    with pytest.raises(ValueError, match="selected_content_delivery_missing"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "活动介绍"}],
+            state,
+        )
+
+
 def test_parallel_reply_does_not_repair_customer_visible_text_for_internal_phrase() -> None:
     class _ModelClient:
         available = True
