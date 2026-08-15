@@ -2087,8 +2087,8 @@ def _geocode_explicit_region_conflict(
     if not isinstance(geocode, dict) or not geocode.get("location"):
         return False
     normalized_expected = _normalized_expected_admin(expected_admin)
-    if normalized_expected:
-        return not _geocode_matches_expected_admin(geocode, normalized_expected)
+    if normalized_expected and not _geocode_matches_expected_admin(geocode, normalized_expected):
+        return True
     text = _compact_text(query)
     if not text:
         return False
@@ -2134,12 +2134,23 @@ def _region_value_explicit_at_level(
         for token in _region_tokens(str(geocode.get(parent_field) or ""))
         if _compact_text(token)
     }
-    return any(
-        len(_compact_text(token)) >= 2
-        and _compact_text(token) not in parent_tokens
-        and _compact_text(token) in query_text
-        for token in _region_tokens(value)
-    )
+    for token in _region_tokens(value):
+        compact_token = _compact_text(token)
+        if len(compact_token) < 2 or compact_token in parent_tokens:
+            continue
+        if compact_token not in query_text:
+            continue
+        # A district-name token can be part of a transport POI's proper name
+        # (for example, 广州白云国际机场 is physically in 花都区). Only the
+        # formal district value or an independent shorthand constrains the
+        # administrative scope; the POI name itself does not.
+        if field == "district" and re.search(
+            rf"{re.escape(compact_token)}(?:国际机场|机场|航站楼)",
+            query_text,
+        ):
+            continue
+        return True
+    return False
 
 
 def _compact_store_text(value: str) -> str:
@@ -3148,8 +3159,11 @@ def _first_geocode_candidate(
     selected = compatible[0] if normalized_expected and compatible else candidates[0]
     candidate_regions: list[dict[str, str]] = []
     signatures: set[tuple[str, str, str]] = set()
-    region_source = compatible if normalized_expected and compatible else candidates
-    for value in region_source:
+    # Selection may prefer a candidate compatible with the expected
+    # administrative context, but audit metadata must preserve every region
+    # returned by geocoding. Otherwise a cross-region ambiguity disappears
+    # merely because one candidate matched the hint.
+    for value in candidates:
         region = {
             key: str(value.get(key) or "").strip()
             for key in ("province", "city", "district")
