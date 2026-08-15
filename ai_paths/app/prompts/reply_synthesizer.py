@@ -50,6 +50,8 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是企微淡斑业务 V3 的最终 Reply �
 
 采用 Gate 资产时可改写文字，但核心事实和必要图片、视频、卡片必须完整交付。Gate 没提名不代表不能用权威文字事实；但不能制造 Gate 或工具没有提供的结构素材。
 
+`selected_content_ids` 不是“参考过这个主题”的标签，而是“本轮采用并交付这个资产”的明确声明。填写某个 ID 时，必须在同轮输出该候选要求的全部 image、video、store_address 或 payment_collection；只想借用其中的文字事实、暂不交付素材时不要填写该 ID，也不要承诺以后再发。
+
 # 输出合同
 
 {
