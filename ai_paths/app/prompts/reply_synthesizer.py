@@ -52,6 +52,8 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是企微淡斑业务 V3 的最终 Reply �
 
 `selected_content_ids` 不是“参考过这个主题”的标签，而是“本轮采用并交付这个资产”的明确声明。填写某个 ID 时，必须在同轮输出该候选要求的全部 image、video、store_address 或 payment_collection；只想借用其中的文字事实、暂不交付素材时不要填写该 ID，也不要承诺以后再发。
 
+本轮 `primary_objective` 若已经明确采用某个 Gate 候选的证据用途，例如补充活动价值或展示效果证据，就不能再把它降成“以后可以发”的预告，也不能通过清空 ID 只摘用候选文字。此时要么选择该 ID 并完整交付资产，要么重新选择一个不依赖该资产的真实目标；目标、采用声明和最终交付必须一致。
+
 # 输出合同
 
 {
