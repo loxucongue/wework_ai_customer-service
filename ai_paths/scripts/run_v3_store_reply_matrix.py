@@ -15,8 +15,13 @@ from app.graph.graph_builder import build_reply_graphs
 from app.graph.nodes.action_nodes import _snapshot_store_values
 from app.services.coze_client import CozeClient
 from app.services.customer_scope import customer_scope_from_state
+from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
 from app.services.runtime_budget import build_runtime_budget
+from app.services.sop_execution_service import SopExecutionService
+from app.services.sop_reply_pack_service import SopReplyPackService
+from app.services.storage import AppRepository, SQLiteStore
 from app.services.trace_logger import TraceLogger
 
 
@@ -236,6 +241,9 @@ async def _run_case(
         ],
         "reply_source": final_state.get("reply_source"),
         "reply_action": final_state.get("reply_action"),
+        "content_gate": deepcopy(final_state.get("content_gate_result") or {}),
+        "selected_content_ids": final_state.get("selected_content_ids") or [],
+        "reply_sales_judgment": deepcopy(final_state.get("reply_sales_judgment") or {}),
         "used_fact_refs": final_state.get("used_fact_refs") or [],
         "errors": final_state.get("errors") or [],
         "warnings": final_state.get("warnings") or [],
@@ -302,6 +310,11 @@ async def _main() -> int:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--case-ids", default="", help="Comma-separated case IDs.")
+    parser.add_argument(
+        "--with-content-gate",
+        action="store_true",
+        help="Run the real content Gate with an isolated SQLite state store.",
+    )
     args = parser.parse_args()
 
     fixture = json.loads(args.fixture.read_text(encoding="utf-8"))
@@ -325,6 +338,8 @@ async def _main() -> int:
         update={
             "trace_log_dir": args.output.parent / "traces",
             "log_dir": args.output.parent / "traces",
+            "memory_dir": args.output.parent / "memory",
+            "db_path": args.output.parent / "simulation_state.db",
             "aics_storage_backend": "sqlite",
             "model_request_retry_attempts": 2,
             "model_round_timeout_seconds": 120.0,
@@ -334,11 +349,34 @@ async def _main() -> int:
     model_client = ModelClient(settings)
     coze_client = CozeClient(settings)
     trace_logger = TraceLogger(settings)
+    sop_execution_service = None
+    if args.with_content_gate:
+        sqlite_store = SQLiteStore(settings)
+        sqlite_store.initialize()
+        repository = AppRepository(sqlite_store)
+        memory_store = CustomerMemoryStore(settings, repository)
+        sop_execution_service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=SopReplyPackService(settings),
+            model_client=model_client,
+            memory_store=memory_store,
+            customer_context_service=None,
+            event_model_retry_attempts=settings.sop_event_model_retry_attempts,
+            event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
+            event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
+            event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
+            chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
+            event_model_max_concurrency=max(1, int(args.concurrency)),
+            model_led_objection_playbook_service=ModelLedObjectionPlaybookService(
+                settings.v2_model_led_objection_playbook_path
+            ),
+        )
     graphs = build_reply_graphs(
         coze_client=coze_client,
         trace_logger=trace_logger,
         model_client=model_client,
         customer_store_knowledge_service=_AllVisibleStoreKnowledge(stores),
+        sop_execution_service=sop_execution_service,
     )
     semaphore = asyncio.Semaphore(max(1, int(args.concurrency)))
     try:
@@ -372,6 +410,7 @@ async def _main() -> int:
             "customer_state_write": False,
             "real_model": True,
             "real_coze_geocode": True,
+            "content_gate": bool(args.with_content_gate),
         },
         "models": {
             "store_destination": settings.model_store_destination,
