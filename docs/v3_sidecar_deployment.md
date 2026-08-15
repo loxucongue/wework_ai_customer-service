@@ -37,6 +37,7 @@ V3 environment requirements:
 ```env
 AI_PATHS_SERVICE_ROLE=model_led_sales_brain_v3
 AI_PATHS_BACKGROUND_WORKERS_ENABLED=false
+SOP_REPLY_PACKS_OVERLAY_PATH=/opt/ai-paths-v3/current/config/v2_sop_asset_overlay.json
 ```
 
 Install these overrides in `/opt/ai-paths-v3/v3.env` and load that file after
@@ -49,6 +50,8 @@ must show both:
 - `background_workers_enabled=false`
 
 `AI_PATHS_BACKGROUND_WORKERS_ENABLED=false` is required because V3 shares business data but must not run duplicate SOP, outreach, retention, or snapshot workers.
+
+`SOP_REPLY_PACKS_OVERLAY_PATH` does not replace the shared customer-visible SOP configuration. It adds code-owned asset roles, evidence purposes, and retrieval boundaries so the V3 Gate can distinguish activity, effect, location, objection, and deposit assets without copying or overwriting the configuration page data.
 
 ## Nginx Routing
 
