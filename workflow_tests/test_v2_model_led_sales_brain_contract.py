@@ -172,6 +172,36 @@ def test_v2_admission_has_no_visible_text_or_semantic_regex_logic() -> None:
     assert "visible_text=False" in source
 
 
+def test_v2_admission_rejects_adopted_asset_when_structured_media_is_missing() -> None:
+    state = {
+        "evidence_join": {
+            "schema_version": "parallel_reply_input_v2",
+            "content_candidates": [
+                {
+                    "content_id": "s10_activity_intro",
+                    "delivery_status": "available",
+                    "messages": [
+                        {"type": "text", "content": "活动介绍"},
+                        {"type": "image", "content": {"url": "https://example.test/activity.png"}},
+                    ],
+                }
+            ],
+        },
+        "reply_selected_content_ids": [],
+        "reply_used_fact_refs": ["content_asset:s10_activity_intro"],
+    }
+
+    try:
+        validate_v2_reply_admission(
+            [{"type": "text", "content": "活动介绍"}],
+            state,
+        )
+    except ValueError as exc:
+        assert "selected_content_delivery_missing:content_id=s10_activity_intro" in str(exc)
+    else:
+        raise AssertionError("adopted content asset must deliver its structured media")
+
+
 def test_v2_payment_material_requires_structured_activity_delivery() -> None:
     assert not _v2_activity_offer_delivered(
         sop_progress={},
