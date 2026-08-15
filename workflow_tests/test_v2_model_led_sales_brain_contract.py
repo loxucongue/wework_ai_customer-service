@@ -231,6 +231,7 @@ def test_prompts_preserve_node_power_boundaries_without_scene_matching() -> None
 
 def test_reply_prompt_requires_real_progress_and_complete_deposit_facts() -> None:
     assert "推进是本轮实际完成交付" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "`sales_judgment.posture` 不得停在 `answer`" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "每位先付10元锁活动资格、到店抵扣、做再付258元、未做或不满意可退" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
