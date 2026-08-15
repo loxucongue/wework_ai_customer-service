@@ -304,6 +304,7 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
         lambda: _validate_parallel_claimed_deposit_evidence(messages, state),
         lambda: _validate_parallel_payment_boundaries(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
+        lambda: _validate_parallel_selected_content_delivery(messages, state),
         lambda: _validate_store_resolution_v2_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),
@@ -365,6 +366,57 @@ def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[s
     # the optional selected_content_ids audit metadata. Commit records only
     # fully delivered assets, so accepting the message cannot falsely advance
     # SOP progress.
+
+
+def _validate_parallel_selected_content_delivery(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Validate Reply's explicit asset-adoption contract without choosing content."""
+
+    selected_ids = {
+        str(item or "").strip()
+        for item in state.get("reply_selected_content_ids") or []
+        if str(item or "").strip()
+    }
+    if not selected_ids:
+        return
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
+    emitted = {
+        _parallel_structured_message_key(item)
+        for item in messages
+        if isinstance(item, dict)
+    }
+    emitted.discard("")
+    violations: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
+        if not content_id or content_id not in selected_ids:
+            continue
+        candidate_messages = candidate.get("messages")
+        if not isinstance(candidate_messages, list):
+            candidate_messages = (
+                candidate.get("reply_messages")
+                if isinstance(candidate.get("reply_messages"), list)
+                else []
+            )
+        required = {
+            _parallel_structured_message_key(item)
+            for item in candidate_messages
+            if isinstance(item, dict) and str(item.get("type") or "").strip() != "text"
+        }
+        required.discard("")
+        missing = sorted(required - emitted)
+        if missing:
+            violations.append(
+                f"selected_content_delivery_missing:content_id={content_id};"
+                f"required={','.join(missing)}"
+            )
+    if violations:
+        raise ValueError(";;".join(violations))
 
 
 def completed_parallel_selected_content_ids(

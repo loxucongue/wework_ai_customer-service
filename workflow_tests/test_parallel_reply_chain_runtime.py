@@ -3550,7 +3550,8 @@ def test_parallel_selected_gate_candidate_commits_only_after_structured_material
     }
 
     text_only = [{"type": "text", "order": 1, "content": "活动介绍"}]
-    validate_reply_consistency(text_only, state)
+    with pytest.raises(ValueError, match="selected_content_delivery_missing"):
+        validate_reply_consistency(text_only, state)
     assert completed_parallel_selected_content_ids(
         text_only,
         state,
@@ -3597,7 +3598,8 @@ def test_parallel_selected_content_does_not_commit_any_incomplete_assets() -> No
     }
 
     messages = [{"type": "text", "order": 1, "content": "先给您讲活动。"}]
-    validate_reply_consistency(messages, state)
+    with pytest.raises(ValueError, match="selected_content_delivery_missing"):
+        validate_reply_consistency(messages, state)
     assert completed_parallel_selected_content_ids(
         messages,
         state,
@@ -3627,7 +3629,8 @@ def test_parallel_selected_gate_candidate_is_not_hydrated_by_code() -> None:
 
     messages = [{"type": "text", "order": 1, "content": "活动内容给您说明一下。"}]
 
-    validate_reply_consistency(messages, state)
+    with pytest.raises(ValueError, match="selected_content_delivery_missing"):
+        validate_reply_consistency(messages, state)
     assert completed_parallel_selected_content_ids(
         messages,
         state,
