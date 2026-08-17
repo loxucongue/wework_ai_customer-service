@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from app.config import get_settings
 from app.services.customer_context import CustomerContextService
 from app.services.customer_relation import (
     customer_relation_is_deleted,
@@ -435,6 +436,21 @@ def _missing_outreach_identity_fields(identity: dict[str, Any]) -> list[str]:
         for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat")
         if not _string(identity.get(key))
     ]
+
+
+def _first_day_wechat_allowlist(value: str | None) -> set[str]:
+    return {
+        token.strip().lower()
+        for token in re.split(r"[,;\s]+", _string(value))
+        if token.strip()
+    }
+
+
+def _first_day_wechat_allowed(wechat: str, allowlist: str | None) -> bool:
+    allowed = _first_day_wechat_allowlist(allowlist)
+    if not allowed:
+        return True
+    return _string(wechat).lower() in allowed
 
 
 def _terminal_outreach_send_failure_reason(error: str) -> str:
@@ -2672,6 +2688,7 @@ class OutreachService:
         sop_reply_pack_service: SopReplyPackService | None = None,
         coze_client: CozeClient | None = None,
         before_send_retry_seconds: int = 60,
+        first_day_wechat_allowlist: str | None = None,
     ) -> None:
         self.repository = repository
         self.model_client = model_client
@@ -2681,6 +2698,11 @@ class OutreachService:
         self.sop_reply_pack_service = sop_reply_pack_service
         self.coze_client = coze_client
         self.before_send_retry_seconds = max(1, int(before_send_retry_seconds))
+        self.first_day_wechat_allowlist = (
+            first_day_wechat_allowlist
+            if first_day_wechat_allowlist is not None
+            else get_settings().outreach_first_day_wechat_allowlist
+        )
         self._plan_locks: dict[str, asyncio.Lock] = {}
         self._monitor_status: dict[str, Any] = {
             "last_scan_started_at": "",
@@ -4836,6 +4858,13 @@ class OutreachService:
         discovery_added_at = _string(candidate.get("sales_contact_started_at"))
         if not all((customer_id, identity["corp_id"], identity["wechat"], identity["external_userid"])):
             return {"status": "skipped", "customer_id": customer_id, "reason": "incomplete_sales_contact_identity"}
+        if not _first_day_wechat_allowed(identity["wechat"], self.first_day_wechat_allowlist):
+            return {
+                "status": "skipped",
+                "customer_id": customer_id,
+                "wechat": identity["wechat"],
+                "reason": "first_day_wechat_not_allowed",
+            }
         candidate_customer_at = _string(candidate.get("last_customer_message_at"))
         candidate_staff_at = _string(
             candidate.get("latest_outbound_message_at") or candidate.get("last_staff_message_at")
@@ -5685,6 +5714,35 @@ class OutreachService:
                 terminal=True,
             )
             return {"ok": False, "status": "failed", "error": reason, **detail}
+        if is_first_day_plan and not _first_day_wechat_allowed(identity["wechat"], self.first_day_wechat_allowlist):
+            reason = "first_day_wechat_not_allowed"
+            self.repository.update_outreach_task(task_id, status="skipped", error_message=reason)
+            self.repository.skip_remaining_outreach_tasks(
+                str(task["plan_id"]),
+                reason=reason,
+                exclude_task_id=task_id,
+            )
+            self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+            self.repository.add_outreach_event(
+                plan_id=str(task["plan_id"]),
+                task_id=task_id,
+                customer_id=str(task["customer_id"]),
+                event_type="task_skipped_first_day_wechat_not_allowed",
+                event_summary="First-day outreach task skipped because the receiving WeChat account is not allowlisted",
+                payload={
+                    "wechat": identity["wechat"],
+                    "allowlist_configured": bool(_first_day_wechat_allowlist(self.first_day_wechat_allowlist)),
+                },
+            )
+            self._sync_first_day_run_for_task(
+                plan=plan,
+                task=task,
+                status="cancelled",
+                reason_code=reason,
+                final_decision="no_send",
+                terminal=True,
+            )
+            return {"ok": True, "status": "skipped", "reason": reason}
         fresh_conversation_messages: list[dict[str, Any]] = []
         send_conversation_id = _string(source_snapshot.get("conversation_id")) or _string(
             trigger_context.get("conversation_id")

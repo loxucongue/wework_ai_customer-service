@@ -16,6 +16,33 @@ from app.services.customer_scope import build_customer_scope
 
 
 class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_day_task_cancelled_when_wechat_not_allowlisted(self) -> None:
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+        )
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+            first_day_wechat_allowlist="WW0601",
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "first_day_wechat_not_allowed")
+        self.assertEqual(system.sent, [])
+        self.assertIn(("task-1", "skipped"), repository.task_statuses)
+        self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
+        self.assertEqual(repository.skipped_remaining[0]["reason"], "first_day_wechat_not_allowed")
+        self.assertIn(
+            "task_skipped_first_day_wechat_not_allowed",
+            [event["event_type"] for event in repository.events],
+        )
+
     async def test_first_day_legacy_payment_card_is_removed_before_send(self) -> None:
         repository = _ExecutionRepository(
             order_status="no_order",

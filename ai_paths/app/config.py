@@ -204,6 +204,7 @@ class Settings(BaseSettings):
     )
     outreach_first_day_silence_enabled: bool = Field(default=False, alias="OUTREACH_FIRST_DAY_SILENCE_ENABLED")
     outreach_first_day_silence_minutes: int = Field(default=3, alias="OUTREACH_FIRST_DAY_SILENCE_MINUTES")
+    outreach_first_day_wechat_allowlist: str = Field(default="", alias="OUTREACH_FIRST_DAY_WECHAT_ALLOWLIST")
     debug_platform_context_enabled: bool = Field(default=False, alias="DEBUG_PLATFORM_CONTEXT_ENABLED")
     debug_platform_customer_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ID")
     debug_platform_customer_add_wechat_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ADD_WECHAT_ID")

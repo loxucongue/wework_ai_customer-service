@@ -1617,6 +1617,43 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(model.calls), 3)
 
+    async def test_first_day_monitor_skips_non_allowlisted_wechat_before_model(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+                "wechat": "WW0601",
+            }
+        ]
+        model = _ModelClient()
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "hello", "created_at": customer_at},
+                {"direction": "staff", "content": "yes", "created_at": staff_at},
+            ],
+            first_day_wechat_allowlist="WW0873",
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(
+            limit=5,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["evaluated_count"], 0)
+        self.assertEqual(result["created_count"], 0)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(result["results"][0]["reason"], "first_day_wechat_not_allowed")
+        self.assertEqual(model.calls, [])
+
     async def test_first_day_monitor_skips_before_model_after_two_plans_today(self) -> None:
         now = datetime.now(timezone.utc)
         first_added_at = (now - timedelta(hours=1)).isoformat()
@@ -3600,11 +3637,13 @@ class _MonitorOutreachService(OutreachService):
         model_client: _ModelClient,
         refreshed_messages: list[dict[str, Any]],
         deleted: bool = False,
+        first_day_wechat_allowlist: str | None = None,
     ) -> None:
         super().__init__(
             repository=repository,
             model_client=model_client,
             system_client=_ConversationSystemClient(),
+            first_day_wechat_allowlist=first_day_wechat_allowlist,
         )
         self.refreshed_messages = refreshed_messages
         self.deleted = deleted
