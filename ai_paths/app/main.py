@@ -2,8 +2,11 @@
 
 import asyncio
 import logging
+import os
+import re
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -149,6 +152,11 @@ store_snapshot_refresh_worker: asyncio.Task[None] | None = None
 outreach_plan_monitor_worker: asyncio.Task[None] | None = None
 outreach_task_executor_worker: asyncio.Task[None] | None = None
 first_day_retention_last_date = ""
+FIRST_DAY_SETTINGS_ENV_KEYS = {
+    "OUTREACH_FIRST_DAY_SILENCE_ENABLED",
+    "OUTREACH_FIRST_DAY_SILENCE_MINUTES",
+    "OUTREACH_FIRST_DAY_WECHAT_ALLOWLIST",
+}
 
 
 async def _run_sop_platform_pull_worker() -> None:
@@ -312,6 +320,101 @@ async def shutdown() -> None:
     await sop_platform_client.aclose()
     platform_agent_client.close()
     storage_store.close()
+
+
+def _first_day_settings_env_path() -> Path:
+    configured = os.environ.get("AI_PATHS_RUNTIME_ENV_FILE", "").strip()
+    if configured:
+        return Path(configured)
+    production_env = Path("/opt/ai-paths/.env")
+    if production_env.exists():
+        return production_env
+    return Path.cwd() / ".env"
+
+
+def _normalize_first_day_wechat_allowlist(value: Any) -> tuple[str, list[str]]:
+    if isinstance(value, list):
+        raw = ",".join(str(item).strip() for item in value if str(item).strip())
+    else:
+        raw = str(value or "")
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in re.split(r"[,;\s]+", raw):
+        item = token.strip()
+        if not item:
+            continue
+        if any(char.isspace() for char in item):
+            raise HTTPException(status_code=400, detail="wechat allowlist item must not contain whitespace")
+        if len(item) > 80:
+            raise HTTPException(status_code=400, detail="wechat allowlist item is too long")
+        lowered = item.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        tokens.append(item)
+    if len(tokens) > 200:
+        raise HTTPException(status_code=400, detail="wechat allowlist supports at most 200 items")
+    return ",".join(tokens), tokens
+
+
+def _write_first_day_settings_env(updates: dict[str, str]) -> None:
+    unknown = set(updates) - FIRST_DAY_SETTINGS_ENV_KEYS
+    if unknown:
+        raise ValueError(f"unsupported first-day setting keys: {sorted(unknown)}")
+    env_path = _first_day_settings_env_path()
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    output: list[str] = []
+    written: set[str] = set()
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output.append(line)
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in updates:
+            if key not in written:
+                output.append(f"{key}={updates[key]}")
+                written.add(key)
+            continue
+        output.append(line)
+    for key in sorted(set(updates) - written):
+        output.append(f"{key}={updates[key]}")
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    mode = env_path.stat().st_mode if env_path.exists() else None
+    tmp_path = env_path.with_name(f"{env_path.name}.tmp")
+    tmp_path.write_text("\n".join(output) + "\n", encoding="utf-8")
+    if mode is not None:
+        tmp_path.chmod(mode)
+    tmp_path.replace(env_path)
+
+
+def _first_day_settings_response() -> dict[str, Any]:
+    raw_allowlist, allowlist = _normalize_first_day_wechat_allowlist(
+        getattr(settings, "outreach_first_day_wechat_allowlist", "")
+    )
+    return {
+        "enabled": bool(settings.outreach_first_day_silence_enabled),
+        "silence_minutes": int(settings.outreach_first_day_silence_minutes),
+        "wechat_allowlist": allowlist,
+        "wechat_allowlist_raw": raw_allowlist,
+        "empty_allowlist_means_all_allowed": True,
+    }
+
+
+async def _sync_outreach_workers_after_first_day_settings_update() -> None:
+    global outreach_plan_monitor_worker, outreach_task_executor_worker
+    if not settings.background_workers_enabled:
+        return
+    if (
+        settings.outreach_first_day_silence_enabled
+        or settings.outreach_plan_monitor_enabled
+    ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
+        outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
+    if (
+        settings.outreach_first_day_silence_enabled
+        or settings.outreach_auto_send_enabled
+    ) and (outreach_task_executor_worker is None or outreach_task_executor_worker.done()):
+        outreach_task_executor_worker = asyncio.create_task(_run_outreach_task_executor_worker())
 
 
 @app.get("/health")
@@ -969,6 +1072,41 @@ async def admin_outreach_events(
     plan_id: str = "",
 ) -> dict[str, Any]:
     return {"items": outreach_service.list_events(limit=limit, customer_id=customer_id, plan_id=plan_id)}
+
+
+@app.get("/admin/outreach/first-day-settings", dependencies=[Depends(require_api_key)])
+async def admin_first_day_outreach_settings() -> dict[str, Any]:
+    return _first_day_settings_response()
+
+
+@app.put("/admin/outreach/first-day-settings", dependencies=[Depends(require_api_key)])
+async def admin_update_first_day_outreach_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    if "enabled" in payload and not isinstance(payload.get("enabled"), bool):
+        raise HTTPException(status_code=400, detail="enabled must be boolean")
+    enabled = bool(payload.get("enabled", settings.outreach_first_day_silence_enabled))
+    silence_minutes_value = payload.get("silence_minutes", settings.outreach_first_day_silence_minutes)
+    try:
+        silence_minutes = int(silence_minutes_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="silence_minutes must be an integer") from exc
+    if silence_minutes < 1 or silence_minutes > 120:
+        raise HTTPException(status_code=400, detail="silence_minutes must be between 1 and 120")
+    allowlist_raw, _allowlist = _normalize_first_day_wechat_allowlist(
+        payload.get("wechat_allowlist", payload.get("wechat_allowlist_raw", settings.outreach_first_day_wechat_allowlist))
+    )
+    updates = {
+        "OUTREACH_FIRST_DAY_SILENCE_ENABLED": "true" if enabled else "false",
+        "OUTREACH_FIRST_DAY_SILENCE_MINUTES": str(silence_minutes),
+        "OUTREACH_FIRST_DAY_WECHAT_ALLOWLIST": allowlist_raw,
+    }
+    await asyncio.to_thread(_write_first_day_settings_env, updates)
+    os.environ.update(updates)
+    object.__setattr__(settings, "outreach_first_day_silence_enabled", enabled)
+    object.__setattr__(settings, "outreach_first_day_silence_minutes", silence_minutes)
+    object.__setattr__(settings, "outreach_first_day_wechat_allowlist", allowlist_raw)
+    outreach_service.first_day_wechat_allowlist = allowlist_raw
+    await _sync_outreach_workers_after_first_day_settings_update()
+    return _first_day_settings_response()
 
 
 @app.get("/admin/outreach/first-day-runs", dependencies=[Depends(require_api_key)])

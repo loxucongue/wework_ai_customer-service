@@ -74,6 +74,14 @@ type Filters = {
   started_to: string;
 };
 
+type FirstDaySettings = {
+  enabled: boolean;
+  silence_minutes: number;
+  wechat_allowlist: string[];
+  wechat_allowlist_raw: string;
+  empty_allowlist_means_all_allowed?: boolean;
+};
+
 const EMPTY_FILTERS: Filters = {
   customer_id: "",
   external_userid: "",
@@ -216,6 +224,8 @@ export function FirstDayOutreachLogViewer() {
           </nav>
         </header>
 
+        <FirstDaySettingsPanel />
+
         <section className="border-b border-zinc-200">
           <button
             type="button"
@@ -302,6 +312,148 @@ export function FirstDayOutreachLogViewer() {
         ) : <EmptyState icon={<ListTree className="h-6 w-6" />} text="从左侧选择一条运行记录" />}
       </section>
     </main>
+  );
+}
+
+function FirstDaySettingsPanel() {
+  const [expanded, setExpanded] = useState(false);
+  const [settings, setSettings] = useState<FirstDaySettings | null>(null);
+  const [enabled, setEnabled] = useState(false);
+  const [silenceMinutes, setSilenceMinutes] = useState("3");
+  const [allowlist, setAllowlist] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const loadSettings = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/outreach/first-day-settings", { cache: "no-store" });
+      const data = (await response.json()) as FirstDaySettings & { detail?: string; error?: string };
+      if (!response.ok) throw new Error(data.detail || data.error || "加载首日千人千面配置失败");
+      setSettings(data);
+      setEnabled(Boolean(data.enabled));
+      setSilenceMinutes(String(data.silence_minutes || 3));
+      setAllowlist(data.wechat_allowlist_raw || "");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加载首日千人千面配置失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadSettings(); }, [loadSettings]);
+
+  const saveSettings = async () => {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/outreach/first-day-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          enabled,
+          silence_minutes: Number(silenceMinutes),
+          wechat_allowlist: allowlist,
+        }),
+      });
+      const data = (await response.json()) as FirstDaySettings & { detail?: string; error?: string };
+      if (!response.ok) throw new Error(data.detail || data.error || "保存首日千人千面配置失败");
+      setSettings(data);
+      setEnabled(Boolean(data.enabled));
+      setSilenceMinutes(String(data.silence_minutes || 3));
+      setAllowlist(data.wechat_allowlist_raw || "");
+      setMessage("配置已保存并同步到运行中服务");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存首日千人千面配置失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const summary = settings
+    ? `${settings.enabled ? "已开启" : "已关闭"} · ${settings.wechat_allowlist?.length ? `${settings.wechat_allowlist.length} 个白名单账号` : "未限制账号"}`
+    : "加载中";
+
+  return (
+    <section className="border-b border-zinc-200">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+        className="flex h-11 w-full items-center justify-between px-4 text-left hover:bg-zinc-50"
+      >
+        <span className="flex min-w-0 items-center gap-2 text-xs font-semibold text-zinc-700">
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+          首日千人千面配置
+          <span className={settings?.enabled ? "rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700" : "rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600"}>
+            {summary}
+          </span>
+        </span>
+        {expanded ? <ChevronUp className="h-4 w-4 text-zinc-500" /> : <ChevronDown className="h-4 w-4 text-zinc-500" />}
+      </button>
+      {expanded ? (
+        <div className="space-y-3 border-t border-zinc-100 px-4 pb-4 pt-3 text-xs">
+          <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2">
+            <span>
+              <span className="block font-medium text-zinc-800">启用沉默触达</span>
+              <span className="text-zinc-500">关闭时不会创建或执行首日千人千面任务</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(event) => setEnabled(event.target.checked)}
+              className="h-4 w-4"
+            />
+          </label>
+          <label className="block text-zinc-600">
+            <span>沉默分钟数</span>
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={silenceMinutes}
+              onChange={(event) => setSilenceMinutes(event.target.value)}
+              className="mt-1 h-8 w-full rounded-md border border-zinc-200 px-2 outline-none focus:border-zinc-500"
+            />
+          </label>
+          <label className="block text-zinc-600">
+            <span>企微号白名单</span>
+            <textarea
+              value={allowlist}
+              onChange={(event) => setAllowlist(event.target.value)}
+              rows={3}
+              placeholder="例如：WW0601, WW0873"
+              className="mt-1 w-full resize-y rounded-md border border-zinc-200 px-2 py-2 font-mono text-xs outline-none focus:border-zinc-500"
+            />
+            <span className="mt-1 block text-[11px] text-zinc-500">支持逗号、分号、空格或换行分隔；为空表示所有企微号都允许。</span>
+          </label>
+          {error ? <div className="rounded-md bg-red-50 px-3 py-2 text-red-700">{error}</div> : null}
+          {message ? <div className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-700">{message}</div> : null}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={saveSettings}
+              disabled={saving || loading}
+              className="inline-flex h-8 flex-1 items-center justify-center rounded-md bg-zinc-900 px-3 text-white disabled:opacity-50"
+            >
+              {saving ? "保存中" : "保存配置"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void loadSettings()}
+              disabled={loading || saving}
+              className="inline-flex h-8 items-center justify-center rounded-md border border-zinc-200 px-3 disabled:opacity-50"
+            >
+              {loading ? "刷新中" : "刷新"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
