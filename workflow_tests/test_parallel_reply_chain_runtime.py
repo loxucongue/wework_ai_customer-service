@@ -4765,7 +4765,10 @@ def test_deterministic_join_does_not_expose_legacy_fact_envelope() -> None:
         node(
             {
                 "shared_context": {"schema_version": "shared_context_v2"},
-                "content_gate_result": {"content_candidates": []},
+                "content_gate_result": {
+                    "route_advice": "tools_only",
+                    "content_candidates": [],
+                },
                 "tool_plan": {"tool_calls": [], "missing_facts": []},
                 "tool_results": {"case_studies": {"documents": []}},
                 "fact_envelope": {
@@ -4795,6 +4798,7 @@ def test_deterministic_join_does_not_expose_legacy_fact_envelope() -> None:
     }
     assert "customer_type" not in str(joined)
     assert "next_step" not in str(joined)
+    assert "route_advice" not in joined["gate_evidence"]
 
 
 def test_reply_graph_bundle_has_no_legacy_planner_or_finalize_graph() -> None:

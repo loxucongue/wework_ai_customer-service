@@ -5676,6 +5676,85 @@ def test_single_haversine_candidate_is_a_valid_single_delivery_fact() -> None:
     )
 
 
+def test_broad_city_delivery_keeps_only_exact_city_stores() -> None:
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "query": "厦门市",
+                "city": "厦门市",
+                "resolved_admin_level": "city",
+                "scope_match_level": "city",
+                "exact_scope_has_store": True,
+                "stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"},
+                    {"store_id": "227", "store_name": "厦门百星湖里店", "city": "厦门市"},
+                ],
+            },
+            "distance_calculate": {
+                "status": "ok",
+                "origin": "厦门市",
+                "origin_precision": "city",
+                "city": "厦门市",
+                "resolved_admin_level": "city",
+                "scope_match_level": "city",
+                "exact_scope_has_store": True,
+                "ranking_complete": True,
+                "ranked_stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市", "distance_km": 1.0},
+                    {"store_id": "227", "store_name": "厦门百星湖里店", "city": "厦门市", "distance_km": 8.0},
+                    {"store_id": "530", "store_name": "泉州丰泽二店", "city": "泉州市", "distance_km": 68.0},
+                ],
+            },
+        },
+        {},
+    )
+
+    resolution = output["fact_envelope"]["structured_facts"]["store_resolution_fact"]
+    assert resolution["status"] == "send_multiple"
+    assert resolution["delivery_store_ids"] == ["12", "227"]
+    assert "530" not in resolution["candidate_store_ids"]
+
+
+def test_broad_district_delivery_keeps_only_exact_district_store() -> None:
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "query": "厦门市思明区",
+                "city": "厦门市",
+                "district": "思明区",
+                "resolved_admin_level": "district",
+                "scope_match_level": "district",
+                "exact_scope_has_store": True,
+                "stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市", "district": "思明区"},
+                ],
+            },
+            "distance_calculate": {
+                "status": "ok",
+                "origin": "厦门市思明区",
+                "origin_precision": "district",
+                "city": "厦门市",
+                "district": "思明区",
+                "resolved_admin_level": "district",
+                "scope_match_level": "district",
+                "exact_scope_has_store": True,
+                "ranking_complete": True,
+                "ranked_stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市", "district": "思明区", "distance_km": 1.0},
+                    {"store_id": "227", "store_name": "厦门百星湖里店", "city": "厦门市", "district": "湖里区", "distance_km": 5.0},
+                ],
+            },
+        },
+        {},
+    )
+
+    resolution = output["fact_envelope"]["structured_facts"]["store_resolution_fact"]
+    assert resolution["status"] == "send_single"
+    assert resolution["delivery_store_ids"] == ["12"]
+
+
 def test_reply_validation_allows_asking_location_before_nearby_matching() -> None:
     validate_reply_consistency(
         [

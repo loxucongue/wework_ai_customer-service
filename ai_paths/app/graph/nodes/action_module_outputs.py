@@ -234,6 +234,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if isinstance(structured_facts.get("store_resolution_fact"), dict)
                 else {}
             )
+            previous_store_facts = [
+                dict(item)
+                for item in structured_facts.get("store_facts") or []
+                if isinstance(item, dict)
+            ]
             destination_resolution = (
                 value.get("destination_resolution")
                 if isinstance(value.get("destination_resolution"), dict)
@@ -300,7 +305,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "comparable_candidate_count": len(comparable_stores),
             }
             authorized_candidate_stores = _authorized_customer_scope_store_items(candidate_stores, state)
-            structured_facts["store_facts"] = [
+            distance_store_facts = [
                 {
                     **_store_fact_from_lookup_item(item, state=state),
                     "distance_source": str(item.get("distance_source") or ""),
@@ -310,6 +315,51 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if isinstance(item, dict)
             ]
             authorized_comparable_stores = _authorized_customer_scope_store_items(comparable_stores, state)
+            origin_precision = str(
+                value.get("origin_precision")
+                or destination_resolution.get("destination_precision")
+                or ""
+            ).strip()
+            exact_scope_has_store = (
+                value.get("exact_scope_has_store")
+                if value.get("exact_scope_has_store") is not None
+                else previous_resolution.get("exact_scope_has_store")
+            )
+            exact_scope_candidate_ids = [
+                str(item)
+                for item in previous_resolution.get("candidate_store_ids") or []
+                if str(item)
+            ]
+            use_broad_exact_scope = bool(
+                exact_scope_has_store is True
+                and origin_precision in {"city", "district", "unknown", ""}
+                and exact_scope_candidate_ids
+            )
+            if use_broad_exact_scope:
+                exact_scope_ids = set(exact_scope_candidate_ids)
+                ranked_ids = [
+                    str(item.get("store_id") or item.get("id") or "")
+                    for item in authorized_comparable_stores
+                    if str(item.get("store_id") or item.get("id") or "") in exact_scope_ids
+                ]
+                exact_fact_by_id = {
+                    str(item.get("store_id") or item.get("id") or ""): item
+                    for item in previous_store_facts
+                    if str(item.get("store_id") or item.get("id") or "") in exact_scope_ids
+                }
+                ordered_exact_ids = list(dict.fromkeys(ranked_ids + exact_scope_candidate_ids))
+                structured_facts["store_facts"] = [
+                    exact_fact_by_id[store_id]
+                    for store_id in ordered_exact_ids
+                    if store_id in exact_fact_by_id
+                ][:5]
+                authorized_comparable_stores = [
+                    item
+                    for item in authorized_comparable_stores
+                    if str(item.get("store_id") or item.get("id") or "") in exact_scope_ids
+                ]
+            else:
+                structured_facts["store_facts"] = distance_store_facts
             if has_authoritative_ranking and authorized_comparable_stores:
                 top_store = _store_fact_from_lookup_item(authorized_comparable_stores[0], state=state)
                 structured_facts["recommended_store"] = {
@@ -326,7 +376,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 tool_status=str(value.get("status") or ""),
                 resolved_level=resolved_admin_level,
                 visible_candidate_count=visible_candidate_count,
-                recommended_store_id=ranked_recommended_store_id,
+                recommended_store_id=(
+                    ""
+                    if use_broad_exact_scope and visible_candidate_count > 1
+                    else ranked_recommended_store_id
+                ),
             )
             candidate_store_ids = [
                 str(item.get("store_id") or item.get("id") or "")
@@ -338,20 +392,13 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 or previous_resolution.get("scope_match_level")
                 or ""
             )
-            exact_scope_has_store = (
-                value.get("exact_scope_has_store")
-                if value.get("exact_scope_has_store") is not None
-                else previous_resolution.get("exact_scope_has_store")
-            )
             if _distance_city_fallback_should_send_multiple(
                 has_real_ranking=has_authoritative_ranking,
                 scope_match_level=scope_match_level,
                 exact_scope_has_store=exact_scope_has_store,
                 candidate_store_ids=candidate_store_ids,
                 origin_precision=str(
-                    value.get("origin_precision")
-                    or destination_resolution.get("destination_precision")
-                    or ""
+                    origin_precision
                 ),
             ):
                 v2_status = "send_multiple"

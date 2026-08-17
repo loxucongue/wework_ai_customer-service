@@ -253,7 +253,15 @@ def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentSt
                 "sales_recall": copy.deepcopy(state.get("sales_recall") or {}),
                 "gate_evidence": _drop_keys(
                     gate,
-                    {"content_candidates", "selector_input", "selector_output", "model_usage"},
+                    {
+                        "content_candidates",
+                        "selector_input",
+                        "selector_output",
+                        "model_usage",
+                        # This only describes whether Gate recalled content. It
+                        # must not narrow the final Reply to a tools-only answer.
+                        "route_advice",
+                    },
                 ),
                 "tool_plan": _drop_keys(tool_plan, {"model_usage"}),
                 "tool_facts": tool_results,
