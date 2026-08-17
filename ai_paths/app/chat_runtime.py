@@ -615,6 +615,7 @@ class ChatRuntime:
                 "reply_sales_judgment": final_state.get("reply_sales_judgment", {}),
                 "reply_deposit_evidence": final_state.get("reply_deposit_evidence", {}),
                 "selected_content_ids": final_state.get("selected_content_ids", []),
+                "reply_content_decisions": final_state.get("reply_content_decisions", []),
                 "content_selection_metrics": final_state.get("content_selection_metrics", {}),
                 "parallel_branch_metrics": final_state.get("parallel_branch_metrics", {}),
                 "fallback_source": final_state.get("fallback_source", ""),

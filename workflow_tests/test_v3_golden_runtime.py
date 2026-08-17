@@ -34,13 +34,23 @@ def test_simulation_result_extracts_customer_visible_reply_and_metrics() -> None
                 {
                     "request_id": "req",
                     "sync_reply_messages": [{"type": "text", "content": "活动价268元"}],
-                    "response_meta": {"content_selection_metrics": {"nominated_ids": ["activity"]}},
+                    "response_meta": {
+                        "content_selection_metrics": {"nominated_ids": ["activity"]},
+                        "reply_content_decisions": [
+                            {
+                                "content_id": "activity",
+                                "decision": "adopt",
+                                "reason": "directly_useful",
+                            }
+                        ],
+                    },
                 }
             ],
         },
     )
     assert result["reply_messages"][0]["content"] == "活动价268元"
     assert result["content_selection_metrics"]["nominated_ids"] == ["activity"]
+    assert result["content_decisions"][0]["decision"] == "adopt"
     assert result["human_review"]["status"] == "pending"
 
 
@@ -114,4 +124,3 @@ def _case() -> dict:
             "reference_reply_examples": ["不应进入运行时"],
         },
     }
-

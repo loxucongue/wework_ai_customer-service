@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.graph.nodes.reply_nodes import (
+    _normalized_content_decisions,
     _normalized_sales_judgment,
     _parallel_generic_reply_repair_messages,
     _parallel_reply_repair_context,
@@ -377,6 +378,41 @@ def test_sales_judgment_keeps_only_compact_model_owned_fields() -> None:
         "posture": "advance",
         "reason": "客户仍在询问而非明确退出",
     }
+
+
+def test_content_decisions_are_normalized_as_audit_metadata_only() -> None:
+    decisions = _normalized_content_decisions(
+        [
+            {
+                "content_id": "s10_need_and_case",
+                "decision": "ADOPT",
+                "reason": "directly_useful",
+            },
+            {
+                "content_id": "s10_need_and_case",
+                "decision": "skip",
+                "reason": "higher_priority",
+            },
+            {
+                "content_id": "s10_activity_intro",
+                "decision": "skip",
+                "reason": "free_form_business_judgment",
+            },
+        ]
+    )
+
+    assert decisions == [
+        {
+            "content_id": "s10_need_and_case",
+            "decision": "adopt",
+            "reason": "directly_useful",
+        },
+        {
+            "content_id": "s10_activity_intro",
+            "decision": "skip",
+            "reason": "",
+        },
+    ]
 
 
 def test_completed_content_can_be_referenced_without_replaying_old_media() -> None:

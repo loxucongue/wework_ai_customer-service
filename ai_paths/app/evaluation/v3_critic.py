@@ -59,6 +59,7 @@ async def evaluate_with_critic(
         "generated": {
             "reply_messages": result.get("reply_messages") or [],
             "content_selection_metrics": result.get("content_selection_metrics") or {},
+            "content_decisions": result.get("content_decisions") or [],
             "hard_errors": result.get("hard_errors") or [],
         },
     }
@@ -114,4 +115,3 @@ def validate_critic_result(value: Any) -> dict[str, Any]:
         "violations": violations,
         "reason": str(value.get("reason") or "")[:1500],
     }
-

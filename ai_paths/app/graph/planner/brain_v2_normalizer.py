@@ -59,7 +59,6 @@ from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assi
 
 _STORE_SNAPSHOT_NAME_CACHE: list[str] | None = None
 _STORE_SNAPSHOT_REGION_TOKEN_CACHE: set[str] | None = None
-_STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE: set[str] | None = None
 ALLOWED_PAYMENT_STATES = (
     "unknown",
     "link_sent",
@@ -1234,19 +1233,6 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
             origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or "").strip()
             if not _location_query_has_scope_region(origin, state):
                 violations.append(_ambiguous_location_tool_violation("distance_calculate"))
-            elif _distance_origin_is_broad_region_only(origin, state):
-                violations.append(
-                    {
-                        "task_type": "tool_argument",
-                        "subtype": "distance_calculate",
-                        "missing": "distance_origin_too_broad_for_ranking",
-                        "note": (
-                            "distance_calculate needs a district, landmark, address, or customer location. A bare city/province "
-                            "cannot support a nearest-store ranking. Use customer_store_lookup for the city list or ask for one "
-                            "more precise location; do not claim a store is nearer from a city-only origin."
-                        ),
-                    }
-                )
             continue
         if name == "available_time":
             missing_args: list[str] = []
@@ -3392,36 +3378,6 @@ def _snapshot_region_tokens() -> set[str]:
                     tokens.add(raw[: -len(suffix)])
     _STORE_SNAPSHOT_REGION_TOKEN_CACHE = {token for token in tokens if len(_compact_text(token)) >= 2}
     return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
-
-
-def _distance_origin_is_broad_region_only(value: str, state: AgentState) -> bool:
-    text = _compact_text(value)
-    if not text or _query_matches_scope_store_name(value, state):
-        return False
-    broad_tokens = set(_snapshot_broad_region_tokens())
-    for mapping in (
-        state,
-        state.get("request_context") if isinstance(state.get("request_context"), dict) else {},
-        state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {},
-        state.get("current_known_store") if isinstance(state.get("current_known_store"), dict) else {},
-    ):
-        if not isinstance(mapping, dict):
-            continue
-        for key in ("province", "city", "current_city"):
-            broad_tokens.update(_region_token_variants(mapping.get(key)))
-    return text in {_compact_text(token) for token in broad_tokens if token}
-
-
-def _snapshot_broad_region_tokens() -> set[str]:
-    global _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
-    if _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE is not None:
-        return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
-    tokens: set[str] = set()
-    for store in _snapshot_store_values_for_guard():
-        for key in ("province", "city"):
-            tokens.update(_region_token_variants(store.get(key)))
-    _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE = {token for token in tokens if len(_compact_text(token)) >= 2}
-    return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
 
 
 def _snapshot_store_values_for_guard() -> list[dict[str, Any]]:

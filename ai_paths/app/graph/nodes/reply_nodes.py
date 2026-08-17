@@ -242,6 +242,7 @@ def create_synthesize_reply_node(
                 "reply_messages": messages,
                 "used_fact_refs": reply_metadata.get("used_fact_refs", []),
                 "selected_content_ids": reply_metadata.get("selected_content_ids", []),
+                "reply_content_decisions": reply_metadata.get("content_decisions", []),
                 "content_selection_metrics": content_selection_metrics,
                 "reply_observation_metrics": reply_observation_metrics,
                 "reply_action": reply_metadata.get("action", "none"),
@@ -757,6 +758,7 @@ def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
     for field in (
         "used_fact_refs",
         "selected_content_ids",
+        "content_decisions",
         "commit_actions",
     ):
         if not isinstance(payload.get(field), list):
@@ -941,6 +943,7 @@ def _reply_metadata_from_model_call(model_call: dict[str, Any] | None) -> dict[s
         "selected_content_ids": [
             str(item).strip() for item in payload.get("selected_content_ids") or [] if str(item).strip()
         ],
+        "content_decisions": _normalized_content_decisions(payload.get("content_decisions")),
         "action": action,
         "action_reason": str(payload.get("action_reason") or "")[:500],
         "sales_judgment": _normalized_sales_judgment(payload.get("sales_judgment")),
@@ -1006,6 +1009,9 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
     validation_state["reply_selected_content_ids"] = [
         str(item).strip() for item in payload.get("selected_content_ids") or [] if str(item).strip()
     ]
+    validation_state["reply_content_decisions"] = _normalized_content_decisions(
+        payload.get("content_decisions")
+    )
     reply_payload = parallel_reply_payload(state)
     delivery_options = (
         reply_payload.get("structured_delivery_options")
@@ -1038,6 +1044,42 @@ def _normalized_reply_action(value: Any) -> str:
     if action not in {"none", "ask", "offer", "payment", "registration"}:
         return "none"
     return action
+
+
+def _normalized_content_decisions(value: Any) -> list[dict[str, str]]:
+    """Keep model-owned candidate reasoning as audit metadata only."""
+
+    if not isinstance(value, list):
+        return []
+    allowed_decisions = {"adopt", "skip"}
+    allowed_reasons = {
+        "directly_useful",
+        "already_delivered",
+        "irrelevant",
+        "conflicting",
+        "higher_priority",
+    }
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        content_id = str(item.get("content_id") or "").strip()
+        decision = str(item.get("decision") or "").strip().lower()
+        reason = str(item.get("reason") or "").strip().lower()
+        if not content_id or content_id in seen or decision not in allowed_decisions:
+            continue
+        if reason not in allowed_reasons:
+            reason = ""
+        normalized.append(
+            {
+                "content_id": content_id,
+                "decision": decision,
+                "reason": reason,
+            }
+        )
+        seen.add(content_id)
+    return normalized
 
 
 def _legacy_normalized_structured_delivery_decisions(value: Any) -> list[dict[str, str]]:

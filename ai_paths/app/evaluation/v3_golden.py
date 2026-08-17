@@ -71,6 +71,7 @@ def simulation_result_to_golden_result(
         "category": case.get("category"),
         "reply_messages": deepcopy(messages),
         "content_selection_metrics": deepcopy(_dict(meta.get("content_selection_metrics"))),
+        "content_decisions": deepcopy(_list(meta.get("reply_content_decisions"))),
         "hard_pass": bool(simulation_result.get("hard_pass")),
         "hard_errors": deepcopy(_list(simulation_result.get("hard_errors"))),
         "infrastructure_errors": deepcopy(_list(simulation_result.get("infrastructure_errors"))),
@@ -102,4 +103,3 @@ def _dict(value: Any) -> dict[str, Any]:
 
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
-

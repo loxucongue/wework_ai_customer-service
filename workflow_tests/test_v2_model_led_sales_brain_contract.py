@@ -232,7 +232,19 @@ def test_prompts_preserve_node_power_boundaries_without_scene_matching() -> None
 def test_reply_prompt_requires_real_progress_and_complete_deposit_facts() -> None:
     assert "推进是本轮实际完成交付" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "`sales_judgment.posture` 不得停在 `answer`" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "直接交付相关证据本身就是有效推进" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不必再叠加问题" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要仅为加快节奏再叠加 `supporting` 资产" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "content_decisions" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "每位先付10元锁活动资格、到店抵扣、做再付258元、未做或不满意可退" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_gate_retrieves_direct_evidence_across_short_factual_followups() -> None:
+    assert "补充上一轮客户问题的事实" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "此前只是被提名或文字预告不算交付" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "不要把旧问题当成必须追回的任务" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
+    assert "不要本轮立即追回旧问题" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要再把被客户跳过的旧问题挂到回复结尾" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_reply_authoritative_facts_rank_above_historical_assistant_text() -> None:

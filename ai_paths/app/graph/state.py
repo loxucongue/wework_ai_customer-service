@@ -86,6 +86,7 @@ class AgentState(TypedDict, total=False):
     evidence_join: dict[str, Any]
     used_fact_refs: list[str]
     selected_content_ids: list[str]
+    reply_content_decisions: list[dict[str, str]]
     content_selection_metrics: dict[str, Any]
     reply_observation_metrics: dict[str, Any]
     reply_action: str

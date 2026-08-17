@@ -956,6 +956,7 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
             "reply_messages": "required customer-visible message list",
             "used_fact_refs": "fact references actually used",
             "selected_content_ids": "Gate candidates actually adopted",
+            "content_decisions": "model-owned adopt/skip audit for direct Gate candidates; never controls delivery",
             "action": "none | ask | offer | payment | registration",
             "action_reason": "brief model reasoning for audit; never customer-visible",
             "sales_judgment": (
