@@ -128,6 +128,15 @@ class _StoreScopeRecoveryPlatformClient:
         return [{"id": "350"}, {"id": "557"}, {"id": "not-in-snapshot"}]
 
 
+class _IdentityRecoveringStoreScopeClient(_StoreScopeRecoveryPlatformClient):
+    def __init__(self) -> None:
+        self.info_calls = 0
+
+    def get_customer_info(self, **_: object) -> dict[str, object]:
+        self.info_calls += 1
+        return {"id": "14618712", "customer_add_wechat_id": "22089120"}
+
+
 class _FakeGeocodeCoze:
     class settings:
         geocode_workflow_id = "geo-workflow"
@@ -252,6 +261,48 @@ def test_action_layer_recovers_timed_out_customer_store_scope(monkeypatch) -> No
     assert output["customer_add_wechat_id"] == "22089120"
     assert [item["store_id"] for item in output["stores"]] == ["350", "557"]
     assert output["missing_snapshot_store_ids"] == ["not-in-snapshot"]
+
+
+def test_action_layer_resolves_missing_platform_identity_before_scope_retry(monkeypatch) -> None:
+    snapshot = [
+        {
+            "store_id": "350",
+            "store_name": "苏州姑苏店",
+            "province": "江苏省",
+            "city": "苏州市",
+            "district": "姑苏区",
+            "store_address": "江苏省苏州市姑苏区广济南路19号",
+            "location": "120.600121,31.305249",
+            "store_fact_integrity": "valid",
+        }
+    ]
+    monkeypatch.setattr(action_nodes, "_snapshot_store_values", lambda: snapshot)
+    platform = _IdentityRecoveringStoreScopeClient()
+
+    output = asyncio.run(
+        action_nodes._recover_customer_store_scope(
+            {
+                "request_context": {
+                    "customer_id": "22379582",
+                    "external_userid": "external-1",
+                    "corp_id": "corp-1",
+                    "wechat": "WJ0011",
+                    "user_id": "7294",
+                },
+                "customer_context": {},
+                "customer_store_knowledge": {
+                    "source": "customer_store_knowledge_timeout",
+                    "stores": [],
+                },
+            },
+            platform,  # type: ignore[arg-type]
+        )
+    )
+
+    assert platform.info_calls == 1
+    assert output["customer_id"] == "14618712"
+    assert output["customer_add_wechat_id"] == "22089120"
+    assert [item["store_id"] for item in output["stores"]] == ["350"]
 
 
 def test_store_scope_uses_stale_cache_when_platform_store_index_fails() -> None:

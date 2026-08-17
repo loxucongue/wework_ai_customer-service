@@ -1231,10 +1231,29 @@ async def _recover_customer_store_scope(
         or state.get("customer_add_wechat_id")
         or ""
     ).strip()
+    request_context = dict(_request_context(state))
+    if (not platform_customer_id or not customer_add_wechat_id) and request_context.get("external_userid"):
+        try:
+            info = await asyncio.wait_for(
+                asyncio.to_thread(
+                    platform_client.get_customer_info,
+                    user_id=request_context.get("user_id"),
+                    corp_id=request_context.get("corp_id"),
+                    wechat=request_context.get("wechat"),
+                    external_userid=request_context.get("external_userid"),
+                ),
+                timeout=_STORE_SCOPE_RECOVERY_TIMEOUT_SECONDS,
+            )
+            if isinstance(info, dict):
+                platform_customer_id = str(info.get("id") or platform_customer_id).strip()
+                customer_add_wechat_id = str(
+                    info.get("customer_add_wechat_id") or customer_add_wechat_id
+                ).strip()
+        except Exception:
+            return {}
     if not platform_customer_id or not customer_add_wechat_id:
         return {}
 
-    request_context = dict(_request_context(state))
     request_context.update(
         {
             "input_customer_id": request_context.get("customer_id"),
@@ -1431,6 +1450,10 @@ async def _resolve_customer_store_workflow(
         "purpose": str(tool.get("purpose") or destination.get("request_kind") or "store_resolution_workflow"),
         "evidence_refs": list(destination.get("evidence_refs") or []),
         "expected_admin": dict(destination.get("administrative_context") or {}),
+        "confirmed_by_customer": bool(
+            not destination.get("needs_clarification")
+            and "current_message" in set(destination.get("evidence_refs") or [])
+        ),
     }
     lookup = await _customer_store_lookup(lookup_tool, state, coze_client)
     lookup["destination_resolution"] = destination
@@ -1487,14 +1510,12 @@ def _store_workflow_should_rank_all_visible(
 ) -> bool:
     if str(lookup.get("status") or "") not in {"ok", "no_match"}:
         return False
+    if str(destination.get("request_kind") or "") in {"store_detail", "reuse_store"}:
+        return False
     precision = str(destination.get("destination_precision") or "unknown")
-    if precision in {"coordinates", "exact_address", "poi", "village", "township"}:
-        return True
-    resolved_level = str(lookup.get("resolved_admin_level") or "")
-    return bool(
-        lookup.get("exact_scope_has_store") is False
-        and resolved_level in {"district", "township"}
-    )
+    if precision == "province":
+        return False
+    return bool(destination.get("destination_query"))
 
 
 async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_client: CozeClient) -> dict[str, Any]:
@@ -2429,17 +2450,7 @@ def _distance_origin_is_broad_lookup_scope(
     location_evidence = lookup.get("location_evidence") if isinstance(lookup.get("location_evidence"), dict) else {}
     if str(location_evidence.get("confirmation_mode") or "") == "authoritative_location_card":
         return False
-    resolved_level = str(lookup.get("resolved_admin_level") or "").strip()
-    if resolved_level == "province":
-        return True
-    if resolved_level != "city":
-        return False
-    if str(location_evidence.get("district") or "").strip() or str(location_evidence.get("township") or "").strip():
-        return False
-    geocode = lookup.get("geocode") if isinstance(lookup.get("geocode"), dict) else {}
-    if str(geocode.get("district") or "").strip():
-        return False
-    return True
+    return str(lookup.get("resolved_admin_level") or "").strip() == "province"
 
 
 def _stores_for_geocode(geocode: dict[str, Any], stores: list[dict[str, Any]], purpose: str) -> list[dict[str, Any]]:

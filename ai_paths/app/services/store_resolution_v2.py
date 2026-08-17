@@ -174,11 +174,18 @@ def legacy_delivery_mode(status: str) -> str:
 
 def _recent_message_evidence(state: dict[str, Any]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    if not history:
+        shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+        history = shared.get("conversation") if isinstance(shared.get("conversation"), list) else []
     customer: list[tuple[str, str]] = []
     assistant: list[tuple[str, str]] = []
     start = max(0, len(history) - 20)
     for index, item in enumerate(history[start:], start=start):
-        ref = f"conv_{index + 1}"
+        ref = (
+            str(item.get("message_ref") or item.get("ref") or "").strip()
+            if isinstance(item, dict)
+            else ""
+        ) or f"conv_{index + 1}"
         role, text = _history_role_text(item)
         if not text:
             continue

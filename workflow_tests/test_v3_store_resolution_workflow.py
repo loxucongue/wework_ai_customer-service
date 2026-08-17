@@ -143,16 +143,19 @@ def test_named_store_detail_is_a_valid_location_anchor() -> None:
 def test_store_destination_prompt_does_not_treat_colloquial_region_as_district() -> None:
     assert "历史地名、口语城市片区或商圈不等于现行行政区" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
     assert "不能填入 administrative_context.district" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+    assert "先设置 geocode_before_clarification=true" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+    assert 'destination_query="武汉汉口"' in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+    assert 'request_kind="nearest"' in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
 
 
-def test_store_workflow_honors_model_location_clarification_before_geocode() -> None:
+def test_store_workflow_ranks_visible_stores_for_colloquial_city_region() -> None:
     class _Model:
         available = True
 
         async def chat_json(self, messages, **kwargs):
             del messages, kwargs
             return {
-                "request_kind": "clarify",
+                "request_kind": "nearest",
                 "destination_query": "武汉汉口",
                 "destination_precision": "unknown",
                 "administrative_context": {"province": "湖北省", "city": "武汉市"},
@@ -162,17 +165,27 @@ def test_store_workflow_honors_model_location_clarification_before_geocode() -> 
                 "evidence_refs": ["current_message", "conv_001"],
                 "superseded_location_refs": [],
                 "confidence": "high",
-                "needs_clarification": True,
-                "geocode_before_clarification": False,
-                "reason": "汉口是城市片区，仍需现行区县或定位才能准确匹配",
+                "needs_clarification": False,
+                "geocode_before_clarification": True,
+                "reason": "汉口是可查询的城市片区，先排序客户可见门店",
             }
 
     class _Client:
         settings = SimpleNamespace(geocode_workflow_id="geo")
 
         async def run_workflow(self, workflow_id, parameters):
-            del workflow_id, parameters
-            raise AssertionError("clarification must stop before geocode")
+            del workflow_id
+            query = str(parameters.get("address") or "")
+            assert query in {"武汉汉口", "就是汉口"}
+            return {
+                "data": {
+                    "formatted_address": "湖北省武汉市汉口城区",
+                    "province": "湖北省",
+                    "city": "武汉市",
+                    "district": "",
+                    "location": "114.2700,30.5900",
+                }
+            }
 
     result = asyncio.run(
         _resolve_customer_store_workflow(
@@ -190,15 +203,40 @@ def test_store_workflow_honors_model_location_clarification_before_geocode() -> 
                     ],
                     "authoritative_facts": {},
                 },
+                "customer_store_knowledge": {
+                    "stores": [
+                        {
+                            "store_id": "1",
+                            "store_name": "武汉一店",
+                            "province": "湖北省",
+                            "city": "武汉市",
+                            "district": "江汉区",
+                            "store_address": "湖北省武汉市江汉区测试路1号",
+                            "location": "114.2710,30.5910",
+                            "store_fact_integrity": "valid",
+                        },
+                        {
+                            "store_id": "2",
+                            "store_name": "武汉二店",
+                            "province": "湖北省",
+                            "city": "武汉市",
+                            "district": "江岸区",
+                            "store_address": "湖北省武汉市江岸区测试路2号",
+                            "location": "114.2800,30.6000",
+                            "store_fact_integrity": "valid",
+                        },
+                    ]
+                },
             },
             _Client(),
             model_client=_Model(),
         )
     )
 
-    assert result["status"] == "need_location_confirmation"
+    assert result["status"] == "ok", result
     assert result["destination_resolution"]["destination_query"] == "武汉汉口"
-    assert result["customer_store_lookup"]["missing"] == ["confirmed_location"]
+    assert result["distance_calculate"]["ranking_complete"] is True
+    assert [item["store_id"] for item in result["distance_calculate"]["ranked_stores"]] == ["1", "2"]
 
 
 def test_distance_ranks_all_visible_stores_across_district_boundary() -> None:
@@ -541,7 +579,7 @@ def test_exact_poi_origin_is_not_downgraded_to_broad_city_scope() -> None:
         lookup,
         candidate_count=5,
         origin_precision="city",
-    ) is True
+    ) is False
 
 
 def test_exact_poi_distance_result_is_not_expanded_to_city_fallback_cards() -> None:

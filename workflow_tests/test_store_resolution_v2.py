@@ -218,7 +218,7 @@ def test_distance_tool_requires_successful_lookup_candidates() -> None:
     )
 
 
-def test_distance_origin_rejects_city_level_lookup_even_with_junk_detail() -> None:
+def test_distance_origin_allows_city_level_lookup_as_approximate_origin() -> None:
     assert _distance_origin_is_broad_lookup_scope(
         {
             "customer_store_lookup": {
@@ -241,7 +241,7 @@ def test_distance_origin_rejects_city_level_lookup_even_with_junk_detail() -> No
             }
         },
         candidate_count=4,
-    )
+    ) is False
 
 
 def test_parent_city_alias_does_not_create_false_district_conflict() -> None:

@@ -68,12 +68,15 @@ def _distance_city_fallback_should_send_multiple(
         "township",
     }:
         return False
-    return (
-        has_real_ranking
-        and exact_scope_has_store is False
+    precision = str(origin_precision or "").strip()
+    broad_origin = precision in {"city", "district", "unknown"} or (
+        not precision
         and scope_match_level == "city_fallback"
-        and len(candidate_store_ids) >= 2
+        and exact_scope_has_store is False
     )
+    if not broad_origin:
+        return False
+    return has_real_ranking and len(candidate_store_ids) >= 2
 
 
 def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
