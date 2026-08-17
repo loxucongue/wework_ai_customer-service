@@ -133,12 +133,20 @@ def normalize_sop_delivery_decision(value: Any, *, manifest: Any) -> dict[str, s
     route = str(candidate.get("route") or "").strip()
     candidate_pack_id = str(candidate.get("sop_pack_id") or "").strip()
     action = str(raw.get("action") or "").strip()
-    if action not in {"deliver_now", "defer", "suppress"}:
-        # sop_only is already a direct Gate delivery decision. ai_then_sop remains
-        # a candidate until Planner explicitly accepts it for the current turn.
-        action = "deliver_now" if route == "sop_only" else "defer"
+    if route == "sop_only":
+        # Gate owns this direct-delivery route. Planner may enrich the reply, but
+        # cannot revoke an already selected, configured SOP asset sequence.
+        action = "deliver_now"
+    elif action not in {"deliver_now", "defer", "suppress"}:
+        # ai_then_sop remains a candidate until Planner explicitly accepts it.
+        action = "defer"
     requested_pack_id = str(raw.get("sop_pack_id") or "").strip()
-    if action == "deliver_now" and requested_pack_id and requested_pack_id != candidate_pack_id:
+    if (
+        route != "sop_only"
+        and action == "deliver_now"
+        and requested_pack_id
+        and requested_pack_id != candidate_pack_id
+    ):
         action = "defer"
     return {
         "action": action,

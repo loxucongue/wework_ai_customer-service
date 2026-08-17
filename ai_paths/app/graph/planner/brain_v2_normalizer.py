@@ -2084,9 +2084,13 @@ def _complete_explicit_kb_search_arguments(
     completed: list[dict[str, Any]] = []
     for item in required_tools:
         tool = dict(item)
-        if (
-            str(tool.get("name") or "").strip() == "kb_search"
-            and str(tool.get("purpose") or "").strip() == "case_studies"
+        kb_selector = {
+            str(tool.get("kb_name") or "").strip(),
+            str(tool.get("purpose") or "").strip(),
+            str(tool.get("query") or "").strip(),
+        }
+        if str(tool.get("name") or "").strip() == "kb_search" and kb_selector.intersection(
+            {"case_studies", "effect_case_reference"}
         ):
             if not str(tool.get("kb_name") or "").strip():
                 tool["kb_name"] = "case_studies"

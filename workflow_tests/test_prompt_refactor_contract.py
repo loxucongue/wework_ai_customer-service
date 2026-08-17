@@ -1100,6 +1100,34 @@ def test_effect_concern_without_case_tool_remains_a_model_decision() -> None:
     assert "改天" in REPLY_SYSTEM_PROMPT
 
 
+def test_effect_case_reference_completes_case_study_kb_protocol_fields() -> None:
+    plan = build_planner_plan_v2(
+        {"content": "好久了", "normalized_content": "好久了"},
+        {
+            "decision": "need_tools",
+            "stage": "S1",
+            "sub_rule_id": "S1_CASE_OR_IMAGE",
+            "customer_type": "effect",
+            "main_blocker": "effect",
+            "reply_messages": [],
+            "tool_calls": [
+                {
+                    "name": "kb_search",
+                    "purpose": "effect_case_reference",
+                    "query": "case_studies",
+                }
+            ],
+        },
+    )
+
+    case_tool = next(item for item in plan["required_tools"] if item.get("name") == "kb_search")
+    assert case_tool["kb_name"] == "case_studies"
+    assert not any(
+        item.get("missing") == "kb_search_missing_kb_name"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> None:
     for marker in ["Source Priority", "Analysis SOP", "Negative Cases"]:
         assert marker in PROFILE_ANALYZER_SYSTEM_PROMPT

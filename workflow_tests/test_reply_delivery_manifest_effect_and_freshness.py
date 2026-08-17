@@ -261,11 +261,13 @@ def test_sop_only_keeps_gate_direct_delivery_when_planner_field_is_missing() -> 
     assert authorized["delivery_decision"]["action"] == "deliver_now"
 
 
-def test_planner_defer_keeps_activity_candidate_out_of_store_turn_contract() -> None:
+def test_sop_only_gate_delivery_cannot_be_deferred_by_planner() -> None:
+    gate = _activity_gate()
+    gate["route"] = "sop_only"
     state = {
         "content": "我在广州这边",
         "normalized_content": "我在广州这边",
-        "sop_delivery_manifest": build_sop_delivery_manifest(_activity_gate()),
+        "sop_delivery_manifest": build_sop_delivery_manifest(gate),
         "conversation_history": ["用户: 我在广州这边"],
         "history_events": [],
     }
@@ -297,10 +299,14 @@ def test_planner_defer_keeps_activity_candidate_out_of_store_turn_contract() -> 
 
     plan = build_planner_plan_v2(state, payload)
 
-    assert plan["sop_delivery_decision"]["action"] == "defer"
-    assert plan["authorized_sop_delivery_manifest"]["active"] is False
-    assert plan["reply_contract"]["delivery_manifest_active"] is False
-    assert [item["message_type"] for item in plan["reply_contract"]["required_deliveries"]] == ["text"]
+    assert plan["sop_delivery_decision"]["action"] == "deliver_now"
+    assert plan["authorized_sop_delivery_manifest"]["active"] is True
+    assert plan["reply_contract"]["delivery_manifest_active"] is True
+    assert [item["message_type"] for item in plan["reply_contract"]["required_deliveries"]] == [
+        "text",
+        "image",
+        "text",
+    ]
 
 
 def test_planner_deliver_now_activates_complete_activity_contract() -> None:
