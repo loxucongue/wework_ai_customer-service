@@ -2631,6 +2631,60 @@ def _first_day_verifier_error(response: dict[str, Any]) -> str:
     return ""
 
 
+def _first_day_upgrade_scene_repeat_repair_to_replan(
+    response: dict[str, Any],
+    *,
+    scene_analysis: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(response, dict) or _string(response.get("decision")) != "repair":
+        return response
+    repeated_step_fields: set[str] = set()
+    for item in [*(response.get("violations") or []), *(response.get("repair_instructions") or [])]:
+        if not isinstance(item, dict):
+            continue
+        code = _string(item.get("code")).lower()
+        field = _string(item.get("field")).lower()
+        text = f"{code} {_string(item.get('evidence'))} {_string(item.get('instruction'))}".lower()
+        if "duplicate_scene_semantics" not in text and "location_slot_already_waiting" not in text:
+            continue
+        if "steps[0]" in field or "steps.0" in field:
+            repeated_step_fields.add("step1")
+        if "steps[1]" in field or "steps.1" in field:
+            repeated_step_fields.add("step2")
+    if not repeated_step_fields:
+        return response
+
+    replan_instructions: list[dict[str, str]] = []
+    violations: list[dict[str, str]] = []
+    for step_key in sorted(repeated_step_fields):
+        scene_field = f"{step_key}_scene"
+        if _string(scene_analysis.get(scene_field)) != "store_area_request":
+            continue
+        contract_field = "scene_contract.step1_scene" if step_key == "step1" else "scene_contract.step2_scene"
+        violations.append(
+            {
+                "code": "store_area_request_duplicate_scene_semantics",
+                "field": contract_field,
+                "evidence": "审核节点已识别该门店位置任务与近期历史语义重复，不能通过换问法修复。",
+            }
+        )
+        replan_instructions.append(
+            {
+                "field": contract_field,
+                "instruction": "门店位置场景已完成或正在等待同一信息，选择其他尚未完成且不依赖继续询问位置的场景。",
+            }
+        )
+    if not replan_instructions:
+        return response
+    upgraded = dict(response)
+    upgraded["decision"] = "replan"
+    upgraded["block_category"] = "none"
+    upgraded["violations"] = violations
+    upgraded["repair_instructions"] = []
+    upgraded["replan_instructions"] = replan_instructions
+    return upgraded
+
+
 def _is_first_day_opened_silence_trigger(trigger_context: dict[str, Any] | None) -> bool:
     trigger = trigger_context if isinstance(trigger_context, dict) else {}
     return _string(trigger.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
@@ -3537,6 +3591,10 @@ class OutreachService:
                         "candidate_structure_error": writer_structure_error,
                     },
                 )
+                verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
+                    verifier_result,
+                    scene_analysis=scene_analysis,
+                )
                 verifier_error = _first_day_verifier_error(verifier_result)
                 if verifier_error:
                     verifier_result, verifier_repair_trace = await self._run_first_day_model_node(
@@ -3553,6 +3611,10 @@ class OutreachService:
                         },
                     )
                     verifier_trace["schema_repair"] = verifier_repair_trace
+                    verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
+                        verifier_result,
+                        scene_analysis=scene_analysis,
+                    )
                     verifier_error = _first_day_verifier_error(verifier_result)
                 if verifier_error:
                     raise RuntimeError(f"first_day_contract_verifier_invalid: {verifier_error}")
@@ -3618,6 +3680,10 @@ class OutreachService:
                             "candidate_plan": writer_result,
                             "candidate_structure_error": writer_structure_error,
                         },
+                    )
+                    verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
+                        verifier_result,
+                        scene_analysis=scene_analysis,
                     )
                     verifier_error = _first_day_verifier_error(verifier_result)
                     if verifier_error:

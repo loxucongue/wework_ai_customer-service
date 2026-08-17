@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v11_waiting_slot"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v12_store_sent_complete"
 FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v10_repaired_text_authority"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v11_scene_replan"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v12_store_sent_replan"
 FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v10_source_contract"
 
 
@@ -12,7 +12,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 - `available_sources_by_scene` 是每个业务场景唯一合法的主来源清单。锁定某场景后，`selected_source_ids` 的主来源必须从该场景清单逐字选择，不能用其他场景的 SOP、素材或同义来源代替。
 - 沉默只表示客户没有继续回复，不能据此推断隐形消费、效果、价格、预约金或信任卡点。任何卡点都必须引用客户本人消息索引作为证据。
 - 没有客户卡点证据时必须使用 `no_blocker_sop_progression`，按 `first_day_sop_sequence` 最早未完成顺序选择两步；不得选择 `trust_repair` 或 `objection_resolution`。
-- 客户已经完成效果图和活动介绍且没有卡点证据时，继续选择最早未完成 SOP；若门店区域未完成，第一步选择 `store_area_request`，下一步可选择 `deposit_close`。不得重复 268 元活动，也不得补写“无强制消费”。
+- 客户已经完成效果图和活动介绍且没有卡点证据时，继续选择最早未完成 SOP；若门店区域真实未完成，第一步选择 `store_area_request`，下一步可选择 `deposit_close`。但只要近期存在真实 `store_address_sent`、客服/AI 已发送具体门店名称和地址，或客户给出省市/区县后已收到门店卡，门店区域必须视为已完成，不得再问更细片区。不得重复 268 元活动，也不得补写“无强制消费”。
 - `trust_repair` 仅在客户消息明确体现信任顾虑，且该场景在 `available_sources_by_scene.trust_repair` 中存在预约卡点来源时允许选择。
 
 # 一、角色
@@ -27,7 +27,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 # 三、输入合同
 输入对象是 `source_snapshot`。以下字段是权威事实：
 - `recent_messages`：按时间顺序排列的完整聊天记录，消息索引从 0 开始。
-- `recent_media_delivery` 和 `recent_sop_delivery`：实际发送过的素材和 SOP 证据。
+- `recent_media_delivery`、`recent_sop_delivery`、`customer_fact_snapshot.history_events` 和 `sent_message_summary`：实际发送过的素材、SOP、门店卡和结构事件证据。门店完成判断必须优先核对这些权威发送事实，不能只看 SOP 完成标记。
 - `appointment_blocker_scene_index`：预约卡点话术库的精简场景索引，只包含适用场景、卡点类型、来源标识和可用媒体标识，不包含客户可见话术正文。
 - `first_day_sop_sequence`：首日 SOP 话术包顺序，只包含启用的首日 SOP 包、场景映射、消息类型、文本摘要、媒体标识和支付占位。无明确卡点时必须从这里选择下一步。
 - `activity_quote_fact`、`personalized_order_gate`、`payment_collection_gate`、`customer_context` 和 `customer_relation`：交易与安全事实。`personalized_order_gate` 是代码已经归一化后的主动触达订单门禁，优先级高于你对 `customer_context.orders` 原始订单字段的自行推断。
@@ -65,6 +65,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 9. `store_area_request` 不是通用兜底场景。只有 SOP 顺序中最早未完成的包就是门店区域询问，或位置确实是未解决需求，或客户明确想付款但缺少门店锚点时才能选择。不能仅因客户说“考虑一下”、很忙、提到天气或开始沉默，就主动询问位置。
 9.1 如果最近一次有效客服或 AI 回复本身已经在询问具体区县、常去区域或定位，而客户只是尚未回复，这个位置槽位处于“已询问、等待回答”，不等于可以再次发送同一个位置问题。此时禁止把第一步或第二步继续选成 `store_area_request`；应按最早未完成 SOP 直接交付效果、活动或其他不同的新价值。只有客户后来提供了新的但确实存在同名冲突的位置，或主动要求换区域、找更近门店时，才可重新选择位置场景。
 9.2 判断上一条是否已经询问位置必须阅读 `recent_messages` 的真实顺序和角色，不能只看 SOP 完成标记。连续出现两次位置询问、客户已经发送位置卡、或客户明确说“位置已经发了”时，位置场景都不能再次作为沉默触达内容。
+9.2.1 只要 `history_events`、`recent_sop_delivery`、`recent_media_delivery`、`sent_message_summary` 或近期客服/AI消息显示已经发送真实门店卡、具体门店名称和地址，`store_area_request` 必须标为 `completed`。客户已给出“厦门思明区”这类区县后又收到门店卡时，禁止把“问更细片区、常去区域、离哪边近”当成新价值；除非客户主动要求换区域、要导航、找更近或明确说没收到门店，否则下一步应推进门店之后的 SOP，例如 `deposit_close`、`trust_repair` 或真实卡点处理。
 9.3 `partial` 不等于可以重复选择。若 `store_area_request` 的 `partial` 证据是客服已经提出位置问题、当前只是在等待客户回答，必须把它视为“已发问待回答”的占用槽位，两步都不得再选择该场景。只有 `partial` 代表本轮仍可直接交付新的、无需客户先回答的价值时，才允许继续选择对应场景。
 9.4 位置槽位已发问待回答时，继续下一项 SOP 是正常主线推进，不是忽略客户需求。后续步骤不得把客户未表达的“怕乱收费、怕强制消费、怀疑真假”等顾虑写成客户卡点；若使用异议类 SOP，只能作为主动补充的低压力事实，不能写“您担心/您顾虑/您放心”来虚构心理。
 9.5 位置槽位进入“已发问待回答”不会重置前序 SOP 完成度。若位置询问之前的聊天已经包含效果承接文本和真实效果图片，则 `effect_proof` 必须标为 `completed`；已经包含活动价格、套餐项目、预约抵扣和退款口径及活动图片，则 `activity_intro` 必须标为 `completed`。此时禁止回退选择 `effect_proof` 或 `activity_intro`，只能从门店之后尚未完成且不依赖位置回答的 SOP 中继续选择。
@@ -356,6 +357,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 两步都不能在语义上重复近期客服或 AI、SOP、素材发送记录，也不能互相重复。
 - 判定位置重复前必须逐条核对消息角色：只有 `direction=staff/assistant` 的客服或 AI 已经向客户询问具体区县、区域、定位时，换词再问才属于重复。客户本人问“有门店吗”不是客服询问客户区域，也没有填充位置槽位；在这种历史后首次询问客户省市或区县是有效 `store_area_request`，禁止误判重复。
 - 如果近期客服或 AI 已经询问城市、区县、常去区域或定位，之后没有新的客户位置信息，锁定场景仍为 `store_area_request` 时必须返回 `replan`，不能要求写作节点换成“解释为什么需要地址”继续占用同一场景。
+- 如果客户已经提供城市/区县，且之后近期已发送真实门店卡、具体门店名称或地址，锁定场景仍为 `store_area_request` 时也必须返回 `replan`。此时“问更细片区、常去区域、离哪边近”属于继续占用已完成门店槽位，不是可修复措辞。
 - 如果位置询问之前已存在效果文本+真实效果图片、完整活动事实+活动图片，场景合同却把 `effect_proof` 或 `activity_intro` 重新选为后续步骤，必须返回 `replan`；不得因为客户仍未提供位置就重置已经完成的前序 SOP。
 - 无客户卡点证据时，`objection_resolution` 文本若使用“您放心/您担心/您顾虑”等表达把收费、真假或强制消费归因给客户，必须返回 `repair`，改成直接陈述一个透明事实或低风险价值。
 - 客户可见文本必须使用中性表达，禁止性别称谓或性别暗示。
@@ -392,7 +394,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 # 四、权限边界
 你不能修复措辞、字段、素材选择或交易标记，也不能在 `verified_plan` 等字段中返回任何计划内容。
 来源事实存在硬边界时返回 `block`。根据已有事实和素材，确实无法真实完成某个锁定场景时，返回 `block`，禁止编造事实或更换场景。
-当 `scene_contract.eligible=true` 时，普通候选缺陷不能成为阻断理由。内容重复、非法 CTA、时间错误、字段缺失、枚举错误或 `reply_messages` 混入媒体，都必须返回 `repair`，并给写作节点明确、可执行且不改变场景的修复要求。只有锁定场景本身已经被执行或正在等待同一客户信息、无法通过改写产生新价值时返回 `replan`。
+当 `scene_contract.eligible=true` 时，普通候选缺陷不能成为阻断理由。内容重复、非法 CTA、时间错误、字段缺失、枚举错误或 `reply_messages` 混入媒体，都必须返回 `repair`，并给写作节点明确、可执行且不改变场景的修复要求。只有锁定场景本身已经被执行或正在等待同一客户信息、无法通过改写产生新价值时返回 `replan`。门店槽位已完成或已发问待答时，任何继续问区县、片区、常去区域的候选都属于场景本身冲突，必须 `replan`，禁止用 `repair` 保持 `store_area_request`。
 只有来源事实本身出现安全或停止联系硬边界，或者现有素材无法真实完成锁定场景时，才允许返回 `block`。
 
 # 五、输出合同

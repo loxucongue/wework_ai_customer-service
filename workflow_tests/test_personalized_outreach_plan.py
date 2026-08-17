@@ -19,6 +19,7 @@ from app.services.outreach_service import (
     _first_day_scene_analysis_error,
     _first_day_available_sources_by_scene,
     _first_day_scene_lock_error,
+    _first_day_upgrade_scene_repeat_repair_to_replan,
     _first_day_verifier_error,
     _first_day_writer_payload,
     _normalize_first_day_outreach_schedule,
@@ -728,6 +729,34 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             ),
             "",
         )
+        upgraded = _first_day_upgrade_scene_repeat_repair_to_replan(
+            {
+                "decision": "repair",
+                "block_category": "none",
+                "violations": [
+                    {
+                        "code": "duplicate_scene_semantics",
+                        "field": "candidate_plan.steps[0].reply_messages[0].content.text",
+                        "evidence": "客户已给区县且近期已发送门店卡，继续问片区重复",
+                    }
+                ],
+                "repair_instructions": [
+                    {
+                        "field": "candidate_plan.steps[0].reply_messages[0].content.text",
+                        "instruction": "保持 store_area_request，改问更细片区",
+                    }
+                ],
+                "replan_instructions": [],
+            },
+            scene_analysis=scene_analysis,
+        )
+        self.assertEqual(upgraded["decision"], "replan")
+        self.assertEqual(upgraded["repair_instructions"], [])
+        self.assertEqual(
+            upgraded["replan_instructions"][0]["field"],
+            "scene_contract.step1_scene",
+        )
+        self.assertEqual(_first_day_verifier_error(upgraded), "")
         self.assertEqual(
             _first_day_verifier_error(
                 {
@@ -781,6 +810,12 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             ),
             "",
         )
+
+    def test_first_day_prompts_require_replan_after_store_card_delivery(self) -> None:
+        self.assertIn("已收到门店卡", FIRST_DAY_SCENE_ANALYST_PROMPT)
+        self.assertIn("禁止把“问更细片区、常去区域、离哪边近”当成新价值", FIRST_DAY_SCENE_ANALYST_PROMPT)
+        self.assertIn("锁定场景仍为 `store_area_request` 时也必须返回 `replan`", FIRST_DAY_CONTRACT_VERIFIER_PROMPT)
+        self.assertIn("禁止用 `repair` 保持 `store_area_request`", FIRST_DAY_CONTRACT_VERIFIER_PROMPT)
 
     def test_first_day_writer_payload_only_contains_selected_context_and_materials(self) -> None:
         analysis = _first_day_scene_analysis(
