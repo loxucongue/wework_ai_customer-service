@@ -408,6 +408,10 @@ def test_parallel_content_gate_treats_recent_real_delivery_as_completed_and_stil
 def test_tool_planner_does_not_turn_truncated_history_into_a_new_location_question() -> None:
     prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
 
+    assert "极短确认、仅标点追问或疑惑表达" in prompt
+    assert "紧邻的未完成事实任务" in prompt
+    assert "规划 `resolve_customer_store`" in prompt
+    assert "不得因为当前消息很短" in prompt
     assert "不能记录可选销售机会" in prompt
     assert "当前窗口没有再次携带原始位置不等于该事实从未收集" in prompt
     assert "不得把位置写成缺失事实" in prompt
