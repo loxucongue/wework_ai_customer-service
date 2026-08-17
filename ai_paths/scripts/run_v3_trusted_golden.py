@@ -162,9 +162,17 @@ def _report(payload: dict[str, Any], evaluation: dict[str, Any]) -> str:
 
 def _git_commit(repo_root: Path) -> str:
     completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, check=True
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, check=False
     )
-    return completed.stdout.strip()
+    commit = completed.stdout.strip() if completed.returncode == 0 else ""
+    if commit:
+        return commit
+    release_commit = repo_root / "RELEASE_COMMIT"
+    if release_commit.is_file():
+        commit = release_commit.read_text(encoding="utf-8").strip()
+    if not commit:
+        raise RuntimeError("cannot determine git commit for V3 evaluation")
+    return commit
 
 
 def main() -> None:

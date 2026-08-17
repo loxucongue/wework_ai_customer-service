@@ -34,7 +34,7 @@ export function V3EvaluationViewer() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/admin/v3-evaluations", { cache: "no-store" });
+      const response = await fetch("/api/v3-evaluations", { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || data.error || "加载失败");
       const items = (data.items || []) as Manifest[];
@@ -50,7 +50,7 @@ export function V3EvaluationViewer() {
   useEffect(() => { void loadRuns(); }, [loadRuns]);
   useEffect(() => {
     if (!selected) return;
-    void fetch(`/api/admin/v3-evaluations?run_id=${encodeURIComponent(selected)}`, { cache: "no-store" })
+    void fetch(`/api/v3-evaluations?run_id=${encodeURIComponent(selected)}`, { cache: "no-store" })
       .then(async (response) => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || data.error || "加载详情失败");
@@ -100,4 +100,3 @@ export function V3EvaluationViewer() {
     </main>
   );
 }
-

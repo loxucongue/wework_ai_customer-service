@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   DatabaseZap,
   FileClock,
+  FlaskConical,
   History,
   Images,
   Menu,
@@ -51,7 +52,10 @@ const groups = [
   },
   {
     label: "系统",
-    items: [{ href: "/admin/customer-cleanup", label: "客户数据清理", icon: DatabaseZap }],
+    items: [
+      { href: "/admin/v3-evaluations", label: "V3 离线评测", icon: FlaskConical },
+      { href: "/admin/customer-cleanup", label: "客户数据清理", icon: DatabaseZap },
+    ],
   },
 ];
 

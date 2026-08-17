@@ -9,6 +9,7 @@ from app.evaluation.v3_critic import CRITIC_SYSTEM_PROMPT, validate_critic_resul
 from app.evaluation.v3_golden import golden_case_to_simulation, simulation_result_to_golden_result
 from app.services.v3_evaluation_service import V3EvaluationService
 from scripts.evaluate_v3_trusted_golden import evaluate
+from scripts.run_v3_trusted_golden import _git_commit
 
 
 def test_golden_case_maps_to_isolated_simulation_without_reference_answers() -> None:
@@ -75,6 +76,17 @@ def test_critic_contract_is_evaluation_only() -> None:
         }
     )
     assert parsed["status"] == "pass"
+
+
+def test_deployed_evaluation_reads_release_commit_without_git_metadata(tmp_path, monkeypatch) -> None:
+    class Completed:
+        returncode = 128
+        stdout = ""
+
+    monkeypatch.setattr("scripts.run_v3_trusted_golden.subprocess.run", lambda *args, **kwargs: Completed())
+    (tmp_path / "RELEASE_COMMIT").write_text("b7053d546\n", encoding="utf-8")
+
+    assert _git_commit(tmp_path) == "b7053d546"
 
 
 def test_evaluator_does_not_claim_calibration_without_human_verdict() -> None:
