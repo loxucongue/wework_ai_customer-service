@@ -89,6 +89,13 @@ def test_deployed_evaluation_reads_release_commit_without_git_metadata(tmp_path,
     assert _git_commit(tmp_path) == "b7053d546"
 
 
+def test_deployed_evaluation_keeps_simulation_state_under_isolated_runtime_root() -> None:
+    source = Path("ai_paths/scripts/run_v3_trusted_golden.py").read_text(encoding="utf-8")
+
+    assert 'repo_root / ".tmp_runtime" / "simulation" / run_id' in source
+    assert 'run_root=run_dir / "simulation"' not in source
+
+
 def test_evaluator_does_not_claim_calibration_without_human_verdict() -> None:
     golden = {"schema_version": "test", "cases": [_case()]}
     result = {

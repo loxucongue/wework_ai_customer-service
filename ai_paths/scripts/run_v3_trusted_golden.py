@@ -38,7 +38,8 @@ async def run(args: argparse.Namespace) -> Path:
     checkpoint_dir.mkdir(exist_ok=args.resume)
 
     settings = Settings()
-    runtime = SimulationRuntime(repo_root=repo_root, run_root=run_dir / "simulation", base_settings=settings)
+    simulation_root = repo_root / ".tmp_runtime" / "simulation" / run_id
+    runtime = SimulationRuntime(repo_root=repo_root, run_root=simulation_root, base_settings=settings)
     critic_settings = settings.model_copy(
         update={
             "model_balanced": args.critic_model or "gpt-5.4-mini",
