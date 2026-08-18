@@ -865,11 +865,28 @@ def _prepare_structural_messages(
     warnings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     if state.get("evidence_join"):
-        # Reply owns wording and sales judgement. Current-turn tool structures
-        # are factual delivery artifacts, so materialize the exact verified
-        # store cards without rewriting Reply's text or action.
-        prepared, store_delivery_materialized = _materialize_required_store_delivery(
+        # Reply owns content selection, wording, and sales judgement. Once it
+        # explicitly adopts and cites a current Gate asset, its configured
+        # image/video payload is a delivery artifact rather than a new sales
+        # decision. Complete that passive-media delivery without touching text,
+        # store selection, payment cards, or the chosen action.
+        prepared, materialized_content_ids = _materialize_selected_content_media(
             messages,
+            state,
+        )
+        if materialized_content_ids:
+            warnings.append(
+                {
+                    "node": "synthesize_reply",
+                    "message": "selected_content_media_materialized",
+                    "content_ids": materialized_content_ids,
+                }
+            )
+        # Current-turn tool structures are factual delivery artifacts, so
+        # materialize exact verified store cards separately. Gate assets can
+        # never authorize or choose stores through the helper above.
+        prepared, store_delivery_materialized = _materialize_required_store_delivery(
+            prepared,
             state,
         )
         if store_delivery_materialized:
@@ -894,6 +911,98 @@ def _prepare_structural_messages(
         if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
             warning.setdefault("node", "synthesize_reply")
     return prepared
+
+
+def _materialize_selected_content_media(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Complete image/video delivery already chosen by Reply.
+
+    Selection remains entirely model-owned. This helper requires both the
+    selected content ID and its fact reference, accepts only the exact current
+    Gate candidate payload, and never materializes store or payment actions.
+    """
+
+    selected_ids = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in state.get("reply_selected_content_ids") or []
+            if str(item or "").strip()
+        )
+    )
+    used_refs = {
+        str(item or "").strip()
+        for item in state.get("reply_used_fact_refs") or []
+        if str(item or "").strip()
+    }
+    if not selected_ids:
+        return list(messages), []
+
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
+    candidates_by_id = {
+        str(item.get("content_id") or item.get("id") or "").strip(): item
+        for item in candidates
+        if isinstance(item, dict)
+        and str(item.get("content_id") or item.get("id") or "").strip()
+    }
+
+    prepared = list(messages)
+    emitted = {
+        (str(item.get("type") or "").strip(), _passive_media_url(item))
+        for item in prepared
+        if isinstance(item, dict)
+        and str(item.get("type") or "").strip() in {"image", "video"}
+        and _passive_media_url(item)
+    }
+    materialized_ids: list[str] = []
+    for content_id in selected_ids:
+        if f"content_asset:{content_id}" not in used_refs:
+            continue
+        candidate = candidates_by_id.get(content_id)
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("delivery_status") or "").strip() == "completed":
+            continue
+        candidate_messages = candidate.get("messages")
+        if not isinstance(candidate_messages, list):
+            candidate_messages = (
+                candidate.get("reply_messages")
+                if isinstance(candidate.get("reply_messages"), list)
+                else []
+            )
+        added = False
+        for item in candidate_messages:
+            if not isinstance(item, dict):
+                continue
+            message_type = str(item.get("type") or "").strip()
+            if message_type not in {"image", "video"}:
+                continue
+            media_url = _passive_media_url(item)
+            if not media_url or not media_url.lower().startswith(("http://", "https://")):
+                continue
+            key = (message_type, media_url)
+            if key in emitted:
+                continue
+            prepared.append({"type": message_type, "content": media_url})
+            emitted.add(key)
+            added = True
+        if added:
+            materialized_ids.append(content_id)
+    return _renumber(prepared), materialized_ids
+
+
+def _passive_media_url(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, dict):
+        return str(
+            content.get("url")
+            or content.get("image_url")
+            or content.get("video_url")
+            or ""
+        ).strip()
+    return str(content or "").strip()
 
 
 def _maybe_append_planner_payment_structure(
@@ -1921,10 +2030,10 @@ def _reply_structural_repair_guard(
                     "保留 ID 时，逐项输出 exact_delivery_requirements.messages 中全部结构消息，"
                     "并保留 required_used_fact_ref；不得只补其中一项。"
                 ),
-                "choice_drop_asset": (
-                    "不交付整套素材时，删除该 ID 及其 content_asset:<id> 引用。"
-                    "若独立预约金证据仍合法，可保留 action=payment 和一张 payment_collection，"
-                    "但不得再声明采用该内容资产。"
+                "hard_conflict_only": (
+                    "单纯漏交付不是重新审理销售选择的理由。只有同一错误中另有已付、健康风险、"
+                    "投诉、权限或支付准入等独立硬冲突时，才可撤销冲突资产；不得为了通过校验"
+                    "而删除原 selected_content_ids。"
                 ),
             }
         )
@@ -2550,19 +2659,18 @@ def _reply_repair_hint(error: str) -> str:
     if "selected_content_delivery_missing" in error:
         return (
             "你在 selected_content_ids 中声明采用了 Gate 候选，但没有输出该候选的结构素材。"
-            "错误会一次列出所有已选候选缺少的 required，请全部处理。请重新检查当前客户问题和硬边界："
-            "如果候选适合本轮，优先保持上一版业务决定，并按错误中的 required 以及 "
+            "错误会一次列出所有已选候选缺少的 required，请全部处理。单纯漏交付不允许重新审理"
+            "上一版销售决定，也不得为了通过校验删除原 selected_content_ids。请按错误中的 required 以及 "
             "validation_context.content_candidate_delivery_requirements 一次补齐真实的 "
-            "image/video/store_address/payment_collection；如果候选与当前付款方式、已付、风险或客户状态冲突，"
-            "就从 selected_content_ids 删除该候选，并保持回复内容和 action 与本轮实际决定一致。"
+            "image/video/store_address/payment_collection。只有同一轮另有已付、风险、投诉、权限或支付准入等"
+            "独立硬冲突时，才撤销对应冲突资产，并保持回复内容和 action 与真实硬边界一致。"
             "保留任何候选时，还必须在 used_fact_refs 中加入对应的 content_asset:<id>；不要等下一次校验再补引用。"
-            "如果你只是依据权威业务事实自行回答或发送合法预约金卡、并不准备交付候选的整套素材，优先删除该候选 ID；"
-            "action=payment 仍可保留并输出 payment_collection，不需要为了发卡强行选择 deposit_close。"
             "若你因此新增 payment_collection，还必须同时填写合法 deposit_evidence：更早活动引用、另一把钥匙的更早真实交付引用、"
             "current_message 行动信号。仅引用历史事实而不重发资产时，不要选择该资产。"
             "未付且本轮不发送 payment_collection 时，action 不能使用 registration；registration 只表示权威已付后的信息登记。"
             "首次活动介绍应使用 offer、ask 或 none 中与实际回复一致的动作，并且不得提前索要姓名或手机号。"
-            "代码不会替你自动追加或删除客户可见卡片。"
+            "代码只会原样补齐你已明确选择并引用的当前 Gate 图片或视频；不会替你选择资产，"
+            "也不会自动追加或删除 payment_collection、store_address 或客户可见文字。"
         )
     if "planned_store_lookup_requires_store_delivery" in error:
         return (

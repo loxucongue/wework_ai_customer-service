@@ -32,6 +32,7 @@ from app.graph.nodes.reply_nodes import (
     _canonical_assessment_refs,
     _case_image_urls,
     _maybe_build_required_payment_collection_fallback,
+    _materialize_selected_content_media,
     _needs_strong_reply_model,
     _prepare_structural_messages,
     _parallel_reply_repair_context,
@@ -2380,7 +2381,7 @@ def test_parallel_structural_repair_guard_cleans_manual_transfer_without_echoing
     assert '"payment_collection":"禁止"' in guard
 
 
-def test_parallel_structural_repair_guard_requires_full_asset_or_deselect() -> None:
+def test_parallel_structural_repair_guard_preserves_selection_without_independent_hard_conflict() -> None:
     guard = _reply_structural_repair_guard(
         "selected_content_delivery_missing:content_id=s10_deposit_close",
         previous_payload={
@@ -2410,7 +2411,8 @@ def test_parallel_structural_repair_guard_requires_full_asset_or_deselect() -> N
     assert '"amount":10' in guard
     assert "https://example.invalid/activity.jpg" not in guard
     assert "逐项输出 exact_delivery_requirements.messages 中全部结构消息" in guard
-    assert "删除该 ID 及其 content_asset:<id> 引用" in guard
+    assert "不得为了通过校验而删除原 selected_content_ids" in guard
+    assert "删除该 ID 及其 content_asset:<id> 引用" not in guard
 
 
 def test_parallel_structural_repair_guard_preserves_selected_asset_on_unrelated_repair() -> None:
@@ -3612,7 +3614,7 @@ def test_parallel_selected_content_does_not_commit_any_incomplete_assets() -> No
     ) == []
 
 
-def test_parallel_selected_gate_candidate_is_not_hydrated_by_code() -> None:
+def test_parallel_selected_gate_candidate_materializes_only_adopted_passive_media() -> None:
     state = {
         **_parallel_state("活动怎么参加"),
         "evidence_join": {
@@ -3622,7 +3624,6 @@ def test_parallel_selected_gate_candidate_is_not_hydrated_by_code() -> None:
                     "messages": [
                         {"type": "text", "content": "活动介绍"},
                         {"type": "image", "content": {"url": "https://example.invalid/activity.jpg"}},
-                        {"type": "payment_collection", "content": {"amount": 10}},
                     ],
                 }
             ]
@@ -3632,23 +3633,137 @@ def test_parallel_selected_gate_candidate_is_not_hydrated_by_code() -> None:
         "reply_action": "none",
     }
 
-    messages = [{"type": "text", "order": 1, "content": "活动内容给您说明一下。"}]
+    messages, materialized_ids = _materialize_selected_content_media(
+        [{"type": "text", "order": 1, "content": "活动内容给您说明一下。"}],
+        state,
+    )
 
-    with pytest.raises(ValueError, match="selected_content_delivery_missing"):
-        validate_reply_consistency(messages, state)
+    assert materialized_ids == ["s10_activity_intro"]
+    assert messages == [
+        {"type": "text", "order": 1, "content": "活动内容给您说明一下。"},
+        {"type": "image", "order": 2, "content": "https://example.invalid/activity.jpg"},
+    ]
+    validate_reply_consistency(messages, state)
     assert completed_parallel_selected_content_ids(
         messages,
         state,
         ["s10_activity_intro"],
-    ) == []
+    ) == ["s10_activity_intro"]
+
+
+def test_parallel_content_media_materializer_does_not_choose_unselected_asset() -> None:
+    state = {
+        **_parallel_state("价格怎么样"),
+        "evidence_join": {
+            "content_candidates": [
+                {
+                    "content_id": "s10_activity_intro",
+                    "messages": [
+                        {"type": "image", "content": "https://example.invalid/activity.jpg"},
+                    ],
+                }
+            ]
+        },
+        "reply_selected_content_ids": [],
+        "reply_used_fact_refs": [],
+    }
+
+    messages, materialized_ids = _materialize_selected_content_media(
+        [{"type": "text", "content": "活动价是268元。"}],
+        state,
+    )
+
+    assert materialized_ids == []
+    assert messages == [{"type": "text", "content": "活动价是268元。"}]
+
+
+def test_parallel_content_media_materializer_requires_explicit_asset_reference() -> None:
+    state = {
+        **_parallel_state("价格怎么样"),
+        "evidence_join": {
+            "content_candidates": [
+                {
+                    "content_id": "s10_activity_intro",
+                    "messages": [
+                        {"type": "image", "content": "https://example.invalid/activity.jpg"},
+                    ],
+                }
+            ]
+        },
+        "reply_selected_content_ids": ["s10_activity_intro"],
+        "reply_used_fact_refs": [],
+    }
+
+    messages, materialized_ids = _materialize_selected_content_media(
+        [{"type": "text", "content": "活动价是268元。"}],
+        state,
+    )
+
+    assert materialized_ids == []
+    assert messages == [{"type": "text", "order": 1, "content": "活动价是268元。"}]
+
+
+def test_parallel_content_media_materializer_never_adds_store_or_payment_actions() -> None:
+    state = {
+        **_parallel_state("活动怎么参加"),
+        "evidence_join": {
+            "content_candidates": [
+                {
+                    "content_id": "mixed_asset",
+                    "messages": [
+                        {"type": "image", "content": "https://example.invalid/activity.jpg"},
+                        {"type": "store_address", "content": {"store_id": "481"}},
+                        {"type": "payment_collection", "content": {"amount": 10}},
+                    ],
+                }
+            ]
+        },
+        "reply_selected_content_ids": ["mixed_asset"],
+        "reply_used_fact_refs": ["content_asset:mixed_asset"],
+    }
+
+    messages, materialized_ids = _materialize_selected_content_media(
+        [{"type": "text", "content": "活动内容给您说明一下。"}],
+        state,
+    )
+
+    assert materialized_ids == ["mixed_asset"]
+    assert [item["type"] for item in messages] == ["text", "image"]
+
+
+def test_parallel_content_media_materializer_does_not_repeat_completed_asset() -> None:
+    state = {
+        **_parallel_state("再说一下活动"),
+        "evidence_join": {
+            "content_candidates": [
+                {
+                    "content_id": "s10_activity_intro",
+                    "delivery_status": "completed",
+                    "messages": [
+                        {"type": "image", "content": "https://example.invalid/activity.jpg"},
+                    ],
+                }
+            ]
+        },
+        "reply_selected_content_ids": ["s10_activity_intro"],
+        "reply_used_fact_refs": ["content_asset:s10_activity_intro"],
+    }
+
+    messages, materialized_ids = _materialize_selected_content_media(
+        [{"type": "text", "content": "活动内容我再给您说清楚。"}],
+        state,
+    )
+
+    assert materialized_ids == []
+    assert [item["type"] for item in messages] == ["text"]
 
 
 def test_parallel_selected_content_repair_hint_is_structural_not_sales_decision() -> None:
     hint = _reply_repair_hint("selected_content_delivery_missing:content_id=s10_activity_intro")
 
     assert "补齐真实" in hint
-    assert "如果候选与当前付款方式" in hint
-    assert "代码不会替你自动追加" in hint
+    assert "单纯漏交付不允许重新审理" in hint
+    assert "只会原样补齐你已明确选择" in hint
 
 
 def test_parallel_content_fact_ref_requires_current_candidate_structured_delivery() -> None:
