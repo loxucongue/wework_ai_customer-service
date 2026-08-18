@@ -42,6 +42,47 @@ class ModelClient:
     def available(self) -> bool:
         return bool(self._api_key())
 
+    @property
+    def secondary_available(self) -> bool:
+        settings = self._secondary_settings()
+        if settings is None:
+            return False
+        return bool(model_selection.api_key(settings, model=settings.model_fast))
+
+    async def chat_json_secondary(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float = 0.0,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Run one JSON attempt through an independently configured provider."""
+
+        settings = self._secondary_settings()
+        if settings is None:
+            raise RuntimeError("Secondary model provider is not configured")
+        client = ModelClient(settings)
+        try:
+            result = await client.chat_json(
+                messages,
+                tier="fast",
+                temperature=temperature,
+                deadline_monotonic=deadline_monotonic,
+                max_parallel_candidates=1,
+            )
+            usage = dict(client.last_usage or {})
+            usage.update(
+                {
+                    "secondary_provider": settings.model_provider,
+                    "secondary_model": settings.model_fast,
+                    "transport_recovery": True,
+                }
+            )
+            self.last_usage = usage
+            return result
+        finally:
+            await client.aclose()
+
     async def chat_text(
         self,
         messages: list[dict[str, Any]],
@@ -696,6 +737,24 @@ class ModelClient:
 
     def _api_key(self, model: str | None = None) -> str:
         return model_selection.api_key(self.settings, model=model)
+
+    def _secondary_settings(self) -> Settings | None:
+        provider = str(self.settings.model_secondary_provider or "").strip().lower()
+        model = str(self.settings.model_secondary or "").strip()
+        if not provider or not model:
+            return None
+        timeout = max(1.0, float(self.settings.model_secondary_timeout_seconds or 20.0))
+        return self.settings.model_copy(
+            update={
+                "model_provider": provider,
+                "model_fast": model,
+                "model_fast_fallbacks": "",
+                "model_emergency_fallbacks": "",
+                "model_hedge_max_parallel": 1,
+                "model_request_retry_attempts": 1,
+                "model_timeout_seconds": timeout,
+            }
+        )
 
     def _base_url(self, model: str | None = None) -> str:
         return model_selection.base_url(self.settings)

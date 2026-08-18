@@ -645,7 +645,12 @@ async def _run_model_led_reply_pipeline(
         repair_messages = _reply_full_task_retry_messages(model_messages, primary_error)
         retry_mode = "full_task_retry"
         second_attempt_budget = repair_budget
-        second_attempt_tier = "fast"
+        second_attempt_tier = (
+            "secondary"
+            if bool(getattr(model_client, "secondary_available", False))
+            and hasattr(model_client, "chat_json_secondary")
+            else "fast"
+        )
     else:
         repair_messages = _reply_retry_messages(
             model_messages,
@@ -662,12 +667,19 @@ async def _run_model_led_reply_pipeline(
     )
     repair_payload: dict[str, Any] | None = None
     try:
-        repair_payload = await _chat_json_with_deadline(
-            model_client,
-            repair_messages,
-            tier=second_attempt_tier,
-            deadline_monotonic=repair_deadline,
-        )
+        if second_attempt_tier == "secondary":
+            repair_payload = await model_client.chat_json_secondary(
+                repair_messages,
+                temperature=0,
+                deadline_monotonic=repair_deadline,
+            )
+        else:
+            repair_payload = await _chat_json_with_deadline(
+                model_client,
+                repair_messages,
+                tier=second_attempt_tier,
+                deadline_monotonic=repair_deadline,
+            )
         model_call["retry"] = {
             "mode": retry_mode,
             "tier": second_attempt_tier,

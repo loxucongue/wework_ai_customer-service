@@ -575,6 +575,7 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
         primary_error = ""
         transport_recovery_attempted = False
         transport_recovery_error = ""
+        transport_recovery_tier = ""
         try:
             payload = await asyncio.wait_for(
                 model_client.chat_json(
@@ -588,15 +589,13 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
             primary_error = f"{type(exc).__name__}: {exc}"
             transport_recovery_attempted = True
             try:
-                # Retry the same evidence-complete read-only task on another
-                # configured model tier. No tool call is inferred by code.
-                payload = await asyncio.wait_for(
-                    model_client.chat_json(
-                        messages,
-                        tier="fast",
-                        temperature=0,
-                    ),
-                    timeout=recovery_budget,
+                # Retry the same evidence-complete read-only task through the
+                # independent provider when configured. No tool call is
+                # inferred or manufactured by code.
+                payload, transport_recovery_tier = await _tool_planner_transport_recovery(
+                    model_client,
+                    messages,
+                    timeout_seconds=recovery_budget,
                 )
             except Exception as recovery_exc:
                 transport_recovery_error = (
@@ -690,6 +689,7 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
             "repair_error": repair_error,
             "primary_error": primary_error,
             "transport_recovery_attempted": transport_recovery_attempted,
+            "transport_recovery_tier": transport_recovery_tier,
             "transport_recovery_error": transport_recovery_error,
             "protocol_recovery": protocol_recovery,
             "model_usage": model_usage_snapshot(model_client),
@@ -721,6 +721,37 @@ def _tool_planner_budget_seconds(
         return max(0.1, float(value))
     except (TypeError, ValueError):
         return default
+
+
+async def _tool_planner_transport_recovery(
+    model_client: ModelClient,
+    messages: list[dict[str, Any]],
+    *,
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], str]:
+    deadline = time.monotonic() + timeout_seconds
+    if bool(getattr(model_client, "secondary_available", False)) and hasattr(
+        model_client,
+        "chat_json_secondary",
+    ):
+        payload = await asyncio.wait_for(
+            model_client.chat_json_secondary(
+                messages,
+                temperature=0,
+                deadline_monotonic=deadline,
+            ),
+            timeout=timeout_seconds,
+        )
+        return payload, "secondary"
+    payload = await asyncio.wait_for(
+        model_client.chat_json(
+            messages,
+            tier="fast",
+            temperature=0,
+        ),
+        timeout=timeout_seconds,
+    )
+    return payload, "fast"
 
 
 def _protocol_required_read_only_tools(state: AgentState) -> list[dict[str, Any]]:

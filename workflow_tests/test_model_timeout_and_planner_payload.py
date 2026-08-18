@@ -33,6 +33,28 @@ def _settings(**overrides: Any) -> Settings:
 
 
 class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
+    def test_secondary_provider_is_independent_and_single_candidate(self) -> None:
+        client = ModelClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="primary-key",
+                aliyun_dashscope_api_key="secondary-key",
+                model_secondary_provider="aliyun",
+                model_secondary="qwen-plus",
+                model_secondary_timeout_seconds=12,
+            )
+        )
+
+        self.assertTrue(client.secondary_available)
+        secondary = client._secondary_settings()
+        self.assertIsNotNone(secondary)
+        self.assertEqual(secondary.model_provider, "aliyun")
+        self.assertEqual(secondary.model_fast, "qwen-plus")
+        self.assertEqual(secondary.model_fast_fallbacks, "")
+        self.assertEqual(secondary.model_emergency_fallbacks, "")
+        self.assertEqual(secondary.model_hedge_max_parallel, 1)
+        self.assertEqual(secondary.model_timeout_seconds, 12)
+
     def test_short_mojibake_detection_preserves_normal_confirmation(self) -> None:
         self.assertFalse(looks_suspected_short_mojibake("行"))
         self.assertFalse(looks_suspected_short_mojibake("好的"))

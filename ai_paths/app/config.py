@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     model_vision_fallbacks: str = ""
     model_store_destination_fallbacks: str = "gpt-5.4,gpt-5.4-mini"
     model_emergency_fallbacks: str = "gpt-5.4,gpt-5.4-mini"
+    model_secondary_provider: str = ""
+    model_secondary: str = ""
+    model_secondary_timeout_seconds: float = 20.0
     model_timeout_seconds: int = 45
     model_hedge_delay_seconds: float = 3.0
     model_planner_hedge_delay_seconds: float = 10.0

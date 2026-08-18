@@ -322,6 +322,42 @@ def test_model_led_reply_timeout_retries_full_original_task_instead_of_structura
     assert source == "single_full_task_retry_model"
     assert messages[0]["content"] == valid_reply["reply_messages"][0]["content"]
 
+    class _SecondaryClient(_Client):
+        secondary_available = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.secondary_calls = 0
+
+        async def chat_json(self, messages, **kwargs):
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            raise TimeoutError("primary provider timeout")
+
+        async def chat_json_secondary(self, messages, **kwargs):
+            self.secondary_calls += 1
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            return valid_reply
+
+    secondary_client = _SecondaryClient()
+    _, secondary_model_call, secondary_source = asyncio.run(
+        _run_model_led_reply_pipeline(
+            state=state,
+            model_client=secondary_client,
+            model_messages=original_messages,
+            validated_model_messages=lambda payload, _state: payload["reply_messages"],
+            debug_message_contents=lambda items: [
+                str(item.get("content") or "") for item in items
+            ],
+            warnings=[],
+        )
+    )
+
+    assert secondary_client.secondary_calls == 1
+    assert secondary_model_call["retry"]["tier"] == "secondary"
+    assert secondary_source == "single_full_task_retry_model"
+
 
 def test_parallel_reply_prompt_is_structured_sales_brain_not_scene_matcher() -> None:
     for section in (

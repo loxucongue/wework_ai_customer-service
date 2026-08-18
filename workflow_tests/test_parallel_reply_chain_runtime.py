@@ -4926,3 +4926,56 @@ def test_tool_planner_transport_timeout_recovers_on_fast_tier_with_full_evidence
     assert result["transport_recovery_attempted"] is True
     assert result["primary_error"].startswith("TimeoutError:")
     assert result["tool_calls"][0]["name"] == "resolve_customer_store"
+
+
+def test_tool_planner_transport_timeout_prefers_secondary_provider() -> None:
+    class _ModelClient:
+        available = True
+        secondary_available = True
+        last_usage = None
+
+        def __init__(self) -> None:
+            self.settings = SimpleNamespace(
+                model_planner_primary_budget_seconds=0.1,
+                model_planner_recovery_budget_seconds=0.3,
+            )
+            self.primary_calls = 0
+            self.secondary_calls = 0
+
+        async def chat_json(self, messages, **kwargs):
+            del messages, kwargs
+            self.primary_calls += 1
+            await asyncio.sleep(0.2)
+
+        async def chat_json_secondary(self, messages, **kwargs):
+            del messages, kwargs
+            self.secondary_calls += 1
+            return {
+                "decision": "facts_sufficient",
+                "tool_calls": [],
+                "evidence_refs": ["current_message"],
+                "reason": "no read-only query is needed",
+            }
+
+    model_client = _ModelClient()
+    result = asyncio.run(
+        _run_tool_planner(
+            {
+                "shared_context": {
+                    "current_message": {
+                        "message_ref": "current_message",
+                        "role": "customer",
+                        "message_type": "text",
+                        "content": "好的",
+                    },
+                    "conversation": [],
+                }
+            },
+            model_client,
+        )
+    )
+
+    assert model_client.primary_calls == 1
+    assert model_client.secondary_calls == 1
+    assert result["status"] == "completed"
+    assert result["transport_recovery_tier"] == "secondary"
