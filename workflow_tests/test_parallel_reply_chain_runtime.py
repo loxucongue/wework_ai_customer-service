@@ -2381,7 +2381,7 @@ def test_parallel_structural_repair_guard_cleans_manual_transfer_without_echoing
     assert '"payment_collection":"禁止"' in guard
 
 
-def test_parallel_structural_repair_guard_preserves_selection_without_independent_hard_conflict() -> None:
+def test_parallel_structural_repair_guard_allows_full_asset_delivery_or_deselection() -> None:
     guard = _reply_structural_repair_guard(
         "selected_content_delivery_missing:content_id=s10_deposit_close",
         previous_payload={
@@ -2411,8 +2411,8 @@ def test_parallel_structural_repair_guard_preserves_selection_without_independen
     assert '"amount":10' in guard
     assert "https://example.invalid/activity.jpg" not in guard
     assert "逐项输出 exact_delivery_requirements.messages 中全部结构消息" in guard
-    assert "不得为了通过校验而删除原 selected_content_ids" in guard
-    assert "删除该 ID 及其 content_asset:<id> 引用" not in guard
+    assert "删除该 ID 及其 content_asset:<id> 引用" in guard
+    assert "不得为了通过校验而删除原 selected_content_ids" not in guard
 
 
 def test_parallel_structural_repair_guard_preserves_selected_asset_on_unrelated_repair() -> None:
@@ -3758,11 +3758,40 @@ def test_parallel_content_media_materializer_does_not_repeat_completed_asset() -
     assert [item["type"] for item in messages] == ["text"]
 
 
+def test_parallel_content_media_materializer_inserts_before_terminal_side_effects() -> None:
+    state = {
+        **_parallel_state("活动怎么参加"),
+        "evidence_join": {
+            "content_candidates": [
+                {
+                    "content_id": "s10_activity_intro",
+                    "messages": [
+                        {"type": "image", "content": "https://example.invalid/activity.jpg"},
+                    ],
+                }
+            ]
+        },
+        "reply_selected_content_ids": ["s10_activity_intro"],
+        "reply_used_fact_refs": ["content_asset:s10_activity_intro"],
+    }
+
+    messages, materialized_ids = _materialize_selected_content_media(
+        [
+            {"type": "text", "content": "活动内容给您说清楚。"},
+            {"type": "payment_collection", "content": {"amount": 10}},
+        ],
+        state,
+    )
+
+    assert materialized_ids == ["s10_activity_intro"]
+    assert [item["type"] for item in messages] == ["text", "image", "payment_collection"]
+
+
 def test_parallel_selected_content_repair_hint_is_structural_not_sales_decision() -> None:
     hint = _reply_repair_hint("selected_content_delivery_missing:content_id=s10_activity_intro")
 
     assert "补齐真实" in hint
-    assert "单纯漏交付不允许重新审理" in hint
+    assert "如果候选与当前付款方式" in hint
     assert "只会原样补齐你已明确选择" in hint
 
 

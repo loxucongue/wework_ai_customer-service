@@ -957,6 +957,7 @@ def _materialize_selected_content_media(
         and _passive_media_url(item)
     }
     materialized_ids: list[str] = []
+    pending_media: list[dict[str, Any]] = []
     for content_id in selected_ids:
         if f"content_asset:{content_id}" not in used_refs:
             continue
@@ -985,11 +986,30 @@ def _materialize_selected_content_media(
             key = (message_type, media_url)
             if key in emitted:
                 continue
-            prepared.append({"type": message_type, "content": media_url})
+            pending_media.append({"type": message_type, "content": media_url})
             emitted.add(key)
             added = True
         if added:
             materialized_ids.append(content_id)
+    if pending_media:
+        # Passive evidence belongs before payment or handoff side effects. This
+        # preserves those message types' terminal position without changing
+        # Reply text or choosing any new action.
+        insert_at = next(
+            (
+                index
+                for index, item in enumerate(prepared)
+                if isinstance(item, dict)
+                and str(item.get("type") or "").strip()
+                in {"payment_collection", "human_handoff_notice"}
+            ),
+            len(prepared),
+        )
+        prepared = [
+            *prepared[:insert_at],
+            *pending_media,
+            *prepared[insert_at:],
+        ]
     return _renumber(prepared), materialized_ids
 
 
@@ -2030,10 +2050,10 @@ def _reply_structural_repair_guard(
                     "保留 ID 时，逐项输出 exact_delivery_requirements.messages 中全部结构消息，"
                     "并保留 required_used_fact_ref；不得只补其中一项。"
                 ),
-                "hard_conflict_only": (
-                    "单纯漏交付不是重新审理销售选择的理由。只有同一错误中另有已付、健康风险、"
-                    "投诉、权限或支付准入等独立硬冲突时，才可撤销冲突资产；不得为了通过校验"
-                    "而删除原 selected_content_ids。"
+                "choice_drop_asset": (
+                    "不交付整套素材时，删除该 ID 及其 content_asset:<id> 引用。"
+                    "若独立预约金证据仍合法，可保留 action=payment 和一张 payment_collection，"
+                    "但不得再声明采用该内容资产。"
                 ),
             }
         )
@@ -2659,12 +2679,14 @@ def _reply_repair_hint(error: str) -> str:
     if "selected_content_delivery_missing" in error:
         return (
             "你在 selected_content_ids 中声明采用了 Gate 候选，但没有输出该候选的结构素材。"
-            "错误会一次列出所有已选候选缺少的 required，请全部处理。单纯漏交付不允许重新审理"
-            "上一版销售决定，也不得为了通过校验删除原 selected_content_ids。请按错误中的 required 以及 "
+            "错误会一次列出所有已选候选缺少的 required，请全部处理。请重新检查当前客户问题和硬边界："
+            "如果候选适合本轮，优先保持上一版业务决定，并按错误中的 required 以及 "
             "validation_context.content_candidate_delivery_requirements 一次补齐真实的 "
-            "image/video/store_address/payment_collection。只有同一轮另有已付、风险、投诉、权限或支付准入等"
-            "独立硬冲突时，才撤销对应冲突资产，并保持回复内容和 action 与真实硬边界一致。"
+            "image/video/store_address/payment_collection；如果候选与当前付款方式、已付、风险或客户状态冲突，"
+            "就从 selected_content_ids 删除该候选，并保持回复内容和 action 与本轮实际决定一致。"
             "保留任何候选时，还必须在 used_fact_refs 中加入对应的 content_asset:<id>；不要等下一次校验再补引用。"
+            "如果你只是依据权威业务事实自行回答或发送合法预约金卡、并不准备交付候选的整套素材，优先删除该候选 ID；"
+            "action=payment 仍可保留并输出 payment_collection，不需要为了发卡强行选择 deposit_close。"
             "若你因此新增 payment_collection，还必须同时填写合法 deposit_evidence：更早活动引用、另一把钥匙的更早真实交付引用、"
             "current_message 行动信号。仅引用历史事实而不重发资产时，不要选择该资产。"
             "未付且本轮不发送 payment_collection 时，action 不能使用 registration；registration 只表示权威已付后的信息登记。"
