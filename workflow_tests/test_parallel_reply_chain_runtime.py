@@ -5123,3 +5123,13 @@ def test_tool_planner_transport_timeout_prefers_secondary_provider() -> None:
     assert model_client.secondary_calls == 1
     assert result["status"] == "completed"
     assert result["transport_recovery_tier"] == "secondary"
+def test_v3_distance_objection_uses_completed_search_and_switches_value_dimension() -> None:
+    tool_prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    reply_prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "recent_store_search_evidence" in tool_prompt
+    assert "不要再次调用门店工具" in tool_prompt
+    assert "不可改变阻力的销售承接" in reply_prompt
+    assert "真实效果证据或活动价值" in reply_prompt
+    assert "其他常去城市" in reply_prompt
+    assert "sales_recall_reference_options" in reply_prompt

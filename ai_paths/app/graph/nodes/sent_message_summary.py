@@ -64,6 +64,11 @@ def sent_message_summary_for_model(
         "store_address_sent_by_store_id": list(dict.fromkeys(store_ids)),
         "store_address_delivery": store_address_delivery,
         "store_anchor_fact": store_anchor_fact,
+        "recent_store_search_evidence": (
+            store_address_delivery.get("store_search_evidence")
+            if isinstance(store_address_delivery.get("store_search_evidence"), dict)
+            else {}
+        ),
     }
     return {key: value for key, value in output.items() if value not in (False, 0, [], {}, None, "")}
 
@@ -156,6 +161,12 @@ def _store_address_delivery(raw_events: Any) -> dict[str, Any]:
 
     store_ids = list(dict.fromkeys(item[3] for item in sorted(latest_batch, key=lambda item: item[0])))
     latest_at = latest[2]
+    latest_facts = latest[1].get("facts") if isinstance(latest[1].get("facts"), dict) else {}
+    search_evidence = (
+        latest_facts.get("store_search_evidence")
+        if isinstance(latest_facts.get("store_search_evidence"), dict)
+        else {}
+    )
     return _drop_empty(
         {
             "total_events": len(deliveries),
@@ -165,6 +176,7 @@ def _store_address_delivery(raw_events: Any) -> dict[str, Any]:
             "last_sent_at": latest_at.isoformat() if latest_at is not None else "",
             "request_id": latest_request_id,
             "batch_confidence": batch_confidence,
+            "store_search_evidence": search_evidence,
             "source": "history_events",
             "decision_policy": "evidence_only_model_decides_store_binding",
         }

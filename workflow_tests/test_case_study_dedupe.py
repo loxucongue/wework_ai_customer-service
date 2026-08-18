@@ -4,16 +4,85 @@ import unittest
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from app.chat_runtime import _activity_intro_image_record_plan, _case_image_send_record
+from app.chat_runtime import (
+    _activity_intro_image_record_plan,
+    _case_image_send_record,
+    _store_fact_record_plan,
+)
 from app.config import Settings
 from app.graph.nodes import action_module_outputs
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_nodes import _filter_case_studies_by_sent_documents
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.services.memory_store import CustomerMemoryStore
 
 
 class CaseStudyDedupeTests(unittest.TestCase):
+    def test_store_delivery_persists_reconstructable_search_evidence(self) -> None:
+        state = {
+            "fact_envelope": {
+                "structured_facts": {
+                    "store_facts": [
+                        {
+                            "store_id": "601",
+                            "store_name": "柳州测试店",
+                            "city": "柳州市",
+                            "store_address": "柳州市测试路1号",
+                            "store_fact_integrity": "valid",
+                        }
+                    ],
+                    "store_resolution_fact": {
+                        "raw_place": "融安县东方上城",
+                        "normalized_query": "广西壮族自治区柳州市融安县东方上城",
+                        "candidate_search_complete": True,
+                        "distance_ranking_available": True,
+                        "distance_ranking_complete": True,
+                        "ranked_candidate_count": 12,
+                        "visible_candidate_count": 12,
+                        "recommended_store_id": "601",
+                        "delivery_store_ids": ["601"],
+                        "ranking_method": "haversine",
+                    },
+                }
+            }
+        }
+
+        plan = _store_fact_record_plan(
+            state,
+            [{"type": "store_address", "content": {"store_id": "601"}}],
+        )
+
+        evidence = plan["records"][0]["store_search_evidence"]
+        self.assertEqual(evidence["normalized_query"], "广西壮族自治区柳州市融安县东方上城")
+        self.assertTrue(evidence["candidate_search_complete"])
+        self.assertTrue(evidence["distance_ranking_complete"])
+        self.assertEqual(evidence["delivery_store_ids"], ["601"])
+
+    def test_memory_summary_replays_latest_store_search_evidence(self) -> None:
+        search_evidence = {
+            "normalized_query": "广西壮族自治区柳州市融安县东方上城",
+            "candidate_search_complete": True,
+            "distance_ranking_complete": True,
+            "recommended_store_id": "601",
+            "delivery_store_ids": ["601"],
+            "ranking_method": "haversine",
+        }
+        with TemporaryDirectory() as temp_dir:
+            store = CustomerMemoryStore(Settings(memory_dir=temp_dir))
+            store.record_store_fact(
+                "customer-store-search",
+                store={"store_id": "601", "store_name": "柳州测试店", "city": "柳州市"},
+                event_type="store_address_sent",
+                request_id="request-store-search",
+                interface_version="v3",
+                store_search_evidence=search_evidence,
+            )
+            memory = store.load("customer-store-search")
+
+        summary = sent_message_summary_for_model(memory)
+        self.assertEqual(summary["recent_store_search_evidence"], search_evidence)
+
     def test_filters_sent_case_document_ids_before_fact_output(self) -> None:
         tool_results = {
             "case_studies": {

@@ -32,6 +32,36 @@ def _store_event_facts(store: dict[str, Any], *, request_id: str = "") -> dict[s
     }
 
 
+def _store_search_event_facts(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only reconstructable lookup facts; never persist a sales conclusion."""
+
+    raw = value if isinstance(value, dict) else {}
+    return {
+        key: raw.get(key)
+        for key in (
+            "raw_place",
+            "normalized_query",
+            "location_evidence",
+            "resolved_admin_level",
+            "province",
+            "city",
+            "district",
+            "township",
+            "candidate_search_complete",
+            "distance_ranking_available",
+            "distance_ranking_complete",
+            "ranked_candidate_count",
+            "unranked_candidate_count",
+            "visible_candidate_count",
+            "recommended_store_id",
+            "delivery_store_ids",
+            "ranking_method",
+            "customer_claim_level",
+        )
+        if raw.get(key) not in (None, "", [], {})
+    }
+
+
 class CustomerMemoryStore:
     def __init__(self, settings: Settings, repository: AppRepository | None = None):
         self.memory_dir: Path = settings.memory_dir
@@ -331,6 +361,7 @@ class CustomerMemoryStore:
         event_type: str,
         request_id: str = "",
         interface_version: str = "v1",
+        store_search_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         store_id = str(store.get("store_id") or store.get("id") or "").strip()
         store_name = str(store.get("store_name") or store.get("name") or "").strip()
@@ -340,6 +371,9 @@ class CustomerMemoryStore:
             event_type = "store_matched"
 
         facts = _store_event_facts(store, request_id=request_id)
+        search_facts = _store_search_event_facts(store_search_evidence)
+        if search_facts:
+            facts["store_search_evidence"] = search_facts
         facts["interface_version"] = _normalized_interface_version(interface_version)
         data = self.load(customer_id)
         basic_info = data.setdefault("basic_info", {})

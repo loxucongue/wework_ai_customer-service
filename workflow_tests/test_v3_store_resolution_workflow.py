@@ -830,3 +830,7 @@ def test_composite_store_workflow_preserves_raw_query_alongside_model_normalizat
 
     assert set(client.queries) == {"被京市海淀区五道口", "北京市海淀区五道口"}
     assert result["destination_resolution"]["source_query"] == "被京市海淀区五道口"
+def test_store_destination_prompt_keeps_last_customer_location_for_distance_feedback() -> None:
+    assert "距离评价不等于地点变更" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+    assert "继续沿用最近一次由客户明确给出的地点或定位卡" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+    assert "不得因此要求客户重复发送同一位置" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT

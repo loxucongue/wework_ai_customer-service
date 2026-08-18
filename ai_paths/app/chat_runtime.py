@@ -1153,6 +1153,11 @@ def _record_visible_store_facts(
                 event_type=str(item.get("event_type") or ""),
                 request_id=str(state.get("request_id") or ""),
                 interface_version=_interface_version_from_state(state),
+                store_search_evidence=(
+                    item.get("store_search_evidence")
+                    if isinstance(item.get("store_search_evidence"), dict)
+                    else None
+                ),
             )
             saved_records.append(saved)
         record["status"] = "recorded" if any(item.get("status") == "recorded" for item in saved_records) else "skipped"
@@ -1166,12 +1171,19 @@ def _record_visible_store_facts(
 
 def _store_fact_record_plan(state: AgentState, reply_messages: list[dict[str, Any]]) -> dict[str, Any]:
     store_address_ids = _store_address_message_ids(reply_messages)
+    store_search_evidence = _store_search_evidence_from_state(state)
     records: list[dict[str, Any]] = []
     missing_store_ids: list[str] = []
     for store_id in store_address_ids:
         store = _store_by_id(state, store_id)
         if store and store_fact_is_valid(store):
-            records.append({"event_type": "store_address_sent", "store": store})
+            records.append(
+                {
+                    "event_type": "store_address_sent",
+                    "store": store,
+                    "store_search_evidence": store_search_evidence,
+                }
+            )
         else:
             missing_store_ids.append(store_id)
     if records:
@@ -1192,6 +1204,39 @@ def _store_fact_record_plan(state: AgentState, reply_messages: list[dict[str, An
         "records": [],
         "store_address_message_ids": store_address_ids,
         "missing_store_ids": missing_store_ids,
+    }
+
+
+def _store_search_evidence_from_state(state: AgentState) -> dict[str, Any]:
+    structured = _structured_facts_from_state(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    return {
+        key: resolution.get(key)
+        for key in (
+            "raw_place",
+            "normalized_query",
+            "location_evidence",
+            "resolved_admin_level",
+            "province",
+            "city",
+            "district",
+            "township",
+            "candidate_search_complete",
+            "distance_ranking_available",
+            "distance_ranking_complete",
+            "ranked_candidate_count",
+            "unranked_candidate_count",
+            "visible_candidate_count",
+            "recommended_store_id",
+            "delivery_store_ids",
+            "ranking_method",
+            "customer_claim_level",
+        )
+        if resolution.get(key) not in (None, "", [], {})
     }
 
 

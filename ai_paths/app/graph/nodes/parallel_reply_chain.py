@@ -83,6 +83,14 @@ TOOL_PLANNER_SYSTEM_PROMPT = """# 对话连续性优先
 }
 """
 
+TOOL_PLANNER_SYSTEM_PROMPT += """
+
+# 已完成门店查询的复用
+- `authoritative_facts.sent_messages.recent_store_search_evidence` 是上一轮门店卡对应的原始查询与排序记录，不是销售结论。
+- 当该记录显示同一查询原点已经完成候选搜索和距离排序，客户当前只是在评价远近、没有提供新地点、没有否定原定位、也没有明确要求重新匹配时，已有事实足够；不要再次调用门店工具，也不要把同一位置写成缺失事实。
+- 客户提供新地点、询问另一城市、否定原定位，或历史记录明确显示排序不完整时，才重新查询。是否承接异议、换效果或活动维度由 Reply 决定。
+"""
+
 
 def create_shared_context_node(
     *,

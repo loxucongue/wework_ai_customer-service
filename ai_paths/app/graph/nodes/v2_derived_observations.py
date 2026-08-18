@@ -98,6 +98,7 @@ def _recent_asset_deliveries(events: list[dict[str, Any]]) -> list[dict[str, Any
                         "image_urls",
                         "amount",
                         "request_id",
+                        "store_search_evidence",
                     )
                     if facts.get(key) not in (None, "", [], {})
                 },
