@@ -284,9 +284,11 @@ def test_model_led_reply_timeout_retries_full_original_task_instead_of_structura
         def __init__(self) -> None:
             self.settings = SimpleNamespace()
             self.calls: list[list[dict]] = []
+            self.call_kwargs: list[dict] = []
 
-        async def chat_json(self, messages, **_kwargs):
+        async def chat_json(self, messages, **kwargs):
             self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
             if len(self.calls) == 1:
                 raise TimeoutError("provider timeout")
             return valid_reply
@@ -314,6 +316,9 @@ def test_model_led_reply_timeout_retries_full_original_task_instead_of_structura
     assert "局部结构修复" in client.calls[1][-1]["content"]
     assert "最小修复" not in client.calls[1][-1]["content"]
     assert model_call["retry"]["mode"] == "full_task_retry"
+    assert model_call["retry"]["tier"] == "fast"
+    assert client.call_kwargs[0]["tier"] == "reply"
+    assert client.call_kwargs[1]["tier"] == "fast"
     assert source == "single_full_task_retry_model"
     assert messages[0]["content"] == valid_reply["reply_messages"][0]["content"]
 

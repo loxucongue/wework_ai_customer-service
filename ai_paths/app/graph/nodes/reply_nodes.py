@@ -644,7 +644,8 @@ async def _run_model_led_reply_pipeline(
         # than replacing it with the narrow structural-repair contract.
         repair_messages = _reply_full_task_retry_messages(model_messages, primary_error)
         retry_mode = "full_task_retry"
-        second_attempt_budget = primary_budget
+        second_attempt_budget = repair_budget
+        second_attempt_tier = "fast"
     else:
         repair_messages = _reply_retry_messages(
             model_messages,
@@ -654,6 +655,7 @@ async def _run_model_led_reply_pipeline(
         )
         retry_mode = "targeted_repair"
         second_attempt_budget = repair_budget
+        second_attempt_tier = tier
     repair_deadline = _capped_deadline(
         time.monotonic() + second_attempt_budget,
         round_deadline,
@@ -663,11 +665,12 @@ async def _run_model_led_reply_pipeline(
         repair_payload = await _chat_json_with_deadline(
             model_client,
             repair_messages,
-            tier=tier,
+            tier=second_attempt_tier,
             deadline_monotonic=repair_deadline,
         )
         model_call["retry"] = {
             "mode": retry_mode,
+            "tier": second_attempt_tier,
             "reason": f"{type(primary_error).__name__}: {primary_error}",
             "messages": repair_messages,
             "raw_json_output": copy.deepcopy(repair_payload),
@@ -684,6 +687,7 @@ async def _run_model_led_reply_pipeline(
         model_call["retry"] = {
             **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
             "mode": retry_mode,
+            "tier": second_attempt_tier,
             "reason": f"{type(primary_error).__name__}: {primary_error}",
             "error": f"{type(repair_error).__name__}: {repair_error}",
             "usage": model_usage_snapshot(model_client),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -4855,3 +4856,73 @@ def test_shared_context_rejects_untrusted_stored_payment_claim() -> None:
     )
 
     assert "resolved_payment" not in facts
+
+
+def test_tool_planner_transport_timeout_recovers_on_fast_tier_with_full_evidence() -> None:
+    class _ModelClient:
+        available = True
+        last_usage = None
+
+        def __init__(self) -> None:
+            self.settings = SimpleNamespace(
+                model_planner_primary_budget_seconds=0.1,
+                model_planner_recovery_budget_seconds=0.3,
+            )
+            self.calls: list[dict] = []
+
+        async def chat_json(self, messages, **kwargs):
+            self.calls.append({"messages": messages, "kwargs": kwargs})
+            if len(self.calls) == 1:
+                await asyncio.sleep(0.2)
+            return {
+                "decision": "use_tools",
+                "tool_calls": [
+                    {
+                        "name": "resolve_customer_store",
+                        "arguments": {
+                            "destination_hint": "四川省遂宁市大英县象山镇"
+                        },
+                        "evidence_refs": ["current_message"],
+                    }
+                ],
+                "evidence_refs": ["current_message"],
+                "reason": "current location needs a read-only store lookup",
+            }
+
+    model_client = _ModelClient()
+    result = asyncio.run(
+        _run_tool_planner(
+            {
+                "shared_context": {
+                    "current_message": {
+                        "message_ref": "current_message",
+                        "role": "customer",
+                        "message_type": "text",
+                        "content": "你们在哪，我是四川省遂宁市大英县象山镇",
+                    },
+                    "conversation": [
+                        {
+                            "message_ref": "history_customer_1",
+                            "role": "customer",
+                            "content": "是",
+                        },
+                        {
+                            "message_ref": "current_message",
+                            "role": "customer",
+                            "content": "你们在哪，我是四川省遂宁市大英县象山镇",
+                        },
+                    ],
+                }
+            },
+            model_client,
+        )
+    )
+
+    assert len(model_client.calls) == 2
+    assert model_client.calls[0]["kwargs"]["tier"] == "planner"
+    assert model_client.calls[1]["kwargs"]["tier"] == "fast"
+    assert model_client.calls[1]["messages"] == model_client.calls[0]["messages"]
+    assert result["status"] == "completed"
+    assert result["transport_recovery_attempted"] is True
+    assert result["primary_error"].startswith("TimeoutError:")
+    assert result["tool_calls"][0]["name"] == "resolve_customer_store"

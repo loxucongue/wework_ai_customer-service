@@ -562,11 +562,50 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
                 ),
             },
         ]
-        payload = await model_client.chat_json(
-            messages,
-            tier="planner",
-            temperature=0,
+        primary_budget = _tool_planner_budget_seconds(
+            model_client,
+            "model_planner_primary_budget_seconds",
+            25.0,
         )
+        recovery_budget = _tool_planner_budget_seconds(
+            model_client,
+            "model_planner_recovery_budget_seconds",
+            10.0,
+        )
+        primary_error = ""
+        transport_recovery_attempted = False
+        transport_recovery_error = ""
+        try:
+            payload = await asyncio.wait_for(
+                model_client.chat_json(
+                    messages,
+                    tier="planner",
+                    temperature=0,
+                ),
+                timeout=primary_budget,
+            )
+        except Exception as exc:
+            primary_error = f"{type(exc).__name__}: {exc}"
+            transport_recovery_attempted = True
+            try:
+                # Retry the same evidence-complete read-only task on another
+                # configured model tier. No tool call is inferred by code.
+                payload = await asyncio.wait_for(
+                    model_client.chat_json(
+                        messages,
+                        tier="fast",
+                        temperature=0,
+                    ),
+                    timeout=recovery_budget,
+                )
+            except Exception as recovery_exc:
+                transport_recovery_error = (
+                    f"{type(recovery_exc).__name__}: {recovery_exc}"
+                )
+                raise RuntimeError(
+                    "tool planner primary and transport recovery failed: "
+                    f"primary={primary_error}; recovery={transport_recovery_error}"
+                ) from recovery_exc
         tool_calls, violations = _normalize_read_only_tool_calls(
             payload.get("tool_calls"),
             valid_evidence_refs=_shared_context_evidence_refs(state),
@@ -579,24 +618,27 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
         if violations:
             repair_attempted = True
             try:
-                repaired_payload = await model_client.chat_json(
-                    [
-                        *messages,
-                        {
-                            "role": "user",
-                            "content": json_dumps(
-                                {
-                                    "schema_violations": violations,
-                                    "instruction": (
+                repaired_payload = await asyncio.wait_for(
+                    model_client.chat_json(
+                        [
+                            *messages,
+                            {
+                                "role": "user",
+                                "content": json_dumps(
+                                    {
+                                        "schema_violations": violations,
+                                        "instruction": (
                                         "只修正工具计划的 schema、必填参数和 evidence_refs。"
                                         "不要新增客户话术、业务判断或写操作；返回完整 json 对象。"
-                                    ),
-                                }
-                            ),
-                        },
-                    ],
-                    tier="planner",
-                    temperature=0,
+                                        ),
+                                    }
+                                ),
+                            },
+                        ],
+                        tier="fast" if transport_recovery_attempted else "planner",
+                        temperature=0,
+                    ),
+                    timeout=recovery_budget,
                 )
                 repaired_calls, repaired_violations = _normalize_read_only_tool_calls(
                     repaired_payload.get("tool_calls"),
@@ -646,6 +688,9 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
             "initial_violations": initial_violations,
             "repair_attempted": repair_attempted,
             "repair_error": repair_error,
+            "primary_error": primary_error,
+            "transport_recovery_attempted": transport_recovery_attempted,
+            "transport_recovery_error": transport_recovery_error,
             "protocol_recovery": protocol_recovery,
             "model_usage": model_usage_snapshot(model_client),
             "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -660,8 +705,22 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
             "evidence_refs": [],
             "error": f"{type(exc).__name__}: {exc}",
             "protocol_recovery": bool(protocol_calls),
+            "model_usage": model_usage_snapshot(model_client),
             "duration_ms": int((time.perf_counter() - started) * 1000),
         }
+
+
+def _tool_planner_budget_seconds(
+    model_client: ModelClient,
+    name: str,
+    default: float,
+) -> float:
+    settings = getattr(model_client, "settings", None)
+    value = getattr(settings, name, default) if settings is not None else default
+    try:
+        return max(0.1, float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _protocol_required_read_only_tools(state: AgentState) -> list[dict[str, Any]]:
