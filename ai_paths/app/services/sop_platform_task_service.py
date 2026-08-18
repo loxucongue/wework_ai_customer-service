@@ -18,6 +18,14 @@ from app.services.payment_collection import (
     PAYMENT_COLLECTION_UNIT_AMOUNT,
 )
 from app.services.sop_execution_service import is_platform_auto_opening_message
+from app.services.sop_platform_scenes import (
+    SOP_PLATFORM_KNOWLEDGE_SCENE_CODES,
+    SOP_PLATFORM_MODEL_SCENE_CODES,
+    sop_platform_knowledge_scene_catalog,
+    sop_platform_model_scene_catalog,
+    sop_platform_scene,
+    sop_platform_scene_name,
+)
 from app.services.storage.serialization import utc_now_iso
 
 
@@ -180,52 +188,43 @@ SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES = {
     "health_risk",
     "paid_or_appointment_conflict",
     "human_takeover",
+    "platform_content_conflict",
+    "exact_duplicate",
 }
 
 
 SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 # 角色
-你是第三方平台 SOP 到期任务的客户触达决策与文案生成节点。
+你是第三方平台 SOP 到期任务的发送审核与轻量润色节点。
 
 # 核心目标
-本节点只处理经过事实路由后仍需模型判断的 `dispatchMode=ai_service` 第三方任务。未真实开口客户和首日已真实开口客户已在进入本节点前分别完成“平台原文直发”和“消费不发送”。
-第三方平台告诉系统“现在有一个触达任务到期”，其原始消息代表本次任务优先希望交付的营销意图和素材组合。你必须结合以下信息决定最终发送内容：
-1. 客户完整聊天记录和最新状态；
-2. 平台客户触达知识库；
-3. 当前权威业务事实。
+客户已经真实开口，平台现在要求发送 `task.required_delivery` 中的本次 SOP 内容。
+你的主要职责不是重新规划销售流程，也不是从知识库另选话术，而是：
+1. 判断本次平台内容现在是否仍适合发送；
+2. 适合发送时，保留本次任务的业务目标、事实和消息组合，只做必要的自然润色；
+3. 输出最终实际发送的完整 `reply_messages`。
 
-除严重客诉、明确停止联系、客户关系删除、健康高风险、已付/已预约冲突、人工正在接管等硬边界外，默认都要发送内容。不能因为客户沉默、没有明确需求、普通考虑、距离远、价格顾虑、效果顾虑、没时间而 no_send。
+模型输入只包含本次平台原始消息、最近聊天、近期已发媒体、不可重复素材指纹和必要业务事实。`dispatchMode` 与 `useAiCopy` 已弃用，不参与判断。
+默认倾向 `send`。普通沉默、普通考虑、距离远、价格/效果/时间顾虑、客户暂时未回复，都不是不发送理由。
 
 # 决策原则
 1. 先判断硬边界。只有硬边界才允许 `no_send`。
-2. 如果客户有明确卡点，优先从 `knowledge_base.items` 中选择最贴近的知识组和段落。目标是让客户重新开口并继续沟通，不要求一次回复彻底解决全部顾虑。你可以正面处理卡点，也可以在不回避客户明确问题的前提下，用真实效果、活动价值或平台任务携带的成交内容从侧面建立信心、推进决策。
-3. 平台原始消息是优先候选，不是仅供审计的废弃文案：
-   - 内容与最新聊天不冲突、未重复、事实仍有效时，应优先保留其业务方向、文本与图片组合，并做必要的自然改写。
-   - 只有原文与客户当前状态冲突、近期已经发送、包含过时事实，或知识库存在明显更适合当前卡点的内容时，才替换或调整。
-   - 不得因为原文营销性较强就自动 `no_send`；应调整为自然短聊表达或选择更合适的效果/活动内容。
-   - “平台原文优先”不能覆盖去重：近期已经完整发送相同活动价格、预约金规则或同一素材时，严禁换句话重复；必须改选知识库中尚未交付的效果证据、信任价值或其他场景。
-4. 如果客户没有明确卡点，必须发送能促使客户开口的新价值。优先选择平台任务当前内容；若该内容重复或不适合，则选择带真实图片/视频的效果展示，或与当前进度匹配的活动价格内容。常规优先输出“一段自然短文本 + 一张与场景匹配的真实图片”。
-5. 知识库话术是参考方向，不是必须原样照抄。你必须结合最新聊天自然改写。
-6. 知识库中的性别称谓必须统一改为中性称谓，如“亲、您、顾客、很多客户”，禁止“美女、姐妹、姐姐、哥哥、小姐姐、女士、先生、男士、女孩子”等。
-7. 知识库中的旧价格、旧活动、旧项目必须改成当前权威业务事实：
+2. 本次平台内容与最新聊天不冲突、近期未重复、事实仍有效时，必须发送；不得为了“更自然”擅自删除图片、视频、卡片或关键业务信息。
+3. 可以润色文本，使其承接最近聊天、像微信短聊，但不得改变业务场景、价格、退款口径、媒体 URL、卡片类型或消息顺序所表达的交付目标。
+4. 如果客户提出了与本次内容相关的普通顾虑，应在保留本次任务目标的前提下自然承接，不能改成另一套销售流程，也不能用“以后再说、需要的话再发”回避交付。
+5. 最近聊天已完整发送相同业务内容，或 `forbidden_media_fingerprints` 已包含本次图片/视频时，输出 `no_send/exact_duplicate`；不得换句话重复，也不得编造替代素材。
+6. 本次平台内容与客户明确状态冲突时，输出 `no_send/platform_content_conflict`。例如客户已经明确拒绝当前活动、当前问题尚未处理而本次内容会明显答非所问，或本次内容包含已经失效的事实。
+7. 所有称谓使用中性表达，如“亲、您、顾客、很多客户”，禁止推断性别。
+8. 平台文本中的旧价格、旧活动、旧项目必须按权威业务事实修正：
    - 当前淡斑活动价 268 元；
    - 10 元预约金，到店抵扣，做的话再付 258 元；
    - 当前项目围绕淡斑、检测皮肤、基础清洁、肌肤补水；
    - 当前活动包含送一次价值180元的美白管理，也可表达为赠送美白小气泡；
    - 不主动强调具体原价金额，只能说名额满后恢复原价。
-8. 不得继承知识库或平台原文里的其他旧赠品、旧加项、旧价值金额或未确认促销利益点。除“价值180元的美白管理/赠送美白小气泡”外，遇到其他“免费赠送某项目”“价值XXX元服务”等内容时，直接删除，并改成当前权威活动事实。
-9. 风险承诺和退款口径由模型结合知识库与权威事实自然处理，本节点不因为话术中存在强销售表达就自动阻断；但不得编造当前事实中不存在的项目、门店、订单、支付成功、预约成功、赠品或额外服务。
-10. 图片/视频是重要消息类型。若选中段落包含 image/video，输出中要保留对应消息类型和 URL；不要把图片视频变成纯文本描述。
-11. 文案要像微信短聊，直接解决卡点或推进下一步，不要写内部分析、流程解释、模型判断。
-12. 必须逐条对照最近聊天和近期已发送的第三方 SOP：已经完整讲过的活动规则、268 元价格、10 元预约金、退款口径、效果说明或同一素材，不得换句话重复。应改选尚未交付的新价值，而不是 `no_send`。
-13. `task.original_message_content` 中的 `payment_collection` 只表示平台候选内容包含预约卡意图。只有平台原始消息或最终选中的知识库段落本身包含 `payment_collection`，并且最新聊天适合推进付款时，才允许保留该消息类型；不得凭空新增预约金卡。是否保留预约卡、改用文本推进或选择其他知识库内容，必须根据最新聊天和硬事实判断；不得生成虚假支付或预约成功事实。
-
-# 知识库选择规则
-- `knowledge_base.items[].id` 是 knowledgeId。
-- `paragraphs[].paragraphNo` 是 knowledgeParagraphNo。
-- 选择某个段落时，必须把该段落所有合适的 text/image/video 按原顺序输出；文本可以改写，媒体 URL 不得改。
-- 如果同一段落有明显旧价格、性别称谓、旧项目，改写文本即可，媒体仍可保留。
-- 如果知识库没有合适卡点段落，可优先使用不冲突且不重复的平台原始消息，或使用 `authoritative_business_facts` 生成效果/活动价值内容。两种情况都把 `knowledgeId` 和 `knowledgeParagraphNo` 置空。
+9. 不得编造当前事实中不存在的项目、门店、订单、支付成功、预约成功、赠品或额外服务。
+10. 图片/视频是本次任务的真实交付。平台原文包含 image/video 时，除重复或硬冲突导致整单 `no_send` 外，必须保留原 URL，不得改成纯文本，也不得生成新 URL。
+11. `payment_collection` 只能在本次平台原始消息本身包含该类型时保留，不能凭空新增。若已付/已预约或最近连续发过预约金卡，应 `no_send`，不得机械重复催付。
+12. 文案要像微信短聊，直接承接客户，不写内部分析、流程解释或模型判断。
 
 # no_send 边界
 只允许以下原因：
@@ -234,14 +233,16 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 - `customer_deleted`：客户关系删除；
 - `health_risk`：健康高风险，不适合营销；
 - `paid_or_appointment_conflict`：已付/已预约且本任务会重复催付或重复预约；
-- `human_takeover`：人工正在连续接待，发送会插话。
+- `human_takeover`：人工正在连续接待，发送会插话；
+- `platform_content_conflict`：平台原始消息与客户当前状态或权威事实存在明确冲突；
+- `exact_duplicate`：平台原始内容、核心语义或媒体近期已经发送。
 
 普通沉默、普通价格/效果/距离/时间顾虑、客户说考虑一下，都必须 `send`。
 
 # 校准示例
-1. 平台任务携带“活动价 + 活动图”，历史尚未介绍活动，客户没有更优先卡点：保留活动方向并自然改写，通常输出一段文本加活动图。
-2. 平台任务携带“活动价 + 活动图”，但最近一轮已经完整发送 268 元、10 元抵扣和退款规则：不得再次发送活动或追加预约金卡；改选知识库中尚未发送的真实效果图或其他新价值。
-3. 客户担心效果，平台任务原本是催预约金：先回应效果卡点并优先发送真实效果素材；不要求一次彻底说服客户，但不能回避问题后机械催款。
+1. 平台任务携带“活动价 + 活动图”，历史尚未完整发送：保留活动方向、关键信息和活动图，只把文字润色得更自然。
+2. 平台任务携带“活动价 + 活动图”，最近已经完整发送同一活动和同一图片：输出 `no_send/exact_duplicate`，不得自行换素材。
+3. 客户正在与人工连续对话，平台任务此时插入会打断人工：输出 `no_send/human_takeover`。
 4. 客户明确投诉并要求不要再联系：输出 `no_send`，不得用其他营销内容绕开停止联系要求。
 
 # 输出 JSON
@@ -254,7 +255,7 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
   "sceneCode": "回写平台的场景编码",
   "knowledgeId": 0,
   "knowledgeParagraphNo": 0,
-  "remark": "回写备注，说明命中知识库/兜底策略",
+  "remark": "回写备注，说明发送审核结论",
   "reply_messages": [
     {"type": "text", "order": 1, "content": {"text": "客户可见内容"}},
     {"type": "image", "order": 2, "content": {"url": "https://..."}},
@@ -264,8 +265,45 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 }
 
 `send` 时 `reply_messages` 必须非空。`no_send` 时 `reply_messages` 必须为空，但也必须输出 sceneName、sceneCode、reason_code 和 remark 用于回写。
-命中知识库时：`sceneName = 分类名 + "｜" + 知识库名称`，`sceneCode = "kb_" + categoryId + "_" + knowledgeId`。
-无卡点发送时：使用 `正常推进｜平台任务内容`、`正常推进｜轻触达效果展示` 或 `正常推进｜活动价格`，`sceneCode` 使用 `normal_platform_intent`、`normal_light_effect` 或 `normal_activity_price`。
+不再从平台知识库选内容，`knowledgeId` 和 `knowledgeParagraphNo` 固定为 0。
+发送时使用 `正常推进｜平台任务内容`，`sceneCode` 使用 `normal_platform_intent`；不发送时按硬边界填写对应场景和编码。
+""".strip()
+
+SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
+# 角色
+你是第三方平台 SOP 到期任务的发送审核与轻量润色节点。平台决定任务时间、频率和候选消息；你只判断当前任务现在发送还是不发送，并在允许发送时输出最终消息。
+
+# 输入边界
+- `task.required_delivery` 是本次必须审核的唯一消息来源。
+- `latest_context` 是最近聊天、客户关系、业务状态、近期已发媒体和禁止重复素材指纹。
+- `authoritative_business_facts` 高于历史聊天中的旧价格和旧口径。
+- `scene_catalog` 是唯一合法业务场景。你只能输出其中一个 `sceneCode`，不得创造新标签。
+- `knowledge_scene_catalog` 只用于记录知识命中。没有真实命中时 `knowledgeId` 和 `knowledgeParagraphNo` 都输出 0。
+
+# 决策原则
+1. 默认发送。普通沉默、考虑、距离、价格、效果或时间顾虑都不是不发送理由。
+2. 只有场景目录中的不发送业务场景才允许 `no_send`：严重客诉或退款纠纷、明确停止联系、客户关系删除、健康风险、已付或已预约冲突、人工正在连续接待、平台内容与当前事实明确冲突。
+3. 客户存在距离、效果、价格或时间异议时，选择对应异议场景，并在保留本次平台交付目标的前提下自然承接。不得改成另一套销售流程。
+4. 没有明确异议时，根据平台内容选择“平台任务内容、轻触达效果展示、活动价格”之一。
+5. 图片、视频、链接和预约金卡的类型、URL、数量和顺序必须与平台原始消息一致；只能润色已有文字，不得生成新素材或卡片。
+6. 不得虚构门店、订单、支付、预约、价格、赠品或服务。使用中性称谓，不推断性别。
+7. `sceneEvidence` 必须引用本轮可见事实，简短说明为什么选择该场景。
+8. 若填写 `knowledgeId`，它必须与所选 `sceneCode` 在 `knowledge_scene_catalog` 中匹配；`knowledgeParagraphNo` 必须大于 0。否则两者都填 0。
+
+# 输出合同
+只返回 JSON，不要 Markdown 或额外字段：
+{
+  "decision": "send | no_send",
+  "sceneCode": "scene_catalog 中的合法编码",
+  "sceneEvidence": "场景证据",
+  "knowledgeId": 0,
+  "knowledgeParagraphNo": 0,
+  "reason": "处理依据",
+  "remark": "策略回传备注",
+  "reply_messages": []
+}
+
+`send` 时 `reply_messages` 必须非空；`no_send` 时必须为空。不要输出 `sceneName`，名称由代码根据注册表生成。
 """.strip()
 
 # Backward-compatible export; the retired pre-dispatch prompt must not be used.
@@ -316,8 +354,6 @@ class SopPlatformTaskService:
             name: deque(maxlen=500)
             for name in ("pull", "claim", "context", "model", "send", "task", "queue_lag")
         }
-        self._knowledge_cache: dict[str, Any] = {}
-        self._knowledge_cache_expires_at = 0.0
         self._last_poll_at = ""
         self._last_poll_error = ""
         self._pending_total = 0
@@ -791,73 +827,6 @@ class SopPlatformTaskService:
             reply_messages=reply_messages,
         )
 
-    async def _repair_duplicate_media_decision(
-        self,
-        platform_task: dict[str, Any],
-        *,
-        context: dict[str, Any],
-        decision: dict[str, Any],
-        duplicate: dict[str, Any],
-    ) -> dict[str, Any]:
-        original_messages = _platform_messages(platform_task)
-        knowledge_base = await self._load_knowledge_base_context()
-        repair_input = {
-            "task": {
-                "task_id": _task_id(platform_task),
-                "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
-                "dispatch_mode": _dispatch_mode(platform_task),
-                "original_message_content": original_messages,
-            },
-            "latest_context": {
-                "conversation_timeline": context.get("conversation_timeline") or [],
-                "business_state": context.get("business_state") or {},
-            },
-            "locked_decision": decision,
-            "duplicate_media_evidence": duplicate,
-            "knowledge_base": knowledge_base,
-            "authoritative_business_facts": sop_platform_business_facts_for_model(),
-        }
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是第三方SOP重复素材修复节点。原发送决策已经锁定为send，不得改变业务场景、"
-                    "销售目标或硬事实。候选消息包含已向同一客户发送过的图片或视频。请从给定知识库"
-                    "选择未发送过且适用于同一场景的素材，必要时只调整与新素材衔接的文字。"
-                    "禁止再次使用duplicate_media_evidence中的任何媒体；不得编造URL、素材、门店、"
-                    "订单或支付事实。找不到合法新素材时输出decision=no_send和空reply_messages。"
-                    "只返回与原决策相同字段的JSON。"
-                ),
-            },
-            {"role": "user", "content": json.dumps(repair_input, ensure_ascii=False)},
-        ]
-        deadline = time.monotonic() + max(5.0, float(self.settings.sop_platform_model_timeout_seconds))
-        raw = await self.model_client.chat_json(
-            messages,
-            tier="balanced",
-            temperature=0.0,
-            deadline_monotonic=deadline,
-            max_parallel_candidates=1,
-        )
-        raw = _normalize_knowledge_decision_callback_fields(raw)
-        if str(raw.get("decision") or "").strip() != "send":
-            return {}
-        error = _decision_error(raw)
-        policy_error = "" if error else _decision_policy_error(raw)
-        if error or policy_error:
-            return {}
-        return {
-            "decision": "send",
-            "reason": str(raw.get("reason") or "duplicate_media_repaired"),
-            "reason_code": str(raw.get("reason_code") or "duplicate_media_repaired"),
-            "sceneName": str(raw.get("sceneName") or decision.get("sceneName") or "重复素材修复"),
-            "sceneCode": str(raw.get("sceneCode") or decision.get("sceneCode") or "duplicate_media_repaired"),
-            "knowledgeId": _int(raw.get("knowledgeId"), 0),
-            "knowledgeParagraphNo": _int(raw.get("knowledgeParagraphNo"), 0),
-            "remark": str(raw.get("remark") or raw.get("reason") or "已更换重复素材"),
-            "reply_messages": raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else [],
-        }
-
     def _observe(self, name: str, elapsed_seconds: float) -> None:
         values = self._timings.get(name)
         if values is not None:
@@ -988,14 +957,24 @@ class SopPlatformTaskService:
             status="platform_received",
         )
         local_status = str(local_task.get("status") or "")
-        dispatch_mode = _dispatch_mode(platform_task)
+        dispatch_mode = "deprecated_ignored"
         duplicate_reason = _duplicate_platform_task_reason(
             self.repository,
             local_task=local_task,
             task_id=task_id,
         )
-        if duplicate_reason and dispatch_mode != "direct":
-            decision = {"decision": "no_send", "reason": duplicate_reason, "reply_messages": []}
+        if duplicate_reason:
+            decision = {
+                "decision": "no_send",
+                "reason": duplicate_reason,
+                "reason_code": "no_send_duplicate",
+                "sceneName": sop_platform_scene_name("no_send_duplicate"),
+                "sceneCode": "no_send_duplicate",
+                "knowledgeId": 0,
+                "knowledgeParagraphNo": 0,
+                "remark": "同一平台任务或同一触达内容已处理，消费但不重复发送",
+                "reply_messages": [],
+            }
             context = {
                 "source": "duplicate_platform_task_content",
                 "duplicate_of_task_id": str(local_task.get("duplicate_of_task_id") or ""),
@@ -1016,7 +995,15 @@ class SopPlatformTaskService:
             self.repository.update_sop_send_task(
                 str(local_task.get("id") or ""),
                 status="completed_without_send",
-                send_payload={"decision": decision, "context": context},
+                send_payload={
+                    "decision": decision,
+                    "context": context,
+                    "rule_data_response": await self._report_rule_data(
+                        platform_task,
+                        decision=decision,
+                        sent=False,
+                    ),
+                },
             )
             self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
             completed = await self.platform_client.consume(task_id=task_id, status=30)
@@ -1053,12 +1040,12 @@ class SopPlatformTaskService:
             dispatch_mode=dispatch_mode,
         )
         quiet_hours: dict[str, Any] = {}
-        if not preflight_reason and dispatch_mode != "direct":
+        if not preflight_reason:
             quiet_hours = await self._quiet_hours_guard(platform_task, identity=identity)
             if quiet_hours.get("blocked"):
                 preflight_reason = str(quiet_hours.get("reason") or "quiet_hours_blocked")
         if self.settings.sop_platform_shadow_mode and preflight_reason:
-            decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
+            decision = _preflight_no_send_decision(platform_task, reason=preflight_reason)
             self.repository.update_sop_send_task(
                 str(local_task.get("id") or ""),
                 status="shadow_no_send",
@@ -1074,14 +1061,14 @@ class SopPlatformTaskService:
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
-        processing_status = "platform_processing" if dispatch_mode == "direct" else "platform_judging"
+        processing_status = "platform_judging"
         self.repository.update_sop_event_status(event_id, status=processing_status)
         self.repository.update_sop_send_task(
             str(local_task.get("id") or ""),
             status="judging",
             send_payload={
                 "platform_task_id": task_id,
-                "phase": "direct_delivery" if dispatch_mode == "direct" else "loading_latest_context",
+                "phase": "loading_opening_state",
                 "dispatch_mode": dispatch_mode,
             },
         )
@@ -1135,116 +1122,62 @@ class SopPlatformTaskService:
                     "task_timing": _task_timing(platform_task),
                     "quiet_hours": quiet_hours,
                 }
-                decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
+                decision = _preflight_no_send_decision(platform_task, reason=preflight_reason)
                 self._counters[preflight_reason] += 1
-            elif dispatch_mode == "direct":
-                decision = {
-                    "decision": "send",
-                    "reason": "platform_direct_passthrough",
-                    "reason_code": "send",
-                    "sceneName": "平台直发",
-                    "sceneCode": "platform_direct",
-                    "knowledgeId": 0,
-                    "knowledgeParagraphNo": 0,
-                    "remark": "dispatchMode=direct，按平台消息原类型、原内容、原顺序发送",
-                    "reply_messages": _platform_messages(platform_task),
-                }
-                context = {
-                    "source": "platform_direct_passthrough",
-                    "dispatch_mode": dispatch_mode,
-                    "conversation_loaded": False,
-                    "knowledge_loaded": False,
-                    "model_called": False,
-                    "task_timing": _task_timing(platform_task),
-                }
             else:
                 started = time.perf_counter()
                 context = await self._load_context(platform_task, identity=identity)
                 self._observe("context", time.perf_counter() - started)
                 context["dispatch_mode"] = dispatch_mode
-                relation = (
-                    context.get("customer_relation")
-                    if isinstance(context.get("customer_relation"), dict)
-                    else {}
-                )
                 opening_state = (
                     context.get("opening_state")
                     if isinstance(context.get("opening_state"), dict)
                     else {}
                 )
-                delivery_conflict = _paid_or_appointment_delivery_conflict(
-                    context.get("business_state")
-                    if isinstance(context.get("business_state"), dict)
+                relation = (
+                    context.get("customer_relation")
+                    if isinstance(context.get("customer_relation"), dict)
                     else {}
                 )
                 if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
                     decision = await self._decide(platform_task, context=context)
-                elif delivery_conflict:
-                    decision = {
-                        "decision": "no_send",
-                        "reason": delivery_conflict,
-                        "reason_code": "paid_or_appointment_conflict",
-                        "sceneName": "不发送｜已付或已预约冲突",
-                        "sceneCode": "no_send_paid_or_appointment_conflict",
-                        "knowledgeId": 0,
-                        "knowledgeParagraphNo": 0,
-                        "remark": "权威订单或预约事实显示本次自动触达与已完成状态冲突",
-                        "reply_messages": [],
-                    }
-                elif opening_state.get("has_real_customer_message") is False:
+                elif opening_state.get("has_real_customer_message") is not True:
                     original_messages = _platform_messages(platform_task)
                     message_error = _platform_message_error(platform_task)
                     if original_messages and not message_error:
                         decision = {
                             "decision": "send",
-                            "reason": "ai_service_unopened_platform_passthrough",
+                            "reason": "unopened_or_conversation_unavailable_platform_passthrough",
                             "reason_code": "send",
-                            "sceneName": "平台原文｜客户未开口",
+                            "sceneName": sop_platform_scene_name("ai_service_unopened_passthrough"),
                             "sceneCode": "ai_service_unopened_passthrough",
                             "knowledgeId": 0,
                             "knowledgeParagraphNo": 0,
-                            "remark": "客户尚未真实开口，按平台消息原类型、原内容、原顺序发送",
+                            "remark": "客户未真实开口或会话状态不可得，按平台消息原类型、原内容、原顺序发送",
                             "reply_messages": original_messages,
                         }
-                        context["source"] = "ai_service_unopened_platform_passthrough"
+                        if not context.get("source"):
+                            context["source"] = "unopened_platform_passthrough"
+                        context["routing_decision"] = "unopened_or_conversation_unavailable_platform_passthrough"
                         context["knowledge_loaded"] = False
                         context["model_called"] = False
                         context["first_day_platform_sop_route"] = {
                             "route_checked": True,
                             "opening_state": opening_state,
-                            "route_reason": "ai_service_unopened_platform_passthrough",
+                            "route_reason": "unopened_or_conversation_unavailable_platform_passthrough",
                         }
                     else:
                         decision = {
                             "decision": "no_send",
                             "reason": message_error or "invalid_message_content",
                             "reason_code": "invalid_message_content",
-                            "sceneName": "不发送｜平台内容无效",
+                            "sceneName": sop_platform_scene_name("no_send_invalid_message_content"),
                             "sceneCode": "no_send_invalid_message_content",
                             "knowledgeId": 0,
                             "knowledgeParagraphNo": 0,
                             "remark": f"客户未开口但平台任务没有可原样发送的合法消息：{message_error or 'empty_messages'}",
                             "reply_messages": [],
                         }
-                elif opening_state.get("first_added_today") is True:
-                    decision = {
-                        "decision": "no_send",
-                        "reason": "first_day_opened_platform_sop_consumed_no_send",
-                        "reason_code": "customer_already_opened",
-                        "sceneName": "不发送｜首日客户已开口",
-                        "sceneCode": "first_day_opened_no_send",
-                        "knowledgeId": 0,
-                        "knowledgeParagraphNo": 0,
-                        "remark": "客户在加微当日已经真实开口，平台任务消费但不发送，交由首日沉默触达链路承接",
-                        "reply_messages": [],
-                    }
-                    context["source"] = "first_day_opened_platform_sop_route"
-                    context["model_called"] = False
-                    context["first_day_platform_sop_route"] = {
-                        "route_checked": True,
-                        "opening_state": opening_state,
-                        "route_reason": "first_day_opened_platform_sop_consumed_no_send",
-                    }
                 else:
                     started = time.perf_counter()
                     decision = await self._decide(platform_task, context=context)
@@ -1285,20 +1218,19 @@ class SopPlatformTaskService:
                     "original": _platform_media_refs(_platform_messages(platform_task)),
                     "final": _platform_media_refs(decision["reply_messages"]),
                 }
-                existing_delivery = (
-                    {}
-                    if dispatch_mode == "direct"
-                    else await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
+                existing_delivery = await self._existing_platform_delivery(
+                    identity=identity,
+                    send_payload=send_payload,
                 )
                 if existing_delivery.get("found"):
                     duplicate_decision = {
                         "decision": "no_send",
                         "reason": "existing_platform_delivery",
                         "reason_code": "exact_duplicate",
-                        "sceneName": str(decision.get("sceneName") or "不发送｜重复发送"),
+                        "sceneName": sop_platform_scene_name("no_send_duplicate"),
                         "sceneCode": "no_send_duplicate",
-                        "knowledgeId": decision.get("knowledgeId") or 0,
-                        "knowledgeParagraphNo": decision.get("knowledgeParagraphNo") or 0,
+                        "knowledgeId": 0,
+                        "knowledgeParagraphNo": 0,
                         "remark": "本地检测到同批平台触达已发送，消费但不重复发送",
                         "reply_messages": [],
                     }
@@ -1332,62 +1264,26 @@ class SopPlatformTaskService:
                         "decision": duplicate_decision,
                         "platform_response": completed,
                     }
-                near_duplicate = (
-                    {"found": False, "match_type": "direct_passthrough"}
-                    if dispatch_mode == "direct"
-                    else await self._recent_near_duplicate_platform_delivery(
-                        identity=identity,
-                        task_id=task_id,
-                        reply_messages=decision["reply_messages"],
-                    )
+                near_duplicate = await self._recent_near_duplicate_platform_delivery(
+                    identity=identity,
+                    task_id=task_id,
+                    reply_messages=decision["reply_messages"],
                 )
                 duplicate_repair: dict[str, Any] = {}
-                if (
-                    near_duplicate.get("found")
-                    and near_duplicate.get("match_type") == "duplicate_media"
-                    and dispatch_mode == "ai_service"
-                    and context.get("model_called") is not False
-                ):
-                    repaired_decision = await self._repair_duplicate_media_decision(
-                        platform_task,
-                        context=context,
-                        decision=decision,
-                        duplicate=near_duplicate,
-                    )
-                    duplicate_repair = {
-                        "attempted": True,
-                        "succeeded": bool(repaired_decision),
-                        "initial_duplicate": near_duplicate,
-                    }
-                    if repaired_decision:
-                        repaired_duplicate = await self._recent_near_duplicate_platform_delivery(
-                            identity=identity,
-                            task_id=task_id,
-                            reply_messages=repaired_decision["reply_messages"],
-                        )
-                        duplicate_repair["verification"] = repaired_duplicate
-                        decision = repaired_decision
-                        send_payload["reply_messages"] = decision["reply_messages"]
-                        media_delivery_audit["final"] = _platform_media_refs(decision["reply_messages"])
-                        near_duplicate = repaired_duplicate
                 if near_duplicate.get("found"):
                     media_duplicate = near_duplicate.get("match_type") == "duplicate_media"
                     if media_duplicate:
-                        duplicate_reason = (
-                            "duplicate_media_exhausted"
-                            if dispatch_mode == "ai_service"
-                            else "duplicate_media_delivery"
-                        )
+                        duplicate_reason = "duplicate_media_delivery"
                     else:
                         duplicate_reason = "near_duplicate_platform_delivery"
                     duplicate_decision = {
                         "decision": "no_send",
                         "reason": duplicate_reason,
                         "reason_code": "exact_duplicate",
-                        "sceneName": str(decision.get("sceneName") or "不发送｜重复触达"),
+                        "sceneName": sop_platform_scene_name("no_send_duplicate"),
                         "sceneCode": "no_send_duplicate",
-                        "knowledgeId": decision.get("knowledgeId") or 0,
-                        "knowledgeParagraphNo": decision.get("knowledgeParagraphNo") or 0,
+                        "knowledgeId": 0,
+                        "knowledgeParagraphNo": 0,
                         "remark": "本地检测到同客户近期第三方SOP最终文案高度重复，消费但不重复发送。",
                         "reply_messages": [],
                     }
@@ -1447,7 +1343,11 @@ class SopPlatformTaskService:
                         **decision,
                         "decision": "no_send",
                         "reason": "downstream_delivery_rejected",
-                        "reason_code": "delivery_rejected",
+                        "reason_code": "no_send_downstream_rejected",
+                        "sceneName": sop_platform_scene_name("no_send_downstream_rejected"),
+                        "sceneCode": "no_send_downstream_rejected",
+                        "knowledgeId": 0,
+                        "knowledgeParagraphNo": 0,
                         "remark": (
                             f"{str(decision.get('remark') or '').strip()} "
                             f"Delivery rejected by downstream system: HTTP {delivery_failure['http_status']}."
@@ -1623,8 +1523,37 @@ class SopPlatformTaskService:
     async def _load_context(self, platform_task: dict[str, Any], *, identity: dict[str, str]) -> dict[str, Any]:
         missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
         if missing:
-            raise RuntimeError(f"platform task missing identity: {','.join(missing)}")
-        conversation = await self.system_client.conversation(**identity, limit=80)
+            return {
+                "source": "identity_incomplete",
+                "conversation_loaded": False,
+                "conversation_error": f"missing_identity:{','.join(missing)}",
+                "customer_relation": {},
+                "conversation_timeline": [],
+                "conversation_count": 0,
+                "opening_state": {
+                    "has_real_customer_message": None,
+                    "opening_state_reliable": False,
+                },
+                "business_state": {"source": "skipped_identity_incomplete"},
+                "task_timing": _task_timing(platform_task),
+            }
+        try:
+            conversation = await self.system_client.conversation(**identity, limit=80)
+        except Exception as exc:
+            return {
+                "source": "conversation_unavailable",
+                "conversation_loaded": False,
+                "conversation_error": f"{type(exc).__name__}: {exc}",
+                "customer_relation": {},
+                "conversation_timeline": [],
+                "conversation_count": 0,
+                "opening_state": {
+                    "has_real_customer_message": None,
+                    "opening_state_reliable": False,
+                },
+                "business_state": {"source": "skipped_conversation_unavailable"},
+                "task_timing": _task_timing(platform_task),
+            }
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
         task_timing = _task_timing(
             platform_task,
@@ -1639,8 +1568,10 @@ class SopPlatformTaskService:
             messages,
             conversation_added_at=data.get("added_at"),
         )
+        opening_state["opening_state_reliable"] = True
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
             return {
+                "conversation_loaded": True,
                 "customer_relation": relation,
                 "conversation_timeline": timeline,
                 "conversation_count": len(messages),
@@ -1648,13 +1579,14 @@ class SopPlatformTaskService:
                 "business_state": {"source": "skipped_customer_deleted"},
                 "task_timing": task_timing,
             }
-        if opening_state.get("has_real_customer_message") is True and opening_state.get("first_added_today") is True:
+        if opening_state.get("has_real_customer_message") is not True:
             return {
+                "conversation_loaded": True,
                 "customer_relation": relation,
                 "conversation_timeline": timeline,
                 "conversation_count": len(messages),
                 "opening_state": opening_state,
-                "business_state": {"source": "skipped_by_opening_route"},
+                "business_state": {"source": "skipped_for_unopened_passthrough"},
                 "task_timing": task_timing,
             }
         request_context = {
@@ -1667,62 +1599,28 @@ class SopPlatformTaskService:
             "order_id": platform_task.get("orderId") or platform_task.get("order_id"),
             "order_no": platform_task.get("orderNo") or platform_task.get("order_no"),
         }
-        customer_context = await asyncio.to_thread(
-            self.customer_context_service.load,
-            customer_id=identity["customer_id"],
-            memory={},
-            request_context=request_context,
-        )
+        try:
+            customer_context = await asyncio.to_thread(
+                self.customer_context_service.load,
+                customer_id=identity["customer_id"],
+                memory={},
+                request_context=request_context,
+            )
+            business_state = _compact_business_state(customer_context)
+        except Exception as exc:
+            business_state = {
+                "source": "customer_context_unavailable",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         return {
+            "conversation_loaded": True,
             "customer_relation": relation,
             "conversation_timeline": timeline,
             "conversation_count": len(messages),
             "opening_state": opening_state,
-            "business_state": _compact_business_state(customer_context),
+            "business_state": business_state,
             "task_timing": task_timing,
         }
-
-    async def _load_knowledge_base_context(self) -> dict[str, Any]:
-        now = time.monotonic()
-        if self._knowledge_cache and now < self._knowledge_cache_expires_at:
-            return self._knowledge_cache
-        if not all(
-            callable(getattr(self.platform_client, name, None))
-            for name in ("knowledge_categories", "knowledge_base")
-        ):
-            self._knowledge_cache = {
-                "categories": [],
-                "items": [],
-                "available": False,
-                "error": "platform_client_knowledge_api_unavailable",
-            }
-            self._knowledge_cache_expires_at = now + 60
-            return self._knowledge_cache
-        categories: list[dict[str, Any]] = []
-        items: list[dict[str, Any]] = []
-        try:
-            category_payload = await self.platform_client.knowledge_categories(page_size=100)
-            categories = _knowledge_categories_for_model(category_payload)
-            kb_payload = await self.platform_client.knowledge_base(page_size=100)
-            items = _knowledge_items_for_model(kb_payload)
-            self._knowledge_cache = {
-                "categories": categories,
-                "items": items,
-                "available": True,
-                "loaded_at": utc_now_iso(),
-            }
-            self._knowledge_cache_expires_at = now + 300
-            return self._knowledge_cache
-        except Exception as exc:
-            self._knowledge_cache = {
-                "categories": categories,
-                "items": items,
-                "available": False,
-                "error": f"{type(exc).__name__}: {exc}",
-                "loaded_at": utc_now_iso(),
-            }
-            self._knowledge_cache_expires_at = now + 60
-            return self._knowledge_cache
 
     async def _report_rule_data(
         self,
@@ -1736,12 +1634,13 @@ class SopPlatformTaskService:
         task_id = _task_id(platform_task)
         if not task_id:
             return {"skipped": True, "reason": "missing_task_id"}
-        scene_name = str(decision.get("sceneName") or decision.get("scene_name") or "").strip()
-        if not scene_name:
-            scene_name = "正常推进｜活动价格" if sent else "不发送｜硬边界"
         scene_code = str(decision.get("sceneCode") or decision.get("scene_code") or "").strip()
-        if not scene_code:
-            scene_code = "normal_activity_price" if sent else "no_send_hard_boundary"
+        scene = sop_platform_scene(scene_code)
+        if scene is None:
+            logger.error("Unregistered platform SOP scene code for task %s: %s", task_id, scene_code)
+            scene_code = "normal_platform_intent" if sent else "no_send_invalid_message_content"
+            scene = sop_platform_scene(scene_code)
+        scene_name = scene.name
         try:
             return await self.platform_client.service_rule_data(
                 task_id=task_id,
@@ -1775,8 +1674,8 @@ class SopPlatformTaskService:
             return {
                 "decision": "no_send",
                 "reason": "customer_relation_deleted",
-                "reason_code": "customer_deleted",
-                "sceneName": "不发送｜客户关系删除",
+                "reason_code": "no_send_customer_deleted",
+                "sceneName": sop_platform_scene_name("no_send_customer_deleted"),
                 "sceneCode": "no_send_customer_deleted",
                 "knowledgeId": 0,
                 "knowledgeParagraphNo": 0,
@@ -1784,7 +1683,6 @@ class SopPlatformTaskService:
                 "reply_messages": [],
             }
         original_messages = _platform_messages(platform_task)
-        knowledge_base = await self._load_knowledge_base_context()
         recent_media_lookup = await self._recent_near_duplicate_platform_delivery(
             identity=_task_identity(platform_task),
             task_id=_task_id(platform_task),
@@ -1800,11 +1698,6 @@ class SopPlatformTaskService:
             for item in recent_sent_media
             if isinstance(item, dict)
         }
-        available_unsent_media = [
-            item
-            for item in _knowledge_media_catalog(knowledge_base)
-            if item.get("fingerprint") not in sent_fingerprints
-        ]
         model_input = {
             "task": {
                 "task_id": _task_id(platform_task),
@@ -1816,10 +1709,10 @@ class SopPlatformTaskService:
                     or ""
                 ),
                 "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
-                "scene_role": "supporting_context",
-                "dispatch_mode": _dispatch_mode(platform_task),
+                "scene_role": "current_delivery_context",
                 "original_message_content": original_messages,
-                "original_message_content_role": "prioritized_campaign_intent_model_may_adapt_or_replace_when_needed",
+                "required_delivery": original_messages,
+                "original_message_content_role": "locked_platform_delivery_model_may_only_review_or_polish",
                 "platform_metadata": {
                     "rule_id": platform_task.get("ruleId") or platform_task.get("rule_id"),
                     "rule_name": platform_task.get("ruleName") or platform_task.get("rule_name"),
@@ -1838,21 +1731,19 @@ class SopPlatformTaskService:
                 "business_state": context.get("business_state") or {},
                 "recent_sent_media": recent_sent_media,
                 "forbidden_media_fingerprints": sorted(value for value in sent_fingerprints if value),
-                "available_unsent_media": available_unsent_media,
             },
-            "knowledge_base": knowledge_base,
             "authoritative_business_facts": sop_platform_business_facts_for_model(),
+            "scene_catalog": sop_platform_model_scene_catalog(),
+            "knowledge_scene_catalog": sop_platform_knowledge_scene_catalog(),
             "output_contract": {
                 "decision": "send | no_send",
-                "reason_code": "required for no_send; optional for send",
                 "reason": "string",
-                "sceneName": "required for platform rule-data callback",
-                "sceneCode": "required for platform rule-data callback",
-                "knowledgeId": "selected knowledge group id, or 0",
-                "knowledgeParagraphNo": "selected paragraph number, or 0",
+                "sceneCode": "required; one code from scene_catalog",
+                "sceneEvidence": "required; short evidence from supplied context",
+                "knowledgeId": "0 or a matching id from knowledge_scene_catalog",
+                "knowledgeParagraphNo": "0 with no knowledge hit; otherwise positive",
                 "remark": "required callback remark",
                 "reply_messages": "send must be non-empty; no_send must be []",
-                "no_send_allowed_reason_codes": sorted(SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES),
             },
         }
         messages = [
@@ -1869,6 +1760,8 @@ class SopPlatformTaskService:
         )
         raw = _normalize_knowledge_decision_callback_fields(raw)
         error = _decision_error(raw)
+        if not error:
+            error = _platform_send_contract_error(raw, original_messages=original_messages)
         policy_error = "" if error else _decision_policy_error(raw)
         if error:
             repair_messages = [
@@ -1890,18 +1783,21 @@ class SopPlatformTaskService:
             )
             raw = _normalize_knowledge_decision_callback_fields(raw)
             error = _decision_error(raw)
+            if not error:
+                error = _platform_send_contract_error(raw, original_messages=original_messages)
             policy_error = "" if error else _decision_policy_error(raw)
-        if not error and policy_error:
+        if error or policy_error:
             repair_messages = [
                 *messages,
                 {"role": "assistant", "content": json.dumps(raw, ensure_ascii=False)},
                 {
                     "role": "user",
                     "content": (
-                        f"决策违反第三方 SOP 知识库触达合同：{policy_error}。"
+                        f"第二次修复：输出违反第三方 SOP 发送审核合同：{error or policy_error}。"
                         "只返回合法 JSON。除严重客诉、明确停止联系、客户关系删除、健康高风险、"
-                        "已付/已预约冲突、人工接管外，必须改为 send，并从知识库或当前活动事实中"
-                        "生成可发送内容。普通沉默、普通考虑、价格/效果/距离/时间顾虑都不能 no_send。"
+                        "已付/已预约冲突、人工接管、平台内容冲突或重复外，必须改为 send，并以"
+                        "task.required_delivery 为唯一内容来源做必要润色。普通沉默、普通考虑、"
+                        "价格/效果/距离/时间顾虑都不能 no_send。"
                     ),
                 },
             ]
@@ -1914,6 +1810,8 @@ class SopPlatformTaskService:
             )
             raw = _normalize_knowledge_decision_callback_fields(raw)
             error = _decision_error(raw)
+            if not error:
+                error = _platform_send_contract_error(raw, original_messages=original_messages)
             policy_error = "" if error else _decision_policy_error(raw)
         if error:
             raise RuntimeError(f"invalid_sop_platform_model_output: {error}")
@@ -1924,14 +1822,12 @@ class SopPlatformTaskService:
             return {
                 "decision": decision,
                 "reason": str(raw.get("reason") or ""),
-                "reason_code": str(raw.get("reason_code") or ""),
-                "sceneName": str(raw.get("sceneName") or raw.get("scene_name") or "不发送｜硬边界"),
-                "sceneCode": str(raw.get("sceneCode") or raw.get("scene_code") or "no_send_hard_boundary"),
-                "knowledgeId": _int(raw.get("knowledgeId", raw.get("knowledge_id")), 0),
-                "knowledgeParagraphNo": _int(
-                    raw.get("knowledgeParagraphNo", raw.get("knowledge_paragraph_no")),
-                    0,
-                ),
+                "reason_code": str(raw.get("sceneCode") or ""),
+                "sceneName": sop_platform_scene_name(str(raw.get("sceneCode") or "")),
+                "sceneCode": str(raw.get("sceneCode") or ""),
+                "sceneEvidence": str(raw.get("sceneEvidence") or ""),
+                "knowledgeId": _int(raw.get("knowledgeId"), 0),
+                "knowledgeParagraphNo": _int(raw.get("knowledgeParagraphNo"), 0),
                 "remark": str(raw.get("remark") or raw.get("reason") or ""),
                 "reply_messages": [],
             }
@@ -1939,20 +1835,18 @@ class SopPlatformTaskService:
         return {
             "decision": decision,
             "reason": str(raw.get("reason") or ""),
-            "reason_code": str(raw.get("reason_code") or ""),
-            "sceneName": str(raw.get("sceneName") or raw.get("scene_name") or "正常推进｜活动价格"),
-            "sceneCode": str(raw.get("sceneCode") or raw.get("scene_code") or "normal_activity_price"),
-            "knowledgeId": _int(raw.get("knowledgeId", raw.get("knowledge_id")), 0),
-            "knowledgeParagraphNo": _int(
-                raw.get("knowledgeParagraphNo", raw.get("knowledge_paragraph_no")),
-                0,
-            ),
+            "reason_code": str(raw.get("sceneCode") or ""),
+            "sceneName": sop_platform_scene_name(str(raw.get("sceneCode") or "")),
+            "sceneCode": str(raw.get("sceneCode") or ""),
+            "sceneEvidence": str(raw.get("sceneEvidence") or ""),
+            "knowledgeId": _int(raw.get("knowledgeId"), 0),
+            "knowledgeParagraphNo": _int(raw.get("knowledgeParagraphNo"), 0),
             "remark": str(raw.get("remark") or raw.get("reason") or ""),
             "reply_messages": output_messages,
         }
 
 
-def _decision_error(raw: Any) -> str:
+def _legacy_decision_error(raw: Any) -> str:
     if not isinstance(raw, dict):
         return "output must be an object"
     unexpected = set(raw).difference(
@@ -2027,7 +1921,7 @@ def _decision_error(raw: Any) -> str:
     return ""
 
 
-def _normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
+def _legacy_normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
     if not isinstance(raw, dict):
         return raw
     output = dict(raw)
@@ -2056,15 +1950,135 @@ def _normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
 
 
 def _decision_policy_error(raw: dict[str, Any]) -> str:
-    if str(raw.get("decision") or "").strip() == "send":
+    return ""
+
+
+def _normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    output = dict(raw)
+    if "scene_code" in output and "sceneCode" not in output:
+        output["sceneCode"] = output.pop("scene_code")
+    if "scene_evidence" in output and "sceneEvidence" not in output:
+        output["sceneEvidence"] = output.pop("scene_evidence")
+    if "knowledge_id" in output and "knowledgeId" not in output:
+        output["knowledgeId"] = output.pop("knowledge_id")
+    if "knowledge_paragraph_no" in output and "knowledgeParagraphNo" not in output:
+        output["knowledgeParagraphNo"] = output.pop("knowledge_paragraph_no")
+    output.pop("reason_code", None)
+    if output.get("knowledgeId") in (None, ""):
+        output["knowledgeId"] = 0
+    if output.get("knowledgeParagraphNo") in (None, ""):
+        output["knowledgeParagraphNo"] = 0
+    if not str(output.get("remark") or "").strip():
+        output["remark"] = str(output.get("reason") or "")
+    return output
+
+
+def _decision_error(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return "output must be an object"
+    allowed_fields = {
+        "decision",
+        "reason",
+        "sceneCode",
+        "sceneEvidence",
+        "knowledgeId",
+        "knowledgeParagraphNo",
+        "remark",
+        "reply_messages",
+    }
+    unexpected = set(raw).difference(allowed_fields)
+    if unexpected:
+        return f"unexpected output fields: {','.join(sorted(unexpected))}"
+    decision = str(raw.get("decision") or "").strip()
+    if decision not in {"send", "no_send"}:
+        return "decision must be send or no_send"
+    scene_code = str(raw.get("sceneCode") or "").strip()
+    scene = sop_platform_scene(scene_code)
+    if scene is None or scene_code not in SOP_PLATFORM_MODEL_SCENE_CODES:
+        return "sceneCode must be one model-selectable code from scene_catalog"
+    if scene.decision != decision:
+        return f"sceneCode {scene_code} requires decision={scene.decision}"
+    if not str(raw.get("sceneEvidence") or "").strip():
+        return "sceneEvidence is required"
+    try:
+        knowledge_id = int(raw.get("knowledgeId") or 0)
+        paragraph_no = int(raw.get("knowledgeParagraphNo") or 0)
+    except (TypeError, ValueError):
+        return "knowledgeId and knowledgeParagraphNo must be integers"
+    if knowledge_id == 0:
+        if paragraph_no != 0:
+            return "knowledgeParagraphNo must be 0 when knowledgeId is 0"
+    else:
+        mapped_scene_code = SOP_PLATFORM_KNOWLEDGE_SCENE_CODES.get(knowledge_id)
+        if mapped_scene_code != scene_code:
+            return "knowledgeId does not match sceneCode"
+        if paragraph_no <= 0:
+            return "knowledgeParagraphNo must be positive when knowledgeId is set"
+    messages = raw.get("reply_messages")
+    if not isinstance(messages, list):
+        return "reply_messages must be a list"
+    if decision == "no_send":
+        return "no_send reply_messages must be empty" if messages else ""
+    if not messages:
+        return "send reply_messages must not be empty"
+    if len(messages) > 6:
+        return "send reply_messages may contain at most six messages"
+    for index, candidate in enumerate(messages, start=1):
+        if not isinstance(candidate, dict):
+            return f"reply message {index} must be an object"
+        if candidate.get("order") != index:
+            return f"reply message {index} order must be {index}"
+        message_type = str(candidate.get("type") or "").strip()
+        if message_type not in {"text", "image", "video", "payment_collection"}:
+            return f"reply message {index} has an unsupported type"
+        content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+        if message_type == "text" and not str(content.get("text") or "").strip():
+            return f"reply message {index} text is empty"
+        if message_type in {"image", "video"} and not str(content.get("url") or "").strip():
+            return f"reply message {index} media url is empty"
+        if message_type == "payment_collection":
+            try:
+                amount = int(content.get("amount") or 0)
+            except (TypeError, ValueError):
+                return f"reply message {index} payment amount must be an integer"
+            if amount not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
+                return f"reply message {index} payment amount must be 10, 20, 30, or 40"
+    return ""
+
+
+def _platform_send_contract_error(
+    raw: dict[str, Any],
+    *,
+    original_messages: list[dict[str, Any]],
+) -> str:
+    if str(raw.get("decision") or "").strip() != "send":
         return ""
-    code = str(raw.get("reason_code") or "").strip()
-    if code in SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES:
-        return ""
-    return (
-        "knowledge-driven platform SOP no_send requires reason_code in "
-        + ",".join(sorted(SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES))
-    )
+    output_messages = raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else []
+
+    def locked_messages(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        locked: list[tuple[str, str]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            message_type = str(message.get("type") or "").strip().lower()
+            if message_type == "text":
+                continue
+            content = message.get("content") if isinstance(message.get("content"), dict) else {}
+            locked.append(
+                (
+                    message_type,
+                    json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                )
+            )
+        return locked
+
+    expected = locked_messages(original_messages)
+    actual = locked_messages(output_messages)
+    if actual != expected:
+        return "send must preserve all platform image/video/link/payment messages in original order and content"
+    return ""
 
 
 def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2221,45 +2235,6 @@ def _platform_media_refs(messages: list[Any]) -> list[dict[str, str]]:
             }
         )
     return refs
-
-
-def _knowledge_media_catalog(knowledge_base: dict[str, Any]) -> list[dict[str, Any]]:
-    catalog: list[dict[str, Any]] = []
-    items = knowledge_base.get("items") if isinstance(knowledge_base.get("items"), list) else []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        paragraphs = item.get("paragraphs") if isinstance(item.get("paragraphs"), list) else []
-        for paragraph in paragraphs:
-            if not isinstance(paragraph, dict):
-                continue
-            messages = paragraph.get("messages") if isinstance(paragraph.get("messages"), list) else []
-            for message in messages:
-                if not isinstance(message, dict):
-                    continue
-                message_type = str(message.get("msgType") or "").strip().lower()
-                if message_type not in {"image", "video"}:
-                    continue
-                normalized = {
-                    "type": message_type,
-                    "content": {
-                        "url": str(message.get("mediaUrl") or "").strip(),
-                        "fileId": message.get("fileId"),
-                    },
-                }
-                refs = _platform_media_refs([normalized])
-                if not refs:
-                    continue
-                catalog.append(
-                    {
-                        **refs[0],
-                        "knowledge_id": _int(item.get("id"), 0),
-                        "knowledge_name": str(item.get("knowledgeName") or ""),
-                        "paragraph_no": _int(paragraph.get("paragraphNo"), 0),
-                        "message_id": _int(message.get("id"), 0),
-                    }
-                )
-    return catalog
 
 
 def _duplicate_platform_task_reason(
@@ -2544,20 +2519,28 @@ def _task_preflight_no_send_reason(
     settings: Any,
     dispatch_mode: str | None = None,
 ) -> str:
-    missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
-    if missing:
-        return "invalid_identity"
-    mode = dispatch_mode or _dispatch_mode(platform_task)
-    if mode == "direct":
-        return "invalid_message_content" if _platform_message_error(platform_task) or not _platform_messages(platform_task) else ""
-    scheduled = _task_scheduled_epoch(platform_task)
-    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 600) or 0))
-    if mode == "ai_service" and scheduled and max_age and time.time() - scheduled > max_age:
-        return "stale_task"
-    live_not_before = _parse_epoch(getattr(settings, "sop_platform_live_not_before", ""))
-    if live_not_before and (not scheduled or scheduled < live_not_before):
-        return "pre_cutover_task"
-    return ""
+    del identity, settings, dispatch_mode
+    return "invalid_message_content" if _platform_message_error(platform_task) or not _platform_messages(platform_task) else ""
+
+
+def _preflight_no_send_decision(platform_task: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    quiet_first_add = reason.startswith("quiet_hours_") and _task_type(platform_task) == "add_wecom"
+    scene_code = "quiet_first_add_backlog" if quiet_first_add else "no_send_invalid_message_content"
+    return {
+        "decision": "no_send",
+        "reason": reason,
+        "reason_code": reason,
+        "sceneName": sop_platform_scene_name(scene_code),
+        "sceneCode": scene_code,
+        "knowledgeId": 0,
+        "knowledgeParagraphNo": 0,
+        "remark": (
+            "首加SOP在夜间被拦截，当前任务已消费，原始内容进入次日08:30融合补触达"
+            if quiet_first_add
+            else f"前置保护命中：{reason}"
+        ),
+        "reply_messages": [],
+    }
 
 
 def _manual_resend_preflight_block_reason(
@@ -2747,9 +2730,6 @@ def _terminal_delivery_failure(exc: Exception) -> dict[str, Any]:
         return {}
     status = int(matched.group(1))
     detail = matched.group(2).strip()
-    normalized_detail = detail.lower()
-    if status == 404 and ("40402" in normalized_detail or "conversation not found" in normalized_detail):
-        return {}
     if status < 400 or status >= 500 or status in {408, 429}:
         return {}
     return {
@@ -3292,143 +3272,11 @@ def _paid_or_appointment_delivery_conflict(business_state: dict[str, Any]) -> st
     return ""
 
 
-def _material_catalog_for_model(service: Any | None) -> list[dict[str, Any]]:
-    if service is None:
-        return []
-    try:
-        payload = service.load()
-    except Exception as exc:
-        logger.warning("Unable to load SOP objection materials: %s: %s", type(exc).__name__, exc)
-        return []
-    materials = payload.get("materials") if isinstance(payload, dict) else []
-    if not isinstance(materials, list):
-        return []
-    output: list[dict[str, Any]] = []
-    for item in materials[:100]:
-        if not isinstance(item, dict):
-            continue
-        output.append(
-            {
-                "material_id": str(item.get("material_id") or "")[:120],
-                "name": str(item.get("name") or "")[:160],
-                "category": str(item.get("category") or "")[:120],
-                "tags": [str(value)[:80] for value in item.get("tags", [])[:20]],
-                "applicable_scenes": [
-                    str(value)[:120] for value in item.get("applicable_scenes", [])[:20]
-                ],
-                "response_approach": str(item.get("response_approach") or "")[:1000],
-                "example_contents": [
-                    str(value)[:1000] for value in item.get("example_contents", [])[:10]
-                ],
-            }
-        )
-    return output
-
-
 def _int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
-
-
-def _knowledge_categories_for_model(payload: Any) -> list[dict[str, Any]]:
-    data = payload.get("data") if isinstance(payload, dict) else {}
-    items = data.get("list") if isinstance(data, dict) and isinstance(data.get("list"), list) else []
-    output: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        category_id = _int(item.get("id"), 0)
-        name = str(item.get("categoryName") or item.get("category_name") or "").strip()
-        if not category_id or not name:
-            continue
-        output.append(
-            {
-                "categoryId": category_id,
-                "categoryName": name[:120],
-                "meta": str(item.get("meta") or "")[:300],
-                "description": str(item.get("description") or "")[:500],
-                "sortOrder": _int(item.get("sortOrder", item.get("sort_order")), 0),
-                "groupCount": _int(item.get("groupCount", item.get("group_count")), 0),
-            }
-        )
-    return output
-
-
-def _knowledge_items_for_model(payload: Any) -> list[dict[str, Any]]:
-    data = payload.get("data") if isinstance(payload, dict) else {}
-    items = data.get("list") if isinstance(data, dict) and isinstance(data.get("list"), list) else []
-    output: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        knowledge_id = _int(item.get("id"), 0)
-        name = str(
-            item.get("knowledgeName")
-            or item.get("knowledge_name")
-            or item.get("groupName")
-            or item.get("group_name")
-            or ""
-        ).strip()
-        if not knowledge_id or not name:
-            continue
-        paragraphs: list[dict[str, Any]] = []
-        raw_paragraphs = item.get("paragraphs") if isinstance(item.get("paragraphs"), list) else []
-        for raw_paragraph in raw_paragraphs:
-            if not isinstance(raw_paragraph, dict):
-                continue
-            messages: list[dict[str, Any]] = []
-            raw_messages = raw_paragraph.get("messages") if isinstance(raw_paragraph.get("messages"), list) else []
-            for raw_message in raw_messages:
-                if not isinstance(raw_message, dict):
-                    continue
-                msg_type = str(raw_message.get("msgType") or raw_message.get("msg_type") or "").strip().lower()
-                if msg_type not in {"text", "image", "video"}:
-                    continue
-                content_text = str(raw_message.get("contentText") or raw_message.get("content_text") or "").strip()
-                media_url = str(raw_message.get("mediaUrl") or raw_message.get("media_url") or "").strip()
-                if msg_type == "text" and not content_text:
-                    continue
-                if msg_type in {"image", "video"} and not media_url:
-                    continue
-                messages.append(
-                    {
-                        "id": _int(raw_message.get("id"), 0),
-                        "msgType": msg_type,
-                        "contentText": content_text[:3000],
-                        "mediaUrl": media_url,
-                        "mediaUrlRaw": str(
-                            raw_message.get("mediaUrlRaw") or raw_message.get("media_url_raw") or ""
-                        ).strip(),
-                        "mediaTitle": str(
-                            raw_message.get("mediaTitle") or raw_message.get("media_title") or ""
-                        ).strip()[:200],
-                        "fileId": _int(raw_message.get("fileId", raw_message.get("file_id")), 0),
-                        "sortOrder": _int(raw_message.get("sortOrder", raw_message.get("sort_order")), 0),
-                    }
-                )
-            if messages:
-                paragraphs.append(
-                    {
-                        "paragraphNo": _int(
-                            raw_paragraph.get("paragraphNo", raw_paragraph.get("paragraph_no")),
-                            len(paragraphs) + 1,
-                        ),
-                        "messages": messages,
-                    }
-                )
-        output.append(
-            {
-                "id": knowledge_id,
-                "categoryId": _int(item.get("categoryId", item.get("category_id")), 0),
-                "categoryName": str(item.get("categoryName") or item.get("category_name") or "").strip()[:120],
-                "knowledgeName": name[:200],
-                "sortOrder": _int(item.get("sortOrder", item.get("sort_order")), 0),
-                "paragraphs": paragraphs,
-            }
-        )
-    return output
 
 
 def _send_content_for_rule_data(messages: list[Any]) -> str:
@@ -3476,7 +3324,10 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
         }
     return {
         "source": str(context.get("source") or ""),
+        "routing_decision": str(context.get("routing_decision") or ""),
         "dispatch_mode": str(context.get("dispatch_mode") or ""),
+        "conversation_loaded": context.get("conversation_loaded"),
+        "conversation_error": str(context.get("conversation_error") or ""),
         "conversation_count": int(context.get("conversation_count") or 0),
         "customer_relation": relation,
         "customer_context_source": customer_context.get("source"),

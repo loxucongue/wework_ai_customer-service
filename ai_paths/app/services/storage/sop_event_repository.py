@@ -476,8 +476,11 @@ class SopEventRepositoryMixin:
                     e.raw_payload_json
                 FROM sop_send_tasks t
                 JOIN sop_events e ON e.event_id=t.event_id
-                WHERE t.status='skipped_quiet_hours_inactive'
-                  AND e.event_type IN ('sop_friend_added_schedule_batch','sop_friend_added_immediate')
+                WHERE (
+                        (t.status='skipped_quiet_hours_inactive'
+                         AND e.event_type IN ('sop_friend_added_schedule_batch','sop_friend_added_immediate'))
+                     OR (t.status='completed_without_send' AND e.event_type='platform_sop_task')
+                  )
                   AND t.created_at>=?
                   AND t.created_at<?
                 ORDER BY t.created_at ASC
@@ -492,6 +495,24 @@ class SopEventRepositoryMixin:
             task = self._decode_sop_send_task(row)
             task["raw_event_payload"] = raw_payload
             task["event_type"] = str(row.get("event_type") or raw_payload.get("event_type") or "")
+            if task["event_type"] == "platform_sop_task":
+                platform_task = raw_payload.get("platform_task") if isinstance(raw_payload.get("platform_task"), dict) else {}
+                trigger = str(
+                    platform_task.get("triggerEvent")
+                    or platform_task.get("trigger_event")
+                    or platform_task.get("eventType")
+                    or platform_task.get("event_type")
+                    or ""
+                ).strip().lower()
+                send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+                decision = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
+                reason = str(decision.get("reason") or "").strip()
+                if trigger != "add_wecom" or reason not in {
+                    "quiet_hours_unknown_activity",
+                    "quiet_hours_customer_pending_reply",
+                    "quiet_hours_first_add_inactive",
+                }:
+                    continue
             marker = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
             backlog_marker = marker.get("backlog_marker") if isinstance(marker.get("backlog_marker"), dict) else {}
             if backlog_marker and backlog_marker.get("pending") is False:

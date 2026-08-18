@@ -1983,6 +1983,72 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
         self.assertEqual(selector.calls, [])
 
+    async def test_quiet_hour_backlog_fuses_third_party_first_add_original_messages(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[{"direction": "assistant", "content": "昨晚比较晚。"}])
+        selector = _FusionSelector(
+            {
+                "send_sop": True,
+                "covered_pack_ids": ["platform-sop-101"],
+                "reply_messages": [
+                    {"type": "text", "text": "亲，昨晚的重点给您一起补充下。"},
+                    {"type": "source", "source_id": "platform-sop-101:2"},
+                    {"type": "text", "text": "活动和效果您都可以先了解，时间后面按您方便安排。"},
+                ],
+            }
+        )
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=selector,
+            pack_service=_BacklogPackService(),
+            quiet_backlog_fusion_time="08:30",
+        )
+        platform_event = {
+            "event_id": "platform_sop_task:101",
+            "event_type": "platform_sop_task",
+            "created_at": "2026-07-20T02:10:00+08:00",
+            "platform_task": {
+                "taskId": 101,
+                "triggerEvent": "add_wecom",
+                "ruleName": "夜间首加效果活动",
+            },
+        }
+        repo.create_sop_event(platform_event)
+        repo.create_sop_send_task(
+            event_id="platform_sop_task:101",
+            idempotency_key="platform-sop:101",
+            send_once_key="platform-sop:101",
+            customer_id="customer",
+            external_userid="external",
+            corp_id="ww943af61cd5d2afe4",
+            user_id="staff",
+            wechat="CS001",
+            sop_pack_id="platform-sop-101",
+            sop_pack_name="夜间首加效果活动",
+            sop_category="platform_task",
+            trigger_source="third_party_sop_pending",
+            reply_messages=[
+                {"type": "text", "order": 1, "content": {"text": "这是活动和效果介绍。"}},
+                {"type": "image", "order": 2, "content": {"url": "https://example.com/platform-case.png"}},
+            ],
+            status="completed_without_send",
+        )
+        repo.tasks[-1]["send_payload"] = {
+            "decision": {"reason": "quiet_hours_first_add_inactive"},
+        }
+        repo.tasks[-1]["created_at"] = "2026-07-20T02:10:00+08:00"
+
+        result = await service.process_due_quiet_backlog_fusions(now=_dt("2026-07-20T08:31:00+08:00"))
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["status"], "sent")
+        self.assertEqual(selector.calls[0]["backlog_sops"][0]["id"], "platform-sop-101")
+        self.assertEqual(selector.calls[0]["backlog_sops"][0]["messages"][0]["text"], "这是活动和效果介绍。")
+        sent_messages = client.send_calls[-1]["reply_messages"]
+        self.assertEqual([item["type"] for item in sent_messages], ["text", "image", "text"])
+        self.assertEqual(sent_messages[1]["content"]["url"], "https://example.com/platform-case.png")
+
     async def test_event_merge_sends_two_adjacent_packs_as_one_sequence(self) -> None:
         class _MergePackService:
             def load(self) -> dict[str, Any]:
@@ -5468,11 +5534,26 @@ class _Repo:
         output: list[dict[str, Any]] = []
         for task in self.tasks:
             created = datetime.fromisoformat(str(task.get("created_at") or "1970-01-01T00:00:00+00:00"))
-            if task.get("status") != "skipped_quiet_hours_inactive":
+            event_payload = self.events.get(str(task.get("event_id") or ""), {}).get("raw_payload", {})
+            event_type = str(event_payload.get("event_type") or "")
+            if event_type == "platform_sop_task":
+                platform_task = event_payload.get("platform_task") if isinstance(event_payload.get("platform_task"), dict) else {}
+                send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+                decision = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
+                if task.get("status") != "completed_without_send":
+                    continue
+                if str(platform_task.get("triggerEvent") or "").lower() != "add_wecom":
+                    continue
+                if decision.get("reason") not in {
+                    "quiet_hours_unknown_activity",
+                    "quiet_hours_customer_pending_reply",
+                    "quiet_hours_first_add_inactive",
+                }:
+                    continue
+            elif task.get("status") != "skipped_quiet_hours_inactive":
                 continue
             if not (start <= created < end):
                 continue
-            event_payload = self.events.get(str(task.get("event_id") or ""), {}).get("raw_payload", {})
             output.append({**dict(task), "raw_event_payload": event_payload, "event_type": event_payload.get("event_type")})
         return output[:limit]
 

@@ -305,12 +305,15 @@ class SopEventService:
             wechat=fusion_customer["wechat"],
         )
         completed_categories = _sent_categories(self.repository, fusion_customer)
+        backlog_tasks = group.get("tasks") if isinstance(group.get("tasks"), list) else []
         backlog_packs = _quiet_backlog_candidate_packs(
             pack_config,
-            group.get("tasks") if isinstance(group.get("tasks"), list) else [],
+            backlog_tasks,
             completed_ids=completed_ids,
             completed_categories=completed_categories,
         )
+        backlog_packs.extend(_quiet_backlog_platform_packs(backlog_tasks))
+        backlog_packs.sort(key=lambda item: (int(item.get("order") or 0), _string(item.get("id"))))
         source_messages, source_lookup = _quiet_backlog_source_messages(
             backlog_packs,
             customer_memory=customer_memory,
@@ -1695,7 +1698,7 @@ def _parse_hour_minute(value: str, *, default_hour: int, default_minute: int) ->
 def _group_quiet_backlog_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for task in tasks:
-        if _string(task.get("event_type")) not in FIRST_ADD_EVENT_TYPES:
+        if _string(task.get("event_type")) not in {*FIRST_ADD_EVENT_TYPES, "platform_sop_task"}:
             continue
         send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
         marker = send_payload.get("backlog_marker") if isinstance(send_payload.get("backlog_marker"), dict) else {}
@@ -1785,6 +1788,39 @@ def _quiet_backlog_candidate_packs(
             if pack_id and pack_id not in packs_by_id:
                 packs_by_id[pack_id] = pack
     return sorted(packs_by_id.values(), key=lambda item: (int(item.get("order") or 0), _string(item.get("id"))))
+
+
+def _quiet_backlog_platform_packs(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    packs: list[dict[str, Any]] = []
+    for index, task in enumerate(tasks, start=1):
+        if _string(task.get("event_type")) != "platform_sop_task":
+            continue
+        messages = task.get("reply_messages") if isinstance(task.get("reply_messages"), list) else []
+        normalized_messages = [message for message in messages if isinstance(message, dict)]
+        if not normalized_messages:
+            continue
+        raw_payload = task.get("raw_event_payload") if isinstance(task.get("raw_event_payload"), dict) else {}
+        platform_task = raw_payload.get("platform_task") if isinstance(raw_payload.get("platform_task"), dict) else {}
+        platform_task_id = _string(
+            platform_task.get("taskId")
+            or platform_task.get("task_id")
+            or platform_task.get("id")
+            or task.get("id")
+        )
+        packs.append(
+            {
+                "id": f"platform-sop-{platform_task_id}",
+                "name": _string(platform_task.get("ruleName") or platform_task.get("rule_name"))
+                or "第三方首加SOP",
+                "sop_category": "platform_first_add_backlog",
+                "purpose": "融合夜间被拦截的第三方首加SOP原始内容",
+                "stage_tag": "platform_first_add_backlog",
+                "delay_minutes": 0,
+                "order": 10000 + index,
+                "reply_messages": normalized_messages,
+            }
+        )
+    return packs
 
 
 def _payload_customer_for_task(payload: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
