@@ -56,6 +56,10 @@ class OutreachSystemClient:
         task_id: str,
         reply_messages: list[dict[str, Any]],
         conversation_id: str = "",
+        run_id: str | int | None = None,
+        rule_id: str | int | None = None,
+        rule_name: str | None = None,
+        rule_task_id: str | int | None = None,
     ) -> dict[str, Any]:
         body = {
             "corp_id": corp_id,
@@ -67,6 +71,14 @@ class OutreachSystemClient:
             "task_id": task_id,
             "reply_messages": reply_messages,
         }
+        if run_id is not None:
+            body["runId"] = run_id
+        if rule_id is not None:
+            body["ruleId"] = rule_id
+        if rule_name is not None:
+            body["ruleName"] = rule_name
+        if rule_task_id is not None:
+            body["ruleTaskId"] = rule_task_id
         if self.settings.outreach_system_send_conversation_id_enabled and conversation_id:
             body["conversation_id"] = conversation_id
         return await self._request(

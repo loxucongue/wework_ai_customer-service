@@ -32,6 +32,10 @@ def test_send_uses_distinct_external_userid_and_conversation_id_when_enabled() -
             plan_id="plan",
             task_id="task",
             conversation_id="ww:staff:external",
+            run_id=0,
+            rule_id=3,
+            rule_name="加微后强触约策略A",
+            rule_task_id=15,
             reply_messages=[{"type": "text", "content": {"text": "test"}}],
         )
     )
@@ -39,6 +43,11 @@ def test_send_uses_distinct_external_userid_and_conversation_id_when_enabled() -
     assert captured["json_body"]["conversation_id"] == "ww:staff:external"
     assert captured["json_body"]["customer_id"] == "123"
     assert captured["json_body"]["external_userid"] == "external"
+    assert captured["json_body"]["task_id"] == "task"
+    assert captured["json_body"]["runId"] == 0
+    assert captured["json_body"]["ruleId"] == 3
+    assert captured["json_body"]["ruleName"] == "加微后强触约策略A"
+    assert captured["json_body"]["ruleTaskId"] == 15
 
 
 def test_send_omits_conversation_id_until_downstream_contract_is_enabled() -> None:

@@ -244,7 +244,11 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             [_text("模型擅自改写")],
         )
         self.assertEqual(system.send_calls[0]["plan_id"], "platform-sop-101")
-        self.assertEqual(system.send_calls[0]["task_id"], "platform-sop-send-101")
+        self.assertEqual(system.send_calls[0]["task_id"], "101")
+        self.assertEqual(system.send_calls[0]["run_id"], 11)
+        self.assertEqual(system.send_calls[0]["rule_id"], 3)
+        self.assertEqual(system.send_calls[0]["rule_name"], "test rule")
+        self.assertEqual(system.send_calls[0]["rule_task_id"], 15)
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(system.conversation_calls, 2)
@@ -357,7 +361,11 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.conversation_calls, 2)
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型擅自改写")])
         self.assertEqual(system.send_calls[0]["plan_id"], "platform-sop-101")
-        self.assertEqual(system.send_calls[0]["task_id"], "platform-sop-send-101")
+        self.assertEqual(system.send_calls[0]["task_id"], "101")
+        self.assertEqual(system.send_calls[0]["run_id"], 11)
+        self.assertEqual(system.send_calls[0]["rule_id"], 3)
+        self.assertEqual(system.send_calls[0]["rule_name"], "test rule")
+        self.assertEqual(system.send_calls[0]["rule_task_id"], 15)
         self.assertEqual(platform.consume_calls, [])
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "sent")
@@ -1495,7 +1503,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         system.conversation_payload["data"]["messages"] = [
             {
                 "from": "staff",
-                "msgid": "ai-outreach-platform-sop-101-platform-sop-send-101-0001-text-existing",
+                "msgid": "ai-outreach-platform-sop-101-101-0001-text-existing",
                 "msgtype": "text",
                 "content": "平台原文",
             }
@@ -1520,7 +1528,16 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         settings.sop_platform_window_seconds = 60
         settings.sop_platform_batch_size = 500
         client = SopPlatformClient(settings)
-        client._request = AsyncMock(return_value={"code": 200, "data": {"list": []}})  # type: ignore[method-assign]
+        upstream_task = {
+            "task_id": 101,
+            "runId": 11,
+            "ruleId": 3,
+            "ruleName": "加微后强触约策略A",
+            "ruleTaskId": 15,
+        }
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            return_value={"code": 200, "data": {"list": [upstream_task]}},
+        )
 
         page = await client.pending()
 
@@ -1528,8 +1545,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(payload["start_time"], int)
         self.assertIsInstance(payload["end_time"], int)
         self.assertEqual(payload["limit"], 500)
-        self.assertEqual(page["items"], [])
-        self.assertEqual(page["total"], 0)
+        self.assertEqual(page["items"], [upstream_task])
+        self.assertEqual(page["total"], 1)
 
     async def test_invalid_identity_is_completed_without_model_or_send(self) -> None:
         model = _Model([])
@@ -1883,7 +1900,10 @@ def _task(
 ):
     return {
         "task_id": 101,
+        "runId": 11,
+        "ruleId": 3,
         "ruleName": "test rule",
+        "ruleTaskId": 15,
         "customerId": 22000001,
         "customer_wechat_id": "wm_external",
         "corp_id": "ww_corp",

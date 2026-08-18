@@ -689,7 +689,7 @@ class SopPlatformTaskService:
         send_payload = {
             **identity,
             "plan_id": f"platform-sop-{task_id}",
-            "task_id": f"platform-sop-send-{task_id}",
+            **_platform_send_trace_fields(platform_task),
             "reply_messages": messages,
         }
         audit_payload = {
@@ -1278,7 +1278,7 @@ class SopPlatformTaskService:
                 send_payload = {
                     **identity,
                     "plan_id": f"platform-sop-{task_id}",
-                    "task_id": f"platform-sop-send-{task_id}",
+                    **_platform_send_trace_fields(platform_task),
                     "reply_messages": decision["reply_messages"],
                 }
                 media_delivery_audit = {
@@ -2824,6 +2824,29 @@ def _task_identity(task: dict[str, Any]) -> dict[str, str]:
 
 def _task_id(task: dict[str, Any]) -> str:
     return str(task.get("task_id") or task.get("taskId") or task.get("id") or "").strip()
+
+
+def _platform_send_trace_fields(task: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "task_id": _task_id(task),
+    }
+    for output_key, source_keys in (
+        ("run_id", ("runId", "run_id")),
+        ("rule_id", ("ruleId", "rule_id")),
+        ("rule_name", ("ruleName", "rule_name")),
+        ("rule_task_id", ("ruleTaskId", "rule_task_id")),
+    ):
+        value = _first_present_task_field(task, *source_keys)
+        if value is not None:
+            fields[output_key] = value
+    return fields
+
+
+def _first_present_task_field(task: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in task and task[key] is not None:
+            return task[key]
+    return None
 
 
 def _task_scheduled_epoch(task: dict[str, Any]) -> float:
