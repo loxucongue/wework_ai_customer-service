@@ -11,6 +11,8 @@ ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision"]
 
 
 def api_key(settings: Settings, model: str | None = None) -> str:
+    if is_deepseek_model(model):
+        return settings.deepseek_api_key or settings.model_relay_api_key
     provider = settings.model_provider.lower()
     if provider == "volcengine":
         return settings.volcengine_ark_api_key
@@ -21,7 +23,9 @@ def api_key(settings: Settings, model: str | None = None) -> str:
     return settings.aliyun_dashscope_api_key
 
 
-def base_url(settings: Settings) -> str:
+def base_url(settings: Settings, model: str | None = None) -> str:
+    if is_deepseek_model(model):
+        return settings.deepseek_openai_base_url
     provider = settings.model_provider.lower()
     if provider == "volcengine":
         return settings.volcengine_openai_base_url
@@ -88,6 +92,11 @@ def is_claude_model(model: str | None) -> bool:
     if not value:
         return False
     return value.startswith("claude-") or "/claude-" in value or value.startswith("anthropic/claude-")
+
+
+def is_deepseek_model(model: str | None) -> bool:
+    value = str(model or "").strip().lower()
+    return value.startswith("deepseek-") or "/deepseek-" in value
 
 
 def should_try_next_model(exc: Exception) -> bool:

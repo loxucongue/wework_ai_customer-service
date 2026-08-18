@@ -281,6 +281,55 @@ Add this required object to the output JSON:
 `strategy` may also be `availability_guard` when the decision is controlled by this contract.
 """
 
+SOP_QUIET_BACKLOG_FUSION_SYSTEM_PROMPT = f"""
+# 节点角色
+你是首加微夜间 SOP 积压融合节点。你只处理凌晨安静时段被系统拦截、尚未发送的新客 SOP 包。
+
+{GLOBAL_STRUCTURED_NODE_CONTRACT}
+
+# 业务目标
+客户在夜间加微或夜间沉默时，多个相对时间 SOP 可能都被拦截。第二天早上 08:30 需要把这些积压 SOP 融合成一次自然触达，避免 SOP 断层。
+
+你的目标不是自由聊天，而是把输入的多个 SOP 包在 4-5 条消息内融合发出：
+- 优先覆盖主线信息：门店区域询问、效果展示、活动价格/规则、预约金价值。
+- 先承接最近聊天，再补客户还没收到的关键信息。
+- 如果客户已经明确回复并且最新问题尚未被回答，应 `skip`，不要用融合 SOP 打断普通 AI/销售回复。
+- 如果存在健康风险、投诉、付款异常、明确停止联系，应 `skip`。
+- 不要重复近期已经完整发送过的同一阶段内容。
+
+{GLOBAL_BUSINESS_RHYTHM_CONTRACT}
+
+# 输入
+你会收到 JSON：
+- `recent_conversation`：最近聊天记录。
+- `conversation_activity`：最新客户/客服/AI消息状态。
+- `backlog_sops`：夜间被拦截的 SOP 包，包含包 ID、名称、目的、阶段、原始消息和素材引用。
+- `completed_sop_pack_ids/completed_sop_categories`：已经真实发送过的 SOP。
+- `source_messages`：允许复用的图片、视频、门店卡或收款卡来源。结构消息只能通过 `source_id` 引用，不能自己生成 URL、门店或卡片。
+
+# 融合规则
+1. 只输出 JSON，不输出 markdown。
+2. `decision=send` 时，`reply_messages` 必须 1-5 条。
+3. 文本要像微信短聊，不能像公告；但内容必须有价值，不能只问“您还在吗/要不要了解”。
+4. 可以把多个 SOP 的文本融合成更自然的 1-3 条文本，保留关键价格、金额、退款口径和活动边界。
+5. 图片/视频/门店卡/收款卡只能输出 `{{"type":"source","source_id":"..."}}` 引用输入来源。
+6. 如果输入里有真实效果图，且近期没有刚发过效果图，优先保留 1-2 张效果图。
+7. 若需要询问门店，只能问客户所在省市、区县或常去区域；不能声称已经查询、匹配或推荐附近门店。
+8. 收款卡只在输入来源中存在且与当前阶段一致时才可引用；如果不能确定，就只用文字说明预约金价值。
+9. 不使用性别称谓，不说“美女、姐妹、女士、先生、帅哥、哥哥、姐姐、妹妹、男士”。
+
+# 输出 Schema
+{{
+  "decision": "send | skip",
+  "reason": "内部原因，简短说明",
+  "covered_pack_ids": ["本次融合覆盖的 SOP 包 ID"],
+  "reply_messages": [
+    {{"type": "text", "text": "客户可见文本"}},
+    {{"type": "source", "source_id": "source_messages 中的 source_id"}}
+  ]
+}}
+""".strip()
+
 
 class SopExecutionService:
     """Select and record configured SOP packs for realtime and event-driven SOP flows."""
@@ -1078,6 +1127,68 @@ class SopExecutionService:
                 }
             )
             return _finish(result, started)
+
+    async def evaluate_quiet_backlog_fusion(
+        self,
+        selector_input: dict[str, Any],
+        *,
+        model: str = "",
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        result: dict[str, Any] = {
+            "mode": "quiet_backlog_fusion",
+            "send_sop": False,
+            "reason": "",
+            "covered_pack_ids": [],
+            "reply_messages": [],
+            "selector_input": compact(selector_input, max_chars=8000),
+            "selector_output": {},
+            "model_usage": {},
+            "error": "",
+        }
+        try:
+            messages = [
+                {"role": "system", "content": SOP_QUIET_BACKLOG_FUSION_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(selector_input, ensure_ascii=False)},
+            ]
+            if model:
+                output = await self.model_client.chat_json_model(
+                    messages,
+                    model=model,
+                    tier="balanced",
+                    temperature=0.1,
+                    deadline_monotonic=deadline_monotonic,
+                )
+            else:
+                output = await self.model_client.chat_json(
+                    messages,
+                    tier="balanced",
+                    temperature=0.1,
+                    deadline_monotonic=deadline_monotonic,
+                )
+            result["selector_output"] = output
+            result["model_usage"] = dict(self.model_client.last_usage or {})
+            decision = _string(output.get("decision")).lower()
+            reply_messages = output.get("reply_messages") if isinstance(output.get("reply_messages"), list) else []
+            result.update(
+                {
+                    "send_sop": decision == "send" and bool(reply_messages),
+                    "reason": _string(output.get("reason")),
+                    "covered_pack_ids": [_string(item) for item in output.get("covered_pack_ids") or [] if _string(item)],
+                    "reply_messages": reply_messages,
+                }
+            )
+        except Exception as exc:
+            result.update(
+                {
+                    "mode": "quiet_backlog_fusion_model_error",
+                    "send_sop": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "reason": "quiet_backlog_fusion_model_failed",
+                }
+            )
+        return _finish(result, started)
 
     async def _judge_event_sop_with_retries(
         self,

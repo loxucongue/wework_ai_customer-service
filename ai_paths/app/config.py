@@ -24,12 +24,14 @@ class Settings(BaseSettings):
     aliyun_dashscope_api_key: str = Field(default="", repr=False)
     volcengine_ark_api_key: str = Field(default="", repr=False)
     model_relay_api_key: str = Field(default="", repr=False)
+    deepseek_api_key: str = Field(default="", alias="DEEPSEEK_API_KEY", repr=False)
     claude_relay_api_key: str = Field(default="", repr=False)
     anthropic_auth_token: str = Field(default="", repr=False)
     model_provider: str = "aliyun"
     aliyun_openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     volcengine_openai_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     model_relay_base_url: str = ""
+    deepseek_openai_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_OPENAI_BASE_URL")
     anthropic_base_url: str = ""
     model_relay_protocol: str = "auto"
     anthropic_version: str = "2023-06-01"
@@ -107,6 +109,14 @@ class Settings(BaseSettings):
     )
     sop_event_retry_poll_seconds: float = Field(default=5.0, alias="SOP_EVENT_RETRY_POLL_SECONDS")
     sop_event_retry_batch_size: int = Field(default=5, alias="SOP_EVENT_RETRY_BATCH_SIZE")
+    sop_quiet_backlog_fusion_enabled: bool = Field(default=True, alias="SOP_QUIET_BACKLOG_FUSION_ENABLED")
+    sop_quiet_backlog_fusion_time: str = Field(default="08:30", alias="SOP_QUIET_BACKLOG_FUSION_TIME")
+    sop_quiet_backlog_fusion_batch_size: int = Field(default=50, alias="SOP_QUIET_BACKLOG_FUSION_BATCH_SIZE")
+    sop_quiet_backlog_fusion_model: str = Field(default="deepseek-chat", alias="SOP_QUIET_BACKLOG_FUSION_MODEL")
+    sop_quiet_backlog_fusion_timeout_seconds: float = Field(
+        default=60.0,
+        alias="SOP_QUIET_BACKLOG_FUSION_TIMEOUT_SECONDS",
+    )
     sop_platform_pull_enabled: bool = Field(default=False, alias="SOP_PLATFORM_PULL_ENABLED")
     sop_platform_shadow_mode: bool = Field(default=True, alias="SOP_PLATFORM_SHADOW_MODE")
     sop_platform_base_url: str = Field(

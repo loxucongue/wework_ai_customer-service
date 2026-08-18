@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -55,6 +56,11 @@ class SopEventService:
         persistent_retry_base_delay_seconds: float = 30.0,
         persistent_retry_max_delay_seconds: float = 300.0,
         retry_batch_size: int = 5,
+        quiet_backlog_fusion_enabled: bool = True,
+        quiet_backlog_fusion_time: str = "08:30",
+        quiet_backlog_fusion_batch_size: int = 50,
+        quiet_backlog_fusion_model: str = "",
+        quiet_backlog_fusion_timeout_seconds: float = 60.0,
     ) -> None:
         self.repository = repository
         self.sop_reply_pack_service = sop_reply_pack_service
@@ -71,6 +77,11 @@ class SopEventService:
             float(persistent_retry_max_delay_seconds or 0.0),
         )
         self.retry_batch_size = max(1, int(retry_batch_size or 1))
+        self.quiet_backlog_fusion_enabled = bool(quiet_backlog_fusion_enabled)
+        self.quiet_backlog_fusion_time = _string(quiet_backlog_fusion_time) or "08:30"
+        self.quiet_backlog_fusion_batch_size = max(1, int(quiet_backlog_fusion_batch_size or 50))
+        self.quiet_backlog_fusion_model = _string(quiet_backlog_fusion_model)
+        self.quiet_backlog_fusion_timeout_seconds = max(5.0, float(quiet_backlog_fusion_timeout_seconds or 60.0))
         self.default_identity = {
             "corp_id": _string((default_identity or {}).get("corp_id")),
             "user_id": _string((default_identity or {}).get("user_id")),
@@ -202,6 +213,242 @@ class SopEventService:
         if not claimed:
             return []
         return list(await asyncio.gather(*(process_claimed(item) for item in claimed)))
+
+    async def process_due_quiet_backlog_fusions(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
+        """Recover first-add SOP tasks suppressed during quiet hours as one morning fusion touch."""
+        if not self.quiet_backlog_fusion_enabled or not self.sop_execution_service:
+            return []
+        window = _quiet_backlog_processing_window(
+            now or datetime.now(timezone.utc),
+            trigger_time=self.quiet_backlog_fusion_time,
+        )
+        if not window:
+            return []
+        list_tasks = getattr(self.repository, "list_quiet_hour_backlog_tasks", None)
+        if not callable(list_tasks):
+            return []
+        tasks = list_tasks(
+            start_at=window["start_at"],
+            end_at=window["end_at"],
+            limit=self.quiet_backlog_fusion_batch_size * 10,
+        )
+        groups = _group_quiet_backlog_tasks(tasks)
+        results: list[dict[str, Any]] = []
+        for group in groups[: self.quiet_backlog_fusion_batch_size]:
+            results.append(await self._process_quiet_backlog_group(group, local_date=window["local_date"]))
+        return results
+
+    async def _process_quiet_backlog_group(self, group: dict[str, Any], *, local_date: str) -> dict[str, Any]:
+        identity = group.get("identity") if isinstance(group.get("identity"), dict) else {}
+        event_id = _quiet_backlog_fusion_event_id(local_date, identity)
+        idempotency_key = _quiet_backlog_fusion_idempotency_key(local_date, identity)
+        get_existing = getattr(self.repository, "get_sop_send_task_by_idempotency_key", None)
+        if callable(get_existing):
+            existing = get_existing(idempotency_key)
+            if existing:
+                return {"status": existing.get("status"), "event_id": event_id, "task": existing, "duplicate": True}
+        fusion_customer = {
+            "corp_id": _string(identity.get("corp_id")),
+            "customer_id": _string(identity.get("customer_id")),
+            "external_userid": _string(identity.get("external_userid")),
+            "user_id": _string(identity.get("user_id")),
+            "wechat": _string(identity.get("wechat")),
+        }
+        payload = {
+            "event_id": event_id,
+            "event_type": "sop_quiet_backlog_fusion",
+            "source": "sop_quiet_backlog_worker",
+            "created_at": utc_now_iso(),
+            "customers": [fusion_customer],
+            "backlog_task_ids": [_string(task.get("id")) for task in group.get("tasks") or [] if _string(task.get("id"))],
+        }
+        self.repository.create_sop_event(payload)
+
+        conversation_fetch = await self.outreach_send_client.fetch_conversation(
+            corp_id=fusion_customer["corp_id"],
+            customer_id=fusion_customer["customer_id"],
+            external_userid=fusion_customer["external_userid"],
+            user_id=fusion_customer["user_id"],
+            wechat=fusion_customer["wechat"],
+            limit=50,
+        )
+        if conversation_fetch.get("status") != "ok":
+            task = self._create_task_record(
+                payload,
+                fusion_customer,
+                index=0,
+                identity=fusion_customer,
+                sop_pack_id="quiet_backlog_fusion",
+                sop_pack_name="quiet_backlog_fusion",
+                sop_category="quiet_backlog_fusion",
+                reply_messages=[],
+                status="failed_conversation_fetch",
+                error=str(conversation_fetch.get("error") or conversation_fetch.get("reason") or "conversation_fetch_failed"),
+                send_payload={
+                    "identity": fusion_customer,
+                    "backlog": group,
+                    "conversation_fetch": compact(conversation_fetch, max_chars=4000),
+                },
+            )
+            return {"status": task.get("status"), "event_id": event_id, "task": task}
+
+        conversation_messages = conversation_fetch.get("messages") if isinstance(conversation_fetch.get("messages"), list) else []
+        conversation_activity = _conversation_activity(conversation_messages, event_at=datetime.now(timezone.utc))
+        customer_memory = self._load_customer_memory(fusion_customer)
+        order_gate = self._load_sop_order_gate(fusion_customer, customer_memory)
+        customer_context = dict(order_gate.get("customer_context") or {})
+        pack_config = self.sop_reply_pack_service.load()
+        completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
+            customer_id=fusion_customer["customer_id"],
+            external_userid=fusion_customer["external_userid"],
+            corp_id=fusion_customer["corp_id"],
+            wechat=fusion_customer["wechat"],
+        )
+        completed_categories = _sent_categories(self.repository, fusion_customer)
+        backlog_packs = _quiet_backlog_candidate_packs(
+            pack_config,
+            group.get("tasks") if isinstance(group.get("tasks"), list) else [],
+            completed_ids=completed_ids,
+            completed_categories=completed_categories,
+        )
+        source_messages, source_lookup = _quiet_backlog_source_messages(
+            backlog_packs,
+            customer_memory=customer_memory,
+            customer_context=customer_context,
+        )
+        if not backlog_packs:
+            task = self._create_task_record(
+                payload,
+                fusion_customer,
+                index=0,
+                identity=fusion_customer,
+                sop_pack_id="quiet_backlog_fusion",
+                sop_pack_name="quiet_backlog_fusion",
+                sop_category="quiet_backlog_fusion",
+                reply_messages=[],
+                status="skipped_no_candidate_sop",
+                error="",
+                send_payload={
+                    "identity": fusion_customer,
+                    "backlog_task_ids": payload["backlog_task_ids"],
+                    "completed_sop_pack_ids": completed_ids,
+                    "completed_sop_categories": completed_categories,
+                },
+            )
+            return {"status": task.get("status"), "event_id": event_id, "task": task}
+
+        selector_input = {
+            "mode": "quiet_backlog_fusion",
+            "recovery_local_date": local_date,
+            "recent_conversation": _conversation_fetch_summary(conversation_fetch),
+            "recent_messages": _compact_conversation_messages(conversation_messages, limit=50),
+            "conversation_activity": conversation_activity,
+            "completed_sop_pack_ids": completed_ids,
+            "completed_sop_categories": completed_categories,
+            "backlog_task_ids": payload["backlog_task_ids"],
+            "backlog_sops": [_quiet_backlog_pack_summary(pack) for pack in backlog_packs],
+            "source_messages": source_messages,
+        }
+        deadline = time.monotonic() + self.quiet_backlog_fusion_timeout_seconds
+        decision = await self.sop_execution_service.evaluate_quiet_backlog_fusion(
+            selector_input,
+            model=self.quiet_backlog_fusion_model,
+            deadline_monotonic=deadline,
+        )
+        if not decision.get("send_sop"):
+            task = self._create_task_record(
+                payload,
+                fusion_customer,
+                index=0,
+                identity=fusion_customer,
+                sop_pack_id="quiet_backlog_fusion",
+                sop_pack_name="quiet_backlog_fusion",
+                sop_category="quiet_backlog_fusion",
+                reply_messages=[],
+                status="failed_model_error" if decision.get("error") else "skipped_model_rejected",
+                error=_string(decision.get("error")),
+                send_payload={
+                    "identity": fusion_customer,
+                    "event_decision_input": decision.get("selector_input", {}),
+                    "backlog": group,
+                },
+                send_response={"event_decision": decision},
+            )
+            return {"status": task.get("status"), "event_id": event_id, "task": task}
+
+        messages = _normalize_quiet_backlog_fusion_messages(decision.get("reply_messages"), source_lookup)
+        messages, sanitize_summary = sanitize_sop_reply_messages(messages, conversation_messages=conversation_messages)
+        if not messages:
+            task = self._create_task_record(
+                payload,
+                fusion_customer,
+                index=0,
+                identity=fusion_customer,
+                sop_pack_id="quiet_backlog_fusion",
+                sop_pack_name="quiet_backlog_fusion",
+                sop_category="quiet_backlog_fusion",
+                reply_messages=[],
+                status="skipped_empty_reply_messages",
+                error="quiet_backlog_fusion_empty_after_sanitize",
+                send_payload={"identity": fusion_customer, "message_sanitize": sanitize_summary, "backlog": group},
+                send_response={"event_decision": decision},
+            )
+            return {"status": task.get("status"), "event_id": event_id, "task": task}
+
+        payment_gate = _sop_payment_collection_gate(
+            messages,
+            customer_memory,
+            customer_context,
+            completed_sop_pack_ids=completed_ids,
+            completed_sop_categories=completed_categories,
+            require_activity_intro=False,
+        )
+        if payment_gate.get("status") not in {"not_required", "supported"}:
+            messages = [message for message in messages if _string(message.get("type")) != "payment_collection"]
+        if not messages:
+            task = self._create_task_record(
+                payload,
+                fusion_customer,
+                index=0,
+                identity=fusion_customer,
+                sop_pack_id="quiet_backlog_fusion",
+                sop_pack_name="quiet_backlog_fusion",
+                sop_category="quiet_backlog_fusion",
+                reply_messages=[],
+                status="skipped_empty_reply_messages",
+                error="quiet_backlog_fusion_empty_after_payment_gate",
+                send_payload={"identity": fusion_customer, "payment_collection_gate": payment_gate, "backlog": group},
+                send_response={"event_decision": decision},
+            )
+            return {"status": task.get("status"), "event_id": event_id, "task": task}
+
+        task = self._create_task_record(
+            payload,
+            fusion_customer,
+            index=0,
+            identity=fusion_customer,
+            sop_pack_id="quiet_backlog_fusion",
+            sop_pack_name="quiet_backlog_fusion",
+            sop_category="quiet_backlog_fusion",
+            reply_messages=messages,
+            status="pending",
+            error="",
+            send_once_key=_quiet_backlog_send_once_key(local_date, fusion_customer),
+            send_payload={
+                "identity": fusion_customer,
+                "routing_mode": "quiet_backlog_fusion",
+                "backlog_task_ids": payload["backlog_task_ids"],
+                "covered_sop_pack_ids": decision.get("covered_pack_ids") or [],
+                "event_decision_input": decision.get("selector_input", {}),
+                "message_sanitize": sanitize_summary,
+                "payment_collection_gate": payment_gate,
+            },
+            send_response={"event_decision": decision},
+        )
+        if not task.get("created") or _string(task.get("status")) != "pending":
+            return {"status": task.get("status"), "event_id": event_id, "task": task}
+        sent = await self._send_task(task)
+        return {"status": sent.get("status"), "event_id": event_id, "task": sent}
 
     async def _create_customer_task(self, payload: dict[str, Any], customer: dict[str, Any], *, index: int) -> dict[str, Any]:
         event_type = _string(payload.get("event_type"))
@@ -1416,6 +1663,252 @@ class SopEventService:
                 )
             except Exception:
                 pass
+
+
+def _quiet_backlog_processing_window(now: datetime, *, trigger_time: str) -> dict[str, str]:
+    local_now = now.astimezone(SOP_QUIET_TIMEZONE)
+    hour, minute = _parse_hour_minute(trigger_time, default_hour=8, default_minute=30)
+    trigger_at = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if local_now < trigger_at:
+        return {}
+    local_start = local_now.replace(hour=SOP_QUIET_START_HOUR, minute=0, second=0, microsecond=0)
+    local_end = local_now.replace(hour=SOP_QUIET_END_HOUR, minute=0, second=0, microsecond=0)
+    return {
+        "local_date": local_now.date().isoformat(),
+        "start_at": local_start.astimezone(timezone.utc).isoformat(),
+        "end_at": local_end.astimezone(timezone.utc).isoformat(),
+        "trigger_at": trigger_at.astimezone(timezone.utc).isoformat(),
+    }
+
+
+def _parse_hour_minute(value: str, *, default_hour: int, default_minute: int) -> tuple[int, int]:
+    text = _string(value)
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = max(0, min(23, int(hour_text)))
+        minute = max(0, min(59, int(minute_text)))
+        return hour, minute
+    except Exception:
+        return default_hour, default_minute
+
+
+def _group_quiet_backlog_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        if _string(task.get("event_type")) not in FIRST_ADD_EVENT_TYPES:
+            continue
+        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+        marker = send_payload.get("backlog_marker") if isinstance(send_payload.get("backlog_marker"), dict) else {}
+        if marker and marker.get("pending") is False:
+            continue
+        identity = {
+            "corp_id": _string(task.get("corp_id")),
+            "customer_id": _string(task.get("customer_id")),
+            "external_userid": _string(task.get("external_userid")),
+            "user_id": _string(task.get("user_id")),
+            "wechat": _string(task.get("wechat")),
+        }
+        if not identity["wechat"] or not (identity["external_userid"] or identity["customer_id"]):
+            continue
+        key = _quiet_backlog_contact_key(identity)
+        group = grouped.setdefault(key, {"key": key, "identity": identity, "tasks": []})
+        group["tasks"].append(task)
+    return sorted(grouped.values(), key=lambda item: _string((item.get("tasks") or [{}])[0].get("created_at")))
+
+
+def _quiet_backlog_contact_key(identity: dict[str, Any]) -> str:
+    customer_key = _string(identity.get("external_userid")) or _string(identity.get("customer_id"))
+    return "|".join(
+        [
+            _string(identity.get("corp_id")).lower(),
+            _string(identity.get("wechat")).lower(),
+            customer_key.lower(),
+        ]
+    )
+
+
+def _quiet_backlog_fusion_event_id(local_date: str, identity: dict[str, Any]) -> str:
+    digest = hashlib.sha1(_quiet_backlog_contact_key(identity).encode("utf-8")).hexdigest()[:16]
+    return f"quiet_backlog_fusion:{local_date}:{digest}"
+
+
+def _quiet_backlog_fusion_idempotency_key(local_date: str, identity: dict[str, Any]) -> str:
+    event_id = _quiet_backlog_fusion_event_id(local_date, identity)
+    customer = {
+        "corp_id": _string(identity.get("corp_id")),
+        "customer_id": _string(identity.get("customer_id")),
+        "external_userid": _string(identity.get("external_userid")),
+        "user_id": _string(identity.get("user_id")),
+        "wechat": _string(identity.get("wechat")),
+    }
+    payload = {"event_id": event_id, "event_type": "sop_quiet_backlog_fusion", "customers": [customer]}
+    return _idempotency_key(payload, customer, sop_pack_id="quiet_backlog_fusion", index=0)
+
+
+def _quiet_backlog_send_once_key(local_date: str, identity: dict[str, Any]) -> str:
+    return f"sop_quiet_backlog_fusion:{local_date}:{_quiet_backlog_contact_key(identity)}"
+
+
+def _quiet_backlog_candidate_packs(
+    config: dict[str, Any],
+    tasks: list[dict[str, Any]],
+    *,
+    completed_ids: list[str],
+    completed_categories: list[str],
+) -> list[dict[str, Any]]:
+    packs_by_id: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        payload = task.get("raw_event_payload") if isinstance(task.get("raw_event_payload"), dict) else {}
+        customer = _payload_customer_for_task(payload, task)
+        marker: dict[str, Any] = {}
+        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+        raw_marker = send_payload.get("backlog_marker") if isinstance(send_payload.get("backlog_marker"), dict) else {}
+        if isinstance(raw_marker.get("event"), dict):
+            marker = raw_marker["event"]
+        event_type = _string(payload.get("event_type")) or _string(task.get("event_type")) or "sop_friend_added_schedule_batch"
+        if event_type not in FIRST_ADD_EVENT_TYPES:
+            continue
+        match_context = _match_context(payload, customer)
+        for key in ("delay_minutes", "day_stage", "customer_state", "stage_tag"):
+            if _string(marker.get(key)) and not _string(match_context.get(key)):
+                match_context[key] = marker[key]
+        delay_minutes = _int(match_context.get("delay_minutes"), _int(marker.get("delay_minutes"), 0))
+        for pack in first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=completed_ids,
+            completed_sop_categories=completed_categories,
+            delay_minutes=delay_minutes,
+            event_type=event_type,
+            match_context=match_context,
+        ):
+            pack_id = _string(pack.get("id"))
+            if pack_id and pack_id not in packs_by_id:
+                packs_by_id[pack_id] = pack
+    return sorted(packs_by_id.values(), key=lambda item: (int(item.get("order") or 0), _string(item.get("id"))))
+
+
+def _payload_customer_for_task(payload: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    customers = payload.get("customers") if isinstance(payload.get("customers"), list) else []
+    task_customer = _string(task.get("customer_id"))
+    task_external = _string(task.get("external_userid"))
+    for item in customers:
+        if not isinstance(item, dict):
+            continue
+        identity = _customer_identity(payload, item)
+        if task_external and _string(identity.get("external_userid")).lower() == task_external.lower():
+            return item
+        if task_customer and _string(identity.get("customer_id")).lower() == task_customer.lower():
+            return item
+    return customers[0] if customers and isinstance(customers[0], dict) else {}
+
+
+def _quiet_backlog_source_messages(
+    packs: list[dict[str, Any]],
+    *,
+    customer_memory: dict[str, Any],
+    customer_context: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    output: list[dict[str, Any]] = []
+    lookup: dict[str, dict[str, Any]] = {}
+    for pack in packs:
+        pack_id = _string(pack.get("id"))
+        for message in _pack_messages(pack):
+            message_type = _string(message.get("type")).lower() or "text"
+            if message_type == "text":
+                continue
+            if message_type == "payment_collection" and not _sop_payment_collection_supported(
+                [message],
+                customer_memory,
+                customer_context,
+            ):
+                continue
+            source_id = f"{pack_id}:{int(message.get('order') or len(output) + 1)}"
+            normalized = {
+                "type": message_type,
+                "order": len(output) + 1,
+                "content": message.get("content") if isinstance(message.get("content"), dict) else {},
+            }
+            lookup[source_id] = normalized
+            output.append(
+                {
+                    "source_id": source_id,
+                    "pack_id": pack_id,
+                    "type": message_type,
+                    "content": compact(normalized.get("content"), max_chars=600),
+                }
+            )
+    return output, lookup
+
+
+def _quiet_backlog_pack_summary(pack: dict[str, Any]) -> dict[str, Any]:
+    messages: list[dict[str, Any]] = []
+    pack_id = _string(pack.get("id"))
+    for message in _pack_messages(pack):
+        message_type = _string(message.get("type")).lower() or "text"
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        summary: dict[str, Any] = {
+            "type": message_type,
+            "order": int(message.get("order") or 0),
+        }
+        if message_type == "text":
+            summary["text"] = _string(content.get("text"))
+        else:
+            summary["source_id"] = f"{pack_id}:{int(message.get('order') or 0)}"
+        messages.append(summary)
+    return {
+        "id": pack_id,
+        "name": _string(pack.get("name")),
+        "category": _pack_category(pack),
+        "purpose": _string(pack.get("purpose")),
+        "stage_tag": _string(pack.get("stage_tag")),
+        "delay_minutes": _int(pack.get("delay_minutes"), 0),
+        "messages": messages,
+    }
+
+
+def _normalize_quiet_backlog_fusion_messages(
+    raw_messages: Any,
+    source_lookup: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    items = raw_messages if isinstance(raw_messages, list) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        message_type = _string(item.get("type")).lower()
+        if message_type == "source":
+            source = source_lookup.get(_string(item.get("source_id")))
+            if source:
+                message = dict(source)
+                message["order"] = len(output) + 1
+                output.append(message)
+            continue
+        if message_type == "text":
+            text = _string(item.get("text"))
+            content = item.get("content") if isinstance(item.get("content"), dict) else {}
+            text = text or _string(content.get("text"))
+            if text:
+                output.append({"type": "text", "order": len(output) + 1, "content": {"text": text}})
+        if len(output) >= 5:
+            break
+    return output
+
+
+def _compact_conversation_messages(messages: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for message in messages[-limit:]:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        output.append(
+            {
+                "direction": _string(message.get("direction") or message.get("from") or message.get("sender_type") or message.get("role")),
+                "content": compact(content, max_chars=800) if isinstance(content, (dict, list)) else _string(content),
+                "created_at": _string(message.get("created_at") or message.get("time") or message.get("timestamp")),
+                "type": _string(message.get("type") or message.get("msgtype") or message.get("content_type")),
+            }
+        )
+    return output
 
 
 def _customer_identity(payload: dict[str, Any], customer: dict[str, Any]) -> dict[str, str]:

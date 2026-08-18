@@ -459,6 +459,46 @@ class SopEventRepositoryMixin:
             row = conn.execute("SELECT * FROM sop_send_tasks WHERE id=?", (task_id,)).fetchone()
         return self._decode_sop_send_task(dict(row)) if row else {}
 
+    def list_quiet_hour_backlog_tasks(
+        self,
+        *,
+        start_at: str,
+        end_at: str,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 500), 2000))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    t.*,
+                    e.event_type,
+                    e.raw_payload_json
+                FROM sop_send_tasks t
+                JOIN sop_events e ON e.event_id=t.event_id
+                WHERE t.status='skipped_quiet_hours_inactive'
+                  AND e.event_type IN ('sop_friend_added_schedule_batch','sop_friend_added_immediate')
+                  AND t.created_at>=?
+                  AND t.created_at<?
+                ORDER BY t.created_at ASC
+                LIMIT ?
+                """,
+                (start_at, end_at, safe_limit),
+            ).fetchall()
+        tasks: list[dict[str, Any]] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            raw_payload = loads_dict(row.pop("raw_payload_json", "{}"))
+            task = self._decode_sop_send_task(row)
+            task["raw_event_payload"] = raw_payload
+            task["event_type"] = str(row.get("event_type") or raw_payload.get("event_type") or "")
+            marker = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+            backlog_marker = marker.get("backlog_marker") if isinstance(marker.get("backlog_marker"), dict) else {}
+            if backlog_marker and backlog_marker.get("pending") is False:
+                continue
+            tasks.append(task)
+        return tasks
+
     def get_sop_send_task_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any]:
         with self.store.connect() as conn:
             row = conn.execute(

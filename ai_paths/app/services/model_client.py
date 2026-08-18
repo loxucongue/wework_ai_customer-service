@@ -163,6 +163,80 @@ class ModelClient:
             self.last_usage = usage
             return result
 
+    async def chat_json_model(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str,
+        tier: ModelTier = "balanced",
+        temperature: float = 0.0,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        if not self._api_key(model):
+            raise RuntimeError("No model API key configured")
+        request_started_at = time.monotonic()
+        deadline = self._resolve_deadline(tier, deadline_monotonic)
+
+        def build_payload(candidate: str, *, include_response_format: bool = True) -> dict[str, Any]:
+            payload = {
+                "model": candidate,
+                "messages": self._prepare_json_messages(messages),
+                "temperature": temperature,
+            }
+            self._apply_max_tokens(payload, json_mode=True)
+            if include_response_format and self.settings.model_response_format_enabled:
+                payload["response_format"] = {"type": "json_object"}
+            self._apply_relay_reasoning(payload, json_mode=True)
+            return payload
+
+        async def consume(raw: dict[str, Any]) -> dict[str, Any]:
+            return self._parse_json(self._extract_text(raw))
+
+        try:
+            return await self._run_with_transient_retries(
+                lambda: self._run_model_candidates(
+                    [model],
+                    tier=tier,
+                    build_payload=lambda candidate: build_payload(candidate, include_response_format=True),
+                    consume=consume,
+                    failure_label="JSON model failed",
+                    deadline_monotonic=deadline,
+                    max_parallel_candidates=1,
+                ),
+                deadline_monotonic=deadline,
+                deadline_seconds=max(0.0, deadline - request_started_at),
+            )
+        except Exception as exc:
+            strict_error = f"{type(exc).__name__}: {exc}"
+            if (
+                not self.settings.model_response_format_enabled
+                or not self._should_retry_json_without_response_format(exc)
+                or (deadline_monotonic is not None and time.monotonic() >= deadline_monotonic)
+            ):
+                raise
+            result = await self._run_with_transient_retries(
+                lambda: self._run_model_candidates(
+                    [model],
+                    tier=tier,
+                    build_payload=lambda candidate: build_payload(candidate, include_response_format=False),
+                    consume=consume,
+                    failure_label="JSON no-response-format model failed",
+                    deadline_monotonic=deadline,
+                    max_parallel_candidates=1,
+                ),
+                deadline_monotonic=deadline,
+                deadline_seconds=max(0.0, deadline - request_started_at),
+            )
+            usage = self.last_usage if isinstance(self.last_usage, dict) else {}
+            usage.update(
+                {
+                    "json_response_format_fallback": True,
+                    "json_response_format_strict_error": strict_error[:800],
+                }
+            )
+            self.last_usage = usage
+            return result
+
     async def vision_json(
         self,
         *,
@@ -681,7 +755,7 @@ class ModelClient:
         return model_selection.api_key(self.settings, model=model)
 
     def _base_url(self, model: str | None = None) -> str:
-        return model_selection.base_url(self.settings)
+        return model_selection.base_url(self.settings, model=model)
 
     def _anthropic_base_url(self, model: str | None = None) -> str:
         return self.settings.anthropic_base_url or self._base_url(model)

@@ -109,6 +109,11 @@ sop_event_service = SopEventService(
     persistent_retry_base_delay_seconds=settings.sop_event_persistent_retry_base_delay_seconds,
     persistent_retry_max_delay_seconds=settings.sop_event_persistent_retry_max_delay_seconds,
     retry_batch_size=settings.sop_event_retry_batch_size,
+    quiet_backlog_fusion_enabled=settings.sop_quiet_backlog_fusion_enabled,
+    quiet_backlog_fusion_time=settings.sop_quiet_backlog_fusion_time,
+    quiet_backlog_fusion_batch_size=settings.sop_quiet_backlog_fusion_batch_size,
+    quiet_backlog_fusion_model=settings.sop_quiet_backlog_fusion_model,
+    quiet_backlog_fusion_timeout_seconds=settings.sop_quiet_backlog_fusion_timeout_seconds,
 )
 sop_platform_task_service = SopPlatformTaskService(
     settings=settings,
@@ -211,6 +216,7 @@ async def _run_store_snapshot_refresh_worker() -> None:
 async def _run_outreach_plan_monitor_worker() -> None:
     while True:
         try:
+            await sop_event_service.process_due_quiet_backlog_fusions()
             if settings.outreach_first_day_silence_enabled:
                 await outreach_service.evaluate_first_day_opened_silence_customers(
                     limit=settings.outreach_plan_monitor_batch_size,
@@ -273,6 +279,7 @@ async def startup() -> None:
     if (
         settings.outreach_first_day_silence_enabled
         or settings.outreach_plan_monitor_enabled
+        or settings.sop_quiet_backlog_fusion_enabled
     ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
         outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
     if (

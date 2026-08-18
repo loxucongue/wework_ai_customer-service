@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1914,6 +1915,73 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             evidence["pending_backlog"]["items"][0]["event"]["stage_tag"],
             "price_quote",
         )
+
+    async def test_quiet_hour_backlog_fuses_suppressed_first_add_sops_after_0830(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[{"direction": "assistant", "content": "我先给您发一下活动。"}])
+        selector = _FusionSelector(
+            {
+                "send_sop": True,
+                "covered_pack_ids": ["effect", "activity"],
+                "reply_messages": [
+                    {"type": "text", "text": "亲，昨晚比较晚，我把重点一次给您发一下。"},
+                    {"type": "source", "source_id": "effect:2"},
+                    {"type": "text", "text": "活动价268元，线上10元先锁名额，到店抵扣。"},
+                ],
+            }
+        )
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=selector,
+            pack_service=_BacklogPackService(),
+            quiet_backlog_fusion_time="08:30",
+        )
+        payload = _base_payload(
+            event_id="evt_quiet_backlog",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-20T02:10:00+08:00",
+            sop={"delay_minutes": 60, "stage_tag": "activity"},
+            customers=[{"first_added_event": {"trace_id": "trace_backlog"}}],
+        )
+
+        repo.create_sop_event(payload)
+        await service.process_event("evt_quiet_backlog")
+        result = await service.process_due_quiet_backlog_fusions(now=_dt("2026-07-20T08:31:00+08:00"))
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["status"], "sent")
+        self.assertEqual(len(selector.calls), 1)
+        self.assertEqual(selector.calls[0]["mode"], "quiet_backlog_fusion")
+        self.assertEqual(selector.calls[0]["backlog_task_ids"], ["task_1"])
+        sent_messages = client.send_calls[-1]["reply_messages"]
+        self.assertEqual([item["type"] for item in sent_messages], ["text", "image", "text"])
+        self.assertEqual(sent_messages[1]["content"]["url"], "https://example.com/case.png")
+
+    async def test_quiet_hour_backlog_waits_until_configured_morning_time(self) -> None:
+        repo = _Repo()
+        selector = _FusionSelector({"send_sop": True, "reply_messages": [{"type": "text", "text": "补发"}]})
+        service = _service(
+            repo=repo,
+            client=_OutreachClient(messages=[]),
+            selector=selector,
+            pack_service=_BacklogPackService(),
+            quiet_backlog_fusion_time="08:30",
+        )
+        payload = _base_payload(
+            event_id="evt_quiet_wait",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-20T02:10:00+08:00",
+            sop={"delay_minutes": 60, "stage_tag": "activity"},
+            customers=[{"first_added_event": {"trace_id": "trace_backlog_wait"}}],
+        )
+
+        repo.create_sop_event(payload)
+        await service.process_event("evt_quiet_wait")
+        result = await service.process_due_quiet_backlog_fusions(now=_dt("2026-07-20T08:29:00+08:00"))
+
+        self.assertEqual(result, [])
+        self.assertEqual(selector.calls, [])
 
     async def test_event_merge_sends_two_adjacent_packs_as_one_sequence(self) -> None:
         class _MergePackService:
@@ -4933,6 +5001,7 @@ def _service(
     customer_context_service: Any | None = None,
     personalized_outreach_service: Any | None = None,
     daily_touch_soft_limit: int = 2,
+    quiet_backlog_fusion_time: str = "08:30",
 ) -> SopEventService:
     return SopEventService(
         repository=repo,
@@ -4944,7 +5013,12 @@ def _service(
         personalized_outreach_service=personalized_outreach_service,
         daily_touch_soft_limit=daily_touch_soft_limit,
         default_identity=default_identity,
+        quiet_backlog_fusion_time=quiet_backlog_fusion_time,
     )
+
+
+def _dt(value: str) -> datetime:
+    return datetime.fromisoformat(value)
 
 
 def _base_payload(
@@ -5123,6 +5197,43 @@ class _DepositPackService:
         }
 
 
+class _BacklogPackService:
+    def load(self) -> dict[str, Any]:
+        return {
+            "packs": [
+                {
+                    "id": "effect",
+                    "enabled": True,
+                    "scope": "event_first_add",
+                    "sop_category": "effect_case",
+                    "name": "效果展示",
+                    "purpose": "发送淡斑效果图",
+                    "order": 10,
+                    "event_type": "sop_friend_added_schedule_batch",
+                    "delay_minutes": 30,
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": "亲，先给您看下做完后的效果参考。"}},
+                        {"type": "image", "order": 2, "content": {"url": "https://example.com/case.png"}},
+                    ],
+                },
+                {
+                    "id": "activity",
+                    "enabled": True,
+                    "scope": "event_first_add",
+                    "sop_category": "activity_intro",
+                    "name": "活动介绍",
+                    "purpose": "介绍活动价和预约金规则",
+                    "order": 20,
+                    "event_type": "sop_friend_added_schedule_batch",
+                    "delay_minutes": 60,
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": "现在活动价268元，线上10元先锁名额。"}}
+                    ],
+                },
+            ]
+        }
+
+
 class _Selector:
     def __init__(self, output: dict[str, Any]) -> None:
         self.output = output
@@ -5130,6 +5241,15 @@ class _Selector:
 
     async def evaluate_event_suggestion(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
+        return dict(self.output)
+
+
+class _FusionSelector(_Selector):
+    async def evaluate_event_suggestion(self, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("quiet backlog fusion must not use event suggestion selector")
+
+    async def evaluate_quiet_backlog_fusion(self, selector_input: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(selector_input)
         return dict(self.output)
 
 
@@ -5341,6 +5461,26 @@ class _Repo:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         return [dict(task) for task in reversed(self.tasks[-limit:])]
+
+    def list_quiet_hour_backlog_tasks(self, *, start_at: str, end_at: str, limit: int = 500) -> list[dict[str, Any]]:
+        start = datetime.fromisoformat(start_at)
+        end = datetime.fromisoformat(end_at)
+        output: list[dict[str, Any]] = []
+        for task in self.tasks:
+            created = datetime.fromisoformat(str(task.get("created_at") or "1970-01-01T00:00:00+00:00"))
+            if task.get("status") != "skipped_quiet_hours_inactive":
+                continue
+            if not (start <= created < end):
+                continue
+            event_payload = self.events.get(str(task.get("event_id") or ""), {}).get("raw_payload", {})
+            output.append({**dict(task), "raw_event_payload": event_payload, "event_type": event_payload.get("event_type")})
+        return output[:limit]
+
+    def get_sop_send_task_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any]:
+        for task in self.tasks:
+            if task.get("idempotency_key") == idempotency_key:
+                return dict(task)
+        return {}
 
     def find_sop_event_identity(self, *, customer_id: str = "", external_userid: str = "", wechat: str = "") -> dict[str, str]:
         if self.identity_lookup_error:
