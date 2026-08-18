@@ -437,7 +437,7 @@ def test_content_decisions_are_normalized_as_audit_metadata_only() -> None:
             {
                 "content_id": "s10_activity_intro",
                 "decision": "skip",
-                "reason": "free_form_business_judgment",
+                "reason": "higher_priority",
             },
         ]
     )

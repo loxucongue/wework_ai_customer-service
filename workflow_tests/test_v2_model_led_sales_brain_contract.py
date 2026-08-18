@@ -231,6 +231,13 @@ def test_prompts_preserve_node_power_boundaries_without_scene_matching() -> None
 
 def test_reply_prompt_requires_real_progress_and_complete_deposit_facts() -> None:
     assert "推进是本轮实际完成交付" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "回答客户刚问的窄事实只是解决当前问题，不自动等于销售推进" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "必须产生可观察进展" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "只是把决定推回客户，不算推进" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "直接交付，不先索取许可" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "如果跳过，就不能在客户可见文字里预告、征求许可" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要使用 `higher_priority` 作为兜底" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "higher_priority\"" not in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "`sales_judgment.posture` 不得停在 `answer`" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "直接交付相关证据本身就是有效推进" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不必再叠加问题" in PARALLEL_REPLY_SYSTEM_PROMPT

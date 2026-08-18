@@ -1202,7 +1202,6 @@ def _normalized_content_decisions(value: Any) -> list[dict[str, str]]:
         "already_delivered",
         "irrelevant",
         "conflicting",
-        "higher_priority",
     }
     normalized: list[dict[str, str]] = []
     seen: set[str] = set()
