@@ -1647,7 +1647,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
             asyncio.run(client.consume(task_id=1, status=40))
 
-    async def test_pending_uses_unix_seconds_and_documented_limit(self) -> None:
+    async def test_pending_relies_on_upstream_due_time_and_uses_documented_limit(self) -> None:
         settings = _settings()
         settings.sop_platform_lookback_seconds = 604800
         settings.sop_platform_window_seconds = 60
@@ -1667,8 +1667,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         page = await client.pending()
 
         payload = client._request.await_args.kwargs["json_body"]  # type: ignore[union-attr]
-        self.assertIsInstance(payload["start_time"], int)
-        self.assertIsInstance(payload["end_time"], int)
+        self.assertNotIn("start_time", payload)
+        self.assertNotIn("end_time", payload)
         self.assertEqual(payload["limit"], 500)
         self.assertEqual(page["items"], [upstream_task])
         self.assertEqual(page["total"], 1)

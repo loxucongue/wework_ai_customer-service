@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -27,12 +26,7 @@ class SopPlatformClient:
     async def pending(self, *, limit: int | None = None) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("SOP_PLATFORM_TOKEN is not configured")
-        now = datetime.now(timezone.utc)
-        start = now - timedelta(seconds=max(1, self.settings.sop_platform_lookback_seconds))
-        end = now + timedelta(seconds=max(0, self.settings.sop_platform_window_seconds))
         payload = {
-            "start_time": int(start.timestamp()),
-            "end_time": int(end.timestamp()),
             "corp_id": "",
             "wechat": "",
             "limit": max(1, min(int(limit or self.settings.sop_platform_batch_size), 500)),
@@ -59,8 +53,6 @@ class SopPlatformClient:
         return {
             "items": items,
             "total": total,
-            "start_time": payload["start_time"],
-            "end_time": payload["end_time"],
             "limit": payload["limit"],
         }
 
