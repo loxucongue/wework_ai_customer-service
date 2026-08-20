@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
 
 from app.config import Settings
+
+
+class SopPlatformTaskStateError(RuntimeError):
+    """The platform rejected a transition because the task is already terminal."""
+
+    def __init__(self, *, state: str, payload: dict[str, Any]):
+        self.state = state
+        self.payload = payload
+        super().__init__(f"sop_platform_task_terminal_state:{state}: {payload}")
 
 
 class SopPlatformClient:
@@ -161,6 +171,13 @@ class SopPlatformClient:
             raise RuntimeError("sop_platform_invalid_response")
         code = payload.get("code")
         if code not in (None, 0, "0", 200, "200"):
+            message = str(payload.get("message") or "")
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            detail = " ".join((message, str(data.get("message") or ""))).strip()
+            state_match = re.search(r"当前状态[：:]\s*([^）)\s,，;；]+)", detail)
+            state = str(state_match.group(1) if state_match else "").strip()
+            if state in {"已取消", "已完成"}:
+                raise SopPlatformTaskStateError(state=state, payload=payload)
             raise RuntimeError(f"sop_platform_error: {payload}")
         return payload
 

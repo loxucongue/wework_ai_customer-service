@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.config import Settings
-from app.services.sop_platform_client import SopPlatformClient
+from app.services.sop_platform_client import SopPlatformClient, SopPlatformTaskStateError
 from app.services.sop_objection_material_service import SopObjectionMaterialService
 from app.services.sop_platform_task_service import (
     SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT,
@@ -80,6 +80,40 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(system.conversation_calls, 0)
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+
+    async def test_cancelled_platform_task_becomes_terminal_instead_of_recovering(self) -> None:
+        service, repo, platform, system = _service(model=_Model([]))
+        platform.consume_responses.append(
+            SopPlatformTaskStateError(
+                state="已取消",
+                payload={"code": 400, "message": "任务不可消费（当前状态：已取消）", "data": None},
+            )
+        )
+
+        result = await service.process_task(_task(), recovery_status="platform_claiming")
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(result["reason"], "platform_task_cancelled")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_cancelled")
+        self.assertEqual(repo.tasks["platform-sop:101"]["status"], "completed_without_send")
+        self.assertEqual(repo.tasks["platform-sop:101"]["error"], "platform_task_cancelled")
+        self.assertEqual(system.send_calls, [])
+
+    async def test_completed_platform_task_becomes_terminal_instead_of_recovering(self) -> None:
+        service, repo, platform, system = _service(model=_Model([]))
+        platform.consume_responses.append(
+            SopPlatformTaskStateError(
+                state="已完成",
+                payload={"code": 400, "message": "任务不可消费（当前状态：已完成）", "data": None},
+            )
+        )
+
+        result = await service.process_task(_task(), recovery_status="platform_claiming")
+
+        self.assertEqual(result["reason"], "platform_task_already_completed")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+        self.assertEqual(repo.tasks["platform-sop:101"]["status"], "completed_without_send")
+        self.assertEqual(system.send_calls, [])
 
     async def test_any_user_wechat_continues_existing_model_chain(self) -> None:
         model = _Model([{"decision": "send", "reason": "test", "reply_messages": [_text("正常发送")] }])
@@ -1912,6 +1946,22 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "invalid_json_response"):
             await client.pending()
 
+    async def test_platform_client_exposes_cancelled_task_as_terminal_state(self) -> None:
+        client = SopPlatformClient(_settings())
+        payload = {"code": 400, "message": "任务不可消费（当前状态：已取消）", "data": None}
+        response = SimpleNamespace(
+            status_code=200,
+            text=json.dumps(payload, ensure_ascii=False),
+            json=lambda: payload,
+        )
+        client._http_client = lambda: SimpleNamespace(request=AsyncMock(return_value=response))  # type: ignore[method-assign]
+
+        with self.assertRaises(SopPlatformTaskStateError) as raised:
+            await client.consume(task_id=8474, status=20)
+
+        self.assertEqual(raised.exception.state, "已取消")
+        self.assertEqual(raised.exception.payload, payload)
+
 
 class SopReplyPackScopeTests(unittest.TestCase):
     def test_load_hides_legacy_event_packs_and_save_rejects_event_scope(self) -> None:
@@ -2164,7 +2214,10 @@ class _Platform:
     async def consume(self, *, task_id, status):
         self.consume_calls.append((str(task_id), status))
         if self.consume_responses:
-            return self.consume_responses.pop(0)
+            response = self.consume_responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return response
         return {"code": 200, "data": {"task_id": task_id, "status": status}}
 
     async def pending(self, *, limit=None):

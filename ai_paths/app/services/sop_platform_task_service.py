@@ -18,6 +18,7 @@ from app.services.payment_collection import (
     PAYMENT_COLLECTION_UNIT_AMOUNT,
 )
 from app.services.sop_execution_service import is_platform_auto_opening_message
+from app.services.sop_platform_client import SopPlatformTaskStateError
 from app.services.sop_platform_scenes import (
     SOP_PLATFORM_KNOWLEDGE_SCENE_CODES,
     SOP_PLATFORM_MODEL_SCENE_CODES,
@@ -552,22 +553,54 @@ class SopPlatformTaskService:
         task_id = _task_id(platform_task)
         if not task_id:
             raise ValueError("platform task_id is required")
-        lock = self._locks.setdefault(task_id, asyncio.Lock())
-        async with lock:
-            contact_lock_key = _platform_contact_lock_key(platform_task)
-            if contact_lock_key:
-                contact_lock = self._locks.setdefault(f"platform-contact:{contact_lock_key}", asyncio.Lock())
-                async with contact_lock:
-                    return await self._process_with_content_lock(
-                        platform_task,
-                        task_id=task_id,
-                        recovery_status=recovery_status,
-                    )
-            return await self._process_with_content_lock(
-                platform_task,
-                task_id=task_id,
-                recovery_status=recovery_status,
+        try:
+            lock = self._locks.setdefault(task_id, asyncio.Lock())
+            async with lock:
+                contact_lock_key = _platform_contact_lock_key(platform_task)
+                if contact_lock_key:
+                    contact_lock = self._locks.setdefault(f"platform-contact:{contact_lock_key}", asyncio.Lock())
+                    async with contact_lock:
+                        return await self._process_with_content_lock(
+                            platform_task,
+                            task_id=task_id,
+                            recovery_status=recovery_status,
+                        )
+                return await self._process_with_content_lock(
+                    platform_task,
+                    task_id=task_id,
+                    recovery_status=recovery_status,
+                )
+        except SopPlatformTaskStateError as exc:
+            return self._finish_terminal_platform_task(platform_task, task_id=task_id, error=exc)
+
+    def _finish_terminal_platform_task(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        task_id: str,
+        error: SopPlatformTaskStateError,
+    ) -> dict[str, Any]:
+        event_id = f"platform_sop_task:{task_id}"
+        local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
+        reason = "platform_task_cancelled" if error.state == "已取消" else "platform_task_already_completed"
+        event_status = "platform_cancelled" if error.state == "已取消" else "platform_completed"
+        if local_task:
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="completed_without_send",
+                send_response={"platform_terminal_state": error.state, "response": error.payload},
+                error=reason,
             )
+        self.repository.update_sop_event_status(event_id, status=event_status, error=reason)
+        self._counters[reason] += 1
+        logger.info("Third-party SOP task %s reached platform terminal state: %s", task_id, error.state)
+        return {
+            "processed": True,
+            "status": "completed_without_send",
+            "task_id": task_id,
+            "reason": reason,
+            "platform_response": error.payload,
+        }
 
     async def _process_with_content_lock(
         self,
