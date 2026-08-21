@@ -55,7 +55,6 @@ from app.services.sop_platform_task_policy import (
 )
 from app.services.storage import AppRepository
 from app.services.storage.serialization import dumps, utc_now_iso
-from app.services.wechat_price_contract import enforce_wechat_price_contract
 
 
 OUTREACH_PERSUASION_ANGLES = {
@@ -6168,19 +6167,6 @@ class OutreachService:
                     terminal=not has_remaining,
                 )
                 return {"ok": True, "status": "skipped", "reason": reason}
-            reply_messages, price_contract_audit = enforce_wechat_price_contract(
-                reply_messages,
-                wechat=identity["wechat"],
-            )
-            if price_contract_audit.get("applied"):
-                self.repository.add_outreach_event(
-                    plan_id=str(task["plan_id"]),
-                    task_id=task_id,
-                    customer_id=str(task["customer_id"]),
-                    event_type="wechat_price_contract_applied",
-                    event_summary="Corrected activity price for the receiving WeChat account",
-                    payload=price_contract_audit,
-                )
             task = self.repository.update_outreach_task(
                 task_id,
                 status="sending",
@@ -6379,10 +6365,6 @@ class OutreachService:
         plan_detail = self.repository.get_outreach_plan(str(task["plan_id"]))
         plan = plan_detail.get("plan") or {}
         reply_messages = await self._generate_task_messages(task=task, plan=plan)
-        reply_messages, _ = enforce_wechat_price_contract(
-            reply_messages,
-            wechat=task.get("wechat") or plan.get("wechat"),
-        )
         task = self.repository.update_outreach_task(
             task_id,
             status=str(task.get("status") or "pending"),

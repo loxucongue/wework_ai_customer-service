@@ -28,7 +28,6 @@ from app.services.reply_governance import reply_governance_flags
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository
-from app.services.wechat_price_contract import enforce_wechat_price_contract
 from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
 
@@ -1157,13 +1156,6 @@ class ChatRuntime:
             raw_reply_messages = _deterministic_final_fallback_messages(final_state)
             final_state["reply_messages"] = raw_reply_messages
             final_state["reply_source"] = "deterministic_empty_reply_fallback"
-        raw_reply_messages, price_contract_audit = enforce_wechat_price_contract(
-            [message for message in raw_reply_messages if isinstance(message, dict)],
-            wechat=request.wechat,
-        )
-        if price_contract_audit.get("applied"):
-            final_state["wechat_price_contract_audit"] = price_contract_audit
-            final_state["reply_messages"] = raw_reply_messages
         reply_messages = [ReplyMessage(**message) for message in raw_reply_messages]
         if reply_messages and not bool(final_state.get("test_isolated")):
             safe_repository_call(

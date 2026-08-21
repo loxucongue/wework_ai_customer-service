@@ -6,7 +6,6 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.services.wechat_price_contract import enforce_wechat_price_contract
 
 
 class OutreachSystemClient:
@@ -62,7 +61,6 @@ class OutreachSystemClient:
         rule_name: str | None = None,
         rule_task_id: str | int | None = None,
     ) -> dict[str, Any]:
-        reply_messages, _ = enforce_wechat_price_contract(reply_messages, wechat=wechat)
         body = {
             "corp_id": corp_id,
             "customer_id": customer_id,
