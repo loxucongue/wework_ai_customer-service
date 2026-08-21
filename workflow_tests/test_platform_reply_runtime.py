@@ -138,7 +138,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.saved_states[-1]["reply_source"], "platform_superseded")
         self.assertEqual(repository.saved_states[-1]["reply_control"]["sync_return"]["type"], "empty")
 
-    async def test_platform_auto_opening_returns_sop_before_planner(self) -> None:
+    async def test_platform_auto_opening_returns_empty_before_gate_and_planner(self) -> None:
         graph = _UnexpectedGraph()
         repository = _Repository()
         runtime = ChatRuntime(
@@ -150,21 +150,16 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         response = await runtime.run_platform_reply(_request("我已经添加了你，现在我们可以开始聊天了。"))
 
-        self.assertEqual([message.type for message in response.reply_messages], ["text"])
-        self.assertEqual(response.reply_messages[0].content["text"], "新客破冰话术")
+        self.assertEqual(response.reply_messages, [])
         self.assertFalse(graph.called)
         self.assertTrue(repository.saved_states)
         state = repository.saved_states[-1]
-        self.assertEqual(state["reply_source"], "sop_gate")
-        self.assertEqual(state["planner_decision"], "direct_reply")
-        self.assertEqual(state["planner_stage"], "SOP")
-        self.assertEqual(state["async_final_reply"]["scheduled"], False)
-        self.assertEqual(state["async_final_reply"]["status"], "not_required")
-        self.assertEqual(state["reply_control"]["sync_return"]["type"], "sop_reply")
-        self.assertEqual(len(state["reply_messages"]), 1)
+        self.assertEqual(state["reply_source"], "ignored_platform_auto_message")
+        self.assertEqual(state["reply_control"]["sync_return"]["type"], "empty")
+        self.assertEqual(state["trace"][-1]["reason"], "platform_auto_opening_ignored")
         workflow_body = workflow_response_from_chat(response)
         self.assertEqual(workflow_body["code"], 0)
-        self.assertEqual(len(workflow_body["data"]["reply_messages"]), 1)
+        self.assertEqual(workflow_body["data"]["reply_messages"], [])
 
     async def test_platform_recalled_message_returns_empty_before_model_graph(self) -> None:
         graph = _UnexpectedGraph()
