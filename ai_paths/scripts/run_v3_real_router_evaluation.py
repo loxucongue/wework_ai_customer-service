@@ -109,7 +109,7 @@ def _recent_identities(db_path: Path, *, hours: int, pool_size: int) -> list[dic
 
 
 def _message_role(message: dict[str, Any]) -> str:
-    for key in ("role", "direction", "sender_type", "message_role", "from_type"):
+    for key in ("role", "from", "direction", "sender_type", "message_role", "from_type"):
         value = _text(message.get(key)).lower()
         if value in {"user", "customer", "inbound", "external", "client"}:
             return "customer"

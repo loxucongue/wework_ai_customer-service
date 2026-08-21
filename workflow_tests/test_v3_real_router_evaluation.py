@@ -39,6 +39,18 @@ def test_conversation_stops_before_messages_after_last_customer_turn() -> None:
     assert current["message_ref"] == "current_message"
 
 
+def test_platform_from_field_maps_customer_and_staff_roles() -> None:
+    normalized = _normalized_conversation(
+        [
+            {"from": "staff", "content": "您好"},
+            {"from": "customer", "content": "离我远吗"},
+        ],
+        identity_values=[],
+    )
+
+    assert [item["role"] for item in normalized] == ["assistant", "customer"]
+
+
 def test_simulated_case_id_is_stable_and_contains_no_real_identity() -> None:
     identity = {
         "corp_id": "corp-secret",
