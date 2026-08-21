@@ -73,6 +73,25 @@ class ChatRuntime:
         )
         initial_state = self._initial_state(request, request_id, request_context)
 
+        if is_platform_auto_opening_message(request.content):
+            initial_state["reply_messages"] = []
+            initial_state["reply_source"] = "ignored_platform_auto_message"
+            initial_state.setdefault("trace", []).append(
+                {
+                    "node": "platform_protocol_filter",
+                    "decision": "no_reply",
+                    "reason": "platform_auto_opening_ignored",
+                }
+            )
+            _set_sync_return(initial_state, "empty", [])
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=initial_state,
+                allow_empty_reply=True,
+            )
+
         try:
             final_state = await self._invoke_graph_with_budget(self._full_graph, initial_state, phase="full")
         except Exception as exc:
@@ -196,38 +215,28 @@ class ChatRuntime:
                 allow_empty_reply=True,
             )
 
-        # WeCom's automatic opening remains a protocol-level special case.
-        # Every ordinary customer message enters the same parallel evidence
-        # graph; Gate no longer commits tasks before Reply has validated the
-        # final customer-visible response.
+        # WeCom sends this fixed sentence when a friend is added. It is a
+        # platform protocol event, not a customer question.
         if is_platform_auto_opening_message(effective_request.content):
-            sop_gate = await self._evaluate_sop_gate(effective_request, request_id, effective_context)
-            initial_state["sop_gate"] = sop_gate
-            _append_sop_gate_trace(initial_state, sop_gate)
-            if sop_gate.get("send_sop"):
-                final_state = self._sop_reply_state(initial_state, sop_gate)
-                if self._platform_reply_coordinator:
-                    await self._platform_reply_coordinator.complete(control_record)
-                return self._persist_and_build_response(
-                    request=request,
-                    request_id=request_id,
-                    conversation_id=conversation_id,
-                    final_state=final_state,
-                    allow_empty_reply=True,
-                )
-            if _sop_gate_terminal_no_reply(sop_gate):
-                terminal_state = dict(initial_state)
-                terminal_state["reply_messages"] = []
-                terminal_state["reply_source"] = str(sop_gate.get("mode") or "sop_gate_no_reply")
-                if self._platform_reply_coordinator:
-                    await self._platform_reply_coordinator.complete(control_record)
-                return self._persist_and_build_response(
-                    request=request,
-                    request_id=request_id,
-                    conversation_id=conversation_id,
-                    final_state=terminal_state,
-                    allow_empty_reply=True,
-                )
+            initial_state["reply_messages"] = []
+            initial_state["reply_source"] = "ignored_platform_auto_message"
+            initial_state.setdefault("trace", []).append(
+                {
+                    "node": "platform_protocol_filter",
+                    "decision": "no_reply",
+                    "reason": "platform_auto_opening_ignored",
+                }
+            )
+            _set_sync_return(initial_state, "empty", [])
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=initial_state,
+                allow_empty_reply=True,
+            )
 
         try:
             final_state = await self._run_graph_with_preemption(
