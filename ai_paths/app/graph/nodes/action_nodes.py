@@ -23,6 +23,7 @@ from app.services.coze_client import CozeClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.customer_payment_state import is_paid_deposit_state, normalize_prepay_facts
 from app.services.customer_order_context import order_status_text
+from app.services.driving_route_service import rerank_stores_by_driving_route
 from app.services.store_fact_integrity import (
     filter_valid_store_facts,
     store_fact_is_valid,
@@ -1453,6 +1454,7 @@ async def _resolve_customer_store_workflow(
         "query": query,
         "customer_raw_query": str(destination.get("source_query") or "").strip(),
         "purpose": str(effective_tool.get("purpose") or destination.get("request_kind") or "store_resolution_workflow"),
+        "request_kind": str(destination.get("request_kind") or "match_location"),
         "evidence_refs": list(destination.get("evidence_refs") or []),
         "expected_admin": dict(destination.get("administrative_context") or {}),
         "use_resolver_admin_fallback": bool(effective_tool.get("use_resolver_admin_fallback")),
@@ -1527,6 +1529,19 @@ def _store_workflow_should_rank_all_visible(
     precision = str(destination.get("destination_precision") or "unknown")
     if precision == "province":
         return False
+    # A broad city/district request with local stores is already fully resolved:
+    # return the same-city choices and never introduce another city merely because
+    # one of its stores is closer to the administrative centre. Precise POIs and
+    # coordinates still rank the complete visible scope because a neighbouring
+    # district can genuinely be nearer to the customer's point.
+    if (
+        (
+            lookup.get("same_city_has_store") is True
+            or lookup.get("exact_scope_has_store") is True
+        )
+        and precision in {"city", "district", "unknown"}
+    ):
+        return False
     return bool(destination.get("destination_query"))
 
 
@@ -1542,6 +1557,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         str(tool.get("query") or tool.get("origin") or tool.get("address") or raw_query)
     )
     purpose = str(tool.get("purpose") or "").strip()
+    request_kind = str(tool.get("request_kind") or "").strip()
     raw_scope_stores = _customer_scope_stores(state)
     stores, invalid_scope_stores = filter_valid_store_facts(
         raw_scope_stores,
@@ -1931,6 +1947,21 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     candidates = [] if geocode_conflict else _stores_for_geocode(scope_geocode, stores, purpose)
     source = "customer_scope_geocode_conflict_ignored" if geocode_conflict else "customer_scope_geocode"
     exact_scope_has_store = _geocode_exact_scope_has_store(scope_geocode, candidates, scope_level)
+    # V3 broad store matching follows the business coverage boundary at city
+    # level: if the resolved city has visible stores, only those stores are
+    # offered. District borders must not cause a cross-city recommendation.
+    # Named-store details and precise-POI ranking keep their narrower behavior.
+    if (
+        bool(tool.get("allow_broad_scope_delivery"))
+        and request_kind not in {"store_detail", "reuse_store"}
+        and scope_level in {"city", "district"}
+        and str(scope_geocode.get("city") or "").strip()
+        and not exact_store_reference
+    ):
+        city_candidates = _stores_for_city_scope(scope_geocode, stores)
+        if city_candidates:
+            candidates = city_candidates
+            source = "customer_scope_same_city_all"
     # Text scoring may refine an exact-area match or an explicit store name. It must
     # not collapse parent-city/province fallback candidates, because the repeated
     # parent place name is not evidence that one fallback store is nearer.
@@ -1961,11 +1992,11 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         {
             "query": resolved_query,
             "geocode": scope_geocode,
-            "candidate_stores": [_store_lookup_item(store) for store in candidates[:60]],
+            "candidate_stores": [_store_lookup_item(store) for store in candidates],
         }
     )
 
-    normalized = [_store_lookup_item(store) for store in candidates[:60]]
+    normalized = [_store_lookup_item(store) for store in candidates]
     scope_fields = _store_lookup_scope_fields(
         {
             "query": resolved_query,
@@ -2389,6 +2420,26 @@ async def _distance_calculate(
             not candidate_scope_truncated
             and comparable_count == len(all_candidates)
         )
+        route_result = {
+            "status": "not_attempted",
+            "ranking_method": "haversine",
+            "ranked_stores": ranked_stores,
+            "route_candidate_count": 0,
+            "route_success_count": 0,
+            "route_ranking_complete": False,
+            "route_shortlist_size": 0,
+        }
+        route_workflow_id = str(
+            getattr(coze_client.settings, "distance_workflow_id", "") or ""
+        ).strip()
+        if ranking_complete and route_workflow_id:
+            route_result = await rerank_stores_by_driving_route(
+                coze_client=coze_client,
+                workflow_id=route_workflow_id,
+                origin_location=str(origin_geo.get("location") or ""),
+                ranked_stores=ranked_stores,
+            )
+            ranked_stores = list(route_result.get("ranked_stores") or ranked_stores)
         origin_precision = str(tool.get("origin_precision") or "unknown").strip()
         requested_claim_level = str(tool.get("ranking_claim_level") or "").strip()
         ranking_claim_level = (
@@ -2400,7 +2451,7 @@ async def _distance_calculate(
             "origin": origin,
             "geocode_origin": geocode_origin,
             "origin_geocode": {key: origin_geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")},
-            "ranking_method": "haversine",
+            "ranking_method": str(route_result.get("ranking_method") or "haversine"),
             "ranking_complete": ranking_complete,
             "ranking_claim_level": ranking_claim_level,
             "origin_precision": origin_precision,
@@ -2412,6 +2463,12 @@ async def _distance_calculate(
             "ranked_candidate_count": comparable_count,
             "unranked_candidate_count": max(0, len(all_candidates) - comparable_count),
             "candidate_scope_truncated": candidate_scope_truncated,
+            "route_status": str(route_result.get("status") or "not_attempted"),
+            "route_candidate_count": int(route_result.get("route_candidate_count") or 0),
+            "route_success_count": int(route_result.get("route_success_count") or 0),
+            "route_ranking_complete": bool(route_result.get("route_ranking_complete")),
+            "route_shortlist_size": int(route_result.get("route_shortlist_size") or 0),
+            "route_errors": list(route_result.get("route_errors") or []),
             "filtered_invalid_stores": invalid_candidates,
             **_distance_lookup_scope_fields(tool, tool_results or {}),
         }
@@ -2547,6 +2604,19 @@ def _stores_for_geocode(geocode: dict[str, Any], stores: list[dict[str, Any]], p
     if province:
         return [store for store in stores if _region_equal(store.get("province"), province)]
     return []
+
+
+def _stores_for_city_scope(geocode: dict[str, Any], stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    province = str(geocode.get("province") or "").strip()
+    city = str(geocode.get("city") or "").strip()
+    if not city:
+        return []
+    return [
+        store
+        for store in stores
+        if (not province or _region_equal(store.get("province"), province))
+        and _region_equal(store.get("city"), city)
+    ]
 
 
 def _geocode_for_query_scope(query: str, geocode: dict[str, Any]) -> dict[str, Any]:
@@ -2978,6 +3048,14 @@ def _store_lookup_scope_fields(result: dict[str, Any]) -> dict[str, Any]:
     candidates = result.get("candidate_stores") if isinstance(result.get("candidate_stores"), list) else []
     resolved_level = _geocode_resolved_admin_level(str(result.get("query") or ""), geocode)
     exact_has_store = _geocode_exact_scope_has_store(geocode, candidates, resolved_level)
+    city = str(geocode.get("city") or "").strip()
+    same_city_has_store = bool(
+        city
+        and any(
+            isinstance(store, dict) and _region_equal(store.get("city"), city)
+            for store in candidates
+        )
+    )
     return {
         "province": str(geocode.get("province") or "").strip(),
         "city": str(geocode.get("city") or "").strip(),
@@ -2986,6 +3064,7 @@ def _store_lookup_scope_fields(result: dict[str, Any]) -> dict[str, Any]:
         "resolved_admin_level": resolved_level,
         "scope_match_level": _geocode_scope_match_level(geocode, candidates, resolved_level, exact_has_store),
         "exact_scope_has_store": exact_has_store,
+        "same_city_has_store": same_city_has_store,
     }
 
 
@@ -3006,6 +3085,7 @@ _STORE_LOOKUP_SCOPE_FIELD_NAMES = (
     "resolved_admin_level",
     "scope_match_level",
     "exact_scope_has_store",
+    "same_city_has_store",
 )
 
 

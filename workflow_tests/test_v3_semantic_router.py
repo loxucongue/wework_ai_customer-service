@@ -6,8 +6,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.prompts.v3_semantic_router import (
+    V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT,
+    V3_POST_STORE_ROUTER_SYSTEM_PROMPT,
     V3_SCRIPT_SELECTOR_SYSTEM_PROMPT,
+    V3_SEQUENCE_SELECTOR_SYSTEM_PROMPT,
     V3_SEMANTIC_ROUTER_SYSTEM_PROMPT,
+    build_v3_checkpoint_router_messages,
+    build_v3_post_store_router_messages,
+    build_v3_sequence_selector_messages,
     build_v3_semantic_router_messages,
 )
 from app.services.deepseek_semantic_client import DeepSeekSemanticClient
@@ -15,6 +21,7 @@ from app.services.v3_semantic_router_service import (
     V3SemanticRouterService,
     _expand_sequence_action_queries,
     _normalize_semantic_route,
+    _sequences_for_checkpoint,
 )
 from app.graph.nodes.parallel_reply_chain import _v3_available_assets_for_turn
 
@@ -85,37 +92,27 @@ class _SemanticClient:
         self.calls += 1
         if "参考话术检索器" in messages[0]["content"]:
             return {"selected_script_ids": self.selected_scripts, "reason": "互补证据"}
+        if "跟进知识检索器" in messages[0]["content"]:
+            return {
+                "sequence_match": {
+                    "sequence_ids": ["18", "unknown"],
+                    "relevant_step_ids": ["181", "unknown-step"],
+                    "reason": "先承接距离，再换价值维度",
+                }
+            }
         return {
+            "classification_status": "clear",
             "checkpoint": {
                 "primary_code": "distance",
                 "secondary_code": "",
                 "evidence_refs": ["conv_002"],
                 "reason": "客户明确认为最近门店仍远",
             },
-            "sequence_match": {
-                "sequence_ids": ["18", "unknown"],
-                "relevant_step_ids": ["181", "unknown-step"],
-                "reason": "先承接距离，再换价值维度",
-            },
             "store_query": {
                 "required": False,
                 "purpose": "none",
                 "location_evidence_refs": [],
             },
-            "script_queries": [
-                {
-                    "checkpoint_code": "distance",
-                    "action_code": "empathy",
-                    "sequence_id": "18",
-                    "step_id": "181",
-                },
-                {
-                    "checkpoint_code": "distance",
-                    "action_code": "resolve",
-                    "sequence_id": "18",
-                    "step_id": "181",
-                },
-            ],
         }
 
 
@@ -171,6 +168,7 @@ def test_router_selects_real_sequence_steps_and_queries_matching_scripts() -> No
             "action_code": "empathy",
             "sequence_id": "18",
             "step_id": "181",
+            "query_source": "selected_sequence_action_coverage",
         },
         {
             "checkpoint_code": "distance",
@@ -187,7 +185,7 @@ def test_router_selects_real_sequence_steps_and_queries_matching_scripts() -> No
     assert "description" not in selected_sequence
     assert "objective" not in selected_sequence["steps"][0]
     assert result["tool_plan"]["decision"] == "facts_sufficient"
-    assert semantic.calls == 1
+    assert semantic.calls == 2
 
 
 def test_router_uses_second_stage_only_above_threshold() -> None:
@@ -201,7 +199,7 @@ def test_router_uses_second_stage_only_above_threshold() -> None:
 
     result = asyncio.run(service.route(shared_context=_shared_context()))
 
-    assert semantic.calls == 2
+    assert semantic.calls == 3
     assert result["knowledge_evidence"]["script_option_count"] == 13
     assert [item["source_id"] for item in result["knowledge_evidence"]["candidates"]] == ["D02", "D05"]
 
@@ -231,7 +229,169 @@ def test_router_reuses_parallel_prefetched_sequence_index() -> None:
     assert knowledge.sequence_calls == 0
 
 
+class _TwoPhaseStoreSemantic(_SemanticClient):
+    async def chat_json(self, messages):
+        self.calls += 1
+        if "轻量语义路由器" in messages[0]["content"]:
+            return {
+                "classification_status": "clear",
+                "checkpoint": {
+                    "primary_code": "distance",
+                    "evidence_refs": ["current_message"],
+                    "reason": "客户给出新地点并明确嫌远",
+                },
+                "store_query": {
+                    "required": True,
+                    "purpose": "store_search",
+                    "location_evidence_refs": ["current_message"],
+                    "destination_hint": "柳州",
+                },
+            }
+        return {
+            "sequence_match": {
+                "sequence_ids": ["18"],
+                "relevant_step_ids": ["182"],
+                "reason": "查询后切换效果价值",
+            },
+            "store_result_interpretation": {
+                "resolved_current_request": True,
+                "remaining_customer_concern_refs": ["current_message", "unknown"],
+                "reason": "同一目的地没有更近候选",
+            },
+        }
+
+
+def test_store_route_defers_sequences_and_scripts_until_store_fact_exists() -> None:
+    semantic = _TwoPhaseStoreSemantic()
+    knowledge = _KnowledgeClient(script_count=2)
+    service = V3SemanticRouterService(
+        semantic_client=semantic,
+        knowledge_client=knowledge,
+    )
+    sequence_result = {"status": "ok", "total": 1, "items": [_sequence()]}
+
+    pre = asyncio.run(
+        service.route(
+            shared_context=_shared_context("柳州这家太远了"),
+            sequence_result=sequence_result,
+        )
+    )
+
+    assert pre["semantic_route"]["phase"] == "pre_store_pending"
+    assert pre["semantic_route"]["checkpoint"]["primary_code"] == ""
+    assert pre["semantic_route"]["provisional_checkpoint"]["primary_code"] == "distance"
+    assert pre["semantic_route"]["sequence_match"]["sequence_ids"] == []
+    assert pre["semantic_route"]["script_queries"] == []
+    assert pre["knowledge_evidence"]["status"] == "deferred_until_store_resolution"
+    assert knowledge.script_queries == []
+
+    final = asyncio.run(
+        service.route_after_store(
+            shared_context=_shared_context(),
+            pre_route=pre["semantic_route"],
+            store_resolution_fact={
+                "status": "send_single",
+                "candidate_search_complete": True,
+                "recommendation_final_for_destination": True,
+                "delivery_store_ids": ["241"],
+            },
+            sequence_result=sequence_result,
+        )
+    )
+
+    route = final["semantic_route"]
+    assert route["phase"] == "post_store_final"
+    assert route["checkpoint"]["primary_code"] == "distance"
+    assert route["store_query"]["required"] is False
+    assert route["store_result_interpretation"]["remaining_customer_concern_refs"] == ["current_message"]
+    assert knowledge.script_queries == [("distance", "empathy"), ("distance", "case")]
+    assert final["knowledge_evidence"]["candidate_count"] == 2
+    assert semantic.calls == 2
+
+
+class _InquiryStoreSemantic(_SemanticClient):
+    async def chat_json(self, messages):
+        self.calls += 1
+        if "轻量语义路由器" in messages[0]["content"]:
+            return {
+                "classification_status": "clear",
+                "checkpoint": {
+                    "primary_code": "inquiry",
+                    "evidence_refs": ["current_message"],
+                    "reason": "客户只询问柳州门店",
+                },
+                "store_query": {
+                    "required": True,
+                    "purpose": "store_search",
+                    "location_evidence_refs": ["current_message"],
+                    "destination_hint": "柳州",
+                },
+            }
+        return {
+            "sequence_match": {"sequence_ids": [], "relevant_step_ids": []},
+            "store_result_interpretation": {
+                "resolved_current_request": False,
+                "remaining_customer_concern_refs": ["current_message"],
+                "reason": "查询不完整",
+            },
+        }
+
+
+def test_post_store_fact_does_not_turn_plain_store_inquiry_into_distance() -> None:
+    semantic = _InquiryStoreSemantic()
+    service = V3SemanticRouterService(
+        semantic_client=semantic,
+        knowledge_client=_KnowledgeClient(script_count=2),
+    )
+    sequence_result = {"status": "ok", "total": 1, "items": [_sequence()]}
+    shared = _shared_context("柳州有店吗")
+
+    pre = asyncio.run(service.route(shared_context=shared, sequence_result=sequence_result))
+    final = asyncio.run(
+        service.route_after_store(
+            shared_context=shared,
+            pre_route=pre["semantic_route"],
+            store_resolution_fact={"status": "search_incomplete", "candidate_search_complete": False},
+            sequence_result=sequence_result,
+        )
+    )
+
+    assert final["semantic_route"]["checkpoint"]["primary_code"] == "inquiry"
+    assert final["semantic_route"]["sequence_match"]["sequence_ids"] == []
+    assert final["semantic_route"]["script_queries"] == []
+    assert final["semantic_route"]["store_result_interpretation"]["resolved_current_request"] is False
+
+
+def test_non_store_route_uses_checkpoint_then_filtered_sequence_selection() -> None:
+    semantic = _SemanticClient()
+    knowledge = _KnowledgeClient(script_count=2)
+    service = V3SemanticRouterService(
+        semantic_client=semantic,
+        knowledge_client=knowledge,
+    )
+
+    result = asyncio.run(service.route(shared_context=_shared_context()))
+
+    assert result["semantic_route"]["phase"] == "non_store_final"
+    assert semantic.calls == 2
+    assert result["knowledge_evidence"]["candidate_count"] == 2
+
+
 def test_semantic_prompts_do_not_delegate_customer_reply_or_close_decision() -> None:
+    assert "不得生成客户话术、序列、步骤、成交动作" in V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
+    assert "门店结果尚未查询时，不得因为猜测某地无店而生成 distance" in V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
+    assert "你不生成客户话术，不决定 Reply 最终采用哪个动作" in V3_SEQUENCE_SELECTOR_SYSTEM_PROMPT
+    checkpoint_rendered = build_v3_checkpoint_router_messages(shared_context=_shared_context())
+    assert "【完整聊天】" in checkpoint_rendered[1]["content"]
+    assert "【已启用跟进序列索引】" not in checkpoint_rendered[1]["content"]
+    sequence_rendered = build_v3_sequence_selector_messages(
+        shared_context=_shared_context(),
+        checkpoint_route={"checkpoint": {"primary_code": "distance", "reason": "客户明确嫌远"}},
+        sequence_candidates=[_sequence()],
+        store_resolution_fact={"status": "send_single", "delivery_store_ids": ["241"]},
+    )
+    assert "【已启用跟进序列索引】" in sequence_rendered[1]["content"]
+    assert "send_single" in sequence_rendered[1]["content"]
     assert "不得生成客户话术" in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
     assert "不得判断是否成交、发预约金卡" in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
     assert "单纯问某地有无门店" in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
@@ -247,11 +407,27 @@ def test_semantic_prompts_do_not_delegate_customer_reply_or_close_decision() -> 
     assert "不生成客户话术，不决定成交动作" in V3_SCRIPT_SELECTOR_SYSTEM_PROMPT
     assert "通常只保留 2–3 条逻辑互补的候选" in V3_SCRIPT_SELECTOR_SYSTEM_PROMPT
     assert "同一结论只是换措辞不算互补" in V3_SCRIPT_SELECTOR_SYSTEM_PROMPT
+    assert "不能单独证明客户存在距离顾虑" in V3_POST_STORE_ROUTER_SYSTEM_PROMPT
+    assert "store_query.required` 必须为 false" in V3_POST_STORE_ROUTER_SYSTEM_PROMPT
     rendered = build_v3_semantic_router_messages(shared_context=_shared_context(), sequence_index=[_sequence()])
     assert "完整聊天" in rendered[1]["content"]
     assert "18｜distance" in rendered[1]["content"]
     assert "距离无法改善时换到效果和活动价值" in rendered[1]["content"]
     assert len(rendered[1]["content"]) < 6000
+    post_rendered = build_v3_post_store_router_messages(
+        shared_context=_shared_context(),
+        sequence_index=[_sequence()],
+        pre_route={
+            "provisional_checkpoint": {"primary_code": "inquiry"},
+            "store_query": {"purpose": "store_search", "destination_hint": "柳州"},
+        },
+        store_resolution_fact={
+            "status": "no_valid_candidate",
+            "candidate_search_complete": True,
+        },
+    )
+    assert "本轮权威门店查询结果" in post_rendered[1]["content"]
+    assert "no_valid_candidate" in post_rendered[1]["content"]
 
 
 def test_router_normalizes_evaluation_only_audit_fields_against_real_ids() -> None:
@@ -283,6 +459,26 @@ def test_router_normalizes_evaluation_only_audit_fields_against_real_ids() -> No
     assert result["sequence_match"]["alternative_sequence_ids"] == ["19"]
     assert result["sequence_match"]["excluded_sequence_ids"] == ["20"]
     assert result["sequence_match"]["exclusion_reasons"] == {"20": "客户没有时间冲突"}
+
+
+def test_sequence_candidates_use_declared_checkpoint_metadata_without_semantic_inference() -> None:
+    sequences = [
+        _sequence(),
+        {"id": "19", "checkpoint_code": "all", "steps": []},
+        {"id": "20", "checkpoint_code": "price", "steps": []},
+    ]
+
+    exact = _sequences_for_checkpoint(
+        sequences,
+        {"checkpoint": {"primary_code": "distance"}},
+    )
+    fallback = _sequences_for_checkpoint(
+        sequences,
+        {"checkpoint": {"primary_code": "inquiry"}},
+    )
+
+    assert [item["id"] for item in exact] == ["18"]
+    assert [item["id"] for item in fallback] == ["19"]
 
 
 def test_deepseek_failure_uses_fixed_openai_fallback(monkeypatch) -> None:

@@ -86,6 +86,44 @@ def test_v3_current_turn_store_delivery_materializes_verified_cards() -> None:
     ]
 
 
+def test_v3_broad_city_delivery_materializes_every_authorized_store() -> None:
+    store_ids = [str(index) for index in range(1, 7)]
+    stores = [
+        {"store_id": store_id, "store_name": f"同城门店{store_id}", "city": "武汉市"}
+        for store_id in store_ids
+    ]
+    state = {
+        "customer_store_knowledge": {"stores": stores},
+        "fact_envelope": {
+            "structured_facts": {
+                "store_resolution_fact": {
+                    "status": "send_multiple",
+                    "allow_broad_scope_delivery": True,
+                    "delivery_store_ids": store_ids,
+                    "visible_candidate_ids": store_ids,
+                },
+                "store_facts": stores,
+            }
+        },
+        "evidence_join": {
+            "schema_version": "reply_chain_evidence_join_v1",
+            "tool_facts": {"store_resolution_fact": {"status": "send_multiple"}},
+        },
+    }
+
+    prepared = _prepare_structural_messages(
+        [{"type": "text", "content": "这个城市的门店位置都发您。"}],
+        state,
+        [],
+    )
+
+    assert [
+        item["content"]["store_id"]
+        for item in prepared
+        if item["type"] == "store_address"
+    ] == store_ids
+
+
 def test_v3_store_fact_recovery_uses_cards_instead_of_neutral_fallback() -> None:
     state = {
         **_store_state(),

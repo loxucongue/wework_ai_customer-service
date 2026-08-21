@@ -454,7 +454,7 @@
     {
       "id": "S2",
       "name": "门店/地址铺垫",
-      "goal": "基于客户范围门店，推荐真实可选门店或继续获取城市/区域/地标",
+      "goal": "一次完成本次真实目的地解析、当地覆盖判断和最终可交付门店匹配",
       "rules": [
         {
           "id": "S2_CITY_ONLY",
@@ -464,9 +464,9 @@
           "source": "business_rules.json#stages.S2.S2_CITY_ONLY",
           "regression_ids": ["reply_chain.store_city_resolution"],
           "scenes": ["只给城市", "问城市有没有门店"],
-          "decision": "门店查询地址来自当前消息和近期可追溯的客户地址证据。只有省份时补问城市和区县；只有城市且客户可见候选超过3家时，即使客户问最近/附近，也因缺少区县、地标、定位或距离排序原点而先问区或定位，不能直接挑一家发卡。明确区县、乡镇、村、道路、地标或定位卡先查工具，唯一且内部一致的解析结果可顺带确认并同轮匹配门店。只有同名多地域、同级城市冲突、解析失败或错别字修正候选才阻断等待确认。工具完成后只按store_resolution_fact.status和delivery_store_ids发送门店卡。",
+          "decision": "门店查询地址来自当前消息和近期可追溯的客户地址证据，当前明确改口优先。只有同名多地域、同级城市冲突、解析失败，或补充信息确实会改变门店结果时才反问。客户只给省份且省内有门店时补问城市或区县；完整查询已确认该省没有门店时直接输出无店事实，不继续追问省内位置。解析到城市且该城市有门店时只发送该城市全部可见门店，不混入其他城市；该城市无店且目的地足以排序时，从全部可见门店中发送完整排序第一家，距离接近时可发送并列候选。工具完成后只按store_resolution_fact.status和delivery_store_ids发送门店卡。",
           "tools": ["customer_store_lookup", "distance_calculate"],
-          "reply_focus": "信息不足只补一个必要位置事实；唯一解析地区可自然顺带确认并同轮发卡，只有不确定或冲突地区才等待客户确认。send_single发送唯一门店卡，send_multiple发送2至3家。只有查询完整且status=no_valid_candidate时，才如实说明客户已确认的地区目前暂时没有门店，并询问客户平时常去哪个城市；不要继续问该地区的商圈。只有Haversine排序事实时可说相对近，不说最近、交通方便、公里或车程。"
+          "reply_focus": "信息不足只补一个会改变结果的必要位置事实；唯一解析地区同轮完成匹配。send_single发送唯一门店卡，send_multiple发送权威delivery_store_ids中的全部门店。查询完整且status=no_valid_candidate时，如实说明对应省、市或地区目前没有门店，不继续追问该范围内的区县或商圈。recommendation_final_for_destination为真后，客户未更换地点不得承诺重新寻找其他或更近门店。只有完整Haversine排序事实时可说相对近，不说驾车最近、交通方便、公里或车程。"
         },
         {
           "id": "S2_LOCATION_DETAIL",

@@ -7,8 +7,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.prompts.v3_semantic_router import (
+    build_v3_checkpoint_router_messages,
     build_v3_script_selector_messages,
-    build_v3_semantic_router_messages,
+    build_v3_sequence_selector_messages,
 )
 from app.services.deepseek_semantic_client import DeepSeekSemanticClient
 from app.services.follow_knowledge_client import ACTION_CODES, CHECKPOINT_CODES, FollowKnowledgeClient
@@ -42,14 +43,12 @@ class V3SemanticRouterService:
         *,
         shared_context: dict[str, Any],
         sequence_result: dict[str, Any] | None = None,
+        force_store_required: bool = False,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         sequence_result = sequence_result if isinstance(sequence_result, dict) else await self._sequence_index()
         sequences = [item for item in sequence_result.get("items") or [] if isinstance(item, dict)]
-        router_messages = build_v3_semantic_router_messages(
-            shared_context=shared_context,
-            sequence_index=sequences,
-        )
+        router_messages = build_v3_checkpoint_router_messages(shared_context=shared_context)
         router_started = time.perf_counter()
         try:
             raw_route = await self.semantic_client.chat_json(router_messages)
@@ -60,13 +59,186 @@ class V3SemanticRouterService:
         semantic_route = _normalize_semantic_route(
             raw_route,
             shared_context=shared_context,
-            sequences=sequences,
+            sequences=[],
         )
-        semantic_route = _expand_sequence_action_queries(semantic_route, sequences=sequences)
+        if force_store_required:
+            semantic_route.setdefault("store_query", {})["required"] = True
+            semantic_route["store_query"]["purpose"] = str(
+                semantic_route["store_query"].get("purpose") or "store_resolution"
+            )
         if route_error:
             semantic_route.update({"status": "error", "reason": route_error})
         semantic_route["duration_ms"] = int((time.perf_counter() - router_started) * 1000)
         semantic_route["model_usage"] = copy.deepcopy(self.semantic_client.last_usage or {})
+
+        if bool((semantic_route.get("store_query") or {}).get("required")):
+            pre_route = _deferred_store_pre_route(semantic_route)
+            return {
+                "schema_version": "v3_semantic_evidence_v2",
+                "status": "ok" if semantic_route.get("status") == "ok" else "degraded",
+                "semantic_route": pre_route,
+                "knowledge_evidence": _deferred_store_knowledge(sequence_result),
+                "tool_plan": _store_tool_plan(pre_route),
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "prompt_preview": {
+                    "router_messages": router_messages,
+                    "sequence_selector_messages": [],
+                    "selector_messages": [],
+                },
+            }
+
+        semantic_route, sequence_selector_messages = await self._select_sequence_route(
+            shared_context=shared_context,
+            checkpoint_route=semantic_route,
+            sequences=sequences,
+        )
+        semantic_route["phase"] = "non_store_final"
+        knowledge, selector_messages = await self._knowledge_for_route(
+            shared_context=shared_context,
+            semantic_route=semantic_route,
+            sequence_result=sequence_result,
+            sequences=sequences,
+        )
+        return {
+            "schema_version": "v3_semantic_evidence_v2",
+            "status": "ok" if semantic_route.get("status") == "ok" else "degraded",
+            "semantic_route": semantic_route,
+            "knowledge_evidence": knowledge,
+            "tool_plan": _store_tool_plan(semantic_route),
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "prompt_preview": {
+                "router_messages": router_messages,
+                "sequence_selector_messages": sequence_selector_messages,
+                "selector_messages": selector_messages,
+            },
+        }
+
+    async def route_after_store(
+        self,
+        *,
+        shared_context: dict[str, Any],
+        pre_route: dict[str, Any],
+        store_resolution_fact: dict[str, Any],
+        sequence_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        sequence_result = sequence_result if isinstance(sequence_result, dict) else await self._sequence_index()
+        sequences = [item for item in sequence_result.get("items") or [] if isinstance(item, dict)]
+        provisional = (
+            pre_route.get("provisional_checkpoint")
+            if isinstance(pre_route.get("provisional_checkpoint"), dict)
+            else pre_route.get("checkpoint")
+        )
+        checkpoint_route = {
+            "schema_version": "v3_semantic_route_v1",
+            "status": "ok",
+            "classification_status": str(pre_route.get("classification_status") or "none"),
+            "checkpoint": copy.deepcopy(provisional or {}),
+            "store_query": copy.deepcopy(pre_route.get("store_query") or {}),
+            "sequence_match": _empty_sequence_match(),
+            "script_queries": [],
+        }
+        semantic_route, router_messages = await self._select_sequence_route(
+            shared_context=shared_context,
+            checkpoint_route=checkpoint_route,
+            sequences=sequences,
+            store_resolution_fact=store_resolution_fact,
+        )
+        semantic_route["phase"] = "post_store_final"
+        semantic_route["provisional_checkpoint"] = copy.deepcopy(
+            pre_route.get("provisional_checkpoint") or pre_route.get("checkpoint") or {}
+        )
+        semantic_route["store_query"] = {
+            "required": False,
+            "purpose": "store_query_already_completed",
+            "location_evidence_refs": list(
+                (pre_route.get("store_query") or {}).get("location_evidence_refs") or []
+            ),
+            "destination_hint": str(
+                (pre_route.get("store_query") or {}).get("destination_hint") or ""
+            ),
+        }
+        knowledge, selector_messages = await self._knowledge_for_route(
+            shared_context=shared_context,
+            semantic_route=semantic_route,
+            sequence_result=sequence_result,
+            sequences=sequences,
+        )
+        return {
+            "schema_version": "v3_semantic_evidence_v2",
+            "status": "ok" if semantic_route.get("status") == "ok" else "degraded",
+            "semantic_route": semantic_route,
+            "knowledge_evidence": knowledge,
+            "tool_plan": _store_tool_plan(semantic_route),
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "prompt_preview": {
+                "router_messages": [],
+                "sequence_selector_messages": router_messages,
+                "selector_messages": selector_messages,
+            },
+        }
+
+    async def _select_sequence_route(
+        self,
+        *,
+        shared_context: dict[str, Any],
+        checkpoint_route: dict[str, Any],
+        sequences: list[dict[str, Any]],
+        store_resolution_fact: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+        """Ask the model to select only among metadata-filtered real sequences."""
+
+        candidates = _sequences_for_checkpoint(sequences, checkpoint_route)
+        if not candidates and not isinstance(store_resolution_fact, dict):
+            output = copy.deepcopy(checkpoint_route)
+            output["sequence_match"] = _empty_sequence_match()
+            output["script_queries"] = []
+            return output, []
+
+        messages = build_v3_sequence_selector_messages(
+            shared_context=shared_context,
+            checkpoint_route=checkpoint_route,
+            sequence_candidates=candidates,
+            store_resolution_fact=store_resolution_fact,
+        )
+        started = time.perf_counter()
+        try:
+            raw_selection = await self.semantic_client.chat_json(messages)
+            error = ""
+        except Exception as exc:
+            raw_selection = {}
+            error = f"{type(exc).__name__}: {exc}"[:500]
+        payload = {
+            "classification_status": checkpoint_route.get("classification_status"),
+            "checkpoint": copy.deepcopy(checkpoint_route.get("checkpoint") or {}),
+            "store_query": copy.deepcopy(checkpoint_route.get("store_query") or {}),
+            "sequence_match": copy.deepcopy(raw_selection.get("sequence_match") or {}),
+            "script_queries": [],
+        }
+        output = _normalize_semantic_route(
+            payload,
+            shared_context=shared_context,
+            sequences=candidates,
+        )
+        output["duration_ms"] = int((time.perf_counter() - started) * 1000)
+        output["model_usage"] = copy.deepcopy(self.semantic_client.last_usage or {})
+        if error:
+            output.update({"status": "error", "reason": error})
+        if isinstance(store_resolution_fact, dict):
+            output["store_result_interpretation"] = _normalize_store_result_interpretation(
+                raw_selection,
+                shared_context=shared_context,
+            )
+        return _expand_sequence_action_queries(output, sequences=candidates), messages
+
+    async def _knowledge_for_route(
+        self,
+        *,
+        shared_context: dict[str, Any],
+        semantic_route: dict[str, Any],
+        sequence_result: dict[str, Any],
+        sequences: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], list[dict[str, str]]]:
 
         sequence_candidates = _selected_sequences(sequences, semantic_route)
         script_result = await self._script_candidates(semantic_route)
@@ -98,18 +270,7 @@ class V3SemanticRouterService:
             "candidates": [_script_reference(item) for item in script_candidates],
             "selector": selector_for_runtime,
         }
-        return {
-            "schema_version": "v3_semantic_evidence_v1",
-            "status": "ok" if semantic_route.get("status") == "ok" else "degraded",
-            "semantic_route": semantic_route,
-            "knowledge_evidence": knowledge,
-            "tool_plan": _store_tool_plan(semantic_route),
-            "duration_ms": int((time.perf_counter() - started) * 1000),
-            "prompt_preview": {
-                "router_messages": router_messages,
-                "selector_messages": selector_messages,
-            },
-        }
+        return knowledge, selector_messages
 
     async def _sequence_index(self) -> dict[str, Any]:
         if self.knowledge_client is None or not self.knowledge_client.available:
@@ -395,6 +556,118 @@ def _normalize_semantic_route(
         },
         "script_queries": script_queries,
     }
+
+
+def _empty_sequence_match() -> dict[str, Any]:
+    return {
+        "sequence_ids": [],
+        "alternative_sequence_ids": [],
+        "relevant_step_ids": [],
+        "excluded_sequence_ids": [],
+        "exclusion_reasons": {},
+        "reason": "",
+    }
+
+
+def _sequences_for_checkpoint(
+    sequences: list[dict[str, Any]],
+    route: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Reduce retrieval candidates using only upstream taxonomy metadata.
+
+    This does not infer the customer's objection. DeepSeek already selected the
+    checkpoint; code only applies the API's declared checkpoint labels. Exact
+    checkpoint sequences take precedence. Generic `all` sequences are exposed
+    only when the knowledge base has no exact sequence for that checkpoint.
+    """
+
+    checkpoint = str((route.get("checkpoint") or {}).get("primary_code") or "").strip().lower()
+    if checkpoint not in CHECKPOINT_CODES - {"all"}:
+        return []
+    exact = [
+        item
+        for item in sequences
+        if str(item.get("checkpoint_code") or "").strip().lower() == checkpoint
+    ]
+    if exact:
+        return exact
+    return [
+        item
+        for item in sequences
+        if str(item.get("checkpoint_code") or "").strip().lower() == "all"
+    ]
+
+
+def _deferred_store_pre_route(route: dict[str, Any]) -> dict[str, Any]:
+    """Keep only store routing evidence until authoritative store facts exist."""
+
+    output = copy.deepcopy(route)
+    output["phase"] = "pre_store_pending"
+    output["provisional_checkpoint"] = copy.deepcopy(output.get("checkpoint") or {})
+    output["checkpoint"] = {
+        "primary_code": "",
+        "secondary_code": "",
+        "evidence_refs": [],
+        "reason": "deferred_until_store_resolution",
+    }
+    output["sequence_match"] = {
+        "sequence_ids": [],
+        "alternative_sequence_ids": [],
+        "relevant_step_ids": [],
+        "excluded_sequence_ids": [],
+        "exclusion_reasons": {},
+        "reason": "deferred_until_store_resolution",
+    }
+    output["script_queries"] = []
+    return output
+
+
+def _deferred_store_knowledge(sequence_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": "v3_knowledge_evidence_v1",
+        "status": "deferred_until_store_resolution",
+        "source": "follow_knowledge_api",
+        "sequence_index_status": sequence_result.get("status"),
+        "sequence_index_total": int(sequence_result.get("total") or 0),
+        "sequence_candidates": [],
+        "script_query_results": [],
+        "script_option_count": 0,
+        "candidate_count": 0,
+        "candidates": [],
+        "selector": {"status": "deferred", "reason": "store_facts_required_first"},
+    }
+
+
+def _normalize_store_result_interpretation(
+    raw: Any,
+    *,
+    shared_context: dict[str, Any],
+) -> dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+    value = (
+        payload.get("store_result_interpretation")
+        if isinstance(payload.get("store_result_interpretation"), dict)
+        else {}
+    )
+    valid_refs = _valid_message_refs(shared_context)
+    return {
+        "resolved_current_request": bool(value.get("resolved_current_request")),
+        "remaining_customer_concern_refs": _valid_refs(
+            value.get("remaining_customer_concern_refs"),
+            valid_refs,
+        ),
+        "reason": str(value.get("reason") or "")[:500],
+    }
+
+
+def _valid_message_refs(shared_context: dict[str, Any]) -> set[str]:
+    refs = {"current_message"}
+    refs.update(
+        str(item.get("message_ref") or "").strip()
+        for item in shared_context.get("conversation") or []
+        if isinstance(item, dict) and str(item.get("message_ref") or "").strip()
+    )
+    return refs
 
 
 def _selected_sequences(sequences: list[dict[str, Any]], route: dict[str, Any]) -> list[dict[str, Any]]:

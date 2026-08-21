@@ -23,6 +23,7 @@ from app.graph.nodes.parallel_reply_chain import (
     _tool_planner_shared_context,
     create_evidence_join_node,
     create_parallel_evidence_node,
+    create_post_store_semantic_evidence_node,
     create_shared_context_node,
     parallel_reply_payload,
 )
@@ -4575,9 +4576,10 @@ def test_commit_action_accepts_only_sourced_registration_and_visible_store_ancho
 
 def test_v3_semantic_router_replaces_gate_and_general_tool_planner() -> None:
     class _SemanticRouter:
-        async def route(self, *, shared_context, sequence_result=None):
+        async def route(self, *, shared_context, sequence_result=None, force_store_required=False):
             assert shared_context == {}
             assert sequence_result == {}
+            assert force_store_required is False
             await asyncio.sleep(0.02)
             return {
                 "duration_ms": 20,
@@ -4616,9 +4618,10 @@ def test_v3_semantic_router_replaces_gate_and_general_tool_planner() -> None:
 
 def test_semantic_router_failure_keeps_assets_and_reply_path_available() -> None:
     class _SemanticRouter:
-        async def route(self, *, shared_context, sequence_result=None):
+        async def route(self, *, shared_context, sequence_result=None, force_store_required=False):
             del shared_context
             del sequence_result
+            del force_store_required
             raise TimeoutError("semantic router timed out")
 
     node = create_parallel_evidence_node(
@@ -4635,6 +4638,102 @@ def test_semantic_router_failure_keeps_assets_and_reply_path_available() -> None
     assert "semantic router timed out" in result["semantic_route"]["reason"]
     assert result["tool_plan"]["decision"] == "facts_sufficient"
     assert result["tool_plan"]["tool_calls"] == []
+
+
+def test_post_store_router_replaces_deferred_knowledge_before_join() -> None:
+    class _SemanticRouter:
+        async def route_after_store(
+            self,
+            *,
+            shared_context,
+            pre_route,
+            store_resolution_fact,
+            sequence_result=None,
+        ):
+            assert shared_context == {"schema_version": "shared_context_v2"}
+            assert pre_route["phase"] == "pre_store_pending"
+            assert store_resolution_fact["status"] == "send_single"
+            assert sequence_result == {"status": "ok", "items": []}
+            return {
+                "duration_ms": 12,
+                "semantic_route": {
+                    "status": "ok",
+                    "phase": "post_store_final",
+                    "checkpoint": {"primary_code": "inquiry"},
+                    "store_query": {"required": False},
+                },
+                "knowledge_evidence": {
+                    "status": "ok",
+                    "candidate_count": 1,
+                    "sequence_candidates": [{"sequence_id": "61"}],
+                    "candidates": [
+                        {
+                            "source_id": "D01",
+                            "script_name": "门店结果承接",
+                            "checkpoint_code": "inquiry",
+                            "checkpoint_name": "单纯咨询",
+                            "action_code": "value_add",
+                            "action_name": "价值补充",
+                            "reference_text": "结合真实门店结果继续提供价值。",
+                            "content_type": "text",
+                            "media": {},
+                        }
+                    ],
+                },
+            }
+
+    node = create_post_store_semantic_evidence_node(
+        trace_logger=_TraceLogger(),
+        semantic_router_service=_SemanticRouter(),
+    )
+    result = asyncio.run(
+        node(
+            {
+                "trace": [],
+                "shared_context": {"schema_version": "shared_context_v2"},
+                "follow_sequence_index": {"status": "ok", "items": []},
+                "store_pre_route": {
+                    "phase": "pre_store_pending",
+                    "store_query": {"required": True},
+                },
+                "content_gate_result": {
+                    "content_candidates": [
+                        {"content_id": "activity_asset", "content_type": "asset"}
+                    ]
+                },
+                "fact_envelope": {
+                    "structured_facts": {
+                        "store_resolution_fact": {
+                            "status": "send_single",
+                            "delivery_store_ids": ["241"],
+                        }
+                    }
+                },
+            }
+        )
+    )
+
+    assert result["semantic_route"]["phase"] == "post_store_final"
+    assert result["sales_recall"]["candidate_count"] == 1
+    assert result["content_gate_result"]["content_candidate_ids"] == [
+        "activity_asset",
+        "follow_script:D01",
+    ]
+
+
+def test_post_store_router_is_noop_for_non_store_turn() -> None:
+    class _SemanticRouter:
+        async def route_after_store(self, **kwargs):
+            raise AssertionError(f"unexpected post-store route: {kwargs}")
+
+    node = create_post_store_semantic_evidence_node(
+        trace_logger=_TraceLogger(),
+        semantic_router_service=_SemanticRouter(),
+    )
+
+    result = asyncio.run(node({"trace": [], "semantic_route": {"phase": "non_store_final"}}))
+
+    assert result == {"trace": []}
 
 
 def test_parallel_content_gate_retries_one_transient_model_failure() -> None:
@@ -5131,6 +5230,6 @@ def test_v3_distance_objection_uses_completed_search_and_switches_value_dimensio
     assert "recent_store_search_evidence" in tool_prompt
     assert "不要再次调用门店工具" in tool_prompt
     assert "距离等现实条件无法改变" in reply_prompt
-    assert "真实效果证据、活动价值" in reply_prompt
-    assert "其他常去城市" in reply_prompt
+    assert "真实效果证据或活动价值" in reply_prompt
+    assert "其他常去城市" not in reply_prompt
     assert "跟进序列是业务总结的处理路径" in reply_prompt

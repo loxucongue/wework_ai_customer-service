@@ -85,6 +85,7 @@ class AgentState(TypedDict, total=False):
     sales_recall: dict[str, Any]
     semantic_route: dict[str, Any]
     knowledge_evidence: dict[str, Any]
+    store_pre_route: dict[str, Any]
     tool_plan: dict[str, Any]
     parallel_branch_metrics: dict[str, Any]
     evidence_join: dict[str, Any]

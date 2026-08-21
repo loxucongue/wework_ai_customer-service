@@ -5366,7 +5366,7 @@ def test_v2_location_confirmation_is_not_overridden_by_legacy_complete_listing_r
     )
 
 
-def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_area() -> None:
+def test_incomplete_candidate_search_preserves_resolved_area_without_false_no_store_claim() -> None:
     output = build_planner_fact_output(
         {
             "customer_store_lookup": {
@@ -5397,9 +5397,11 @@ def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_are
     assert structured["store_lookup_status"]["city"] == "绥化市"
     assert structured["store_lookup_status"]["district"] == "望奎县"
     assert structured["store_resolution_fact"]["resolved_admin_level"] == "township"
-    assert structured["store_resolution_fact"]["delivery_mode"] == "clarify_service_area"
-    assert structured["store_resolution_fact"]["candidate_search_complete"] is True
-    assert structured["store_resolution_fact"]["candidate_search_scope"] == "province"
+    assert structured["store_resolution_fact"]["status"] == "search_incomplete"
+    assert structured["store_resolution_fact"]["delivery_mode"] == "none"
+    assert structured["store_resolution_fact"]["candidate_search_complete"] is False
+    assert structured["store_resolution_fact"]["recommendation_final_for_destination"] is False
+    assert structured["store_resolution_fact"]["delivery_store_ids"] == []
 
     state = {
         **output,
@@ -5411,18 +5413,7 @@ def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_are
         },
     }
     validate_reply_consistency(
-        [
-            {
-                "type": "text",
-                "order": 1,
-                "content": "望奎县这边我先记下了，您平时更常去哪个市区或商圈？我按您顺路的地方给您看。",
-            }
-        ],
-        state,
-    )
-
-    validate_reply_consistency(
-        [{"type": "text", "order": 1, "content": "望奎县这个位置收到了，我先按这个位置给您看。"}],
+        [{"type": "text", "order": 1, "content": "您稍等一下"}],
         state,
     )
 
@@ -5432,7 +5423,7 @@ def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_are
             state,
         )
 
-    with pytest.raises(ValueError, match="store_cards_not_allowed_when_service_area_clarification_required"):
+    with pytest.raises(ValueError, match="store_cards_not_allowed_for_resolution_status:search_incomplete"):
         validate_reply_consistency(
             [
                 {"type": "text", "order": 1, "content": "我先发一家给您。"},

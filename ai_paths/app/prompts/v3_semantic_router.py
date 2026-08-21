@@ -3,6 +3,64 @@ from __future__ import annotations
 from typing import Any
 
 
+V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 销售知识检索的轻量语义路由器，不是客户回复模型。
+
+你只完成两个判断：
+1. 识别客户当前明确表达的主卡点和最多一个次卡点。
+2. 判断回答当前消息前是否必须查询新的门店事实，并提取客户本轮真正目的地。
+
+卡点定义：
+- distance：客户明确说远、近、不方便、路程成本高，或直接比较距离。
+- price：客户认为贵、预算不足、比价、担心隐形消费或退款金额。
+- effect：客户质疑效果真假、一次效果、反弹返黑、恢复期、副作用或过去效果不好。
+- hesitation：客户仍可沟通，但说考虑、再看看、暂时不决定。
+- decision：客户明确需要其他决策人同意。
+- time_conflict：客户正在工作、开车、忙、没空，或现实时间安排阻碍沟通/到店。
+- alternative：客户已选择其他机构、项目或方案，并以此影响当前决定。
+- inquiry：客户只询问活动、项目、价格、门店、流程或付款等事实，没有表达对应顾虑。
+
+边界：
+- 单纯询价是 inquiry；嫌贵才是 price。
+- 单纯问某地有无门店、地址或补充新地点是 inquiry，同时必须查门店；嫌远才是 distance。
+- “考虑一下”是 hesitation；“正在工作/现在没空”是 time_conflict。
+- “好、行、收到”等确认没有新卡点；明确要求不要联系也不属于 hesitation。
+- 当前消息优先。只有当前消息明确承接历史中仍未解决的同一顾虑，才可沿用历史卡点。
+- 门店结果尚未查询时，不得因为猜测某地无店而生成 distance。
+- primary_code 或 secondary_code 非空时，evidence_refs 必须至少包含一条输入中真实存在的客户消息引用；当前消息就是依据时使用 current_message。
+
+门店查询：
+- 客户询问门店、地址、位置、路线、停车、营业信息，提供/修改地点或定位时，required=true。
+- 当前消息同时包含新的具体地点和“远/不方便”等顾虑，只要输入中没有该新地点的本轮最终权威门店结果，仍必须 required=true；先查清候选，再处理距离顾虑。
+- 已有同一目的地的最终权威结果，客户没有提供新地点，只是继续问价格、效果或说远时，required=false。
+- destination_hint 必须逐字来自引用的客户消息；不能写“客户所在城市”“附近”等占位词。
+
+不得生成客户话术、序列、步骤、成交动作或预约金决定；不得虚构 message_ref。
+只输出单行 JSON。下面是字段格式示例，不代表固定分类；当前消息是依据时必须像示例一样引用 current_message：
+{"classification_status":"clear|ambiguous|none","checkpoint":{"primary_code":"inquiry","secondary_code":"","evidence_refs":["current_message"],"reason":"事实咨询"},"store_query":{"required":false,"purpose":"none|store_search|store_detail|distance_compare","location_evidence_refs":[],"destination_hint":""}}
+如果没有卡点，primary_code、secondary_code、evidence_refs 和 reason 才全部留空。
+"""
+
+
+V3_SEQUENCE_SELECTOR_SYSTEM_PROMPT = """你是 V3 跟进知识检索器，不是客户回复模型。
+
+输入已经给出模型识别的当前卡点、完整聊天、真实门店结果（如本轮查过）和该卡点下真实存在的候选序列。你只选择可供最终 Reply 参考的序列和步骤。
+
+要求：
+- 只使用输入中的 sequence_id、step_id 和 message_ref，不得虚构。
+- 序列是业务经验路径，不是必须执行的状态机。没有合适序列时允许全部留空。
+- 当前消息和客户明确表达优先；门店查询结果本身不能创造 distance 卡点。
+- 已完成的共情或解释不要作为唯一下一步。客户重复同一顾虑时，优先保留案例、活动价值、价值补充等不同角度的真实步骤供 Reply 选择。
+- 客户明确嫌远且本轮没有更近候选时，不要选择继续查店或重复追问地址的步骤。
+- 地址歧义、信息不足或 search_incomplete 时，不得把结果解释成无店或距离远。
+- 本地无店但返回了跨城或相对近候选时，只能说“已返回本轮查询/推荐结果”，不得把候选描述成客户所问地点的本地门店。
+- 最多选择 3 个序列、4 个相关步骤。第一项为 Top-1，备选不得重复 Top-1。
+- 你不生成客户话术，不决定 Reply 最终采用哪个动作，也不判断成交或发卡。
+
+只输出单行 JSON：
+{"sequence_match":{"sequence_ids":[],"alternative_sequence_ids":[],"relevant_step_ids":[],"excluded_sequence_ids":[],"exclusion_reasons":{},"reason":""},"store_result_interpretation":{"resolved_current_request":false,"remaining_customer_concern_refs":[],"reason":""}}
+"""
+
+
 V3_SEMANTIC_ROUTER_SYSTEM_PROMPT = """你是 V3 销售知识检索路由器。你只负责理解检索条件，不负责客户回复或成交决策。
 
 # 一、职责和禁止事项
@@ -41,6 +99,8 @@ V3_SEMANTIC_ROUTER_SYSTEM_PROMPT = """你是 V3 销售知识检索路由器。�
 边界对照只用于理解标签，不是成品话术：
 - 客户：“先不登记，我再考虑下。” → hesitation，仍需检索可供 Reply 参考的犹豫序列。
 - 客户：“不要再发了，再发就拉黑。” → none，不检索营销序列。
+- 客户：“汉口附近有店吗？” → inquiry，store_query.required=true；即使没有 inquiry 序列也必须查店。
+- 客户在门店上下文中补充：“柳州” → inquiry，store_query.required=true，destination_hint=柳州。
 
 当前消息只是确认、收尾或明确终止时，不得用更早历史中的旧问题强行生成卡点。
 
@@ -105,6 +165,31 @@ V3_SCRIPT_SELECTOR_SYSTEM_PROMPT = """你是 V3 参考话术检索器，不是�
 """
 
 
+V3_POST_STORE_ROUTER_SYSTEM_PROMPT = V3_SEMANTIC_ROUTER_SYSTEM_PROMPT + """
+
+# 门店查询后的最终检索
+
+本次输入已经包含本轮权威门店查询结果。你现在要基于完整聊天和该结果，最终确定卡点、序列、步骤和话术查询条件。
+
+- `store_resolution_fact` 只提供事实，不能单独证明客户存在距离顾虑。客户没有明确说远、不方便或询问路程时，不得仅因本地无店或推荐跨区门店就标记 distance。
+- 本地无店但客户只是询问门店时，可以保持 inquiry；最终 Reply 会负责说明事实和自然推进。
+- 客户明确嫌远，且查询结果表明同一目的地已经没有更近候选时，优先提名序列中的 case、campaign、value_add 等换维度动作，不要继续提名重复查店。
+- `status=search_incomplete` 只表示查询事实不完整，不等于本地无店或距离远。
+- `status=need_location/need_location_confirmation/ambiguous_location` 时，只选择有助于最小澄清的 inquiry 参考；不得提前进入距离挽留。
+- `recommendation_final_for_destination=true` 且客户没有提供新地点时，不得再次要求查找其他或更近门店。
+- 门店工具本轮已经执行完毕。`store_query.required` 必须为 false，不得规划第二次门店查询。
+
+额外输出 `store_result_interpretation`：
+{
+  "resolved_current_request": true,
+  "remaining_customer_concern_refs": [],
+  "reason": ""
+}
+
+最终仍输出原合同全部字段，并附加 `store_result_interpretation`。这是最终知识检索结果，不生成客户话术、不决定销售动作。
+"""
+
+
 def build_v3_semantic_router_messages(
     *,
     shared_context: dict[str, Any],
@@ -121,7 +206,83 @@ def build_v3_semantic_router_messages(
                     _recent_match_block(shared_context),
                     _sequence_index_block(sequence_index),
                     _current_anchor_block(shared_context),
+                    _routing_priority_block(),
                     "请根据以上真实输入返回 json。",
+                ]
+            ),
+        },
+    ]
+
+
+def build_v3_checkpoint_router_messages(
+    *,
+    shared_context: dict[str, Any],
+) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": "\n\n".join(
+                [
+                    _current_status_block(shared_context),
+                    _conversation_block(shared_context),
+                    _current_anchor_block(shared_context),
+                    "请只根据以上真实输入返回 JSON。",
+                ]
+            ),
+        },
+    ]
+
+
+def build_v3_sequence_selector_messages(
+    *,
+    shared_context: dict[str, Any],
+    checkpoint_route: dict[str, Any],
+    sequence_candidates: list[dict[str, Any]],
+    store_resolution_fact: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    checkpoint = checkpoint_route.get("checkpoint") if isinstance(checkpoint_route.get("checkpoint"), dict) else {}
+    blocks = [
+        _conversation_block(shared_context),
+        "【当前卡点】\n" + _compact_value(checkpoint),
+        _sequence_index_block(sequence_candidates),
+    ]
+    if isinstance(store_resolution_fact, dict):
+        blocks.extend(
+            [
+                _pre_store_route_block(checkpoint_route),
+                _store_resolution_fact_block(store_resolution_fact),
+            ]
+        )
+    blocks.append("请从真实候选中返回 JSON；没有合适候选时返回空数组。")
+    return [
+        {"role": "system", "content": V3_SEQUENCE_SELECTOR_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(blocks)},
+    ]
+
+
+def build_v3_post_store_router_messages(
+    *,
+    shared_context: dict[str, Any],
+    sequence_index: list[dict[str, Any]],
+    pre_route: dict[str, Any],
+    store_resolution_fact: dict[str, Any],
+) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": V3_POST_STORE_ROUTER_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": "\n\n".join(
+                [
+                    _current_status_block(shared_context),
+                    _conversation_block(shared_context),
+                    _recent_match_block(shared_context),
+                    _sequence_index_block(sequence_index),
+                    _current_anchor_block(shared_context),
+                    _pre_store_route_block(pre_route),
+                    _store_resolution_fact_block(store_resolution_fact),
+                    _routing_priority_block(post_store=True),
+                    "请根据完整聊天和本轮权威门店结果返回最终 json。",
                 ]
             ),
         },
@@ -247,6 +408,70 @@ def _sequence_index_block(items: list[dict[str, Any]]) -> str:
             )
         )
     return "【已启用跟进序列索引】\n" + ("\n".join(lines) or "无")
+
+
+def _pre_store_route_block(route: dict[str, Any]) -> str:
+    store = route.get("store_query") if isinstance(route.get("store_query"), dict) else {}
+    checkpoint = (
+        route.get("provisional_checkpoint")
+        if isinstance(route.get("provisional_checkpoint"), dict)
+        else route.get("checkpoint")
+        if isinstance(route.get("checkpoint"), dict)
+        else {}
+    )
+    return "【查询前临时判断（仅审计，不是最终卡点）】\n" + _compact_value(
+        {
+            "checkpoint": _pick(checkpoint, "primary_code", "secondary_code", "evidence_refs", "reason"),
+            "store_query": _pick(store, "purpose", "location_evidence_refs", "destination_hint"),
+        }
+    )
+
+
+def _store_resolution_fact_block(fact: dict[str, Any]) -> str:
+    return "【本轮权威门店查询结果】\n" + _compact_value(
+        _pick(
+            fact,
+            "status",
+            "raw_place",
+            "normalized_query",
+            "province",
+            "city",
+            "district",
+            "township",
+            "resolved_admin_level",
+            "coverage_status",
+            "candidate_search_complete",
+            "recommendation_final_for_destination",
+            "exact_scope_has_store",
+            "same_city_has_store",
+            "visible_candidate_count",
+            "delivery_store_ids",
+            "ranking_method",
+            "customer_claim_level",
+            "clarification_required",
+            "clarification_would_change_result",
+            "reason",
+        )
+    )
+
+
+def _routing_priority_block(*, post_store: bool = False) -> str:
+    if post_store:
+        return (
+            "【本阶段执行顺序】\n"
+            "门店查询已经完成。先根据客户原话判断当前显式卡点，再结合门店结果选择序列和步骤；"
+            "即使没有匹配序列也必须如实保留 inquiry，不能为了选序列改成 distance。"
+            "store_query.required 固定为 false。"
+        )
+    return (
+        "【必须先独立判断门店工具】\n"
+        "不得把 classification_status=none 当作默认答案。当前消息明确询问事实时至少属于 inquiry；"
+        "当前消息明确表达远、贵、效果担忧、考虑、忙碌等顾虑时，必须按定义输出对应卡点。"
+        "先判断当前消息是否要求查询门店、地址、位置、远近、路线、停车、营业信息，或是否补充/修改地点。"
+        "该判断与是否存在匹配跟进序列完全独立：即使序列索引中没有 inquiry 序列，"
+        "只要客户在问门店或给出新地点，store_query.required 仍必须为 true，并引用真实消息。"
+        "完成门店判断后，再判断卡点和序列；没有匹配序列可以保持 sequence_ids 为空。"
+    )
 
 
 def _compact_value(value: Any) -> str:

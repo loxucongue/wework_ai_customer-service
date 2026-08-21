@@ -182,6 +182,12 @@ def create_parallel_evidence_node(
             "v3_semantic_route_and_knowledge",
             {"shared_context_schema": (state.get("shared_context") or {}).get("schema_version")},
         ) as span:
+            protocol_required = _protocol_required_read_only_tools(state)
+            force_store_required = any(
+                str(item.get("name") or "").strip() == "resolve_customer_store"
+                for item in protocol_required
+                if isinstance(item, dict)
+            )
             if semantic_router_service is None:
                 semantic_output = {
                     "status": "degraded",
@@ -194,6 +200,7 @@ def create_parallel_evidence_node(
                     semantic_output = await semantic_router_service.route(
                         shared_context=copy.deepcopy(state.get("shared_context") or {}),
                         sequence_result=copy.deepcopy(state.get("follow_sequence_index") or {}),
+                        force_store_required=force_store_required,
                     )
                 except Exception as exc:
                     semantic_output = {
@@ -205,7 +212,6 @@ def create_parallel_evidence_node(
             semantic_route = copy.deepcopy(semantic_output.get("semantic_route") or {})
             sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
             tool_plan = copy.deepcopy(semantic_output.get("tool_plan") or {})
-            protocol_required = _protocol_required_read_only_tools(state)
             tool_plan["tool_calls"] = _merge_tool_calls(
                 _dict_list(tool_plan.get("tool_calls")),
                 protocol_required,
@@ -234,6 +240,11 @@ def create_parallel_evidence_node(
                 "tool_plan": tool_plan,
                 "sales_recall": sales_recall,
                 "semantic_route": semantic_route,
+                "store_pre_route": (
+                    copy.deepcopy(semantic_route)
+                    if str(semantic_route.get("phase") or "") == "pre_store_pending"
+                    else {}
+                ),
                 "knowledge_evidence": sales_recall,
                 "parallel_branch_metrics": metrics,
                 # Compatibility input for the existing read-only executor.
@@ -270,6 +281,152 @@ def create_parallel_evidence_node(
             return output
 
     return parallel_evidence
+
+
+def create_post_store_semantic_evidence_node(
+    *,
+    trace_logger: TraceLogger,
+    semantic_router_service: V3SemanticRouterService | None = None,
+) -> Callable[[AgentState], Any]:
+    async def post_store_semantic_evidence(state: AgentState) -> dict[str, Any]:
+        pre_route = (
+            state.get("store_pre_route")
+            if isinstance(state.get("store_pre_route"), dict)
+            else {}
+        )
+        if str(pre_route.get("phase") or "") != "pre_store_pending":
+            return {"trace": state.get("trace", [])}
+
+        started = time.perf_counter()
+        store_fact = _store_resolution_fact_for_post_route(state)
+        with trace_logger.node(
+            state,
+            "v3_post_store_semantic_route_and_knowledge",
+            {
+                "pre_route_phase": pre_route.get("phase"),
+                "store_resolution_status": store_fact.get("status"),
+            },
+        ) as span:
+            if semantic_router_service is None:
+                semantic_output = {
+                    "status": "degraded",
+                    "semantic_route": {
+                        "schema_version": "v3_semantic_route_v1",
+                        "status": "disabled",
+                        "phase": "post_store_final",
+                        "reason": "semantic_router_not_configured",
+                        "checkpoint": {},
+                        "sequence_match": {},
+                        "script_queries": [],
+                        "store_query": {"required": False},
+                    },
+                    "knowledge_evidence": {
+                        "status": "disabled",
+                        "candidates": [],
+                        "sequence_candidates": [],
+                    },
+                }
+            else:
+                try:
+                    semantic_output = await semantic_router_service.route_after_store(
+                        shared_context=copy.deepcopy(state.get("shared_context") or {}),
+                        pre_route=copy.deepcopy(pre_route),
+                        store_resolution_fact=copy.deepcopy(store_fact),
+                        sequence_result=copy.deepcopy(state.get("follow_sequence_index") or {}),
+                    )
+                except Exception as exc:
+                    semantic_output = {
+                        "status": "degraded",
+                        "semantic_route": {
+                            "schema_version": "v3_semantic_route_v1",
+                            "status": "error",
+                            "phase": "post_store_final",
+                            "reason": f"{type(exc).__name__}: {exc}"[:500],
+                            "checkpoint": {},
+                            "sequence_match": {},
+                            "script_queries": [],
+                            "store_query": {"required": False},
+                        },
+                        "knowledge_evidence": {
+                            "status": "error",
+                            "candidates": [],
+                            "sequence_candidates": [],
+                        },
+                    }
+
+            semantic_route = copy.deepcopy(semantic_output.get("semantic_route") or {})
+            sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
+            existing_gate = copy.deepcopy(state.get("content_gate_result") or {})
+            existing_candidates = _dict_list(existing_gate.get("content_candidates"))
+            recalled_candidates = script_content_candidates(sales_recall)
+            content_candidates = _dedupe_content_candidates(
+                [*existing_candidates, *recalled_candidates]
+            )
+            gate_result = {
+                **existing_gate,
+                "status": "completed",
+                "content_candidate_ids": [item["content_id"] for item in content_candidates],
+                "content_candidates": content_candidates,
+                "reason": "approved_assets_plus_post_store_semantic_knowledge",
+            }
+            metrics = copy.deepcopy(state.get("parallel_branch_metrics") or {})
+            post_duration_ms = int((time.perf_counter() - started) * 1000)
+            metrics.update(
+                {
+                    "post_store_semantic_router_duration_ms": int(
+                        semantic_output.get("duration_ms") or 0
+                    ),
+                    "post_store_evidence_elapsed_ms": post_duration_ms,
+                    "pre_reply_evidence_elapsed_ms": int(
+                        metrics.get("pre_reply_evidence_elapsed_ms") or 0
+                    )
+                    + post_duration_ms,
+                }
+            )
+            span["entry"]["tool_calls"] = [
+                {"name": "deepseek_post_store_semantic_router", "output": _branch_trace_output(semantic_route)},
+                {"name": "follow_knowledge_api", "output": _branch_trace_output(sales_recall)},
+            ]
+            span["output_snapshot"] = {
+                "checkpoint": (semantic_route.get("checkpoint") or {}).get("primary_code"),
+                "store_resolution_status": store_fact.get("status"),
+                "sales_recall_status": sales_recall.get("status"),
+                "sales_recall_candidates": sales_recall.get("candidate_count"),
+                "selected_content_ids": gate_result.get("content_candidate_ids") or [],
+                "metrics": metrics,
+            }
+            return {
+                "content_gate_result": gate_result,
+                "sales_recall": sales_recall,
+                "semantic_route": semantic_route,
+                "knowledge_evidence": sales_recall,
+                "parallel_branch_metrics": metrics,
+                "trace": state.get("trace", []),
+            }
+
+    return post_store_semantic_evidence
+
+
+def _store_resolution_fact_for_post_route(state: AgentState) -> dict[str, Any]:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = (
+        fact_envelope.get("structured_facts")
+        if isinstance(fact_envelope.get("structured_facts"), dict)
+        else {}
+    )
+    fact = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if fact:
+        return copy.deepcopy(fact)
+    return {
+        "status": "search_incomplete",
+        "candidate_search_complete": False,
+        "recommendation_final_for_destination": False,
+        "reason": "store_resolution_fact_missing_after_tool_execution",
+    }
 
 
 def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentState], Any]:
@@ -1215,8 +1372,18 @@ def _current_turn_structural_constraints(
             {
                 "code": "store_location_clarification_required",
                 "instruction": (
-                    "本轮只能说明工具已经确认的范围，并询问一个会改变查询结果的必要位置；"
+                    "本轮只能说明工具已经确认的范围，并且只询问一个确实会改变门店结果的必要位置；"
                     "不得发送 store_address，不得编造系统更新、同步或维护原因，也不得推导活动未覆盖。"
+                ),
+            }
+        )
+    elif status == "search_incomplete":
+        constraints.append(
+            {
+                "code": "store_search_incomplete",
+                "instruction": (
+                    "客户地点证据已经足够，但门店或排序事实本轮没有完整返回。不得要求客户重复提供同一地址，"
+                    "不得断言当地没有门店，不得发送未经确认的门店卡，也不得承诺稍后再找其他门店。"
                 ),
             }
         )
@@ -1229,6 +1396,16 @@ def _current_turn_structural_constraints(
                 "instruction": (
                     "本轮门店查询范围不完整；不得断言当地没有门店或活动，"
                     "不得编造系统更新、同步或维护原因。"
+                ),
+            }
+        )
+    elif status == "no_valid_candidate":
+        constraints.append(
+            {
+                "code": "store_scope_confirmed_no_candidate",
+                "instruction": (
+                    "本轮地点和查询范围已经确认，完整查询后该范围没有可发送门店。只陈述权威覆盖事实；"
+                    "不要继续追问该范围内更具体的区县或商圈，不要承诺重新找更近门店。"
                 ),
             }
         )
@@ -1249,7 +1426,8 @@ def _current_turn_structural_constraints(
                 "instruction": (
                     "本轮门店工具已经给出可交付结果；回答当前门店问题时应实际交付 "
                     f"structured_delivery_options 中 store_id 属于 {available_ids} 的 store_address，"
-                    "不能只列名称或再次索要已经足够的位置。"
+                    "不能只列名称或再次索要已经足够的位置。recommendation_final_for_destination=true 时，"
+                    "客户未更换地点就不得承诺重新查找其他或更近门店。"
                 ),
             }
         )

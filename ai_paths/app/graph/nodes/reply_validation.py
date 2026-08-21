@@ -175,7 +175,7 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
             for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
             if str(item or "").strip()
         }
-        delivery_limit = 5 if resolution.get("allow_broad_scope_delivery") else 3
+        delivery_limit = len(ids) if resolution.get("allow_broad_scope_delivery") else 3
         if 1 <= len(resolution_ids) <= delivery_limit:
             output.append(resolution_ids)
 
@@ -1240,6 +1240,7 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
         "need_location",
         "need_location_confirmation",
         "ambiguous_location",
+        "search_incomplete",
         "no_valid_candidate",
         "reuse_confirmed_store",
     }:
@@ -1255,7 +1256,11 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
             raise ValueError("store_resolution_send_single_contract_violation")
         return
     if status == "send_multiple":
-        delivery_limit = 5 if resolution.get("allow_broad_scope_delivery") else 3
+        delivery_limit = (
+            max(5, int(resolution.get("visible_candidate_count") or len(delivery_ids)))
+            if resolution.get("allow_broad_scope_delivery")
+            else 3
+        )
         if emitted and (not 2 <= len(delivery_ids) <= delivery_limit or emitted != delivery_ids):
             raise ValueError("store_resolution_send_multiple_contract_violation")
 
@@ -1780,10 +1785,12 @@ def _has_distance_ranking_fact(structured: dict[str, Any]) -> bool:
         comparable_candidate_count = 0
     resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
     return (
-        recommended_store.get("reason") in {"distance_calculate_rank_1", "haversine_rank_1"}
+        recommended_store.get("reason")
+        in {"distance_calculate_rank_1", "haversine_rank_1", "driving_route_rank_1"}
         and store_lookup_status.get("source") == "distance_calculate"
         and comparable_candidate_count >= 1
-        and str(resolution.get("ranking_method") or "haversine") == "haversine"
+        and str(resolution.get("ranking_method") or "haversine")
+        in {"haversine", "driving_route", "driving_route_shortlist"}
         and recommendation_status not in {"distance_tool_unavailable", "insufficient_comparable_candidates", "error", "failed"}
     )
 

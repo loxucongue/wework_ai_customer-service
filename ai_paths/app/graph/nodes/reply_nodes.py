@@ -49,7 +49,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 客户明确要入口/预约时，不要因为缺订单或开单失败暴露“入口没对上/不能发卡”，也不能再反问“如果你要我再发”；活动报价已铺垫且无硬阻断时按当前结构事实发卡，否则只补最小必要信息。
 - 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
 - 客户因担心一次没效果或可能需要多次而说不做时，这是带原因的效果异议，不按“不做了”字面送客。先明确“当前淡斑效果活动价就是268元、绝大多数客户都是一次就好”，有真实 case_facts 时同轮发图，再说明完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解；不得说因人而异、可能需要多次、单次单部位或以后再来找我。明确要求停止联系或近期已处理同一异议后再次强拒绝时才收口。
-- `store_resolution_fact.status=no_valid_candidate` 且 `candidate_search_complete=true` 表示客户位置已经确认，完整查询后该省范围当前没有可发送的合法门店。不要承诺发卡；要如实、简短地说“您这个地区目前暂时没有门店”，然后只问客户平时常去哪个城市，例如：“亲，您这个地区目前暂时没有门店，您平时更常去哪个城市？我再按您常去的城市帮您看。”不要继续问当前地区的商圈，也不要用“我不乱发、不乱指、不瞎推荐、不敢乱说”这类系统免责表达。若 `candidate_search_complete=false`，这是门店事实加载不完整，不能对客户断言没有门店，也不能主动猜测或列举权威门店事实中没有出现的城市供客户选择。
+- `store_resolution_fact.status=no_valid_candidate` 且 `candidate_search_complete=true` 表示客户位置已经确认，完整查询后对应省、市或地区当前没有可发送的合法门店。不要承诺发卡；如实、简短地说明覆盖事实，不再追问该范围内更具体的区县或商圈，也不承诺重新找其他门店。可以根据完整聊天自主决定是否用真实效果或活动价值承接。若 `candidate_search_complete=false` 或 status=search_incomplete，这是门店事实加载不完整，不能断言没有门店、不能让客户重复提供已经足够的位置，也不能猜测城市或门店。
 - 退款、扣款异常只能先核对门店、时间、金额、项目或截图；不能说已经同意/正在办理退款，也不能承诺自动退回、原路到账或处理时效。
 - 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
 - payment_collection、store_address、image、human_handoff_notice 必须使用输入中已核验的结构事实。
@@ -3014,21 +3014,21 @@ def _reply_repair_hint(error: str) -> str:
             "已解析到城市就问客户这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。语气要像微信真人，不要说“不乱发、不确定的位置、真实门店、重新对”。"
         )
     if "unsupported_store_address_message" in error:
-        return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
+        return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时不要输出 store_address，按 store_resolution_fact 区分必要位置补充、当地无店或查询未完成，不能一律继续追问地址。"
     if "store_cards_not_allowed_when_location_clarification_required" in error:
-        return "本轮 store_resolution_fact 要求 clarify_location，说明客户只给了省份、候选超过3家或地点仍有歧义。删除所有 store_address，只问一个最小必要字段：具体城市、区县或定位。"
+        return "本轮 store_resolution_fact 要求 clarify_location。删除所有 store_address，只问一个确实会改变门店结果的最小必要位置字段；如果事实已经确认某省或地区没有门店，不得继续追问该范围内更具体的位置。"
     if "store_cards_not_allowed_for_province_only_scope" in error:
         return "客户当前只给了省份，且没有可靠的城市、区县或定位事实。删除所有 store_address，不按省中心猜门店；只自然追问具体城市、区县或请客户发定位。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
-        return "你在文本里承诺了发送地址或位置卡，但本轮没有对应门店卡。只有 store_resolution_fact.status=send_single/send_multiple 时，才按 delivery_store_ids 追加对应 store_address；其他状态必须删除发卡承诺，并按状态补问地区、确认解析结果或询问客户常去的市区/商圈。"
+        return "你在文本里承诺了发送地址或位置卡，但本轮没有对应门店卡。只有 store_resolution_fact.status=send_single/send_multiple 时，才按 delivery_store_ids 追加对应 store_address；其他状态必须删除发卡承诺，并严格按门店事实决定是补充必要位置、说明当地无店或等待事实恢复。"
     if "store_cards_not_allowed_when_service_area_clarification_required" in error:
-        return "客户当前地址已经确认，完整查询后该地区目前没有可发送的合法门店。删除所有 store_address 和发卡承诺，如实、简短地说明“您这个地区目前暂时没有门店”，然后只问客户平时常去哪个城市；不要继续问当前地区的区县或商圈，也不要让客户重复提供同一位置。语气要短、口语化，不要说“没查到、查不到、不乱发、不确定的位置、真实门店、重新对”。"
+        return "客户当前地址已经确认，完整查询后该范围目前没有可发送的合法门店。删除所有 store_address 和发卡承诺，如实、简短地说明对应省、市或地区当前没有门店；不要继续问该范围内的区县或商圈，不要让客户重复提供同一位置，也不要承诺重新查找其他门店。"
     if "store_scope_incomplete_system_disclaimer" in error or "store_scope_incomplete_unsupported_location_options" in error:
-        return "本轮门店范围事实加载不完整，不能断言没有门店，也不能自行列出事实中没有的城市让客户二选一。删除“我不乱发、不乱指、不瞎推荐、不敢乱说”这类系统免责话；位置已确认时不要重复索要同一地址，只用一条短、口语化文字询问客户平时还常去哪个城市，不要给具体城市选项。"
+        return "本轮门店范围事实加载不完整，不能断言没有门店，也不能自行列出事实中没有的城市。删除系统免责话；客户位置已经足够时不得重复索要地址，也不得承诺稍后重新找店。当前问题只有门店且无合法事实可答时，使用非业务等待回复。"
     if "distance_value_not_customer_visible" in error:
-        return "Haversine 直线距离只用于内部排序门店。客户可见最多说“按您这个位置，这家相对近一些”，不要输出公里、分钟、车程、路线或步行时长。"
+        return "距离和驾车时间只用于内部排序门店。客户可见最多说“按您这个位置，这家相对近一些”，不要输出公里、分钟、车程、路线或步行时长。"
     if "distance_fact_required" in error:
-        return "没有 store_resolution_fact.ranking_method=haversine 和 customer_claim_level=relative_near 时，不要输出最近、离您最近、较近、就近或交通方便等排序表达。只使用已有门店事实，并按当前主线自然承接。"
+        return "没有完整的门店排序事实和 customer_claim_level=relative_near 时，不要输出最近、离您最近、较近、就近或交通方便等排序表达。只使用已有门店事实，并按当前主线自然承接。"
     if "nearby_store_claim_without_location_fact" in error:
         return (
             "没有客户定位、门店工具或距离排序事实时，不要说‘附近门店/离您近’，也不要换成‘我帮您看下门店’这类"
@@ -3144,7 +3144,9 @@ def _materialize_required_store_delivery(
     expected_count = (
         1
         if status == "send_single"
-        else min(5 if resolution.get("allow_broad_scope_delivery") else 3, len(required_ids))
+        else len(required_ids)
+        if resolution.get("allow_broad_scope_delivery")
+        else min(3, len(required_ids))
     )
     required_ids = required_ids[:expected_count]
     if len(required_ids) != expected_count or not required_ids:
@@ -3211,14 +3213,17 @@ def _store_fact_recovery_messages(state: AgentState) -> list[dict[str, Any]]:
     expected_count = (
         1
         if status == "send_single"
-        else min(5 if resolution.get("allow_broad_scope_delivery") else 3, len(required_ids))
+        else len(required_ids)
+        if resolution.get("allow_broad_scope_delivery")
+        else min(3, len(required_ids))
     )
     required_ids = required_ids[:expected_count]
     if len(required_ids) != expected_count or not required_ids:
         return []
     intro = (
         "按您这个位置，相对近的门店位置发您。"
-        if str(resolution.get("ranking_method") or "") == "haversine"
+        if str(resolution.get("ranking_method") or "")
+        in {"haversine", "driving_route", "driving_route_shortlist"}
         else "门店位置发您。"
     )
     return _renumber(

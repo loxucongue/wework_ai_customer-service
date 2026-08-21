@@ -83,6 +83,30 @@ def test_v3_resolver_admin_fact_recovers_visible_city_stores_without_geocode() -
     )
 
 
+def test_province_without_visible_store_is_final_no_candidate_not_location_question() -> None:
+    assert (
+        _store_resolution_status(
+            tool_status="no_match",
+            resolved_level="province",
+            visible_candidate_count=0,
+            allow_broad_scope_delivery=True,
+        )
+        == "no_valid_candidate"
+    )
+
+
+def test_province_with_visible_stores_still_requires_city_for_selection() -> None:
+    assert (
+        _store_resolution_status(
+            tool_status="ok",
+            resolved_level="province",
+            visible_candidate_count=2,
+            allow_broad_scope_delivery=True,
+        )
+        == "need_location"
+    )
+
+
 def test_v3_composite_store_workflow_reads_nested_tool_arguments() -> None:
     class _Model:
         available = True
@@ -356,8 +380,9 @@ def test_store_workflow_ranks_visible_stores_for_colloquial_city_region() -> Non
 
     assert result["status"] == "ok", result
     assert result["destination_resolution"]["destination_query"] == "武汉汉口"
-    assert result["distance_calculate"]["ranking_complete"] is True
-    assert [item["store_id"] for item in result["distance_calculate"]["ranked_stores"]] == ["1", "2"]
+    assert "distance_calculate" not in result
+    assert result["customer_store_lookup"]["same_city_has_store"] is True
+    assert [item["store_id"] for item in result["customer_store_lookup"]["stores"]] == ["1", "2"]
 
 
 def test_distance_ranks_all_visible_stores_across_district_boundary() -> None:

@@ -362,9 +362,9 @@ def _fact_boundary_for_rule(
     if "kb_search(case_studies)" in tools:
         return "案例与效果图必须来自真实 case_studies 工具事实；旧 SOP 完成状态不能替代近期真实发图证据。"
     if "distance_calculate" in tools:
-        return "门店存在性和详情来自 customer_store_lookup；距离工具只按合法经纬度执行 Haversine 排序。最终只按 store_resolution_fact.status 和 delivery_store_ids 发卡，不得自行增减；客户可见不输出公里、分钟、车程或路线。"
+        return "门店存在性和详情来自 customer_store_lookup；当前仅能按合法经纬度执行完整 Haversine 排序。最终只按 store_resolution_fact.status 和 delivery_store_ids 发卡；同一目的地的最终推荐不得再次承诺重查，客户可见不输出公里、分钟、车程或路线。"
     if "customer_store_lookup" in tools:
-        return "具体门店、地址、停车和营业时间必须来自 customer_store_lookup。省或城市信息不足时补问；POI 推断出的上级行政区必须先确认；完整省市区、详细地址或定位卡才可直接匹配。"
+        return "具体门店、地址、停车和营业时间必须来自 customer_store_lookup。只有补充位置会改变结果时才反问；唯一且行政区一致的 POI 可同轮匹配。已确认省内无店时不得继续追问省内区市。"
     if "appointment_record_query" in tools:
         return "既有预约、改约和取消必须以 appointment_record_query 的真实结果为准。"
     if "professional_assist" in tools:

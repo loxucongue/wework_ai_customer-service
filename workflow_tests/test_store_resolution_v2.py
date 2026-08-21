@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,10 @@ from app.services.store_resolution_v2 import (
     build_location_evidence,
     resolution_status_for_location,
 )
+from app.services.driving_route_service import (
+    parse_driving_route_workflow_result,
+    rerank_stores_by_driving_route,
+)
 
 
 def test_autonomous_prefecture_and_county_level_city_share_region_scope() -> None:
@@ -39,13 +44,27 @@ from app.services.store_snapshot_service import StoreSnapshotService, parse_geoc
 
 
 class _GeocodeClient:
-    def __init__(self, results: dict[str, dict[str, object]]) -> None:
-        self.settings = SimpleNamespace(geocode_workflow_id="geo", distance_workflow_id="route")
+    def __init__(
+        self,
+        results: dict[str, dict[str, object]],
+        *,
+        routes: dict[str, dict[str, object]] | None = None,
+    ) -> None:
+        self.settings = SimpleNamespace(
+            geocode_workflow_id="geo",
+            distance_workflow_id="route" if routes is not None else "",
+        )
         self.results = results
+        self.routes = routes or {}
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     async def run_workflow(self, workflow_id: str, parameters: dict[str, object]) -> dict[str, object]:
         self.calls.append((workflow_id, dict(parameters)))
+        if workflow_id == "route":
+            return self.routes.get(
+                str(parameters.get("destination") or ""),
+                {"data": json.dumps({"output": None})},
+            )
         return {"data": self.results.get(str(parameters.get("address") or ""), {})}
 
 
@@ -589,6 +608,215 @@ def test_distance_calculate_uses_haversine_without_route_workflow() -> None:
     assert all("origin" not in parameters and "destination" not in parameters for _, parameters in client.calls)
 
 
+def test_route_parser_uses_one_path_and_ignores_top_level_sums() -> None:
+    result = parse_driving_route_workflow_result(
+        {
+            "data": json.dumps(
+                {
+                    "output": {
+                        "distance": 63000,
+                        "duration": 9000,
+                        "paths": [
+                            {"index": 0, "distance": "20000", "duration": 3100},
+                            {"index": 1, "distance": "22000", "duration": 2800},
+                            {"index": 2, "distance": "21000", "duration": 3100},
+                        ],
+                    }
+                }
+            )
+        }
+    )
+
+    assert result == {
+        "status": "ok",
+        "route_index": 1,
+        "distance_meters": 22000,
+        "duration_seconds": 2800,
+        "path_count": 3,
+    }
+
+
+def test_route_parser_accepts_v5_cost_duration_and_outputoutput_alias() -> None:
+    result = parse_driving_route_workflow_result(
+        {
+            "data": {
+                "outputoutput": {
+                    "paths": [
+                        {"distance": "9300", "cost": {"duration": "1200"}},
+                    ]
+                }
+            }
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert result["distance_meters"] == 9300
+    assert result["duration_seconds"] == 1200
+
+
+def test_distance_calculate_reranks_haversine_shortlist_by_driving_time() -> None:
+    stores = [
+        _store("1", "直线近但驾车慢", location="120.821,27.911"),
+        _store("2", "驾车更快", location="120.822,27.912"),
+        _store("3", "第三家", location="120.900,27.990"),
+    ]
+
+    def route(*paths: tuple[int, int]) -> dict[str, object]:
+        normalized = [
+            {"index": index, "distance": str(distance), "duration": duration}
+            for index, (distance, duration) in enumerate(paths)
+        ]
+        return {
+            "data": json.dumps(
+                {
+                    "output": {
+                        "distance": sum(distance for distance, _ in paths),
+                        "duration": sum(duration for _, duration in paths),
+                        "paths": normalized,
+                    }
+                }
+            )
+        }
+
+    client = _GeocodeClient(
+        {
+            "浙江省温州市龙湾区滨海路": {
+                "province": "浙江省",
+                "city": "温州市",
+                "district": "龙湾区",
+                "formatted_address": "浙江省温州市龙湾区滨海路",
+                "location": "120.82,27.91",
+            }
+        },
+        routes={
+            "120.821000,27.911000": route((1000, 500), (1200, 450)),
+            "120.822000,27.912000": route((1500, 180), (1400, 220)),
+            "120.900000,27.990000": route((12000, 900), (11000, 950)),
+        },
+    )
+
+    result = asyncio.run(
+        _distance_calculate(
+            {
+                "name": "distance_calculate",
+                "origin": "浙江省温州市龙湾区滨海路",
+                "candidate_source": "customer_store_lookup",
+                "ranking_claim_level": "relative_near",
+            },
+            {"normalized_content": "滨海路"},
+            client,  # type: ignore[arg-type]
+            {"customer_store_lookup": {"candidate_stores": stores}},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["ranking_method"] == "driving_route"
+    assert result["route_ranking_complete"] is True
+    assert result["route_candidate_count"] == 3
+    assert result["route_success_count"] == 3
+    assert [item["store_id"] for item in result["ranked_stores"]] == ["2", "1", "3"]
+    assert result["ranked_stores"][0]["driving_duration_seconds"] == 180
+    route_calls = [parameters for workflow, parameters in client.calls if workflow == "route"]
+    assert len(route_calls) == 3
+    assert {parameters["origin"] for parameters in route_calls} == {"120.820000,27.910000"}
+
+
+def test_distance_calculate_falls_back_to_complete_haversine_when_one_route_fails() -> None:
+    stores = [
+        _store("1", "近店", location="120.821,27.911"),
+        _store("2", "远店", location="120.900,27.990"),
+    ]
+    client = _GeocodeClient(
+        {
+            "浙江省温州市龙湾区滨海路": {
+                "province": "浙江省",
+                "city": "温州市",
+                "district": "龙湾区",
+                "location": "120.82,27.91",
+            }
+        },
+        routes={
+            "120.821000,27.911000": {
+                "data": json.dumps(
+                    {"output": {"paths": [{"distance": "1000", "duration": 200}]}}
+                )
+            }
+        },
+    )
+
+    result = asyncio.run(
+        _distance_calculate(
+            {
+                "name": "distance_calculate",
+                "origin": "浙江省温州市龙湾区滨海路",
+                "candidate_source": "customer_store_lookup",
+            },
+            {"normalized_content": "滨海路"},
+            client,  # type: ignore[arg-type]
+            {"customer_store_lookup": {"candidate_stores": stores}},
+        )
+    )
+
+    assert result["ranking_method"] == "haversine"
+    assert result["route_status"] == "fallback_haversine"
+    assert [item["store_id"] for item in result["ranked_stores"]] == ["1", "2"]
+    assert all("driving_duration_seconds" not in item for item in result["ranked_stores"])
+
+
+def test_driving_route_only_calls_first_eight_haversine_candidates() -> None:
+    stores = [
+        {
+            **_store(str(index), f"门店{index}", location=f"120.{820 + index:03d},27.91"),
+            "distance_km": float(index),
+            "distance_source": "haversine",
+        }
+        for index in range(1, 11)
+    ]
+    routes = {
+        f"120.{820 + index:03d}000,27.910000": {
+            "data": json.dumps(
+                {
+                    "output": {
+                        "paths": [
+                            {
+                                "distance": str(index * 1000),
+                                "duration": 1000 - index * 10,
+                            }
+                        ]
+                    }
+                }
+            )
+        }
+        for index in range(1, 9)
+    }
+    client = _GeocodeClient({}, routes=routes)
+
+    result = asyncio.run(
+        rerank_stores_by_driving_route(
+            coze_client=client,
+            workflow_id="route",
+            origin_location="120.820,27.910",
+            ranked_stores=stores,
+        )
+    )
+
+    route_calls = [parameters for workflow, parameters in client.calls if workflow == "route"]
+    assert len(route_calls) == 8
+    assert result["ranking_method"] == "driving_route_shortlist"
+    assert result["route_ranking_complete"] is False
+    assert [item["store_id"] for item in result["ranked_stores"][:8]] == [
+        "8",
+        "7",
+        "6",
+        "5",
+        "4",
+        "3",
+        "2",
+        "1",
+    ]
+    assert [item["store_id"] for item in result["ranked_stores"][8:]] == ["9", "10"]
+
+
 def test_distance_calculate_reuses_confirmed_lookup_coordinates() -> None:
     stores = [
         {
@@ -678,6 +906,56 @@ def test_planner_fact_output_emits_single_v2_delivery_contract() -> None:
     assert resolution["customer_claim_level"] == "relative_near"
 
 
+def test_planner_fact_output_preserves_driving_route_ranking_fact() -> None:
+    stores = [
+        {
+            **_store("2", "驾车更快", location="120.822,27.912"),
+            "distance_km": 0.3,
+            "distance_source": "driving_route",
+            "driving_distance_meters": 1500,
+            "driving_duration_seconds": 180,
+        },
+        {
+            **_store("1", "直线更近", location="120.821,27.911"),
+            "distance_km": 0.2,
+            "distance_source": "driving_route",
+            "driving_distance_meters": 1000,
+            "driving_duration_seconds": 500,
+        },
+    ]
+    output = build_planner_fact_output(
+        {
+            "distance_calculate": {
+                "status": "ok",
+                "origin": "浙江省温州市龙湾区滨海路",
+                "province": "浙江省",
+                "city": "温州市",
+                "district": "龙湾区",
+                "resolved_admin_level": "district",
+                "ranking_method": "driving_route",
+                "ranking_complete": True,
+                "route_status": "ok",
+                "route_candidate_count": 2,
+                "route_success_count": 2,
+                "route_ranking_complete": True,
+                "route_shortlist_size": 2,
+                "ranked_stores": stores,
+                "candidate_store_count": 2,
+                "ranked_candidate_count": 2,
+            }
+        },
+        {"customer_store_knowledge": {"stores": stores}, "guardrail_result": {}},
+    )
+    resolution = output["structured_facts"]["store_resolution_fact"]
+    recommended = output["structured_facts"]["recommended_store"]
+
+    assert resolution["recommended_store_id"] == "2"
+    assert resolution["ranking_method"] == "driving_route"
+    assert resolution["route_ranking_complete"] is True
+    assert resolution["route_candidate_count"] == 2
+    assert recommended["reason"] == "driving_route_rank_1"
+
+
 def test_city_fallback_distance_ranking_delivers_top_three_store_options() -> None:
     stores = [
         {**_store(str(store_id), f"store-{store_id}", location=location, district=district), "distance_km": distance, "distance_source": "haversine"}
@@ -722,10 +1000,100 @@ def test_city_fallback_distance_ranking_delivers_top_three_store_options() -> No
 
     assert resolution["status"] == "send_multiple"
     assert resolution["recommended_store_id"] == "218"
-    assert resolution["delivery_store_ids"] == ["218", "344", "149"]
+    assert resolution["delivery_store_ids"] == ["218", "344"]
+    assert resolution["distance_tie_threshold_km"] == 5.0
     assert resolution["visible_candidate_ids"] == ["218", "344", "149", "590"]
     assert resolution["ranking_method"] == "haversine"
     assert resolution["customer_claim_level"] == "relative_near"
+
+
+def test_completed_province_search_without_store_does_not_ask_for_district() -> None:
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "no_match",
+                "raw_query": "湖北省",
+                "query": "湖北省",
+                "province": "湖北省",
+                "resolved_admin_level": "province",
+                "scope_match_level": "none",
+                "exact_scope_has_store": False,
+                "same_city_has_store": False,
+                "stores": [],
+                "candidate_stores": [],
+                "missing": [],
+            }
+        },
+        {
+            "customer_store_knowledge": {
+                "stores": [
+                    {
+                        "store_id": "900",
+                        "store_name": "外省门店",
+                        "province": "湖南省",
+                        "city": "长沙市",
+                        "district": "岳麓区",
+                        "store_address": "湖南省长沙市岳麓区测试路1号",
+                        "store_fact_integrity": "valid",
+                    }
+                ]
+            },
+            "guardrail_result": {},
+        },
+    )
+    resolution = output["structured_facts"]["store_resolution_fact"]
+
+    assert resolution["status"] == "no_valid_candidate"
+    assert resolution["candidate_search_complete"] is True
+    assert resolution["candidate_search_scope"] == "province"
+    assert resolution["coverage_status"] == "no_store_in_province"
+    assert resolution["clarification_required"] is False
+    assert resolution["recommendation_final_for_destination"] is True
+    assert resolution["delivery_store_ids"] == []
+
+
+def test_city_scope_delivers_all_same_city_stores_without_cross_city_candidate() -> None:
+    stores = [
+        {
+            "store_id": str(index),
+            "store_name": f"武汉门店{index}",
+            "province": "湖北省",
+            "city": "武汉市",
+            "district": district,
+            "store_address": f"湖北省武汉市{district}测试路{index}号",
+            "store_fact_integrity": "valid",
+        }
+        for index, district in enumerate(
+            ("江汉区", "江岸区", "武昌区", "洪山区", "汉阳区", "硚口区"),
+            start=1,
+        )
+    ]
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "raw_query": "武汉市",
+                "query": "武汉市",
+                "province": "湖北省",
+                "city": "武汉市",
+                "resolved_admin_level": "city",
+                "scope_match_level": "city",
+                "exact_scope_has_store": True,
+                "same_city_has_store": True,
+                "allow_broad_scope_delivery": True,
+                "stores": stores,
+                "candidate_stores": stores,
+                "missing": [],
+            }
+        },
+        {"customer_store_knowledge": {"stores": stores}, "guardrail_result": {}},
+    )
+    resolution = output["structured_facts"]["store_resolution_fact"]
+
+    assert resolution["status"] == "send_multiple"
+    assert resolution["delivery_store_ids"] == ["1", "2", "3", "4", "5", "6"]
+    assert resolution["coverage_status"] == "same_city_available"
+    assert resolution["recommendation_final_for_destination"] is True
 
 
 def test_empty_distance_result_does_not_erase_location_confirmation_contract() -> None:

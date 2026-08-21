@@ -55,6 +55,7 @@ def test_active_reply_graph_cannot_reach_legacy_planner_or_normalizer() -> None:
         '"shared_context"',
         '"parallel_evidence"',
         '"execute_readonly_actions"',
+        '"post_store_semantic_evidence"',
         '"evidence_join"',
         '"synthesize_reply"',
     )
@@ -68,9 +69,10 @@ def test_active_reply_graph_cannot_reach_legacy_planner_or_normalizer() -> None:
 def test_parallel_chain_does_not_publish_legacy_sales_decisions() -> None:
     source = PARALLEL_CHAIN_PATH.read_text(encoding="utf-8")
 
-    assert "asyncio.create_task(_run_content_gate" in source
-    assert "asyncio.create_task(_run_tool_planner" in source
-    assert "await asyncio.gather(" in source
+    assert "semantic_router_service.route(" in source
+    assert "semantic_router_service.route_after_store(" in source
+    assert "_run_content_gate(" not in source[source.index("def create_parallel_evidence_node"):source.index("def create_evidence_join_node")]
+    assert "_run_tool_planner(" not in source[source.index("def create_parallel_evidence_node"):source.index("def create_evidence_join_node")]
     assert '"planner_decision":' not in source
     for excluded in (
         "signup_state",

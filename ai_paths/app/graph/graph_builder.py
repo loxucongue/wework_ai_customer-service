@@ -12,6 +12,7 @@ from app.graph.nodes.parallel_reply_chain import (
     create_commit_coordinator_node,
     create_evidence_join_node,
     create_parallel_evidence_node,
+    create_post_store_semantic_evidence_node,
     create_prepare_commit_node,
     create_shared_context_node,
     parallel_reply_payload,
@@ -161,6 +162,10 @@ def _build_nodes(
         model_client=model_client,
         execution_mode="readonly",
     )
+    post_store_semantic_evidence = create_post_store_semantic_evidence_node(
+        trace_logger=trace_logger,
+        semantic_router_service=semantic_router_service,
+    )
     evidence_join = create_evidence_join_node(trace_logger=trace_logger)
 
     synthesize_reply = create_synthesize_reply_node(
@@ -199,6 +204,7 @@ def _build_nodes(
         "shared_context": shared_context,
         "parallel_evidence": parallel_evidence,
         "execute_readonly_actions": execute_readonly_actions,
+        "post_store_semantic_evidence": post_store_semantic_evidence,
         "evidence_join": evidence_join,
         "synthesize_reply": synthesize_reply,
         "prepare_commit": prepare_commit,
@@ -215,6 +221,7 @@ def _compile_full_graph(nodes: dict[str, Any]):
         "shared_context",
         "parallel_evidence",
         "execute_readonly_actions",
+        "post_store_semantic_evidence",
         "evidence_join",
         "synthesize_reply",
     )
