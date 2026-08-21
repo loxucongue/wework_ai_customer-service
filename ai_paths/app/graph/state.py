@@ -65,6 +65,7 @@ class AgentState(TypedDict, total=False):
     sop_progress_evidence: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]
+    follow_sequence_index: dict[str, Any]
     store_context_status: str
     store_context_elapsed_ms: int
     store_context_skipped_steps: list[str]
@@ -81,6 +82,9 @@ class AgentState(TypedDict, total=False):
     # candidates only; customer-visible business decisions remain Reply-owned.
     shared_context: dict[str, Any]
     content_gate_result: dict[str, Any]
+    sales_recall: dict[str, Any]
+    semantic_route: dict[str, Any]
+    knowledge_evidence: dict[str, Any]
     tool_plan: dict[str, Any]
     parallel_branch_metrics: dict[str, Any]
     evidence_join: dict[str, Any]
@@ -95,6 +99,7 @@ class AgentState(TypedDict, total=False):
     # customer profile or reused to control a later turn.
     reply_sales_assessment: dict[str, Any]
     reply_sales_judgment: dict[str, Any]
+    reply_knowledge_use: dict[str, Any]
     reply_payment_assessment: dict[str, Any]
     reply_payment_channel: str
     reply_payment_channel_explicit: bool

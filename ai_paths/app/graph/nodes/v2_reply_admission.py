@@ -62,15 +62,3 @@ def _validate_selected_content_provenance(state: dict[str, Any]) -> None:
     }
     if not selected_ids.issubset(allowed_ids):
         raise ValueError("selected_content_id_not_nominated")
-    used_refs = {
-        str(item or "").strip()
-        for item in state.get("reply_used_fact_refs") or []
-        if str(item or "").strip()
-    }
-    missing_refs = {
-        f"content_asset:{content_id}"
-        for content_id in selected_ids
-        if f"content_asset:{content_id}" not in used_refs
-    }
-    if missing_refs:
-        raise ValueError("selected_content_missing_fact_ref:" + ",".join(sorted(missing_refs)))

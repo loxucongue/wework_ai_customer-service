@@ -376,12 +376,11 @@ def test_parallel_content_gate_does_not_use_opening_asset_for_substantive_questi
 def test_parallel_reply_prompt_uses_history_without_fixed_short_ack_script() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "带时间聊天" in prompt
     assert "完整聊天" in prompt
-    assert "不要重复已回答的问题" in prompt
+    assert "客户已经给过的信息不再问" in prompt
     assert "每轮只选一个主要目标" in prompt
-    assert "客户正在工作、开车或处理现实事务" in prompt
-    assert "可逆犹豫不自动等于退出" in prompt
+    assert "正在开车/工作且明确不便" in prompt
+    assert "可逆犹豫时换一个真实角度" in prompt
     assert "好/好的/嗯/可以" not in prompt
 
 
@@ -3331,7 +3330,9 @@ def test_parallel_reply_exposes_store_delivery_as_structure_not_sales_decision()
 def test_v3_prompts_treat_customer_reply_as_open_channel_without_forcing_pause_cases() -> None:
     assert "客户每次主动开口" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不能把准确回答当成终点" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "当前健康风险、投诉退款、明确强拒绝" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "当前健康风险" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "投诉退款" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "明确拒绝" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "只要目录中存在" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
     assert "低信息承接不代表付款或预约同意" in PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 
@@ -3355,7 +3356,7 @@ def test_parallel_reply_prompt_keeps_store_delivery_fact_based() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "不能编造价格、门店、素材、距离" in prompt
-    assert "提问只用于获得会改变事实、工具、证据或行动的信息" in prompt
+    assert "问一个确实会改变事实/工具/证据/行动的必要问题" in prompt
     assert "应视为当前门店匹配请求" not in prompt
 
 
@@ -3383,7 +3384,7 @@ def test_parallel_reply_prompt_forbids_placeholder_commit_actions() -> None:
 
     assert '"commit_actions"' in prompt
     assert "create_work_order | add_customer_mobile" in prompt
-    assert "支付、退款、预约、排客" in prompt
+    assert "不能编造" in prompt and "排客" in prompt
 
 
 def test_parallel_reply_prompt_requires_visible_reply_when_parallel_inputs_are_empty() -> None:
@@ -3795,7 +3796,7 @@ def test_parallel_selected_content_repair_hint_is_structural_not_sales_decision(
     assert "只会原样补齐你已明确选择" in hint
 
 
-def test_parallel_content_fact_ref_requires_current_candidate_structured_delivery() -> None:
+def test_parallel_content_fact_ref_without_selection_does_not_claim_asset_adoption() -> None:
     state = {
         **_parallel_state("地址发我"),
         "evidence_join": {
@@ -3814,11 +3815,10 @@ def test_parallel_content_fact_ref_requires_current_candidate_structured_deliver
         "reply_used_fact_refs": ["content_asset:s10_activity_intro"],
     }
 
-    with pytest.raises(ValueError, match="selected_content_delivery_missing"):
-        validate_reply_consistency(
+    validate_reply_consistency(
             [{"type": "text", "order": 1, "content": "活动介绍"}],
-            state,
-        )
+        state,
+    )
 
 
 def test_parallel_reply_does_not_repair_customer_visible_text_for_internal_phrase() -> None:
@@ -4573,67 +4573,68 @@ def test_commit_action_accepts_only_sourced_registration_and_visible_store_ancho
     assert "commit_action_store_missing_anchor:create_work_order" in violations
 
 
-def test_gate_and_tool_planner_execute_concurrently(monkeypatch) -> None:
-    async def fake_gate(state, service):
-        await asyncio.sleep(0.08)
-        return {"duration_ms": 80, "content_candidate_ids": [], "content_candidates": []}
+def test_v3_semantic_router_replaces_gate_and_general_tool_planner() -> None:
+    class _SemanticRouter:
+        async def route(self, *, shared_context, sequence_result=None):
+            assert shared_context == {}
+            assert sequence_result == {}
+            await asyncio.sleep(0.02)
+            return {
+                "duration_ms": 20,
+                "semantic_route": {
+                    "status": "ok",
+                    "checkpoint": {"primary_code": "distance"},
+                },
+                "knowledge_evidence": {
+                    "status": "empty",
+                    "candidates": [],
+                    "sequence_candidates": [],
+                },
+                "tool_plan": {
+                    "status": "completed",
+                    "decision": "facts_sufficient",
+                    "tool_calls": [],
+                },
+            }
 
-    async def fake_planner(state, model_client):
-        await asyncio.sleep(0.08)
-        return {"duration_ms": 80, "tool_calls": [], "missing_facts": []}
-
-    monkeypatch.setattr(parallel_reply_chain, "_run_content_gate", fake_gate)
-    monkeypatch.setattr(parallel_reply_chain, "_run_tool_planner", fake_planner)
     node = create_parallel_evidence_node(
         trace_logger=_TraceLogger(),
-        model_client=object(),
-        sop_execution_service=object(),
+        model_client=None,
+        sop_execution_service=None,
+        semantic_router_service=_SemanticRouter(),
     )
 
     started = time.perf_counter()
     result = asyncio.run(node({"shared_context": {}, "trace": []}))
     elapsed = time.perf_counter() - started
 
-    assert elapsed < 0.14
-    assert result["parallel_branch_metrics"]["parallel_expected_elapsed_ms"] == 80
+    assert elapsed < 0.08
+    assert result["semantic_route"]["checkpoint"]["primary_code"] == "distance"
+    assert result["planner_source"] == "v3_semantic_router_store_only"
+    assert "parallel_expected_elapsed_ms" not in result["parallel_branch_metrics"]
 
 
-def test_one_parallel_branch_failure_preserves_the_other_branch(monkeypatch) -> None:
-    async def failed_gate(state, service):
-        del state, service
-        raise TimeoutError("gate timed out")
+def test_semantic_router_failure_keeps_assets_and_reply_path_available() -> None:
+    class _SemanticRouter:
+        async def route(self, *, shared_context, sequence_result=None):
+            del shared_context
+            del sequence_result
+            raise TimeoutError("semantic router timed out")
 
-    async def successful_planner(state, model_client):
-        del state, model_client
-        return {
-            "schema_version": "tool_plan_v1",
-            "status": "ok",
-            "duration_ms": 12,
-            "tool_calls": [
-                {
-                    "name": "kb_search",
-                    "query": "真实效果案例",
-                    "kb_name": "case_studies",
-                    "evidence_refs": ["current_message"],
-                }
-            ],
-            "missing_facts": [],
-        }
-
-    monkeypatch.setattr(parallel_reply_chain, "_run_content_gate", failed_gate)
-    monkeypatch.setattr(parallel_reply_chain, "_run_tool_planner", successful_planner)
     node = create_parallel_evidence_node(
         trace_logger=_TraceLogger(),
-        model_client=object(),
-        sop_execution_service=object(),
+        model_client=None,
+        sop_execution_service=None,
+        semantic_router_service=_SemanticRouter(),
     )
 
     result = asyncio.run(node({"shared_context": {}, "trace": []}))
 
-    assert result["content_gate_result"]["status"] == "error"
-    assert "gate timed out" in result["content_gate_result"]["error"]
-    assert result["tool_plan"]["status"] == "ok"
-    assert result["tool_plan"]["tool_calls"][0]["name"] == "kb_search"
+    assert result["content_gate_result"]["status"] == "completed"
+    assert result["semantic_route"]["status"] == "error"
+    assert "semantic router timed out" in result["semantic_route"]["reason"]
+    assert result["tool_plan"]["decision"] == "facts_sufficient"
+    assert result["tool_plan"]["tool_calls"] == []
 
 
 def test_parallel_content_gate_retries_one_transient_model_failure() -> None:
@@ -5129,7 +5130,7 @@ def test_v3_distance_objection_uses_completed_search_and_switches_value_dimensio
 
     assert "recent_store_search_evidence" in tool_prompt
     assert "不要再次调用门店工具" in tool_prompt
-    assert "不可改变阻力的销售承接" in reply_prompt
-    assert "真实效果证据或活动价值" in reply_prompt
+    assert "距离等现实条件无法改变" in reply_prompt
+    assert "真实效果证据、活动价值" in reply_prompt
     assert "其他常去城市" in reply_prompt
-    assert "sales_recall_reference_options" in reply_prompt
+    assert "跟进序列是业务总结的处理路径" in reply_prompt

@@ -1415,10 +1415,15 @@ async def _resolve_customer_store_workflow(
     *,
     model_client: ModelClient | None,
 ) -> dict[str, Any]:
+    nested_arguments = tool.get("arguments") if isinstance(tool.get("arguments"), dict) else {}
+    effective_tool = {
+        **nested_arguments,
+        **{key: value for key, value in tool.items() if key != "arguments"},
+    }
     destination = await resolve_active_store_destination(
         model_client=model_client,
         state=state,
-        tool=tool,
+        tool=effective_tool,
     )
     query = str(destination.get("destination_query") or destination.get("named_store") or "").strip()
     if not query or (
@@ -1429,7 +1434,7 @@ async def _resolve_customer_store_workflow(
             "status": "need_location_confirmation",
             "raw_query": query,
             "query": query,
-            "purpose": str(tool.get("purpose") or "store_resolution_workflow"),
+            "purpose": str(effective_tool.get("purpose") or "store_resolution_workflow"),
             "source": "store_destination_resolver",
             "destination_resolution": destination,
             "stores": [],
@@ -1447,9 +1452,11 @@ async def _resolve_customer_store_workflow(
         "name": "customer_store_lookup",
         "query": query,
         "customer_raw_query": str(destination.get("source_query") or "").strip(),
-        "purpose": str(tool.get("purpose") or destination.get("request_kind") or "store_resolution_workflow"),
+        "purpose": str(effective_tool.get("purpose") or destination.get("request_kind") or "store_resolution_workflow"),
         "evidence_refs": list(destination.get("evidence_refs") or []),
         "expected_admin": dict(destination.get("administrative_context") or {}),
+        "use_resolver_admin_fallback": bool(effective_tool.get("use_resolver_admin_fallback")),
+        "allow_broad_scope_delivery": bool(effective_tool.get("allow_broad_scope_delivery")),
         "confirmed_by_customer": bool(
             not destination.get("needs_clarification")
             and "current_message" in set(destination.get("evidence_refs") or [])
@@ -1511,6 +1518,11 @@ def _store_workflow_should_rank_all_visible(
     if str(lookup.get("status") or "") not in {"ok", "no_match"}:
         return False
     if str(destination.get("request_kind") or "") in {"store_detail", "reuse_store"}:
+        return False
+    if (
+        lookup.get("source") == "customer_scope_resolver_admin"
+        and not str((lookup.get("geocode") or {}).get("location") or "").strip()
+    ):
         return False
     precision = str(destination.get("destination_precision") or "unknown")
     if precision == "province":
@@ -1685,6 +1697,17 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
 
     text_candidates = _stores_for_text_query(resolved_query, stores, purpose)
     exact_region_candidates, exact_region = _stores_for_explicit_visible_region(resolved_query, stores)
+    resolver_admin_fallback = False
+    if (
+        not exact_region_candidates
+        and not geocode.get("location")
+        and bool(tool.get("use_resolver_admin_fallback"))
+    ):
+        exact_region_candidates, exact_region = _stores_for_resolver_admin_region(
+            expected_admin,
+            stores,
+        )
+        resolver_admin_fallback = bool(exact_region_candidates)
     if exact_region_candidates and not geocode.get("location"):
         normalized, invalid_candidates = filter_valid_store_facts(
             exact_region_candidates,
@@ -1719,7 +1742,14 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "raw_query": raw_query,
             "query": resolved_query,
             "purpose": purpose,
-            "source": "customer_scope_exact_text_region",
+            "source": (
+                "customer_scope_resolver_admin"
+                if resolver_admin_fallback
+                else "customer_scope_exact_text_region"
+            ),
+            "allow_broad_scope_delivery": bool(
+                resolver_admin_fallback and tool.get("allow_broad_scope_delivery")
+            ),
             "geocode": {"formatted_address": resolved_query, **exact_region},
             "location_evidence": location_evidence,
             "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
@@ -2014,6 +2044,40 @@ def _stores_for_explicit_visible_region(
         region[field] = original_values[key]
         return matched, region
     return [], {}
+
+
+def _stores_for_resolver_admin_region(
+    expected_admin: dict[str, Any],
+    stores: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Filter visible stores by an accepted resolver administrative fact.
+
+    This does not interpret customer text. It only compares the destination
+    model's structured province/city/district fields with structured fields on
+    customer-visible stores. Province-only facts remain too broad.
+    """
+
+    expected = _normalized_expected_admin(expected_admin)
+    if not expected.get("city") and not expected.get("district"):
+        return [], {}
+    matched = [
+        store
+        for store in stores
+        if all(
+            str(store.get(field) or "").strip()
+            and _region_equal(store.get(field), expected_value)
+            for field, expected_value in expected.items()
+        )
+    ]
+    if not matched:
+        return [], {}
+    region = {
+        key: str(expected.get(key) or "").strip()
+        for key in ("province", "city", "district")
+        if str(expected.get(key) or "").strip()
+    }
+    region["resolved_admin_level"] = "district" if expected.get("district") else "city"
+    return matched, region
 
 
 def _store_lookup_geocode_queries(tool: dict[str, Any], query: str) -> list[dict[str, Any]]:

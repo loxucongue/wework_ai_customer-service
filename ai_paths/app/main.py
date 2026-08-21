@@ -15,6 +15,9 @@ from app.schemas import ChatRequest, ChatResponse
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
+from app.services.follow_knowledge_client import FollowKnowledgeClient
+from app.services.deepseek_semantic_client import DeepSeekSemanticClient
+from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.outreach_service import OutreachService, classify_conversation_refresh_error
@@ -67,6 +70,24 @@ precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
 sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
 model_led_objection_playbook_service = ModelLedObjectionPlaybookService(
     settings.v2_model_led_objection_playbook_path
+)
+follow_knowledge_client = FollowKnowledgeClient(settings)
+deepseek_semantic_fallback_client = ModelClient(
+    settings.model_copy(
+        update={
+            "model_fast": "gpt-5.4-mini",
+            "model_fast_fallbacks": "gpt-5.4",
+            "model_emergency_fallbacks": "",
+            "model_hedge_max_parallel": 1,
+        }
+    )
+)
+deepseek_semantic_client = DeepSeekSemanticClient(settings, deepseek_semantic_fallback_client)
+v3_semantic_router_service = V3SemanticRouterService(
+    semantic_client=deepseek_semantic_client,
+    knowledge_client=follow_knowledge_client,
+    script_threshold=settings.deepseek_semantic_script_threshold,
+    max_scripts=settings.deepseek_semantic_max_scripts,
 )
 outreach_service = OutreachService(
     repository=repository,
@@ -130,6 +151,7 @@ reply_graphs = build_reply_graphs(
     outreach_send_client,
     platform_agent_client,
     sop_execution_service,
+    v3_semantic_router_service,
 )
 compiled_graph = reply_graphs.full_graph
 chat_runtime = ChatRuntime(
@@ -284,6 +306,9 @@ async def shutdown() -> None:
     await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()
+    await follow_knowledge_client.aclose()
+    await deepseek_semantic_client.aclose()
+    await deepseek_semantic_fallback_client.aclose()
     await voice_transcription_client.aclose()
     await outreach_send_client.aclose()
     await outreach_system_client.aclose()

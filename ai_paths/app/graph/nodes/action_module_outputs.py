@@ -23,6 +23,7 @@ def _store_resolution_status(
     resolved_level: str,
     visible_candidate_count: int,
     recommended_store_id: str = "",
+    allow_broad_scope_delivery: bool = False,
 ) -> str:
     if tool_status in {
         "need_location",
@@ -42,6 +43,8 @@ def _store_resolution_status(
     if tool_status == "ok" and visible_candidate_count == 1:
         return "send_single"
     if tool_status == "ok" and 2 <= visible_candidate_count <= 3:
+        return "send_multiple"
+    if tool_status == "ok" and visible_candidate_count > 3 and allow_broad_scope_delivery:
         return "send_multiple"
     if tool_status == "ok" and visible_candidate_count > 3:
         return "need_location"
@@ -175,6 +178,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 resolved_level=resolved_level,
                 visible_candidate_count=visible_candidate_count,
                 recommended_store_id=recommended_store_id,
+                allow_broad_scope_delivery=bool(value.get("allow_broad_scope_delivery")),
             )
             candidate_store_ids = [
                 str(item.get("store_id") or item.get("id") or "")
@@ -214,6 +218,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "candidate_search_scope": "province" if v2_status == "no_valid_candidate" else "",
                     "recommended_store_id": recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
+                    "allow_broad_scope_delivery": bool(value.get("allow_broad_scope_delivery")),
                     "ranking_method": "scope_match",
                     "customer_claim_level": "candidate_list",
                     "reason": f"{resolution_status}_scope_resolution",

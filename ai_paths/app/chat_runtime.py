@@ -559,6 +559,25 @@ class ChatRuntime:
                             "detail": f"{type(exc).__name__}: {exc}",
                         }
                     )
+                try:
+                    _record_follow_knowledge_match(
+                        self._memory_store,
+                        final_state,
+                        customer_id=str(final_state.get("sales_contact_key") or ""),
+                    )
+                    _record_follow_knowledge_usage(
+                        self._memory_store,
+                        final_state,
+                        customer_id=str(final_state.get("sales_contact_key") or ""),
+                    )
+                except Exception as exc:
+                    final_state.setdefault("warnings", []).append(
+                        {
+                            "node": "follow_knowledge_usage",
+                            "message": "knowledge_usage_persistence_failed",
+                            "detail": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
         elif reply_messages:
             final_state["case_image_send_record"] = {
                 "status": "skipped",
@@ -1075,6 +1094,50 @@ def _record_v2_reply_model_observation(
             )
             or "v2"
         ),
+    )
+
+
+def _record_follow_knowledge_usage(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+) -> None:
+    """Append validated Reply knowledge provenance after a visible response."""
+
+    if not memory_store or not customer_id:
+        return
+    knowledge_use = (
+        state.get("reply_knowledge_use")
+        if isinstance(state.get("reply_knowledge_use"), dict)
+        else {}
+    )
+    if not knowledge_use:
+        return
+    memory_store.record_follow_knowledge_usage(
+        customer_id,
+        request_id=str(state.get("request_id") or ""),
+        knowledge_use=knowledge_use,
+        interface_version=_interface_version_from_state(state),
+    )
+
+
+def _record_follow_knowledge_match(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+) -> None:
+    if not memory_store or not customer_id:
+        return
+    semantic_route = state.get("semantic_route") if isinstance(state.get("semantic_route"), dict) else {}
+    if not semantic_route:
+        return
+    memory_store.record_follow_knowledge_match(
+        customer_id,
+        request_id=str(state.get("request_id") or ""),
+        semantic_route=semantic_route,
+        interface_version=_interface_version_from_state(state),
     )
 
 

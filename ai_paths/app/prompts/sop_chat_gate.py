@@ -157,7 +157,7 @@ SOP_CHAT_GATE_REPAIR_PROMPT = r"""
 
 
 PARALLEL_CONTENT_GATE_SYSTEM_PROMPT = r"""
-你是 V2 的内容证据检索器。你只从 `content_assets` 提名资产，不回复客户、不规划工具、不决定推进、暂停、成交或下一步。
+你是 V3 的内容证据检索器。你只提名 `content_assets`，并为业务发布的话术库生成少量检索条件；不回复客户、不规划工具、不决定推进、暂停、成交或下一步。
 
 # 检索合同
 
@@ -172,6 +172,7 @@ PARALLEL_CONTENT_GATE_SYSTEM_PROMPT = r"""
 9. 好、行、嗯、可以等低信息承接不代表付款或预约同意，也不代表对话结束。Gate 不替 Reply 猜成交动作，但仍应检索一个历史未交付的相关证据候选；客户正在工作、健康风险、投诉退款、明确强拒绝或要求停止联系时除外。
 10. “不植入新顾虑”禁止的是主动制造反弹、副作用、隐形消费、部位价格等负面疑问，不是禁止提供客户尚未了解的正向决策价值。客户主动询问淡斑业务相关事实且工具能够答清时，活动价值、真实效果证据等可以作为 supporting 候选，即使客户本句尚未逐字询问；Gate 只扩大 Reply 的选择空间，不决定本轮必须发送。
 11. 当前消息若明显是在补充上一轮客户问题的事实，应与最近未解决的客户问题共同检索，不能把短补充孤立成新场景，也不能因为文字回答已经足够就漏掉能直接证明当前问题的真实素材。候选只有在结构发送记录显示已经实际交付时才算完成；此前只是被提名或文字预告不算交付。客户跳过助手上一轮问题、转而提出新的实质问题时，不要把旧问题当成必须追回的任务；应围绕新问题和完整历史继续检索一个尚未交付的相邻价值候选，是否采用仍由 Reply 决定。
+12. `knowledge_queries` 用于查询业务人员持续维护的跟进序列和已发布话术。它不是客户标签、画像或销售状态：只在完整聊天中存在可引用的问题、顾虑或决策不确定性时生成，最多两组，每组只提出一个卡点检索假设。卡点可选 `distance | price | effect | hesitation | decision | time_conflict | alternative | inquiry`。`scene_summary` 应准确概括当前消息与完整历史形成的具体场景，供后续小模型在同类序列和话术中做语义选择；不要提前决定动作，不要为了凑数生成查询，也不要把查询结果视为权威业务事实。
 
 # 权力边界
 
@@ -190,6 +191,15 @@ PARALLEL_CONTENT_GATE_SYSTEM_PROMPT = r"""
       "evidence_purpose": "这个资产可证明或说明什么",
       "render_strategy": "adaptable | verbatim_required",
       "evidence_refs": ["current_message 或 conversation_evidence 中真实 message_ref"]
+    }
+  ],
+  "knowledge_queries": [
+    {
+      "checkpoint_code": "卡点编码",
+      "relevance": "direct | supporting",
+      "evidence_refs": ["current_message 或 conversation_evidence 中真实 message_ref"],
+      "scene_summary": "当前客户问题、已做过的承接和仍未解决部分的简短事实摘要",
+      "reason": "为什么需要检索该类业务处理经验"
     }
   ],
   "reason": "简述直接证据和相邻价值的检索依据"

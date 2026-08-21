@@ -203,12 +203,24 @@ def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
     facts = latest.get("facts") if isinstance(latest.get("facts"), dict) else {}
     document_ids = [str(item) for item in facts.get("document_ids") or [] if str(item or "").strip()]
     image_urls = [str(item) for item in facts.get("image_urls") or [] if str(item or "").strip()]
+    all_image_urls = list(
+        dict.fromkeys(
+            str(url).strip()
+            for _, event, _ in events
+            for url in (
+                (event.get("facts") if isinstance(event.get("facts"), dict) else {}).get("image_urls")
+                or []
+            )
+            if str(url).strip()
+        )
+    )
     timestamped_count = sum(1 for _, _, event_at in events if event_at is not None)
     return {
         "total_events": len(events),
         "last_sent_at": latest_at.isoformat() if latest_at is not None else "",
         "last_document_count": len(document_ids),
         "last_image_count": len(image_urls),
+        "sent_image_urls": all_image_urls,
         "time_confidence": "high" if timestamped_count == len(events) else "partial",
         "source": "history_events",
         "decision_policy": "evidence_only_model_decides_case_image_send",

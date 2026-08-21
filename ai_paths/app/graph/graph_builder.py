@@ -27,6 +27,7 @@ from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
+from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.outreach_send_client import OutreachSendClient
@@ -55,6 +56,7 @@ def build_graph(
     outreach_send_client: OutreachSendClient | None = None,
     platform_agent_client: PlatformAgentClient | None = None,
     sop_execution_service: SopExecutionService | None = None,
+    semantic_router_service: V3SemanticRouterService | None = None,
 ):
     return build_reply_graphs(
         coze_client,
@@ -67,6 +69,7 @@ def build_graph(
         outreach_send_client,
         platform_agent_client,
         sop_execution_service,
+        semantic_router_service,
     ).full_graph
 
 
@@ -81,6 +84,7 @@ def build_reply_graphs(
     outreach_send_client: OutreachSendClient | None = None,
     platform_agent_client: PlatformAgentClient | None = None,
     sop_execution_service: SopExecutionService | None = None,
+    semantic_router_service: V3SemanticRouterService | None = None,
 ) -> ReplyGraphs:
     nodes = _build_nodes(
         coze_client=coze_client,
@@ -93,6 +97,7 @@ def build_reply_graphs(
         outreach_send_client=outreach_send_client,
         platform_agent_client=platform_agent_client,
         sop_execution_service=sop_execution_service,
+        semantic_router_service=semantic_router_service,
     )
     return ReplyGraphs(
         full_graph=_compile_full_graph(nodes),
@@ -112,6 +117,7 @@ def _build_nodes(
     outreach_send_client: OutreachSendClient | None,
     platform_agent_client: PlatformAgentClient | None,
     sop_execution_service: SopExecutionService | None,
+    semantic_router_service: V3SemanticRouterService | None,
 ) -> dict[str, Any]:
     layer_1_input_normalization = create_input_normalization_layer(
         trace_logger=trace_logger,
@@ -124,6 +130,11 @@ def _build_nodes(
         customer_store_knowledge_service=customer_store_knowledge_service,
         coze_client=coze_client,
         conversation_fetcher=outreach_send_client.fetch_conversation if outreach_send_client else None,
+        follow_sequence_fetcher=(
+            semantic_router_service.load_sequence_index
+            if semantic_router_service is not None
+            else None
+        ),
     )
     shared_context = create_shared_context_node(
         trace_logger=trace_logger,
@@ -134,6 +145,7 @@ def _build_nodes(
         model_client=model_client,
         sop_execution_service=sop_execution_service,
         coze_client=coze_client,
+        semantic_router_service=semantic_router_service,
     )
     execute_readonly_actions = create_execute_actions_node(
         coze_client=coze_client,

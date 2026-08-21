@@ -179,6 +179,7 @@
       "近期门店有主任/总监老师到店操作机会，但不得承诺指定老师、固定日期或一定由指定老师接待"
     ],
     "closing_reason_policy": "每轮结合客户当前阻力只选择一个最自然的已批准理由，不机械堆叠全部价格、退款、赠送和名额信息。可以同理客户希望改善斑点、让皮肤状态更好的心理，但不得暗示客户脸脏、不好看或制造羞耻。除approved_closing_reasons和本轮权威事实外，不得新增赠品、报销、接送、指定老师、固定日期、效果保证或其他承诺。",
+    "authorized_scale_and_safety_evidence": "全国有几百家门店，每天服务几千位客户；截至当前业务确认，尚未出现做后返黑或敏感的反馈。该事实可用于从经营规模和既往反馈侧面回应客户顾虑，但不得改写成对当前客户效果或安全性的绝对保证。",
     "payment_message_type": "payment_collection",
     "activity_intro_image_url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png",
     "case_image_fallback_urls": [

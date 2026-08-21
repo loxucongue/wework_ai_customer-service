@@ -191,6 +191,45 @@ class Settings(BaseSettings):
     )
     v2_sales_recall_wait_seconds: float = Field(default=2.5, alias="V2_SALES_RECALL_WAIT_SECONDS")
     v2_sales_recall_max_candidates: int = Field(default=3, alias="V2_SALES_RECALL_MAX_CANDIDATES")
+    follow_knowledge_enabled: bool = Field(default=True, alias="FOLLOW_KNOWLEDGE_ENABLED")
+    follow_knowledge_base_url: str = Field(
+        default="https://test.api.customer.4ba.cn",
+        alias="FOLLOW_KNOWLEDGE_BASE_URL",
+    )
+    follow_knowledge_token: str = Field(default="", alias="FOLLOW_KNOWLEDGE_TOKEN", repr=False)
+    follow_knowledge_timeout_seconds: float = Field(
+        default=4.0,
+        alias="FOLLOW_KNOWLEDGE_TIMEOUT_SECONDS",
+    )
+    follow_knowledge_cache_ttl_seconds: float = Field(
+        default=60.0,
+        alias="FOLLOW_KNOWLEDGE_CACHE_TTL_SECONDS",
+    )
+    deepseek_api_key: str = Field(default="", alias="DEEPSEEK_API_KEY", repr=False)
+    deepseek_api_base_url: str = Field(
+        default="https://api.deepseek.com",
+        alias="DEEPSEEK_API_BASE_URL",
+    )
+    deepseek_semantic_model: str = Field(
+        default="deepseek-v4-flash",
+        alias="DEEPSEEK_SEMANTIC_MODEL",
+    )
+    deepseek_semantic_timeout_seconds: float = Field(
+        default=10.0,
+        alias="DEEPSEEK_SEMANTIC_TIMEOUT_SECONDS",
+    )
+    deepseek_semantic_max_tokens: int = Field(
+        default=800,
+        alias="DEEPSEEK_SEMANTIC_MAX_TOKENS",
+    )
+    deepseek_semantic_script_threshold: int = Field(
+        default=12,
+        alias="DEEPSEEK_SEMANTIC_SCRIPT_THRESHOLD",
+    )
+    deepseek_semantic_max_scripts: int = Field(
+        default=6,
+        alias="DEEPSEEK_SEMANTIC_MAX_SCRIPTS",
+    )
     sop_objection_materials_path: Path = Field(
         default=Path("config/sop_objection_materials.json"),
         alias="SOP_OBJECTION_MATERIALS_PATH",

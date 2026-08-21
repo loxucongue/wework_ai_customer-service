@@ -6,8 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.config import Settings
-from app.graph.nodes.action_module_outputs import _distance_city_fallback_should_send_multiple
+from app.graph.nodes.action_module_outputs import (
+    _distance_city_fallback_should_send_multiple,
+    _store_resolution_status,
+)
 from app.graph.nodes.action_nodes import (
+    _customer_store_lookup,
     _distance_calculate,
     _distance_origin_is_broad_lookup_scope,
     _explicit_parent_admin_from_store_scope,
@@ -30,6 +34,123 @@ def test_v3_store_address_fixture_contains_122_unique_addresses() -> None:
 
     assert len(addresses) == 122
     assert len(set(addresses)) == 122
+
+
+def test_v3_resolver_admin_fact_recovers_visible_city_stores_without_geocode() -> None:
+    stores = [
+        {
+            "store_id": str(index),
+            "store_name": f"长沙门店{index}",
+            "province": "湖南省",
+            "city": "长沙市",
+            "district": district,
+            "store_address": f"湖南省长沙市{district}测试路{index}号",
+            "location": f"112.{index:03d},28.{index:03d}",
+            "store_fact_integrity": "valid",
+        }
+        for index, district in enumerate(("岳麓区", "雨花区", "望城区", "长沙县"), start=1)
+    ]
+    state = {"customer_store_knowledge": {"stores": stores}}
+    client = SimpleNamespace(settings=SimpleNamespace(geocode_workflow_id=""))
+
+    result = asyncio.run(
+        _customer_store_lookup(
+            {
+                "name": "customer_store_lookup",
+                "query": "长沙",
+                "expected_admin": {"province": "湖南省", "city": "长沙市"},
+                "use_resolver_admin_fallback": True,
+                "allow_broad_scope_delivery": True,
+            },
+            state,
+            client,
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["source"] == "customer_scope_resolver_admin"
+    assert result["candidate_store_count"] == 4
+    assert result["resolved_admin_level"] == "city"
+    assert result["allow_broad_scope_delivery"] is True
+    assert (
+        _store_resolution_status(
+            tool_status="ok",
+            resolved_level="city",
+            visible_candidate_count=4,
+            allow_broad_scope_delivery=True,
+        )
+        == "send_multiple"
+    )
+
+
+def test_v3_composite_store_workflow_reads_nested_tool_arguments() -> None:
+    class _Model:
+        available = True
+
+        async def chat_json(self, messages, **kwargs):
+            del messages, kwargs
+            return {
+                "request_kind": "match_location",
+                "destination_query": "长沙",
+                "destination_precision": "city",
+                "administrative_context": {"province": "湖南省", "city": "长沙市"},
+                "destination_subject": "customer",
+                "named_store": "",
+                "detail_kind": "none",
+                "evidence_refs": ["current_message"],
+                "superseded_location_refs": [],
+                "confidence": "high",
+                "needs_clarification": False,
+                "reason": "客户当前询问长沙门店",
+            }
+
+    stores = [
+        {
+            "store_id": str(index),
+            "store_name": f"长沙门店{index}",
+            "province": "湖南省",
+            "city": "长沙市",
+            "district": district,
+            "store_address": f"湖南省长沙市{district}测试路{index}号",
+            "location": f"112.{index:03d},28.{index:03d}",
+            "store_fact_integrity": "valid",
+        }
+        for index, district in enumerate(("岳麓区", "雨花区", "望城区", "长沙县"), start=1)
+    ]
+    state = {
+        "normalized_content": "长沙有门店吗",
+        "shared_context": {
+            "current_message": {"message_ref": "current_message", "content": "长沙有门店吗"},
+            "conversation": [],
+        },
+        "customer_store_knowledge": {"stores": stores},
+    }
+    client = SimpleNamespace(settings=SimpleNamespace(geocode_workflow_id=""))
+
+    result = asyncio.run(
+        _resolve_customer_store_workflow(
+            {
+                "name": "resolve_customer_store",
+                "arguments": {
+                    "purpose": "查询长沙门店",
+                    "destination_hint": "长沙",
+                    "use_resolver_admin_fallback": True,
+                    "allow_broad_scope_delivery": True,
+                },
+                "evidence_refs": ["current_message"],
+            },
+            state,
+            client,
+            model_client=_Model(),
+        )
+    )
+
+    lookup = result["customer_store_lookup"]
+    assert result["status"] == "ok"
+    assert "distance_calculate" not in result
+    assert lookup["source"] == "customer_scope_resolver_admin"
+    assert lookup["candidate_store_count"] == 4
+    assert lookup["allow_broad_scope_delivery"] is True
 
 
 class _DestinationModel:

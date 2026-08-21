@@ -275,6 +275,7 @@ def _offer_facts(offer: dict[str, Any]) -> dict[str, Any]:
         "scarcity_reasons": offer.get("scarcity_reasons") or [],
         "approved_closing_reasons": offer.get("approved_closing_reasons") or [],
         "closing_reason_policy": offer.get("closing_reason_policy"),
+        "authorized_scale_and_safety_evidence": offer.get("authorized_scale_and_safety_evidence"),
         "payment_message_type": offer.get("payment_message_type"),
     }
 

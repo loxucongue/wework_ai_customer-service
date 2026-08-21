@@ -101,3 +101,18 @@ def test_confirmed_refusal_and_registration_boundaries_are_preserved() -> None:
     payment_points = "；".join(cases["golden_v3_004"]["annotation"]["must_answer_points"])
     assert "完成线上活动登记后" in payment_points
     assert "免费皮肤检测" in payment_points
+
+
+def test_payment_delivery_cases_include_prior_structured_activity_evidence() -> None:
+    cases = _load_fixture()["cases"]
+
+    for case in cases:
+        annotation = case["annotation"]
+        if "payment_collection" not in annotation["required_deliveries"]:
+            continue
+        delivered_ids = {
+            str(item.get("asset_id") or "")
+            for item in case["input"].get("delivered_assets") or []
+            if isinstance(item, dict)
+        }
+        assert "s10_activity_intro" in delivered_ids, case["case_id"]

@@ -31,6 +31,14 @@ def build_v2_derived_observations(
             history_events,
             interface_version=interface_version,
         ),
+        "latest_follow_knowledge_usage": _latest_follow_knowledge_usage(
+            history_events,
+            interface_version=interface_version,
+        ),
+        "latest_follow_knowledge_match": _latest_follow_knowledge_match(
+            history_events,
+            interface_version=interface_version,
+        ),
         "authority": (
             "Raw measurements and prior model observations only. Current customer text and "
             "authoritative facts always override them. They never control routing or actions."
@@ -191,6 +199,63 @@ def _prior_model_observations(
         if len(output) == 2:
             break
     return output
+
+
+def _latest_follow_knowledge_usage(
+    events: list[dict[str, Any]],
+    *,
+    interface_version: str,
+) -> dict[str, Any]:
+    version = str(interface_version or "v2").strip().lower()
+    if version not in {"v2", "v3"}:
+        version = "v2"
+    expected_event_type = f"{version}_follow_knowledge_usage"
+    for event in reversed(events or []):
+        if not isinstance(event, dict) or str(event.get("event_type") or "") != expected_event_type:
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        event_id = str(event.get("event_id") or event.get("id") or "").strip()
+        return {
+            "sequence_id": str(facts.get("sequence_id") or ""),
+            "sequence_name": str(facts.get("sequence_name") or ""),
+            "step_id": str(facts.get("step_id") or ""),
+            "checkpoint_code": str(facts.get("checkpoint_code") or ""),
+            "action_code": str(facts.get("action_code") or ""),
+            "selected_script_ids": [
+                str(item).strip()
+                for item in facts.get("selected_script_ids") or []
+                if str(item).strip()
+            ],
+            "selected_at": str(event.get("event_time") or event.get("created_at") or ""),
+            "source_ref": f"history_event:{event_id}" if event_id else "",
+            "authority": "prior_reply_reference_selection_not_customer_fact",
+        }
+    return {}
+
+
+def _latest_follow_knowledge_match(
+    events: list[dict[str, Any]],
+    *,
+    interface_version: str,
+) -> dict[str, Any]:
+    version = str(interface_version or "v3").strip().lower()
+    if version not in {"v2", "v3"}:
+        version = "v3"
+    expected = f"{version}_follow_knowledge_match"
+    for event in reversed(events or []):
+        if not isinstance(event, dict) or str(event.get("event_type") or "") != expected:
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        event_id = str(event.get("event_id") or event.get("id") or "").strip()
+        return {
+            "checkpoint_code": str(facts.get("checkpoint_code") or ""),
+            "sequence_ids": [str(item) for item in facts.get("sequence_ids") or [] if str(item).strip()],
+            "step_ids": [str(item) for item in facts.get("step_ids") or [] if str(item).strip()],
+            "matched_at": str(event.get("event_time") or event.get("created_at") or ""),
+            "source_ref": f"history_event:{event_id}" if event_id else "",
+            "authority": "prior_router_match_not_customer_fact_or_state",
+        }
+    return {}
 
 
 def _event_timestamp(event: dict[str, Any]) -> float | None:

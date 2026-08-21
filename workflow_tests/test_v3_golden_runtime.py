@@ -18,6 +18,7 @@ def test_golden_case_maps_to_isolated_simulation_without_reference_answers() -> 
 
     assert scenario["id"] == "golden_v3_test"
     assert scenario["initial"]["stores"][0]["store_id"] == "12"
+    assert scenario["initial"]["history_events"] == []
     assert scenario["timeline"][0]["content"] == "多少钱"
     assert "reference_reply_examples" not in json.dumps(scenario, ensure_ascii=False)
 
@@ -94,6 +95,14 @@ def test_deployed_evaluation_keeps_simulation_state_under_isolated_runtime_root(
 
     assert 'repo_root / ".tmp_runtime" / "simulation" / run_id' in source
     assert 'run_root=run_dir / "simulation"' not in source
+
+
+def test_v3_golden_runner_mounts_the_real_semantic_router() -> None:
+    source = Path("ai_paths/scripts/run_v3_trusted_golden.py").read_text(encoding="utf-8")
+
+    assert "DeepSeekSemanticClient(settings, semantic_fallback)" in source
+    assert "knowledge_client=follow_knowledge" in source
+    assert "semantic_router_service=semantic_router" in source
 
 
 def test_evaluator_does_not_claim_calibration_without_human_verdict() -> None:

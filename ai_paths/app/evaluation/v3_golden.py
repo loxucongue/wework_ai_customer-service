@@ -38,6 +38,7 @@ def golden_case_to_simulation(case: dict[str, Any]) -> dict[str, Any]:
             "case_facts": deepcopy(_list(tool_facts.get("case_facts"))),
             "geocodes": deepcopy(_dict(tool_facts.get("geocodes"))),
             "distances": deepcopy(_dict(tool_facts.get("distances"))),
+            "history_events": deepcopy(_list(tool_facts.get("history_events"))),
             "completed_sops": completed_sops,
         },
         "timeline": [

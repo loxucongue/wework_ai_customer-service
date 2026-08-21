@@ -22,12 +22,17 @@ from app.graph.nodes.reply_nodes import (
     REPLY_RECOVERY_SYSTEM_PROMPT,
     _ensure_required_handoff_notice,
     _maybe_build_required_payment_collection_fallback,
+    _materialize_required_store_delivery,
     _normalize_planner_reply_messages,
     _raise_repairable_reply_quality_issues,
     _suppress_stale_handoff_notice,
 )
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
-from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
+from app.graph.nodes.reply_validation import (
+    _validate_store_resolution_v2_contract,
+    validate_reply_consistency,
+    validated_model_messages,
+)
 from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planner_payload_for_model, _should_suppress_planner_memory
 from app.graph.planner.brain_v2_normalizer import _clean_scoped_location_query, build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT
@@ -43,6 +48,33 @@ _ACTIVITY_INTRO_EVIDENCE = {
         "completed_categories": ["activity_intro"],
     }
 }
+
+
+def test_v3_broad_city_store_delivery_materializes_all_verified_cards() -> None:
+    state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_resolution_fact": {
+                    "status": "send_multiple",
+                    "delivery_store_ids": ["160", "179", "546", "552"],
+                    "allow_broad_scope_delivery": True,
+                }
+            }
+        }
+    }
+
+    messages, changed = _materialize_required_store_delivery(
+        [{"type": "text", "content": "长沙有四家可去的门店，我都发您看下。"}],
+        state,
+    )
+
+    assert changed is True
+    assert [
+        item["content"]["store_id"]
+        for item in messages
+        if item.get("type") == "store_address"
+    ] == ["160", "179", "546", "552"]
+    _validate_store_resolution_v2_contract(messages, state)
 
 
 def test_activity_intro_image_is_not_appended_by_postprocessor() -> None:
@@ -7302,6 +7334,35 @@ def test_background_context_keeps_request_history_when_platform_fetch_fails() ->
     assert output["conversation_history"] == ["用户: 原始历史"]
     assert output["conversation_fetch"]["status"] == "failed"
     assert output["conversation_fetch"]["used_message_count"] == 1
+
+
+def test_background_context_prefetches_follow_sequence_index() -> None:
+    calls = 0
+
+    async def sequence_fetcher() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return {
+            "status": "ok",
+            "source": "follow_knowledge_api",
+            "total": 1,
+            "items": [{"id": "sequence-1"}],
+        }
+
+    node = create_background_context_layer(
+        trace_logger=_TraceLogger(),
+        memory_store=None,
+        customer_context_service=None,
+        customer_store_knowledge_service=None,
+        conversation_fetcher=None,
+        follow_sequence_fetcher=sequence_fetcher,
+    )
+    output = asyncio.run(node({"conversation_history": [], "request_context": {}, "trace": []}))
+
+    assert calls == 1
+    assert output["follow_sequence_index"]["total"] == 1
+    assert any(item["name"] == "follow_sequence_index" for item in output["background_substeps"])
 
 
 def test_background_store_context_uses_one_shared_timeout_budget(monkeypatch: pytest.MonkeyPatch) -> None:

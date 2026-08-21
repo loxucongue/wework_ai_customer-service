@@ -222,7 +222,11 @@ def create_synthesize_reply_node(
                 or state.get("recovery_reason")
                 or ""
             )[:500]
-            reply_metadata = _reply_metadata_from_model_call(model_call) if state.get("evidence_join") else {}
+            reply_metadata = (
+                _reply_metadata_from_model_call(model_call, state=state)
+                if state.get("evidence_join")
+                else {}
+            )
             content_selection_metrics = (
                 _parallel_content_selection_metrics(
                     state,
@@ -248,6 +252,7 @@ def create_synthesize_reply_node(
                 "reply_action": reply_metadata.get("action", "none"),
                 "reply_action_reason": reply_metadata.get("action_reason", ""),
                 "reply_sales_judgment": reply_metadata.get("sales_judgment", {}),
+                "reply_knowledge_use": reply_metadata.get("knowledge_use", {}),
                 "reply_payment_assessment": reply_metadata.get("payment_assessment", {}),
                 "reply_payment_channel": reply_metadata.get("payment_channel", "none"),
                 "reply_deposit_evidence": reply_metadata.get("deposit_evidence", {}),
@@ -1075,7 +1080,11 @@ def _reply_recovery_messages(
     ]
 
 
-def _reply_metadata_from_model_call(model_call: dict[str, Any] | None) -> dict[str, Any]:
+def _reply_metadata_from_model_call(
+    model_call: dict[str, Any] | None,
+    *,
+    state: AgentState | None = None,
+) -> dict[str, Any]:
     if not isinstance(model_call, dict):
         return {}
     payload = model_call.get("validated_json_output")
@@ -1083,15 +1092,21 @@ def _reply_metadata_from_model_call(model_call: dict[str, Any] | None) -> dict[s
         return {}
     action = _normalized_reply_action(payload.get("action"))
     payload["action"] = action
+    selected_content_ids = [
+        str(item).strip() for item in payload.get("selected_content_ids") or [] if str(item).strip()
+    ]
     return {
         "used_fact_refs": [str(item).strip() for item in payload.get("used_fact_refs") or [] if str(item).strip()],
-        "selected_content_ids": [
-            str(item).strip() for item in payload.get("selected_content_ids") or [] if str(item).strip()
-        ],
+        "selected_content_ids": selected_content_ids,
         "content_decisions": _normalized_content_decisions(payload.get("content_decisions")),
         "action": action,
         "action_reason": str(payload.get("action_reason") or "")[:500],
         "sales_judgment": _normalized_sales_judgment(payload.get("sales_judgment")),
+        "knowledge_use": _normalized_follow_knowledge_use(
+            payload.get("knowledge_use"),
+            state=state,
+            selected_content_ids=selected_content_ids,
+        ),
         "payment_assessment": _normalized_payment_assessment(payload.get("payment_assessment")),
         "payment_channel": _normalized_payment_channel(payload.get("payment_assessment")),
         "deposit_evidence": _normalized_deposit_evidence(
@@ -1224,6 +1239,92 @@ def _normalized_content_decisions(value: Any) -> list[dict[str, str]]:
         )
         seen.add(content_id)
     return normalized
+
+
+def _normalized_follow_knowledge_use(
+    value: Any,
+    *,
+    state: AgentState | None,
+    selected_content_ids: list[str],
+) -> dict[str, Any]:
+    """Normalize knowledge provenance without interpreting customer semantics."""
+
+    raw = value if isinstance(value, dict) else {}
+    recall = state.get("sales_recall") if isinstance(state, dict) and isinstance(state.get("sales_recall"), dict) else {}
+    sequences = {
+        str(item.get("sequence_id") or "").strip(): item
+        for item in recall.get("sequence_candidates") or []
+        if isinstance(item, dict) and str(item.get("sequence_id") or "").strip()
+    }
+    scripts = {
+        str(item.get("source_id") or item.get("script_code") or "").strip(): item
+        for item in recall.get("candidates") or []
+        if isinstance(item, dict)
+        and str(item.get("source_id") or item.get("script_code") or "").strip()
+    }
+    selected_script_ids = [
+        content_id.split(":", 1)[1]
+        for content_id in selected_content_ids
+        if content_id.startswith("follow_script:")
+        and content_id.split(":", 1)[1] in scripts
+    ]
+    sequence_id = str(raw.get("sequence_id") or "").strip()
+    step_id = str(raw.get("step_id") or "").strip()
+    if sequence_id not in sequences:
+        sequence_id = ""
+        step_id = ""
+    valid_steps = {
+        str(step.get("step_id") or "").strip(): step
+        for step in (sequences.get(sequence_id) or {}).get("steps") or []
+        if isinstance(step, dict) and str(step.get("step_id") or "").strip()
+    }
+    if step_id not in valid_steps:
+        step_id = ""
+
+    compatible_links: list[dict[str, Any]] = []
+    for script_id in selected_script_ids:
+        for link in (scripts.get(script_id) or {}).get("sequence_links") or []:
+            if not isinstance(link, dict):
+                continue
+            linked_sequence = str(link.get("sequence_id") or "").strip()
+            linked_step = str(link.get("step_id") or "").strip()
+            if linked_sequence in sequences and linked_step:
+                compatible_links.append(link)
+    unique_links = {
+        (
+            str(link.get("sequence_id") or "").strip(),
+            str(link.get("step_id") or "").strip(),
+        )
+        for link in compatible_links
+    }
+    if not sequence_id and len(unique_links) == 1:
+        sequence_id, step_id = next(iter(unique_links))
+        valid_steps = {
+            str(step.get("step_id") or "").strip(): step
+            for step in (sequences.get(sequence_id) or {}).get("steps") or []
+            if isinstance(step, dict) and str(step.get("step_id") or "").strip()
+        }
+    elif sequence_id and not step_id:
+        linked_steps = {
+            linked_step
+            for linked_sequence, linked_step in unique_links
+            if linked_sequence == sequence_id
+        }
+        if len(linked_steps) == 1:
+            step_id = next(iter(linked_steps))
+
+    sequence = sequences.get(sequence_id) or {}
+    step = valid_steps.get(step_id) or {}
+    return {
+        "sequence_id": sequence_id,
+        "sequence_name": str(sequence.get("sequence_name") or "").strip(),
+        "step_id": step_id,
+        "checkpoint_code": str(sequence.get("checkpoint_code") or "").strip(),
+        "action_code": str(step.get("action_code") or "").strip(),
+        "selected_script_ids": list(dict.fromkeys(selected_script_ids)),
+        "reason": str(raw.get("reason") or "").strip()[:500],
+        "authority": "reply_selected_reference_not_customer_fact",
+    }
 
 
 def _legacy_normalized_structured_delivery_decisions(value: Any) -> list[dict[str, str]]:
@@ -1582,6 +1683,97 @@ def _reply_retry_messages(
 
 
 def _parallel_generic_reply_repair_messages(
+    messages: list[dict[str, Any]],
+    exc: Exception,
+    *,
+    previous_payload: dict[str, Any] | None,
+    validation_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Repair only schema, provenance and side-effect structure with readable instructions."""
+
+    raw_error = str(exc)
+    markers = (
+        "v2_reply_admission_violations::",
+        "parallel_reply_hard_violations::",
+    )
+    marker = next((item for item in markers if item in raw_error), "")
+    violation_codes = raw_error.split(marker, 1)[1].split(";;") if marker else [raw_error]
+    violations = [item.strip() for item in violation_codes if item.strip()]
+    structured_delivery_options = (
+        validation_context.get("structured_delivery_options")
+        if isinstance(validation_context.get("structured_delivery_options"), dict)
+        else {}
+    )
+    repair_contract = {
+        "schema_version": "parallel_reply_generic_repair_v4",
+        "failure_class": _parallel_repair_failure_class(violations),
+        "violations": violations,
+        "required_change": (
+            "只修复列出的结构、引用或确定性事实冲突。若原动作的副作用条件无法证明，"
+            "降级 action，并删除对应结构消息、资产选择、content_asset 引用和副作用声明；"
+            "保留未冲突的事实解释、客户可见内容和销售判断。"
+        ),
+        "rules": [
+            "不得重新判断客户心理、成交阶段或销售节奏，不得按错误码生成新销售话术。",
+            "所有 ID、URL、金额、结构消息和 evidence_refs 只能取自 valid_reference_contract。",
+            "采用内容资产就完整交付其必需结构；无法完整交付就删除该资产 ID 和对应引用。",
+            "只输出完整严格 json，不解释错误，不输出 markdown 或内部分析。",
+        ],
+        "previous_reply_claims": {
+            "action": str((previous_payload or {}).get("action") or ""),
+            "payment_assessment": (
+                (previous_payload or {}).get("payment_assessment")
+                if isinstance((previous_payload or {}).get("payment_assessment"), dict)
+                else {}
+            ),
+        },
+        "exact_payment_delivery_contract": (
+            structured_delivery_options.get("payment_collection")
+            if isinstance(structured_delivery_options.get("payment_collection"), dict)
+            else {}
+        ),
+        "valid_reference_contract": {
+            "current_message": validation_context.get("current_message") or {},
+            "prior_message_options": validation_context.get("prior_message_options") or [],
+            "valid_customer_message_refs": validation_context.get("valid_customer_message_refs") or [],
+            "valid_deposit_evidence_refs": validation_context.get("valid_deposit_evidence_refs") or [],
+            "allowed_selected_content_ids": validation_context.get("allowed_selected_content_ids") or [],
+            "content_candidate_reference_options": validation_context.get("content_candidate_reference_options") or [],
+            "tool_fact_reference_options": validation_context.get("tool_fact_reference_options") or [],
+            "authoritative_fact_reference_options": validation_context.get("authoritative_fact_reference_options") or [],
+            "content_candidate_delivery_requirements": validation_context.get("content_candidate_delivery_requirements") or [],
+            "authoritative_paid": bool(validation_context.get("authoritative_paid")),
+        },
+    }
+    evidence_messages = [
+        item
+        for item in messages
+        if isinstance(item, dict) and str(item.get("role") or "") == "user"
+    ]
+    previous_output = (
+        [{"role": "assistant", "content": json.dumps(previous_payload, ensure_ascii=False, separators=(",", ":"))}]
+        if isinstance(previous_payload, dict)
+        else []
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是最终 Reply 的通用校验修复器，不是第二个销售大脑。"
+                "只处理 schema、结构素材、引用或确定性事实冲突。"
+                "保留所有未冲突内容，只输出完整严格 json。"
+            ),
+        },
+        *evidence_messages,
+        *previous_output,
+        {
+            "role": "user",
+            "content": "这是一次事实与结构最小修复，不是重新制定销售策略。" + json_dumps(repair_contract),
+        },
+    ]
+
+
+def _legacy_parallel_generic_reply_repair_messages(
     messages: list[dict[str, Any]],
     exc: Exception,
     *,
@@ -2949,7 +3141,11 @@ def _materialize_required_store_delivery(
             if str(item or "").strip()
         )
     )
-    expected_count = 1 if status == "send_single" else min(3, len(required_ids))
+    expected_count = (
+        1
+        if status == "send_single"
+        else min(5 if resolution.get("allow_broad_scope_delivery") else 3, len(required_ids))
+    )
     required_ids = required_ids[:expected_count]
     if len(required_ids) != expected_count or not required_ids:
         return list(messages), False
@@ -3012,7 +3208,11 @@ def _store_fact_recovery_messages(state: AgentState) -> list[dict[str, Any]]:
             if str(item or "").strip()
         )
     )
-    expected_count = 1 if status == "send_single" else min(3, len(required_ids))
+    expected_count = (
+        1
+        if status == "send_single"
+        else min(5 if resolution.get("allow_broad_scope_delivery") else 3, len(required_ids))
+    )
     required_ids = required_ids[:expected_count]
     if len(required_ids) != expected_count or not required_ids:
         return []

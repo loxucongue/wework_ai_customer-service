@@ -175,7 +175,8 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
             for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
             if str(item or "").strip()
         }
-        if 1 <= len(resolution_ids) <= 3:
+        delivery_limit = 5 if resolution.get("allow_broad_scope_delivery") else 3
+        if 1 <= len(resolution_ids) <= delivery_limit:
             output.append(resolution_ids)
 
     for region in _store_scope_summary_regions(state):
@@ -379,12 +380,6 @@ def _validate_parallel_selected_content_delivery(
         for item in state.get("reply_selected_content_ids") or []
         if str(item or "").strip()
     }
-    adopted_ids.update(
-        str(ref).split(":", 1)[1].strip()
-        for ref in state.get("reply_used_fact_refs") or []
-        if str(ref or "").startswith("content_asset:")
-        and str(ref).split(":", 1)[1].strip()
-    )
     if not adopted_ids:
         return
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
@@ -483,11 +478,6 @@ def completed_parallel_selected_content_ids(
     if not requested:
         return []
     complete: list[str] = []
-    used_refs = {
-        str(item or "").strip()
-        for item in state.get("reply_used_fact_refs") or []
-        if str(item or "").strip()
-    }
     for content_id in dict.fromkeys(requested):
         candidate = next(
             (
@@ -513,11 +503,6 @@ def completed_parallel_selected_content_ids(
             if isinstance(item, dict) and str(item.get("type") or "") != "text"
         }
         required.discard("")
-        if not required and f"content_asset:{content_id}" not in used_refs:
-            # Text-only assets cannot be matched against a rewritten customer
-            # sentence deterministically. Require Reply's explicit asset ref
-            # for commit bookkeeping, but never reject or rewrite the reply.
-            continue
         if required.issubset(emitted):
             complete.append(content_id)
     return complete
@@ -1270,7 +1255,8 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
             raise ValueError("store_resolution_send_single_contract_violation")
         return
     if status == "send_multiple":
-        if emitted and (not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids):
+        delivery_limit = 5 if resolution.get("allow_broad_scope_delivery") else 3
+        if emitted and (not 2 <= len(delivery_ids) <= delivery_limit or emitted != delivery_ids):
             raise ValueError("store_resolution_send_multiple_contract_violation")
 
 
@@ -1396,7 +1382,8 @@ def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
             for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
             if str(item or "").strip()
         }
-        if 1 <= len(ids) <= 3:
+        delivery_limit = 5 if resolution.get("allow_broad_scope_delivery") else 3
+        if 1 <= len(ids) <= delivery_limit:
             return ids
 
     lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}

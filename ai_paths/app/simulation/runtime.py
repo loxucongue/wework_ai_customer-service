@@ -28,6 +28,7 @@ from app.services.sop_execution_service import SopExecutionService
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.trace_logger import TraceLogger
+from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.voice_transcription import transcribe_voice_request
 from app.services.workflow_compat import normalize_workflow_request
 from app.simulation.adapters import (
@@ -66,10 +67,18 @@ class SimulationBundle:
 
 
 class SimulationRuntime:
-    def __init__(self, *, repo_root: Path, run_root: Path | None = None, base_settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        repo_root: Path,
+        run_root: Path | None = None,
+        base_settings: Settings | None = None,
+        semantic_router_service: V3SemanticRouterService | None = None,
+    ) -> None:
         self.repo_root = repo_root.resolve()
         self.run_root = (run_root or self.repo_root / ".tmp_runtime" / "simulation").resolve()
         self.base_settings = base_settings or Settings()
+        self.semantic_router_service = semantic_router_service
 
     async def run_scenario(
         self,
@@ -241,6 +250,7 @@ class SimulationRuntime:
             outreach,
             platform,
             sop_execution,
+            self.semantic_router_service,
         )
         chat_runtime = ChatRuntime(
             full_graph=graphs.full_graph,

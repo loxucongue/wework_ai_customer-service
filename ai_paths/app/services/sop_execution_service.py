@@ -190,6 +190,25 @@ class SopExecutionService:
             ),
         }
 
+    def reply_chain_available_assets(self) -> list[dict[str, Any]]:
+        """Return approved V3 assets without selecting a customer-facing action."""
+
+        packs = _parallel_candidate_packs(
+            _enabled_chat_packs(self.sop_reply_pack_service.load())
+        )
+        return [
+            _parallel_content_candidate(
+                pack,
+                {
+                    "evidence_purpose": _string(pack.get("purpose")),
+                    "relevance": "available",
+                    "render_strategy": _string(pack.get("render_strategy")) or "adaptable",
+                    "evidence_refs": [],
+                },
+            )
+            for pack in packs
+        ]
+
     def reply_chain_sop_progress(
         self,
         request: ChatRequest,
@@ -468,6 +487,7 @@ class SopExecutionService:
                         "reason": str(selector_output.get("reason") or ""),
                         "reply_messages": [],
                         "candidate_packs": candidate_items,
+                        "knowledge_queries": deepcopy(selector_output.get("knowledge_queries") or []),
                         "task": {},
                         "candidate_only": True,
                     }
@@ -811,6 +831,7 @@ class SopExecutionService:
         if parallel_mode:
             return {
                 "candidate_assets": [],
+                "knowledge_queries": [],
                 "reason": "content_gate_invalid_after_repair_continue_reply",
                 "initial_violations": violations,
                 "repair_violations": repaired_violations,
@@ -3104,6 +3125,42 @@ def _parallel_content_gate_output_violations(
             )
     if direct_count > 1:
         violations.append("candidate_assets_multiple_direct")
+    queries = selector_output.get("knowledge_queries", [])
+    if not isinstance(queries, list):
+        violations.append("knowledge_queries_must_be_list")
+    elif len(queries) > 2:
+        violations.append("knowledge_queries_exceed_limit")
+    else:
+        checkpoint_codes = {
+            "distance",
+            "price",
+            "effect",
+            "hesitation",
+            "decision",
+            "time_conflict",
+            "alternative",
+            "inquiry",
+        }
+        seen_queries: set[str] = set()
+        for index, item in enumerate(queries):
+            if not isinstance(item, dict):
+                violations.append(f"knowledge_query_not_object:{index}")
+                continue
+            checkpoint = _string(item.get("checkpoint_code"))
+            if checkpoint not in checkpoint_codes:
+                violations.append(f"knowledge_query_invalid_checkpoint:{index}")
+            if checkpoint in seen_queries:
+                violations.append(f"knowledge_query_duplicate:{index}")
+            seen_queries.add(checkpoint)
+            if _string(item.get("relevance")) not in {"direct", "supporting"}:
+                violations.append(f"knowledge_query_invalid_relevance:{index}")
+            refs = [_string(ref) for ref in item.get("evidence_refs") or [] if _string(ref)]
+            if not refs or any(ref not in valid_refs for ref in refs):
+                violations.append(f"knowledge_query_invalid_evidence_refs:{index}")
+            if not _string(item.get("reason")):
+                violations.append(f"knowledge_query_missing_reason:{index}")
+            if not _string(item.get("scene_summary")):
+                violations.append(f"knowledge_query_missing_scene_summary:{index}")
     return violations
 
 

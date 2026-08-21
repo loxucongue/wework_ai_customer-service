@@ -862,7 +862,13 @@
           "case_facts": [],
           "history_events": []
         },
-        "delivered_assets": [],
+        "delivered_assets": [
+          {
+            "asset_id": "s10_activity_intro",
+            "delivery_type": "text",
+            "conversation_index": 2
+          }
+        ],
         "payment_and_order_facts": {
           "orders": []
         }
@@ -3790,10 +3796,16 @@
         "current_time": "2026-08-13T15:00:00+08:00",
         "conversation": [
           {
+            "role": "customer",
+            "msgtype": "text",
+            "content": "我在广西柳州融水县",
+            "created_at": "2026-08-13T14:57:00+08:00"
+          },
+          {
             "role": "assistant",
             "msgtype": "text",
-            "content": "门店位置：[周边城市真实门店卡]",
-            "created_at": "2026-08-13T15:00:00+08:00"
+            "content": "按您融水县的位置，当前可见范围里相对近的是柳州城中店，我把门店卡发您。",
+            "created_at": "2026-08-13T14:58:00+08:00"
           },
           {
             "role": "customer",
@@ -3865,7 +3877,52 @@
           "paid_flow": "权威已付后不再发卡；收姓名、电话、门店和到店意向，后台尽力创建或关联订单。",
           "risk": "当前明确发炎、过敏或破损时暂停操作和营销推进，不做线上诊断，不发预约金卡。"
         },
-        "tool_facts": {},
+        "tool_facts": {
+          "visible_stores": [
+            {
+              "id": "sim_store_liuzhou_1",
+              "store_id": "sim_store_liuzhou_1",
+              "name": "柳州城中店",
+              "store_name": "柳州城中店",
+              "province": "广西壮族自治区",
+              "city": "柳州市",
+              "district": "城中区",
+              "address": "广西壮族自治区柳州市城中区仿真门店地址",
+              "store_address": "广西壮族自治区柳州市城中区仿真门店地址",
+              "scope_authorized": true
+            }
+          ],
+          "history_events": [
+            {
+              "event_id": "sim_store_address_sent_golden_v3_020",
+              "event_type": "store_address_sent",
+              "created_at": "2026-08-13T14:58:00+08:00",
+              "facts": {
+                "store_id": "sim_store_liuzhou_1",
+                "store_name": "柳州城中店",
+                "city": "柳州市",
+                "address": "广西壮族自治区柳州市城中区仿真门店地址",
+                "request_id": "sim_store_batch_golden_v3_020",
+                "interface_version": "v3",
+                "store_search_evidence": {
+                  "raw_place": "广西柳州融水县",
+                  "normalized_query": "广西壮族自治区柳州市融水苗族自治县",
+                  "resolved_admin_level": "district",
+                  "province": "广西壮族自治区",
+                  "city": "柳州市",
+                  "district": "融水苗族自治县",
+                  "candidate_search_complete": true,
+                  "visible_candidate_count": 1,
+                  "delivery_store_ids": [
+                    "sim_store_liuzhou_1"
+                  ],
+                  "ranking_method": "haversine",
+                  "customer_claim_level": "nearest_candidate"
+                }
+              }
+            }
+          ]
+        },
         "delivered_assets": [
           {
             "asset_id": "store_address",

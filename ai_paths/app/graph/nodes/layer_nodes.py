@@ -271,6 +271,7 @@ def create_background_context_layer(
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None,
     coze_client: CozeClient | None = None,
     conversation_fetcher: ConversationFetcher | None = None,
+    follow_sequence_fetcher: Callable[[], Any] | None = None,
 ) -> Callable[[AgentState], Any]:
     async def background_context_layer(state: AgentState) -> dict[str, Any]:
         request_context = request_context_from_state(state)
@@ -280,6 +281,18 @@ def create_background_context_layer(
             {"customer_id": state.get("customer_id"), "user_id": state.get("user_id"), "wechat": state.get("wechat")},
         ) as span:
             substeps: list[dict[str, Any]] = []
+            sequence_task = asyncio.create_task(
+                _timed_async_call(
+                    "follow_sequence_index",
+                    follow_sequence_fetcher,
+                    disabled_result={
+                        "status": "disabled",
+                        "reason": "follow_sequence_fetcher_unavailable",
+                        "total": 0,
+                        "items": [],
+                    },
+                )
+            )
             memory_task = asyncio.to_thread(_timed_call, "memory_load", _load_memory, memory_store, state)
             identity_task = asyncio.to_thread(_timed_call, "get_customer_info", _load_customer_identity, customer_context_service, state, request_context)
             memory_result, identity_result = await asyncio.gather(
@@ -330,7 +343,7 @@ def create_background_context_layer(
                 {},
                 identity,
             )
-            customer_result_timed, conversation_result_timed, store_result_timed = await asyncio.gather(
+            customer_result_timed, conversation_result_timed, store_result_timed, sequence_result_timed = await asyncio.gather(
                 _await_timed_background_task(
                     customer_task,
                     name="order_index",
@@ -366,6 +379,18 @@ def create_background_context_layer(
                         "error": f"timeout_after_{BACKGROUND_STORE_CONTEXT_BUDGET_SECONDS:g}s",
                     },
                 ),
+                _await_timed_background_task(
+                    sequence_task,
+                    name="follow_sequence_index",
+                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                    timeout_result={
+                        "status": "error",
+                        "reason": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                        "total": 0,
+                        "items": [],
+                        "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                    },
+                ),
             )
             customer_result = customer_result_timed["result"]
             customer_store_knowledge = store_result_timed["result"]
@@ -381,6 +406,7 @@ def create_background_context_layer(
                     _without_result(customer_result_timed),
                     _without_result(store_result_timed),
                     _without_result(conversation_result_timed),
+                    _without_result(sequence_result_timed),
                 ]
             )
             customer_context = customer_result.get("customer_context", {})
@@ -448,6 +474,7 @@ def create_background_context_layer(
                 "conversation_history": conversation_history,
                 "conversation_turns": conversation_turns,
                 "conversation_fetch": conversation_result.get("conversation_fetch", {}),
+                "follow_sequence_index": sequence_result_timed.get("result") or {},
                 "background_substeps": substeps,
                 "store_context_status": store_context_status,
                 "store_context_elapsed_ms": store_context_elapsed_ms,
@@ -512,6 +539,40 @@ def _timed_call(name: str, func: Callable[..., Any], *args: Any, **kwargs: Any) 
             "name": name,
             "duration_ms": int((time.perf_counter() - started) * 1000),
             "result": result,
+            "cache_hit": _cache_hit_from_result(result),
+            "error": _error_from_result(result),
+        }
+    except Exception as exc:
+        return {
+            "name": name,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": {},
+            "cache_hit": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+async def _timed_async_call(
+    name: str,
+    func: Callable[[], Any] | None,
+    *,
+    disabled_result: dict[str, Any],
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    if func is None:
+        return {
+            "name": name,
+            "duration_ms": 0,
+            "result": dict(disabled_result),
+            "cache_hit": False,
+            "error": "",
+        }
+    try:
+        result = await func()
+        return {
+            "name": name,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": result if isinstance(result, dict) else {},
             "cache_hit": _cache_hit_from_result(result),
             "error": _error_from_result(result),
         }

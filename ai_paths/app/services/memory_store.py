@@ -295,6 +295,155 @@ class CustomerMemoryStore:
                 pass
         return {"status": "recorded", "event_id": event_id}
 
+    def record_follow_knowledge_usage(
+        self,
+        customer_id: str,
+        *,
+        request_id: str,
+        knowledge_use: dict[str, Any],
+        interface_version: str = "v3",
+    ) -> dict[str, Any]:
+        """Persist Reply-selected sequence/script IDs as low-authority provenance."""
+
+        raw = knowledge_use if isinstance(knowledge_use, dict) else {}
+        sequence_id = str(raw.get("sequence_id") or "").strip()[:120]
+        step_id = str(raw.get("step_id") or "").strip()[:120]
+        script_ids = list(
+            dict.fromkeys(
+                str(item).strip()[:120]
+                for item in raw.get("selected_script_ids") or []
+                if str(item).strip()
+            )
+        )[:8]
+        if not sequence_id and not script_ids:
+            return {"status": "skipped", "reason": "no_adopted_follow_knowledge"}
+        version = _normalized_interface_version(interface_version)
+        event_type = f"{version}_follow_knowledge_usage"
+        event_id = f"{event_type}_{request_id or uuid4()}"
+        data = self.load(customer_id)
+        now = self._now()
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        if not any(
+            isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+            for item in events
+        ):
+            events.append(
+                {
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "event_time": now,
+                    "facts": {
+                        "request_id": str(request_id or ""),
+                        "interface_version": version,
+                        "sequence_id": sequence_id,
+                        "sequence_name": str(raw.get("sequence_name") or "").strip()[:200],
+                        "step_id": step_id,
+                        "checkpoint_code": str(raw.get("checkpoint_code") or "").strip()[:80],
+                        "action_code": str(raw.get("action_code") or "").strip()[:80],
+                        "selected_script_ids": script_ids,
+                        "selection_reason": str(raw.get("reason") or "").strip()[:500],
+                        "selection_status": "reply_generated",
+                    },
+                    "source": f"{version}_reply_knowledge_use",
+                    "confidence": 0.5,
+                    "impact": "reference_selection_only_not_customer_fact",
+                }
+            )
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "event_id": event_id}
+
+    def record_follow_knowledge_match(
+        self,
+        customer_id: str,
+        *,
+        request_id: str,
+        semantic_route: dict[str, Any],
+        interface_version: str = "v3",
+    ) -> dict[str, Any]:
+        """Persist router-matched knowledge IDs without turning them into state."""
+
+        route = semantic_route if isinstance(semantic_route, dict) else {}
+        checkpoint = route.get("checkpoint") if isinstance(route.get("checkpoint"), dict) else {}
+        sequence = route.get("sequence_match") if isinstance(route.get("sequence_match"), dict) else {}
+        sequence_ids = [
+            str(item).strip()[:120]
+            for item in sequence.get("sequence_ids") or []
+            if str(item).strip()
+        ][:3]
+        step_ids = [
+            str(item).strip()[:120]
+            for item in sequence.get("relevant_step_ids") or []
+            if str(item).strip()
+        ][:4]
+        primary_code = str(checkpoint.get("primary_code") or "").strip()[:80]
+        if not primary_code and not sequence_ids:
+            return {"status": "skipped", "reason": "no_matched_follow_knowledge"}
+        version = _normalized_interface_version(interface_version)
+        event_type = f"{version}_follow_knowledge_match"
+        event_id = f"{event_type}_{request_id or uuid4()}"
+        data = self.load(customer_id)
+        now = self._now()
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        if not any(
+            isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+            for item in events
+        ):
+            events.append(
+                {
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "event_time": now,
+                    "facts": {
+                        "request_id": str(request_id or ""),
+                        "interface_version": version,
+                        "checkpoint_code": primary_code,
+                        "checkpoint_evidence_refs": [
+                            str(item).strip()[:120]
+                            for item in checkpoint.get("evidence_refs") or []
+                            if str(item).strip()
+                        ][:8],
+                        "sequence_ids": sequence_ids,
+                        "step_ids": step_ids,
+                        "selection_status": "semantic_router_matched",
+                    },
+                    "source": f"{version}_semantic_router_match",
+                    "confidence": 0.5,
+                    "impact": "reference_match_only_not_customer_fact_or_state",
+                }
+            )
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "event_id": event_id}
+
     def record_sop_pack_sent(
         self,
         customer_id: str,

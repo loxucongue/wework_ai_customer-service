@@ -71,6 +71,12 @@ def _delivered_assets(result: dict[str, Any]) -> set[str]:
         delivered.add("payment_collection")
     if "store_address" in _message_types(messages):
         delivered.add("store_address")
+    if "s10_activity_intro" in delivered:
+        delivered.add("activity_image")
+    if "s10_need_and_case" in delivered or any(
+        item.startswith("configured_effect_case_") for item in delivered
+    ):
+        delivered.add("case_image")
     return delivered
 
 

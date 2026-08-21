@@ -12,6 +12,9 @@ from app.config import Settings
 from app.evaluation.v3_critic import evaluate_with_critic
 from app.evaluation.v3_golden import golden_case_to_simulation, simulation_result_to_golden_result
 from app.services.model_client import ModelClient
+from app.services.deepseek_semantic_client import DeepSeekSemanticClient
+from app.services.follow_knowledge_client import FollowKnowledgeClient
+from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.simulation.runtime import SimulationRuntime
 from scripts.evaluate_v3_trusted_golden import evaluate
 
@@ -39,7 +42,30 @@ async def run(args: argparse.Namespace) -> Path:
 
     settings = Settings()
     simulation_root = repo_root / ".tmp_runtime" / "simulation" / run_id
-    runtime = SimulationRuntime(repo_root=repo_root, run_root=simulation_root, base_settings=settings)
+    follow_knowledge = FollowKnowledgeClient(settings)
+    semantic_fallback = ModelClient(
+        settings.model_copy(
+            update={
+                "model_fast": "gpt-5.4-mini",
+                "model_fast_fallbacks": "gpt-5.4",
+                "model_emergency_fallbacks": "",
+                "model_hedge_max_parallel": 1,
+            }
+        )
+    )
+    deepseek_semantic = DeepSeekSemanticClient(settings, semantic_fallback)
+    semantic_router = V3SemanticRouterService(
+        semantic_client=deepseek_semantic,
+        knowledge_client=follow_knowledge,
+        script_threshold=settings.deepseek_semantic_script_threshold,
+        max_scripts=settings.deepseek_semantic_max_scripts,
+    )
+    runtime = SimulationRuntime(
+        repo_root=repo_root,
+        run_root=simulation_root,
+        base_settings=settings,
+        semantic_router_service=semantic_router,
+    )
     critic_settings = settings.model_copy(
         update={
             "model_balanced": args.critic_model or "gpt-5.4-mini",
@@ -79,6 +105,9 @@ async def run(args: argparse.Namespace) -> Path:
     finally:
         if critic is not None:
             await critic.aclose()
+        await deepseek_semantic.aclose()
+        await semantic_fallback.aclose()
+        await follow_knowledge.aclose()
 
     payload = {
         "schema_version": "v3_trusted_golden_run_v1",
