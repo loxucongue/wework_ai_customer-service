@@ -43,12 +43,13 @@ def _settings() -> SimpleNamespace:
 
 
 def test_mysql_schema_contains_only_expected_aics_tables() -> None:
-    assert len(EXPECTED_TABLES) == 13
-    assert len(EXPECTED_ALL_TABLES) == 14
+    assert len(EXPECTED_TABLES) == 14
+    assert len(EXPECTED_ALL_TABLES) == 15
     assert VERSION_TABLE == "aics_schema_version"
     assert all(table.startswith("aics_") for table in EXPECTED_ALL_TABLES)
     assert {table.removeprefix("aics_") for table in EXPECTED_TABLES} == set(LOGICAL_TABLES)
     assert "active_send_once_key" in EXPECTED_COLUMNS["aics_sop_send_tasks"]
+    assert "payload_json" in EXPECTED_COLUMNS["aics_strategy_data_outbox"]
 
 
 def test_table_mapper_does_not_rewrite_string_literals() -> None:

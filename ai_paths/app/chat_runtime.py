@@ -28,6 +28,7 @@ from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService, is_platform_auto_opening_message
+from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.storage import AppRepository
 from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
@@ -45,6 +46,7 @@ class ChatRuntime:
         memory_store: CustomerMemoryStore | None = None,
         platform_reply_coordinator: PlatformReplyCoordinator | None = None,
         sop_execution_service: SopExecutionService | None = None,
+        service_rule_data_service: ServiceRuleDataService | None = None,
         settings: Settings | None = None,
     ) -> None:
         self._full_graph = full_graph
@@ -55,6 +57,7 @@ class ChatRuntime:
         self._memory_store = memory_store
         self._platform_reply_coordinator = platform_reply_coordinator
         self._sop_execution_service = sop_execution_service
+        self._service_rule_data_service = service_rule_data_service
         self._settings = settings
         self._platform_request_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
         self._platform_request_results: dict[str, tuple[float, ChatResponse]] = {}
@@ -587,6 +590,23 @@ class ChatRuntime:
                             "detail": f"{type(exc).__name__}: {exc}",
                         }
                     )
+            if self._service_rule_data_service:
+                try:
+                    final_state["strategy_data_callback"] = (
+                        self._service_rule_data_service.enqueue_customer_open(final_state)
+                    )
+                except Exception as exc:
+                    final_state["strategy_data_callback"] = {
+                        "status": "error",
+                        "reason": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                    final_state.setdefault("warnings", []).append(
+                        {
+                            "node": "strategy_data_callback",
+                            "message": "strategy_data_callback_enqueue_failed",
+                            "detail": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
         elif reply_messages:
             final_state["case_image_send_record"] = {
                 "status": "skipped",
@@ -652,6 +672,7 @@ class ChatRuntime:
                 "async_final_reply": final_state.get("async_final_reply", {}),
                 "reply_control": final_state.get("reply_control", {}),
                 "sop_gate": final_state.get("sop_gate", {}),
+                "strategy_data_callback": final_state.get("strategy_data_callback", {}),
                 "conversation_id": conversation_id,
             },
         )

@@ -33,6 +33,8 @@ from app.services.sop_objection_material_service import SopObjectionMaterialServ
 from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
 from app.services.sop_platform_client import SopPlatformClient
 from app.services.sop_platform_task_service import SopPlatformTaskService
+from app.services.service_rule_data_client import ServiceRuleDataClient
+from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.storage import AppRepository, build_store
 from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
@@ -51,6 +53,15 @@ v3_evaluation_service = V3EvaluationService(settings.v3_evaluation_dir)
 trace_logger = TraceLogger(settings)
 storage_store = build_store(settings)
 repository = AppRepository(storage_store)
+service_rule_data_client = ServiceRuleDataClient(settings)
+service_rule_data_service = ServiceRuleDataService(
+    repository=repository,
+    client=service_rule_data_client,
+    poll_seconds=settings.service_rule_data_poll_seconds,
+    batch_size=settings.service_rule_data_batch_size,
+    max_attempts=settings.service_rule_data_max_attempts,
+    retry_base_seconds=settings.service_rule_data_retry_base_seconds,
+)
 coze_client = CozeClient(settings)
 voice_transcription_client = DoubaoAsrClient(settings)
 model_client = ModelClient(settings)
@@ -163,6 +174,7 @@ chat_runtime = ChatRuntime(
     memory_store=memory_store,
     platform_reply_coordinator=platform_reply_coordinator,
     sop_execution_service=sop_execution_service,
+    service_rule_data_service=service_rule_data_service,
     settings=settings,
 )
 app = FastAPI(title=settings.app_name)
@@ -171,6 +183,7 @@ sop_platform_pull_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
 store_snapshot_refresh_worker: asyncio.Task[None] | None = None
 outreach_plan_monitor_worker: asyncio.Task[None] | None = None
+strategy_data_callback_worker: asyncio.Task[None] | None = None
 first_day_retention_last_date = ""
 
 
@@ -253,9 +266,13 @@ async def _run_outreach_plan_monitor_worker() -> None:
         await asyncio.sleep(max(5.0, float(settings.outreach_plan_monitor_poll_seconds)))
 
 
+async def _run_strategy_data_callback_worker() -> None:
+    await service_rule_data_service.run()
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker, strategy_data_callback_worker
     storage_store.initialize()
     if not settings.background_workers_enabled:
         logger.info("Background workers disabled for service role: %s", settings.service_role)
@@ -278,11 +295,15 @@ async def startup() -> None:
         or settings.outreach_plan_monitor_enabled
     ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
         outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
+    if service_rule_data_service.available and (
+        strategy_data_callback_worker is None or strategy_data_callback_worker.done()
+    ):
+        strategy_data_callback_worker = asyncio.create_task(_run_strategy_data_callback_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker, strategy_data_callback_worker
     if sop_platform_pull_worker is not None:
         sop_platform_pull_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -303,6 +324,12 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await outreach_plan_monitor_worker
         outreach_plan_monitor_worker = None
+    if strategy_data_callback_worker is not None:
+        service_rule_data_service.stop()
+        strategy_data_callback_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await strategy_data_callback_worker
+        strategy_data_callback_worker = None
     await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()
@@ -313,6 +340,7 @@ async def shutdown() -> None:
     await outreach_send_client.aclose()
     await outreach_system_client.aclose()
     await sop_platform_client.aclose()
+    await service_rule_data_client.aclose()
     platform_agent_client.close()
     storage_store.close()
 
@@ -330,6 +358,7 @@ async def health() -> dict[str, Any]:
             "config_revision": settings.build_config_revision,
         },
         "platform_sop_worker": sop_platform_task_service.runtime_status(),
+        "strategy_data_callback": service_rule_data_service.status(),
     }
 
 

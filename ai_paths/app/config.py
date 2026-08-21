@@ -205,6 +205,39 @@ class Settings(BaseSettings):
         default=60.0,
         alias="FOLLOW_KNOWLEDGE_CACHE_TTL_SECONDS",
     )
+    service_rule_data_enabled: bool = Field(
+        default=False,
+        alias="SERVICE_RULE_DATA_ENABLED",
+    )
+    service_rule_data_base_url: str = Field(
+        default="https://test.api.customer.4ba.cn",
+        alias="SERVICE_RULE_DATA_BASE_URL",
+    )
+    service_rule_data_token: str = Field(
+        default="",
+        alias="SERVICE_RULE_DATA_TOKEN",
+        repr=False,
+    )
+    service_rule_data_timeout_seconds: float = Field(
+        default=6.0,
+        alias="SERVICE_RULE_DATA_TIMEOUT_SECONDS",
+    )
+    service_rule_data_poll_seconds: float = Field(
+        default=2.0,
+        alias="SERVICE_RULE_DATA_POLL_SECONDS",
+    )
+    service_rule_data_batch_size: int = Field(
+        default=10,
+        alias="SERVICE_RULE_DATA_BATCH_SIZE",
+    )
+    service_rule_data_max_attempts: int = Field(
+        default=6,
+        alias="SERVICE_RULE_DATA_MAX_ATTEMPTS",
+    )
+    service_rule_data_retry_base_seconds: float = Field(
+        default=10.0,
+        alias="SERVICE_RULE_DATA_RETRY_BASE_SECONDS",
+    )
     deepseek_api_key: str = Field(default="", alias="DEEPSEEK_API_KEY", repr=False)
     deepseek_api_base_url: str = Field(
         default="https://api.deepseek.com",

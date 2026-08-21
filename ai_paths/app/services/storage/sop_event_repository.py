@@ -559,6 +559,94 @@ class SopEventRepositoryMixin:
             ).fetchall()
         return [self._decode_sop_send_task(dict(row)) for row in rows]
 
+    def find_latest_platform_task_for_customer_reply(
+        self,
+        *,
+        customer_id: str,
+        external_userid: str,
+        corp_id: str,
+        wechat: str,
+        replied_at: str,
+    ) -> dict[str, Any]:
+        """Return the latest actually-sent third-party SOP task before a reply.
+
+        The append-only task table remains the source of truth. Selecting at
+        reply time avoids a stale or late-arriving task overwriting a separate
+        "latest task" pointer.
+        """
+
+        if (
+            not str(corp_id or "").strip()
+            or not str(wechat or "").strip()
+            or not (external_userid or customer_id)
+        ):
+            return {}
+        identity_clause = "LOWER(t.external_userid)=LOWER(?)" if external_userid else "t.customer_id=?"
+        identity_value = str(external_userid or customer_id).strip()
+        clauses = [
+            identity_clause,
+            "LOWER(t.wechat)=LOWER(?)",
+            "t.sop_category='platform_task'",
+            "t.status='sent'",
+        ]
+        params: list[Any] = [identity_value, str(wechat or "").strip()]
+        clauses.append("t.corp_id=?")
+        params.append(str(corp_id).strip())
+        if replied_at:
+            clauses.append("COALESCE(NULLIF(t.sent_at,''), t.updated_at)<=?")
+            params.append(str(replied_at).strip())
+        with self.store.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT t.*, e.raw_payload_json
+                FROM sop_send_tasks t
+                LEFT JOIN sop_events e ON e.event_id=t.event_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY COALESCE(NULLIF(t.sent_at,''), t.updated_at) DESC, t.created_at DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        if not row:
+            return {}
+        decoded = self._decode_sop_send_task(dict(row))
+        raw_payload = loads_dict(row["raw_payload_json"])
+        platform_task = (
+            raw_payload.get("platform_task")
+            if isinstance(raw_payload.get("platform_task"), dict)
+            else {}
+        )
+        event_id = str(decoded.get("event_id") or "")
+        task_id = str(
+            platform_task.get("taskId")
+            or platform_task.get("task_id")
+            or platform_task.get("id")
+            or (event_id.split(":", 1)[1] if event_id.startswith("platform_sop_task:") else "")
+        ).strip()
+        if not task_id:
+            return {}
+        scene = platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {}
+        return {
+            "task_id": task_id,
+            "sent_at": str(decoded.get("sent_at") or decoded.get("updated_at") or ""),
+            "trigger_type": "sop_node",
+            "trigger_ref": str(
+                scene.get("nodeNo")
+                or scene.get("node_no")
+                or platform_task.get("nodeNo")
+                or platform_task.get("node_no")
+                or ""
+            ).strip(),
+            "scene_code": str(
+                scene.get("sceneCode")
+                or scene.get("scene_code")
+                or platform_task.get("sceneCode")
+                or platform_task.get("scene_code")
+                or ""
+            ).strip(),
+            "source_event_id": event_id,
+        }
+
     def get_sop_event_detail(self, event_id: str) -> dict[str, Any]:
         event = self.get_sop_event(event_id)
         if not event:

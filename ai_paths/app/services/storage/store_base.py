@@ -19,6 +19,7 @@ LOGICAL_TABLES = (
     "first_day_outreach_runs",
     "sop_events",
     "sop_send_tasks",
+    "strategy_data_outbox",
 )
 
 

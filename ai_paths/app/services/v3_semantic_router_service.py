@@ -790,6 +790,7 @@ def _expand_sequence_action_queries(
 def _script_reference(item: dict[str, Any]) -> dict[str, Any]:
     media = item.get("media") if isinstance(item.get("media"), dict) else {}
     return {
+        "script_id": str(item.get("id") or ""),
         "source_id": str(item.get("script_code") or ""),
         "script_name": str(item.get("script_name") or ""),
         "checkpoint_code": str(item.get("checkpoint_code") or ""),
