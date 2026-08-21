@@ -1455,6 +1455,7 @@ async def _resolve_customer_store_workflow(
         "customer_raw_query": str(destination.get("source_query") or "").strip(),
         "purpose": str(effective_tool.get("purpose") or destination.get("request_kind") or "store_resolution_workflow"),
         "request_kind": str(destination.get("request_kind") or "match_location"),
+        "destination_precision": str(destination.get("destination_precision") or "unknown"),
         "evidence_refs": list(destination.get("evidence_refs") or []),
         "expected_admin": dict(destination.get("administrative_context") or {}),
         "use_resolver_admin_fallback": bool(effective_tool.get("use_resolver_admin_fallback")),
@@ -1714,17 +1715,27 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     text_candidates = _stores_for_text_query(resolved_query, stores, purpose)
     exact_region_candidates, exact_region = _stores_for_explicit_visible_region(resolved_query, stores)
     resolver_admin_fallback = False
+    resolver_admin_scope_preferred = (
+        bool(tool.get("use_resolver_admin_fallback"))
+        and bool(tool.get("allow_broad_scope_delivery"))
+        and request_kind not in {"store_detail", "reuse_store"}
+        and str(tool.get("destination_precision") or "unknown") in {"city", "unknown"}
+        and bool(expected_admin.get("city"))
+        and not bool(expected_admin.get("district"))
+    )
     if (
         not exact_region_candidates
-        and not geocode.get("location")
         and bool(tool.get("use_resolver_admin_fallback"))
+        and (not geocode.get("location") or resolver_admin_scope_preferred)
     ):
         exact_region_candidates, exact_region = _stores_for_resolver_admin_region(
             expected_admin,
             stores,
         )
         resolver_admin_fallback = bool(exact_region_candidates)
-    if exact_region_candidates and not geocode.get("location"):
+    if exact_region_candidates and (
+        not geocode.get("location") or resolver_admin_fallback
+    ):
         normalized, invalid_candidates = filter_valid_store_facts(
             exact_region_candidates,
             known_stores=[*_snapshot_store_values(), *stores, *exact_region_candidates],

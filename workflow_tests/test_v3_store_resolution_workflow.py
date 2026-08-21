@@ -83,6 +83,68 @@ def test_v3_resolver_admin_fact_recovers_visible_city_stores_without_geocode() -
     )
 
 
+def test_v3_resolver_admin_city_ignores_unstated_finer_geocode_scope() -> None:
+    stores = [
+        {
+            "store_id": "1",
+            "store_name": "武汉一店",
+            "province": "湖北省",
+            "city": "武汉市",
+            "district": "江汉区",
+            "store_address": "湖北省武汉市江汉区测试路1号",
+            "location": "114.2710,30.5910",
+            "store_fact_integrity": "valid",
+        },
+        {
+            "store_id": "2",
+            "store_name": "武汉二店",
+            "province": "湖北省",
+            "city": "武汉市",
+            "district": "江岸区",
+            "store_address": "湖北省武汉市江岸区测试路2号",
+            "location": "114.2800,30.6000",
+            "store_fact_integrity": "valid",
+        },
+    ]
+
+    class _Client:
+        settings = SimpleNamespace(geocode_workflow_id="geo")
+
+        async def run_workflow(self, workflow_id, parameters):
+            del workflow_id, parameters
+            return {
+                "data": {
+                    "formatted_address": "湖北省武汉市黄陂区汉口",
+                    "province": "湖北省",
+                    "city": "武汉市",
+                    "district": "黄陂区",
+                    "location": "114.2700,30.5900",
+                }
+            }
+
+    result = asyncio.run(
+        _customer_store_lookup(
+            {
+                "name": "customer_store_lookup",
+                "query": "汉口",
+                "expected_admin": {"province": "湖北省", "city": "武汉市"},
+                "destination_precision": "unknown",
+                "request_kind": "nearest",
+                "use_resolver_admin_fallback": True,
+                "allow_broad_scope_delivery": True,
+                "confirmed_by_customer": True,
+            },
+            {"normalized_content": "汉口", "customer_store_knowledge": {"stores": stores}},
+            _Client(),
+        )
+    )
+
+    assert result["status"] == "ok", result
+    assert result["source"] == "customer_scope_resolver_admin"
+    assert result["resolved_admin_level"] == "city"
+    assert [item["store_id"] for item in result["stores"]] == ["1", "2"]
+
+
 def test_province_without_visible_store_is_final_no_candidate_not_location_question() -> None:
     assert (
         _store_resolution_status(
@@ -324,17 +386,22 @@ def test_store_workflow_ranks_visible_stores_for_colloquial_city_region() -> Non
             assert query in {"武汉汉口", "就是汉口"}
             return {
                 "data": {
-                    "formatted_address": "湖北省武汉市汉口城区",
+                    "formatted_address": "湖北省武汉市黄陂区汉口",
                     "province": "湖北省",
                     "city": "武汉市",
-                    "district": "",
+                    "district": "黄陂区",
                     "location": "114.2700,30.5900",
                 }
             }
 
     result = asyncio.run(
         _resolve_customer_store_workflow(
-            {"name": "resolve_customer_store", "purpose": "nearest"},
+            {
+                "name": "resolve_customer_store",
+                "purpose": "nearest",
+                "use_resolver_admin_fallback": True,
+                "allow_broad_scope_delivery": True,
+            },
             {
                 "normalized_content": "汉口",
                 "shared_context": {
@@ -381,6 +448,7 @@ def test_store_workflow_ranks_visible_stores_for_colloquial_city_region() -> Non
     assert result["status"] == "ok", result
     assert result["destination_resolution"]["destination_query"] == "武汉汉口"
     assert "distance_calculate" not in result
+    assert result["customer_store_lookup"]["source"] == "customer_scope_resolver_admin"
     assert result["customer_store_lookup"]["same_city_has_store"] is True
     assert [item["store_id"] for item in result["customer_store_lookup"]["stores"]] == ["1", "2"]
 
