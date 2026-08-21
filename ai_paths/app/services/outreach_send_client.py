@@ -8,6 +8,7 @@ import httpx
 
 from app.config import Settings
 from app.services.customer_relation import normalize_customer_relation
+from app.services.wechat_price_contract import enforce_wechat_price_contract
 
 
 _REQUEST_RETRY_ATTEMPTS = 3
@@ -47,6 +48,8 @@ class OutreachSendClient:
     ) -> dict[str, Any]:
         if not self.available:
             return {"status": "skipped", "reason": "outreach_send_not_configured"}
+        effective_wechat = str(request_context.get("wechat") or fallback_wechat or "").strip()
+        reply_messages, _ = enforce_wechat_price_contract(reply_messages, wechat=effective_wechat)
         payload = self._payload(
             request_id=request_id,
             request_context=request_context,

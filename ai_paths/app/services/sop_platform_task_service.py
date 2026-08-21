@@ -28,6 +28,7 @@ from app.services.sop_platform_scenes import (
     sop_platform_scene_name,
 )
 from app.services.storage.serialization import utc_now_iso
+from app.services.wechat_price_contract import enforce_wechat_price_contract
 
 
 logger = logging.getLogger(__name__)
@@ -755,6 +756,11 @@ class SopPlatformTaskService:
             messages = decision["reply_messages"]
             decision_reason = f"manual_resend_ai_copy:{decision.get('reason') or ''}"
 
+        messages, price_contract_audit = enforce_wechat_price_contract(
+            messages,
+            wechat=identity["wechat"],
+        )
+
         send_payload = {
             **identity,
             "plan_id": f"platform-sop-{task_id}",
@@ -764,7 +770,7 @@ class SopPlatformTaskService:
         audit_payload = {
             "decision": {"decision": "send", "reason": decision_reason, "reply_messages": messages},
             "request": send_payload,
-            "context": _context_audit(context),
+            "context": {**_context_audit(context), "wechat_price_contract": price_contract_audit},
         }
         self.repository.update_sop_send_task(str(local_task.get("id") or ""), status="sending", send_payload=audit_payload)
         started = time.perf_counter()
@@ -1215,6 +1221,16 @@ class SopPlatformTaskService:
                     started = time.perf_counter()
                     decision = await self._decide(platform_task, context=context)
                     self._observe("model", time.perf_counter() - started)
+            if decision["decision"] == "send":
+                corrected_messages, price_contract_audit = enforce_wechat_price_contract(
+                    decision["reply_messages"],
+                    wechat=identity["wechat"],
+                )
+                decision = {
+                    **decision,
+                    "reply_messages": corrected_messages,
+                    "wechat_price_contract": price_contract_audit,
+                }
             if self.settings.sop_platform_shadow_mode:
                 status = f"shadow_{decision['decision']}"
                 self.repository.update_sop_send_task(
