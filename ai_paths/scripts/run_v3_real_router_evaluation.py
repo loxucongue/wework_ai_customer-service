@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import statistics
@@ -482,6 +483,9 @@ def _markdown(report: dict[str, Any]) -> str:
 
 
 def _git_commit() -> str:
+    configured = str(os.getenv("AI_PATHS_BUILD_GIT_COMMIT") or "").strip()
+    if configured:
+        return configured
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "HEAD"],

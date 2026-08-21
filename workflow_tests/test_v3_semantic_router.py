@@ -241,6 +241,9 @@ def test_semantic_prompts_do_not_delegate_customer_reply_or_close_decision() -> 
     assert "动作完成只影响检索优先级" in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
     assert "不要只重复已经完成的 empathy/resolve" in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
     assert '"classification_status":"clear | ambiguous | none"' in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
+    assert "明确终止联系。它不是 hesitation" in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
+    assert "确认或应答，本身没有提出新问题或顾虑" in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
+    assert "不得用更早历史中的旧问题强行生成卡点" in V3_SEMANTIC_ROUTER_SYSTEM_PROMPT
     assert "不生成客户话术，不决定成交动作" in V3_SCRIPT_SELECTOR_SYSTEM_PROMPT
     assert "通常只保留 2–3 条逻辑互补的候选" in V3_SCRIPT_SELECTOR_SYSTEM_PROMPT
     assert "同一结论只是换措辞不算互补" in V3_SCRIPT_SELECTOR_SYSTEM_PROMPT
