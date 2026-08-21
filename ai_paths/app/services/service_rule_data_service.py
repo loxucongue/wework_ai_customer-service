@@ -144,6 +144,8 @@ class ServiceRuleDataService:
     async def run(self) -> None:
         if not self.available:
             return
+        if self._stop.is_set():
+            self._stop = asyncio.Event()
         await asyncio.to_thread(self.repository.reset_processing_strategy_data_callbacks)
         while not self._stop.is_set():
             try:

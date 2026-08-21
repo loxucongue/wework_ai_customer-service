@@ -274,6 +274,10 @@ async def _run_strategy_data_callback_worker() -> None:
 async def startup() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker, strategy_data_callback_worker
     storage_store.initialize()
+    if service_rule_data_service.available and (
+        strategy_data_callback_worker is None or strategy_data_callback_worker.done()
+    ):
+        strategy_data_callback_worker = asyncio.create_task(_run_strategy_data_callback_worker())
     if not settings.background_workers_enabled:
         logger.info("Background workers disabled for service role: %s", settings.service_role)
         return
@@ -295,10 +299,6 @@ async def startup() -> None:
         or settings.outreach_plan_monitor_enabled
     ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
         outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
-    if service_rule_data_service.available and (
-        strategy_data_callback_worker is None or strategy_data_callback_worker.done()
-    ):
-        strategy_data_callback_worker = asyncio.create_task(_run_strategy_data_callback_worker())
 
 
 @app.on_event("shutdown")

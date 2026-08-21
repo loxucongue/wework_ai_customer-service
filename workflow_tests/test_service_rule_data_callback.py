@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from datetime import datetime, timedelta, timezone
 
 from app.config import Settings
@@ -230,3 +231,13 @@ def test_non_numeric_script_code_is_not_sent_as_follow_script_id(tmp_path) -> No
     rows = repository.claim_due_strategy_data_callbacks(limit=1)
 
     assert "followScriptId" not in rows[0]["payload"]
+
+
+def test_v3_callback_worker_is_started_before_general_background_worker_guard() -> None:
+    from app import main
+
+    source = inspect.getsource(main.startup)
+    callback_start = source.index("service_rule_data_service.available")
+    general_worker_guard = source.index("if not settings.background_workers_enabled")
+
+    assert callback_start < general_worker_guard
