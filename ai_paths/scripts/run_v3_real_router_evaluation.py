@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import statistics
@@ -423,7 +424,7 @@ async def _evaluate(args: argparse.Namespace) -> Path:
                 "selector_runs": selector_count,
                 "selector_rate": round(selector_count / len(results), 4),
                 "p50_ms": round(statistics.median(durations), 1),
-                "p90_ms": durations[min(len(durations) - 1, max(0, int(len(durations) * 0.9) - 1))],
+                "p90_ms": durations[min(len(durations) - 1, max(0, math.ceil(len(durations) * 0.9) - 1))],
                 "accuracy_note": "Expected labels are pending business review; accuracy metrics are intentionally not claimed.",
             },
             "cases": results,
