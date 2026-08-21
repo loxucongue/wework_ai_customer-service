@@ -12,6 +12,8 @@ from app.services.storage import AppRepository
 
 logger = logging.getLogger(__name__)
 _CUSTOMER_REPLY_TYPES = {"text", "image", "video", "voice", "other"}
+_CUSTOMER_OPEN_SCENE_CODE = "customer_opening"
+_CUSTOMER_OPEN_SCENE_NAME = "开口场景"
 
 
 class ServiceRuleDataService:
@@ -70,6 +72,8 @@ class ServiceRuleDataService:
         reply_msgid = _bounded_message_id(raw_msgid)
         payload: dict[str, Any] = {
             "recordKind": "customer_open",
+            "sceneCode": _CUSTOMER_OPEN_SCENE_CODE,
+            "sceneName": _CUSTOMER_OPEN_SCENE_NAME,
             "taskId": task_id,
             "customerId": _numeric_or_text(
                 state.get("customer_id") or state.get("external_userid") or ""
