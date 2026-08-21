@@ -70,16 +70,24 @@ class V3SemanticRouterService:
             semantic_route.update({"status": "error", "reason": route_error})
         semantic_route["duration_ms"] = int((time.perf_counter() - router_started) * 1000)
         semantic_route["model_usage"] = copy.deepcopy(self.semantic_client.last_usage or {})
+        checkpoint_router_ms = int(semantic_route["duration_ms"])
 
         if bool((semantic_route.get("store_query") or {}).get("required")):
             pre_route = _deferred_store_pre_route(semantic_route)
+            total_ms = int((time.perf_counter() - started) * 1000)
             return {
                 "schema_version": "v3_semantic_evidence_v2",
                 "status": "ok" if semantic_route.get("status") == "ok" else "degraded",
                 "semantic_route": pre_route,
                 "knowledge_evidence": _deferred_store_knowledge(sequence_result),
                 "tool_plan": _store_tool_plan(pre_route),
-                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "duration_ms": total_ms,
+                "timings": {
+                    "checkpoint_router_ms": checkpoint_router_ms,
+                    "sequence_selector_ms": 0,
+                    "knowledge_ms": 0,
+                    "total_ms": total_ms,
+                },
                 "prompt_preview": {
                     "router_messages": router_messages,
                     "sequence_selector_messages": [],
@@ -92,6 +100,7 @@ class V3SemanticRouterService:
             checkpoint_route=semantic_route,
             sequences=sequences,
         )
+        sequence_selector_ms = int(semantic_route.get("duration_ms") or 0)
         semantic_route["phase"] = "non_store_final"
         knowledge, selector_messages = await self._knowledge_for_route(
             shared_context=shared_context,
@@ -99,13 +108,20 @@ class V3SemanticRouterService:
             sequence_result=sequence_result,
             sequences=sequences,
         )
+        total_ms = int((time.perf_counter() - started) * 1000)
         return {
             "schema_version": "v3_semantic_evidence_v2",
             "status": "ok" if semantic_route.get("status") == "ok" else "degraded",
             "semantic_route": semantic_route,
             "knowledge_evidence": knowledge,
             "tool_plan": _store_tool_plan(semantic_route),
-            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "duration_ms": total_ms,
+            "timings": {
+                "checkpoint_router_ms": checkpoint_router_ms,
+                "sequence_selector_ms": sequence_selector_ms,
+                "knowledge_ms": int(knowledge.get("duration_ms") or 0),
+                "total_ms": total_ms,
+            },
             "prompt_preview": {
                 "router_messages": router_messages,
                 "sequence_selector_messages": sequence_selector_messages,
@@ -144,6 +160,7 @@ class V3SemanticRouterService:
             sequences=sequences,
             store_resolution_fact=store_resolution_fact,
         )
+        sequence_selector_ms = int(semantic_route.get("duration_ms") or 0)
         semantic_route["phase"] = "post_store_final"
         semantic_route["provisional_checkpoint"] = copy.deepcopy(
             pre_route.get("provisional_checkpoint") or pre_route.get("checkpoint") or {}
@@ -164,13 +181,20 @@ class V3SemanticRouterService:
             sequence_result=sequence_result,
             sequences=sequences,
         )
+        total_ms = int((time.perf_counter() - started) * 1000)
         return {
             "schema_version": "v3_semantic_evidence_v2",
             "status": "ok" if semantic_route.get("status") == "ok" else "degraded",
             "semantic_route": semantic_route,
             "knowledge_evidence": knowledge,
             "tool_plan": _store_tool_plan(semantic_route),
-            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "duration_ms": total_ms,
+            "timings": {
+                "checkpoint_router_ms": 0,
+                "sequence_selector_ms": sequence_selector_ms,
+                "knowledge_ms": int(knowledge.get("duration_ms") or 0),
+                "total_ms": total_ms,
+            },
             "prompt_preview": {
                 "router_messages": [],
                 "sequence_selector_messages": router_messages,
@@ -193,6 +217,8 @@ class V3SemanticRouterService:
             output = copy.deepcopy(checkpoint_route)
             output["sequence_match"] = _empty_sequence_match()
             output["script_queries"] = []
+            output["duration_ms"] = 0
+            output["model_usage"] = {}
             return output, []
 
         messages = build_v3_sequence_selector_messages(
@@ -239,7 +265,7 @@ class V3SemanticRouterService:
         sequence_result: dict[str, Any],
         sequences: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
-
+        started = time.perf_counter()
         sequence_candidates = _selected_sequences(sequences, semantic_route)
         script_result = await self._script_candidates(semantic_route)
         script_candidates = [item for item in script_result.get("items") or [] if isinstance(item, dict)]
@@ -269,6 +295,7 @@ class V3SemanticRouterService:
             "candidate_count": len(script_candidates),
             "candidates": [_script_reference(item) for item in script_candidates],
             "selector": selector_for_runtime,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
         }
         return knowledge, selector_messages
 
@@ -301,6 +328,8 @@ class V3SemanticRouterService:
                     "status": result.get("status"),
                     "total": int(result.get("total") or 0),
                     "reason": result.get("reason", ""),
+                    "duration_ms": int(result.get("duration_ms") or 0),
+                    "cache_hit_pages": int(result.get("cache_hit_pages") or 0),
                 }
             )
             for raw in result.get("items") or []:
@@ -716,11 +745,13 @@ def _expand_sequence_action_queries(
     *,
     sequences: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Expose each selected sequence action as evidence without choosing an action for Reply."""
+    """Query scripts only for the model-selected real sequence steps."""
     output = copy.deepcopy(route)
-    selected_ids = set((output.get("sequence_match") or {}).get("sequence_ids") or [])
+    sequence_match = output.get("sequence_match") or {}
+    selected_ids = set(sequence_match.get("sequence_ids") or [])
+    relevant_step_ids = set(sequence_match.get("relevant_step_ids") or [])
     checkpoint = str((output.get("checkpoint") or {}).get("primary_code") or "").strip().lower()
-    if not selected_ids or checkpoint not in CHECKPOINT_CODES - {"all"}:
+    if not selected_ids or not relevant_step_ids or checkpoint not in CHECKPOINT_CODES - {"all"}:
         return output
 
     queries = output.setdefault("script_queries", [])
@@ -738,6 +769,8 @@ def _expand_sequence_action_queries(
                 continue
             action = str(step.get("action_code") or "").strip().lower()
             step_id = str(step.get("id") or "").strip()
+            if step_id not in relevant_step_ids:
+                continue
             key = (sequence_id, action)
             if not step_id or action not in ACTION_CODES or key in seen_actions:
                 continue
@@ -747,7 +780,7 @@ def _expand_sequence_action_queries(
                     "action_code": action,
                     "sequence_id": sequence_id,
                     "step_id": step_id,
-                    "query_source": "selected_sequence_action_coverage",
+                    "query_source": "model_selected_relevant_step",
                 }
             )
             seen_actions.add(key)

@@ -58,7 +58,7 @@ def _sequence() -> dict:
     }
 
 
-def test_selected_sequence_exposes_each_distinct_action_without_choosing_for_reply() -> None:
+def test_selected_sequence_queries_only_model_selected_relevant_steps() -> None:
     route = {
         "checkpoint": {"primary_code": "distance"},
         "sequence_match": {"sequence_ids": ["18"], "relevant_step_ids": ["181"]},
@@ -76,8 +76,19 @@ def test_selected_sequence_exposes_each_distinct_action_without_choosing_for_rep
 
     assert [(item["action_code"], item["step_id"]) for item in expanded["script_queries"]] == [
         ("empathy", "181"),
-        ("case", "182"),
     ]
+
+
+def test_selected_sequence_without_relevant_steps_does_not_query_scripts() -> None:
+    route = {
+        "checkpoint": {"primary_code": "distance"},
+        "sequence_match": {"sequence_ids": ["18"], "relevant_step_ids": []},
+        "script_queries": [],
+    }
+
+    expanded = _expand_sequence_action_queries(route, sequences=[_sequence()])
+
+    assert expanded["script_queries"] == []
 
 
 class _SemanticClient:
@@ -168,17 +179,10 @@ def test_router_selects_real_sequence_steps_and_queries_matching_scripts() -> No
             "action_code": "empathy",
             "sequence_id": "18",
             "step_id": "181",
-            "query_source": "selected_sequence_action_coverage",
-        },
-        {
-            "checkpoint_code": "distance",
-            "action_code": "case",
-            "sequence_id": "18",
-            "step_id": "182",
-            "query_source": "selected_sequence_action_coverage",
+            "query_source": "model_selected_relevant_step",
         },
     ]
-    assert knowledge.script_queries == [("distance", "empathy"), ("distance", "case")]
+    assert knowledge.script_queries == [("distance", "empathy")]
     assert result["knowledge_evidence"]["candidate_count"] == 2
     selected_sequence = result["knowledge_evidence"]["sequence_candidates"][0]
     assert selected_sequence["selection_reason"] == "先承接距离，再换价值维度"
@@ -304,7 +308,7 @@ def test_store_route_defers_sequences_and_scripts_until_store_fact_exists() -> N
     assert route["checkpoint"]["primary_code"] == "distance"
     assert route["store_query"]["required"] is False
     assert route["store_result_interpretation"]["remaining_customer_concern_refs"] == ["current_message"]
-    assert knowledge.script_queries == [("distance", "empathy"), ("distance", "case")]
+    assert knowledge.script_queries == [("distance", "case")]
     assert final["knowledge_evidence"]["candidate_count"] == 2
     assert semantic.calls == 2
 

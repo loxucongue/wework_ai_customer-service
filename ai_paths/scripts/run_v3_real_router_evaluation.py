@@ -336,10 +336,13 @@ async def _evaluate(args: argparse.Namespace) -> Path:
         async def run_case(index: int, case: dict[str, Any]) -> dict[str, Any]:
             case_id = _masked_case_id(case["identity"], index)
             shared = _shared_context(case_id, case["history"], case["current"])
-            started = time.perf_counter()
+            queued_at = time.perf_counter()
             async with semaphore:
+                execution_started = time.perf_counter()
+                queue_wait_ms = int((execution_started - queued_at) * 1000)
                 result = await router.route(shared_context=shared, sequence_result=sequence_index)
-            duration_ms = int((time.perf_counter() - started) * 1000)
+                execution_ms = int((time.perf_counter() - execution_started) * 1000)
+            duration_ms = int(result.get("duration_ms") or execution_ms)
             route = result.get("semantic_route") if isinstance(result.get("semantic_route"), dict) else {}
             checkpoint = route.get("checkpoint") if isinstance(route.get("checkpoint"), dict) else {}
             sequence_match = route.get("sequence_match") if isinstance(route.get("sequence_match"), dict) else {}
@@ -383,6 +386,9 @@ async def _evaluate(args: argparse.Namespace) -> Path:
                 "runtime": {
                     "status": result.get("status"),
                     "duration_ms": duration_ms,
+                    "execution_wall_ms": execution_ms,
+                    "queue_wait_ms": queue_wait_ms,
+                    "timings": result.get("timings") or {},
                     "route_duration_ms": route.get("duration_ms"),
                     "model_usage": route.get("model_usage") or {},
                     "selector_used": ((result.get("knowledge_evidence") or {}).get("selector") or {}).get("status") == "ok",
@@ -394,6 +400,7 @@ async def _evaluate(args: argparse.Namespace) -> Path:
 
         results = await asyncio.gather(*(run_case(index, case) for index, case in enumerate(cases, start=1)))
         durations = sorted(item["runtime"]["duration_ms"] for item in results)
+        queue_waits = sorted(item["runtime"]["queue_wait_ms"] for item in results)
         failures = [item for item in results if item["runtime"]["status"] != "ok"]
         structural = [item for item in results if item["runtime"]["structural_issues"]]
         selector_count = sum(1 for item in results if item["runtime"]["selector_used"])
@@ -426,6 +433,10 @@ async def _evaluate(args: argparse.Namespace) -> Path:
                 "selector_rate": round(selector_count / len(results), 4),
                 "p50_ms": round(statistics.median(durations), 1),
                 "p90_ms": durations[min(len(durations) - 1, max(0, math.ceil(len(durations) * 0.9) - 1))],
+                "queue_wait_p50_ms": round(statistics.median(queue_waits), 1),
+                "queue_wait_p90_ms": queue_waits[
+                    min(len(queue_waits) - 1, max(0, math.ceil(len(queue_waits) * 0.9) - 1))
+                ],
                 "accuracy_note": "Expected labels are pending business review; accuracy metrics are intentionally not claimed.",
             },
             "cases": results,

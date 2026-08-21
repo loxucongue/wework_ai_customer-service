@@ -219,7 +219,7 @@ class Settings(BaseSettings):
         alias="DEEPSEEK_SEMANTIC_TIMEOUT_SECONDS",
     )
     deepseek_semantic_max_tokens: int = Field(
-        default=1200,
+        default=800,
         alias="DEEPSEEK_SEMANTIC_MAX_TOKENS",
     )
     deepseek_semantic_script_threshold: int = Field(

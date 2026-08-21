@@ -243,9 +243,9 @@ def build_v3_sequence_selector_messages(
 ) -> list[dict[str, str]]:
     checkpoint = checkpoint_route.get("checkpoint") if isinstance(checkpoint_route.get("checkpoint"), dict) else {}
     blocks = [
-        _conversation_block(shared_context),
-        "【当前卡点】\n" + _compact_value(checkpoint),
         _sequence_index_block(sequence_candidates),
+        "【当前卡点】\n" + _compact_value(checkpoint),
+        _conversation_block(shared_context),
     ]
     if isinstance(store_resolution_fact, dict):
         blocks.extend(
@@ -318,11 +318,11 @@ def build_v3_script_selector_messages(
             "role": "user",
             "content": "\n\n".join(
                 [
-                    _conversation_block(shared_context),
+                    "【候选话术】\n" + "\n".join(lines),
+                    f"【最多选择】\n{max_scripts}",
                     "【本轮卡点】\n"
                     + f"{checkpoint.get('primary_code', '')}｜{checkpoint.get('reason', '')}",
-                    f"【最多选择】\n{max_scripts}",
-                    "【候选话术】\n" + "\n".join(lines),
+                    _conversation_block(shared_context),
                     "请返回 json。",
                 ]
             ),
