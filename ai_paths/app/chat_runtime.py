@@ -26,7 +26,7 @@ from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
 from app.services.reply_governance import reply_governance_flags
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
-from app.services.sop_execution_service import SopExecutionService
+from app.services.sop_execution_service import SopExecutionService, is_platform_auto_opening_message
 from app.services.storage import AppRepository
 from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
@@ -75,6 +75,25 @@ class ChatRuntime:
             request_context=request_context,
         )
         initial_state = self._initial_state(request, request_id, request_context)
+
+        if is_platform_auto_opening_message(request.content):
+            initial_state["reply_messages"] = []
+            initial_state["reply_source"] = "ignored_platform_auto_message"
+            initial_state.setdefault("trace", []).append(
+                {
+                    "node": "platform_protocol_filter",
+                    "decision": "no_reply",
+                    "reason": "platform_auto_opening_ignored",
+                }
+            )
+            _set_sync_return(initial_state, "empty", [])
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=initial_state,
+                allow_empty_reply=True,
+            )
 
         try:
             final_state = await self._invoke_graph_with_budget(self._full_graph, initial_state, phase="full")
@@ -173,6 +192,27 @@ class ChatRuntime:
         initial_state = self._initial_state(effective_request, request_id, effective_context)
         if decision and self._platform_reply_coordinator:
             initial_state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
+
+        if is_platform_auto_opening_message(effective_request.content):
+            initial_state["reply_messages"] = []
+            initial_state["reply_source"] = "ignored_platform_auto_message"
+            initial_state.setdefault("trace", []).append(
+                {
+                    "node": "platform_protocol_filter",
+                    "decision": "no_reply",
+                    "reason": "platform_auto_opening_ignored",
+                }
+            )
+            _set_sync_return(initial_state, "empty", [])
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=initial_state,
+                allow_empty_reply=True,
+            )
 
         self._update_run_progress(request_id, "sop_gate")
         sop_gate = await self._evaluate_sop_gate(effective_request, request_id, effective_context)

@@ -217,7 +217,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.saved_states[-1]["reply_source"], "platform_superseded")
         self.assertEqual(repository.saved_states[-1]["reply_control"]["sync_return"]["type"], "empty")
 
-    async def test_platform_auto_opening_sop_returns_configured_messages_without_models(self) -> None:
+    async def test_platform_auto_opening_returns_empty_without_sop_or_models(self) -> None:
         graph = _OpeningUnifiedGraph()
         repository = _Repository()
         runtime = ChatRuntime(
@@ -231,22 +231,16 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         response = await runtime.run_platform_reply(_request("我已经添加了你，现在我们可以开始聊天了。"))
 
-        self.assertEqual([message.type for message in response.reply_messages], ["text", "image"])
-        self.assertEqual(response.reply_messages[0].content["text"], "新客破冰话术")
-        self.assertEqual(response.reply_messages[1].content["url"], "https://example.com/opening.png")
+        self.assertEqual(response.reply_messages, [])
         self.assertFalse(graph.called)
         self.assertTrue(repository.saved_states)
         state = repository.saved_states[-1]
-        self.assertEqual(state["reply_source"], "sop_gate")
-        self.assertEqual(state["planner_decision"], "direct_reply")
-        self.assertEqual(state["planner_stage"], "SOP")
-        self.assertEqual(state["async_final_reply"]["scheduled"], False)
-        self.assertEqual(state["async_final_reply"]["status"], "not_required")
-        self.assertEqual(state["reply_control"]["sync_return"]["type"], "sop_reply")
-        self.assertEqual(len(state["reply_messages"]), 2)
+        self.assertEqual(state["reply_source"], "ignored_platform_auto_message")
+        self.assertEqual(state["reply_control"]["sync_return"]["type"], "empty")
+        self.assertEqual(state["trace"][-1]["reason"], "platform_auto_opening_ignored")
         workflow_body = workflow_response_from_chat(response)
         self.assertEqual(workflow_body["code"], 0)
-        self.assertEqual(len(workflow_body["data"]["reply_messages"]), 2)
+        self.assertEqual(workflow_body["data"]["reply_messages"], [])
 
     def test_only_explicit_opening_passthrough_can_bypass_planner(self) -> None:
         messages = [{"type": "text", "content": {"text": "配置内容"}}]

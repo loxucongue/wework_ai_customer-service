@@ -27,7 +27,6 @@ from app.prompts.sop_chat_gate import (
 from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
-from app.services.customer_relation import customer_relation_is_deleted, normalize_customer_relation
 from app.services.model_client import ModelClient
 from app.services.sop_event_decision import normalize_event_decision, selected_candidate_packs
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
@@ -402,33 +401,13 @@ class SopExecutionService:
         }
         try:
             if is_platform_auto_opening_message(request.content):
-                identity = _chat_identity(request, request_context)
-                if not _string(identity.get("wechat")):
-                    result.update(
-                        {
-                            "mode": "missing_sales_account_scope",
-                            "send_sop": False,
-                            "need_ai_reply": False,
-                            "reason": "wechat_required_for_sop_scope",
-                        }
-                    )
-                    return _finish(result, started)
-                relation = normalize_customer_relation(request_context)
-                if customer_relation_is_deleted(relation):
-                    result.update(
-                        {
-                            "mode": "platform_auto_opening_customer_deleted",
-                            "send_sop": False,
-                            "need_ai_reply": False,
-                            "reason": "customer_deleted",
-                        }
-                    )
-                    return _finish(result, started)
-                self._handle_platform_auto_opening(
-                    result=result,
-                    request=request,
-                    request_id=request_id,
-                    request_context=request_context,
+                result.update(
+                    {
+                        "mode": "ignored_platform_auto_message",
+                        "send_sop": False,
+                        "need_ai_reply": False,
+                        "reason": "platform_auto_opening_ignored",
+                    }
                 )
                 return _finish(result, started)
             if request_context.get("skip_sop_gate"):
@@ -788,84 +767,6 @@ class SopExecutionService:
             "payment": payment,
             "summary": summary,
         }
-
-    def _handle_platform_auto_opening(
-        self,
-        *,
-        result: dict[str, Any],
-        request: ChatRequest,
-        request_id: str,
-        request_context: dict[str, Any],
-    ) -> None:
-        """Send the configured first-add opening for WeCom's automatic add-friend event."""
-        pack = _platform_auto_opening_pack(self.sop_reply_pack_service.load())
-        if not pack:
-            result.update(
-                {
-                    "mode": "platform_auto_opening_config_error",
-                    "send_sop": False,
-                    "need_ai_reply": False,
-                    "reason": "platform_auto_opening_pack_unavailable",
-                    "error": "s10_new_customer_opening is not enabled with reply messages",
-                }
-            )
-            return
-
-        identity = _chat_identity(request, request_context)
-        messages, sanitize_summary = sanitize_sop_reply_messages(
-            _pack_messages(pack),
-            state={
-                "content": request.content,
-                "normalized_content": request.content,
-                "conversation_history": request.conversation_history if isinstance(request.conversation_history, list) else [],
-            },
-        )
-        result["message_sanitize"] = sanitize_summary
-        if not messages:
-            result.update(
-                {
-                    "mode": "platform_auto_opening_config_error",
-                    "send_sop": False,
-                    "need_ai_reply": False,
-                    "reason": "platform_auto_opening_pack_has_no_messages",
-                }
-            )
-            return
-
-        task = self._record_chat_gate_task(
-            request=request,
-            request_id=request_id,
-            request_context=request_context,
-            identity=identity,
-            pack=pack,
-            reply_messages=messages,
-            trigger_source="platform_auto_opening",
-        )
-        if task.get("status") == "sent":
-            result.update(
-                {
-                    "mode": "platform_auto_opening_sop",
-                    "delivery_mode": "configured_passthrough",
-                    "send_sop": True,
-                    "sop_pack_id": str(pack.get("id") or ""),
-                    "sop_pack_name": str(pack.get("name") or ""),
-                    "need_ai_reply": False,
-                    "reason": "platform_auto_opening_first_add_sop",
-                    "reply_messages": messages,
-                    "task": task,
-                }
-            )
-            return
-
-        result.update(
-            {
-                "mode": "platform_auto_opening_duplicate",
-                "send_sop": False,
-                "need_ai_reply": False,
-                "reason": str(task.get("error") or "platform_auto_opening_sop_already_sent"),
-                "task": task,
-            }
-        )
 
     async def _select_chat_sop(
         self,
@@ -1763,21 +1664,6 @@ def is_platform_auto_opening_message(content: str) -> bool:
         "我已经添加了你现在我们可以开始聊天了",
         "我已经添加了你现在可以开始聊天了",
     }
-
-
-def _platform_auto_opening_pack(config: dict[str, Any]) -> dict[str, Any]:
-    packs = config.get("packs") if isinstance(config.get("packs"), list) else []
-    for pack in packs:
-        if not isinstance(pack, dict):
-            continue
-        if _string(pack.get("id")) != "s10_new_customer_opening":
-            continue
-        if not bool(pack.get("enabled")) or not _pack_messages(pack):
-            return {}
-        if not (_pack_has_scope(pack, "chat_gate") or _pack_has_scope(pack, "event_first_add")):
-            return {}
-        return pack
-    return {}
 
 
 def _enabled_chat_packs(config: dict[str, Any]) -> list[dict[str, Any]]:

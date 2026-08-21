@@ -3985,7 +3985,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("remove_message", system_prompt)
         self.assertIn("客户画像和旧事件不是当前对话事实", system_prompt)
 
-    async def test_chat_gate_sends_configured_opening_for_platform_auto_message(self) -> None:
+    async def test_chat_gate_ignores_platform_auto_message(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening", "need_ai_reply": False})
         repository = _Repo()
         service = SopExecutionService(repository=repository, sop_reply_pack_service=_DualScopeOpeningPackService(), model_client=model)
@@ -4000,20 +4000,18 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.evaluate_chat_gate(request, request_id="req_auto_opening", request_context={})
 
-        self.assertEqual(result["mode"], "platform_auto_opening_sop")
-        self.assertTrue(result["send_sop"])
+        self.assertEqual(result["mode"], "ignored_platform_auto_message")
+        self.assertFalse(result["send_sop"])
         self.assertFalse(result["need_ai_reply"])
-        self.assertEqual(result["reason"], "platform_auto_opening_first_add_sop")
-        self.assertEqual(result["delivery_mode"], "configured_passthrough")
-        self.assertEqual(result["sop_pack_id"], "s10_new_customer_opening")
-        self.assertEqual(result["reply_messages"][0]["content"]["text"], "新客破冰话术")
-        self.assertEqual(result["task"]["trigger_source"], "platform_auto_opening")
+        self.assertEqual(result["reason"], "platform_auto_opening_ignored")
+        self.assertEqual(result["reply_messages"], [])
+        self.assertEqual(repository.tasks, [])
         self.assertEqual(model.messages, [])
 
         duplicate = await service.evaluate_chat_gate(request, request_id="req_auto_opening_duplicate", request_context={})
-        self.assertEqual(duplicate["mode"], "platform_auto_opening_duplicate")
+        self.assertEqual(duplicate["mode"], "ignored_platform_auto_message")
         self.assertFalse(duplicate["send_sop"])
-        self.assertEqual(len(repository.tasks), 2)
+        self.assertEqual(repository.tasks, [])
 
     async def test_chat_gate_blocks_configured_opening_for_deleted_customer_relation(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening"})
@@ -4043,10 +4041,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        self.assertEqual(result["mode"], "platform_auto_opening_customer_deleted")
+        self.assertEqual(result["mode"], "ignored_platform_auto_message")
         self.assertFalse(result["send_sop"])
         self.assertFalse(result["need_ai_reply"])
-        self.assertEqual(result["reason"], "customer_deleted")
+        self.assertEqual(result["reason"], "platform_auto_opening_ignored")
         self.assertEqual(model.messages, [])
         self.assertEqual(repository.tasks, [])
 
@@ -4288,7 +4286,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mainline", selector_input)
         self.assertIn("precision_qa_index", selector_input)
 
-    async def test_chat_gate_platform_auto_opening_does_not_wait_for_order_lookup(self) -> None:
+    async def test_chat_gate_platform_auto_opening_does_not_query_order_or_send_sop(self) -> None:
         repository = _Repo()
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening"})
         service = SopExecutionService(
@@ -4322,10 +4320,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.evaluate_chat_gate(request, request_id="req_auto_paid", request_context={})
 
-        self.assertEqual(result["mode"], "platform_auto_opening_sop")
-        self.assertTrue(result["send_sop"])
-        self.assertEqual(result["delivery_mode"], "configured_passthrough")
-        self.assertEqual(len(repository.tasks), 1)
+        self.assertEqual(result["mode"], "ignored_platform_auto_message")
+        self.assertFalse(result["send_sop"])
+        self.assertEqual(result["reason"], "platform_auto_opening_ignored")
+        self.assertEqual(repository.tasks, [])
         self.assertEqual(model.messages, [])
 
     async def test_chat_gate_applies_contextual_text_adjustment_without_changing_pack_structure(self) -> None:

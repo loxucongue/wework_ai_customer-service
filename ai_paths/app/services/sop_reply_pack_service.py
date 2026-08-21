@@ -628,10 +628,6 @@ def _audit_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _audit_first_add_candidates(packs: list[Any], issues: list[dict[str, Any]]) -> None:
-    opening = next((pack for pack in packs if isinstance(pack, dict) and str(pack.get("id") or "") == "s10_new_customer_opening"), {})
-    if not opening or not bool(opening.get("enabled")):
-        issues.append(_audit_issue("error", "first_add_opening_disabled", "s10_new_customer_opening", "首次加微必须启用 s10_new_customer_opening。"))
-
     immediate = [
         pack
         for pack in packs
