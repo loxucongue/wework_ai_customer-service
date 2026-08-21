@@ -329,7 +329,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first_result["status"], "sent")
         self.assertEqual(second_result["status"], "completed_without_send")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30), ("102", 20), ("102", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30), ("102", 20), ("102", 70)])
         self.assertEqual(len(system.send_calls), 1)
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型擅自改写")])
         second_payload = repo.tasks["platform-sop:102"]["send_payload"]
@@ -337,7 +337,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(platform.rule_data_calls[-1]["task_id"], "102")
         self.assertEqual(platform.rule_data_calls[-1]["scene_code"], "no_send_duplicate")
         self.assertEqual(platform.rule_data_calls[-1]["send_content"], "")
-        self.assertEqual(repo.events["platform_sop_task:102"]["status"], "platform_completed")
+        self.assertEqual(repo.events["platform_sop_task:102"]["status"], "platform_no_send")
         self.assertEqual(len(model.calls), 1)
 
     async def test_stale_task_still_follows_current_opening_route(self) -> None:
@@ -468,7 +468,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_task(task)
 
         self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(system.conversation_calls, 0)
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
@@ -488,7 +488,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_task(task)
 
         self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(system.conversation_calls, 0)
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
@@ -593,10 +593,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(model.calls, [])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         stored = next(iter(repo.tasks.values()))
         self.assertEqual(stored["send_payload"]["decision"]["reason"], "duplicate_media_delivery")
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
 
     async def test_first_day_payment_card_marker_becomes_payment_collection(self) -> None:
         model = _Model([])
@@ -917,12 +917,12 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(result["delivery_failure"]["http_status"], 409)
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         stored = next(iter(repo.tasks.values()))
         self.assertEqual(stored["status"], "completed_without_send")
         self.assertEqual(stored["send_payload"]["decision"]["reason_code"], "no_send_downstream_rejected")
         self.assertEqual(stored["send_payload"]["attempted_decision"]["decision"], "send")
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
 
     async def test_transient_downstream_send_failure_remains_recoverable(self) -> None:
         model = _Model([{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}])
@@ -945,11 +945,46 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(_task())
 
-        self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(next(iter(repo.tasks.values()))["status"], "completed_without_send")
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
+        self.assertEqual(next(iter(repo.tasks.values()))["status"], "failed")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
         self.assertEqual(len(system.send_calls), 1)
+
+    async def test_target_ai_disabled_is_consumed_as_no_send(self) -> None:
+        model = _Model([{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}])
+        service, repo, platform, system = _service(model=model)
+        system.send_error = RuntimeError(
+            'outreach_system_http_409: {"code":40908,"msg":"AI outreach target is outside enabled AI scope",'
+            '"data":{"reason_code":"target_ai_disabled"}}'
+        )
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
+        self.assertEqual(next(iter(repo.tasks.values()))["status"], "completed_without_send")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
+
+    async def test_transient_failures_retry_three_times_then_consume_failed(self) -> None:
+        model = _Model(
+            [{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]} for _ in range(4)]
+        )
+        service, repo, platform, system = _service(model=model)
+        system.send_error = RuntimeError('outreach_system_http_503: {"detail":"temporarily unavailable"}')
+        task = _task()
+
+        for recovery_status in ("", "platform_processing_retry", "platform_processing_retry"):
+            with self.assertRaisesRegex(RuntimeError, "outreach_system_http_503"):
+                await service.process_task(task, recovery_status=recovery_status)
+
+        result = await service.process_task(task, recovery_status="platform_processing_retry")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
+        self.assertEqual(repo.events["platform_sop_task:101"]["retry_count"], 4)
+        self.assertEqual(len(system.send_calls), 4)
 
     async def test_ai_service_customer_message_without_time_still_uses_model(self) -> None:
         model = _Model([{"decision": "send", "reason": "model owns semantics", "reply_messages": [_text("自然承接")]}])
@@ -1060,7 +1095,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_task(_task())
 
         self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(system.send_calls, [])
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "completed_without_send")
 
@@ -1074,7 +1109,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(model.calls, [])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
 
     async def test_first_add_invalid_no_send_reason_repairs_then_defaults_to_send(self) -> None:
         model = _Model(
@@ -1118,7 +1153,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         stored = next(iter(repo.tasks.values()))
         self.assertEqual(stored["send_payload"]["decision"]["reason_code"], "no_send_explicit_stop_contact")
 
@@ -1155,10 +1190,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(task)
 
-        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(result["status"], "failed")
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
 
     async def test_empty_platform_content_never_falls_back_to_knowledge_model(self) -> None:
         model = _Model([{"decision": "send", "reason": "knowledge fallback", "reply_messages": [_text("知识库轻触达")]}])
@@ -1168,10 +1203,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(task)
 
-        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(result["status"], "failed")
         self.assertEqual(model.calls, [])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
 
     async def test_defer_output_is_repaired_and_never_becomes_platform_state(self) -> None:
         model = _Model(
@@ -1191,7 +1226,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(len(model.calls), 2)
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
 
     async def test_model_failure_stays_local_retry_and_does_not_fake_success(self) -> None:
         model = _Model(
@@ -1322,6 +1357,23 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
 
+    async def test_recovery_missing_task_payload_finishes_as_platform_failure(self) -> None:
+        service, repo, platform, system = _service(model=_Model([]))
+        repo.create_sop_event(
+            {
+                "event_id": "platform_sop_task:101",
+                "event_type": "platform_sop_task",
+            }
+        )
+        repo.events["platform_sop_task:101"]["status"] = "platform_processing_retry"
+
+        processed = await service.process_recoveries()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(platform.consume_calls, [("101", 40)])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
+        self.assertEqual(system.send_calls, [])
+
     async def test_claim_must_confirm_processing_before_context_or_send(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("不应发送")]}])
         service, repo, platform, system = _service(model=model)
@@ -1348,15 +1400,61 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(system.send_calls), 1)
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "sent")
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_complete_pending")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_terminal_pending")
 
         platform.consume_responses = [{"code": 200, "data": {"task_id": 101, "status": 30}}]
-        result = await service.process_task(_task(), recovery_status="platform_complete_pending")
+        result = await service.process_task(_task(), recovery_status="platform_terminal_pending")
 
         self.assertTrue(result["processed"])
         self.assertEqual(len(system.send_calls), 1)
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+
+    async def test_no_send_completion_retry_preserves_status_70(self) -> None:
+        model = _Model(
+            [
+                {
+                    "decision": "no_send",
+                    "reason": "human takeover",
+                    "reason_code": "human_takeover",
+                    "remark": "人工正在连续接待",
+                    "reply_messages": [],
+                }
+            ]
+        )
+        service, repo, platform, system = _service(model=model)
+        platform.consume_responses = [
+            {"code": 200, "data": {"task_id": 101, "status": 20}},
+            {"code": 200, "data": {"task_id": 101, "status": 20}},
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "expected 70, got 20"):
+            await service.process_task(_task())
+
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_terminal_pending")
+        self.assertEqual(system.send_calls, [])
+        platform.consume_responses = [{"code": 200, "data": {"task_id": 101, "status": 70}}]
+
+        result = await service.process_task(_task(), recovery_status="platform_terminal_pending")
+
+        self.assertTrue(result["processed"])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70), ("101", 70)])
+        self.assertEqual(platform.consume_remarks, ["", "人工正在连续接待", "人工正在连续接待"])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
+        self.assertEqual(len(model.calls), 1)
+
+    async def test_legacy_no_send_recovery_prefers_local_terminal_status_over_error_text(self) -> None:
+        service, _repo, _platform, _system = _service(model=_Model([]))
+
+        terminal_status = service._stored_terminal_status(
+            {
+                "status": "completed_without_send",
+                "error": "downstream_delivery_rejected",
+                "send_payload": {},
+            }
+        )
+
+        self.assertEqual(terminal_status, 70)
 
     async def test_accepted_no_response_is_recorded_as_sent(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
@@ -1412,7 +1510,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(platform.rule_data_calls[-1]["scene_code"], "no_send_duplicate")
         self.assertEqual(platform.rule_data_calls[-1]["send_content"], "")
         stored = next(iter(repo.tasks.values()))
@@ -1445,7 +1543,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         stored = next(iter(repo.tasks.values()))
         self.assertEqual(stored["send_payload"]["decision"]["reason"], "duplicate_media_delivery")
         duplicate = stored["send_payload"]["context"]["near_duplicate_delivery"]
@@ -1672,14 +1770,33 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
 
     def test_platform_client_rejects_non_contract_statuses(self) -> None:
         client = SopPlatformClient(_settings())
-        with self.assertRaisesRegex(ValueError, "20 or 30"):
+        with self.assertRaisesRegex(ValueError, "20, 30, 40, or 70"):
             import asyncio
 
-            asyncio.run(client.consume(task_id=1, status=40))
+            asyncio.run(client.consume(task_id=1, status=60))
+
+    async def test_platform_client_accepts_failed_and_no_send_statuses(self) -> None:
+        client = SopPlatformClient(_settings())
+        client._request = AsyncMock(side_effect=[
+            {"code": 200, "data": {"taskId": 1, "status": 40}},
+            {"code": 200, "data": {"taskId": 2, "status": 70}},
+        ])  # type: ignore[method-assign]
+
+        await client.consume(task_id=1, status=40)
+        await client.consume(task_id=2, status=70, remark="客户明确停止联系")
+
+        self.assertEqual(
+            client._request.await_args_list[0].kwargs["json_body"],
+            {"taskId": 1, "status": 40, "remark": ""},
+        )  # type: ignore[union-attr]
+        self.assertEqual(
+            client._request.await_args_list[1].kwargs["json_body"],
+            {"taskId": 2, "status": 70, "remark": "客户明确停止联系"},
+        )  # type: ignore[union-attr]
 
     async def test_pending_relies_on_upstream_due_time_and_uses_documented_limit(self) -> None:
         settings = _settings()
@@ -1707,7 +1824,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page["items"], [upstream_task])
         self.assertEqual(page["total"], 1)
 
-    async def test_invalid_identity_attempts_platform_original_without_model(self) -> None:
+    async def test_invalid_identity_is_consumed_as_failure_without_model(self) -> None:
         model = _Model([])
         service, _repo, platform, system = _service(model=model)
         task = _task()
@@ -1715,10 +1832,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(task)
 
-        self.assertEqual(result["status"], "sent")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
         self.assertEqual(model.calls, [])
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls, [])
 
     async def test_rule_data_client_sends_current_callback_contract(self) -> None:
         client = SopPlatformClient(_settings())
@@ -2159,6 +2276,7 @@ class _Repo:
                 "event_type": payload.get("event_type"),
                 "status": "accepted",
                 "raw_payload": dict(payload),
+                "retry_count": 0,
             }
         return {**self.events[event_id], "created": created}
 
@@ -2183,6 +2301,14 @@ class _Repo:
         self.events[event_id]["error"] = error
         return dict(self.events[event_id])
 
+    def schedule_platform_sop_retry(self, event_id, *, error, delays_seconds=(10, 30, 60)):
+        event = self.events[event_id]
+        retry_count = int(event.get("retry_count") or 0) + 1
+        event["retry_count"] = retry_count
+        event["error"] = error if retry_count > len(delays_seconds) else ""
+        event["status"] = "platform_retry_exhausted" if retry_count > len(delays_seconds) else "platform_processing_retry"
+        return dict(event)
+
     def create_sop_send_task(self, **payload):
         key = payload["idempotency_key"]
         created = key not in self.tasks
@@ -2206,13 +2332,15 @@ class _Repo:
 class _Platform:
     def __init__(self):
         self.consume_calls: list[tuple[str, int]] = []
+        self.consume_remarks: list[str] = []
         self.consume_responses: list[dict[str, Any]] = []
         self.rule_data_calls: list[dict[str, Any]] = []
         self.knowledge_category_calls = 0
         self.knowledge_base_calls = 0
 
-    async def consume(self, *, task_id, status):
+    async def consume(self, *, task_id, status, remark=""):
         self.consume_calls.append((str(task_id), status))
+        self.consume_remarks.append(str(remark or ""))
         if self.consume_responses:
             response = self.consume_responses.pop(0)
             if isinstance(response, BaseException):

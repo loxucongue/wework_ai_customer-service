@@ -226,9 +226,8 @@ def _platform_sop_metrics(rows: list[dict[str, Any]], bucket: str) -> dict[str, 
     sent = sum(status in {"sent", "shadow_send"} for status in statuses.elements())
     no_send = sum(status in {"completed_without_send", "shadow_no_send"} for status in statuses.elements())
     failed = sum(
-        bool(str(row.get("task_error") or "").strip())
-        or "fail" in str(row.get("task_status") or "").lower()
-        or "error" in str(row.get("task_status") or "").lower()
+        str(row.get("event_status") or "") == "platform_failed"
+        or str(row.get("task_status") or "") == "failed"
         for row in task_values
     )
     reasons = Counter()

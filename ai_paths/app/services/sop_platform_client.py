@@ -21,8 +21,8 @@ class SopPlatformTaskStateError(RuntimeError):
 class SopPlatformClient:
     """Client for the third-party SOP task queue.
 
-    The upstream state contract is intentionally limited to 10 (pending),
-    20 (processing), and 30 (completed).
+    The upstream state contract is 10 (pending), 20 (processing),
+    30 (sent), 40 (failed), and 70 (not sent).
     """
 
     def __init__(self, settings: Settings):
@@ -66,13 +66,19 @@ class SopPlatformClient:
             "limit": payload["limit"],
         }
 
-    async def consume(self, *, task_id: str | int, status: int) -> dict[str, Any]:
-        if status not in {20, 30}:
-            raise ValueError("platform SOP status must be 20 or 30")
+    async def consume(
+        self,
+        *,
+        task_id: str | int,
+        status: int,
+        remark: str = "",
+    ) -> dict[str, Any]:
+        if status not in {20, 30, 40, 70}:
+            raise ValueError("platform SOP status must be 20, 30, 40, or 70")
         return await self._request(
             "POST",
             "/event/trigger/consume",
-            json_body={"taskId": task_id, "status": status},
+            json_body={"taskId": task_id, "status": status, "remark": str(remark or "")[:500]},
         )
 
     async def knowledge_categories(
@@ -176,7 +182,16 @@ class SopPlatformClient:
             detail = " ".join((message, str(data.get("message") or ""))).strip()
             state_match = re.search(r"当前状态[：:]\s*([^）)\s,，;；]+)", detail)
             state = str(state_match.group(1) if state_match else "").strip()
-            if state in {"已取消", "已完成"}:
+            if not state:
+                state = next(
+                    (
+                        candidate
+                        for candidate in ("已不发送", "不发送", "已失败", "失败", "已取消", "已完成")
+                        if candidate in detail
+                    ),
+                    "",
+                )
+            if state in {"已取消", "已完成", "已失败", "失败", "已不发送", "不发送"}:
                 raise SopPlatformTaskStateError(state=state, payload=payload)
             raise RuntimeError(f"sop_platform_error: {payload}")
         return payload

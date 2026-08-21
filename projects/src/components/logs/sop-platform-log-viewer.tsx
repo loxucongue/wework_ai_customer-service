@@ -25,6 +25,7 @@ type TaskItem = {
   bucket: string;
   stage_label: string;
   platform_status?: string;
+  platform_terminal_status?: number | null;
   platform_visible?: boolean;
   event_status?: string;
   task_status?: string;
@@ -61,6 +62,7 @@ type Summary = {
   judged_no_send?: number;
   sending?: number;
   sent?: number;
+  failed?: number;
   recovery?: number;
 };
 
@@ -90,6 +92,7 @@ const BUCKETS = [
   ["judged_no_send", "已判断不发"],
   ["sending", "发送中"],
   ["sent", "已发送"],
+  ["failed", "处理失败"],
   ["recovery", "恢复中"],
 ] as const;
 
@@ -214,7 +217,7 @@ export function SopPlatformLogViewer() {
       </header>
 
       <section className="border-b bg-white px-5 py-4">
-        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border bg-slate-200 sm:grid-cols-4 xl:grid-cols-8">
+        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border bg-slate-200 sm:grid-cols-4 xl:grid-cols-9">
           <Metric label="平台状态10" value={summary.platform_pending_total} icon={<Database className="h-4 w-4" />} />
           <Metric label="平台待拉取" value={summary.platform_pending} icon={<Clock3 className="h-4 w-4" />} />
           <Metric label="已拉取待判断" value={summary.pulled_unjudged} icon={<LoaderCircle className="h-4 w-4" />} />
@@ -223,6 +226,7 @@ export function SopPlatformLogViewer() {
           <Metric label="判断不发" value={summary.judged_no_send} icon={<Ban className="h-4 w-4" />} />
           <Metric label="发送中" value={summary.sending} icon={<LoaderCircle className="h-4 w-4" />} />
           <Metric label="已发送" value={summary.sent} icon={<CheckCircle2 className="h-4 w-4" />} />
+          <Metric label="处理失败" value={summary.failed} icon={<AlertTriangle className="h-4 w-4" />} />
         </div>
         <div className="mt-4 flex flex-wrap items-end gap-3">
           <FilterInput label="任务 ID" value={filters.task_id} onChange={(value) => setFilters((prev) => ({ ...prev, task_id: value }))} />
@@ -427,7 +431,7 @@ function isResendable(task: TaskItem) {
   if (task.task_status === "sent" || task.task_status === "sending" || task.event_status === "platform_send_uncertain") {
     return false;
   }
-  return ["judged_no_send", "judged_send", "recovery", "pulled_unjudged"].includes(task.bucket);
+  return ["judged_no_send", "judged_send", "failed", "recovery", "pulled_unjudged"].includes(task.bucket);
 }
 
 function TimelineStep({ label, time, done }: { label: string; time: string; done: boolean }) {
@@ -482,6 +486,7 @@ function StageBadge({ bucket, label }: { bucket: string; label: string }) {
     judged_no_send: "border-amber-200 bg-amber-50 text-amber-800",
     sending: "border-indigo-200 bg-indigo-50 text-indigo-700",
     sent: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    failed: "border-red-200 bg-red-50 text-red-700",
     recovery: "border-red-200 bg-red-50 text-red-700",
   };
   return <span className={`shrink-0 rounded-md border px-2 py-1 text-xs ${tones[bucket] || tones.platform_pending}`}>{label}</span>;

@@ -59,6 +59,26 @@ def test_operations_dashboard_aggregates_authoritative_runtime_tables(tmp_path) 
                     'platform', '[]', 'sent', '{}', '{}', '', ?, ?, ?)""",
             (at, at, at),
         )
+        for suffix, event_status, task_status in (
+            ("no-send", "platform_no_send", "completed_without_send"),
+            ("failed", "platform_failed", "failed"),
+        ):
+            conn.execute(
+                """INSERT INTO sop_events
+                (id, event_id, event_type, source, request_reply, upstream_created_at, raw_payload_json,
+                 status, error, retry_count, next_retry_at, last_retry_error, received_at, updated_at)
+                VALUES (?, ?, 'platform_sop_task', 'platform', 0, '', '{}', ?, '', 0, '', '', ?, ?)""",
+                (f"event-{suffix}", f"platform:{suffix}", event_status, at, at),
+            )
+            conn.execute(
+                """INSERT INTO sop_send_tasks
+                (id, event_id, idempotency_key, send_once_key, customer_id, external_userid, corp_id, user_id,
+                 wechat, sop_pack_id, sop_pack_name, sop_category, trigger_source, reply_messages_json, status,
+                 send_payload_json, send_response_json, error, created_at, updated_at, sent_at)
+                    VALUES (?, ?, ?, '', 'customer-a', '', 'corp-a', '', 'staff-a', '', '', '',
+                            'platform', '[]', ?, '{}', '{}', '', ?, ?, '')""",
+                    (f"task-{suffix}", f"platform:{suffix}", f"platform:{suffix}", task_status, at, at),
+                )
         conn.execute(
             """INSERT INTO outreach_plans
             (id, sop_plan_id, customer_id, corp_id, user_id, wechat, external_userid, status,
@@ -98,6 +118,8 @@ def test_operations_dashboard_aggregates_authoritative_runtime_tables(tmp_path) 
     assert result["ai_reply"]["timeout"] == 1
     assert result["ai_reply"]["p90_ms"] == 5000
     assert result["platform_sop"]["sent"] == 1
+    assert result["platform_sop"]["no_send"] == 1
+    assert result["platform_sop"]["failed"] == 1
     assert result["platform_sop"]["retry_count"] == 1
     assert result["first_day_outreach"]["plans_created"] == 1
     assert result["first_day_outreach"]["first_sent"] == 1
