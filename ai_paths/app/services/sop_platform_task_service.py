@@ -1919,13 +1919,34 @@ class SopPlatformTaskService:
         platform_task_id = str(context.get("platform_task_id") or dispatch.get("task_id") or "").strip()
         if not local_task_id:
             raise ValueError("Platform SOP delivery dispatch is missing sop_send_task_id")
+        local_task = self.repository.get_sop_send_task(local_task_id)
+        if not local_task:
+            raise ValueError(f"Platform SOP send task not found: {local_task_id}")
+        event_id = event_id or str(local_task.get("event_id") or "").strip()
+        event = self.repository.get_sop_event(event_id) if event_id else {}
+        raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        platform_task = raw_payload.get("platform_task") if isinstance(raw_payload.get("platform_task"), dict) else {}
+        send_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        send_response = local_task.get("send_response") if isinstance(local_task.get("send_response"), dict) else {}
+        decision = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
         status = str(dispatch.get("status") or "")
+        if platform_task and decision and status in {"send_succeeded", "send_failed", "partial_failed"}:
+            send_payload = {
+                **send_payload,
+                "rule_data_response": await self._report_rule_data(
+                    platform_task,
+                    decision=decision,
+                    sent=status == "send_succeeded",
+                ),
+            }
+        callback_response = {**send_response, "message_delivery": dispatch}
         if status in {"send_failed", "partial_failed"}:
             error = str(dispatch.get("error_message") or status)
             self.repository.update_sop_send_task(
                 local_task_id,
                 status="failed" if status == "send_failed" else "partial_failed",
-                send_response={"message_delivery": dispatch},
+                send_payload=send_payload,
+                send_response=callback_response,
                 error=error,
             )
             if platform_task_id and not self.settings.sop_platform_shadow_mode:
@@ -1946,7 +1967,8 @@ class SopPlatformTaskService:
         self.repository.update_sop_send_task(
             local_task_id,
             status="sent",
-            send_response={"message_delivery": dispatch},
+            send_payload=send_payload,
+            send_response=callback_response,
             sent_at=str(dispatch.get("confirmed_at") or "") or utc_now_iso(),
         )
         if event_id:

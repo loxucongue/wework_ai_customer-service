@@ -1643,13 +1643,20 @@ class SopEventService:
         task_id = str(context.get("sop_send_task_id") or dispatch.get("source_task_id") or "").strip()
         if not task_id:
             raise ValueError("SOP delivery dispatch is missing sop_send_task_id")
+        task = self.repository.get_sop_send_task(task_id)
+        if not task:
+            raise ValueError(f"SOP send task not found: {task_id}")
+        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+        send_response = task.get("send_response") if isinstance(task.get("send_response"), dict) else {}
+        callback_response = {**send_response, "message_delivery": dispatch}
         status = str(dispatch.get("status") or "")
         if status == "send_succeeded":
             sent_at = str(dispatch.get("confirmed_at") or "") or utc_now_iso()
             task = self.repository.update_sop_send_task(
                 task_id,
                 status="sent",
-                send_response={"message_delivery": dispatch},
+                send_payload=send_payload,
+                send_response=callback_response,
                 sent_at=sent_at,
             )
             self._record_successful_send(task, sent_at=sent_at)
@@ -1658,7 +1665,8 @@ class SopEventService:
             self.repository.update_sop_send_task(
                 task_id,
                 status="failed" if status == "send_failed" else "partial_failed",
-                send_response={"message_delivery": dispatch},
+                send_payload=send_payload,
+                send_response=callback_response,
                 error=str(dispatch.get("error_message") or status),
             )
 

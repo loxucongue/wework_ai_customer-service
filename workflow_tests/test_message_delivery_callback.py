@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from app.schemas import MessageDeliveryCallback
 from app.services.message_delivery import MessageDeliveryService
+from app.services.outreach_service import OutreachService
+from app.services.sop_event_service import SopEventService
+from app.services.sop_platform_task_service import SopPlatformTaskService
 from app.services.storage import AppRepository
 from app.services.storage.sqlite_store import SQLiteStore
 
@@ -266,3 +270,238 @@ def test_optional_callback_without_complete_configuration_stays_disabled(tmp_pat
     )
 
     assert service.enabled is False
+
+
+def test_sop_delivery_callback_preserves_existing_send_audit(tmp_path) -> None:
+    _, repository = _service(tmp_path)
+    repository.create_sop_event(
+        {
+            "event_id": "sop-event-1",
+            "event_type": "sop_friend_added_schedule_batch",
+            "source": "test",
+        }
+    )
+    task = repository.create_sop_send_task(
+        event_id="sop-event-1",
+        idempotency_key="sop-task-1",
+        customer_id="customer-1",
+        external_userid="external-1",
+        corp_id="corp-1",
+        user_id="user-1",
+        wechat="wechat-1",
+        sop_pack_id="pack-1",
+        sop_pack_name="pack",
+        reply_messages=[{"type": "text", "content": "hello"}],
+        status="sending",
+    )
+    repository.update_sop_send_task(
+        task["id"],
+        status="sending",
+        send_payload={"decision": {"decision": "send"}},
+        send_response={"platform_request_id": "platform-request-1"},
+    )
+    service = SopEventService.__new__(SopEventService)
+    service.repository = repository
+    service.memory_store = None
+
+    service.finalize_message_delivery(
+        {
+            "status": "send_succeeded",
+            "confirmed_at": "2026-08-22T10:00:00+08:00",
+            "source_context": {"sop_send_task_id": task["id"]},
+        }
+    )
+
+    finalized = repository.get_sop_send_task(task["id"])
+    assert finalized["status"] == "sent"
+    assert finalized["send_payload"]["decision"]["decision"] == "send"
+    assert finalized["send_response"]["platform_request_id"] == "platform-request-1"
+    assert finalized["send_response"]["message_delivery"]["status"] == "send_succeeded"
+
+
+def test_sop_task_partial_update_does_not_erase_send_audit(tmp_path) -> None:
+    _, repository = _service(tmp_path)
+    repository.create_sop_event(
+        {"event_id": "sop-event-2", "event_type": "platform_sop_task", "source": "test"}
+    )
+    task = repository.create_sop_send_task(
+        event_id="sop-event-2",
+        idempotency_key="sop-task-2",
+        customer_id="customer-2",
+        external_userid="external-2",
+        corp_id="corp-1",
+        user_id="user-1",
+        wechat="wechat-1",
+        sop_pack_id="pack-2",
+        sop_pack_name="pack",
+        reply_messages=[{"type": "text", "content": "hello"}],
+        status="sending",
+    )
+    repository.update_sop_send_task(
+        task["id"],
+        status="sending",
+        send_payload={"decision": {"decision": "send"}},
+        send_response={"accepted": True},
+    )
+
+    repository.update_sop_send_task(task["id"], status="sent", sent_at="2026-08-22T10:00:00+08:00")
+
+    finalized = repository.get_sop_send_task(task["id"])
+    assert finalized["send_payload"] == {"decision": {"decision": "send"}}
+    assert finalized["send_response"] == {"accepted": True}
+
+
+def test_platform_sop_callback_reports_rule_data_and_preserves_audit() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.task = {
+                "id": "local-task-1",
+                "event_id": "platform-event-1",
+                "idempotency_key": "platform-sop:platform-task-1",
+                "status": "sending",
+                "send_payload": {
+                    "decision": {
+                        "decision": "send",
+                        "sceneCode": "normal_activity_price",
+                        "remark": "send",
+                        "reply_messages": [{"type": "text", "content": "hello"}],
+                    }
+                },
+                "send_response": {"accepted": True},
+            }
+            self.event_statuses: list[str] = []
+
+        def get_sop_send_task(self, task_id: str) -> dict:
+            return dict(self.task) if task_id == self.task["id"] else {}
+
+        def get_sop_send_task_by_idempotency_key(self, key: str) -> dict:
+            return dict(self.task) if key == self.task["idempotency_key"] else {}
+
+        def get_sop_event(self, event_id: str) -> dict:
+            return {
+                "event_id": event_id,
+                "raw_payload": {"platform_task": {"taskId": "platform-task-1"}},
+            }
+
+        def update_sop_send_task(self, task_id: str, **changes) -> dict:
+            assert task_id == self.task["id"]
+            for key, value in changes.items():
+                if value is not None:
+                    self.task[key] = value
+            return dict(self.task)
+
+        def update_sop_event_status(self, event_id: str, *, status: str, **_kwargs) -> dict:
+            self.event_statuses.append(status)
+            return {"event_id": event_id, "status": status}
+
+    class PlatformClient:
+        def __init__(self) -> None:
+            self.rule_calls: list[dict] = []
+            self.consume_calls: list[dict] = []
+
+        async def service_rule_data(self, **kwargs) -> dict:
+            self.rule_calls.append(kwargs)
+            return {"code": 0}
+
+        async def consume(self, **kwargs) -> dict:
+            self.consume_calls.append(kwargs)
+            return {"data": {"status": kwargs["status"]}}
+
+    repository = Repository()
+    platform_client = PlatformClient()
+    service = SopPlatformTaskService.__new__(SopPlatformTaskService)
+    service.repository = repository
+    service.platform_client = platform_client
+    service.settings = SimpleNamespace(sop_platform_shadow_mode=False)
+    service._terminal_ids = set()
+    service._terminal_order = []
+    service._terminal_reack_at = {}
+
+    asyncio.run(
+        service.finalize_message_delivery(
+            {
+                "status": "send_succeeded",
+                "confirmed_at": "2026-08-22T10:00:00+08:00",
+                "source_context": {
+                    "sop_send_task_id": "local-task-1",
+                    "sop_event_id": "platform-event-1",
+                    "platform_task_id": "platform-task-1",
+                },
+            }
+        )
+    )
+
+    assert len(platform_client.rule_calls) == 1
+    assert platform_client.consume_calls[0]["status"] == 30
+    assert repository.task["send_payload"]["rule_data_response"] == {"code": 0}
+    assert repository.task["send_response"]["accepted"] is True
+    assert repository.task["send_response"]["message_delivery"]["status"] == "send_succeeded"
+
+
+def test_first_day_outreach_failure_callback_closes_plan_and_run() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.task = {
+                "id": "outreach-task-1",
+                "plan_id": "outreach-plan-1",
+                "customer_id": "customer-1",
+            }
+            self.plan_status = "active"
+            self.skipped = 0
+            self.run_updates: list[dict] = []
+            self.events: list[str] = []
+
+        def get_outreach_task(self, task_id: str) -> dict:
+            return dict(self.task) if task_id == self.task["id"] else {}
+
+        def get_outreach_plan(self, _plan_id: str) -> dict:
+            return {
+                "plan": {
+                    "id": "outreach-plan-1",
+                    "source_snapshot": {
+                        "workflow_run_id": "run-1",
+                        "trigger_context": {"trigger_type": "first_day_opened_silence"},
+                    },
+                }
+            }
+
+        def update_outreach_task(self, _task_id: str, **changes) -> dict:
+            self.task.update(changes)
+            return dict(self.task)
+
+        def skip_remaining_outreach_tasks(self, *_args, **_kwargs) -> int:
+            self.skipped += 1
+            return 1
+
+        def update_outreach_plan_status(self, _plan_id: str, status: str) -> dict:
+            self.plan_status = status
+            return {"status": status}
+
+        def add_outreach_event(self, **kwargs) -> dict:
+            self.events.append(kwargs["event_type"])
+            return {}
+
+        def get_first_day_outreach_run(self, *_args, **_kwargs) -> dict:
+            return {"started_at": "2026-08-22T01:00:00+00:00"}
+
+        def update_first_day_outreach_run(self, _run_id: str, **changes) -> dict:
+            self.run_updates.append(changes)
+            return changes
+
+    repository = Repository()
+    service = OutreachService.__new__(OutreachService)
+    service.repository = repository
+
+    service.finalize_message_delivery(
+        {
+            "status": "send_failed",
+            "error_message": "platform rejected",
+            "source_context": {"outreach_task_id": "outreach-task-1"},
+        }
+    )
+
+    assert repository.task["status"] == "failed"
+    assert repository.skipped == 1
+    assert repository.plan_status == "cancelled"
+    assert repository.run_updates[-1]["reason_code"] == "message_delivery_failed"
+    assert repository.run_updates[-1]["status"] == "failed"

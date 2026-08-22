@@ -6355,13 +6355,30 @@ class OutreachService:
         task = self.repository.get_outreach_task(task_id)
         if not task:
             raise ValueError(f"Outreach task not found: {task_id}")
+        plan_detail = self.repository.get_outreach_plan(str(task.get("plan_id") or ""))
+        plan = plan_detail.get("plan") if isinstance(plan_detail.get("plan"), dict) else {}
+        source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+        trigger_context = (
+            source_snapshot.get("trigger_context")
+            if isinstance(source_snapshot.get("trigger_context"), dict)
+            else {}
+        )
+        is_first_day_plan = _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
         status = str(dispatch.get("status") or "")
         if status in {"send_failed", "partial_failed"}:
+            error = str(dispatch.get("error_message") or status)
             self.repository.update_outreach_task(
                 task_id,
                 status="failed" if status == "send_failed" else "partial_failed",
-                error_message=str(dispatch.get("error_message") or status),
+                error_message=error,
             )
+            if is_first_day_plan:
+                self.repository.skip_remaining_outreach_tasks(
+                    str(task.get("plan_id") or ""),
+                    reason="message_delivery_failed",
+                    exclude_task_id=task_id,
+                )
+                self.repository.update_outreach_plan_status(str(task.get("plan_id") or ""), "cancelled")
             self.repository.add_outreach_event(
                 plan_id=str(task.get("plan_id") or ""),
                 task_id=task_id,
@@ -6369,6 +6386,15 @@ class OutreachService:
                 event_type="task_delivery_failed",
                 event_summary="Outreach delivery callback reported failure",
                 payload={"message_delivery": dispatch},
+            )
+            self._sync_first_day_run_for_task(
+                plan=plan,
+                task=task,
+                status="failed",
+                reason_code="message_delivery_failed",
+                final_decision="failed",
+                terminal=True,
+                error=error,
             )
             return
         if status != "send_succeeded":
@@ -6407,6 +6433,23 @@ class OutreachService:
             event_summary="Outreach task send confirmed by delivery callback",
             payload={"message_delivery": dispatch},
         )
+        self._sync_first_day_run_for_task(
+            plan=plan,
+            task=task,
+            status="sent" if not has_remaining_tasks else "created",
+            reason_code="plan_completed" if not has_remaining_tasks else "first_task_sent",
+            final_decision="sent" if not has_remaining_tasks else "second_task_pending",
+            terminal=not has_remaining_tasks,
+        )
+        if not has_remaining_tasks:
+            self.repository.add_outreach_event(
+                plan_id=str(task.get("plan_id") or ""),
+                task_id=task_id,
+                customer_id=str(task.get("customer_id") or ""),
+                event_type="plan_cycle_completed",
+                event_summary="Final outreach step send confirmed; current personalized outreach cycle completed",
+                payload={"sent_at": sent_at, "message_delivery": dispatch},
+            )
 
     async def _refresh_order_eligibility(self, *, task: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
         source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}

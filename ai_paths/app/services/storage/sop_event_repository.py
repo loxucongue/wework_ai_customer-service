@@ -439,6 +439,12 @@ class SopEventRepositoryMixin:
     ) -> dict[str, Any]:
         now = utc_now_iso()
         with self.store.connect() as conn:
+            current = conn.execute(
+                "SELECT send_payload_json, send_response_json FROM sop_send_tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            existing_payload = loads_dict(current["send_payload_json"]) if current else {}
+            existing_response = loads_dict(current["send_response_json"]) if current else {}
             conn.execute(
                 """
                 UPDATE sop_send_tasks
@@ -448,8 +454,8 @@ class SopEventRepositoryMixin:
                 """,
                 (
                     status,
-                    dumps(send_payload or {}),
-                    dumps(send_response or {}),
+                    dumps(send_payload if send_payload is not None else existing_payload),
+                    dumps(send_response if send_response is not None else existing_response),
                     error,
                     sent_at,
                     now,
@@ -457,6 +463,14 @@ class SopEventRepositoryMixin:
                 ),
             )
             row = conn.execute("SELECT * FROM sop_send_tasks WHERE id=?", (task_id,)).fetchone()
+        return self._decode_sop_send_task(dict(row)) if row else {}
+
+    def get_sop_send_task(self, task_id: str) -> dict[str, Any]:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM sop_send_tasks WHERE id=?",
+                (str(task_id or "").strip(),),
+            ).fetchone()
         return self._decode_sop_send_task(dict(row)) if row else {}
 
     def list_quiet_hour_backlog_tasks(
