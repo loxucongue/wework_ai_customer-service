@@ -249,3 +249,20 @@ def test_required_callback_configuration_fails_closed(tmp_path) -> None:
             ),
             repository,
         )
+
+
+def test_optional_callback_without_complete_configuration_stays_disabled(tmp_path) -> None:
+    store = SQLiteStore(SimpleNamespace(db_path=tmp_path / "disabled.db"))
+    store.initialize()
+    repository = AppRepository(store)
+
+    service = MessageDeliveryService(
+        SimpleNamespace(
+            message_delivery_callback_required=False,
+            message_delivery_callback_public_url="",
+            message_delivery_callback_token="",
+        ),
+        repository,
+    )
+
+    assert service.enabled is False

@@ -78,7 +78,7 @@ class OutreachSendClient:
 
         dispatch_id = ""
         callback_required = False
-        if self._delivery_service:
+        if self._delivery_service and self._delivery_service.enabled:
             prepared = self._delivery_service.prepare_dispatch(
                 source_channel=source_channel,
                 source_kind=source_kind,
@@ -142,6 +142,8 @@ class OutreachSendClient:
                     error_code="read_timeout",
                     error_message="platform send response timed out",
                 )
+                if not callback_required:
+                    self._delivery_service.mark_finalized(dispatch_id)
             return {
                 "status": "accepted" if callback_required else "sent",
                 "send_status": "accepted_no_response",
@@ -196,6 +198,8 @@ class OutreachSendClient:
                 platform_request_id=metadata["platform_request_id"],
                 system_msgid=metadata["system_msgid"],
             )
+            if not callback_required:
+                self._delivery_service.mark_finalized(dispatch_id)
         return {
             "status": "accepted" if callback_required else "sent",
             "delivery_status": "platform_accepted" if dispatch_id else "legacy_http_success",

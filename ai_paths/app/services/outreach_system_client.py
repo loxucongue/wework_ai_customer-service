@@ -112,7 +112,7 @@ class OutreachSystemClient:
             body["conversation_id"] = conversation_id
         dispatch_id = ""
         callback_required = False
-        if self._delivery_service:
+        if self._delivery_service and self._delivery_service.enabled:
             prepared = self._delivery_service.prepare_dispatch(
                 source_channel=source_channel,
                 source_kind=source_kind,
@@ -190,6 +190,8 @@ class OutreachSystemClient:
                 error_code="read_timeout" if delivery_status == "submission_unknown" else "",
                 error_message="platform send response timed out" if delivery_status == "submission_unknown" else "",
             )
+            if not callback_required:
+                self._delivery_service.mark_finalized(dispatch_id)
         result_data = dict(data)
         result_data.update(
             {

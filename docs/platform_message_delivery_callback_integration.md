@@ -250,11 +250,15 @@ Authorization: Bearer <AI_PATHS_API_KEY>
 
    ```env
    MESSAGE_DELIVERY_CALLBACK_REQUIRED=false
+   MESSAGE_DELIVERY_CALLBACK_PUBLIC_URL=
+   MESSAGE_DELIVERY_CALLBACK_TOKEN=
    ```
 
-   此阶段对现有发送行为兼容。
+   URL 或 Token 未完整配置时，AI 服务不会向旧发送请求增加回执字段，此阶段对现有发送协议完全兼容。
 
 2. 双方配置同一个回调 Token，并为聚合平台开放 HTTPS 回调地址。
+
+   先保持 `MESSAGE_DELIVERY_CALLBACK_REQUIRED=false` 做影子联调：AI 系统记录回调结果，但仍沿用原有 HTTP 受理即完成的业务状态，不重复写客户消息、SOP 进度或素材记录。
 
 3. 聚合平台支持新增请求字段和结果回调，使用测试客户完成：
    - 单条文字成功。

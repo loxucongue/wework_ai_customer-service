@@ -32,6 +32,13 @@ class MessageDeliveryService:
         return bool(self.settings.message_delivery_callback_required)
 
     @property
+    def enabled(self) -> bool:
+        return bool(
+            self.callback_url
+            and str(self.settings.message_delivery_callback_token or "").strip()
+        )
+
+    @property
     def callback_url(self) -> str:
         return str(self.settings.message_delivery_callback_public_url or "").strip()
 
