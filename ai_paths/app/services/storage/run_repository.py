@@ -124,6 +124,7 @@ class RunRepositoryMixin:
             "interface_version": interface_version,
             "reply_chain_mode": str(request_context.get("reply_chain_mode") or ""),
             "v3_sidecar": bool(request_context.get("v3_sidecar")),
+            "strategy_data_callback": final_state.get("strategy_data_callback", {}),
             "planner_route": planner_public_route(final_state),
             "planner_source": final_state.get("planner_source", ""),
             "conversion_stage": final_state.get("conversion_stage", ""),
@@ -272,8 +273,40 @@ class RunRepositoryMixin:
                 "SELECT * FROM node_traces WHERE request_id=? ORDER BY created_at ASC",
                 (request_id,),
             ).fetchall()
+            decoded_run = decode_run(dict(run)) if run else {}
+            output_snapshot = (
+                decoded_run.get("output_snapshot")
+                if isinstance(decoded_run.get("output_snapshot"), dict)
+                else {}
+            )
+            callback = (
+                output_snapshot.get("strategy_data_callback")
+                if isinstance(output_snapshot.get("strategy_data_callback"), dict)
+                else {}
+            )
+            outbox_id = str(callback.get("outbox_id") or "").strip()
+            if outbox_id:
+                callback_row = conn.execute(
+                    """
+                    SELECT status, retry_count, error, response_json, updated_at, sent_at
+                    FROM strategy_data_outbox WHERE id=?
+                    """,
+                    (outbox_id,),
+                ).fetchone()
+                if callback_row:
+                    response = loads_dict(callback_row["response_json"])
+                    output_snapshot["strategy_data_callback"] = {
+                        **callback,
+                        "status": str(callback_row["status"] or ""),
+                        "retry_count": int(callback_row["retry_count"] or 0),
+                        "error": str(callback_row["error"] or ""),
+                        "updated_at": str(callback_row["updated_at"] or ""),
+                        "sent_at": str(callback_row["sent_at"] or ""),
+                        "response_code": response.get("code"),
+                        "response_message": str(response.get("message") or ""),
+                    }
         return {
-            "run": decode_run(dict(run)) if run else {},
+            "run": decoded_run,
             "node_traces": [decode_trace(dict(row)) for row in traces],
         }
 

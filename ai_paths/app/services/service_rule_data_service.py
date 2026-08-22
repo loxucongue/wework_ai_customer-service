@@ -177,13 +177,29 @@ class ServiceRuleDataService:
                     callback_id,
                     response=response,
                 )
+                logger.info(
+                    "strategy_data_callback_sent outbox_id=%s task_id=%s record_kind=%s response_code=%s",
+                    callback_id,
+                    str(record.get("task_id") or ""),
+                    str(record.get("record_kind") or ""),
+                    str(response.get("code") or ""),
+                )
             except Exception as exc:
-                await asyncio.to_thread(
+                failure = await asyncio.to_thread(
                     self.repository.fail_strategy_data_callback,
                     callback_id,
                     error=f"{type(exc).__name__}: {exc}",
                     max_attempts=self.max_attempts,
                     base_delay_seconds=self.retry_base_seconds,
+                )
+                logger.warning(
+                    "strategy_data_callback_failed outbox_id=%s task_id=%s record_kind=%s status=%s retry_count=%s error=%s",
+                    callback_id,
+                    str(record.get("task_id") or ""),
+                    str(record.get("record_kind") or ""),
+                    str(failure.get("status") or ""),
+                    str(failure.get("retry_count") or ""),
+                    f"{type(exc).__name__}: {exc}"[:500],
                 )
         return len(records)
 

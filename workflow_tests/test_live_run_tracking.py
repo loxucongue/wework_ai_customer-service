@@ -137,3 +137,48 @@ def test_v3_runs_preserve_sidecar_interface_metadata(tmp_path: Path) -> None:
     assert completed["interface_version"] == "v3"
     assert output["reply_chain_mode"] == "model_led_sales_brain_v3"
     assert output["v3_sidecar"] is True
+
+
+def test_v3_run_detail_refreshes_strategy_callback_outbox_status(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _insert_conversation(repository, "conversation-v3-callback")
+    callback = repository.enqueue_strategy_data_callback(
+        idempotency_key="customer_open:100:message-1",
+        record_kind="customer_open",
+        task_id="100",
+        sales_contact_key="sales_contact:v2:sim_corp:sim_wechat:sim_external",
+        customer_id="sim_customer",
+        interface_version="v3",
+        payload={"recordKind": "customer_open", "taskId": 100},
+    )
+    repository.save_run(
+        conversation_id="conversation-v3-callback",
+        final_state={
+            "request_id": "request-v3-callback",
+            "customer_id": "sim_customer",
+            "content": "test",
+            "request_context": {"interface_version": "v3"},
+            "reply_messages": [{"type": "text", "content": "ok"}],
+            "strategy_data_callback": {
+                "status": "pending",
+                "outbox_id": callback["id"],
+                "task_id": "100",
+            },
+            "trace": [],
+            "errors": [],
+        },
+        token_usage={},
+    )
+
+    pending = repository.get_run("request-v3-callback")["run"]["output_snapshot"]
+    assert pending["strategy_data_callback"]["status"] == "pending"
+
+    repository.complete_strategy_data_callback(
+        callback["id"],
+        response={"code": 200, "message": "操作成功"},
+    )
+    sent = repository.get_run("request-v3-callback")["run"]["output_snapshot"]
+    assert sent["strategy_data_callback"]["status"] == "sent"
+    assert sent["strategy_data_callback"]["sent_at"]
+    assert sent["strategy_data_callback"]["response_code"] == 200
+    assert sent["strategy_data_callback"]["response_message"] == "操作成功"

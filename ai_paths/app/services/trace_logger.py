@@ -28,6 +28,7 @@ RUN_TERMINAL_KEYS = (
     "tool_policy_violations",
     "errors",
     "warnings",
+    "strategy_data_callback",
 )
 
 

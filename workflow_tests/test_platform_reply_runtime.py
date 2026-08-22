@@ -248,6 +248,10 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "reply_messages": [{"type": "text", "order": 1, "content": {"text": "已经回复"}}],
                     "reply_source": "planner_direct_reply",
                     "reply_control": {"sync_return": {"type": "direct_reply"}},
+                    "strategy_data_callback": {
+                        "status": "pending",
+                        "outbox_id": "callback-1",
+                    },
                     "trace": [],
                 }
             )
@@ -258,6 +262,8 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["reply_messages"][0]["content"]["text"], "已经回复")
         self.assertEqual(saved["reply_source"], "planner_direct_reply")
         self.assertEqual(saved["reply_control"]["sync_return"]["type"], "direct_reply")
+        self.assertEqual(saved["strategy_data_callback"]["status"], "pending")
+        self.assertEqual(saved["strategy_data_callback"]["outbox_id"], "callback-1")
 
     async def test_trace_file_preserves_model_prompt_raw_json_and_recovery(self) -> None:
         prompt = "模型系统规则" * 3000
