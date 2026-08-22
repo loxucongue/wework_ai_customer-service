@@ -1010,6 +1010,111 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         decision = repo.tasks["platform-sop:101"]["send_payload"]["decision"]
         self.assertEqual(decision["reason"], "takeover_status_unavailable")
 
+    async def test_same_contact_sop_send_within_five_minutes_is_consumed_without_send(self) -> None:
+        model = _Model([{"decision": "send", "reason": "should not run", "reply_messages": [_text("unused")]}])
+        service, repo, platform, system = _service(model=model)
+        previous = _sent_platform_record(task_id="100", messages=[_text("previous")])
+        previous["sent_at"] = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        repo.list_platform_sop_task_records = lambda **_kwargs: [previous]  # type: ignore[attr-defined]
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.send_calls, [])
+        stored = repo.tasks["platform-sop:101"]["send_payload"]
+        self.assertEqual(stored["decision"]["reason"], "platform_contact_send_cooldown")
+        self.assertEqual(
+            stored["context"]["platform_contact_delivery_guard"]["successful_send_count_since_last_customer_reply"],
+            1,
+        )
+
+    async def test_same_contact_only_sends_two_sops_until_customer_replies(self) -> None:
+        model = _Model([{"decision": "send", "reason": "should not run", "reply_messages": [_text("unused")]}])
+        service, repo, platform, system = _service(model=model)
+        first = _sent_platform_record(task_id="99", messages=[_text("first")])
+        second = _sent_platform_record(task_id="100", messages=[_text("second")])
+        first["sent_at"] = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        second["sent_at"] = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        repo.list_platform_sop_task_records = lambda **_kwargs: [second, first]  # type: ignore[attr-defined]
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(
+            repo.tasks["platform-sop:101"]["send_payload"]["decision"]["reason"],
+            "platform_contact_send_limit",
+        )
+
+    async def test_non_sent_sop_tasks_do_not_count_toward_contact_limit(self) -> None:
+        model = _Model([{"decision": "send", "reason": "allowed", "reply_messages": [_text("new delivery")]}])
+        service, repo, platform, system = _service(model=model)
+        first = _sent_platform_record(task_id="99", messages=[_text("first")])
+        second = _sent_platform_record(task_id="100", messages=[_text("second")])
+        first.update({"task_status": "completed_without_send", "sent_at": ""})
+        second.update({"task_status": "failed", "sent_at": ""})
+        repo.list_platform_sop_task_records = lambda **_kwargs: [second, first]  # type: ignore[attr-defined]
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(len(system.send_calls), 1)
+
+    async def test_customer_reply_resets_contact_sop_send_limit(self) -> None:
+        model = _Model([{"decision": "send", "reason": "allowed after reply", "reply_messages": [_text("new delivery")]}])
+        service, repo, platform, system = _service(model=model)
+        first = _sent_platform_record(task_id="99", messages=[_text("first")])
+        second = _sent_platform_record(task_id="100", messages=[_text("second")])
+        first["sent_at"] = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        second["sent_at"] = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        repo.list_platform_sop_task_records = lambda **_kwargs: [second, first]  # type: ignore[attr-defined]
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "new customer reply",
+                "msgtime": int((time.time() - 30) * 1000),
+            }
+        ]
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(len(model.calls), 1)
+        guard = repo.tasks["platform-sop:101"]["send_payload"]["context"]["platform_contact_delivery_guard"]
+        self.assertEqual(guard["successful_send_count_since_last_customer_reply"], 0)
+
+    async def test_customer_reply_does_not_bypass_absolute_five_minute_cooldown(self) -> None:
+        model = _Model([{"decision": "send", "reason": "should not run", "reply_messages": [_text("unused")]}])
+        service, repo, platform, system = _service(model=model)
+        previous = _sent_platform_record(task_id="100", messages=[_text("previous")])
+        previous["sent_at"] = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+        repo.list_platform_sop_task_records = lambda **_kwargs: [previous]  # type: ignore[attr-defined]
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "new customer reply",
+                "msgtime": int((time.time() - 30) * 1000),
+            }
+        ]
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(
+            repo.tasks["platform-sop:101"]["send_payload"]["decision"]["reason"],
+            "platform_contact_send_cooldown",
+        )
+
     async def test_transient_failure_is_attempted_once_then_released(self) -> None:
         model = _Model(
             [{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}]
@@ -1756,7 +1861,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(system.send_calls), 1)
         self.assertEqual(
             repo.tasks["platform-sop:102"]["send_payload"]["decision"]["reason"],
-            "duplicate_media_delivery",
+            "platform_contact_send_cooldown",
         )
 
     async def test_rule_data_failure_does_not_retry_after_customer_message_sent(self) -> None:

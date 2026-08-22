@@ -823,8 +823,16 @@ class SopPlatformTaskService:
         clean_task_id = str(task_id or "").strip()
         if not clean_task_id:
             raise ValueError("task_id is required")
+        event = self.repository.get_sop_event(f"platform_sop_task:{clean_task_id}")
+        raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        platform_task = raw_payload.get("platform_task") if isinstance(raw_payload.get("platform_task"), dict) else {}
         lock = self._locks.setdefault(clean_task_id, asyncio.Lock())
         async with lock:
+            contact_lock_key = _platform_contact_lock_key(platform_task)
+            if contact_lock_key:
+                contact_lock = self._locks.setdefault(f"platform-contact:{contact_lock_key}", asyncio.Lock())
+                async with contact_lock:
+                    return await self._admin_resend_task_locked(clean_task_id)
             return await self._admin_resend_task_locked(clean_task_id)
 
     async def _admin_resend_task_locked(self, task_id: str) -> dict[str, Any]:
@@ -854,15 +862,30 @@ class SopPlatformTaskService:
             raise RuntimeError(f"task cannot be resent: {preflight_reason}")
 
         await self._manual_resend_relation_guard(identity)
+        resend_context = await self._load_context(platform_task, identity=identity)
+        resend_opening_state = (
+            resend_context.get("opening_state")
+            if isinstance(resend_context.get("opening_state"), dict)
+            else {}
+        )
+        resend_guard = self._platform_contact_delivery_guard(
+            identity=identity,
+            task_id=task_id,
+            opening_state=resend_opening_state,
+        )
+        if resend_guard.get("blocked"):
+            raise RuntimeError(f"task cannot be resent: {resend_guard.get('reason')}")
         messages = _manual_resend_messages(local_task, platform_task)
         decision_reason = "manual_resend"
         context: dict[str, Any] = {
             "source": "manual_resend",
             "original_event_status": event_status,
             "original_task_status": task_status,
+            "platform_contact_delivery_guard": resend_guard,
         }
         if not messages:
-            context = await self._load_context(platform_task, identity=identity)
+            context = resend_context
+            context["platform_contact_delivery_guard"] = resend_guard
             decision = await self._decide(platform_task, context=context)
             if decision["decision"] != "send" or not decision["reply_messages"]:
                 raise RuntimeError(f"manual resend produced no sendable content: {decision.get('reason') or 'no_send'}")
@@ -976,6 +999,33 @@ class SopPlatformTaskService:
             identity=identity,
             current_task_id=task_id,
             reply_messages=reply_messages,
+        )
+
+    def _platform_contact_delivery_guard(
+        self,
+        *,
+        identity: dict[str, str],
+        task_id: str,
+        opening_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not hasattr(self.repository, "list_platform_sop_task_records"):
+            return {"blocked": False, "reason": "history_lookup_unsupported"}
+        try:
+            records = self.repository.list_platform_sop_task_records(
+                limit=500,
+                customer_id=identity.get("customer_id") or "",
+            )
+        except Exception as exc:
+            return {
+                "blocked": False,
+                "reason": "history_lookup_error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return _platform_contact_delivery_guard(
+            records if isinstance(records, list) else [],
+            identity=identity,
+            current_task_id=task_id,
+            latest_customer_at=opening_state.get("latest_real_customer_at_beijing"),
         )
 
     def _observe(self, name: str, elapsed_seconds: float) -> None:
@@ -1390,12 +1440,36 @@ class SopPlatformTaskService:
                     if isinstance(context.get("opening_state"), dict)
                     else {}
                 )
+                delivery_guard = self._platform_contact_delivery_guard(
+                    identity=identity,
+                    task_id=task_id,
+                    opening_state=opening_state,
+                )
+                context["platform_contact_delivery_guard"] = delivery_guard
                 relation = (
                     context.get("customer_relation")
                     if isinstance(context.get("customer_relation"), dict)
                     else {}
                 )
-                if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+                if delivery_guard.get("blocked"):
+                    guard_reason = str(delivery_guard.get("reason") or "platform_contact_send_limit")
+                    decision = {
+                        "decision": "no_send",
+                        "reason": guard_reason,
+                        "reason_code": guard_reason,
+                        "sceneName": sop_platform_scene_name("no_send_duplicate"),
+                        "sceneCode": "no_send_duplicate",
+                        "knowledgeId": 0,
+                        "knowledgeParagraphNo": 0,
+                        "remark": (
+                            "同一客户与企微账号5分钟内已有第三方SOP成功发送，本任务消费但不发送。"
+                            if guard_reason == "platform_contact_send_cooldown"
+                            else "同一客户与企微账号在客户未回复期间已成功发送2条第三方SOP，本任务消费但不发送。"
+                        ),
+                        "reply_messages": [],
+                    }
+                    self._counters[guard_reason] += 1
+                elif relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
                     decision = await self._decide(platform_task, context=context)
                 elif opening_state.get("has_real_customer_message") is not True:
                     original_messages = _platform_messages(platform_task)
@@ -2721,6 +2795,67 @@ def _same_platform_contact(record: dict[str, Any], identity: dict[str, str]) -> 
     return str(record.get("customer_id") or "").strip() == str(identity.get("customer_id") or "").strip()
 
 
+def _platform_contact_delivery_guard(
+    records: list[dict[str, Any]],
+    *,
+    identity: dict[str, str],
+    current_task_id: str,
+    latest_customer_at: Any,
+    now_epoch: float | None = None,
+) -> dict[str, Any]:
+    latest_customer_epoch = _parse_epoch(latest_customer_at)
+    all_successful_sends: list[dict[str, Any]] = []
+    successful_sends: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict) or not _same_platform_contact(record, identity):
+            continue
+        if _platform_record_task_id(record) == str(current_task_id).strip():
+            continue
+        if str(record.get("task_status") or "").strip() != "sent":
+            continue
+        sent_epoch = _parse_epoch(record.get("sent_at"))
+        if not sent_epoch:
+            continue
+        sent_record = {
+            "task_id": _platform_record_task_id(record),
+            "sent_at": str(record.get("sent_at") or ""),
+            "sent_epoch": sent_epoch,
+        }
+        all_successful_sends.append(sent_record)
+        if not latest_customer_epoch or sent_epoch > latest_customer_epoch:
+            successful_sends.append(sent_record)
+
+    all_successful_sends.sort(key=lambda item: float(item["sent_epoch"]))
+    successful_sends.sort(key=lambda item: float(item["sent_epoch"]))
+    latest_send = all_successful_sends[-1] if all_successful_sends else {}
+    reference_epoch = now_epoch if now_epoch is not None else time.time()
+    seconds_since_latest_send = (
+        max(0.0, reference_epoch - float(latest_send["sent_epoch"]))
+        if latest_send
+        else None
+    )
+    reason = ""
+    if seconds_since_latest_send is not None and seconds_since_latest_send < 300:
+        reason = "platform_contact_send_cooldown"
+    elif len(successful_sends) >= 2:
+        reason = "platform_contact_send_limit"
+    return {
+        "blocked": bool(reason),
+        "reason": reason or "allowed",
+        "successful_send_count_since_last_customer_reply": len(successful_sends),
+        "latest_customer_at": str(latest_customer_at or ""),
+        "latest_successful_send_at": str(latest_send.get("sent_at") or ""),
+        "seconds_since_latest_successful_send": (
+            round(seconds_since_latest_send, 3)
+            if seconds_since_latest_send is not None
+            else None
+        ),
+        "successful_task_ids": [item["task_id"] for item in successful_sends[-2:]],
+        "max_sends_without_reply": 2,
+        "cooldown_seconds": 300,
+    }
+
+
 def _platform_record_task_id(record: dict[str, Any]) -> str:
     platform_task = record.get("platform_task") if isinstance(record.get("platform_task"), dict) else {}
     task_id = str(platform_task.get("task_id") or platform_task.get("taskId") or "").strip()
@@ -3744,5 +3879,10 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
         "task_timing": context.get("task_timing") if isinstance(context.get("task_timing"), dict) else {},
         "quiet_hours": quiet_hours,
         "opening_state": context.get("opening_state") if isinstance(context.get("opening_state"), dict) else {},
+        "platform_contact_delivery_guard": (
+            context.get("platform_contact_delivery_guard")
+            if isinstance(context.get("platform_contact_delivery_guard"), dict)
+            else {}
+        ),
         "first_day_platform_sop_route": first_day_route,
     }
