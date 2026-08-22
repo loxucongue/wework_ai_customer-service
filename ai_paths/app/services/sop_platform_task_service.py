@@ -22,6 +22,7 @@ from app.services.sop_platform_client import SopPlatformTaskStateError
 from app.services.sop_platform_scenes import (
     SOP_PLATFORM_KNOWLEDGE_SCENE_CODES,
     SOP_PLATFORM_MODEL_SCENE_CODES,
+    sop_platform_callback_scene,
     sop_platform_knowledge_scene_catalog,
     sop_platform_model_scene_catalog,
     sop_platform_scene,
@@ -2022,18 +2023,17 @@ class SopPlatformTaskService:
         task_id = _task_id(platform_task)
         if not task_id:
             return {"skipped": True, "reason": "missing_task_id"}
-        scene_code = str(decision.get("sceneCode") or decision.get("scene_code") or "").strip()
-        scene = sop_platform_scene(scene_code)
-        if scene is None:
-            logger.error("Unregistered platform SOP scene code for task %s: %s", task_id, scene_code)
-            scene_code = "normal_platform_intent" if sent else "no_send_invalid_message_content"
-            scene = sop_platform_scene(scene_code)
-        scene_name = scene.name
+        internal_scene_code = str(decision.get("sceneCode") or decision.get("scene_code") or "").strip()
+        callback_scene = sop_platform_callback_scene(
+            internal_scene_code=internal_scene_code,
+            sent=sent,
+            task_type=_task_type(platform_task),
+        )
         try:
             return await self.platform_client.service_rule_data(
                 task_id=task_id,
-                scene_name=scene_name,
-                scene_code=scene_code,
+                scene_name=callback_scene.name,
+                scene_code=callback_scene.code,
                 knowledge_id=_int(decision.get("knowledgeId", decision.get("knowledge_id")), 0) or None,
                 knowledge_paragraph_no=_int(
                     decision.get("knowledgeParagraphNo", decision.get("knowledge_paragraph_no")),

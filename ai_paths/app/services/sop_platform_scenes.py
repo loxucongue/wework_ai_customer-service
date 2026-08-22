@@ -11,6 +11,12 @@ class SopPlatformScene:
     decision: str
 
 
+@dataclass(frozen=True)
+class SopPlatformCallbackScene:
+    code: str
+    name: str
+
+
 _BUSINESS_SCENES = (
     ("objection_distance_local_store_far", "距离异议｜本地有店但距离远", "send"),
     ("objection_distance_cross_city", "距离异议｜本地无店需跨城", "send"),
@@ -64,6 +70,57 @@ SOP_PLATFORM_MODEL_SCENE_CODES = frozenset(
 SOP_PLATFORM_TECHNICAL_SCENE_CODES = frozenset(
     code for code, scene in SOP_PLATFORM_SCENES.items() if not scene.model_selectable
 )
+
+# External strategy callbacks describe customer/runtime state. Business-detail
+# scenes above remain internal model decisions and are not exposed as callback
+# sceneName/sceneCode values.
+SOP_PLATFORM_CALLBACK_SCENES = {
+    code: SopPlatformCallbackScene(code=code, name=name)
+    for code, name in (
+        ("customer_first_add_opening", "客户加微首句"),
+        ("customer_unopened", "客户未开口"),
+        ("customer_opened", "客户已开口"),
+        ("customer_deleted", "客户删除"),
+        ("customer_stop_contact", "客户停止联系"),
+        ("customer_complaint_or_refund", "客户投诉或退款"),
+        ("customer_health_risk", "客户健康风险"),
+        ("customer_paid_or_appointed", "客户已付或已预约"),
+        ("human_takeover", "人工接管"),
+        ("night_blocked", "夜间拦截"),
+        ("duplicate_blocked", "重复拦截"),
+        ("frequency_blocked", "频控拦截"),
+        ("rejected", "拒发"),
+    )
+}
+
+
+def sop_platform_callback_scene(
+    *,
+    internal_scene_code: str,
+    sent: bool,
+    task_type: str,
+) -> SopPlatformCallbackScene:
+    code = str(internal_scene_code or "").strip()
+    exact_mappings = {
+        "no_send_customer_deleted": "customer_deleted",
+        "no_send_explicit_stop_contact": "customer_stop_contact",
+        "no_send_complaint_or_refund": "customer_complaint_or_refund",
+        "no_send_health_risk": "customer_health_risk",
+        "no_send_paid_or_appointment_conflict": "customer_paid_or_appointed",
+        "no_send_human_takeover": "human_takeover",
+        "quiet_first_add_backlog": "night_blocked",
+        "no_send_duplicate": "duplicate_blocked",
+        "no_send_contact_cooldown": "frequency_blocked",
+        "no_send_contact_send_limit": "frequency_blocked",
+        "no_send_invalid_message_content": "rejected",
+        "no_send_downstream_rejected": "rejected",
+    }
+    callback_code = exact_mappings.get(code, "")
+    if not callback_code and code == "ai_service_unopened_passthrough":
+        callback_code = "customer_first_add_opening" if task_type == "add_wecom" else "customer_unopened"
+    if not callback_code:
+        callback_code = "customer_opened" if sent or code in SOP_PLATFORM_MODEL_SCENE_CODES else "rejected"
+    return SOP_PLATFORM_CALLBACK_SCENES[callback_code]
 
 # Knowledge 9 is mislabeled upstream as recurrence, but its paragraphs are all
 # about transparent pricing. Keep semantic routing tied to content, not its name.
