@@ -141,6 +141,7 @@ def test_enqueue_uses_latest_prior_task_and_first_adopted_script(tmp_path) -> No
     assert payload["sceneCode"] == "customer_opening"
     assert payload["sceneName"] == "开口场景"
     assert payload["taskId"] == 102
+    assert payload["sendStatus"] == 10
     assert payload["customerReplyType"] == "voice"
     assert payload["replyMsgId"] == "customer-msg-1"
     assert payload["checkpointCode"] == "distance"
@@ -170,6 +171,7 @@ def test_human_takeover_opening_is_reported_without_ai_send_content(tmp_path) ->
     assert result["task_id"] == "103"
     assert rows[0]["payload"]["recordKind"] == "customer_open"
     assert rows[0]["payload"]["customerReply"] == "我觉得还是有点远"
+    assert rows[0]["payload"]["sendStatus"] == 20
     assert "sendContent" not in rows[0]["payload"]
 
 

@@ -80,6 +80,7 @@ class ServiceRuleDataService:
             "sceneCode": _CUSTOMER_OPEN_SCENE_CODE,
             "sceneName": _CUSTOMER_OPEN_SCENE_NAME,
             "taskId": task_id,
+            "sendStatus": 10 if state.get("reply_messages") else 20,
             "customerId": _numeric_or_text(
                 state.get("customer_id") or state.get("external_userid") or ""
             ),
