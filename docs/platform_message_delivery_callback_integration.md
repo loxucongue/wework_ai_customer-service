@@ -39,7 +39,7 @@ HTTP `2xx` 或请求读取超时，只能说明聚合平台已经接收或可能
   "plan_id": "",
   "task_id": "task-20260822-0001",
   "dispatch_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25",
-  "callback_url": "https://<AI服务域名>/callbacks/v1/message-delivery",
+  "callback_url": "http://47.252.81.104/api/ai/callbacks/v1/message-delivery",
   "reply_messages": [
     {
       "type": "text",
@@ -79,10 +79,12 @@ HTTP `2xx` 或请求读取超时，只能说明聚合平台已经接收或可能
 回调接口：
 
 ```text
-POST https://<AI服务域名>/callbacks/v1/message-delivery
+POST http://47.252.81.104/api/ai/callbacks/v1/message-delivery
 Content-Type: application/json; charset=utf-8
 X-Callback-Token: <双方约定的回调 Token>
 ```
+
+当前回调入口仅允许聚合平台现有出口 IP `120.26.43.96`、`121.199.0.182` 访问；如回调任务使用其他出口 IP，聚合平台需提前提供。当前服务器只开放 HTTP，正式开启强制回执前应补 HTTPS；联调阶段仍需同时使用来源 IP 白名单和 Token。
 
 批次全部成功：
 
@@ -274,7 +276,7 @@ Authorization: Bearer <AI_PATHS_API_KEY>
 
    ```env
    MESSAGE_DELIVERY_CALLBACK_REQUIRED=true
-   MESSAGE_DELIVERY_CALLBACK_PUBLIC_URL=https://<AI服务域名>/callbacks/v1/message-delivery
+   MESSAGE_DELIVERY_CALLBACK_PUBLIC_URL=http://47.252.81.104/api/ai/callbacks/v1/message-delivery
    MESSAGE_DELIVERY_CALLBACK_TOKEN=<双方约定的高强度随机 Token>
    ```
 
