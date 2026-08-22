@@ -375,8 +375,18 @@ export async function listAiPathsRuns(query: AiPathsRunsQuery) {
 export async function getAiPathsRun(requestId: string) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const headers = aiPathsAuthHeaders();
+  const path = `/admin/runs/${encodeURIComponent(requestId)}`;
 
-  return fetch(`${apiBase.replace(/\/$/, "")}/admin/runs/${encodeURIComponent(requestId)}`, {
+  const v3Response = await fetch(`${v3ApiBase()}${path}`, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+  if (v3Response.ok || v3Response.status !== 404) {
+    return v3Response;
+  }
+
+  return fetch(`${apiBase.replace(/\/$/, "")}${path}`, {
     method: "GET",
     headers,
     cache: "no-store",
