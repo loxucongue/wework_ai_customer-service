@@ -60,6 +60,77 @@ class MemoryRepositoryMixin:
             ],
         }
 
+    def load_memories(self, customer_ids: list[str]) -> dict[str, dict[str, Any]]:
+        ids = list(dict.fromkeys(str(item or "").strip() for item in customer_ids if str(item or "").strip()))
+        if not ids:
+            return {}
+        memory_rows: list[Any] = []
+        event_rows: list[Any] = []
+        with self.store.connect() as conn:
+            for offset in range(0, len(ids), 500):
+                chunk = ids[offset : offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                memory_rows.extend(
+                    conn.execute(
+                        f"""
+                        SELECT customer_id, portrait, basic_info, lifecycle_stage,
+                               last_customer_message_at, last_staff_message_at, last_ai_reply_at,
+                               last_manual_takeover_at, last_outreach_at, outreach_status,
+                               outreach_plan_id, updated_at
+                        FROM customer_memory
+                        WHERE customer_id IN ({placeholders})
+                        """,
+                        chunk,
+                    ).fetchall()
+                )
+                event_rows.extend(
+                    conn.execute(
+                        f"""
+                        SELECT id, customer_id, event_type, stage, summary, facts,
+                               impact, confidence, created_at
+                        FROM history_events
+                        WHERE customer_id IN ({placeholders})
+                        ORDER BY customer_id, created_at ASC
+                        """,
+                        chunk,
+                    ).fetchall()
+                )
+        events_by_customer: dict[str, list[dict[str, Any]]] = {}
+        for item in event_rows:
+            customer_id = str(item["customer_id"] or "")
+            events = events_by_customer.setdefault(customer_id, [])
+            if len(events) < 100:
+                events.append(
+                    {
+                        "event_id": item["id"],
+                        "event_type": item["event_type"],
+                        "stage": item["stage"],
+                        "summary": item["summary"],
+                        "facts": loads_dict(item["facts"]),
+                        "impact": item["impact"],
+                        "confidence": item["confidence"],
+                        "event_time": item["created_at"],
+                    }
+                )
+        return {
+            str(row["customer_id"]): {
+                "customer_id": row["customer_id"],
+                "portrait": loads_dict(row["portrait"]),
+                "basic_info": loads_dict(row["basic_info"]),
+                "lifecycle_stage": row["lifecycle_stage"] or "",
+                "last_customer_message_at": row["last_customer_message_at"] or "",
+                "last_staff_message_at": row["last_staff_message_at"] or "",
+                "last_ai_reply_at": row["last_ai_reply_at"] or "",
+                "last_manual_takeover_at": row["last_manual_takeover_at"] or "",
+                "last_outreach_at": row["last_outreach_at"] or "",
+                "outreach_status": row["outreach_status"] or "none",
+                "outreach_plan_id": row["outreach_plan_id"] or "",
+                "updated_at": row["updated_at"],
+                "history_events": events_by_customer.get(str(row["customer_id"]), []),
+            }
+            for row in memory_rows
+        }
+
     def clear_memory(self, customer_id: str) -> None:
         with self.store.connect() as conn:
             conn.execute("DELETE FROM history_events WHERE customer_id=?", (customer_id,))

@@ -741,7 +741,7 @@ class OutreachRepositoryMixin:
                 (cutoff_72h, query_limit),
             ).fetchall()
             platform_names = _latest_platform_customer_names(conn, list(rows))
-        items: list[dict[str, Any]] = []
+        prepared_rows: list[tuple[dict[str, Any], Any]] = []
         for row in rows:
             item = dict(row)
             platform_name_key = (
@@ -757,7 +757,18 @@ class OutreachRepositoryMixin:
                 external_userid=item.get("external_userid"),
                 customer_id=item.get("customer_id"),
             )
-            memory = self.load_memory(scope.sales_contact_key) if scope.persistence_allowed else {}
+            prepared_rows.append((item, scope))
+        memory_loader = getattr(self, "load_memories", None)
+        memory_by_contact = (
+            memory_loader(
+                [scope.sales_contact_key for _, scope in prepared_rows if scope.persistence_allowed]
+            )
+            if callable(memory_loader)
+            else {}
+        )
+        items: list[dict[str, Any]] = []
+        for item, scope in prepared_rows:
+            memory = memory_by_contact.get(scope.sales_contact_key, {}) if scope.persistence_allowed else {}
             memory = memory if isinstance(memory, dict) else {}
             item["portrait"] = memory.get("portrait") if isinstance(memory.get("portrait"), dict) else {}
             item["basic_info"] = memory.get("basic_info") if isinstance(memory.get("basic_info"), dict) else {}

@@ -27,7 +27,7 @@ def _replace_qmark_placeholders(sql: str) -> str:
     while index < len(sql):
         char = sql[index]
         if quote:
-            output.append(char)
+            output.append("%%" if char == "%" else char)
             if char == quote:
                 if index + 1 < len(sql) and sql[index + 1] == quote:
                     output.append(sql[index + 1])
@@ -39,6 +39,8 @@ def _replace_qmark_placeholders(sql: str) -> str:
             output.append(char)
         elif char == "?":
             output.append("%s")
+        elif char == "%":
+            output.append("%%")
         else:
             output.append(char)
         index += 1
@@ -289,7 +291,7 @@ class MySQLStore:
             raise RuntimeError(f"Missing AICS MySQL tables: {', '.join(missing_tables)}")
         mismatches = []
         for table, expected in EXPECTED_COLUMNS.items():
-            if tuple(actual.get(table, ())) != tuple(expected):
+            if not set(expected).issubset(set(actual.get(table, ()))):
                 mismatches.append(table)
         if mismatches:
             raise RuntimeError(f"AICS MySQL schema fingerprint mismatch: {', '.join(mismatches)}")

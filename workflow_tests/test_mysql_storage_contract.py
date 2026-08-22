@@ -51,6 +51,82 @@ def test_mysql_schema_contains_only_expected_aics_tables() -> None:
     assert "active_send_once_key" in EXPECTED_COLUMNS["aics_sop_send_tasks"]
 
 
+def test_migration_contract_covers_every_runtime_table() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "aics_migration_contract",
+        Path("ai_paths/scripts/migrate_sqlite_to_mysql.py"),
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert set(module.ACTIVE_TABLES) == set(LOGICAL_TABLES)
+    assert module.JSON_COLUMNS["first_day_outreach_runs"] == (
+        "input_snapshot_json",
+        "workflow_json",
+        "final_plan_json",
+    )
+
+
+def test_migration_integrity_digest_is_row_framed_and_chunked() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "aics_migration_digest",
+        Path("ai_paths/scripts/migrate_sqlite_to_mysql.py"),
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    rows = [{"id": "a", "value": "bc"}, {"id": "ab", "value": "c"}]
+    first = module._digest_rows(rows, ["id", "value"])
+    second = module._digest_rows(list(rows), ["id", "value"])
+    reversed_rows = module._digest_rows(list(reversed(rows)), ["id", "value"])
+
+    assert first == second
+    assert first["rows"] == 2
+    assert len(first["chunks"]) == 1
+    assert first["sha256"] != reversed_rows["sha256"]
+
+
+def test_migration_batches_are_bounded_by_rows_and_bytes() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "aics_migration_batches",
+        Path("ai_paths/scripts/migrate_sqlite_to_mysql.py"),
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    rows = [
+        {"id": "1", "payload": "a" * 8},
+        {"id": "2", "payload": "b" * 8},
+        {"id": "3", "payload": "c" * 8},
+    ]
+    by_bytes = list(
+        module._chunks(rows, 100, columns=["id", "payload"], max_bytes=10)
+    )
+    by_rows = list(
+        module._chunks(rows, 2, columns=["id", "payload"], max_bytes=1000)
+    )
+
+    assert [len(batch) for batch in by_bytes] == [1, 1, 1]
+    assert [len(batch) for batch in by_rows] == [2, 1]
+
+
+def test_migration_delta_timestamp_columns_cover_every_active_table() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "aics_migration_delta_contract",
+        Path("ai_paths/scripts/migrate_sqlite_to_mysql.py"),
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert set(module.DELTA_TIMESTAMP_COLUMNS) == set(module.ACTIVE_TABLES)
+    for table, column in module.DELTA_TIMESTAMP_COLUMNS.items():
+        assert column in EXPECTED_COLUMNS[f"aics_{table}"]
+
+
 def test_table_mapper_does_not_rewrite_string_literals() -> None:
     sql = (
         "SELECT * FROM conversations "
@@ -87,6 +163,12 @@ def test_mysql_store_translates_placeholders_and_sqlite_upserts() -> None:
             "INSERT OR REPLACE INTO runs (request_id) VALUES (?)"
         )
         assert replaced == "REPLACE INTO aics_runs (request_id) VALUES (%s)"
+
+        like_query = store.prepare_sql(
+            "SELECT event_id FROM sop_events WHERE event_type LIKE '%加微%' AND status=?"
+        )
+        assert "LIKE '%%加微%%'" in like_query
+        assert like_query.endswith("status=%s")
     finally:
         store.close()
 
@@ -224,6 +306,17 @@ def test_migration_source_manifest_uses_14_day_trace_window(tmp_path: Path) -> N
         )
         connection.execute(
             """
+            INSERT INTO first_day_outreach_runs
+                (workflow_run_id, input_snapshot_json, workflow_json,
+                 final_plan_json, started_at, created_at, updated_at)
+            VALUES ('first-day-1', '{}', '{}', '{}',
+                    '2026-07-29T00:00:00+00:00',
+                    '2026-07-29T00:00:00+00:00',
+                    '2026-07-29T00:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
             INSERT INTO node_traces
                 (id, request_id, node_name, created_at)
             VALUES ('old', 'r1', 'planner', '2000-01-01T00:00:00+00:00')
@@ -245,7 +338,11 @@ def test_migration_source_manifest_uses_14_day_trace_window(tmp_path: Path) -> N
         connection.close()
     assert manifest["tables"]["runs"]["rows"] == 1
     assert manifest["tables"]["node_traces"]["rows"] == 1
+    assert manifest["tables"]["first_day_outreach_runs"]["rows"] == 1
+    assert manifest["tables"]["first_day_outreach_runs"]["integrity"]["rows"] == 1
+    assert manifest["tables"]["first_day_outreach_runs"]["integrity"]["sha256"]
     assert manifest["json_errors"] == []
+    assert manifest["relation_errors"] == []
 
 
 @pytest.mark.skipif(
