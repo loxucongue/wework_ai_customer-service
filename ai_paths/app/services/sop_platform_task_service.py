@@ -1246,7 +1246,7 @@ class SopPlatformTaskService:
                 "platform_response": completed,
                 "error": error,
             }
-        if local_status == "sending" or current_status == "platform_delivery_pending":
+        if current_status == "platform_delivery_pending":
             return {
                 "processed": False,
                 "status": "accepted",
@@ -1921,18 +1921,25 @@ class SopPlatformTaskService:
             raise ValueError("Platform SOP delivery dispatch is missing sop_send_task_id")
         status = str(dispatch.get("status") or "")
         if status in {"send_failed", "partial_failed"}:
+            error = str(dispatch.get("error_message") or status)
             self.repository.update_sop_send_task(
                 local_task_id,
                 status="failed" if status == "send_failed" else "partial_failed",
                 send_response={"message_delivery": dispatch},
-                error=str(dispatch.get("error_message") or status),
+                error=error,
             )
-            if event_id:
-                self.repository.update_sop_event_status(
-                    event_id,
-                    status="platform_delivery_failed",
-                    error=str(dispatch.get("error_message") or status),
+            if platform_task_id and not self.settings.sop_platform_shadow_mode:
+                completed = await self._commit_platform_terminal(
+                    task_id=platform_task_id,
+                    event_id=event_id,
+                    terminal_status=70,
+                    event_status="platform_failed",
+                    remark=error,
                 )
+                _require_platform_status(completed, 70)
+            elif event_id:
+                self.repository.update_sop_event_status(event_id, status="platform_failed", error=error)
+            self._remember_terminal(platform_task_id)
             return
         if status != "send_succeeded":
             return

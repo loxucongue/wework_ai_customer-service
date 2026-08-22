@@ -108,11 +108,22 @@ class OutreachSendClient:
                 "send_failed",
                 "partial_failed",
             }:
+                result_status = (
+                    "sent"
+                    if existing_status == "send_succeeded"
+                    else "failed"
+                    if existing_status in {"send_failed", "partial_failed"}
+                    else "accepted"
+                )
                 return {
-                    "status": "sent" if existing_status == "send_succeeded" else "accepted",
+                    "status": result_status,
                     "delivery_status": existing_status,
                     "dispatch_id": dispatch_id,
+                    "callback_required": callback_required,
                     "duplicate_dispatch": True,
+                    "error": str(dispatch.get("error_message") or existing_status)
+                    if result_status == "failed"
+                    else "",
                     "payload_message_count": len(reply_messages),
                     "send_payload": payload,
                 }

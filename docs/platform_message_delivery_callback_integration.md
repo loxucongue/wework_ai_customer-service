@@ -219,7 +219,17 @@ X-Callback-Token: <双方约定的回调 Token>
 - `send_failed`：收到失败回调后，任务进入失败状态。
 - `partial_failed`：批次部分成功，保存逐条结果，不把整个任务当成功。
 
-数据库使用 MySQL 表：
+回执记录与当前 AI 存储后端一致，聚合平台不依赖数据库类型：
+
+SQLite 逻辑表：
+
+```text
+message_dispatches
+message_dispatch_items
+message_delivery_events
+```
+
+切换到 MySQL 后对应隔离表：
 
 ```text
 aics_message_dispatches

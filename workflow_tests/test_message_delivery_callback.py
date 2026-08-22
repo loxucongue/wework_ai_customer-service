@@ -62,6 +62,32 @@ def test_dispatch_is_idempotent_and_attaches_client_message_ids(tmp_path) -> Non
     ]
 
 
+def test_dispatch_rejects_idempotency_key_reuse_with_different_payload(tmp_path) -> None:
+    service, _ = _service(tmp_path)
+    _prepare(service)
+
+    with pytest.raises(ValueError, match="different payload"):
+        service.prepare_dispatch(
+            source_channel="async_reply",
+            source_kind="ai_async_reply",
+            source_request_id="request-1",
+            source_task_id="request-1",
+            conversation_id="conversation-1",
+            identity={
+                "corp_id": "corp-1",
+                "customer_id": "customer-1",
+                "external_userid": "external-1",
+                "user_id": "user-1",
+                "wechat": "wechat-1",
+            },
+            plan_id="",
+            task_id="request-1",
+            reply_messages=[{"type": "text", "content": "不同内容"}],
+            source_context={},
+            idempotency_key="request-1",
+        )
+
+
 def test_platform_acceptance_is_pending_until_success_callback(tmp_path) -> None:
     service, repository = _service(tmp_path)
     prepared = _prepare(service)
@@ -129,6 +155,22 @@ def test_partial_failure_requires_items_and_preserves_per_message_result(tmp_pat
             )
         )
 
+    with pytest.raises(ValueError, match="cover every dispatched message"):
+        service.accept_callback(
+            MessageDeliveryCallback(
+                event_id="event-partial-incomplete",
+                dispatch_id=dispatch_id,
+                task_id="request-1",
+                status="partial_failed",
+                items=[
+                    {
+                        "client_message_id": f"{dispatch_id}:1",
+                        "status": "send_succeeded",
+                    }
+                ],
+            )
+        )
+
     result = service.accept_callback(
         MessageDeliveryCallback(
             event_id="event-partial-valid",
@@ -179,6 +221,15 @@ def test_callback_rejects_unknown_dispatch_and_wrong_task(tmp_path) -> None:
                 event_id="event-wrong-task",
                 dispatch_id=prepared["dispatch_id"],
                 task_id="another-task",
+                status="send_succeeded",
+            )
+        )
+
+    with pytest.raises(ValueError, match="task_id does not match"):
+        service.accept_callback(
+            MessageDeliveryCallback(
+                event_id="event-missing-task",
+                dispatch_id=prepared["dispatch_id"],
                 status="send_succeeded",
             )
         )

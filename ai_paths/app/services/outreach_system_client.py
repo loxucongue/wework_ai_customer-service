@@ -148,6 +148,10 @@ class OutreachSystemClient:
                 "send_failed",
                 "partial_failed",
             }:
+                if existing_status in {"send_failed", "partial_failed"}:
+                    raise RuntimeError(
+                        f"message_delivery_{existing_status}: dispatch_id={dispatch_id}"
+                    )
                 return {
                     "code": 0,
                     "msg": "duplicate_dispatch",

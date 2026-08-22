@@ -32,6 +32,8 @@ RELATIONSHIPS = (
     ("history_events", "customer_id", "customer_memory", "customer_id"),
     ("outreach_tasks", "plan_id", "outreach_plans", "id"),
     ("sop_send_tasks", "event_id", "sop_events", "event_id"),
+    ("message_dispatch_items", "dispatch_id", "message_dispatches", "id"),
+    ("message_delivery_events", "dispatch_id", "message_dispatches", "id"),
 )
 
 DELTA_TIMESTAMP_COLUMNS = {
@@ -48,6 +50,9 @@ DELTA_TIMESTAMP_COLUMNS = {
     "first_day_outreach_runs": "updated_at",
     "sop_events": "updated_at",
     "sop_send_tasks": "updated_at",
+    "message_dispatches": "updated_at",
+    "message_dispatch_items": "updated_at",
+    "message_delivery_events": "received_at",
 }
 
 
@@ -65,6 +70,9 @@ ACTIVE_TABLES = (
     "first_day_outreach_runs",
     "sop_events",
     "sop_send_tasks",
+    "message_dispatches",
+    "message_dispatch_items",
+    "message_delivery_events",
 )
 LEGACY_TABLES = (
     "kb_sync_records",
@@ -91,6 +99,8 @@ JSON_COLUMNS = {
     ),
     "sop_events": ("raw_payload_json",),
     "sop_send_tasks": ("reply_messages_json", "send_payload_json", "send_response_json"),
+    "message_dispatches": ("reply_messages_json", "source_context_json"),
+    "message_delivery_events": ("raw_payload_json",),
 }
 
 
