@@ -4806,13 +4806,22 @@ class OutreachService:
             "results": [],
         }
         scan_limit = max(200, min(2000, max(1, int(limit)) * 200))
-        candidates = self.list_candidates(limit=scan_limit, silent_minutes_min=0)
+        candidates = await asyncio.to_thread(
+            self.list_candidates,
+            limit=scan_limit,
+            silent_minutes_min=0,
+        )
         sop_candidate_loader = getattr(self.repository, "list_first_day_sop_contact_candidates", None)
         if callable(sop_candidate_loader):
             since = (
                 datetime.now(timezone.utc) - timedelta(minutes=FIRST_DAY_WINDOW_MINUTES)
             ).isoformat()
-            candidates.extend(sop_candidate_loader(limit=scan_limit, since=since))
+            sop_candidates = await asyncio.to_thread(
+                sop_candidate_loader,
+                limit=scan_limit,
+                since=since,
+            )
+            candidates.extend(sop_candidates)
             candidates = _dedupe_outreach_candidates(candidates)
         stats["candidate_count"] = len(candidates)
         effective_limit = max(1, int(limit))
