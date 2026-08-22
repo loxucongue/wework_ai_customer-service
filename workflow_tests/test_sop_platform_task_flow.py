@@ -30,13 +30,15 @@ from app.services.sop_reply_pack_service import SopReplyPackService
 
 
 class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
-    def test_platform_scene_registry_has_28_stable_combinations(self) -> None:
-        self.assertEqual(len(SOP_PLATFORM_SCENES), 28)
+    def test_platform_scene_registry_has_30_stable_combinations(self) -> None:
+        self.assertEqual(len(SOP_PLATFORM_SCENES), 30)
         self.assertEqual(len(SOP_PLATFORM_MODEL_SCENE_CODES), 23)
-        self.assertEqual(len(SOP_PLATFORM_TECHNICAL_SCENE_CODES), 5)
+        self.assertEqual(len(SOP_PLATFORM_TECHNICAL_SCENE_CODES), 7)
         self.assertNotIn("platform_direct", SOP_PLATFORM_SCENES)
         self.assertNotIn("first_day_opened_no_send", SOP_PLATFORM_SCENES)
         self.assertIn("quiet_first_add_backlog", SOP_PLATFORM_TECHNICAL_SCENE_CODES)
+        self.assertIn("no_send_contact_cooldown", SOP_PLATFORM_TECHNICAL_SCENE_CODES)
+        self.assertIn("no_send_contact_send_limit", SOP_PLATFORM_TECHNICAL_SCENE_CODES)
         self.assertIn("no_send_platform_content_conflict", SOP_PLATFORM_MODEL_SCENE_CODES)
 
     def test_platform_knowledge_mapping_uses_real_knowledge_semantics(self) -> None:
@@ -1025,6 +1027,9 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         stored = repo.tasks["platform-sop:101"]["send_payload"]
         self.assertEqual(stored["decision"]["reason"], "platform_contact_send_cooldown")
+        self.assertEqual(stored["decision"]["sceneCode"], "no_send_contact_cooldown")
+        self.assertEqual(platform.rule_data_calls[-1]["scene_code"], "no_send_contact_cooldown")
+        self.assertEqual(platform.rule_data_calls[-1]["scene_name"], "不发送｜5分钟触达冷却")
         self.assertEqual(
             stored["context"]["platform_contact_delivery_guard"]["successful_send_count_since_last_customer_reply"],
             1,
@@ -1049,6 +1054,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             repo.tasks["platform-sop:101"]["send_payload"]["decision"]["reason"],
             "platform_contact_send_limit",
         )
+        self.assertEqual(platform.rule_data_calls[-1]["scene_code"], "no_send_contact_send_limit")
+        self.assertEqual(platform.rule_data_calls[-1]["scene_name"], "不发送｜连续触达次数上限")
 
     async def test_non_sent_sop_tasks_do_not_count_toward_contact_limit(self) -> None:
         model = _Model([{"decision": "send", "reason": "allowed", "reply_messages": [_text("new delivery")]}])

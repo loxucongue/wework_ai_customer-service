@@ -42,6 +42,8 @@ _TECHNICAL_SCENES = (
     ("no_send_invalid_message_content", "不发送｜平台内容无效", "no_send"),
     ("quiet_first_add_backlog", "夜间拦截｜次日08:30融合", "no_send"),
     ("no_send_duplicate", "不发送｜重复内容", "no_send"),
+    ("no_send_contact_cooldown", "不发送｜5分钟触达冷却", "no_send"),
+    ("no_send_contact_send_limit", "不发送｜连续触达次数上限", "no_send"),
     ("no_send_downstream_rejected", "不发送｜下游发送拒绝", "no_send"),
 )
 

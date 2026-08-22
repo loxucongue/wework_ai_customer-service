@@ -1453,12 +1453,17 @@ class SopPlatformTaskService:
                 )
                 if delivery_guard.get("blocked"):
                     guard_reason = str(delivery_guard.get("reason") or "platform_contact_send_limit")
+                    guard_scene_code = (
+                        "no_send_contact_cooldown"
+                        if guard_reason == "platform_contact_send_cooldown"
+                        else "no_send_contact_send_limit"
+                    )
                     decision = {
                         "decision": "no_send",
                         "reason": guard_reason,
                         "reason_code": guard_reason,
-                        "sceneName": sop_platform_scene_name("no_send_duplicate"),
-                        "sceneCode": "no_send_duplicate",
+                        "sceneName": sop_platform_scene_name(guard_scene_code),
+                        "sceneCode": guard_scene_code,
                         "knowledgeId": 0,
                         "knowledgeParagraphNo": 0,
                         "remark": (
