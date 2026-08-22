@@ -260,3 +260,79 @@ CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_customer ON sop_send_tasks(custome
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_pack ON sop_send_tasks(sop_pack_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_sales_contact
 ON sop_send_tasks(corp_id, wechat, external_userid, customer_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS message_dispatches (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    source_channel TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
+    source_request_id TEXT NOT NULL DEFAULT '',
+    source_task_id TEXT NOT NULL DEFAULT '',
+    conversation_id TEXT NOT NULL DEFAULT '',
+    corp_id TEXT NOT NULL DEFAULT '',
+    customer_id TEXT NOT NULL DEFAULT '',
+    external_userid TEXT NOT NULL DEFAULT '',
+    user_id TEXT NOT NULL DEFAULT '',
+    wechat TEXT NOT NULL DEFAULT '',
+    plan_id TEXT NOT NULL DEFAULT '',
+    task_id TEXT NOT NULL DEFAULT '',
+    reply_messages_json TEXT NOT NULL DEFAULT '[]',
+    source_context_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'created',
+    expected_count INTEGER NOT NULL DEFAULT 0,
+    succeeded_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    platform_request_id TEXT NOT NULL DEFAULT '',
+    system_msgid TEXT NOT NULL DEFAULT '',
+    error_code TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT NOT NULL DEFAULT '',
+    accepted_at TEXT NOT NULL DEFAULT '',
+    confirmed_at TEXT NOT NULL DEFAULT '',
+    last_callback_at TEXT NOT NULL DEFAULT '',
+    finalized_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_dispatches_status ON message_dispatches(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_message_dispatches_task ON message_dispatches(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_message_dispatches_sales_contact
+ON message_dispatches(corp_id, wechat, external_userid, customer_id, created_at);
+
+CREATE TABLE IF NOT EXISTS message_dispatch_items (
+    id TEXT PRIMARY KEY,
+    dispatch_id TEXT NOT NULL,
+    client_message_id TEXT NOT NULL UNIQUE,
+    message_index INTEGER NOT NULL DEFAULT 0,
+    message_type TEXT NOT NULL DEFAULT '',
+    payload_hash TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'created',
+    platform_message_id TEXT NOT NULL DEFAULT '',
+    error_code TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(dispatch_id) REFERENCES message_dispatches(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_dispatch_items_dispatch
+ON message_dispatch_items(dispatch_id, message_index);
+CREATE INDEX IF NOT EXISTS idx_message_dispatch_items_status
+ON message_dispatch_items(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS message_delivery_events (
+    event_id TEXT PRIMARY KEY,
+    dispatch_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '',
+    raw_payload_json TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL,
+    FOREIGN KEY(dispatch_id) REFERENCES message_dispatches(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_delivery_events_dispatch
+ON message_delivery_events(dispatch_id, received_at);
+CREATE INDEX IF NOT EXISTS idx_message_delivery_events_status
+ON message_delivery_events(status, received_at);

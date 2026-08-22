@@ -43,8 +43,8 @@ def _settings() -> SimpleNamespace:
 
 
 def test_mysql_schema_contains_only_expected_aics_tables() -> None:
-    assert len(EXPECTED_TABLES) == 13
-    assert len(EXPECTED_ALL_TABLES) == 14
+    assert len(EXPECTED_TABLES) == 16
+    assert len(EXPECTED_ALL_TABLES) == 17
     assert VERSION_TABLE == "aics_schema_version"
     assert all(table.startswith("aics_") for table in EXPECTED_ALL_TABLES)
     assert {table.removeprefix("aics_") for table in EXPECTED_TABLES} == set(LOGICAL_TABLES)

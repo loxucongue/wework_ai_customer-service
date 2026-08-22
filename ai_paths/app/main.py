@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,11 +15,12 @@ from fastapi.responses import JSONResponse
 from app.chat_runtime import ChatRuntime
 from app.config import get_settings
 from app.graph.graph_builder import build_reply_graphs
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, MessageDeliveryCallback
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
+from app.services.message_delivery import MessageDeliveryService
 from app.services.model_client import ModelClient
 from app.services.outreach_service import OutreachService, classify_conversation_refresh_error
 from app.services.outreach_send_client import OutreachSendClient
@@ -48,13 +50,14 @@ settings = get_settings()
 trace_logger = TraceLogger(settings)
 storage_store = build_store(settings)
 repository = AppRepository(storage_store)
+message_delivery_service = MessageDeliveryService(settings, repository)
 coze_client = CozeClient(settings)
 voice_transcription_client = DoubaoAsrClient(settings)
 model_client = ModelClient(settings)
 memory_store = CustomerMemoryStore(settings, repository)
 platform_agent_client = PlatformAgentClient(settings)
-outreach_send_client = OutreachSendClient(settings)
-outreach_system_client = OutreachSystemClient(settings)
+outreach_send_client = OutreachSendClient(settings, delivery_service=message_delivery_service)
+outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
 sop_platform_client = SopPlatformClient(settings)
 platform_reply_coordinator = PlatformReplyCoordinator(settings)
 platform_voice_batch_coordinator = PlatformVoiceBatchCoordinator(settings)
@@ -472,8 +475,78 @@ async def require_external_api_key(authorization: str | None = Header(default=No
         )
 
 
+async def require_message_delivery_callback_token(
+    x_callback_token: str | None = Header(default=None, alias="X-Callback-Token"),
+) -> None:
+    expected = str(settings.message_delivery_callback_token or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Message delivery callback token is not configured",
+        )
+    if not x_callback_token or not secrets.compare_digest(x_callback_token, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing message delivery callback token",
+        )
+
+
+async def _finalize_message_delivery(dispatch: dict[str, Any]) -> None:
+    source_kind = str(dispatch.get("source_kind") or "").strip()
+    if source_kind == "ai_async_reply":
+        chat_runtime.finalize_async_message_delivery(dispatch)
+    elif source_kind == "sop_event":
+        sop_event_service.finalize_message_delivery(dispatch)
+    elif source_kind == "outreach_task":
+        outreach_service.finalize_message_delivery(dispatch)
+    elif source_kind == "sop_platform_task":
+        await sop_platform_task_service.finalize_message_delivery(dispatch)
+    else:
+        raise ValueError(f"unsupported message delivery source_kind: {source_kind or '<empty>'}")
+    message_delivery_service.mark_finalized(str(dispatch.get("id") or ""))
+
+
 def _reject_legacy_outreach_mutation() -> None:
     raise HTTPException(status_code=410, detail="旧 Outreach 已转为历史只读")
+
+
+@app.post(
+    "/callbacks/v1/message-delivery",
+    dependencies=[Depends(require_message_delivery_callback_token)],
+)
+async def message_delivery_callback(payload: MessageDeliveryCallback) -> dict[str, Any]:
+    try:
+        result = message_delivery_service.accept_callback(payload)
+        dispatch = result.get("dispatch") if isinstance(result.get("dispatch"), dict) else {}
+        if message_delivery_service.needs_finalization(dispatch):
+            await _finalize_message_delivery(dispatch)
+            dispatch = repository.get_message_dispatch(str(dispatch.get("id") or ""))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Message delivery callback finalization failed: dispatch_id=%s", payload.dispatch_id)
+        raise
+    return {
+        "code": 0,
+        "msg": "ok",
+        "data": {
+            "event_id": payload.event_id,
+            "dispatch_id": payload.dispatch_id,
+            "duplicate": bool(result.get("duplicate")),
+            "status": str(dispatch.get("status") or ""),
+            "finalized": bool(str(dispatch.get("finalized_at") or "").strip()),
+        },
+    }
+
+
+@app.get("/admin/message-deliveries/{dispatch_id}", dependencies=[Depends(require_api_key)])
+async def admin_message_delivery(dispatch_id: str) -> dict[str, Any]:
+    dispatch = repository.get_message_dispatch(dispatch_id)
+    if not dispatch:
+        raise HTTPException(status_code=404, detail="Message delivery dispatch not found")
+    return dispatch
 
 
 @app.post("/admin/store-snapshot/refresh", dependencies=[Depends(require_api_key)])

@@ -894,18 +894,80 @@ class ChatRuntime:
     async def _send_async_reply(self, request: ChatRequest, final_state: AgentState, messages: list[dict[str, Any]]) -> dict[str, Any]:
         if not self._outreach_send_client:
             return {"scheduled": True, "status": "skipped", "reason": "outreach_send_client_missing"}
+        request_context = final_state.get("request_context") if isinstance(final_state.get("request_context"), dict) else {}
+        conversation_id = conversation_id_from_request(request, request_context)
+        source_context = {
+            "assistant_request_id": f"{final_state.get('request_id')}:async",
+            "sales_contact_key": str(final_state.get("sales_contact_key") or ""),
+            "memory_persist_allowed": _memory_persistence_allowed(final_state),
+            "case_image_record": _case_image_send_record(final_state, messages),
+            "activity_intro_record": _activity_intro_image_record_plan(final_state, messages, send_mode="async"),
+            "store_fact_record": _store_fact_record_plan(final_state, messages),
+        }
         result = await self._outreach_send_client.send_reply_messages(
             request_id=str(final_state.get("request_id") or ""),
-            request_context=final_state.get("request_context") if isinstance(final_state.get("request_context"), dict) else {},
+            request_context=request_context,
             fallback_customer_id=request.customer_id,
             fallback_corp_id=request.corp_id,
             fallback_user_id=request.user_id,
             fallback_wechat=request.wechat,
             fallback_external_userid=request.external_userid,
             reply_messages=messages,
+            source_channel="ai_async_reply",
+            source_kind="ai_async_reply",
+            source_request_id=str(final_state.get("request_id") or ""),
+            source_task_id=str(final_state.get("request_id") or ""),
+            conversation_id=conversation_id,
+            source_context=source_context,
+            delivery_idempotency_key=f"ai_async_reply:{final_state.get('request_id')}",
         )
         result["scheduled"] = True
         return result
+
+    def finalize_async_message_delivery(self, dispatch: dict[str, Any]) -> None:
+        if str(dispatch.get("status") or "") != "send_succeeded":
+            return
+        context = dispatch.get("source_context") if isinstance(dispatch.get("source_context"), dict) else {}
+        reply_messages = dispatch.get("reply_messages") if isinstance(dispatch.get("reply_messages"), list) else []
+        conversation_id = str(dispatch.get("conversation_id") or "").strip()
+        assistant_request_id = str(context.get("assistant_request_id") or dispatch.get("source_request_id") or "").strip()
+        if conversation_id and assistant_request_id and reply_messages:
+            safe_repository_call(
+                self._repository.add_assistant_message,
+                conversation_id=conversation_id,
+                request_id=assistant_request_id,
+                reply_messages=reply_messages,
+            )
+        if not bool(context.get("memory_persist_allowed")) or not self._memory_store:
+            return
+        sales_contact_key = str(context.get("sales_contact_key") or "").strip()
+        if not sales_contact_key:
+            return
+        case_record = context.get("case_image_record") if isinstance(context.get("case_image_record"), dict) else {}
+        if case_record.get("document_ids"):
+            self._memory_store.record_case_images_sent(
+                sales_contact_key,
+                document_ids=case_record.get("document_ids") or [],
+                image_urls=case_record.get("image_urls") or [],
+                request_id=str(dispatch.get("source_request_id") or ""),
+            )
+        activity_record = context.get("activity_intro_record") if isinstance(context.get("activity_intro_record"), dict) else {}
+        if activity_record.get("image_url"):
+            self._memory_store.record_activity_intro_image_sent(
+                sales_contact_key,
+                image_url=str(activity_record.get("image_url") or ""),
+                request_id=str(dispatch.get("source_request_id") or ""),
+                send_mode=str(activity_record.get("send_mode") or "async"),
+            )
+        store_record = context.get("store_fact_record") if isinstance(context.get("store_fact_record"), dict) else {}
+        for item in store_record.get("records") or []:
+            if isinstance(item, dict) and isinstance(item.get("store"), dict):
+                self._memory_store.record_store_fact(
+                    sales_contact_key,
+                    store=item["store"],
+                    event_type=str(item.get("event_type") or "store_address_sent"),
+                    request_id=str(dispatch.get("source_request_id") or ""),
+                )
 
     async def _recover_async_exception_and_send(
         self,
@@ -1523,6 +1585,8 @@ def _set_async_final_control(state: AgentState, result: dict[str, Any]) -> None:
         "send_payload": result.get("send_payload", {}),
         "send_response": result.get("response", {}),
         "payload_message_count": result.get("payload_message_count", 0),
+        "dispatch_id": result.get("dispatch_id", ""),
+        "delivery_status": result.get("delivery_status", ""),
     }
     state["reply_control"] = control
 

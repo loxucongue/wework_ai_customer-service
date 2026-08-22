@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.services.storage.conversation_repository import ConversationRepositoryMixin
 from app.services.storage.customer_record_admin_repository import CustomerRecordAdminRepositoryMixin
 from app.services.storage.memory_repository import MemoryRepositoryMixin
+from app.services.storage.message_delivery_repository import MessageDeliveryRepositoryMixin
 from app.services.storage.outreach_repository import OutreachRepositoryMixin
 from app.services.storage.operations_dashboard_repository import OperationsDashboardRepositoryMixin
 from app.services.storage.run_repository import RunRepositoryMixin
@@ -14,6 +15,7 @@ class AppRepository(
     ConversationRepositoryMixin,
     CustomerRecordAdminRepositoryMixin,
     MemoryRepositoryMixin,
+    MessageDeliveryRepositoryMixin,
     OutreachRepositoryMixin,
     OperationsDashboardRepositoryMixin,
     RunRepositoryMixin,

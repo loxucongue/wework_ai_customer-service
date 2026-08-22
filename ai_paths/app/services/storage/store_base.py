@@ -19,6 +19,9 @@ LOGICAL_TABLES = (
     "first_day_outreach_runs",
     "sop_events",
     "sop_send_tasks",
+    "message_dispatches",
+    "message_dispatch_items",
+    "message_delivery_events",
 )
 
 

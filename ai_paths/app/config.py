@@ -200,6 +200,19 @@ class Settings(BaseSettings):
         alias="OUTREACH_SYSTEM_SEND_CONVERSATION_ID_ENABLED",
     )
     background_workers_enabled: bool = Field(default=True, alias="AI_PATHS_BACKGROUND_WORKERS_ENABLED")
+    message_delivery_callback_required: bool = Field(
+        default=False,
+        alias="MESSAGE_DELIVERY_CALLBACK_REQUIRED",
+    )
+    message_delivery_callback_public_url: str = Field(
+        default="",
+        alias="MESSAGE_DELIVERY_CALLBACK_PUBLIC_URL",
+    )
+    message_delivery_callback_token: str = Field(
+        default="",
+        alias="MESSAGE_DELIVERY_CALLBACK_TOKEN",
+        repr=False,
+    )
     outreach_auto_send_enabled: bool = Field(default=False, alias="OUTREACH_AUTO_SEND_ENABLED")
     outreach_auto_send_poll_seconds: float = Field(default=5.0, alias="OUTREACH_AUTO_SEND_POLL_SECONDS")
     outreach_auto_send_batch_size: int = Field(default=20, alias="OUTREACH_AUTO_SEND_BATCH_SIZE")

@@ -913,9 +913,43 @@ class SopPlatformTaskService:
             audit_payload["platform_terminal_status"] = original_terminal_status
         self.repository.update_sop_send_task(str(local_task.get("id") or ""), status="sending", send_payload=audit_payload)
         started = time.perf_counter()
-        send_result = await self.system_client.send(**send_payload)
+        send_result = await self.system_client.send(
+            **send_payload,
+            source_channel="proactive_message",
+            source_kind="sop_platform_task",
+            source_request_id=event_id,
+            source_task_id=str(local_task.get("id") or ""),
+            source_context={
+                "sop_send_task_id": str(local_task.get("id") or ""),
+                "sop_event_id": event_id,
+                "platform_task_id": task_id,
+            },
+            delivery_idempotency_key=f"sop_platform_task:{local_task.get('id')}",
+        )
         self._observe("send", time.perf_counter() - started)
-        send_status = str((send_result.get("data") or {}).get("send_status") or send_result.get("msg") or "")
+        send_data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
+        delivery_status = str(send_data.get("delivery_status") or "")
+        if bool(send_data.get("callback_required")) and delivery_status in {
+            "platform_accepted",
+            "submission_unknown",
+            "sending",
+        }:
+            self.repository.update_sop_event_status(event_id, status="platform_delivery_pending")
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="sending",
+                send_payload=audit_payload,
+                send_response=send_result,
+                error="",
+            )
+            return {
+                "processed": True,
+                "status": "accepted",
+                "task_id": task_id,
+                "reply_messages": messages,
+                "send_response": send_result,
+            }
+        send_status = str(send_data.get("send_status") or send_result.get("msg") or "")
         if send_status == "accepted_no_response":
             self.repository.update_sop_event_status(event_id, status="platform_send_uncertain", error="active_send_timeout_unknown_result")
             self.repository.update_sop_send_task(
@@ -1211,6 +1245,13 @@ class SopPlatformTaskService:
                 "task_id": task_id,
                 "platform_response": completed,
                 "error": error,
+            }
+        if local_status == "sending" or current_status == "platform_delivery_pending":
+            return {
+                "processed": False,
+                "status": "accepted",
+                "task_id": task_id,
+                "reason": "awaiting_message_delivery_callback",
             }
         duplicate_reason = _duplicate_platform_task_reason(
             self.repository,
@@ -1671,7 +1712,19 @@ class SopPlatformTaskService:
                 )
                 started = time.perf_counter()
                 try:
-                    send_result = await self.system_client.send(**send_payload)
+                    send_result = await self.system_client.send(
+                        **send_payload,
+                        source_channel="proactive_message",
+                        source_kind="sop_platform_task",
+                        source_request_id=event_id,
+                        source_task_id=str(local_task.get("id") or ""),
+                        source_context={
+                            "sop_send_task_id": str(local_task.get("id") or ""),
+                            "sop_event_id": event_id,
+                            "platform_task_id": task_id,
+                        },
+                        delivery_idempotency_key=f"sop_platform_task:{local_task.get('id')}",
+                    )
                 except Exception as exc:
                     delivery_failure = _terminal_delivery_failure(exc)
                     if not delivery_failure:
@@ -1732,7 +1785,28 @@ class SopPlatformTaskService:
                         "platform_response": completed,
                     }
                 self._observe("send", time.perf_counter() - started)
-                send_status = str((send_result.get("data") or {}).get("send_status") or send_result.get("msg") or "")
+                send_data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
+                delivery_status = str(send_data.get("delivery_status") or "")
+                if bool(send_data.get("callback_required")) and delivery_status in {
+                    "platform_accepted",
+                    "submission_unknown",
+                    "sending",
+                }:
+                    self.repository.update_sop_event_status(event_id, status="platform_delivery_pending")
+                    self.repository.update_sop_send_task(
+                        str(local_task.get("id") or ""),
+                        status="sending",
+                        send_payload={"decision": decision, "request": send_payload, "context": _context_audit(context)},
+                        send_response=send_result,
+                        error="",
+                    )
+                    return {
+                        "processed": True,
+                        "status": "accepted",
+                        "task_id": task_id,
+                        "send_response": send_result,
+                    }
+                send_status = str(send_data.get("send_status") or send_result.get("msg") or "")
                 if send_status == "accepted_no_response":
                     send_result = {
                         **send_result,
@@ -1837,6 +1911,45 @@ class SopPlatformTaskService:
                     "error": error,
                 }
             raise
+
+    async def finalize_message_delivery(self, dispatch: dict[str, Any]) -> None:
+        context = dispatch.get("source_context") if isinstance(dispatch.get("source_context"), dict) else {}
+        local_task_id = str(context.get("sop_send_task_id") or dispatch.get("source_task_id") or "").strip()
+        event_id = str(context.get("sop_event_id") or "").strip()
+        platform_task_id = str(context.get("platform_task_id") or dispatch.get("task_id") or "").strip()
+        if not local_task_id:
+            raise ValueError("Platform SOP delivery dispatch is missing sop_send_task_id")
+        status = str(dispatch.get("status") or "")
+        if status in {"send_failed", "partial_failed"}:
+            self.repository.update_sop_send_task(
+                local_task_id,
+                status="failed" if status == "send_failed" else "partial_failed",
+                send_response={"message_delivery": dispatch},
+                error=str(dispatch.get("error_message") or status),
+            )
+            if event_id:
+                self.repository.update_sop_event_status(
+                    event_id,
+                    status="platform_delivery_failed",
+                    error=str(dispatch.get("error_message") or status),
+                )
+            return
+        if status != "send_succeeded":
+            return
+        self.repository.update_sop_send_task(
+            local_task_id,
+            status="sent",
+            send_response={"message_delivery": dispatch},
+            sent_at=str(dispatch.get("confirmed_at") or "") or utc_now_iso(),
+        )
+        if event_id:
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+        if platform_task_id and not self.settings.sop_platform_shadow_mode:
+            completed = await self.platform_client.consume(task_id=platform_task_id, status=30)
+            _require_platform_status(completed, 30)
+        if event_id:
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
+        self._remember_terminal(platform_task_id)
 
     async def _quiet_hours_guard(
         self,

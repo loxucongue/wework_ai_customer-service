@@ -39,6 +39,30 @@ class ChatResponse(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class MessageDeliveryCallbackItem(BaseModel):
+    client_message_id: str = Field(min_length=1, max_length=255)
+    message_index: int | None = None
+    platform_message_id: str = ""
+    status: Literal["sending", "send_succeeded", "send_failed"]
+    sent_at: str = ""
+    error_code: str = ""
+    error_message: str = ""
+
+
+class MessageDeliveryCallback(BaseModel):
+    event_id: str = Field(min_length=1, max_length=255)
+    dispatch_id: str = Field(min_length=1, max_length=255)
+    task_id: str = ""
+    status: Literal["sending", "send_succeeded", "send_failed", "partial_failed"]
+    occurred_at: str = ""
+    platform_request_id: str = ""
+    system_msgid: str = ""
+    retryable: bool = False
+    error_code: str = ""
+    error_message: str = ""
+    items: list[MessageDeliveryCallbackItem] = Field(default_factory=list)
+
+
 class CozeKbItem(BaseModel):
     content: str
     document_id: str = ""

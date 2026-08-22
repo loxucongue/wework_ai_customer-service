@@ -6191,6 +6191,15 @@ class OutreachService:
                 task_id=task_id,
                 reply_messages=reply_messages,
                 conversation_id=send_conversation_id,
+                source_channel="proactive_message",
+                source_kind="outreach_task",
+                source_request_id=str(task.get("plan_id") or ""),
+                source_task_id=task_id,
+                source_context={
+                    "outreach_task_id": task_id,
+                    "outreach_plan_id": str(task.get("plan_id") or ""),
+                },
+                delivery_idempotency_key=f"outreach_task:{task_id}",
             )
         except Exception as exc:
             message = str(exc)
@@ -6238,6 +6247,20 @@ class OutreachService:
             )
             return {"ok": False, "status": "failed", "error": message}
         data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
+        if bool(data.get("callback_required")) and str(data.get("delivery_status") or "") in {
+            "platform_accepted",
+            "submission_unknown",
+            "sending",
+        }:
+            self.repository.add_outreach_event(
+                plan_id=str(task["plan_id"]),
+                task_id=task_id,
+                customer_id=str(task["customer_id"]),
+                event_type="task_platform_accepted",
+                event_summary="Outreach task accepted; awaiting delivery callback",
+                payload={"reply_messages": reply_messages, "send_result": send_result},
+            )
+            return {"ok": True, "status": "accepted", "send_result": send_result}
         sent_at = utc_now_iso()
         self.repository.update_outreach_task(
             task_id,
@@ -6323,6 +6346,67 @@ class OutreachService:
             "wechat": str(task.get("wechat") or plan.get("wechat") or ""),
             "external_userid": str(task.get("external_userid") or plan.get("external_userid") or ""),
         }
+
+    def finalize_message_delivery(self, dispatch: dict[str, Any]) -> None:
+        context = dispatch.get("source_context") if isinstance(dispatch.get("source_context"), dict) else {}
+        task_id = str(context.get("outreach_task_id") or dispatch.get("source_task_id") or "").strip()
+        if not task_id:
+            raise ValueError("Outreach delivery dispatch is missing outreach_task_id")
+        task = self.repository.get_outreach_task(task_id)
+        if not task:
+            raise ValueError(f"Outreach task not found: {task_id}")
+        status = str(dispatch.get("status") or "")
+        if status in {"send_failed", "partial_failed"}:
+            self.repository.update_outreach_task(
+                task_id,
+                status="failed" if status == "send_failed" else "partial_failed",
+                error_message=str(dispatch.get("error_message") or status),
+            )
+            self.repository.add_outreach_event(
+                plan_id=str(task.get("plan_id") or ""),
+                task_id=task_id,
+                customer_id=str(task.get("customer_id") or ""),
+                event_type="task_delivery_failed",
+                event_summary="Outreach delivery callback reported failure",
+                payload={"message_delivery": dispatch},
+            )
+            return
+        if status != "send_succeeded":
+            return
+        sent_at = str(dispatch.get("confirmed_at") or "") or utc_now_iso()
+        self.repository.update_outreach_task(
+            task_id,
+            status="sent",
+            reply_messages=dispatch.get("reply_messages") if isinstance(dispatch.get("reply_messages"), list) else [],
+            sent_at=sent_at,
+            send_status="send_succeeded",
+            system_msgid=str(dispatch.get("system_msgid") or ""),
+        )
+        has_remaining_tasks = bool(self.repository.outreach_plan_has_remaining_tasks(str(task.get("plan_id") or "")))
+        next_plan_status = "waiting" if has_remaining_tasks else "completed"
+        scope = build_customer_scope(
+            corp_id=dispatch.get("corp_id"),
+            wechat=dispatch.get("wechat"),
+            external_userid=dispatch.get("external_userid"),
+            customer_id=dispatch.get("customer_id"),
+        )
+        if scope.persistence_allowed:
+            self.repository.touch_customer_message_time(scope.sales_contact_key, field="last_outreach_at", value=sent_at)
+            self.repository.update_customer_outreach_state(
+                scope.sales_contact_key,
+                outreach_status=next_plan_status,
+                outreach_plan_id=str(task.get("plan_id") or "") if has_remaining_tasks else "",
+                last_outreach_at=sent_at,
+            )
+        self.repository.update_outreach_plan_status(str(task.get("plan_id") or ""), next_plan_status)
+        self.repository.add_outreach_event(
+            plan_id=str(task.get("plan_id") or ""),
+            task_id=task_id,
+            customer_id=str(task.get("customer_id") or ""),
+            event_type="task_sent",
+            event_summary="Outreach task send confirmed by delivery callback",
+            payload={"message_delivery": dispatch},
+        )
 
     async def _refresh_order_eligibility(self, *, task: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
         source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}

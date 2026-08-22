@@ -8,6 +8,7 @@ import httpx
 
 from app.config import Settings
 from app.services.customer_relation import normalize_customer_relation
+from app.services.message_delivery import MessageDeliveryService, delivery_response_metadata
 
 
 _REQUEST_RETRY_ATTEMPTS = 3
@@ -18,12 +19,13 @@ _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 class OutreachSendClient:
     """Client for the platform proactive message send endpoint."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, delivery_service: MessageDeliveryService | None = None) -> None:
         self._base_url = str(settings.outreach_send_base_url or "").rstrip("/") + "/"
         self._token = settings.outreach_send_agent_token
         self._timeout = float(settings.outreach_send_timeout_seconds)
         self._client: httpx.AsyncClient | None = None
         self._client_loop_id: int | None = None
+        self._delivery_service = delivery_service
 
     @property
     def available(self) -> bool:
@@ -44,6 +46,13 @@ class OutreachSendClient:
         fallback_wechat: str | None,
         fallback_external_userid: str | None,
         reply_messages: list[dict[str, Any]],
+        source_channel: str = "ai_async_reply",
+        source_kind: str = "ai_async_reply",
+        source_request_id: str = "",
+        source_task_id: str = "",
+        conversation_id: str = "",
+        source_context: dict[str, Any] | None = None,
+        delivery_idempotency_key: str = "",
     ) -> dict[str, Any]:
         if not self.available:
             return {"status": "skipped", "reason": "outreach_send_not_configured"}
@@ -67,6 +76,47 @@ class OutreachSendClient:
         if not reply_messages:
             return {"status": "skipped", "reason": "empty_reply_messages"}
 
+        dispatch_id = ""
+        callback_required = False
+        if self._delivery_service:
+            prepared = self._delivery_service.prepare_dispatch(
+                source_channel=source_channel,
+                source_kind=source_kind,
+                source_request_id=source_request_id or request_id,
+                source_task_id=source_task_id or request_id,
+                conversation_id=conversation_id,
+                identity={key: payload.get(key) for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat")},
+                plan_id=str(payload.get("plan_id") or ""),
+                task_id=str(payload.get("task_id") or ""),
+                reply_messages=reply_messages,
+                source_context=source_context or {},
+                idempotency_key=delivery_idempotency_key,
+            )
+            dispatch = prepared.get("dispatch") if isinstance(prepared.get("dispatch"), dict) else {}
+            dispatch_id = str(prepared.get("dispatch_id") or "")
+            callback_required = bool(prepared.get("callback_required"))
+            payload["dispatch_id"] = dispatch_id
+            payload["reply_messages"] = prepared.get("reply_messages") or reply_messages
+            if prepared.get("callback_url"):
+                payload["callback_url"] = prepared["callback_url"]
+            existing_status = str(dispatch.get("status") or "")
+            if not bool(dispatch.get("created")) and existing_status in {
+                "platform_accepted",
+                "submission_unknown",
+                "sending",
+                "send_succeeded",
+                "send_failed",
+                "partial_failed",
+            }:
+                return {
+                    "status": "sent" if existing_status == "send_succeeded" else "accepted",
+                    "delivery_status": existing_status,
+                    "dispatch_id": dispatch_id,
+                    "duplicate_dispatch": True,
+                    "payload_message_count": len(reply_messages),
+                    "send_payload": payload,
+                }
+
         try:
             response = await self._request_with_retry(
                 "POST",
@@ -74,23 +124,50 @@ class OutreachSendClient:
                 json=payload,
             )
         except httpx.ReadTimeout:
+            if self._delivery_service and dispatch_id:
+                self._delivery_service.record_submission(
+                    dispatch_id,
+                    status="submission_unknown",
+                    error_code="read_timeout",
+                    error_message="platform send response timed out",
+                )
             return {
-                "status": "sent",
+                "status": "accepted" if callback_required else "sent",
                 "send_status": "accepted_no_response",
+                "delivery_status": "submission_unknown",
+                "dispatch_id": dispatch_id,
                 "payload_message_count": len(reply_messages),
                 "send_payload": payload,
             }
         except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            if self._delivery_service and dispatch_id:
+                self._delivery_service.record_submission(
+                    dispatch_id,
+                    status="submission_failed",
+                    error_code=type(exc).__name__,
+                    error_message=str(exc),
+                )
             return {
                 "status": "failed",
+                "delivery_status": "submission_failed",
+                "dispatch_id": dispatch_id,
                 "error": f"{type(exc).__name__}: {exc}",
                 "payload_message_count": len(reply_messages),
                 "send_payload": payload,
             }
         data = _response_body(response)
         if response.status_code >= 400:
+            if self._delivery_service and dispatch_id:
+                self._delivery_service.record_submission(
+                    dispatch_id,
+                    status="submission_failed",
+                    error_code=f"http_{response.status_code}",
+                    error_message=response.text[:2000],
+                )
             return {
                 "status": "failed",
+                "delivery_status": "submission_failed",
+                "dispatch_id": dispatch_id,
                 "error": f"http_status:{response.status_code}",
                 "payload_message_count": len(reply_messages),
                 "send_payload": payload,
@@ -100,8 +177,18 @@ class OutreachSendClient:
                     "text": response.text[:2000],
                 },
             }
+        if self._delivery_service and dispatch_id:
+            metadata = delivery_response_metadata(data)
+            self._delivery_service.record_submission(
+                dispatch_id,
+                status="platform_accepted",
+                platform_request_id=metadata["platform_request_id"],
+                system_msgid=metadata["system_msgid"],
+            )
         return {
-            "status": "sent",
+            "status": "accepted" if callback_required else "sent",
+            "delivery_status": "platform_accepted" if dispatch_id else "legacy_http_success",
+            "dispatch_id": dispatch_id,
             "payload_message_count": len(reply_messages),
             "send_payload": payload,
             "response": data,

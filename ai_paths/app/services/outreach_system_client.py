@@ -6,12 +6,14 @@ from typing import Any
 import httpx
 
 from app.config import Settings
+from app.services.message_delivery import MessageDeliveryService, delivery_response_metadata
 
 
 class OutreachSystemClient:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, delivery_service: MessageDeliveryService | None = None):
         self.settings = settings
         self._client: httpx.AsyncClient | None = None
+        self._delivery_service = delivery_service
 
     @property
     def available(self) -> bool:
@@ -81,6 +83,12 @@ class OutreachSystemClient:
         rule_id: str | int | None = None,
         rule_name: str | None = None,
         rule_task_id: str | int | None = None,
+        source_channel: str = "proactive_message",
+        source_kind: str = "proactive_message",
+        source_request_id: str = "",
+        source_task_id: str = "",
+        source_context: dict[str, Any] | None = None,
+        delivery_idempotency_key: str = "",
     ) -> dict[str, Any]:
         body = {
             "corp_id": corp_id,
@@ -102,11 +110,92 @@ class OutreachSystemClient:
             body["ruleTaskId"] = rule_task_id
         if self.settings.outreach_system_send_conversation_id_enabled and conversation_id:
             body["conversation_id"] = conversation_id
-        return await self._request(
-            "POST",
-            "/api/v1/platform-agent/ai-outreach/send",
-            json_body=body,
+        dispatch_id = ""
+        callback_required = False
+        if self._delivery_service:
+            prepared = self._delivery_service.prepare_dispatch(
+                source_channel=source_channel,
+                source_kind=source_kind,
+                source_request_id=source_request_id or task_id,
+                source_task_id=source_task_id or task_id,
+                conversation_id=conversation_id,
+                identity={
+                    "corp_id": corp_id,
+                    "customer_id": customer_id,
+                    "external_userid": external_userid,
+                    "user_id": user_id,
+                    "wechat": wechat,
+                },
+                plan_id=plan_id,
+                task_id=task_id,
+                reply_messages=reply_messages,
+                source_context=source_context or {},
+                idempotency_key=delivery_idempotency_key,
+            )
+            dispatch = prepared.get("dispatch") if isinstance(prepared.get("dispatch"), dict) else {}
+            dispatch_id = str(prepared.get("dispatch_id") or "")
+            callback_required = bool(prepared.get("callback_required"))
+            body["dispatch_id"] = dispatch_id
+            body["reply_messages"] = prepared.get("reply_messages") or reply_messages
+            if prepared.get("callback_url"):
+                body["callback_url"] = prepared["callback_url"]
+            existing_status = str(dispatch.get("status") or "")
+            if not bool(dispatch.get("created")) and existing_status in {
+                "platform_accepted",
+                "submission_unknown",
+                "sending",
+                "send_succeeded",
+                "send_failed",
+                "partial_failed",
+            }:
+                return {
+                    "code": 0,
+                    "msg": "duplicate_dispatch",
+                    "data": {
+                        "send_status": existing_status,
+                        "delivery_status": existing_status,
+                        "dispatch_id": dispatch_id,
+                        "callback_required": callback_required,
+                    },
+                }
+        try:
+            result = await self._request(
+                "POST",
+                "/api/v1/platform-agent/ai-outreach/send",
+                json_body=body,
+            )
+        except Exception as exc:
+            if self._delivery_service and dispatch_id:
+                self._delivery_service.record_submission(
+                    dispatch_id,
+                    status="submission_failed",
+                    error_code=type(exc).__name__,
+                    error_message=str(exc),
+                )
+            raise
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        upstream_status = str(data.get("send_status") or result.get("msg") or "")
+        delivery_status = "submission_unknown" if upstream_status == "accepted_no_response" else "platform_accepted"
+        if self._delivery_service and dispatch_id:
+            metadata = delivery_response_metadata(result)
+            self._delivery_service.record_submission(
+                dispatch_id,
+                status=delivery_status,
+                platform_request_id=metadata["platform_request_id"],
+                system_msgid=metadata["system_msgid"],
+                error_code="read_timeout" if delivery_status == "submission_unknown" else "",
+                error_message="platform send response timed out" if delivery_status == "submission_unknown" else "",
+            )
+        result_data = dict(data)
+        result_data.update(
+            {
+                "delivery_status": delivery_status,
+                "dispatch_id": dispatch_id,
+                "callback_required": callback_required,
+            }
         )
+        result["data"] = result_data
+        return result
 
     async def _request(
         self,

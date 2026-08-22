@@ -1588,6 +1588,12 @@ class SopEventService:
                 fallback_wechat=str(task.get("wechat") or ""),
                 fallback_external_userid=str(task.get("external_userid") or ""),
                 reply_messages=task.get("reply_messages") if isinstance(task.get("reply_messages"), list) else [],
+                source_channel="proactive_message",
+                source_kind="sop_event",
+                source_request_id=str(task.get("event_id") or ""),
+                source_task_id=str(task.get("id") or ""),
+                source_context={"sop_send_task_id": str(task.get("id") or "")},
+                delivery_idempotency_key=f"sop_event:{task.get('id')}",
             )
         except Exception as exc:
             return self.repository.update_sop_send_task(
@@ -1610,6 +1616,17 @@ class SopEventService:
             )
             self._record_successful_send(sent_task, sent_at=sent_at)
             return sent_task
+        if result.get("status") == "accepted":
+            return self.repository.update_sop_send_task(
+                str(task.get("id") or ""),
+                status="sending",
+                send_payload=_merge_send_payload(
+                    task,
+                    result.get("send_payload") if isinstance(result.get("send_payload"), dict) else {},
+                ),
+                send_response=_merge_send_response(task, result),
+                error="",
+            )
         status = str(result.get("status") or "failed")
         reason = str(result.get("reason") or result.get("error") or "")
         final_status = status if status.startswith("skipped") else "failed"
@@ -1620,6 +1637,30 @@ class SopEventService:
             send_response=_merge_send_response(task, result),
             error=reason,
         )
+
+    def finalize_message_delivery(self, dispatch: dict[str, Any]) -> None:
+        context = dispatch.get("source_context") if isinstance(dispatch.get("source_context"), dict) else {}
+        task_id = str(context.get("sop_send_task_id") or dispatch.get("source_task_id") or "").strip()
+        if not task_id:
+            raise ValueError("SOP delivery dispatch is missing sop_send_task_id")
+        status = str(dispatch.get("status") or "")
+        if status == "send_succeeded":
+            sent_at = str(dispatch.get("confirmed_at") or "") or utc_now_iso()
+            task = self.repository.update_sop_send_task(
+                task_id,
+                status="sent",
+                send_response={"message_delivery": dispatch},
+                sent_at=sent_at,
+            )
+            self._record_successful_send(task, sent_at=sent_at)
+            return
+        if status in {"send_failed", "partial_failed"}:
+            self.repository.update_sop_send_task(
+                task_id,
+                status="failed" if status == "send_failed" else "partial_failed",
+                send_response={"message_delivery": dispatch},
+                error=str(dispatch.get("error_message") or status),
+            )
 
     def _record_successful_send(self, task: dict[str, Any], *, sent_at: str) -> None:
         """Persist activity timestamps and minimal SOP history after a confirmed send."""
