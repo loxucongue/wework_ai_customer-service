@@ -44,7 +44,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no_send_platform_content_conflict", SOP_PLATFORM_MODEL_SCENE_CODES)
 
     def test_platform_callback_registry_only_exposes_customer_and_runtime_states(self) -> None:
-        self.assertEqual(len(SOP_PLATFORM_CALLBACK_SCENES), 12)
+        self.assertEqual(len(SOP_PLATFORM_CALLBACK_SCENES), 9)
         self.assertEqual(
             sop_platform_callback_scene(
                 internal_scene_code="ai_service_unopened_passthrough",
@@ -66,6 +66,19 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             ).code,
             "rejected",
         )
+        for internal_code in (
+            "no_send_explicit_stop_contact",
+            "no_send_complaint_or_refund",
+            "no_send_health_risk",
+            "no_send_paid_or_appointment_conflict",
+        ):
+            self.assertEqual(
+                sop_platform_callback_scene(
+                    internal_scene_code=internal_code,
+                    sent=False,
+                ).code,
+                "customer_state_blocked",
+            )
 
     def test_platform_knowledge_mapping_uses_real_knowledge_semantics(self) -> None:
         self.assertEqual(SOP_PLATFORM_KNOWLEDGE_SCENE_CODES[8], "objection_effect_recurrence")
@@ -364,6 +377,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_payload["decision"]["reason"], "duplicate_platform_task_content")
         self.assertEqual(platform.rule_data_calls[-1]["task_id"], "102")
         self.assertEqual(platform.rule_data_calls[-1]["scene_code"], "duplicate_blocked")
+        self.assertEqual(platform.rule_data_calls[-1]["send_status"], 20)
         self.assertEqual(platform.rule_data_calls[-1]["send_content"], "")
         self.assertEqual(repo.events["platform_sop_task:102"]["status"], "platform_no_send")
         self.assertEqual(len(model.calls), 1)
@@ -883,6 +897,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(callback["task_id"], "101")
         self.assertEqual(callback["scene_name"], "客户未开口")
         self.assertEqual(callback["scene_code"], "customer_unopened")
+        self.assertEqual(callback["send_status"], 10)
         self.assertIsNone(callback["knowledge_id"])
         self.assertIsNone(callback["knowledge_paragraph_no"])
         self.assertEqual(
@@ -2032,6 +2047,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             task_id=101,
             scene_name="正常推进｜平台任务内容",
             scene_code="normal_platform_intent",
+            send_status=10,
             remark="客户已开口，模型审核后发送",
             send_content="最终文本\n[image]https://cdn.example/a.jpg",
         )
@@ -2044,6 +2060,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
                 "taskId": 101,
                 "sceneName": "正常推进｜平台任务内容",
                 "sceneCode": "normal_platform_intent",
+                "sendStatus": 10,
                 "remark": "客户已开口，模型审核后发送",
                 "sendContent": "最终文本\n[image]https://cdn.example/a.jpg",
             },

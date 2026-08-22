@@ -125,15 +125,20 @@ class SopPlatformClient:
         *,
         task_id: str | int,
         scene_name: str,
+        send_status: int,
         scene_code: str = "",
         knowledge_id: int | None = None,
         knowledge_paragraph_no: int | None = None,
         remark: str = "",
         send_content: str = "",
     ) -> dict[str, Any]:
+        normalized_send_status = int(send_status)
+        if normalized_send_status not in {10, 20}:
+            raise ValueError("send_status must be 10 (success) or 20 (failed)")
         payload: dict[str, Any] = {
             "taskId": task_id,
             "sceneName": scene_name,
+            "sendStatus": normalized_send_status,
             "remark": remark[:500],
             "sendContent": send_content[:10000],
         }

@@ -2033,6 +2033,7 @@ class SopPlatformTaskService:
                 task_id=task_id,
                 scene_name=callback_scene.name,
                 scene_code=callback_scene.code,
+                send_status=10 if sent else 20,
                 knowledge_id=_int(decision.get("knowledgeId", decision.get("knowledge_id")), 0) or None,
                 knowledge_paragraph_no=_int(
                     decision.get("knowledgeParagraphNo", decision.get("knowledge_paragraph_no")),
