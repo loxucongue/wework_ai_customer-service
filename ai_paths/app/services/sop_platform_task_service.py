@@ -463,7 +463,11 @@ class SopPlatformTaskService:
                 break
             task["_aics_pulled_at"] = pulled_at
             try:
-                event, local_task = self._ensure_local_task(task, status="platform_queued")
+                event, local_task = await asyncio.to_thread(
+                    self._ensure_local_task,
+                    task,
+                    status="platform_queued",
+                )
             except Exception:
                 self._counters["persistence_error"] += 1
                 logger.exception("Unable to persist pulled third-party SOP task: %s", task_id)
@@ -522,7 +526,8 @@ class SopPlatformTaskService:
             await asyncio.sleep(max(1.0, float(self.settings.sop_platform_poll_seconds)))
 
     async def process_recoveries(self) -> int:
-        events = self.repository.list_sop_events_by_statuses(
+        events = await asyncio.to_thread(
+            self.repository.list_sop_events_by_statuses,
             self.RECOVERY_STATUSES,
             limit=self.settings.sop_platform_recovery_batch_size,
             event_type="platform_sop_task",
