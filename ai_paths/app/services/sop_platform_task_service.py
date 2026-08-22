@@ -463,10 +463,15 @@ class SopPlatformTaskService:
                 break
             task["_aics_pulled_at"] = pulled_at
             try:
-                self._ensure_local_task(task, status="platform_queued")
+                event, local_task = self._ensure_local_task(task, status="platform_queued")
             except Exception:
                 self._counters["persistence_error"] += 1
                 logger.exception("Unable to persist pulled third-party SOP task: %s", task_id)
+                continue
+            if str(event.get("status") or "") in self.RECOVERY_STATUSES or str(
+                local_task.get("status") or ""
+            ) in {"judging", "processing_retry", "sending", "failed"}:
+                self._counters["recovery_deferred"] += 1
                 continue
             self._queued_ids.add(task_id)
             self._queue.put_nowait(task)
@@ -540,10 +545,10 @@ class SopPlatformTaskService:
                         )
                         response = await self.platform_client.consume(
                             task_id=task_id,
-                            status=40,
+                            status=70,
                             remark="missing_platform_task_payload",
                         )
-                        _require_platform_status(response, 40)
+                        _require_platform_status(response, 70)
                         self.repository.update_sop_event_status(
                             event_id,
                             status="platform_failed",
@@ -644,8 +649,10 @@ class SopPlatformTaskService:
         task_id: str,
         event_id: str,
         terminal_status: int,
+        event_status: str = "",
+        remark: str | None = None,
     ) -> dict[str, Any]:
-        if terminal_status not in {30, 40, 70}:
+        if terminal_status not in {30, 70}:
             raise ValueError(f"unsupported platform terminal status: {terminal_status}")
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
         if local_task:
@@ -653,18 +660,22 @@ class SopPlatformTaskService:
             self.repository.update_sop_send_task(
                 str(local_task.get("id") or ""),
                 status=str(local_task.get("status") or "platform_received"),
-                send_payload={**audit, "platform_terminal_status": terminal_status},
+                send_payload={
+                    **audit,
+                    "platform_terminal_status": terminal_status,
+                    "platform_terminal_event_status": event_status,
+                },
             )
         self.repository.update_sop_event_status(event_id, status="platform_terminal_pending")
         response = await self.platform_client.consume(
             task_id=task_id,
             status=terminal_status,
-            remark=_platform_consume_remark(local_task),
+            remark=_platform_consume_remark(local_task) if remark is None else str(remark)[:500],
         )
         _require_platform_status(response, terminal_status)
         self.repository.update_sop_event_status(
             event_id,
-            status={30: "platform_completed", 40: "platform_failed", 70: "platform_no_send"}[terminal_status],
+            status=event_status or {30: "platform_completed", 70: "platform_no_send"}[terminal_status],
         )
         return response
 
@@ -674,8 +685,10 @@ class SopPlatformTaskService:
             explicit = int(payload.get("platform_terminal_status") or 0)
         except (TypeError, ValueError):
             explicit = 0
-        if explicit in {30, 40, 70}:
+        if explicit in {30, 70}:
             return explicit
+        if explicit == 40:
+            return 70
         task_status = str(local_task.get("status") or "")
         error = str(local_task.get("error") or "")
         decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
@@ -683,12 +696,19 @@ class SopPlatformTaskService:
         if task_status == "sent":
             return 30
         if task_status == "failed":
-            return 40
+            return 70
         if task_status in {"completed_without_send", "shadow_no_send"}:
             return 70
         if error or reason_code == "no_send_downstream_rejected":
-            return 40
+            return 70
         return 70
+
+    def _stored_terminal_event_status(self, local_task: dict[str, Any]) -> str:
+        payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        explicit = str(payload.get("platform_terminal_event_status") or "")
+        if explicit in {"platform_completed", "platform_failed", "platform_no_send"}:
+            return explicit
+        return "platform_failed" if str(local_task.get("status") or "") == "failed" else ""
 
     async def _process_with_content_lock(
         self,
@@ -857,7 +877,7 @@ class SopPlatformTaskService:
         }
         original_terminal_status = {
             "platform_completed": 30,
-            "platform_failed": 40,
+            "platform_failed": 70,
             "platform_no_send": 70,
         }.get(event_status)
         if original_terminal_status:
@@ -1007,7 +1027,7 @@ class SopPlatformTaskService:
         try:
             terminal_status = {
                 "platform_completed": 30,
-                "platform_failed": 40,
+                "platform_failed": 70,
                 "platform_no_send": 70,
             }.get(event_status, 30)
             local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
@@ -1108,6 +1128,34 @@ class SopPlatformTaskService:
         )
         local_status = str(local_task.get("status") or "")
         dispatch_mode = "deprecated_ignored"
+        if not self.settings.sop_platform_shadow_mode and recovery_status in {
+            "platform_claiming",
+            "platform_judging",
+            "platform_processing",
+            "platform_processing_retry",
+        }:
+            error = str(local_task.get("error") or recovery_status or "platform_processing_abandoned")
+            stored_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="failed",
+                send_payload=stored_payload,
+                error=error,
+            )
+            completed = await self._commit_platform_terminal(
+                task_id=task_id,
+                event_id=event_id,
+                terminal_status=70,
+                event_status="platform_failed",
+                remark=error,
+            )
+            return {
+                "processed": True,
+                "status": "failed",
+                "task_id": task_id,
+                "platform_response": completed,
+                "error": error,
+            }
         duplicate_reason = _duplicate_platform_task_reason(
             self.repository,
             local_task=local_task,
@@ -1183,6 +1231,7 @@ class SopPlatformTaskService:
                 task_id=task_id,
                 event_id=event_id,
                 terminal_status=terminal_status,
+                event_status=self._stored_terminal_event_status(local_task),
             )
             self._observe("claim", time.perf_counter() - started)
             return {
@@ -1502,7 +1551,7 @@ class SopPlatformTaskService:
                     if not delivery_failure:
                         raise
                     self._observe("send", time.perf_counter() - started)
-                    terminal_status = _delivery_rejection_terminal_status(delivery_failure)
+                    business_no_send = _delivery_rejection_is_no_send(delivery_failure)
                     failed_decision = {
                         **decision,
                         "decision": "no_send",
@@ -1525,7 +1574,7 @@ class SopPlatformTaskService:
                     )
                     self.repository.update_sop_send_task(
                         str(local_task.get("id") or ""),
-                        status="completed_without_send" if terminal_status == 70 else "failed",
+                        status="completed_without_send" if business_no_send else "failed",
                         send_payload={
                             "decision": failed_decision,
                             "attempted_decision": decision,
@@ -1543,12 +1592,14 @@ class SopPlatformTaskService:
                     completed = await self._commit_platform_terminal(
                         task_id=task_id,
                         event_id=event_id,
-                        terminal_status=terminal_status,
+                        terminal_status=70,
+                        event_status="" if business_no_send else "platform_failed",
+                        remark=str(failed_decision.get("remark") or ""),
                     )
                     self._counters["terminal_delivery_rejected"] += 1
                     return {
                         "processed": True,
-                        "status": "completed_without_send" if terminal_status == 70 else "failed",
+                        "status": "completed_without_send" if business_no_send else "failed",
                         "task_id": task_id,
                         "decision": failed_decision,
                         "delivery_failure": delivery_failure,
@@ -1586,8 +1637,9 @@ class SopPlatformTaskService:
                     send_response=send_result,
                     sent_at=utc_now_iso(),
                 )
-            terminal_status = 30 if decision["decision"] == "send" else _decision_terminal_status(decision)
-            if terminal_status == 40:
+            terminal_status = 30 if decision["decision"] == "send" else 70
+            processing_failure = decision["decision"] != "send" and _decision_is_processing_failure(decision)
+            if processing_failure:
                 current_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
                 current_payload = (
                     current_task.get("send_payload")
@@ -1604,6 +1656,8 @@ class SopPlatformTaskService:
                 task_id=task_id,
                 event_id=event_id,
                 terminal_status=terminal_status,
+                event_status="platform_failed" if processing_failure else "",
+                remark=str(decision.get("remark") or decision.get("reason") or ""),
             )
             return {
                 "processed": True,
@@ -1611,7 +1665,7 @@ class SopPlatformTaskService:
                     "sent"
                     if decision["decision"] == "send"
                     else "failed"
-                    if terminal_status == 40
+                    if processing_failure
                     else "completed_without_send"
                 ),
                 "task_id": task_id,
@@ -1626,30 +1680,36 @@ class SopPlatformTaskService:
                 "platform_terminal_pending",
             }:
                 error = f"{type(exc).__name__}: {exc}"
-                retry_event = self.repository.schedule_platform_sop_retry(event_id, error=error)
-                retry_exhausted = str(retry_event.get("status") or "") == "platform_retry_exhausted"
+                current_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
+                current_payload = (
+                    current_task.get("send_payload")
+                    if isinstance(current_task.get("send_payload"), dict)
+                    else {}
+                )
                 self.repository.update_sop_send_task(
-                    str(local_task.get("id") or ""),
-                    status="failed" if retry_exhausted else "processing_retry",
+                    str(current_task.get("id") or local_task.get("id") or ""),
+                    status="failed",
                     send_payload={
+                        **current_payload,
                         "platform_task_id": task_id,
-                        "retry_count": int(retry_event.get("retry_count") or 0),
+                        "retry_cancelled": True,
                     },
                     error=error,
                 )
-                if retry_exhausted:
-                    completed = await self._commit_platform_terminal(
-                        task_id=task_id,
-                        event_id=event_id,
-                        terminal_status=40,
-                    )
-                    return {
-                        "processed": True,
-                        "status": "failed",
-                        "task_id": task_id,
-                        "platform_response": completed,
-                        "error": error,
-                    }
+                completed = await self._commit_platform_terminal(
+                    task_id=task_id,
+                    event_id=event_id,
+                    terminal_status=70,
+                    event_status="platform_failed",
+                    remark=error,
+                )
+                return {
+                    "processed": True,
+                    "status": "failed",
+                    "task_id": task_id,
+                    "platform_response": completed,
+                    "error": error,
+                }
             raise
 
     async def _quiet_hours_guard(
@@ -2955,7 +3015,7 @@ def _terminal_delivery_failure(exc: Exception) -> dict[str, Any]:
     }
 
 
-def _delivery_rejection_terminal_status(failure: dict[str, Any]) -> int:
+def _delivery_rejection_is_no_send(failure: dict[str, Any]) -> bool:
     reason_code = str(failure.get("reason_code") or "").strip().lower()
     if reason_code in {
         "target_ai_disabled",
@@ -2964,26 +3024,26 @@ def _delivery_rejection_terminal_status(failure: dict[str, Any]) -> int:
         "human_takeover",
         "manual_takeover",
     }:
-        return 70
+        return True
     detail = str(failure.get("detail") or "").lower()
     if "outside enabled ai scope" in detail or "manual handoff" in detail or "human takeover" in detail:
-        return 70
-    return 40
+        return True
+    return False
 
 
-def _decision_terminal_status(decision: dict[str, Any]) -> int:
+def _decision_is_processing_failure(decision: dict[str, Any]) -> bool:
     reason = str(decision.get("reason") or "").strip().lower()
     reason_code = str(decision.get("reason_code") or "").strip().lower()
     scene_code = str(decision.get("sceneCode") or "").strip().lower()
     if reason.startswith("quiet_hours_") or reason_code.startswith("quiet_hours_"):
-        return 70
+        return False
     if (
         reason.startswith("invalid_")
         or reason_code.startswith("invalid_")
         or scene_code == "no_send_invalid_message_content"
     ):
-        return 40
-    return 70
+        return True
+    return False
 
 
 def _platform_consume_remark(local_task: dict[str, Any] | None) -> str:

@@ -924,17 +924,17 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["send_payload"]["attempted_decision"]["decision"], "send")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
 
-    async def test_transient_downstream_send_failure_remains_recoverable(self) -> None:
+    async def test_transient_downstream_send_failure_is_released_without_retry(self) -> None:
         model = _Model([{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}])
         service, repo, platform, system = _service(model=model)
         system.send_error = RuntimeError('outreach_system_http_503: {"detail":"temporarily unavailable"}')
 
-        with self.assertRaisesRegex(RuntimeError, "outreach_system_http_503"):
-            await service.process_task(_task())
+        result = await service.process_task(_task())
 
-        self.assertEqual(platform.consume_calls, [("101", 20)])
-        self.assertEqual(next(iter(repo.tasks.values()))["status"], "processing_retry")
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_processing_retry")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
+        self.assertEqual(next(iter(repo.tasks.values()))["status"], "failed")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
 
     async def test_downstream_conversation_not_found_is_consumed_as_terminal_rejection(self) -> None:
         model = _Model([{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}])
@@ -946,7 +946,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_task(_task())
 
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "failed")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
         self.assertEqual(len(system.send_calls), 1)
@@ -966,25 +966,21 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "completed_without_send")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
 
-    async def test_transient_failures_retry_three_times_then_consume_failed(self) -> None:
+    async def test_transient_failure_is_attempted_once_then_released(self) -> None:
         model = _Model(
-            [{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]} for _ in range(4)]
+            [{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}]
         )
         service, repo, platform, system = _service(model=model)
         system.send_error = RuntimeError('outreach_system_http_503: {"detail":"temporarily unavailable"}')
         task = _task()
 
-        for recovery_status in ("", "platform_processing_retry", "platform_processing_retry"):
-            with self.assertRaisesRegex(RuntimeError, "outreach_system_http_503"):
-                await service.process_task(task, recovery_status=recovery_status)
-
-        result = await service.process_task(task, recovery_status="platform_processing_retry")
+        result = await service.process_task(task)
 
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
-        self.assertEqual(repo.events["platform_sop_task:101"]["retry_count"], 4)
-        self.assertEqual(len(system.send_calls), 4)
+        self.assertEqual(repo.events["platform_sop_task:101"]["retry_count"], 0)
+        self.assertEqual(len(system.send_calls), 1)
 
     async def test_ai_service_customer_message_without_time_still_uses_model(self) -> None:
         model = _Model([{"decision": "send", "reason": "model owns semantics", "reply_messages": [_text("自然承接")]}])
@@ -1193,7 +1189,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
 
     async def test_empty_platform_content_never_falls_back_to_knowledge_model(self) -> None:
         model = _Model([{"decision": "send", "reason": "knowledge fallback", "reply_messages": [_text("知识库轻触达")]}])
@@ -1206,7 +1202,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(model.calls, [])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
 
     async def test_defer_output_is_repaired_and_never_becomes_platform_state(self) -> None:
         model = _Model(
@@ -1228,7 +1224,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(model.calls), 2)
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
 
-    async def test_model_failure_stays_local_retry_and_does_not_fake_success(self) -> None:
+    async def test_model_failure_is_released_and_does_not_fake_success(self) -> None:
         model = _Model(
             [
                 {"decision": "defer", "delay_minutes": 30, "reason": "later", "reply_messages": []},
@@ -1238,14 +1234,14 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         service, repo, platform, system = _service(model=model)
 
-        with self.assertRaisesRegex(RuntimeError, "invalid_sop_platform_model_output"):
-            await service.process_task(_task())
+        result = await service.process_task(_task())
 
-        self.assertEqual(platform.consume_calls, [("101", 20)])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_processing_retry")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
 
-    async def test_illegal_scene_code_gets_two_repairs_then_remains_retryable(self) -> None:
+    async def test_illegal_scene_code_gets_two_repairs_then_is_released(self) -> None:
         invalid = {
             "decision": "send",
             "sceneCode": "invented_scene",
@@ -1256,13 +1252,13 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         model = _Model([invalid, invalid, invalid])
         service, repo, platform, system = _service(model=model)
 
-        with self.assertRaisesRegex(RuntimeError, "invalid_sop_platform_model_output"):
-            await service.process_task(_task())
+        result = await service.process_task(_task())
 
+        self.assertEqual(result["status"], "failed")
         self.assertEqual(len(model.calls), 3)
-        self.assertEqual(platform.consume_calls, [("101", 20)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_processing_retry")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
 
     async def test_knowledge_scene_mismatch_is_repaired(self) -> None:
         model = _Model(
@@ -1370,8 +1366,21 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         processed = await service.process_recoveries()
 
         self.assertEqual(processed, 1)
-        self.assertEqual(platform.consume_calls, [("101", 40)])
+        self.assertEqual(platform.consume_calls, [("101", 70)])
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
+        self.assertEqual(system.send_calls, [])
+
+    async def test_existing_processing_retry_is_released_without_model_or_send(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+
+        result = await service.process_task(_task(), recovery_status="platform_processing_retry")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(platform.consume_calls, [("101", 70)])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
+        self.assertEqual(repo.tasks["platform-sop:101"]["status"], "failed")
+        self.assertEqual(model.calls, [])
         self.assertEqual(system.send_calls, [])
 
     async def test_claim_must_confirm_processing_before_context_or_send(self) -> None:
@@ -1774,27 +1783,23 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_platform_client_rejects_non_contract_statuses(self) -> None:
         client = SopPlatformClient(_settings())
-        with self.assertRaisesRegex(ValueError, "20, 30, 40, or 70"):
+        with self.assertRaisesRegex(ValueError, "20, 30, or 70"):
             import asyncio
 
             asyncio.run(client.consume(task_id=1, status=60))
 
-    async def test_platform_client_accepts_failed_and_no_send_statuses(self) -> None:
+    async def test_platform_client_accepts_no_send_and_rejects_internal_failure(self) -> None:
         client = SopPlatformClient(_settings())
-        client._request = AsyncMock(side_effect=[
-            {"code": 200, "data": {"taskId": 1, "status": 40}},
-            {"code": 200, "data": {"taskId": 2, "status": 70}},
-        ])  # type: ignore[method-assign]
+        client._request = AsyncMock(
+            return_value={"code": 200, "data": {"taskId": 2, "status": 70}}
+        )  # type: ignore[method-assign]
 
-        await client.consume(task_id=1, status=40)
+        with self.assertRaisesRegex(ValueError, "20, 30, or 70"):
+            await client.consume(task_id=1, status=40)
         await client.consume(task_id=2, status=70, remark="客户明确停止联系")
 
         self.assertEqual(
-            client._request.await_args_list[0].kwargs["json_body"],
-            {"taskId": 1, "status": 40, "remark": ""},
-        )  # type: ignore[union-attr]
-        self.assertEqual(
-            client._request.await_args_list[1].kwargs["json_body"],
+            client._request.await_args.kwargs["json_body"],
             {"taskId": 2, "status": 70, "remark": "客户明确停止联系"},
         )  # type: ignore[union-attr]
 
@@ -1833,7 +1838,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_task(task)
 
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 40)])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
         self.assertEqual(model.calls, [])
         self.assertEqual(system.send_calls, [])
 

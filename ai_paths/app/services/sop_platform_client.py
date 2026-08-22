@@ -22,7 +22,8 @@ class SopPlatformClient:
     """Client for the third-party SOP task queue.
 
     The upstream state contract is 10 (pending), 20 (processing),
-    30 (sent), 40 (failed), and 70 (not sent).
+    30 (sent), and 70 (not sent). Status 40 is written by the platform itself
+    and is not accepted by the external consume endpoint.
     """
 
     def __init__(self, settings: Settings):
@@ -73,8 +74,8 @@ class SopPlatformClient:
         status: int,
         remark: str = "",
     ) -> dict[str, Any]:
-        if status not in {20, 30, 40, 70}:
-            raise ValueError("platform SOP status must be 20, 30, 40, or 70")
+        if status not in {20, 30, 70}:
+            raise ValueError("platform SOP status must be 20, 30, or 70")
         return await self._request(
             "POST",
             "/event/trigger/consume",

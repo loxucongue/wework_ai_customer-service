@@ -133,42 +133,6 @@ class SopEventRepositoryMixin:
             )
         return self.get_sop_event(event_id)
 
-    def schedule_platform_sop_retry(
-        self,
-        event_id: str,
-        *,
-        error: str,
-        delays_seconds: tuple[int, ...] = (10, 30, 60),
-    ) -> dict[str, Any]:
-        """Persist one processing retry without changing the platform's status 20."""
-        now = datetime.now(timezone.utc)
-        delays = tuple(max(0, int(value)) for value in delays_seconds)
-        with self.store.connect() as conn:
-            row = conn.execute(
-                "SELECT retry_count FROM sop_events WHERE event_id=?",
-                (event_id,),
-            ).fetchone()
-            if row is None:
-                return {}
-            retry_count = int(row["retry_count"] or 0) + 1
-            if retry_count > len(delays):
-                status = "platform_retry_exhausted"
-                next_retry_at = ""
-                event_error = error
-            else:
-                status = "platform_processing_retry"
-                next_retry_at = (now + timedelta(seconds=delays[retry_count - 1])).isoformat()
-                event_error = ""
-            conn.execute(
-                """
-                UPDATE sop_events
-                SET status=?, error=?, retry_count=?, next_retry_at=?, last_retry_error=?, updated_at=?
-                WHERE event_id=?
-                """,
-                (status, event_error, retry_count, next_retry_at, error, now.isoformat(), event_id),
-            )
-        return self.get_sop_event(event_id)
-
     def list_platform_sop_task_records(
         self,
         *,
@@ -612,15 +576,13 @@ class SopEventRepositoryMixin:
         if event_type:
             clauses.append("event_type=?")
             params.append(str(event_type))
-        now = utc_now_iso()
-        params.extend([now, max(1, min(int(limit or 10), 100))])
+        params.append(max(1, min(int(limit or 10), 100)))
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT *
                 FROM sop_events
                 WHERE {' AND '.join(clauses)}
-                  AND (next_retry_at='' OR next_retry_at<=?)
                 ORDER BY updated_at ASC
                 LIMIT ?
                 """,
