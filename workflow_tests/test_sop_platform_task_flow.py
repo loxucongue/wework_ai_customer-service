@@ -966,6 +966,50 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "completed_without_send")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
 
+    async def test_human_takeover_status_is_consumed_without_model_or_send(self) -> None:
+        model = _Model([{"decision": "send", "reason": "must not run", "reply_messages": [_text("reply")]}])
+        service, repo, platform, system = _service(model=model)
+        system.conversation_status_payload = {
+            "code": 0,
+            "data": {
+                "takeover": {
+                    "mode": "human",
+                    "is_human": True,
+                    "is_ai": False,
+                    "handoff_status": "human_pending",
+                },
+                "ai_outreach": {
+                    "send_allowed": False,
+                    "reason_code": "handoff_human_active",
+                },
+            },
+        }
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
+        self.assertEqual(system.conversation_status_calls, 1)
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        decision = repo.tasks["platform-sop:101"]["send_payload"]["decision"]
+        self.assertEqual(decision["sceneCode"], "no_send_human_takeover")
+
+    async def test_takeover_status_failure_is_consumed_without_send(self) -> None:
+        model = _Model([{"decision": "send", "reason": "must not run", "reply_messages": [_text("reply")]}])
+        service, repo, platform, system = _service(model=model)
+        system.conversation_status_error = TimeoutError("status timeout")
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        decision = repo.tasks["platform-sop:101"]["send_payload"]["decision"]
+        self.assertEqual(decision["reason"], "takeover_status_unavailable")
+
     async def test_transient_failure_is_attempted_once_then_released(self) -> None:
         model = _Model(
             [{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}]
@@ -2417,6 +2461,15 @@ class _System:
         self.send_responses: list[dict[str, Any]] = []
         self.send_error: Exception | None = None
         self.conversation_calls = 0
+        self.conversation_status_calls = 0
+        self.conversation_status_error: Exception | None = None
+        self.conversation_status_payload = {
+            "code": 0,
+            "data": {
+                "takeover": {"mode": "ai", "is_human": False, "is_ai": True},
+                "ai_outreach": {"send_allowed": True, "reason_code": "ai_active"},
+            },
+        }
         self.conversation_error: Exception | None = None
         self.conversation_limits: list[int | None] = []
         self.conversation_payload = {
@@ -2433,6 +2486,12 @@ class _System:
         if self.conversation_error is not None:
             raise self.conversation_error
         return self.conversation_payload
+
+    async def conversation_status(self, **_kwargs):
+        self.conversation_status_calls += 1
+        if self.conversation_status_error is not None:
+            raise self.conversation_status_error
+        return self.conversation_status_payload
 
     async def send(self, **kwargs):
         self.send_calls.append(kwargs)

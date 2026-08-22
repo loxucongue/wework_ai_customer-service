@@ -1329,8 +1329,49 @@ class SopPlatformTaskService:
                 "platform_response": completed,
             }
 
+        takeover_status: dict[str, Any] = {}
+        takeover_decision: dict[str, Any] | None = None
+        if all(identity.get(key) for key in ("corp_id", "customer_id", "wechat")):
+            try:
+                takeover_status = await self.system_client.conversation_status(**identity)
+            except Exception as exc:
+                takeover_decision = {
+                    "decision": "no_send",
+                    "reason": "takeover_status_unavailable",
+                    "reason_code": "no_send_downstream_rejected",
+                    "sceneName": sop_platform_scene_name("no_send_downstream_rejected"),
+                    "sceneCode": "no_send_downstream_rejected",
+                    "knowledgeId": 0,
+                    "knowledgeParagraphNo": 0,
+                    "remark": f"会话接管状态查询失败，保守不发送：{type(exc).__name__}",
+                    "reply_messages": [],
+                }
+                self._counters["takeover_status_unavailable"] += 1
+            else:
+                if _is_human_takeover_status(takeover_status):
+                    takeover_decision = {
+                        "decision": "no_send",
+                        "reason": "human_takeover_active",
+                        "reason_code": "human_takeover",
+                        "sceneName": sop_platform_scene_name("no_send_human_takeover"),
+                        "sceneCode": "no_send_human_takeover",
+                        "knowledgeId": 0,
+                        "knowledgeParagraphNo": 0,
+                        "remark": "当前会话已由人工接管，平台任务消费但不发送",
+                        "reply_messages": [],
+                    }
+                    self._counters["human_takeover_status"] += 1
+
         try:
-            if preflight_reason:
+            if takeover_decision:
+                context = {
+                    "source": "conversation_takeover_status",
+                    "dispatch_mode": dispatch_mode,
+                    "task_timing": _task_timing(platform_task),
+                    "takeover_status": _compact_takeover_status(takeover_status),
+                }
+                decision = takeover_decision
+            elif preflight_reason:
                 context = {
                     "source": "preflight",
                     "dispatch_mode": dispatch_mode,
@@ -3034,6 +3075,37 @@ def _delivery_rejection_is_no_send(failure: dict[str, Any]) -> bool:
     if "outside enabled ai scope" in detail or "manual handoff" in detail or "human takeover" in detail:
         return True
     return False
+
+
+def _is_human_takeover_status(payload: dict[str, Any]) -> bool:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
+    outreach = data.get("ai_outreach") if isinstance(data.get("ai_outreach"), dict) else {}
+    mode = str(takeover.get("mode") or "").strip().lower()
+    reason_code = str(outreach.get("reason_code") or takeover.get("reason_code") or "").strip().lower()
+    return (
+        takeover.get("is_human") is True
+        or mode == "human"
+        or (
+            outreach.get("send_allowed") is False
+            and reason_code in {"handoff_human_active", "human_takeover", "manual_takeover"}
+        )
+    )
+
+
+def _compact_takeover_status(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
+    outreach = data.get("ai_outreach") if isinstance(data.get("ai_outreach"), dict) else {}
+    return {
+        "conversation_id": str(data.get("conversation_id") or ""),
+        "mode": str(takeover.get("mode") or ""),
+        "is_human": takeover.get("is_human"),
+        "is_ai": takeover.get("is_ai"),
+        "handoff_status": str(takeover.get("handoff_status") or ""),
+        "reason_code": str(outreach.get("reason_code") or takeover.get("reason_code") or ""),
+        "send_allowed": outreach.get("send_allowed"),
+    }
 
 
 def _decision_is_processing_failure(decision: dict[str, Any]) -> bool:
