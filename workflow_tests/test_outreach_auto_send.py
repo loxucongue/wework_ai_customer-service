@@ -480,7 +480,7 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
                     "sender_type": "ai",
                     "msgtype": "image",
                     "mediaUrl": f"{media_path}?Expires=100&Signature=old",
-                    "created_at": "2026-08-13T21:55:00+08:00",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                 }
             ]
         )
