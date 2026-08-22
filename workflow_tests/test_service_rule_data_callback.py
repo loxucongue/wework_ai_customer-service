@@ -151,6 +151,40 @@ def test_enqueue_uses_latest_prior_task_and_first_adopted_script(tmp_path) -> No
     assert payload["followScriptId"] == 37
 
 
+def test_human_takeover_opening_is_reported_without_ai_send_content(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    now = datetime.now(timezone.utc)
+    _create_sent_platform_task(
+        repository,
+        task_id="103",
+        sent_at=(now - timedelta(minutes=5)).isoformat(),
+    )
+    service = ServiceRuleDataService(repository=repository, client=_FakeClient())
+    state = _state(msgtype="text")
+    state["reply_messages"] = []
+
+    result = service.enqueue_customer_open(state, allow_empty_reply=True)
+    rows = repository.claim_due_strategy_data_callbacks(limit=1)
+
+    assert result["status"] == "pending"
+    assert result["task_id"] == "103"
+    assert rows[0]["payload"]["recordKind"] == "customer_open"
+    assert rows[0]["payload"]["customerReply"] == "我觉得还是有点远"
+    assert "sendContent" not in rows[0]["payload"]
+
+
+def test_human_takeover_without_prior_task_does_not_enqueue_callback(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    service = ServiceRuleDataService(repository=repository, client=_FakeClient())
+    state = _state(msgtype="text")
+    state["reply_messages"] = []
+
+    result = service.enqueue_customer_open(state, allow_empty_reply=True)
+
+    assert result == {"status": "skipped", "reason": "no_prior_sent_platform_task"}
+    assert repository.strategy_data_outbox_status() == {}
+
+
 def test_outbox_is_idempotent_and_worker_marks_sent(tmp_path) -> None:
     repository = _repository(tmp_path)
     now = datetime.now(timezone.utc)

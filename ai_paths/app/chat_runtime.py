@@ -25,6 +25,7 @@ from app.services.customer_payment_state import payment_fact_from_image
 from app.services.customer_scope import customer_scope_from_state
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
+from app.services.outreach_system_client import OutreachSystemClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService, is_platform_auto_opening_message
@@ -43,6 +44,7 @@ class ChatRuntime:
         repository: AppRepository,
         commit_graph: Any | None = None,
         outreach_send_client: OutreachSendClient | None = None,
+        outreach_system_client: OutreachSystemClient | None = None,
         memory_store: CustomerMemoryStore | None = None,
         platform_reply_coordinator: PlatformReplyCoordinator | None = None,
         sop_execution_service: SopExecutionService | None = None,
@@ -54,6 +56,7 @@ class ChatRuntime:
         self._trace_logger = trace_logger
         self._repository = repository
         self._outreach_send_client = outreach_send_client
+        self._outreach_system_client = outreach_system_client
         self._memory_store = memory_store
         self._platform_reply_coordinator = platform_reply_coordinator
         self._sop_execution_service = sop_execution_service
@@ -62,6 +65,100 @@ class ChatRuntime:
         self._platform_request_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
         self._platform_request_results: dict[str, tuple[float, ChatResponse]] = {}
         self._platform_request_tasks_lock = asyncio.Lock()
+
+    async def run_v3_takeover_guard(self, request: ChatRequest) -> ChatResponse | None:
+        """Stop V3 before model/tool work when the platform is in human mode."""
+
+        request_context = build_request_context(request)
+        if str(request_context.get("interface_version") or "").lower() != "v3":
+            return None
+        if is_isolated_v2_test_request(request, request_context):
+            return None
+        if not self._outreach_system_client or not self._outreach_system_client.available:
+            request_context["takeover_guard"] = {
+                "checked": False,
+                "decision": "continue_ai",
+                "reason": "outreach_system_not_configured",
+            }
+            request.request_context = request_context
+            return None
+
+        try:
+            status = await self._outreach_system_client.conversation_status(
+                corp_id=str(request.corp_id or ""),
+                customer_id=str(request.customer_id or request.external_userid or ""),
+                external_userid=str(request.external_userid or request.customer_id or ""),
+                user_id=str(request.user_id or ""),
+                wechat=str(request.wechat or ""),
+                ai_profile_id=str(request_context.get("ai_profile_id") or ""),
+                plan_id=str(request_context.get("plan_id") or ""),
+            )
+        except Exception as exc:
+            request_context["takeover_guard"] = {
+                "checked": False,
+                "decision": "continue_ai",
+                "reason": "status_query_failed",
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+            }
+            request.request_context = request_context
+            return None
+
+        data = status.get("data") if isinstance(status.get("data"), dict) else {}
+        takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
+        human_mode = bool(takeover.get("is_human")) or str(takeover.get("mode") or "").lower() == "human"
+        request_context["takeover_guard"] = {
+            "checked": True,
+            "decision": "return_empty" if human_mode else "continue_ai",
+            "mode": str(takeover.get("mode") or ""),
+            "handoff_status": str(takeover.get("handoff_status") or ""),
+            "reason_code": str(takeover.get("reason_code") or ""),
+            "reason": str(takeover.get("reason") or ""),
+        }
+        request.request_context = request_context
+        if not human_mode:
+            return None
+
+        request_id = str(uuid4())
+        request_context["test_isolated"] = False
+        request_context["memory_persist_allowed"] = True
+        conversation_id = self._prepare_conversation(request, request_id, request_context)
+        self._start_run_tracking(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            request_context=request_context,
+        )
+        state = self._initial_state(request, request_id, request_context)
+        state["reply_messages"] = []
+        state["reply_source"] = "human_takeover_guard"
+        state["takeover_guard"] = dict(request_context["takeover_guard"])
+        state.setdefault("trace", []).append(
+            {
+                "node": "human_takeover_guard",
+                "decision": "no_reply",
+                "reason": "platform_human_takeover_active",
+                "takeover": dict(request_context["takeover_guard"]),
+            }
+        )
+        _set_sync_return(state, "empty", [])
+        if self._service_rule_data_service:
+            try:
+                state["strategy_data_callback"] = self._service_rule_data_service.enqueue_customer_open(
+                    state,
+                    allow_empty_reply=True,
+                )
+            except Exception as exc:
+                state["strategy_data_callback"] = {
+                    "status": "error",
+                    "reason": f"{type(exc).__name__}: {exc}"[:500],
+                }
+        return self._persist_and_build_response(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            final_state=state,
+            allow_empty_reply=True,
+        )
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
         request_id = str(uuid4())

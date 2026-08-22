@@ -171,6 +171,7 @@ chat_runtime = ChatRuntime(
     trace_logger=trace_logger,
     repository=repository,
     outreach_send_client=outreach_send_client,
+    outreach_system_client=outreach_system_client,
     memory_store=memory_store,
     platform_reply_coordinator=platform_reply_coordinator,
     sop_execution_service=sop_execution_service,
@@ -671,6 +672,12 @@ async def workflow_compatible_reply(
     except ValueError as exc:
         return JSONResponse(status_code=400, content=workflow_error_response(str(exc)))
     _attach_request_interface_version(request, interface_version)
+    if str(interface_version).strip().lower() == "v3":
+        takeover_response = await chat_runtime.run_v3_takeover_guard(request)
+        if takeover_response is not None:
+            response_body = workflow_response_from_chat(takeover_response)
+            _record_http_response_body(takeover_response.request_id, response_body)
+            return JSONResponse(content=response_body)
     request = (
         await platform_voice_batch_coordinator.prepare(request, voice_transcription_client)
         if platform_async

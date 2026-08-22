@@ -69,6 +69,12 @@ def test_v3_sidecar_route_is_explicit_and_does_not_replace_existing_routes() -> 
     assert 'interface_version="v3"' in source
 
 
+def test_v3_takeover_guard_runs_before_media_preprocessing() -> None:
+    source = inspect.getsource(main.workflow_compatible_reply)
+
+    assert source.index("run_v3_takeover_guard") < source.index("platform_voice_batch_coordinator.prepare")
+
+
 def test_workflow_interface_version_is_attached_to_request_context() -> None:
     request = main.ChatRequest(customer_id="c1", corp_id="corp")
 

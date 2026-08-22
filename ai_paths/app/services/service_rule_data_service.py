@@ -41,7 +41,12 @@ class ServiceRuleDataService:
     def available(self) -> bool:
         return self.client.available
 
-    def enqueue_customer_open(self, state: dict[str, Any]) -> dict[str, Any]:
+    def enqueue_customer_open(
+        self,
+        state: dict[str, Any],
+        *,
+        allow_empty_reply: bool = False,
+    ) -> dict[str, Any]:
         if not self.available:
             return {"status": "skipped", "reason": "service_rule_data_not_configured"}
         context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
@@ -49,7 +54,7 @@ class ServiceRuleDataService:
             return {"status": "skipped", "reason": "not_v3"}
         if state.get("test_isolated"):
             return {"status": "skipped", "reason": "test_isolated"}
-        if not state.get("reply_messages"):
+        if not state.get("reply_messages") and not allow_empty_reply:
             return {"status": "skipped", "reason": "no_customer_visible_reply"}
 
         replied_at_iso, reply_epoch = _reply_times(context)
