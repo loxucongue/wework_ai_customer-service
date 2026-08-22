@@ -834,7 +834,9 @@ class OutreachRepositoryMixin:
                 rows = conn.execute(
                     """
                     WITH candidates AS (
-                        SELECT customer_id, external_userid, corp_id, user_id, wechat,
+                        SELECT customer_id, external_userid, corp_id,
+                               MAX(user_id) AS user_id,
+                               MAX(wechat) AS wechat,
                                MIN(created_at) AS sales_contact_started_at,
                                MAX(updated_at) AS updated_at,
                                MAX(created_at) AS latest_sop_task_at

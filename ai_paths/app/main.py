@@ -156,6 +156,7 @@ storage_retention_worker: asyncio.Task[None] | None = None
 store_snapshot_refresh_worker: asyncio.Task[None] | None = None
 outreach_plan_monitor_worker: asyncio.Task[None] | None = None
 outreach_task_executor_worker: asyncio.Task[None] | None = None
+first_day_outreach_backfill_worker: asyncio.Task[None] | None = None
 first_day_retention_last_date = ""
 FIRST_DAY_SETTINGS_ENV_KEYS = {
     "OUTREACH_FIRST_DAY_SILENCE_ENABLED",
@@ -255,17 +256,30 @@ async def _run_outreach_task_executor_worker() -> None:
         await asyncio.sleep(max(1.0, float(settings.outreach_auto_send_poll_seconds)))
 
 
+async def _run_first_day_outreach_backfill_worker() -> None:
+    try:
+        result = await asyncio.to_thread(repository.backfill_first_day_outreach_runs)
+        if result.get("created_runs"):
+            logger.info("Backfilled first-day outreach run history: %s", result)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("First-day outreach history backfill failed")
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
     global outreach_plan_monitor_worker, outreach_task_executor_worker
+    global first_day_outreach_backfill_worker
     storage_store.initialize()
-    backfill_result = await asyncio.to_thread(repository.backfill_first_day_outreach_runs)
-    if backfill_result.get("created_runs"):
-        logger.info("Backfilled first-day outreach run history: %s", backfill_result)
     if not settings.background_workers_enabled:
         logger.info("Background workers are disabled by AI_PATHS_BACKGROUND_WORKERS_ENABLED=false")
         return
+    if first_day_outreach_backfill_worker is None or first_day_outreach_backfill_worker.done():
+        first_day_outreach_backfill_worker = asyncio.create_task(
+            _run_first_day_outreach_backfill_worker()
+        )
     if settings.sop_platform_pull_enabled and (
         sop_platform_pull_worker is None or sop_platform_pull_worker.done()
     ):
@@ -293,6 +307,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
     global outreach_plan_monitor_worker, outreach_task_executor_worker
+    global first_day_outreach_backfill_worker
     if sop_platform_pull_worker is not None:
         sop_platform_pull_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -318,6 +333,11 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await outreach_task_executor_worker
         outreach_task_executor_worker = None
+    if first_day_outreach_backfill_worker is not None:
+        first_day_outreach_backfill_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await first_day_outreach_backfill_worker
+        first_day_outreach_backfill_worker = None
     await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()
