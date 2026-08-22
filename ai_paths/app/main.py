@@ -15,8 +15,19 @@ from fastapi.responses import JSONResponse
 from app.chat_runtime import ChatRuntime
 from app.config import get_settings
 from app.graph.graph_builder import build_reply_graphs
-from app.schemas import ChatRequest, ChatResponse, MessageDeliveryCallback
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ConversationModeChangedEvent,
+    MessageDeliveryCallback,
+)
 from app.services.coze_client import CozeClient
+from app.services.conversation_mode_relay import (
+    ConversationModeRelayService,
+    ConversationModeWritebackRejected,
+    ConversationModeWritebackTimeout,
+    ConversationModeWritebackUnavailable,
+)
 from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
@@ -51,6 +62,7 @@ trace_logger = TraceLogger(settings)
 storage_store = build_store(settings)
 repository = AppRepository(storage_store)
 message_delivery_service = MessageDeliveryService(settings, repository)
+conversation_mode_relay_service = ConversationModeRelayService(settings)
 coze_client = CozeClient(settings)
 voice_transcription_client = DoubaoAsrClient(settings)
 model_client = ModelClient(settings)
@@ -324,6 +336,7 @@ async def shutdown() -> None:
     await voice_transcription_client.aclose()
     await outreach_send_client.aclose()
     await outreach_system_client.aclose()
+    await conversation_mode_relay_service.aclose()
     await sop_platform_client.aclose()
     platform_agent_client.close()
     storage_store.close()
@@ -491,6 +504,26 @@ async def require_message_delivery_callback_token(
         )
 
 
+async def require_conversation_mode_callback_token(
+    x_callback_token: str | None = Header(default=None, alias="X-Callback-Token"),
+) -> None:
+    expected = str(
+        settings.conversation_mode_callback_token
+        or settings.message_delivery_callback_token
+        or ""
+    ).strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Conversation mode callback token is not configured",
+        )
+    if not x_callback_token or not secrets.compare_digest(x_callback_token, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing conversation mode callback token",
+        )
+
+
 async def _finalize_message_delivery(dispatch: dict[str, Any]) -> None:
     source_kind = str(dispatch.get("source_kind") or "").strip()
     if source_kind == "ai_async_reply":
@@ -537,6 +570,37 @@ async def message_delivery_callback(payload: MessageDeliveryCallback) -> dict[st
             "duplicate": bool(result.get("duplicate")),
             "status": str(dispatch.get("status") or ""),
             "finalized": bool(str(dispatch.get("finalized_at") or "").strip()),
+        },
+    }
+
+
+@app.post(
+    "/callbacks/v1/conversation-mode",
+    dependencies=[Depends(require_conversation_mode_callback_token)],
+)
+async def conversation_mode_callback(payload: ConversationModeChangedEvent) -> dict[str, Any]:
+    try:
+        result = await conversation_mode_relay_service.forward(payload)
+    except ConversationModeWritebackUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ConversationModeWritebackTimeout as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except ConversationModeWritebackRejected as exc:
+        logger.warning(
+            "Conversation mode strategy writeback rejected: event_id=%s status=%s error=%s",
+            payload.event_id,
+            exc.status_code,
+            exc,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "code": 0,
+        "msg": "ok",
+        "data": {
+            "event_id": payload.event_id,
+            "forwarded": True,
+            "writeback_http_status": int(result.get("http_status") or 0),
+            "writeback_response": result.get("response"),
         },
     }
 

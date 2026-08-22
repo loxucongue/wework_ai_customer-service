@@ -213,6 +213,26 @@ class Settings(BaseSettings):
         alias="MESSAGE_DELIVERY_CALLBACK_TOKEN",
         repr=False,
     )
+    conversation_mode_callback_token: str = Field(
+        default="",
+        alias="CONVERSATION_MODE_CALLBACK_TOKEN",
+        repr=False,
+    )
+    conversation_mode_writeback_url: str = Field(
+        default="",
+        alias="CONVERSATION_MODE_WRITEBACK_URL",
+    )
+    conversation_mode_writeback_token: str = Field(
+        default="",
+        alias="CONVERSATION_MODE_WRITEBACK_TOKEN",
+        repr=False,
+    )
+    conversation_mode_writeback_timeout_seconds: float = Field(
+        default=10.0,
+        alias="CONVERSATION_MODE_WRITEBACK_TIMEOUT_SECONDS",
+        gt=0,
+        le=120,
+    )
     outreach_auto_send_enabled: bool = Field(default=False, alias="OUTREACH_AUTO_SEND_ENABLED")
     outreach_auto_send_poll_seconds: float = Field(default=5.0, alias="OUTREACH_AUTO_SEND_POLL_SECONDS")
     outreach_auto_send_batch_size: int = Field(default=20, alias="OUTREACH_AUTO_SEND_BATCH_SIZE")

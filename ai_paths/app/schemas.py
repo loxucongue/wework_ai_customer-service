@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ChatRequest(BaseModel):
@@ -61,6 +61,29 @@ class MessageDeliveryCallback(BaseModel):
     error_code: str = ""
     error_message: str = ""
     items: list[MessageDeliveryCallbackItem] = Field(default_factory=list)
+
+
+class ConversationModeChangedEvent(BaseModel):
+    event_id: str = Field(min_length=1, max_length=255)
+    event_type: Literal["conversation_mode_changed"] = "conversation_mode_changed"
+    occurred_at: str = Field(min_length=1, max_length=64)
+    sequence: int | None = Field(default=None, ge=0)
+    corp_id: str = Field(min_length=1, max_length=255)
+    wechat: str = Field(min_length=1, max_length=255)
+    external_userid: str = Field(min_length=1, max_length=255)
+    customer_id: str = Field(min_length=1, max_length=255)
+    conversation_id: str = Field(default="", max_length=512)
+    from_mode: Literal["ai", "human"]
+    to_mode: Literal["ai", "human"]
+    reason_code: str = Field(default="", max_length=255)
+    operator_id: str = Field(default="", max_length=255)
+    operator_name: str = Field(default="", max_length=255)
+
+    @model_validator(mode="after")
+    def validate_transition(self) -> "ConversationModeChangedEvent":
+        if self.from_mode == self.to_mode:
+            raise ValueError("from_mode and to_mode must be different")
+        return self
 
 
 class CozeKbItem(BaseModel):
