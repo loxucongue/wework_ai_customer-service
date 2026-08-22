@@ -138,6 +138,8 @@ def test_enqueue_uses_latest_prior_task_and_first_adopted_script(tmp_path) -> No
     assert result["status"] == "pending"
     assert result["task_id"] == "102"
     assert payload["recordKind"] == "customer_open"
+    assert payload["triggerType"] == "customer_open"
+    assert payload["triggerRef"] == "102"
     assert payload["sceneCode"] == "customer_opening"
     assert payload["sceneName"] == "开口场景"
     assert payload["taskId"] == 102

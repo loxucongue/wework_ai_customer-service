@@ -91,14 +91,12 @@ class ServiceRuleDataService:
             ),
             "replyMsgId": reply_msgid,
             "replyTime": reply_epoch,
-            "triggerType": str(task.get("trigger_type") or "sop_node"),
+            "triggerType": "customer_open",
+            "triggerRef": str(task_id),
         }
         send_content = _sent_content_summary(state.get("reply_messages"))
         if send_content:
             payload["sendContent"] = send_content
-        if str(task.get("trigger_ref") or "").strip():
-            payload["triggerRef"] = str(task["trigger_ref"]).strip()
-
         knowledge = state.get("reply_knowledge_use") if isinstance(state.get("reply_knowledge_use"), dict) else {}
         checkpoint = str(
             knowledge.get("checkpoint_code")
