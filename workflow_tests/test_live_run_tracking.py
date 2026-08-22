@@ -181,4 +181,10 @@ def test_v3_run_detail_refreshes_strategy_callback_outbox_status(tmp_path: Path)
     assert sent["strategy_data_callback"]["status"] == "sent"
     assert sent["strategy_data_callback"]["sent_at"]
     assert sent["strategy_data_callback"]["response_code"] == 200
+    assert sent["strategy_data_callback"]["request_payload"] == {
+        "recordKind": "customer_open",
+        "taskId": 100,
+    }
+    assert sent["strategy_data_callback"]["response"]["code"] == 200
+    assert sent["strategy_data_callback"]["created_at"]
     assert sent["strategy_data_callback"]["response_message"] == "操作成功"

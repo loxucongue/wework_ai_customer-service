@@ -288,20 +288,25 @@ class RunRepositoryMixin:
             if outbox_id:
                 callback_row = conn.execute(
                     """
-                    SELECT status, retry_count, error, response_json, updated_at, sent_at
+                    SELECT status, retry_count, error, payload_json, response_json,
+                           created_at, updated_at, sent_at
                     FROM strategy_data_outbox WHERE id=?
                     """,
                     (outbox_id,),
                 ).fetchone()
                 if callback_row:
+                    request_payload = loads_dict(callback_row["payload_json"])
                     response = loads_dict(callback_row["response_json"])
                     output_snapshot["strategy_data_callback"] = {
                         **callback,
                         "status": str(callback_row["status"] or ""),
                         "retry_count": int(callback_row["retry_count"] or 0),
                         "error": str(callback_row["error"] or ""),
+                        "created_at": str(callback_row["created_at"] or ""),
                         "updated_at": str(callback_row["updated_at"] or ""),
                         "sent_at": str(callback_row["sent_at"] or ""),
+                        "request_payload": request_payload,
+                        "response": response,
                         "response_code": response.get("code"),
                         "response_message": str(response.get("message") or ""),
                     }

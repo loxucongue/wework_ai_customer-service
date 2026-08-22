@@ -313,6 +313,8 @@ function RunDetailPanel({
 
   return (
     <div className="space-y-5">
+      <StrategyCallbackPanel value={run.output_snapshot?.strategy_data_callback} />
+
       <section className="rounded-lg border bg-white p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -414,6 +416,55 @@ function RunDetailPanel({
         </details>
       </section>
     </div>
+  );
+}
+
+function StrategyCallbackPanel({ value }: { value: JsonValue }) {
+  if (!isRecord(value) || !Object.keys(value).length) return null;
+
+  const status = stringField(value.status) || "unknown";
+  const statusTone =
+    status === "sent"
+      ? "bg-emerald-100 text-emerald-700"
+      : status === "dead" || status === "failed"
+        ? "bg-red-100 text-red-700"
+        : status === "skipped"
+          ? "bg-slate-100 text-slate-700"
+          : "bg-amber-100 text-amber-700";
+  const requestPayload = isRecord(value.request_payload) ? value.request_payload : {};
+  const response = isRecord(value.response) ? value.response : {};
+
+  return (
+    <section className="rounded-lg border border-blue-200 bg-blue-50/40 p-5">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-semibold">策略回写</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusTone}`}>{status}</span>
+        <span className="text-slate-600">taskId: {stringField(value.task_id) || "未找到"}</span>
+        {stringField(value.outbox_id) ? <span className="font-mono text-xs text-slate-500">{stringField(value.outbox_id)}</span> : null}
+        {stringField(value.sent_at) ? <span className="text-xs text-slate-500">发送于 {formatTime(stringField(value.sent_at))}</span> : null}
+      </div>
+      {stringField(value.reason) ? <p className="mt-2 text-xs text-slate-600">原因：{stringField(value.reason)}</p> : null}
+      {stringField(value.error) ? <p className="mt-2 text-xs text-red-700">失败：{stringField(value.error)}</p> : null}
+      <details className="mt-3 rounded-md border bg-white">
+        <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-700">查看详细请求字段与响应</summary>
+        <div className="grid gap-3 border-t p-3 xl:grid-cols-2">
+          <Snapshot title="回写请求 Body（不含鉴权 Token）" value={requestPayload} tall />
+          <Snapshot
+            title="回写响应与执行信息"
+            value={{
+              response,
+              status,
+              retry_count: value.retry_count,
+              created_at: value.created_at,
+              updated_at: value.updated_at,
+              sent_at: value.sent_at,
+              error: value.error,
+            }}
+            tall
+          />
+        </div>
+      </details>
+    </section>
   );
 }
 
