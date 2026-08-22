@@ -2027,7 +2027,6 @@ class SopPlatformTaskService:
         callback_scene = sop_platform_callback_scene(
             internal_scene_code=internal_scene_code,
             sent=sent,
-            task_type=_task_type(platform_task),
         )
         try:
             return await self.platform_client.service_rule_data(

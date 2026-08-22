@@ -77,7 +77,6 @@ SOP_PLATFORM_TECHNICAL_SCENE_CODES = frozenset(
 SOP_PLATFORM_CALLBACK_SCENES = {
     code: SopPlatformCallbackScene(code=code, name=name)
     for code, name in (
-        ("customer_first_add_opening", "客户加微首句"),
         ("customer_unopened", "客户未开口"),
         ("customer_opened", "客户已开口"),
         ("customer_deleted", "客户删除"),
@@ -98,7 +97,6 @@ def sop_platform_callback_scene(
     *,
     internal_scene_code: str,
     sent: bool,
-    task_type: str,
 ) -> SopPlatformCallbackScene:
     code = str(internal_scene_code or "").strip()
     exact_mappings = {
@@ -117,7 +115,7 @@ def sop_platform_callback_scene(
     }
     callback_code = exact_mappings.get(code, "")
     if not callback_code and code == "ai_service_unopened_passthrough":
-        callback_code = "customer_first_add_opening" if task_type == "add_wecom" else "customer_unopened"
+        callback_code = "customer_unopened"
     if not callback_code:
         callback_code = "customer_opened" if sent or code in SOP_PLATFORM_MODEL_SCENE_CODES else "rejected"
     return SOP_PLATFORM_CALLBACK_SCENES[callback_code]

@@ -44,20 +44,18 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no_send_platform_content_conflict", SOP_PLATFORM_MODEL_SCENE_CODES)
 
     def test_platform_callback_registry_only_exposes_customer_and_runtime_states(self) -> None:
-        self.assertEqual(len(SOP_PLATFORM_CALLBACK_SCENES), 13)
+        self.assertEqual(len(SOP_PLATFORM_CALLBACK_SCENES), 12)
         self.assertEqual(
             sop_platform_callback_scene(
                 internal_scene_code="ai_service_unopened_passthrough",
                 sent=True,
-                task_type="add_wecom",
             ).code,
-            "customer_first_add_opening",
+            "customer_unopened",
         )
         self.assertEqual(
             sop_platform_callback_scene(
                 internal_scene_code="normal_activity_price",
                 sent=True,
-                task_type="",
             ).code,
             "customer_opened",
         )
@@ -65,7 +63,6 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             sop_platform_callback_scene(
                 internal_scene_code="no_send_downstream_rejected",
                 sent=False,
-                task_type="",
             ).code,
             "rejected",
         )
