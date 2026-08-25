@@ -248,6 +248,12 @@ const PHASE_META: Record<NodePresentation["phase"], { label: string; description
 function nodePresentation(node: ObservableNode): NodePresentation {
   const key = `${node.node_name} ${node.display_name}`.toLowerCase();
 
+  if (/platform_protocol_filter|auto_message|protocol_filter/.test(key)) {
+    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "识别是否需要 AI 处理", purpose: "识别平台自动消息等无需回复的请求，避免重复或错误发送。" };
+  }
+  if (/human_takeover|takeover_guard/.test(key)) {
+    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "检查是否已转人工", purpose: "确认当前会话是否仍由 AI 托管；已转人工时不再自动回复。" };
+  }
   if (/input_normal|preprocess|message_preprocess/.test(key)) {
     return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "接收并整理请求", purpose: "读取客户当前消息，统一消息格式和基础身份信息。" };
   }
