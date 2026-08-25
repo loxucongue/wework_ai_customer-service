@@ -5,7 +5,8 @@ import hashlib
 import json
 import os
 import time
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -248,6 +249,98 @@ class SopEventService:
         for group in pending_groups:
             results.append(await self._process_quiet_backlog_group(group, local_date=window["local_date"]))
         return results
+
+    def admin_quiet_backlog_logs(
+        self,
+        *,
+        local_date: str = "",
+        status: str = "",
+        customer_id: str = "",
+        wechat: str = "",
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        day = _quiet_backlog_admin_date(local_date)
+        source_start = datetime.combine(day, datetime_time.min, SOP_QUIET_TIMEZONE)
+        source_end = source_start.replace(hour=SOP_QUIET_END_HOUR)
+        day_end = source_start + timedelta(days=1)
+        source_tasks = self.repository.list_quiet_hour_backlog_tasks(
+            start_at=source_start.astimezone(timezone.utc).isoformat(),
+            end_at=source_end.astimezone(timezone.utc).isoformat(),
+            limit=2000,
+        )
+        groups = _group_quiet_backlog_tasks(source_tasks)
+        fusion_tasks = self.repository.list_quiet_backlog_fusion_tasks(
+            start_at=source_start.astimezone(timezone.utc).isoformat(),
+            end_at=day_end.astimezone(timezone.utc).isoformat(),
+            limit=2000,
+        )
+        fusion_by_contact = {
+            _quiet_backlog_contact_key(task): task
+            for task in fusion_tasks
+        }
+        items = [
+            _quiet_backlog_admin_item(
+                task=fusion_by_contact.get(group["key"]),
+                group=group,
+                local_date=day.isoformat(),
+            )
+            for group in groups
+        ]
+        for task in fusion_tasks:
+            key = _quiet_backlog_contact_key(task)
+            if any(item["contact_key"] == key for item in items):
+                continue
+            items.append(_quiet_backlog_admin_item(task=task, group=None, local_date=day.isoformat()))
+        items.sort(key=lambda item: str(item.get("processed_at") or item.get("suppressed_at") or ""), reverse=True)
+        status_filter = _string(status).lower()
+        customer_filter = _string(customer_id).lower()
+        wechat_filter = _string(wechat).lower()
+        filtered = [
+            item
+            for item in items
+            if (not status_filter or item["status"] == status_filter)
+            and (not customer_filter or customer_filter in _string(item.get("customer_id")).lower())
+            and (not wechat_filter or wechat_filter in _string(item.get("wechat")).lower())
+        ]
+        counts = Counter(item["status"] for item in items)
+        return {
+            "local_date": day.isoformat(),
+            "timezone": str(SOP_QUIET_TIMEZONE),
+            "summary": {
+                "night_task_count": len(source_tasks),
+                "customer_count": len(groups),
+                "fusion_count": len(fusion_tasks),
+                "sent_count": counts["sent"],
+                "not_sent_count": len(items) - counts["sent"] - counts["pending"] - counts["processing"],
+                "pending_count": counts["pending"],
+                "processing_count": counts["processing"],
+                "model_rejected_count": counts["model_rejected"],
+                "conversation_fetch_failed_count": counts["conversation_fetch_failed"],
+                "downstream_send_failed_count": counts["downstream_send_failed"],
+                "other_failed_count": counts["failed"],
+            },
+            "items": filtered[: max(1, min(int(limit or 200), 500))],
+        }
+
+    def admin_quiet_backlog_detail(self, event_id: str) -> dict[str, Any]:
+        detail = self.repository.get_sop_event_detail(_string(event_id))
+        event = detail.get("event") if isinstance(detail.get("event"), dict) else {}
+        if _string(event.get("event_type")) != "sop_quiet_backlog_fusion":
+            return {}
+        tasks = detail.get("tasks") if isinstance(detail.get("tasks"), list) else []
+        task = tasks[0] if tasks and isinstance(tasks[0], dict) else {}
+        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+        source_ids = send_payload.get("backlog_task_ids") if isinstance(send_payload.get("backlog_task_ids"), list) else []
+        if not source_ids:
+            raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+            source_ids = raw_payload.get("backlog_task_ids") if isinstance(raw_payload.get("backlog_task_ids"), list) else []
+        source_tasks = self.repository.list_sop_send_tasks_by_ids([_string(item) for item in source_ids])
+        return {
+            "event": event,
+            "task": task,
+            "source_tasks": source_tasks,
+            "timeline": _quiet_backlog_admin_timeline(event, task, source_tasks),
+        }
 
     async def _process_quiet_backlog_group(self, group: dict[str, Any], *, local_date: str) -> dict[str, Any]:
         identity = group.get("identity") if isinstance(group.get("identity"), dict) else {}
@@ -1788,6 +1881,91 @@ def _quiet_backlog_contact_key(identity: dict[str, Any]) -> str:
             customer_key.lower(),
         ]
     )
+
+
+def _quiet_backlog_admin_date(value: str) -> date:
+    text = _string(value)
+    if text:
+        try:
+            return date.fromisoformat(text)
+        except ValueError as exc:
+            raise ValueError("local_date must use YYYY-MM-DD") from exc
+    return datetime.now(SOP_QUIET_TIMEZONE).date()
+
+
+def _quiet_backlog_admin_status(task: dict[str, Any] | None) -> str:
+    if not task:
+        return "pending"
+    status = _string(task.get("status"))
+    if status == "sent":
+        return "sent"
+    if status == "skipped_model_rejected":
+        return "model_rejected"
+    if status == "failed_conversation_fetch":
+        return "conversation_fetch_failed"
+    if status == "failed" and _string(task.get("error")).startswith("http_status:"):
+        return "downstream_send_failed"
+    if status in {"pending", "sending"}:
+        return status
+    return "failed"
+
+
+def _quiet_backlog_admin_item(
+    *,
+    task: dict[str, Any] | None,
+    group: dict[str, Any] | None,
+    local_date: str,
+) -> dict[str, Any]:
+    source_tasks = group.get("tasks") if isinstance(group, dict) and isinstance(group.get("tasks"), list) else []
+    identity = group.get("identity") if isinstance(group, dict) and isinstance(group.get("identity"), dict) else task or {}
+    send_payload = task.get("send_payload") if isinstance(task, dict) and isinstance(task.get("send_payload"), dict) else {}
+    send_response = task.get("send_response") if isinstance(task, dict) and isinstance(task.get("send_response"), dict) else {}
+    decision = send_response.get("event_decision") if isinstance(send_response.get("event_decision"), dict) else {}
+    source_ids = send_payload.get("backlog_task_ids") if isinstance(send_payload.get("backlog_task_ids"), list) else []
+    if not source_ids:
+        source_ids = [_string(item.get("id")) for item in source_tasks if _string(item.get("id"))]
+    suppressed_times = [_string(item.get("created_at")) for item in source_tasks if _string(item.get("created_at"))]
+    return {
+        "event_id": _string(task.get("event_id")) if isinstance(task, dict) else _quiet_backlog_fusion_event_id(local_date, identity),
+        "contact_key": _quiet_backlog_contact_key(identity),
+        "customer_id": _string(identity.get("customer_id")),
+        "external_userid": _string(identity.get("external_userid")),
+        "corp_id": _string(identity.get("corp_id")),
+        "user_id": _string(identity.get("user_id")),
+        "wechat": _string(identity.get("wechat")),
+        "status": _quiet_backlog_admin_status(task),
+        "raw_status": _string(task.get("status")) if isinstance(task, dict) else "",
+        "error": _string(task.get("error")) if isinstance(task, dict) else "",
+        "reason": _string(decision.get("reason")),
+        "source_task_count": len(source_ids),
+        "source_task_ids": source_ids,
+        "covered_pack_ids": decision.get("covered_pack_ids") if isinstance(decision.get("covered_pack_ids"), list) else [],
+        "message_count": len(task.get("reply_messages") or []) if isinstance(task, dict) else 0,
+        "suppressed_at": min(suppressed_times) if suppressed_times else "",
+        "processed_at": _string(task.get("created_at")) if isinstance(task, dict) else "",
+        "sent_at": _string(task.get("sent_at")) if isinstance(task, dict) else "",
+    }
+
+
+def _quiet_backlog_admin_timeline(
+    event: dict[str, Any],
+    task: dict[str, Any],
+    source_tasks: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    timeline: list[dict[str, str]] = []
+    source_times = [_string(item.get("created_at")) for item in source_tasks if _string(item.get("created_at"))]
+    if source_times:
+        timeline.append({"stage": "quiet_suppressed", "time": min(source_times), "label": "夜间规则拦截并消费"})
+    received_at = _string(event.get("received_at")) or _string(task.get("created_at"))
+    if received_at:
+        timeline.append({"stage": "fusion_started", "time": received_at, "label": "进入客户级融合"})
+    if task.get("send_response"):
+        timeline.append({"stage": "model_decided", "time": _string(task.get("updated_at")) or received_at, "label": "模型完成融合判断"})
+    if _string(task.get("sent_at")):
+        timeline.append({"stage": "sent", "time": _string(task.get("sent_at")), "label": "聚合平台发送成功"})
+    elif _string(task.get("status")):
+        timeline.append({"stage": "finished_without_send", "time": _string(task.get("updated_at")) or received_at, "label": "未发送并记录原因"})
+    return timeline
 
 
 def _quiet_backlog_fusion_event_id(local_date: str, identity: dict[str, Any]) -> str:

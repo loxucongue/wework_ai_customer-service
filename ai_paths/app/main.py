@@ -736,6 +736,34 @@ async def admin_sop_platform_tasks(
     )
 
 
+@app.get("/admin/sop-platform-tasks/quiet-backlog", dependencies=[Depends(require_api_key)])
+async def admin_sop_platform_quiet_backlog(
+    local_date: str = "",
+    status: str = "",
+    customer_id: str = "",
+    wechat: str = "",
+    limit: int = 200,
+) -> dict[str, Any]:
+    try:
+        return sop_event_service.admin_quiet_backlog_logs(
+            local_date=local_date,
+            status=status,
+            customer_id=customer_id,
+            wechat=wechat,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/admin/sop-platform-tasks/quiet-backlog/{event_id:path}", dependencies=[Depends(require_api_key)])
+async def admin_sop_platform_quiet_backlog_detail(event_id: str) -> dict[str, Any]:
+    detail = sop_event_service.admin_quiet_backlog_detail(event_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="quiet backlog fusion event not found")
+    return detail
+
+
 @app.post("/admin/sop-platform-tasks/{task_id}/resend", dependencies=[Depends(require_api_key)])
 async def admin_sop_platform_task_resend(task_id: str) -> dict[str, Any]:
     try:

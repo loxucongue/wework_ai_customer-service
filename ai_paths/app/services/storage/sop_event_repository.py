@@ -534,6 +534,70 @@ class SopEventRepositoryMixin:
             tasks.append(task)
         return tasks
 
+    def list_quiet_backlog_fusion_tasks(
+        self,
+        *,
+        start_at: str,
+        end_at: str,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 500), 2000))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.*, e.received_at AS event_received_at, e.status AS event_status,
+                       e.raw_payload_json AS raw_payload_json
+                FROM sop_send_tasks t
+                JOIN sop_events e ON e.event_id=t.event_id
+                WHERE e.event_type='sop_quiet_backlog_fusion'
+                  AND t.created_at>=?
+                  AND t.created_at<?
+                ORDER BY t.created_at DESC
+                LIMIT ?
+                """,
+                (start_at, end_at, safe_limit),
+            ).fetchall()
+        tasks: list[dict[str, Any]] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            event_received_at = str(row.pop("event_received_at", "") or "")
+            event_status = str(row.pop("event_status", "") or "")
+            raw_payload = loads_dict(row.pop("raw_payload_json", "{}"))
+            task = self._decode_sop_send_task(row)
+            task["event_received_at"] = event_received_at
+            task["event_status"] = event_status
+            task["raw_event_payload"] = raw_payload
+            tasks.append(task)
+        return tasks
+
+    def list_sop_send_tasks_by_ids(self, task_ids: list[str]) -> list[dict[str, Any]]:
+        normalized = list(dict.fromkeys(str(task_id or "").strip() for task_id in task_ids if str(task_id or "").strip()))
+        if not normalized:
+            return []
+        normalized = normalized[:2000]
+        placeholders = ",".join("?" for _ in normalized)
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT t.*, e.event_type AS source_event_type, e.raw_payload_json AS source_raw_payload_json
+                FROM sop_send_tasks t
+                LEFT JOIN sop_events e ON e.event_id=t.event_id
+                WHERE t.id IN ({placeholders})
+                ORDER BY t.created_at ASC
+                """,
+                normalized,
+            ).fetchall()
+        tasks: list[dict[str, Any]] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            source_event_type = str(row.pop("source_event_type", "") or "")
+            source_raw_payload = loads_dict(row.pop("source_raw_payload_json", "{}"))
+            task = self._decode_sop_send_task(row)
+            task["source_event_type"] = source_event_type
+            task["raw_event_payload"] = source_raw_payload
+            tasks.append(task)
+        return tasks
+
     def get_sop_send_task_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any]:
         with self.store.connect() as conn:
             row = conn.execute(

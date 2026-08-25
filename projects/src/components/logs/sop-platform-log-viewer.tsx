@@ -206,6 +206,13 @@ export function SopPlatformLogViewer() {
           </div>
           <div className="flex items-center gap-2">
             <Link
+              href="/logs/sop-platform?view=quiet-backlog"
+              className="inline-flex items-center gap-2 rounded-md border bg-white px-4 py-2 text-sm hover:bg-slate-50"
+            >
+              <Clock3 className="h-4 w-4" />
+              夜间补发
+            </Link>
+            <Link
               href="/sop-materials"
               className="inline-flex items-center gap-2 rounded-md border bg-white px-4 py-2 text-sm hover:bg-slate-50"
             >

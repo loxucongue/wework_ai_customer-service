@@ -2030,6 +2030,44 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             {"task_1", "task_2"},
         )
 
+    async def test_quiet_hour_backlog_admin_logs_link_source_tasks_and_result(self) -> None:
+        repo = _Repo()
+        selector = _FusionSelector(
+            {
+                "send_sop": True,
+                "covered_pack_ids": ["effect"],
+                "reply_messages": [{"type": "text", "text": "补发效果内容"}],
+            }
+        )
+        service = _service(
+            repo=repo,
+            client=_OutreachClient(messages=[]),
+            selector=selector,
+            pack_service=_BacklogPackService(),
+            quiet_backlog_fusion_time="08:30",
+        )
+        payload = _base_payload(
+            event_id="evt_quiet_admin",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-08-25T02:10:00+08:00",
+            sop={"delay_minutes": 60, "stage_tag": "activity"},
+            customers=[{"first_added_event": {"trace_id": "trace_admin"}}],
+        )
+        repo.create_sop_event(payload)
+        await service.process_event(payload["event_id"])
+        await service.process_due_quiet_backlog_fusions(now=_dt("2026-08-25T08:31:00+08:00"))
+
+        result = service.admin_quiet_backlog_logs(local_date="2026-08-25")
+
+        self.assertEqual(result["summary"]["night_task_count"], 1)
+        self.assertEqual(result["summary"]["customer_count"], 1)
+        self.assertEqual(result["summary"]["fusion_count"], 1)
+        self.assertEqual(result["summary"]["sent_count"], 1)
+        self.assertEqual(result["items"][0]["source_task_ids"], ["task_1"])
+        detail = service.admin_quiet_backlog_detail(result["items"][0]["event_id"])
+        self.assertEqual(detail["source_tasks"][0]["id"], "task_1")
+        self.assertEqual(detail["timeline"][-1]["stage"], "sent")
+
     async def test_quiet_hour_backlog_fuses_third_party_first_add_original_messages(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "assistant", "content": "昨晚比较晚。"}])
@@ -5601,6 +5639,35 @@ class _Repo:
                 continue
             output.append({**dict(task), "raw_event_payload": event_payload, "event_type": event_payload.get("event_type")})
         return output[:limit]
+
+    def list_quiet_backlog_fusion_tasks(self, *, start_at: str, end_at: str, limit: int = 500) -> list[dict[str, Any]]:
+        start = datetime.fromisoformat(start_at)
+        end = datetime.fromisoformat(end_at)
+        output: list[dict[str, Any]] = []
+        for task in self.tasks:
+            created = datetime.fromisoformat(str(task.get("created_at") or "1970-01-01T00:00:00+00:00"))
+            event_payload = self.events.get(str(task.get("event_id") or ""), {}).get("raw_payload", {})
+            if event_payload.get("event_type") != "sop_quiet_backlog_fusion" or not (start <= created < end):
+                continue
+            output.append(dict(task))
+        return list(reversed(output[-limit:]))
+
+    def list_sop_send_tasks_by_ids(self, task_ids: list[str]) -> list[dict[str, Any]]:
+        wanted = set(task_ids)
+        return [dict(task) for task in self.tasks if str(task.get("id") or "") in wanted]
+
+    def get_sop_event_detail(self, event_id: str) -> dict[str, Any]:
+        event = self.events.get(event_id)
+        if not event:
+            return {}
+        return {
+            "event": {
+                **dict(event),
+                "event_type": str(event.get("raw_payload", {}).get("event_type") or ""),
+                "received_at": str(event.get("raw_payload", {}).get("created_at") or ""),
+            },
+            "tasks": [dict(task) for task in self.tasks if task.get("event_id") == event_id],
+        }
 
     def get_sop_send_task_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any]:
         for task in self.tasks:

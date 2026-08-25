@@ -354,6 +354,14 @@ export type AiPathsSopPlatformTasksQuery = {
   refresh_platform?: string;
 };
 
+export type AiPathsQuietBacklogQuery = {
+  local_date?: string;
+  status?: string;
+  customer_id?: string;
+  wechat?: string;
+  limit?: string;
+};
+
 export async function listAiPathsRuns(query: AiPathsRunsQuery) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const headers = aiPathsAuthHeaders();
@@ -430,6 +438,30 @@ export async function resendAiPathsSopPlatformTask(taskId: string) {
   const headers = aiPathsAuthHeaders();
   return fetch(`${apiBase.replace(/\/$/, "")}/admin/sop-platform-tasks/${encodeURIComponent(taskId)}/resend`, {
     method: "POST",
+    headers,
+    cache: "no-store",
+  });
+}
+
+export async function listAiPathsQuietBacklog(query: AiPathsQuietBacklogQuery) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = aiPathsAuthHeaders();
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value) search.set(key, value);
+  }
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/sop-platform-tasks/quiet-backlog?${search.toString()}`, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+}
+
+export async function getAiPathsQuietBacklog(eventId: string) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = aiPathsAuthHeaders();
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/sop-platform-tasks/quiet-backlog/${encodeURIComponent(eventId)}`, {
+    method: "GET",
     headers,
     cache: "no-store",
   });
