@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeft, CheckCircle2, Clock3, Database, RefreshCw, Search, Send, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Clock3, Database, RefreshCw, Search, XCircle } from "lucide-react";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -75,7 +75,7 @@ export function QuietBacklogLogViewer() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const items = data.items || [];
+  const items = useMemo(() => data.items || [], [data.items]);
   const selected = useMemo(() => items.find((item) => item.event_id === selectedId) || items[0] || null, [items, selectedId]);
 
   const load = useCallback(async () => {
@@ -228,7 +228,10 @@ function MessageItem({ message, index }: { message: unknown; index: number }) {
     return <div className="border bg-slate-50 p-3"><div className="mb-2 text-xs text-slate-500">#{index + 1} 文字</div><div className="whitespace-pre-wrap text-sm leading-6">{text}</div></div>;
   }
   const url = isRecord(content) ? String(content.url || "") : String(content || item.mediaUrl || "");
-  return <div className="border bg-slate-50 p-3"><div className="mb-2 text-xs text-slate-500">#{index + 1} {type}</div>{type === "image" && url ? <img src={url} alt="SOP 素材" className="mb-2 max-h-56 max-w-full border object-contain" /> : null}<div className="break-all text-xs text-slate-500">{url || JSON.stringify(content)}</div></div>;
+  return <div className="border bg-slate-50 p-3"><div className="mb-2 text-xs text-slate-500">#{index + 1} {type}</div>{type === "image" && url ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={url} alt="SOP 素材" className="mb-2 max-h-56 max-w-full border object-contain" />
+  ) : null}<div className="break-all text-xs text-slate-500">{url || JSON.stringify(content)}</div></div>;
 }
 
 function Metric({ label, value, tone = "default" }: { label: string; value?: number; tone?: "default" | "green" | "red" }) {
