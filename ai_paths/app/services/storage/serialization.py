@@ -111,13 +111,13 @@ def interface_version_from_run(run: dict[str, Any]) -> str:
     request_context = input_snapshot.get("request_context") if isinstance(input_snapshot.get("request_context"), dict) else {}
     raw_http = output_snapshot.get("http_response_body") if isinstance(output_snapshot.get("http_response_body"), dict) else {}
     candidates = [
-        run.get("interface_version"),
         input_snapshot.get("interface_version"),
-        output_snapshot.get("interface_version"),
         request_context.get("interface_version"),
         request_context.get("api_version"),
         raw_http.get("interface_version"),
         raw_http.get("api_version"),
+        run.get("interface_version"),
+        output_snapshot.get("interface_version"),
         request_context.get("source_protocol"),
     ]
     for value in candidates:

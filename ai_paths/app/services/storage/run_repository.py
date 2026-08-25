@@ -29,12 +29,14 @@ class RunRepositoryMixin:
         """Persist the request before model execution so it is visible live."""
 
         started_at = utc_now_iso()
+        version = str(interface_version or "").strip().lower()
+        version = version if version in {"v1", "v2", "v3"} else "v1"
         output_snapshot = {
             "runtime_status": "running",
             "runtime_phase": "request_received",
             "runtime_started_at": started_at,
             "runtime_updated_at": started_at,
-            "interface_version": "v2" if str(interface_version).lower() == "v2" else "v1",
+            "interface_version": version,
         }
         with self.store.connect() as conn:
             conn.execute(

@@ -70,6 +70,26 @@ def test_run_is_visible_while_running_and_completion_preserves_start_time(tmp_pa
     assert completed["duration_ms"] >= 1
 
 
+def test_running_v3_request_preserves_interface_version(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _insert_conversation(repository, "conversation-live-v3")
+    repository.start_run(
+        request_id="request-live-v3",
+        conversation_id="conversation-live-v3",
+        customer_id="sim_customer",
+        interface_version="v3",
+        input_snapshot={
+            "content": "测试 v3 运行任务",
+            "request_context": {"interface_version": "v3", "api_version": "v3"},
+        },
+    )
+
+    running = repository.get_run("request-live-v3")["run"]
+
+    assert running["interface_version"] == "v3"
+    assert running["output_snapshot"]["interface_version"] == "v3"
+
+
 def test_legacy_runs_decode_as_completed(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     _insert_conversation(repository, "conversation-legacy")

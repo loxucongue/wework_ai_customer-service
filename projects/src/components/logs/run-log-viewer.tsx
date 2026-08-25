@@ -659,7 +659,9 @@ function contentSnippet(run: RunItem) {
 function InterfaceVersionBadge({ run }: { run: RunItem }) {
   const version = runInterfaceVersion(run);
   const className =
-    version === "v2"
+    version === "v3"
+      ? "bg-blue-100 text-blue-700 ring-blue-200"
+      : version === "v2"
       ? "bg-emerald-100 text-emerald-700 ring-emerald-200"
       : "bg-slate-200 text-slate-700 ring-slate-300";
   return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase ring-1 ${className}`}>{version}</span>;
@@ -710,10 +712,12 @@ function phaseLabel(phase?: string) {
 
 function runInterfaceVersion(run: RunItem) {
   const direct = String(run.interface_version || "").trim().toLowerCase();
+  if (direct === "v3") return "v3";
   if (direct === "v2") return "v2";
   const context = run.input_snapshot?.request_context;
   if (isRecord(context)) {
     const values = [context.interface_version, context.api_version, context.source_protocol];
+    if (values.some((item) => String(item || "").toLowerCase().includes("v3"))) return "v3";
     if (values.some((item) => String(item || "").toLowerCase().includes("v2"))) return "v2";
   }
   return "v1";

@@ -851,7 +851,8 @@ async def workflow_compatible_reply(
 
 
 def _attach_request_interface_version(request: ChatRequest, interface_version: str) -> None:
-    version = "v2" if str(interface_version).strip().lower() == "v2" else "v1"
+    candidate = str(interface_version).strip().lower()
+    version = candidate if candidate in {"v1", "v2", "v3"} else "v1"
     context = dict(request.request_context or {})
     context["interface_version"] = version
     context["api_version"] = version
