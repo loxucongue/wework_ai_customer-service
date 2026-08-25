@@ -2088,8 +2088,6 @@ def _quiet_backlog_source_messages(
         pack_id = _string(pack.get("id"))
         for message in _pack_messages(pack):
             message_type = _string(message.get("type")).lower() or "text"
-            if message_type == "text":
-                continue
             if message_type == "payment_collection" and not _sop_payment_collection_supported(
                 [message],
                 customer_memory,
@@ -2108,7 +2106,7 @@ def _quiet_backlog_source_messages(
                     "source_id": source_id,
                     "pack_id": pack_id,
                     "type": message_type,
-                    "content": compact(normalized.get("content"), max_chars=600),
+                    "content": compact(normalized.get("content"), max_chars=4000),
                 }
             )
     return output, lookup
@@ -2157,12 +2155,28 @@ def _normalize_quiet_backlog_fusion_messages(
                 message["order"] = len(output) + 1
                 output.append(message)
             continue
-        if message_type == "text":
-            text = _string(item.get("text"))
-            content = item.get("content") if isinstance(item.get("content"), dict) else {}
-            text = text or _string(content.get("text"))
-            if text:
-                output.append({"type": "text", "order": len(output) + 1, "content": {"text": text}})
+        if message_type == "group":
+            source_ids = item.get("source_ids") if isinstance(item.get("source_ids"), list) else []
+            texts: list[str] = []
+            for source_id in source_ids:
+                source = source_lookup.get(_string(source_id))
+                if not source or _string(source.get("type")) != "text":
+                    texts = []
+                    break
+                content = source.get("content") if isinstance(source.get("content"), dict) else {}
+                text = _string(content.get("text"))
+                if not text:
+                    texts = []
+                    break
+                texts.append(text)
+            if texts:
+                output.append(
+                    {
+                        "type": "text",
+                        "order": len(output) + 1,
+                        "content": {"text": "\n\n".join(texts)},
+                    }
+                )
         if len(output) >= 5:
             break
     return output

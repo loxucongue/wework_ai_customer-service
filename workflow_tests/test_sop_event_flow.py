@@ -14,7 +14,7 @@ from app.services.sop_event_decision import (
     combine_selected_pack_messages,
     normalize_event_decision,
 )
-from app.services.sop_event_service import SopEventService
+from app.services.sop_event_service import SopEventService, _normalize_quiet_backlog_fusion_messages
 from app.services.sop_execution_service import (
     SopExecutionService,
     _event_selector_input,
@@ -1924,9 +1924,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 "send_sop": True,
                 "covered_pack_ids": ["effect", "activity"],
                 "reply_messages": [
-                    {"type": "text", "text": "亲，昨晚比较晚，我把重点一次给您发一下。"},
+                    {"type": "source", "source_id": "effect:1"},
                     {"type": "source", "source_id": "effect:2"},
-                    {"type": "text", "text": "活动价268元，线上10元先锁名额，到店抵扣。"},
+                    {"type": "source", "source_id": "activity:1"},
                 ],
             }
         )
@@ -1956,7 +1956,37 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls[0]["backlog_task_ids"], ["task_1"])
         sent_messages = client.send_calls[-1]["reply_messages"]
         self.assertEqual([item["type"] for item in sent_messages], ["text", "image", "text"])
+        self.assertEqual(sent_messages[0]["content"]["text"], "亲，先给您看下做完后的效果参考。")
         self.assertEqual(sent_messages[1]["content"]["url"], "https://example.com/case.png")
+        self.assertEqual(sent_messages[2]["content"]["text"], "现在活动价268元，线上10元先锁名额。")
+
+    async def test_quiet_hour_backlog_only_sends_verbatim_source_text(self) -> None:
+        source_lookup = {
+            "activity:1": {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "活动价268元，线上名额有限。"},
+            },
+            "activity:2": {
+                "type": "text",
+                "order": 2,
+                "content": {"text": "到店抵扣；未做或不满意可退，实际按付款记录核对。"},
+            },
+        }
+
+        messages = _normalize_quiet_backlog_fusion_messages(
+            [
+                {"type": "text", "text": "活动价改成199元。"},
+                {"type": "group", "source_ids": ["activity:1", "activity:2"]},
+            ],
+            source_lookup,
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0]["content"]["text"],
+            "活动价268元，线上名额有限。\n\n到店抵扣；未做或不满意可退，实际按付款记录核对。",
+        )
 
     async def test_quiet_hour_backlog_waits_until_configured_morning_time(self) -> None:
         repo = _Repo()
@@ -1989,7 +2019,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             {
                 "send_sop": True,
                 "covered_pack_ids": ["effect"],
-                "reply_messages": [{"type": "text", "text": "补发效果内容"}],
+                "reply_messages": [{"type": "source", "source_id": "effect:1"}],
             }
         )
         service = _service(
@@ -2036,7 +2066,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             {
                 "send_sop": True,
                 "covered_pack_ids": ["effect"],
-                "reply_messages": [{"type": "text", "text": "补发效果内容"}],
+                "reply_messages": [{"type": "source", "source_id": "effect:1"}],
             }
         )
         service = _service(
@@ -2076,9 +2106,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 "send_sop": True,
                 "covered_pack_ids": ["platform-sop-101"],
                 "reply_messages": [
-                    {"type": "text", "text": "亲，昨晚的重点给您一起补充下。"},
+                    {"type": "source", "source_id": "platform-sop-101:1"},
                     {"type": "source", "source_id": "platform-sop-101:2"},
-                    {"type": "text", "text": "活动和效果您都可以先了解，时间后面按您方便安排。"},
                 ],
             }
         )
@@ -2131,7 +2160,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls[0]["backlog_sops"][0]["id"], "platform-sop-101")
         self.assertEqual(selector.calls[0]["backlog_sops"][0]["messages"][0]["text"], "这是活动和效果介绍。")
         sent_messages = client.send_calls[-1]["reply_messages"]
-        self.assertEqual([item["type"] for item in sent_messages], ["text", "image", "text"])
+        self.assertEqual([item["type"] for item in sent_messages], ["text", "image"])
+        self.assertEqual(sent_messages[0]["content"]["text"], "这是活动和效果介绍。")
         self.assertEqual(sent_messages[1]["content"]["url"], "https://example.com/platform-case.png")
 
     async def test_event_merge_sends_two_adjacent_packs_as_one_sequence(self) -> None:

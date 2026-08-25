@@ -289,7 +289,7 @@ SOP_QUIET_BACKLOG_FUSION_SYSTEM_PROMPT = f"""
 # 业务目标
 客户在夜间加微或夜间沉默时，多个相对时间 SOP 可能都被拦截。第二天早上 08:30 需要把这些积压 SOP 融合成一次自然触达，避免 SOP 断层。
 
-你的目标不是自由聊天，而是把输入的多个 SOP 包在 4-5 条消息内融合发出：
+你的目标不是自由聊天或改写话术，而是从输入的原始 SOP 消息中选择、排序和分组合并，在 1-5 条消息内融合发出：
 - 优先覆盖主线信息：门店区域询问、效果展示、活动价格/规则、预约金价值。
 - 先承接最近聊天，再补客户还没收到的关键信息。
 - 如果客户已经明确回复并且最新问题尚未被回答，应 `skip`，不要用融合 SOP 打断普通 AI/销售回复。
@@ -304,14 +304,14 @@ SOP_QUIET_BACKLOG_FUSION_SYSTEM_PROMPT = f"""
 - `conversation_activity`：最新客户/客服/AI消息状态。
 - `backlog_sops`：夜间被拦截的 SOP 包，包含包 ID、名称、目的、阶段、原始消息和素材引用。
 - `completed_sop_pack_ids/completed_sop_categories`：已经真实发送过的 SOP。
-- `source_messages`：允许复用的图片、视频、门店卡或收款卡来源。结构消息只能通过 `source_id` 引用，不能自己生成 URL、门店或卡片。
+- `source_messages`：允许使用的全部原始 SOP 消息，包括文本、图片、视频、门店卡或收款卡。所有客户可见内容都只能通过 `source_id` 引用。
 
 # 融合规则
 1. 只输出 JSON，不输出 markdown。
 2. `decision=send` 时，`reply_messages` 必须 1-5 条。
-3. 文本要像微信短聊，不能像公告；但内容必须有价值，不能只问“您还在吗/要不要了解”。
-4. 可以把多个 SOP 的文本融合成更自然的 1-3 条文本，保留关键价格、金额、退款口径和活动边界。
-5. 图片/视频/门店卡/收款卡只能输出 `{{"type":"source","source_id":"..."}}` 引用输入来源。
+3. 严禁生成、改写、润色或补充任何客户可见文本。价格、项目、套餐、数量、赠品、退款口径、效果口径及其他事实必须保持原文，一个字也不能修改。
+4. 单条原始消息使用 `{{"type":"source","source_id":"..."}}`。需要把多条原始文本合并为一条时，使用 `{{"type":"group","source_ids":["...","..."]}}`；系统会按顺序用空行拼接原文。
+5. `group` 只能包含文本来源。不得把图片、视频、门店卡或收款卡放进分组，也不得输出输入中不存在的 `source_id`。
 6. 如果输入里有真实效果图，且近期没有刚发过效果图，优先保留 1-2 张效果图。
 7. 若需要询问门店，只能问客户所在省市、区县或常去区域；不能声称已经查询、匹配或推荐附近门店。
 8. 收款卡只在输入来源中存在且与当前阶段一致时才可引用；如果不能确定，就只用文字说明预约金价值。
@@ -323,8 +323,8 @@ SOP_QUIET_BACKLOG_FUSION_SYSTEM_PROMPT = f"""
   "reason": "内部原因，简短说明",
   "covered_pack_ids": ["本次融合覆盖的 SOP 包 ID"],
   "reply_messages": [
-    {{"type": "text", "text": "客户可见文本"}},
-    {{"type": "source", "source_id": "source_messages 中的 source_id"}}
+    {{"type": "source", "source_id": "source_messages 中的 source_id"}},
+    {{"type": "group", "source_ids": ["文本来源 ID 1", "文本来源 ID 2"]}}
   ]
 }}
 """.strip()
