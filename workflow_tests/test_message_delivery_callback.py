@@ -92,6 +92,16 @@ def test_dispatch_rejects_idempotency_key_reuse_with_different_payload(tmp_path)
         )
 
 
+def test_dispatches_can_be_loaded_by_source_request_id(tmp_path) -> None:
+    service, repository = _service(tmp_path)
+    prepared = _prepare(service)
+
+    dispatches = repository.list_message_dispatches_for_request("request-1")
+
+    assert [item["id"] for item in dispatches] == [prepared["dispatch_id"]]
+    assert [item["message_type"] for item in dispatches[0]["items"]] == ["text", "image"]
+
+
 def test_platform_acceptance_is_pending_until_success_callback(tmp_path) -> None:
     service, repository = _service(tmp_path)
     prepared = _prepare(service)
@@ -433,7 +443,9 @@ def test_platform_sop_callback_reports_rule_data_and_preserves_audit() -> None:
 
     assert len(platform_client.rule_calls) == 1
     assert platform_client.consume_calls[0]["status"] == 30
-    assert repository.task["send_payload"]["rule_data_response"] == {"code": 0}
+    rule_data_audit = repository.task["send_payload"]["rule_data_response"]
+    assert rule_data_audit["rule_data_response"] == {"code": 0}
+    assert rule_data_audit["rule_data_request"]["taskId"] == "platform-task-1"
     assert repository.task["send_response"]["accepted"] is True
     assert repository.task["send_response"]["message_delivery"]["status"] == "send_succeeded"
 

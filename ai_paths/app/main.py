@@ -32,6 +32,7 @@ from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.message_delivery import MessageDeliveryService
+from app.services.run_observability import build_run_observability
 from app.services.model_client import ModelClient
 from app.services.outreach_service import OutreachService, classify_conversation_refresh_error
 from app.services.outreach_send_client import OutreachSendClient
@@ -971,7 +972,15 @@ async def admin_clear_customer_records(payload: dict[str, Any] = Body(...)) -> d
 @app.get("/admin/runs/{request_id}", dependencies=[Depends(require_api_key)])
 async def admin_run(request_id: str) -> dict[str, Any]:
     detail = repository.get_run(request_id)
-    detail["raw_log"] = trace_logger.read_run(request_id)
+    raw_log = trace_logger.read_run(request_id)
+    dispatches = repository.list_message_dispatches_for_request(request_id)
+    detail["raw_log"] = raw_log
+    detail["message_dispatches"] = dispatches
+    detail["observability_view"] = build_run_observability(
+        detail,
+        raw_log=raw_log,
+        dispatches=dispatches,
+    )
     return detail
 
 

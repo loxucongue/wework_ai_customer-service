@@ -110,6 +110,25 @@ class MessageDeliveryRepositoryMixin:
             ).fetchall()
         return _decode_dispatch(row, items)
 
+    def list_message_dispatches_for_request(self, source_request_id: str) -> list[dict[str, Any]]:
+        clean_request_id = str(source_request_id or "").strip()
+        if not clean_request_id:
+            return []
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM message_dispatches
+                WHERE source_request_id=?
+                ORDER BY created_at ASC
+                """,
+                (clean_request_id,),
+            ).fetchall()
+        return [
+            dispatch
+            for row in rows
+            if (dispatch := self.get_message_dispatch(str(row["id"] or "")))
+        ]
+
     def update_message_dispatch_submission(
         self,
         dispatch_id: str,
