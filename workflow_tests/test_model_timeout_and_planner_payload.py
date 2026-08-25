@@ -877,6 +877,11 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((client.payload or {}).get("reasoning"), {"enabled": False})
         self.assertEqual((client.payload or {}).get("max_tokens"), 2048)
 
+    def test_new_linkai_domain_is_recognized_for_json_protocol_fallback(self) -> None:
+        error = RuntimeError("Model HTTP 502: bad gateway linkai.pics")
+
+        self.assertTrue(ModelClient._should_retry_json_without_response_format(error))
+
     async def test_model_client_uses_json_mode_and_disables_reasoning_for_claude_model(self) -> None:
         class CaptureModelClient(ModelClient):
             def __init__(self, settings: Settings) -> None:

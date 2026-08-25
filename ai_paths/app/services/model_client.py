@@ -796,7 +796,7 @@ class ModelClient:
             return True
         if "model http 502" not in message:
             return False
-        gateway_markers = ("bad gateway", "cloudflare", "linkai.shop")
+        gateway_markers = ("bad gateway", "cloudflare", "linkai.shop", "linkai.pics")
         return any(marker in message for marker in gateway_markers)
 
     @staticmethod

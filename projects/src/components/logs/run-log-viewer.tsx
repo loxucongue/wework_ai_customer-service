@@ -1,10 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
-  ArrowLeft,
   Bot,
   CheckCircle2,
   ChevronRight,
@@ -317,25 +315,13 @@ export function RunLogViewer() {
 
   return (
     <main className="flex h-screen flex-col bg-slate-50 text-slate-950 lg:flex-row">
-      <aside className="flex max-h-[46vh] w-full min-w-0 flex-col border-b bg-white lg:max-h-none lg:w-[390px] lg:min-w-[340px] lg:border-b-0 lg:border-r">
-        <header className="border-b p-4">
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <Link href="/" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
-              <ArrowLeft className="h-4 w-4" />
-              返回对话
-            </Link>
-            <Link href="/logs/sop" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
-              <Send className="h-4 w-4" />
-              SOP 日志
-            </Link>
-            <Link href="/logs/sop-platform" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
-              <CircleDashed className="h-4 w-4" />
-              第三方任务
-            </Link>
-            <Link href="/logs/outreach-first-day" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
-              <Bot className="h-4 w-4" />
-              首日千人千面
-            </Link>
+      <aside className="flex max-h-[46vh] w-full min-w-0 flex-col border-b bg-white lg:max-h-none lg:w-[370px] lg:min-w-[330px] lg:border-b-0 lg:border-r">
+        <header className="border-b px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="flex items-center gap-2 text-lg font-semibold">
+              <Database className="h-5 w-5" />
+              AI 回复运行日志
+            </h1>
             <button
               type="button"
               onClick={() => void loadRuns()}
@@ -346,42 +332,34 @@ export function RunLogViewer() {
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
           </div>
-          <h1 className="flex items-center gap-2 text-lg font-semibold">
-            <Database className="h-5 w-5" />
-            AI 回复运行日志
-          </h1>
-          <p className="mt-1 text-sm text-slate-500">查看每个节点的输入事实、处理结果、耗时和最终发送状态。</p>
+          <p className="mt-1 text-xs text-slate-500">节点事实、处理结果、耗时与最终发送状态</p>
         </header>
 
-        <section className="border-b p-4">
-          <div className="grid grid-cols-2 gap-3">
+        <section className="border-b px-4 py-3">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
             <div className="col-span-2">
               <FilterInput label="请求 ID" value={filters.request_id} onChange={(value) => setFilters((prev) => ({ ...prev, request_id: value }))} />
             </div>
+            <FilterInput label="客户 ID" value={filters.customer_id} onChange={(value) => setFilters((prev) => ({ ...prev, customer_id: value }))} />
+            <FilterInput label="会话 ID" value={filters.conversation_id} onChange={(value) => setFilters((prev) => ({ ...prev, conversation_id: value }))} />
             <FilterInput label="数量" value={filters.limit} onChange={(value) => setFilters((prev) => ({ ...prev, limit: value }))} />
             <label className="text-xs font-medium text-slate-600">
               运行错误
               <select
                 value={filters.has_error}
                 onChange={(event) => setFilters((prev) => ({ ...prev, has_error: event.target.value }))}
-                className="mt-1 w-full rounded-md border px-2 py-2 text-sm"
+                className="mt-1 h-8 w-full rounded-md border px-2 text-sm"
               >
                 <option value="">全部</option>
                 <option value="true">只看错误</option>
                 <option value="false">只看正常</option>
               </select>
             </label>
-            <div className="col-span-2">
-              <FilterInput label="客户 ID" value={filters.customer_id} onChange={(value) => setFilters((prev) => ({ ...prev, customer_id: value }))} />
-            </div>
-            <div className="col-span-2">
-              <FilterInput label="会话 ID" value={filters.conversation_id} onChange={(value) => setFilters((prev) => ({ ...prev, conversation_id: value }))} />
-            </div>
           </div>
           <button
             type="button"
             onClick={() => void loadRuns()}
-            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50"
+            className="mt-2 inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border px-3 text-sm hover:bg-slate-50"
           >
             <Search className="h-4 w-4" />
             查询
@@ -417,7 +395,7 @@ function FilterInput({ label, value, onChange }: { label: string; value: string;
   return (
     <label className="text-xs font-medium text-slate-600">
       {label}
-      <input value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 w-full rounded-md border px-2 py-2 text-sm" />
+      <input value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 h-8 w-full rounded-md border px-2 text-sm" />
     </label>
   );
 }
