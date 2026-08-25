@@ -233,8 +233,19 @@ class SopEventService:
             limit=self.quiet_backlog_fusion_batch_size * 10,
         )
         groups = _group_quiet_backlog_tasks(tasks)
+        get_existing = getattr(self.repository, "get_sop_send_task_by_idempotency_key", None)
+        pending_groups: list[dict[str, Any]] = []
+        for group in groups:
+            identity = group.get("identity") if isinstance(group.get("identity"), dict) else {}
+            if callable(get_existing):
+                idempotency_key = _quiet_backlog_fusion_idempotency_key(window["local_date"], identity)
+                if get_existing(idempotency_key):
+                    continue
+            pending_groups.append(group)
+            if len(pending_groups) >= self.quiet_backlog_fusion_batch_size:
+                break
         results: list[dict[str, Any]] = []
-        for group in groups[: self.quiet_backlog_fusion_batch_size]:
+        for group in pending_groups:
             results.append(await self._process_quiet_backlog_group(group, local_date=window["local_date"]))
         return results
 

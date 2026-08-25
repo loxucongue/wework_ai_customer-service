@@ -1983,6 +1983,53 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
         self.assertEqual(selector.calls, [])
 
+    async def test_quiet_hour_backlog_next_poll_skips_completed_batch(self) -> None:
+        repo = _Repo()
+        selector = _FusionSelector(
+            {
+                "send_sop": True,
+                "covered_pack_ids": ["effect"],
+                "reply_messages": [{"type": "text", "text": "补发效果内容"}],
+            }
+        )
+        service = _service(
+            repo=repo,
+            client=_OutreachClient(messages=[]),
+            selector=selector,
+            pack_service=_BacklogPackService(),
+            quiet_backlog_fusion_time="08:30",
+        )
+        service.quiet_backlog_fusion_batch_size = 1
+        for index in range(2):
+            payload = _base_payload(
+                event_id=f"evt_quiet_batch_{index}",
+                event_type="sop_friend_added_schedule_batch",
+                created_at="2026-07-20T02:10:00+08:00",
+                sop={"delay_minutes": 60, "stage_tag": "activity"},
+                customers=[
+                    {
+                        "customer_id": f"customer_{index}",
+                        "external_userid": f"external_{index}",
+                        "first_added_event": {"trace_id": f"trace_batch_{index}"},
+                    }
+                ],
+            )
+            repo.create_sop_event(payload)
+            await service.process_event(payload["event_id"])
+
+        first = await service.process_due_quiet_backlog_fusions(now=_dt("2026-07-20T08:31:00+08:00"))
+        second = await service.process_due_quiet_backlog_fusions(now=_dt("2026-07-20T08:32:00+08:00"))
+        third = await service.process_due_quiet_backlog_fusions(now=_dt("2026-07-20T08:33:00+08:00"))
+
+        self.assertEqual([item["status"] for item in first], ["sent"])
+        self.assertEqual([item["status"] for item in second], ["sent"])
+        self.assertEqual(third, [])
+        self.assertEqual(len(selector.calls), 2)
+        self.assertEqual(
+            {call["backlog_task_ids"][0] for call in selector.calls},
+            {"task_1", "task_2"},
+        )
+
     async def test_quiet_hour_backlog_fuses_third_party_first_add_original_messages(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "assistant", "content": "昨晚比较晚。"}])
