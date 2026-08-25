@@ -10,10 +10,13 @@ import {
   Database,
   ExternalLink,
   Image as ImageIcon,
+  Layers3,
   MapPin,
+  MessageSquareText,
   RefreshCw,
   Search,
   Send,
+  ShieldCheck,
   TriangleAlert,
   WalletCards,
   Wrench,
@@ -103,6 +106,13 @@ type ObservableNode = {
   tool_calls: ObservableToolCall[];
   warnings: string[];
   errors: string[];
+};
+
+type NodePresentation = {
+  phase: "understand" | "facts" | "reply" | "commit";
+  phaseLabel: string;
+  title: string;
+  purpose: string;
 };
 
 type DeliveryItem = {
@@ -227,6 +237,51 @@ const STATUS_META: Record<string, { label: string; className: string }> = {
   send_failed: { label: "发送失败", className: "bg-red-100 text-red-800" },
   platform_accepted: { label: "平台已接受", className: "bg-blue-100 text-blue-800" },
 };
+
+const PHASE_META: Record<NodePresentation["phase"], { label: string; description: string }> = {
+  understand: { label: "理解请求", description: "整理客户消息并识别本轮需要处理的事情" },
+  facts: { label: "查询事实", description: "补齐门店、订单、素材等可核验信息" },
+  reply: { label: "生成回复", description: "结合上下文与事实生成客户可见内容" },
+  commit: { label: "校验与提交", description: "检查结构和事实，记录发送及后续动作" },
+};
+
+function nodePresentation(node: ObservableNode): NodePresentation {
+  const key = `${node.node_name} ${node.display_name}`.toLowerCase();
+
+  if (/input_normal|preprocess|message_preprocess/.test(key)) {
+    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "接收并整理请求", purpose: "读取客户当前消息，统一消息格式和基础身份信息。" };
+  }
+  if (/background|shared_context|context_assembl|context/.test(key)) {
+    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "补齐客户上下文", purpose: "汇总聊天记录、订单、支付、素材和客户可见门店等已知信息。" };
+  }
+  if (/semantic_route|content_gate|route|gate/.test(key)) {
+    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "判断本轮需要什么", purpose: "识别当前问题，并确定是否需要话术素材或实时事实。" };
+  }
+  if (/execute_action|tool|store_workflow|knowledge|search|lookup|geocode|distance/.test(key)) {
+    return { phase: "facts", phaseLabel: PHASE_META.facts.label, title: "查询业务事实", purpose: "调用只读工具查询本轮回复需要的真实信息。" };
+  }
+  if (/join|evidence/.test(key)) {
+    return { phase: "facts", phaseLabel: PHASE_META.facts.label, title: "汇总可用证据", purpose: "把上下文、素材候选和工具结果合并为一份可引用事实。" };
+  }
+  if (/synthesize|reply|response/.test(key) && !/audit|valid|repair/.test(key)) {
+    return { phase: "reply", phaseLabel: PHASE_META.reply.label, title: "生成客户回复", purpose: "由回复模型决定回答内容、销售动作和需要发送的素材。" };
+  }
+  if (/audit|valid|repair|guard|check/.test(key)) {
+    return { phase: "commit", phaseLabel: PHASE_META.commit.label, title: "检查回复", purpose: "检查消息结构、事实来源和外部动作是否符合硬边界。" };
+  }
+  if (/commit|persist|authoritative|send_record|memory/.test(key)) {
+    return { phase: "commit", phaseLabel: PHASE_META.commit.label, title: "记录结果与后续动作", purpose: "在回复通过检查后记录发送结果，并执行允许的后续写入。" };
+  }
+  return { phase: "commit", phaseLabel: PHASE_META.commit.label, title: "完成链路处理", purpose: "执行该轮回复链路中的辅助处理。" };
+}
+
+function nodeStatusText(node: ObservableNode) {
+  if (node.status === "failed") return "失败";
+  if (node.status === "warning" || node.warnings.length) return "有警告";
+  if (node.status === "pending") return "处理中";
+  if (node.status === "skipped") return "已跳过";
+  return "完成";
+}
 
 export function RunLogViewer() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
@@ -456,13 +511,13 @@ function RunDetailPanel({ run, detail, loading, nowMs }: { run: RunItem; detail:
         <div className="border-b px-5 py-4">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h3 className="font-semibold">执行链路</h3>
-              <p className="mt-1 text-sm text-slate-500">选择节点查看关键输入、输出、模型、工具和异常恢复。</p>
+              <h3 className="font-semibold">本轮处理过程</h3>
+              <p className="mt-1 text-sm text-slate-500">按业务阶段查看系统做了什么、得到了什么，以及哪里出现异常。</p>
             </div>
-            <span className="text-sm text-slate-500">{loading ? "加载中..." : `${nodes.length} 个节点`}</span>
+            <span className="text-sm text-slate-500">{loading ? "加载中..." : `${nodes.length} 个步骤`}</span>
           </div>
         </div>
-        <div className="grid min-h-[520px] lg:grid-cols-[340px_minmax(0,1fr)]">
+        <div className="grid min-h-[520px] lg:grid-cols-[390px_minmax(0,1fr)]">
           <ExecutionTimeline nodes={nodes} selectedId={selectedNode?.id || ""} onSelect={setSelectedNodeId} />
           {selectedNode ? (
             <NodeInspector node={selectedNode} trace={selectedTrace} />
@@ -550,72 +605,99 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 }
 
 function ExecutionTimeline({ nodes, selectedId, onSelect }: { nodes: ObservableNode[]; selectedId: string; onSelect: (id: string) => void }) {
+  const grouped = nodes.reduce<Array<{ phase: NodePresentation["phase"]; nodes: ObservableNode[] }>>((groups, node) => {
+    const phase = nodePresentation(node).phase;
+    const current = groups[groups.length - 1];
+    if (current?.phase === phase) current.nodes.push(node);
+    else groups.push({ phase, nodes: [node] });
+    return groups;
+  }, []);
+
   return (
-    <div className="border-b bg-slate-50 p-3 lg:border-b-0 lg:border-r">
-      <div className="space-y-1">
-        {nodes.map((node, index) => {
-          const previousParallel = index > 0 ? nodes[index - 1].parallel_group : "";
-          const showParallel = Boolean(node.parallel_group && node.parallel_group !== previousParallel);
-          return (
-            <div key={node.id}>
-              {showParallel ? <div className="px-3 pb-1 pt-3 text-[11px] font-semibold uppercase text-blue-600">并行分支</div> : null}
-              <button
-                type="button"
-                onClick={() => onSelect(node.id)}
-                className={`grid w-full grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-2 rounded-md px-3 py-3 text-left ${
-                  selectedId === node.id ? "bg-white shadow-sm ring-1 ring-slate-200" : "hover:bg-white"
-                }`}
-              >
-                <NodeStatusIcon status={node.status} />
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">{node.display_name}</span>
-                  <span className="mt-1 block line-clamp-1 text-xs text-slate-500">{node.summary?.[0] || node.node_name}</span>
-                </span>
-                <span className="flex items-center gap-1 text-xs text-slate-500">
-                  {formatDuration(node.duration_ms)}
-                  <ChevronRight className="h-3.5 w-3.5" />
-                </span>
-              </button>
+    <div className="border-b bg-slate-50 p-4 lg:border-b-0 lg:border-r">
+      <div className="space-y-5">
+        {grouped.map((group) => (
+          <div key={`${group.phase}-${group.nodes[0]?.id}`}>
+            <div className="mb-2 px-2">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                <PhaseIcon phase={group.phase} />
+                {PHASE_META[group.phase].label}
+              </div>
+              <div className="mt-1 pl-6 text-xs leading-relaxed text-slate-500">{PHASE_META[group.phase].description}</div>
             </div>
-          );
-        })}
+            <div className="space-y-1">
+              {group.nodes.map((node) => {
+                const presentation = nodePresentation(node);
+                return (
+                  <button
+                    key={node.id}
+                    type="button"
+                    onClick={() => onSelect(node.id)}
+                    className={`grid w-full grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-2 rounded-md px-3 py-3 text-left ${
+                      selectedId === node.id ? "bg-white shadow-sm ring-1 ring-slate-200" : "hover:bg-white"
+                    }`}
+                  >
+                    <NodeStatusIcon status={node.status} />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-slate-900">{presentation.title}</span>
+                      <span className="mt-1 block line-clamp-2 text-xs leading-relaxed text-slate-500">{node.summary?.[0] || presentation.purpose}</span>
+                      <span className="mt-1.5 flex flex-wrap gap-2 text-[11px] text-slate-400">
+                        <span>{nodeStatusText(node)}</span>
+                        {node.model_calls.length ? <span>模型 {node.model_calls.length} 次</span> : null}
+                        {node.tool_calls.length ? <span>工具 {node.tool_calls.length} 次</span> : null}
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-1 text-xs text-slate-500">
+                      {formatDuration(node.duration_ms)}
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
 function NodeInspector({ node, trace }: { node: ObservableNode; trace?: NodeTrace }) {
+  const presentation = nodePresentation(node);
   return (
     <div className="min-w-0 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
         <div>
+          <div className="mb-2 text-xs font-medium text-blue-700">{presentation.phaseLabel}</div>
           <div className="flex items-center gap-2">
             <NodeStatusIcon status={node.status} />
-            <h4 className="font-semibold">{node.display_name}</h4>
+            <h4 className="text-lg font-semibold">{presentation.title}</h4>
           </div>
-          <div className="mt-2 font-mono text-xs text-slate-400">{node.node_name}</div>
+          <p className="mt-2 text-sm leading-relaxed text-slate-600">{presentation.purpose}</p>
         </div>
         <div className="text-right text-sm text-slate-500">
-          <div>{formatDuration(node.duration_ms)}</div>
+          <div className="font-medium text-slate-700">{nodeStatusText(node)} · {formatDuration(node.duration_ms)}</div>
           <div className="mt-1 text-xs">{formatTime(node.started_at)}</div>
         </div>
       </div>
 
       <div className="py-4">
-        <SectionTitle title="节点结论" />
-        <ul className="space-y-1.5 text-sm leading-relaxed">
-          {(node.summary || []).map((line, index) => <li key={index}>· {line}</li>)}
-        </ul>
+        <SectionTitle title="处理结果" />
+        {(node.summary || []).length ? (
+          <ul className="space-y-2 text-sm leading-relaxed text-slate-800">
+            {(node.summary || []).map((line, index) => <li key={index} className="rounded-md bg-slate-50 px-3 py-2">{line}</li>)}
+          </ul>
+        ) : <div className="text-sm text-slate-400">该步骤已完成，但没有额外结果摘要。</div>}
       </div>
 
       <div className="grid gap-5 border-t py-4 xl:grid-cols-2">
-        <FieldList title="关键输入" values={node.important_inputs} empty="该节点未记录可读输入摘要" />
-        <FieldList title="关键输出" values={node.important_outputs} empty="该节点未记录可读输出摘要" />
+        <FieldList title="使用的信息" values={node.important_inputs} empty="没有需要额外展示的输入信息" />
+        <FieldList title="得到的信息" values={node.important_outputs} empty="没有需要额外展示的输出信息" />
       </div>
 
       {node.model_calls.length ? (
         <div className="border-t py-4">
-          <SectionTitle title={`模型调用（${node.model_calls.length}）`} icon={<Bot className="h-4 w-4" />} />
+          <SectionTitle title={`模型处理（${node.model_calls.length} 次）`} icon={<Bot className="h-4 w-4" />} />
           <div className="space-y-2">
             {node.model_calls.map((call) => <ModelSummary key={call.id} call={call} />)}
           </div>
@@ -624,7 +706,7 @@ function NodeInspector({ node, trace }: { node: ObservableNode; trace?: NodeTrac
 
       {node.tool_calls.length ? (
         <div className="border-t py-4">
-          <SectionTitle title={`工具调用（${node.tool_calls.length}）`} icon={<Wrench className="h-4 w-4" />} />
+          <SectionTitle title={`事实查询（${node.tool_calls.length} 次）`} icon={<Wrench className="h-4 w-4" />} />
           <div className="space-y-2">
             {node.tool_calls.map((call, index) => <ToolSummary key={`${call.name}-${index}`} call={call} />)}
           </div>
@@ -635,7 +717,8 @@ function NodeInspector({ node, trace }: { node: ObservableNode; trace?: NodeTrac
       {node.warnings.length ? <IssueList title="节点警告与恢复" values={node.warnings} tone="warning" /> : null}
 
       <details className="mt-4 border-t pt-4">
-        <summary className="cursor-pointer text-sm font-medium text-slate-600">查看该节点调试快照</summary>
+        <summary className="cursor-pointer text-sm font-medium text-slate-600">技术详情与原始数据</summary>
+        <div className="mt-3 rounded-md bg-slate-50 px-3 py-2 font-mono text-xs text-slate-500">内部节点：{node.node_name}</div>
         <div className="mt-3 grid gap-3 xl:grid-cols-3">
           <Snapshot title="输入快照" value={trace?.input_snapshot || {}} />
           <Snapshot title="调用快照" value={trace?.tool_calls || []} />
@@ -644,6 +727,13 @@ function NodeInspector({ node, trace }: { node: ObservableNode; trace?: NodeTrac
       </details>
     </div>
   );
+}
+
+function PhaseIcon({ phase }: { phase: NodePresentation["phase"] }) {
+  if (phase === "facts") return <Database className="h-4 w-4 text-emerald-600" />;
+  if (phase === "reply") return <MessageSquareText className="h-4 w-4 text-blue-600" />;
+  if (phase === "commit") return <ShieldCheck className="h-4 w-4 text-violet-600" />;
+  return <Layers3 className="h-4 w-4 text-slate-600" />;
 }
 
 function SectionTitle({ title, icon }: { title: string; icon?: React.ReactNode }) {
