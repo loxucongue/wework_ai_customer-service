@@ -1495,25 +1495,16 @@ class SopPlatformTaskService:
                     else {}
                 )
                 if delivery_guard.get("blocked"):
-                    guard_reason = str(delivery_guard.get("reason") or "platform_contact_send_limit")
-                    guard_scene_code = (
-                        "no_send_contact_cooldown"
-                        if guard_reason == "platform_contact_send_cooldown"
-                        else "no_send_contact_send_limit"
-                    )
+                    guard_reason = str(delivery_guard.get("reason") or "platform_contact_send_cooldown")
                     decision = {
                         "decision": "no_send",
                         "reason": guard_reason,
                         "reason_code": guard_reason,
-                        "sceneName": sop_platform_scene_name(guard_scene_code),
-                        "sceneCode": guard_scene_code,
+                        "sceneName": sop_platform_scene_name("no_send_contact_cooldown"),
+                        "sceneCode": "no_send_contact_cooldown",
                         "knowledgeId": 0,
                         "knowledgeParagraphNo": 0,
-                        "remark": (
-                            "同一客户与企微账号5分钟内已有第三方SOP成功发送，本任务消费但不发送。"
-                            if guard_reason == "platform_contact_send_cooldown"
-                            else "同一客户与企微账号在客户未回复期间已成功发送2条第三方SOP，本任务消费但不发送。"
-                        ),
+                        "remark": "同一客户与企微账号5分钟内已有第三方SOP成功发送，本任务消费但不发送。",
                         "reply_messages": [],
                     }
                     self._counters[guard_reason] += 1
@@ -3005,8 +2996,6 @@ def _platform_contact_delivery_guard(
     reason = ""
     if seconds_since_latest_send is not None and seconds_since_latest_send < 300:
         reason = "platform_contact_send_cooldown"
-    elif len(successful_sends) >= 2:
-        reason = "platform_contact_send_limit"
     return {
         "blocked": bool(reason),
         "reason": reason or "allowed",
@@ -3019,7 +3008,6 @@ def _platform_contact_delivery_guard(
             else None
         ),
         "successful_task_ids": [item["task_id"] for item in successful_sends[-2:]],
-        "max_sends_without_reply": 2,
         "cooldown_seconds": 300,
     }
 

@@ -1090,8 +1090,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
-    async def test_same_contact_only_sends_two_sops_until_customer_replies(self) -> None:
-        model = _Model([{"decision": "send", "reason": "should not run", "reply_messages": [_text("unused")]}])
+    async def test_same_contact_can_send_more_than_two_sops_after_cooldown(self) -> None:
+        model = _Model([{"decision": "send", "reason": "allowed", "reply_messages": [_text("new delivery")]}])
         service, repo, platform, system = _service(model=model)
         first = _sent_platform_record(task_id="99", messages=[_text("first")])
         second = _sent_platform_record(task_id="100", messages=[_text("second")])
@@ -1101,16 +1101,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(_task())
 
-        self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
-        self.assertEqual(model.calls, [])
-        self.assertEqual(system.send_calls, [])
-        self.assertEqual(
-            repo.tasks["platform-sop:101"]["send_payload"]["decision"]["reason"],
-            "platform_contact_send_limit",
-        )
-        self.assertEqual(platform.rule_data_calls[-1]["scene_code"], "frequency_blocked")
-        self.assertEqual(platform.rule_data_calls[-1]["scene_name"], "频控拦截")
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(len(system.send_calls), 1)
 
     async def test_non_sent_sop_tasks_do_not_count_toward_contact_limit(self) -> None:
         model = _Model([{"decision": "send", "reason": "allowed", "reply_messages": [_text("new delivery")]}])
