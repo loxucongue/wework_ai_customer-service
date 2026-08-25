@@ -31,6 +31,8 @@ type TaskItem = {
   task_status?: string;
   decision?: string;
   decision_reason?: string;
+  decision_reason_code?: string;
+  decision_reason_cn?: string;
   error?: string;
   customer_id?: string;
   external_userid?: string;
@@ -50,6 +52,13 @@ type TaskItem = {
   original_messages?: unknown[];
   final_messages?: unknown[];
   send_response?: JsonRecord;
+  rule_data_callback?: {
+    attempted?: boolean;
+    success?: boolean;
+    request_source?: "stored" | "response_echo" | string;
+    request?: JsonRecord;
+    response?: JsonRecord;
+  };
 };
 
 type Summary = {
@@ -296,7 +305,7 @@ export function SopPlatformLogViewer() {
                 <span className="truncate">客户 {item.customer_id || "身份缺失"}</span>
                 <span className="shrink-0">{formatTime(item.scheduled_at)}</span>
               </div>
-              {item.decision_reason ? <div className="mt-2 line-clamp-2 text-xs text-slate-500">{item.decision_reason}</div> : null}
+              {item.decision_reason_cn ? <div className="mt-2 line-clamp-2 text-xs text-slate-500">{item.decision_reason_cn}</div> : null}
             </button>
           ))}
           {!loading && items.length === 0 ? <div className="p-8 text-center text-sm text-slate-500">暂无匹配任务</div> : null}
@@ -345,6 +354,11 @@ function FilterSelect({ label, value, options, onChange }: { label: string; valu
 
 function TaskDetail({ task, onResend, resending }: { task: TaskItem; onResend: (task: TaskItem) => void; resending: boolean }) {
   const canResend = isResendable(task);
+  const callback = task.rule_data_callback || {};
+  const callbackRequest = callback.request || {};
+  const callbackResponse = callback.response || {};
+  const callbackData = isRecord(callbackResponse.data) ? callbackResponse.data : {};
+  const callbackError = String(callbackResponse.error || callbackResponse.message || "");
   return (
     <div className="space-y-4">
       <section className="border bg-white p-5">
@@ -401,7 +415,12 @@ function TaskDetail({ task, onResend, resending }: { task: TaskItem; onResend: (
             {task.error ? <AlertTriangle className="h-4 w-4" /> : task.decision === "no_send" ? <Ban className="h-4 w-4" /> : <Brain className="h-4 w-4" />}
             {task.error ? "处理异常" : task.decision === "no_send" ? "模型判断：不发送" : "模型判断：发送"}
           </div>
-          <p className="mt-2 whitespace-pre-wrap text-sm">{task.error || task.decision_reason || "未记录判断原因"}</p>
+          <p className="mt-2 whitespace-pre-wrap text-sm">{task.error || task.decision_reason_cn || "未记录判断原因"}</p>
+          {!task.error && (task.decision_reason_code || task.decision_reason) ? (
+            <div className="mt-3 border-t border-current/15 pt-2 font-mono text-xs opacity-70">
+              原始标识：{task.decision_reason_code || task.decision_reason}
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -414,6 +433,43 @@ function TaskDetail({ task, onResend, resending }: { task: TaskItem; onResend: (
         />
       </section>
 
+      <section className="border bg-white">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b bg-slate-50 px-4 py-3">
+          <div>
+            <h3 className="text-sm font-semibold">策略数据回写</h3>
+            <p className="mt-1 text-xs text-slate-500">回写接口：/event/trigger/service-rule-data</p>
+          </div>
+          <CallbackBadge attempted={Boolean(callback.attempted)} success={Boolean(callback.success)} />
+        </div>
+        <div className="grid gap-x-6 gap-y-3 border-b px-4 py-4 text-sm sm:grid-cols-2 xl:grid-cols-5">
+          <Fact label="场景编码" value={String(callbackData.sceneTypeCode || callbackRequest.sceneCode || "-")} />
+          <Fact label="场景名称" value={String(callbackData.sceneTypeName || callbackRequest.sceneName || "-")} />
+          <Fact label="发送状态" value={callbackSendStatus(callbackRequest, callbackData)} />
+          <Fact label="平台记录 ID" value={String(callbackData.id || "-")} />
+          <Fact label="回写结果" value={callback.success ? "成功" : callback.attempted ? callbackError || "失败" : "尚未回写"} />
+        </div>
+        {callback.request_source === "response_echo" ? (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+            该历史任务未单独保存请求体，以下请求 JSON 根据平台响应回显字段还原；无法确认的字段未补写。
+          </div>
+        ) : null}
+        <div className="grid gap-4 p-4 xl:grid-cols-2">
+          <JsonPanel
+            title="完整 JSON 请求体"
+            value={callbackRequest}
+            empty={callback.attempted ? "该任务未保存可确认的回写请求体" : "该任务尚未执行策略数据回写"}
+          />
+          <JsonPanel
+            title="完整 JSON 响应体"
+            value={callbackResponse}
+            empty={callback.attempted ? "接口未返回可记录的响应体" : "该任务尚未执行策略数据回写"}
+          />
+        </div>
+        <div className="border-t px-4 py-2 text-xs text-slate-500">
+          页面展示保留完整业务字段；Authorization、Token、Cookie 和 OSS 签名参数会自动脱敏。
+        </div>
+      </section>
+
       {task.scene && Object.keys(task.scene).length ? (
         <section className="border bg-white p-5">
           <h3 className="text-sm font-semibold">平台场景</h3>
@@ -424,6 +480,38 @@ function TaskDetail({ task, onResend, resending }: { task: TaskItem; onResend: (
       ) : null}
     </div>
   );
+}
+
+function CallbackBadge({ attempted, success }: { attempted: boolean; success: boolean }) {
+  const label = success ? "回写成功" : attempted ? "回写失败" : "尚未回写";
+  const tone = success
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : attempted
+      ? "border-red-200 bg-red-50 text-red-700"
+      : "border-slate-200 bg-white text-slate-600";
+  return <span className={`rounded-md border px-2 py-1 text-xs font-medium ${tone}`}>{label}</span>;
+}
+
+function JsonPanel({ title, value, empty }: { title: string; value: JsonRecord; empty: string }) {
+  const hasValue = Object.keys(value).length > 0;
+  return (
+    <div className="min-w-0 overflow-hidden border bg-slate-950">
+      <div className="border-b border-slate-700 px-3 py-2 text-xs font-medium text-slate-200">{title}</div>
+      {hasValue ? (
+        <pre className="max-h-[420px] overflow-auto p-3 text-xs leading-5 text-slate-100">{JSON.stringify(value, null, 2)}</pre>
+      ) : (
+        <div className="bg-white px-3 py-8 text-center text-sm text-slate-500">{empty}</div>
+      )}
+    </div>
+  );
+}
+
+function callbackSendStatus(request: JsonRecord, data: JsonRecord) {
+  const raw = request.sendStatus ?? data.sendStatus;
+  const value = String(raw ?? "");
+  if (value === "10") return "10 · 成功";
+  if (value === "20") return "20 · 失败/不发送";
+  return value || "-";
 }
 
 function isResendable(task: TaskItem) {

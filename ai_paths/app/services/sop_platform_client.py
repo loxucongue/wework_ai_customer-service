@@ -132,22 +132,16 @@ class SopPlatformClient:
         remark: str = "",
         send_content: str = "",
     ) -> dict[str, Any]:
-        normalized_send_status = int(send_status)
-        if normalized_send_status not in {10, 20}:
-            raise ValueError("send_status must be 10 (success) or 20 (failed)")
-        payload: dict[str, Any] = {
-            "taskId": task_id,
-            "sceneName": scene_name,
-            "sendStatus": normalized_send_status,
-            "remark": remark[:500],
-            "sendContent": send_content[:10000],
-        }
-        if scene_code:
-            payload["sceneCode"] = scene_code
-        if knowledge_id:
-            payload["knowledgeId"] = int(knowledge_id)
-        if knowledge_paragraph_no:
-            payload["knowledgeParagraphNo"] = int(knowledge_paragraph_no)
+        payload = service_rule_data_payload(
+            task_id=task_id,
+            scene_name=scene_name,
+            send_status=send_status,
+            scene_code=scene_code,
+            knowledge_id=knowledge_id,
+            knowledge_paragraph_no=knowledge_paragraph_no,
+            remark=remark,
+            send_content=send_content,
+        )
         return await self._request(
             "POST",
             "/event/trigger/service-rule-data",
@@ -211,3 +205,34 @@ class SopPlatformClient:
     async def aclose(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+
+def service_rule_data_payload(
+    *,
+    task_id: str | int,
+    scene_name: str,
+    send_status: int,
+    scene_code: str = "",
+    knowledge_id: int | None = None,
+    knowledge_paragraph_no: int | None = None,
+    remark: str = "",
+    send_content: str = "",
+) -> dict[str, Any]:
+    """Build the exact JSON body sent to the platform rule-data callback."""
+    normalized_send_status = int(send_status)
+    if normalized_send_status not in {10, 20}:
+        raise ValueError("send_status must be 10 (success) or 20 (failed)")
+    payload: dict[str, Any] = {
+        "taskId": task_id,
+        "sceneName": scene_name,
+        "sendStatus": normalized_send_status,
+        "remark": remark[:500],
+        "sendContent": send_content[:10000],
+    }
+    if scene_code:
+        payload["sceneCode"] = scene_code
+    if knowledge_id:
+        payload["knowledgeId"] = int(knowledge_id)
+    if knowledge_paragraph_no:
+        payload["knowledgeParagraphNo"] = int(knowledge_paragraph_no)
+    return payload

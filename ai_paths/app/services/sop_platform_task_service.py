@@ -18,7 +18,8 @@ from app.services.payment_collection import (
     PAYMENT_COLLECTION_UNIT_AMOUNT,
 )
 from app.services.sop_execution_service import is_platform_auto_opening_message
-from app.services.sop_platform_client import SopPlatformTaskStateError
+from app.services.first_day_outreach_log import redact_first_day_log_value
+from app.services.sop_platform_client import SopPlatformTaskStateError, service_rule_data_payload
 from app.services.sop_platform_scenes import (
     SOP_PLATFORM_KNOWLEDGE_SCENE_CODES,
     SOP_PLATFORM_MODEL_SCENE_CODES,
@@ -1570,7 +1571,7 @@ class SopPlatformTaskService:
                 return {"processed": True, "status": status, "task_id": task_id, "decision": decision}
 
             if decision["decision"] == "no_send":
-                rule_data_response = await self._report_rule_data(
+                rule_data_audit = await self._report_rule_data(
                     platform_task,
                     decision=decision,
                     sent=False,
@@ -1581,7 +1582,7 @@ class SopPlatformTaskService:
                     send_payload={
                         "decision": decision,
                         "context": _context_audit(context),
-                        "rule_data_response": rule_data_response,
+                        **rule_data_audit,
                     },
                 )
             else:
@@ -1611,7 +1612,7 @@ class SopPlatformTaskService:
                         "remark": "本地检测到同批平台触达已发送，消费但不重复发送",
                         "reply_messages": [],
                     }
-                    rule_data_response = await self._report_rule_data(
+                    rule_data_audit = await self._report_rule_data(
                         platform_task,
                         decision=duplicate_decision,
                         sent=False,
@@ -1627,7 +1628,7 @@ class SopPlatformTaskService:
                                 "existing_delivery": existing_delivery,
                                 "media_delivery": media_delivery_audit,
                             },
-                            "rule_data_response": rule_data_response,
+                            **rule_data_audit,
                         },
                     )
                     completed = await self._commit_platform_terminal(
@@ -1665,7 +1666,7 @@ class SopPlatformTaskService:
                         "remark": "本地检测到同客户近期第三方SOP最终文案高度重复，消费但不重复发送。",
                         "reply_messages": [],
                     }
-                    rule_data_response = await self._report_rule_data(
+                    rule_data_audit = await self._report_rule_data(
                         platform_task,
                         decision=duplicate_decision,
                         sent=False,
@@ -1682,7 +1683,7 @@ class SopPlatformTaskService:
                                 "duplicate_media_repair": duplicate_repair,
                                 "media_delivery": media_delivery_audit,
                             },
-                            "rule_data_response": rule_data_response,
+                            **rule_data_audit,
                         },
                     )
                     completed = await self._commit_platform_terminal(
@@ -1746,7 +1747,7 @@ class SopPlatformTaskService:
                         ).strip(),
                         "reply_messages": [],
                     }
-                    rule_data_response = await self._report_rule_data(
+                    rule_data_audit = await self._report_rule_data(
                         platform_task,
                         decision=failed_decision,
                         sent=False,
@@ -1764,7 +1765,7 @@ class SopPlatformTaskService:
                                 "duplicate_media_repair": duplicate_repair,
                             },
                             "delivery_failure": delivery_failure,
-                            "rule_data_response": rule_data_response,
+                            **rule_data_audit,
                         },
                         error=f"{type(exc).__name__}: {exc}",
                     )
@@ -1816,7 +1817,7 @@ class SopPlatformTaskService:
                             "assumed_sent": True,
                         },
                     }
-                rule_data_response = await self._report_rule_data(
+                rule_data_audit = await self._report_rule_data(
                     platform_task,
                     decision=decision,
                     sent=True,
@@ -1832,7 +1833,7 @@ class SopPlatformTaskService:
                             "media_delivery": media_delivery_audit,
                             "duplicate_media_repair": duplicate_repair,
                         },
-                        "rule_data_response": rule_data_response,
+                        **rule_data_audit,
                     },
                     send_response=send_result,
                     sent_at=utc_now_iso(),
@@ -2161,30 +2162,47 @@ class SopPlatformTaskService:
         sent: bool,
     ) -> dict[str, Any]:
         if not callable(getattr(self.platform_client, "service_rule_data", None)):
-            return {"skipped": True, "reason": "platform_client_rule_data_api_unavailable"}
+            return {
+                "rule_data_request": {},
+                "rule_data_response": {"skipped": True, "reason": "platform_client_rule_data_api_unavailable"},
+            }
         task_id = _task_id(platform_task)
         if not task_id:
-            return {"skipped": True, "reason": "missing_task_id"}
+            return {
+                "rule_data_request": {},
+                "rule_data_response": {"skipped": True, "reason": "missing_task_id"},
+            }
         internal_scene_code = str(decision.get("sceneCode") or decision.get("scene_code") or "").strip()
         callback_scene = sop_platform_callback_scene(
             internal_scene_code=internal_scene_code,
             sent=sent,
         )
-        try:
-            return await self.platform_client.service_rule_data(
-                task_id=task_id,
-                scene_name=callback_scene.name,
-                scene_code=callback_scene.code,
-                send_status=10 if sent else 20,
-                knowledge_id=_int(decision.get("knowledgeId", decision.get("knowledge_id")), 0) or None,
-                knowledge_paragraph_no=_int(
-                    decision.get("knowledgeParagraphNo", decision.get("knowledge_paragraph_no")),
-                    0,
-                )
-                or None,
-                remark=str(decision.get("remark") or decision.get("reason") or ""),
-                send_content=_send_content_for_rule_data(decision.get("reply_messages") or []),
+        request_body = service_rule_data_payload(
+            task_id=task_id,
+            scene_name=callback_scene.name,
+            scene_code=callback_scene.code,
+            send_status=10 if sent else 20,
+            knowledge_id=_int(decision.get("knowledgeId", decision.get("knowledge_id")), 0) or None,
+            knowledge_paragraph_no=_int(
+                decision.get("knowledgeParagraphNo", decision.get("knowledge_paragraph_no")),
+                0,
             )
+            or None,
+            remark=str(decision.get("remark") or decision.get("reason") or ""),
+            send_content=_send_content_for_rule_data(decision.get("reply_messages") or []),
+        )
+        try:
+            response = await self.platform_client.service_rule_data(
+                task_id=request_body["taskId"],
+                scene_name=str(request_body["sceneName"]),
+                scene_code=str(request_body.get("sceneCode") or ""),
+                send_status=int(request_body["sendStatus"]),
+                knowledge_id=_int(request_body.get("knowledgeId"), 0) or None,
+                knowledge_paragraph_no=_int(request_body.get("knowledgeParagraphNo"), 0) or None,
+                remark=str(request_body.get("remark") or ""),
+                send_content=str(request_body.get("sendContent") or ""),
+            )
+            return {"rule_data_request": request_body, "rule_data_response": response}
         except Exception as exc:
             logger.warning(
                 "Failed to report platform SOP rule data for task %s: %s: %s",
@@ -2193,9 +2211,12 @@ class SopPlatformTaskService:
                 exc,
             )
             return {
-                "error": "service_rule_data_failed",
-                "exception_type": type(exc).__name__,
-                "message": str(exc),
+                "rule_data_request": request_body,
+                "rule_data_response": {
+                    "error": "service_rule_data_failed",
+                    "exception_type": type(exc).__name__,
+                    "message": str(exc),
+                },
             }
 
     async def _decide(self, platform_task: dict[str, Any], *, context: dict[str, Any]) -> dict[str, Any]:
@@ -3603,6 +3624,21 @@ def _platform_task_log_item(
     task_status = str(local_record.get("task_status") or "")
     bucket = _platform_task_bucket(event_status=event_status, task_status=task_status, has_local=bool(local_record))
     send_payload = local_record.get("send_payload") if isinstance(local_record.get("send_payload"), dict) else {}
+    rule_data_request = (
+        send_payload.get("rule_data_request")
+        if isinstance(send_payload.get("rule_data_request"), dict)
+        else {}
+    )
+    rule_data_response = (
+        send_payload.get("rule_data_response")
+        if isinstance(send_payload.get("rule_data_response"), dict)
+        else {}
+    )
+    rule_data_request_source = "stored" if rule_data_request else ""
+    if not rule_data_request and rule_data_response:
+        rule_data_request = _legacy_rule_data_request(rule_data_response)
+        if rule_data_request:
+            rule_data_request_source = "response_echo"
     try:
         platform_terminal_status = int(send_payload.get("platform_terminal_status") or 0)
     except (TypeError, ValueError):
@@ -3652,6 +3688,14 @@ def _platform_task_log_item(
         "task_status": task_status,
         "decision": decision,
         "decision_reason": str(decision_payload.get("reason") or ""),
+        "decision_reason_code": str(
+            decision_payload.get("reason_code")
+            or decision_payload.get("sceneCode")
+            or decision_payload.get("scene_code")
+            or decision_payload.get("reason")
+            or ""
+        ),
+        "decision_reason_cn": _decision_reason_cn(decision_payload, decision=decision),
         "error": str(local_record.get("task_error") or local_record.get("event_error") or ""),
         "customer_id": identity["customer_id"],
         "external_userid": identity["external_userid"],
@@ -3671,8 +3715,63 @@ def _platform_task_log_item(
         "original_messages": _platform_messages(platform_task),
         "final_messages": final_messages,
         "send_response": local_record.get("send_response") if isinstance(local_record.get("send_response"), dict) else {},
+        "rule_data_callback": redact_first_day_log_value(
+            {
+                "attempted": bool(rule_data_request or rule_data_response),
+                "success": _rule_data_response_succeeded(rule_data_response),
+                "request_source": rule_data_request_source,
+                "request": rule_data_request,
+                "response": rule_data_response,
+            }
+        ),
         "_sort_epoch": max(scheduled_epoch, _parse_epoch(received_at)),
     }
+
+
+def _legacy_rule_data_request(response: dict[str, Any]) -> dict[str, Any]:
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    task_id = data.get("taskId") or data.get("waitId")
+    scene_name = data.get("sceneTypeName")
+    send_status = data.get("sendStatus")
+    if task_id in (None, "") or scene_name in (None, "") or send_status in (None, ""):
+        return {}
+    request: dict[str, Any] = {
+        "taskId": task_id,
+        "sceneName": scene_name,
+        "sendStatus": send_status,
+        "remark": data.get("remark") or "",
+        "sendContent": data.get("sendContent") or "",
+    }
+    optional = {
+        "sceneCode": data.get("sceneTypeCode"),
+        "knowledgeId": data.get("knowledgeGroupId"),
+        "knowledgeParagraphNo": data.get("knowledgeParagraphNo"),
+    }
+    for key, value in optional.items():
+        if value not in (None, "", 0, "0"):
+            request[key] = value
+    return request
+
+
+def _decision_reason_cn(decision_payload: dict[str, Any], *, decision: str) -> str:
+    for value in (
+        decision_payload.get("remark"),
+        decision_payload.get("sceneName"),
+        decision_payload.get("scene_name"),
+    ):
+        text = str(value or "").strip()
+        if text and re.search(r"[\u4e00-\u9fff]", text):
+            return text
+    return "审核通过，发送本次平台 SOP 内容" if decision == "send" else "审核未通过，本次平台 SOP 不发送"
+
+
+def _rule_data_response_succeeded(response: dict[str, Any]) -> bool:
+    if not response or response.get("error") or response.get("skipped"):
+        return False
+    try:
+        return int(response.get("code")) == 200
+    except (TypeError, ValueError):
+        return False
 
 
 def _record_task_id(record: dict[str, Any]) -> str:

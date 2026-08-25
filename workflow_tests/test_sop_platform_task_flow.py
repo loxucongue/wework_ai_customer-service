@@ -121,6 +121,20 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(system.conversation_calls, 0)
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+        audit = repo.tasks["platform-sop:101"]["send_payload"]
+        callback = platform.rule_data_calls[-1]
+        self.assertEqual(
+            audit["rule_data_request"],
+            {
+                "taskId": callback["task_id"],
+                "sceneName": callback["scene_name"],
+                "sceneCode": callback["scene_code"],
+                "sendStatus": callback["send_status"],
+                "remark": callback["remark"],
+                "sendContent": callback["send_content"],
+            },
+        )
+        self.assertEqual(audit["rule_data_response"]["code"], 200)
 
     async def test_cancelled_platform_task_becomes_terminal_instead_of_recovering(self) -> None:
         service, repo, platform, system = _service(model=_Model([]))
@@ -2205,7 +2219,22 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
                 "sop_pack_name": "test rule",
                 "task_status": "shadow_no_send",
                 "reply_messages": [_text("original")],
-                "send_payload": {"decision": {"decision": "no_send", "reason": "duplicate", "reply_messages": []}},
+                "send_payload": {
+                    "decision": {"decision": "no_send", "reason": "duplicate", "reply_messages": []},
+                    "rule_data_response": {
+                        "code": 200,
+                        "message": "操作成功",
+                        "data": {
+                            "id": 14983,
+                            "taskId": 101,
+                            "sceneTypeName": "客户未开口",
+                            "sceneTypeCode": "customer_unopened",
+                            "sendStatus": 10,
+                            "remark": "平台原文发送",
+                            "sendContent": "[image]https://cdn.example/a.png?Signature=secret&Expires=123",
+                        },
+                    },
+                },
                 "send_response": {},
                 "task_error": "",
                 "task_created_at": "2026-08-04T00:00:00+00:00",
@@ -2220,6 +2249,16 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["summary"]["judged_no_send"], 1)
         self.assertEqual(result["summary"]["platform_pending"], 1)
         self.assertEqual({item["task_id"] for item in result["items"]}, {"101", "202"})
+        local_item = next(item for item in result["items"] if item["task_id"] == "101")
+        callback = local_item["rule_data_callback"]
+        self.assertTrue(callback["success"])
+        self.assertEqual(callback["request_source"], "response_echo")
+        self.assertEqual(callback["request"]["sceneCode"], "customer_unopened")
+        self.assertIn("%5BREDACTED%5D", callback["request"]["sendContent"])
+        self.assertNotIn("secret", callback["request"]["sendContent"])
+        self.assertEqual(callback["response"]["data"]["id"], 14983)
+        self.assertEqual(local_item["decision_reason_cn"], "审核未通过，本次平台 SOP 不发送")
+        self.assertEqual(local_item["decision_reason_code"], "duplicate")
 
     async def test_queue_workers_never_exceed_configured_concurrency(self) -> None:
         settings = _settings(shadow_mode=True)
