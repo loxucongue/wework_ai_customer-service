@@ -399,6 +399,17 @@ class SopEventService:
 
         conversation_messages = conversation_fetch.get("messages") if isinstance(conversation_fetch.get("messages"), list) else []
         conversation_activity = _conversation_activity(conversation_messages, event_at=datetime.now(timezone.utc))
+        # Deferred first-add SOP follows the same replied-customer boundary as its source.
+        if conversation_activity["customer_replied"]:
+            task = self._create_task_record(
+                payload, fusion_customer, index=0, identity=fusion_customer,
+                sop_pack_id="quiet_backlog_fusion", sop_pack_name="quiet_backlog_fusion",
+                sop_category="quiet_backlog_fusion", reply_messages=[],
+                status="skipped_customer_replied", error="",
+                send_payload={"identity": fusion_customer, "backlog_task_ids": payload["backlog_task_ids"],
+                              "conversation_activity": conversation_activity},
+            )
+            return {"status": task.get("status"), "event_id": event_id, "task": task}
         customer_memory = self._load_customer_memory(fusion_customer)
         order_gate = self._load_sop_order_gate(fusion_customer, customer_memory)
         customer_context = dict(order_gate.get("customer_context") or {})

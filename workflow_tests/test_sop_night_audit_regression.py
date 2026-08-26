@@ -36,6 +36,23 @@ class SopNightAuditRegression(unittest.IsolatedAsyncioTestCase):
         result = _normalize_quiet_backlog_fusion_messages([{"type": "source", "source_id": "case:1"}] * 8, source)
         self.assertEqual(len(result), 5)
 
+    async def test_backlog_does_not_interrupt_replied_customer_or_call_model(self):
+        for messages in [
+            [{"direction": "customer", "content": "地址发我", "created_at": "2026-08-26T08:29:00+08:00"}],
+            [{"direction": "customer", "content": "你好"}, {"direction": "assistant", "content": "您好"}],
+        ]:
+            repo = _Repo()
+            client = _OutreachClient(messages=messages)
+            service = event_service(repo=repo, client=client)
+            service.sop_execution_service = SimpleNamespace(evaluate_quiet_backlog_fusion=AsyncMock())
+            result = await service._process_quiet_backlog_group({
+                "identity": {"corp_id": "sim_corp", "customer_id": "sim_customer", "external_userid": "sim_external",
+                             "user_id": "sim_staff", "wechat": "sim_wechat"}, "tasks": [],
+            }, local_date="2026-08-26")
+            self.assertEqual(result["status"], "skipped_customer_replied")
+            self.assertEqual(client.send_calls, [])
+            service.sop_execution_service.evaluate_quiet_backlog_fusion.assert_not_awaited()
+
     def test_actual_time_blocks_daytime_task_and_midnight_boundaries(self):
         settings = _settings(quiet_hours_enabled=True)
         task = {"scheduledAt": _beijing_epoch("2026-08-25 12:00:00")}
