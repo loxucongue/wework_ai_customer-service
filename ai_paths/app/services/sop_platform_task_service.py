@@ -671,7 +671,9 @@ class SopPlatformTaskService:
                     **audit,
                     "platform_terminal_status": terminal_status,
                     "platform_terminal_event_status": event_status,
+                    "platform_terminal_remark": str(remark if remark is not None else local_task.get("error") or ""),
                 },
+                error=str(local_task.get("error") or ""),
             )
         self.repository.update_sop_event_status(event_id, status="platform_terminal_pending")
         response = await self.platform_client.consume(
@@ -855,6 +857,8 @@ class SopPlatformTaskService:
             raise RuntimeError("task already sent or sending")
 
         identity = _task_identity(platform_task)
+        if _quiet_hours_base_summary({}, settings=self.settings)["in_quiet_hours"]:
+            raise RuntimeError("task cannot be resent: quiet_hours_all_sop_blocked")
         preflight_reason = _manual_resend_preflight_block_reason(
             platform_task,
             identity=identity,
@@ -912,6 +916,8 @@ class SopPlatformTaskService:
         }.get(event_status)
         if original_terminal_status:
             audit_payload["platform_terminal_status"] = original_terminal_status
+        if _quiet_hours_base_summary({}, settings=self.settings)["in_quiet_hours"]:
+            raise RuntimeError("task cannot be resent: quiet_hours_all_sop_blocked")
         self.repository.update_sop_send_task(str(local_task.get("id") or ""), status="sending", send_payload=audit_payload)
         started = time.perf_counter()
         send_result = await self.system_client.send(
@@ -1424,7 +1430,7 @@ class SopPlatformTaskService:
 
         takeover_status: dict[str, Any] = {}
         takeover_decision: dict[str, Any] | None = None
-        if all(identity.get(key) for key in ("corp_id", "customer_id", "wechat")):
+        if not preflight_reason and all(identity.get(key) for key in ("corp_id", "customer_id", "wechat")):
             try:
                 takeover_status = await self.system_client.conversation_status(**identity)
             except Exception as exc:
@@ -1551,6 +1557,12 @@ class SopPlatformTaskService:
                     started = time.perf_counter()
                     decision = await self._decide(platform_task, context=context)
                     self._observe("model", time.perf_counter() - started)
+            context["takeover_status"] = {
+                **_compact_takeover_status(takeover_status),
+                "checked": not bool(preflight_reason) and all(identity.get(key) for key in ("corp_id", "customer_id", "wechat")),
+                "query_failed": bool(takeover_decision and takeover_decision.get("reason") == "takeover_status_unavailable"),
+            }
+            context["quiet_hours"] = quiet_hours
             if self.settings.sop_platform_shadow_mode:
                 status = f"shadow_{decision['decision']}"
                 self.repository.update_sop_send_task(
@@ -1703,6 +1715,18 @@ class SopPlatformTaskService:
                     },
                 )
                 started = time.perf_counter()
+                send_time_quiet = _quiet_hours_base_summary({}, settings=self.settings)
+                if send_time_quiet["in_quiet_hours"]:
+                    decision = _preflight_no_send_decision(platform_task, reason="quiet_hours_all_sop_blocked")
+                    context["quiet_hours"] = send_time_quiet
+                    rule_data_audit = await self._report_rule_data(platform_task, decision=decision, sent=False)
+                    self.repository.update_sop_send_task(
+                        str(local_task.get("id") or ""),
+                        status="completed_without_send",
+                        send_payload={"decision": decision, "context": _context_audit(context), **rule_data_audit},
+                    )
+                    await self._commit_platform_terminal(task_id=task_id, event_id=event_id, terminal_status=70)
+                    return {"processed": True, "status": "completed_without_send", "task_id": task_id}
                 try:
                     send_result = await self.system_client.send(
                         **send_payload,
@@ -1885,6 +1909,11 @@ class SopPlatformTaskService:
                         **current_payload,
                         "platform_task_id": task_id,
                         "retry_cancelled": True,
+                        "execution_failure": {
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                            "phase": str(current_task.get("status") or "processing"),
+                        },
                     },
                     error=error,
                 )
@@ -1982,65 +2011,11 @@ class SopPlatformTaskService:
         if not summary.get("in_quiet_hours"):
             return summary
 
-        task_type = _task_type(platform_task)
-        summary["task_type"] = task_type
-        if task_type != "add_wecom":
-            return {
-                **summary,
-                "blocked": True,
-                "reason": "quiet_hours_marketing_blocked",
-            }
-
-        cutoff_epoch = float(summary.get("reference_epoch") or 0.0)
-        try:
-            conversation = await self.system_client.conversation(**identity, limit=80)
-        except Exception as exc:
-            return {
-                **summary,
-                "blocked": True,
-                "reason": "quiet_hours_unknown_activity",
-                "activity_error": f"{type(exc).__name__}: {exc}",
-            }
-
-        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
-        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
-        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
-            return {
-                **summary,
-                "blocked": True,
-                "reason": "customer_relation_deleted",
-                "customer_relation": _compact_customer_relation(relation),
-            }
-        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
-        activity = _quiet_hours_activity(messages[-80:], before_epoch=cutoff_epoch)
-        summary["activity"] = activity
-        grace_minutes = max(
-            0,
-            int(getattr(self.settings, "sop_platform_quiet_first_add_grace_minutes", 30) or 0),
-        )
-        if not activity.get("activity_epoch"):
-            return {
-                **summary,
-                "blocked": True,
-                "reason": "quiet_hours_unknown_activity",
-            }
-        if activity.get("customer_pending_reply"):
-            return {
-                **summary,
-                "blocked": True,
-                "reason": "quiet_hours_customer_pending_reply",
-            }
-        inactivity_minutes = int(activity.get("inactivity_minutes") or 0)
-        if inactivity_minutes >= grace_minutes:
-            return {
-                **summary,
-                "blocked": True,
-                "reason": "quiet_hours_first_add_inactive",
-            }
         return {
             **summary,
-            "blocked": False,
-            "reason": "quiet_hours_recent_first_add_allowed",
+            "task_type": _task_type(platform_task),
+            "blocked": True,
+            "reason": "quiet_hours_all_sop_blocked",
         }
 
     async def _load_context(self, platform_task: dict[str, Any], *, identity: dict[str, str]) -> dict[str, Any]:
@@ -3175,7 +3150,11 @@ def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -
     scheduled_epoch = _task_scheduled_epoch(platform_task)
     reference_epoch = scheduled_epoch or time.time()
     local_time = datetime.fromtimestamp(reference_epoch, tz=_BEIJING_TZ)
-    in_quiet_hours = bool(enabled and _hour_in_window(local_time.hour, start_hour=start_hour, end_hour=end_hour))
+    processing_time = datetime.fromtimestamp(time.time(), tz=_BEIJING_TZ)
+    in_quiet_hours = bool(enabled and (
+        _hour_in_window(local_time.hour, start_hour=start_hour, end_hour=end_hour)
+        or _hour_in_window(processing_time.hour, start_hour=start_hour, end_hour=end_hour)
+    ))
     return {
         "enabled": enabled,
         "timezone": "Asia/Shanghai",
@@ -3184,6 +3163,7 @@ def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -
         "reference_source": "scheduled_at" if scheduled_epoch else "processing_time",
         "reference_epoch": reference_epoch,
         "reference_at_beijing": local_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "processing_at_beijing": processing_time.strftime("%Y-%m-%d %H:%M:%S"),
         "in_quiet_hours": in_quiet_hours,
         "blocked": False,
         "reason": "",
@@ -4112,6 +4092,7 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
         "customer_context_error": customer_context.get("error"),
         "task_timing": context.get("task_timing") if isinstance(context.get("task_timing"), dict) else {},
         "quiet_hours": quiet_hours,
+        "takeover_status": context.get("takeover_status") or {},
         "opening_state": context.get("opening_state") if isinstance(context.get("opening_state"), dict) else {},
         "platform_contact_delivery_guard": (
             context.get("platform_contact_delivery_guard")

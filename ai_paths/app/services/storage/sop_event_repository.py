@@ -478,9 +478,12 @@ class SopEventRepositoryMixin:
         *,
         start_at: str,
         end_at: str,
-        limit: int = 500,
+        limit: int | None = 500,
     ) -> list[dict[str, Any]]:
-        safe_limit = max(1, min(int(limit or 500), 2000))
+        # A fusion must see the whole contact history within the bounded night.
+        # Limit the number of contacts after grouping, not their source rows.
+        limit_clause = "" if limit is None else " LIMIT ?"
+        params = (start_at, end_at) if limit is None else (start_at, end_at, max(1, min(int(limit or 500), 2000)))
         with self.store.connect() as conn:
             rows = conn.execute(
                 """
@@ -498,9 +501,8 @@ class SopEventRepositoryMixin:
                   AND t.created_at>=?
                   AND t.created_at<?
                 ORDER BY t.created_at ASC
-                LIMIT ?
-                """,
-                (start_at, end_at, safe_limit),
+                """ + limit_clause,
+                params,
             ).fetchall()
         tasks: list[dict[str, Any]] = []
         for raw_row in rows:
@@ -525,6 +527,7 @@ class SopEventRepositoryMixin:
                     "quiet_hours_unknown_activity",
                     "quiet_hours_customer_pending_reply",
                     "quiet_hours_first_add_inactive",
+                    "quiet_hours_all_sop_blocked",
                 }:
                     continue
             marker = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}

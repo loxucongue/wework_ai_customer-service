@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks
 
+from app.policies.business_rules import sop_platform_business_facts_for_model
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
@@ -231,7 +232,7 @@ class SopEventService:
         tasks = list_tasks(
             start_at=window["start_at"],
             end_at=window["end_at"],
-            limit=self.quiet_backlog_fusion_batch_size * 10,
+            limit=None,
         )
         groups = _group_quiet_backlog_tasks(tasks)
         get_existing = getattr(self.repository, "get_sop_send_task_by_idempotency_key", None)
@@ -447,6 +448,8 @@ class SopEventService:
         selector_input = {
             "mode": "quiet_backlog_fusion",
             "recovery_local_date": local_date,
+            "authoritative_business_facts": sop_platform_business_facts_for_model(),
+            "customer_context": customer_context,
             "recent_conversation": _conversation_fetch_summary(conversation_fetch),
             "recent_messages": _compact_conversation_messages(conversation_messages, limit=50),
             "conversation_activity": conversation_activity,
@@ -703,7 +706,7 @@ class SopEventService:
             )
 
         quiet_hours = _quiet_hours_summary(payload, conversation_messages)
-        if event_type in FIRST_ADD_EVENT_TYPES and quiet_hours["skip"]:
+        if quiet_hours["skip"]:
             return self._create_task_record(
                 payload,
                 customer,
@@ -1676,6 +1679,16 @@ class SopEventService:
         return task
 
     async def _send_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        quiet = _quiet_hours_summary({"created_at": utc_now_iso()}, [])
+        if quiet["skip"]:
+            payload = dict(task.get("send_payload") or {})
+            payload["quiet_hours"] = quiet
+            return self.repository.update_sop_send_task(
+                str(task.get("id") or ""),
+                status="skipped_quiet_hours_inactive",
+                send_payload=payload,
+                error="quiet_hours_all_sop_blocked",
+            )
         try:
             result = await self.outreach_send_client.send_reply_messages(
                 request_id=str(task.get("id") or task.get("event_id") or ""),
@@ -2145,9 +2158,17 @@ def _normalize_quiet_backlog_fusion_messages(
     output: list[dict[str, Any]] = []
     items = raw_messages if isinstance(raw_messages, list) else []
     for item in items:
+        if len(output) >= 5:
+            break
         if not isinstance(item, dict):
             continue
         message_type = _string(item.get("type")).lower()
+        if message_type == "text":
+            content = item.get("content")
+            text = _string(content.get("text")) if isinstance(content, dict) else _string(content)
+            if text:
+                output.append({"type": "text", "order": len(output) + 1, "content": {"text": text}})
+            continue
         if message_type == "source":
             source = source_lookup.get(_string(item.get("source_id")))
             if source:
@@ -2601,7 +2622,6 @@ def _quiet_hours_summary(payload: dict[str, Any], messages: list[dict[str, Any]]
     if activity_at:
         inactivity_minutes = max(0, int((event_at - activity_at).total_seconds() // 60))
     in_quiet_window = SOP_QUIET_START_HOUR <= local_event_at.hour < SOP_QUIET_END_HOUR
-    inactive = activity_at is None or (inactivity_minutes is not None and inactivity_minutes >= SOP_QUIET_INACTIVITY_MINUTES)
     return {
         "timezone": "Asia/Shanghai",
         "event_at": event_at.isoformat(),
@@ -2611,8 +2631,8 @@ def _quiet_hours_summary(payload: dict[str, Any], messages: list[dict[str, Any]]
         "latest_platform_auto_opening_at": latest_auto_opening_at.isoformat() if latest_auto_opening_at else "",
         "quiet_activity_source": activity_source,
         "inactivity_minutes": inactivity_minutes,
-        "skip": bool(in_quiet_window and inactive),
-        "reason": "quiet_hours_customer_inactive" if in_quiet_window and inactive else "",
+        "skip": bool(in_quiet_window),
+        "reason": "quiet_hours_all_sop_blocked" if in_quiet_window else "",
     }
 
 

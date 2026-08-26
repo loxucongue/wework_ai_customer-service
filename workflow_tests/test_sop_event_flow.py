@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from app.schemas import ChatRequest
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
@@ -567,7 +568,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
-    async def test_event_continues_auto_opening_within_30_minutes_during_quiet_hours(self) -> None:
+    async def test_event_blocks_auto_opening_within_30_minutes_during_quiet_hours(self) -> None:
         repo = _Repo()
         client = _OutreachClient(
             messages=[
@@ -592,11 +593,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_quiet_auto_opening_recent")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(repo.tasks[0]["sop_pack_id"], "opening")
-        self.assertEqual(len(selector.calls), 1)
-        self.assertEqual(selector.calls[0]["conversation_messages"][0]["content"], "我已经添加了你，现在我们可以开始聊天了。")
-        self.assertEqual(len(client.send_calls), 1)
+        self.assertEqual(repo.tasks[0]["status"], "skipped_quiet_hours_inactive")
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
 
     async def test_event_skips_when_no_customer_activity_time_during_quiet_hours(self) -> None:
         repo = _Repo()
@@ -1960,7 +1959,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_messages[1]["content"]["url"], "https://example.com/case.png")
         self.assertEqual(sent_messages[2]["content"]["text"], "现在活动价268元，线上10元先锁名额。")
 
-    async def test_quiet_hour_backlog_only_sends_verbatim_source_text(self) -> None:
+    async def test_quiet_hour_backlog_rewrites_text_and_preserves_source_groups(self) -> None:
         source_lookup = {
             "activity:1": {
                 "type": "text",
@@ -1976,15 +1975,16 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         messages = _normalize_quiet_backlog_fusion_messages(
             [
-                {"type": "text", "text": "活动价改成199元。"},
+                {"type": "text", "content": "我先把这次活动内容跟您说清楚。"},
                 {"type": "group", "source_ids": ["activity:1", "activity:2"]},
             ],
             source_lookup,
         )
 
-        self.assertEqual(len(messages), 1)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["content"]["text"], "我先把这次活动内容跟您说清楚。")
         self.assertEqual(
-            messages[0]["content"]["text"],
+            messages[1]["content"]["text"],
             "活动价268元，线上名额有限。\n\n到店抵扣；未做或不满意可退，实际按付款记录核对。",
         )
 
@@ -2085,7 +2085,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         repo.create_sop_event(payload)
         await service.process_event(payload["event_id"])
-        await service.process_due_quiet_backlog_fusions(now=_dt("2026-08-25T08:31:00+08:00"))
+        with patch("app.services.sop_event_service.utc_now_iso", return_value="2026-08-25T00:31:00+00:00"):
+            await service.process_due_quiet_backlog_fusions(now=_dt("2026-08-25T08:31:00+08:00"))
 
         result = service.admin_quiet_backlog_logs(local_date="2026-08-25")
 
@@ -5641,7 +5642,7 @@ class _Repo:
     ) -> list[dict[str, Any]]:
         return [dict(task) for task in reversed(self.tasks[-limit:])]
 
-    def list_quiet_hour_backlog_tasks(self, *, start_at: str, end_at: str, limit: int = 500) -> list[dict[str, Any]]:
+    def list_quiet_hour_backlog_tasks(self, *, start_at: str, end_at: str, limit: int | None = 500) -> list[dict[str, Any]]:
         start = datetime.fromisoformat(start_at)
         end = datetime.fromisoformat(end_at)
         output: list[dict[str, Any]] = []
@@ -5661,6 +5662,7 @@ class _Repo:
                     "quiet_hours_unknown_activity",
                     "quiet_hours_customer_pending_reply",
                     "quiet_hours_first_add_inactive",
+                    "quiet_hours_all_sop_blocked",
                 }:
                     continue
             elif task.get("status") != "skipped_quiet_hours_inactive":

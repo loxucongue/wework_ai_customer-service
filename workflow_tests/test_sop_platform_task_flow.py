@@ -529,7 +529,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
         payload = next(iter(repo.tasks.values()))["send_payload"]
-        self.assertEqual(payload["decision"]["reason"], "quiet_hours_marketing_blocked")
+        self.assertEqual(payload["decision"]["reason"], "quiet_hours_all_sop_blocked")
         self.assertEqual(payload["context"]["dispatch_mode"], "deprecated_ignored")
 
     async def test_quiet_hours_blocks_ai_copy_marketing_before_model(self) -> None:
@@ -549,7 +549,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
 
-    async def test_quiet_hours_allows_recent_first_add_auto_opening_then_sends_platform_original(self) -> None:
+    async def test_quiet_hours_blocks_recent_first_add_without_activity_exception(self) -> None:
         model = _Model([])
         settings = _settings(quiet_hours_enabled=True)
         settings.sop_platform_max_task_age_seconds = 0
@@ -573,11 +573,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(task)
 
-        self.assertEqual(result["status"], "sent")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertGreaterEqual(system.conversation_calls, 2)
-        self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.send_calls, [])
         self.assertEqual(len(model.calls), 0)
 
     async def test_deprecated_direct_mode_unopened_sends_original_without_model(self) -> None:
@@ -1227,7 +1226,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
         payload = next(iter(repo.tasks.values()))["send_payload"]
-        self.assertEqual(payload["decision"]["reason"], "quiet_hours_first_add_inactive")
+        self.assertEqual(payload["decision"]["reason"], "quiet_hours_all_sop_blocked")
         self.assertEqual(payload["context"]["quiet_hours"]["reference_at_beijing"], "2026-08-05 01:00:00")
         self.assertEqual(platform.rule_data_calls[-1]["scene_code"], "night_blocked")
         self.assertIn("次日08:30融合", platform.rule_data_calls[-1]["remark"])
@@ -1254,7 +1253,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(system.send_calls, [])
         payload = next(iter(repo.tasks.values()))["send_payload"]
-        self.assertEqual(payload["decision"]["reason"], "quiet_hours_customer_pending_reply")
+        self.assertEqual(payload["decision"]["reason"], "quiet_hours_all_sop_blocked")
 
     async def test_quiet_hours_end_boundary_sends_fixed_copy(self) -> None:
         model = _Model(
