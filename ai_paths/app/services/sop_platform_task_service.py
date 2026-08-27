@@ -319,6 +319,7 @@ class SopPlatformTaskService:
         "platform_judging",
         "platform_processing",
         "platform_processing_retry",
+        "platform_send_retry",
         "platform_send_uncertain",
         "platform_complete_pending",
         "platform_terminal_pending",
@@ -718,6 +719,238 @@ class SopPlatformTaskService:
         if explicit in {"platform_completed", "platform_failed", "platform_no_send"}:
             return explicit
         return "platform_failed" if str(local_task.get("status") or "") == "failed" else ""
+
+    def _defer_platform_send_retry(
+        self,
+        *,
+        task_id: str,
+        event_id: str,
+        local_task: dict[str, Any],
+        send_payload: dict[str, Any],
+        failure: dict[str, Any],
+        error: Exception,
+    ) -> dict[str, Any]:
+        previous_retry = (
+            send_payload.get("delivery_retry")
+            if isinstance(send_payload.get("delivery_retry"), dict)
+            else {}
+        )
+        attempt_count = max(0, int(previous_retry.get("attempt_count") or 0)) + 1
+        delay_seconds = 0 if attempt_count == 1 else min(300, 15 * (2 ** min(attempt_count - 2, 5)))
+        next_retry_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+        ).isoformat()
+        retry_state = {
+            "attempt_count": attempt_count,
+            "next_retry_at": next_retry_at,
+            "last_failure": failure,
+            "last_error": f"{type(error).__name__}: {error}",
+        }
+        payload = {
+            **send_payload,
+            "platform_task_id": task_id,
+            "delivery_retry": retry_state,
+        }
+        self.repository.update_sop_send_task(
+            str(local_task.get("id") or ""),
+            status="processing_retry",
+            send_payload=payload,
+            error=retry_state["last_error"],
+        )
+        self.repository.update_sop_event_status(
+            event_id,
+            status="platform_send_retry",
+            error=retry_state["last_error"],
+        )
+        self._counters["send_retry_deferred"] += 1
+        return {
+            "processed": False,
+            "status": "processing_retry",
+            "task_id": task_id,
+            "retry": retry_state,
+            "error": retry_state["last_error"],
+        }
+
+    async def _retry_platform_send(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        task_id: str,
+        event_id: str,
+        local_task: dict[str, Any],
+    ) -> dict[str, Any]:
+        stored_payload = (
+            local_task.get("send_payload")
+            if isinstance(local_task.get("send_payload"), dict)
+            else {}
+        )
+        send_payload = (
+            stored_payload.get("request")
+            if isinstance(stored_payload.get("request"), dict)
+            else {}
+        )
+        decision = (
+            stored_payload.get("decision")
+            if isinstance(stored_payload.get("decision"), dict)
+            else {}
+        )
+        if not send_payload or not decision:
+            raise RuntimeError("platform send retry is missing the immutable request or decision")
+
+        retry_state = (
+            stored_payload.get("delivery_retry")
+            if isinstance(stored_payload.get("delivery_retry"), dict)
+            else {}
+        )
+        next_retry_epoch = _parse_epoch(retry_state.get("next_retry_at"))
+        if next_retry_epoch and next_retry_epoch > time.time():
+            return {
+                "processed": False,
+                "status": "retry_waiting",
+                "task_id": task_id,
+                "retry": retry_state,
+            }
+        if _quiet_hours_base_summary({}, settings=self.settings)["in_quiet_hours"]:
+            return {
+                "processed": False,
+                "status": "retry_waiting_quiet_hours",
+                "task_id": task_id,
+                "retry": retry_state,
+            }
+
+        started = time.perf_counter()
+        try:
+            send_result = await self.system_client.send(
+                **send_payload,
+                source_channel="proactive_message",
+                source_kind="sop_platform_task",
+                source_request_id=event_id,
+                source_task_id=str(local_task.get("id") or ""),
+                source_context={
+                    "sop_send_task_id": str(local_task.get("id") or ""),
+                    "sop_event_id": event_id,
+                    "platform_task_id": task_id,
+                },
+                delivery_idempotency_key=f"sop_platform_task:{local_task.get('id')}",
+            )
+        except Exception as exc:
+            self._observe("send", time.perf_counter() - started)
+            retryable_failure = _retryable_delivery_failure(exc)
+            if retryable_failure:
+                return self._defer_platform_send_retry(
+                    task_id=task_id,
+                    event_id=event_id,
+                    local_task=local_task,
+                    send_payload=stored_payload,
+                    failure=retryable_failure,
+                    error=exc,
+                )
+            terminal_failure = _terminal_delivery_failure(exc)
+            if not terminal_failure:
+                raise
+            business_no_send = _delivery_rejection_is_no_send(terminal_failure)
+            failed_decision = {
+                **decision,
+                "decision": "no_send",
+                "reason": "downstream_delivery_rejected",
+                "reason_code": "no_send_downstream_rejected",
+                "sceneName": sop_platform_scene_name("no_send_downstream_rejected"),
+                "sceneCode": "no_send_downstream_rejected",
+                "knowledgeId": 0,
+                "knowledgeParagraphNo": 0,
+                "remark": f"Delivery rejected by downstream system: HTTP {terminal_failure['http_status']}.",
+                "reply_messages": [],
+            }
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="completed_without_send" if business_no_send else "failed",
+                send_payload={
+                    **stored_payload,
+                    "decision": failed_decision,
+                    "attempted_decision": decision,
+                    "delivery_failure": terminal_failure,
+                },
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            completed = await self._commit_platform_terminal(
+                task_id=task_id,
+                event_id=event_id,
+                terminal_status=70,
+                event_status="" if business_no_send else "platform_failed",
+                remark=str(failed_decision.get("remark") or ""),
+            )
+            return {
+                "processed": True,
+                "status": "completed_without_send" if business_no_send else "failed",
+                "task_id": task_id,
+                "decision": failed_decision,
+                "delivery_failure": terminal_failure,
+                "platform_response": completed,
+            }
+
+        self._observe("send", time.perf_counter() - started)
+        send_data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
+        delivery_status = str(send_data.get("delivery_status") or "")
+        if bool(send_data.get("callback_required")) and delivery_status in {
+            "platform_accepted",
+            "submission_unknown",
+            "sending",
+        }:
+            self.repository.update_sop_event_status(event_id, status="platform_delivery_pending", error="")
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="sending",
+                send_payload=stored_payload,
+                send_response=send_result,
+                error="",
+            )
+            return {
+                "processed": True,
+                "status": "accepted",
+                "task_id": task_id,
+                "send_response": send_result,
+            }
+
+        send_status = str(send_data.get("send_status") or send_result.get("msg") or "")
+        if send_status == "accepted_no_response":
+            send_result = {
+                **send_result,
+                "msg": "accepted_no_response_assumed_sent",
+                "data": {**send_data, "assumed_sent": True},
+            }
+        rule_data_audit = await self._report_rule_data(
+            platform_task,
+            decision=decision,
+            sent=True,
+        )
+        self.repository.update_sop_send_task(
+            str(local_task.get("id") or ""),
+            status="sent",
+            send_payload={
+                **stored_payload,
+                "delivery_retry": {
+                    **retry_state,
+                    "resolved_at": utc_now_iso(),
+                },
+                **rule_data_audit,
+            },
+            send_response=send_result,
+            error="",
+            sent_at=utc_now_iso(),
+        )
+        completed = await self._commit_platform_terminal(
+            task_id=task_id,
+            event_id=event_id,
+            terminal_status=30,
+        )
+        self._counters["send_retry_recovered"] += 1
+        return {
+            "processed": True,
+            "status": "sent",
+            "task_id": task_id,
+            "platform_response": completed,
+            "send_response": send_result,
+        }
 
     async def _process_with_content_lock(
         self,
@@ -1345,6 +1578,14 @@ class SopPlatformTaskService:
                 "platform_response": completed,
             }
 
+        if not self.settings.sop_platform_shadow_mode and recovery_status == "platform_send_retry":
+            return await self._retry_platform_send(
+                platform_task,
+                task_id=task_id,
+                event_id=event_id,
+                local_task=local_task,
+            )
+
         preflight_reason = _task_preflight_no_send_reason(
             platform_task,
             identity=identity,
@@ -1742,6 +1983,25 @@ class SopPlatformTaskService:
                         delivery_idempotency_key=f"sop_platform_task:{local_task.get('id')}",
                     )
                 except Exception as exc:
+                    retryable_failure = _retryable_delivery_failure(exc)
+                    if retryable_failure:
+                        self._observe("send", time.perf_counter() - started)
+                        return self._defer_platform_send_retry(
+                            task_id=task_id,
+                            event_id=event_id,
+                            local_task=local_task,
+                            send_payload={
+                                "decision": decision,
+                                "request": send_payload,
+                                "context": {
+                                    **_context_audit(context),
+                                    "media_delivery": media_delivery_audit,
+                                    "duplicate_media_repair": duplicate_repair,
+                                },
+                            },
+                            failure=retryable_failure,
+                            error=exc,
+                        )
                     delivery_failure = _terminal_delivery_failure(exc)
                     if not delivery_failure:
                         raise
@@ -3306,6 +3566,38 @@ def _dispatch_mode(task: dict[str, Any]) -> str:
     return "direct" if value == "direct" else "ai_service"
 
 
+def _retryable_delivery_failure(exc: Exception) -> dict[str, Any]:
+    message = str(exc)
+    matched = re.search(r"outreach_system_http_(\d{3})\s*:\s*(.*)", message, flags=re.DOTALL)
+    if matched:
+        status = int(matched.group(1))
+        if status not in {408, 425, 429} and status < 500:
+            return {}
+        return {
+            "kind": "downstream_transient_http_error",
+            "http_status": status,
+            "detail": matched.group(2).strip()[:2000],
+            "retryable": True,
+        }
+    if type(exc).__name__ not in {
+        "ConnectError",
+        "ConnectTimeout",
+        "NetworkError",
+        "PoolTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "WriteError",
+        "WriteTimeout",
+    }:
+        return {}
+    return {
+        "kind": "downstream_transient_network_error",
+        "http_status": 0,
+        "detail": message[:2000],
+        "retryable": True,
+    }
+
+
 def _terminal_delivery_failure(exc: Exception) -> dict[str, Any]:
     message = str(exc)
     matched = re.search(r"outreach_system_http_(\d{3})\s*:\s*(.*)", message, flags=re.DOTALL)
@@ -3757,6 +4049,7 @@ def _platform_task_bucket(*, event_status: str, task_status: str, has_local: boo
     if event_status == "platform_failed" or task_status == "failed":
         return "failed"
     if event_status in {
+        "platform_send_retry",
         "platform_send_uncertain",
         "platform_processing_retry",
         "platform_complete_pending",

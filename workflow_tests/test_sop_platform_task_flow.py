@@ -980,17 +980,17 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["send_payload"]["attempted_decision"]["decision"], "send")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_no_send")
 
-    async def test_transient_downstream_send_failure_is_released_without_retry(self) -> None:
+    async def test_transient_downstream_send_failure_remains_recoverable(self) -> None:
         model = _Model([{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}])
         service, repo, platform, system = _service(model=model)
         system.send_error = RuntimeError('outreach_system_http_503: {"detail":"temporarily unavailable"}')
 
         result = await service.process_task(_task())
 
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
-        self.assertEqual(next(iter(repo.tasks.values()))["status"], "failed")
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
+        self.assertEqual(result["status"], "processing_retry")
+        self.assertEqual(platform.consume_calls, [("101", 20)])
+        self.assertEqual(next(iter(repo.tasks.values()))["status"], "processing_retry")
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_send_retry")
 
     async def test_downstream_conversation_not_found_is_consumed_as_terminal_rejection(self) -> None:
         model = _Model([{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}])
@@ -1170,7 +1170,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             "platform_contact_send_cooldown",
         )
 
-    async def test_transient_failure_is_attempted_once_then_released(self) -> None:
+    async def test_transient_failure_is_attempted_once_then_scheduled_for_retry(self) -> None:
         model = _Model(
             [{"decision": "send", "reason": "handled", "reply_messages": [_text("reply")]}]
         )
@@ -1180,9 +1180,9 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(task)
 
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 70)])
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_failed")
+        self.assertEqual(result["status"], "processing_retry")
+        self.assertEqual(platform.consume_calls, [("101", 20)])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_send_retry")
         self.assertEqual(repo.events["platform_sop_task:101"]["retry_count"], 0)
         self.assertEqual(len(system.send_calls), 1)
 
@@ -1687,6 +1687,57 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["status"], "sent")
         self.assertEqual(stored["send_response"]["msg"], "accepted_no_response_assumed_sent")
         self.assertTrue(stored["send_response"]["data"]["assumed_sent"])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+
+    async def test_transient_outreach_500_stays_recoverable_without_terminal_consume(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        system.conversation_payload["data"]["messages"] = []
+        system.send_error = RuntimeError("outreach_system_http_500: Internal Server Error")
+
+        result = await service.process_task(_task(use_ai_copy=False))
+
+        self.assertFalse(result["processed"])
+        self.assertEqual(result["status"], "processing_retry")
+        self.assertEqual(platform.consume_calls, [("101", 20)])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_send_retry")
+        stored = repo.tasks["platform-sop:101"]
+        self.assertEqual(stored["status"], "processing_retry")
+        self.assertNotIn("retry_cancelled", stored["send_payload"])
+        self.assertEqual(stored["send_payload"]["delivery_retry"]["attempt_count"], 1)
+        self.assertEqual(
+            stored["send_payload"]["delivery_retry"]["last_failure"]["http_status"],
+            500,
+        )
+        self.assertTrue(stored["send_payload"]["request"]["reply_messages"])
+        self.assertEqual(model.calls, [])
+
+    async def test_transient_outreach_500_retries_same_request_without_rerunning_model(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=False)
+        system.conversation_payload["data"]["messages"] = []
+        system.send_error = RuntimeError("outreach_system_http_503: temporarily unavailable")
+
+        first = await service.process_task(task)
+        first_request = dict(repo.tasks["platform-sop:101"]["send_payload"]["request"])
+        system.send_error = None
+        recovered_count = await service.process_recoveries()
+
+        self.assertEqual(first["status"], "processing_retry")
+        self.assertEqual(recovered_count, 1)
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(len(system.send_calls), 2)
+        self.assertEqual(system.send_calls[0]["reply_messages"], first_request["reply_messages"])
+        self.assertEqual(system.send_calls[1]["reply_messages"], first_request["reply_messages"])
+        self.assertEqual(
+            system.send_calls[0]["delivery_idempotency_key"],
+            system.send_calls[1]["delivery_idempotency_key"],
+        )
+        self.assertEqual(model.calls, [])
+        stored = repo.tasks["platform-sop:101"]
+        self.assertEqual(stored["status"], "sent")
+        self.assertTrue(stored["send_payload"]["delivery_retry"]["resolved_at"])
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
     async def test_near_duplicate_platform_delivery_is_consumed_without_send(self) -> None:
