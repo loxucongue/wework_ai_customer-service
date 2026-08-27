@@ -681,34 +681,22 @@ class SopPlatformTaskService:
         for task in [*tasks, *trigger_tasks]:
             self._ensure_local_task(task, status="platform_queued")
 
-        conversation = await self.system_client.conversation(**identity, limit=50)
-        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
-        if not isinstance(data, dict):
-            raise RuntimeError("platform customer conversation response is invalid")
-        ai_auto_reply = _conversation_ai_auto_reply(data)
+        status_response = await self.system_client.conversation_status(**identity)
+        status_data = (
+            status_response.get("data")
+            if isinstance(status_response.get("data"), dict)
+            else status_response
+        )
+        if not isinstance(status_data, dict):
+            raise RuntimeError("platform customer conversation status response is invalid")
+        ai_auto_reply = _conversation_ai_auto_reply(status_data)
         if ai_auto_reply is None:
-            raise RuntimeError("platform customer conversation is missing ai_auto_reply")
-        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
-        raw_messages = data.get("messages") if isinstance(data.get("messages"), list) else []
-        timeline = _conversation_timeline(raw_messages)
-        timeline_structure = _timeline_structure(timeline)
+            raise RuntimeError("platform customer conversation status is missing ai_auto_reply")
         base_audit_context = {
             "management_mode": "ai" if ai_auto_reply else "human",
-            "management_source": "conversation.ai_auto_reply",
-            "timeline_structure": timeline_structure,
-            "customer_opened": bool(timeline_structure.get("customer_message_count")),
-            "customer_relation": _compact_customer_relation(relation),
+            "management_source": "conversation_status.takeover.ai_auto_reply",
+            "management_status": _compact_management_status(status_data),
         }
-        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
-            return await self._consume_batch_without_send(
-                tasks,
-                trigger_tasks=trigger_tasks,
-                reason="customer_relation_deleted",
-                batch_key=batch_key,
-                biz_type=biz_type,
-                batch_run_id=batch_run_id,
-                audit_context=base_audit_context,
-            )
         if ai_auto_reply is False:
             return await self._consume_batch_without_send(
                 tasks,
@@ -720,6 +708,29 @@ class SopPlatformTaskService:
                 audit_context=base_audit_context,
             )
 
+        conversation = await self.system_client.conversation(**identity, limit=50)
+        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        if not isinstance(data, dict):
+            raise RuntimeError("platform customer conversation response is invalid")
+        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
+        raw_messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        timeline = _conversation_timeline(raw_messages)
+        timeline_structure = _timeline_structure(timeline)
+        base_audit_context.update({
+            "timeline_structure": timeline_structure,
+            "customer_opened": bool(timeline_structure.get("customer_message_count")),
+            "customer_relation": _compact_customer_relation(relation),
+        })
+        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+            return await self._consume_batch_without_send(
+                tasks,
+                trigger_tasks=trigger_tasks,
+                reason="customer_relation_deleted",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                audit_context=base_audit_context,
+            )
         context = await self._load_batch_context(
             tasks[0],
             identity=identity,
@@ -3825,7 +3836,7 @@ def _conversation_ai_auto_reply(data: dict[str, Any]) -> bool | None:
         data.get("ai_auto_reply"),
         data.get("aiAutoReply"),
     ]
-    for key in ("conversation", "customer", "session"):
+    for key in ("conversation", "customer", "session", "takeover", "ai_outreach"):
         nested = data.get(key) if isinstance(data.get(key), dict) else {}
         candidates.extend((nested.get("ai_auto_reply"), nested.get("aiAutoReply")))
     for value in candidates:
@@ -3837,6 +3848,18 @@ def _conversation_ai_auto_reply(data: dict[str, Any]) -> bool | None:
         if normalized in {"0", "false", "no", "off", "human", "manual"}:
             return False
     return None
+
+
+def _compact_management_status(data: dict[str, Any]) -> dict[str, Any]:
+    takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
+    outreach = data.get("ai_outreach") if isinstance(data.get("ai_outreach"), dict) else {}
+    return {
+        "conversation_id": str(data.get("conversation_id") or ""),
+        "mode": str(takeover.get("mode") or ""),
+        "handoff_status": str(takeover.get("handoff_status") or ""),
+        "reason_code": str(takeover.get("reason_code") or outreach.get("reason_code") or ""),
+        "send_allowed": outreach.get("send_allowed") if isinstance(outreach.get("send_allowed"), bool) else None,
+    }
 
 
 def _is_same_day_unopened(tasks: list[dict[str, Any]], *, timeline: list[dict[str, Any]]) -> bool:

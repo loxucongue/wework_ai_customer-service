@@ -1136,6 +1136,31 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(item["remark"] == "human_takeover" for item in platform.consume_details))
         self.assertEqual(system.send_calls, [])
 
+    async def test_management_mode_comes_from_status_endpoint_not_message_history(self) -> None:
+        service, _repo, platform, system = _service(model=_Model([]))
+        system.conversation_payload["data"].pop("ai_auto_reply")
+        system.conversation_status = AsyncMock(
+            return_value={
+                "code": 0,
+                "data": {
+                    "takeover": {
+                        "mode": "human",
+                        "ai_auto_reply": False,
+                        "handoff_status": "human_pending",
+                    }
+                },
+            }
+        )
+
+        result = await service.process_customer_batch(
+            _customer_batch(_batch_task("1"), _batch_task("2"))
+        )
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70)])
+        self.assertEqual(system.conversation_calls, 0)
+        system.conversation_status.assert_awaited_once()
+
     async def test_human_takeover_consumes_resolved_content_and_empty_trigger_without_send(self) -> None:
         service, _repo, platform, system = _service(model=_Model([]))
         system.conversation_payload["data"]["ai_auto_reply"] = False
@@ -1940,6 +1965,18 @@ class _System:
                 "ai_auto_reply": True,
                 "customer_relation": {"status": "active", "is_deleted": False},
                 "messages": [{"direction": "customer", "content": "你好"}],
+            },
+        }
+
+    async def conversation_status(self, **_kwargs):
+        ai_auto_reply = self.conversation_payload["data"].get("ai_auto_reply")
+        return {
+            "code": 0,
+            "data": {
+                "takeover": {
+                    "mode": "ai" if ai_auto_reply else "human",
+                    "ai_auto_reply": ai_auto_reply,
+                }
             },
         }
 
