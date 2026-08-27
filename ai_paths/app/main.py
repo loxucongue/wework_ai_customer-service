@@ -765,6 +765,37 @@ async def admin_sop_platform_quiet_backlog_detail(event_id: str) -> dict[str, An
     return detail
 
 
+@app.get("/admin/sop-platform-runs", dependencies=[Depends(require_api_key)])
+async def admin_sop_platform_runs(
+    limit: int = 100,
+    status: str = "",
+    log_version: str = "",
+    biz_type: str = "",
+    task_id: str = "",
+    customer_id: str = "",
+    external_userid: str = "",
+    wechat: str = "",
+    query: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    refresh_platform: bool = True,
+) -> dict[str, Any]:
+    return await sop_platform_task_service.admin_run_logs(
+        limit=limit,
+        status=status,
+        log_version=log_version,
+        biz_type=biz_type,
+        task_id=task_id,
+        customer_id=customer_id,
+        external_userid=external_userid,
+        wechat=wechat,
+        query=query,
+        date_from=date_from,
+        date_to=date_to,
+        refresh_platform=refresh_platform,
+    )
+
+
 @app.post("/admin/sop-platform-tasks/{task_id}/resend", dependencies=[Depends(require_api_key)])
 async def admin_sop_platform_task_resend(task_id: str) -> dict[str, Any]:
     try:

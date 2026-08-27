@@ -133,6 +133,27 @@ class Settings(BaseSettings):
     sop_platform_recovery_concurrency: int = Field(default=2, alias="SOP_PLATFORM_RECOVERY_CONCURRENCY")
     sop_platform_timeout_seconds: float = Field(default=12.0, alias="SOP_PLATFORM_TIMEOUT_SECONDS")
     sop_platform_model_timeout_seconds: float = Field(default=20.0, alias="SOP_PLATFORM_MODEL_TIMEOUT_SECONDS")
+    sop_platform_decision_model: str = Field(
+        default="deepseek-v4-flash",
+        alias="SOP_PLATFORM_DECISION_MODEL",
+    )
+    sop_platform_decision_model_fallbacks: str = Field(
+        default="gpt-5.4-mini,gpt-5.4",
+        alias="SOP_PLATFORM_DECISION_MODEL_FALLBACKS",
+    )
+    sop_platform_decision_api_key: str = Field(
+        default="",
+        alias="SOP_PLATFORM_DECISION_API_KEY",
+        repr=False,
+    )
+    sop_platform_decision_base_url: str = Field(
+        default="https://api.deepseek.com",
+        alias="SOP_PLATFORM_DECISION_BASE_URL",
+    )
+    sop_platform_decision_primary_timeout_seconds: float = Field(
+        default=12.0,
+        alias="SOP_PLATFORM_DECISION_PRIMARY_TIMEOUT_SECONDS",
+    )
     sop_platform_recovery_batch_size: int = Field(default=10, alias="SOP_PLATFORM_RECOVERY_BATCH_SIZE")
     sop_platform_max_task_age_seconds: int = Field(default=600, alias="SOP_PLATFORM_MAX_TASK_AGE_SECONDS")
     sop_platform_live_not_before: str = Field(default="", alias="SOP_PLATFORM_LIVE_NOT_BEFORE")

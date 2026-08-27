@@ -139,6 +139,10 @@ class SopEventRepositoryMixin:
         limit: int = 100,
         task_id: str = "",
         customer_id: str = "",
+        external_userid: str = "",
+        wechat: str = "",
+        date_from: str = "",
+        date_to: str = "",
     ) -> list[dict[str, Any]]:
         clauses = ["e.event_type='platform_sop_task'"]
         params: list[Any] = []
@@ -148,6 +152,18 @@ class SopEventRepositoryMixin:
         if customer_id:
             clauses.append("t.customer_id=?")
             params.append(str(customer_id).strip())
+        if external_userid:
+            clauses.append("t.external_userid=?")
+            params.append(str(external_userid).strip())
+        if wechat:
+            clauses.append("LOWER(t.wechat)=LOWER(?)")
+            params.append(str(wechat).strip())
+        if date_from:
+            clauses.append("e.received_at>=?")
+            params.append(str(date_from).strip())
+        if date_to:
+            clauses.append("e.received_at<=?")
+            params.append(str(date_to).strip())
         safe_limit = max(1, min(int(limit or 100), 500))
         with self.store.connect() as conn:
             rows = conn.execute(

@@ -8,27 +8,11 @@ import re
 import time
 from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
-from difflib import SequenceMatcher
 from typing import Any
-from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import urlparse
 
 from app.policies.business_rules import sop_platform_business_facts_for_model
-from app.services.payment_collection import (
-    PAYMENT_COLLECTION_ALLOWED_AMOUNTS,
-    PAYMENT_COLLECTION_UNIT_AMOUNT,
-)
 from app.services.sop_execution_service import is_platform_auto_opening_message
-from app.services.first_day_outreach_log import redact_first_day_log_value
-from app.services.sop_platform_client import SopPlatformTaskStateError, service_rule_data_payload
-from app.services.sop_platform_scenes import (
-    SOP_PLATFORM_KNOWLEDGE_SCENE_CODES,
-    SOP_PLATFORM_MODEL_SCENE_CODES,
-    sop_platform_callback_scene,
-    sop_platform_knowledge_scene_catalog,
-    sop_platform_model_scene_catalog,
-    sop_platform_scene,
-    sop_platform_scene_name,
-)
 from app.services.storage.serialization import utc_now_iso
 
 
@@ -143,11 +127,9 @@ Decision hierarchy:
    message asks for a concrete action or fact that still needs the normal AI
    chain or a human/tool answer, such as store lookup, order/payment check, or
    appointment lookup.
-3. Duplicate or near-duplicate: no_send when the final customer-visible copy
-   would repeat the same core facts, same offer, same appointment/deposit CTA,
-   and same reassurance that were already sent recently to the same customer by
-   this receiving WeChat account. Do not require byte-for-byte equality when the
-   semantic customer value is unchanged.
+3. Exact duplicate: no_send only when the full candidate batch has the same
+   message types, order, text and media/link URLs as a recently sent full batch.
+   Similar topic, similar intent, or non-identical wording is not duplicate.
 4. First-add tasks (`add_wecom`) default to send. Silence, no expressed demand,
    old resolved store context, ordinary hesitation, or `use_ai_copy=false` are
    never valid no_send reasons for first-add tasks.
@@ -184,133 +166,104 @@ FIRST_ADD_NO_SEND_REASON_CODES = {
     "invalid_task",
 }
 
-SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES = {
-    "complaint_or_refund",
-    "explicit_stop_contact",
-    "customer_deleted",
-    "health_risk",
-    "paid_or_appointment_conflict",
-    "human_takeover",
-    "platform_content_conflict",
-    "exact_duplicate",
-}
 
+SOP_PLATFORM_BATCH_SYSTEM_PROMPT = """
+你是第三方 SOP 待消费消息组的顺序审核节点。平台已经决定触发时间；你只负责按照给定顺序判断哪些旧消息组已经不适合发送，以及最早哪一组现在仍可发送。
 
-SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
-# 角色
-你是第三方平台 SOP 到期任务的发送审核与轻量润色节点。
+严格规则：
+1. `pending_groups` 已按计划时间升序排列。必须从第一组开始逐组判断；每轮最多选择一组发送，遇到第一条 `send` 立即停止，禁止评价后续组。比如 1、2 为 `skip`、3 为 `send` 时，只返回 1、2、3 的判断，4 不判断、不返回、继续留待下轮处理。
+2. 平台原始 `message_content` 是不可修改的事实载体。你不能改写、删减、合并、重排其中任何文字、价格、项目、邀约、退款说明、图片、视频或链接。
+3. 你可以输出一条简短 `transition_text` 承接最新聊天，但只能连接上下文，不能加入任何新的业务事实、数字、价格、项目、承诺、优惠、名额、门店、距离或时间安排。不需要过渡时返回空字符串。
+4. 判断消息组的真实目的，不能只按关键词处理。包含价格不等于标准报价；价格可以是回访唤醒内容。只有客户近期已经完成同一沟通目的、内容与最新状态冲突、客户明确拒绝/投诉/健康风险、已付后仍催付，或人工接管等情况才跳过。
+5. 客户普通沉默、犹豫或没有主动提问，不是自动跳过理由。客户最后有尚未回答的具体问题且本组不能解决时，应跳过，让普通回复链路处理。
+6. 客户确认意向、回复“好”或表示会到店，不等于平台计划的提醒已经发送。只有历史中已有可比的助手/平台消息交付证据，或最新状态使提醒失效时，才能以“已处理/重复”为由跳过。
+7. 前一组被跳过后，不得仅因后一组属于相同大类而一并跳过。必须比较后一组是否提供了尚未交付的新信息、不同提醒目的或新的行动价值；有则可以发送，无则继续跳过。
+8. 客户明确要求接收某个后续消息组已经包含的内容，是该组仍可发送的直接证据。除非命中删除、人工接管、投诉退款、健康风险、已付冲突等硬边界，不得把客户的明确接收请求解释成困惑、拒绝或重复。
+9. 客户提到“第一条、第二条”等顺序时，必须同时核对每组 `sequence_index` 和该组真实 `message_content`，不得只凭语义相近就把后一组内容错认成前一组。
+10. `evidence_refs` 只能引用输入中真实存在的 `msg_*` 或 `task:*` 引用。
+11. 只返回小写 json，不要 Markdown 或解释。
 
-# 核心目标
-客户已经真实开口，平台现在要求发送 `task.required_delivery` 中的本次 SOP 内容。
-你的主要职责不是重新规划销售流程，也不是从知识库另选话术，而是：
-1. 判断本次平台内容现在是否仍适合发送；
-2. 适合发送时，保留本次任务的业务目标、事实和消息组合，只做必要的自然润色；
-3. 输出最终实际发送的完整 `reply_messages`。
-
-模型输入只包含本次平台原始消息、最近聊天、近期已发媒体、不可重复素材指纹和必要业务事实。`dispatchMode` 与 `useAiCopy` 已弃用，不参与判断。
-默认倾向 `send`。普通沉默、普通考虑、距离远、价格/效果/时间顾虑、客户暂时未回复，都不是不发送理由。
-
-# 决策原则
-1. 先判断硬边界。只有硬边界才允许 `no_send`。
-2. 本次平台内容与最新聊天不冲突、近期未重复、事实仍有效时，必须发送；不得为了“更自然”擅自删除图片、视频、卡片或关键业务信息。
-3. 可以润色文本，使其承接最近聊天、像微信短聊，但不得改变业务场景、价格、退款口径、媒体 URL、卡片类型或消息顺序所表达的交付目标。
-4. 如果客户提出了与本次内容相关的普通顾虑，应在保留本次任务目标的前提下自然承接，不能改成另一套销售流程，也不能用“以后再说、需要的话再发”回避交付。
-5. 最近聊天已完整发送相同业务内容，或 `forbidden_media_fingerprints` 已包含本次图片/视频时，输出 `no_send/exact_duplicate`；不得换句话重复，也不得编造替代素材。
-6. 本次平台内容与客户明确状态冲突时，输出 `no_send/platform_content_conflict`。例如客户已经明确拒绝当前活动、当前问题尚未处理而本次内容会明显答非所问，或本次内容包含已经失效的事实。
-7. 所有称谓使用中性表达，如“亲、您、顾客、很多客户”，禁止推断性别。
-8. 平台文本中的旧价格、旧活动、旧项目必须按权威业务事实修正：
-   - 当前淡斑活动价 268 元；
-   - 10 元预约金，到店抵扣，做的话再付 258 元；
-   - 当前项目围绕淡斑、检测皮肤、基础清洁、肌肤补水；
-   - 当前活动包含送一次价值180元的美白管理，也可表达为赠送美白小气泡；
-   - 不主动强调具体原价金额，只能说名额满后恢复原价。
-9. 不得编造当前事实中不存在的项目、门店、订单、支付成功、预约成功、赠品或额外服务。
-10. 图片/视频是本次任务的真实交付。平台原文包含 image/video 时，除重复或硬冲突导致整单 `no_send` 外，必须保留原 URL，不得改成纯文本，也不得生成新 URL。
-11. `payment_collection` 只能在本次平台原始消息本身包含该类型时保留，不能凭空新增。若已付/已预约或最近连续发过预约金卡，应 `no_send`，不得机械重复催付。
-12. 文案要像微信短聊，直接承接客户，不写内部分析、流程解释或模型判断。
-
-# no_send 边界
-只允许以下原因：
-- `complaint_or_refund`：严重客诉、退款纠纷、投诉升级；
-- `explicit_stop_contact`：客户明确要求不要再联系；
-- `customer_deleted`：客户关系删除；
-- `health_risk`：健康高风险，不适合营销；
-- `paid_or_appointment_conflict`：已付/已预约且本任务会重复催付或重复预约；
-- `human_takeover`：人工正在连续接待，发送会插话；
-- `platform_content_conflict`：平台原始消息与客户当前状态或权威事实存在明确冲突；
-- `exact_duplicate`：平台原始内容、核心语义或媒体近期已经发送。
-
-普通沉默、普通价格/效果/距离/时间顾虑、客户说考虑一下，都必须 `send`。
-
-# 校准示例
-1. 平台任务携带“活动价 + 活动图”，历史尚未完整发送：保留活动方向、关键信息和活动图，只把文字润色得更自然。
-2. 平台任务携带“活动价 + 活动图”，最近已经完整发送同一活动和同一图片：输出 `no_send/exact_duplicate`，不得自行换素材。
-3. 客户正在与人工连续对话，平台任务此时插入会打断人工：输出 `no_send/human_takeover`。
-4. 客户明确投诉并要求不要再联系：输出 `no_send`，不得用其他营销内容绕开停止联系要求。
-
-# 输出 JSON
-只返回 JSON，不要 Markdown，不要解释。Schema：
+输出：
 {
-  "decision": "send | no_send",
-  "reason_code": "send 或 no_send 原因码",
-  "reason": "简短说明为什么这样处理",
-  "sceneName": "回写平台的场景名称",
-  "sceneCode": "回写平台的场景编码",
-  "knowledgeId": 0,
-  "knowledgeParagraphNo": 0,
-  "remark": "回写备注，说明发送审核结论",
-  "reply_messages": [
-    {"type": "text", "order": 1, "content": {"text": "客户可见内容"}},
-    {"type": "image", "order": 2, "content": {"url": "https://..."}},
-    {"type": "video", "order": 3, "content": {"url": "https://..."}},
-    {"type": "payment_collection", "order": 4, "content": {"amount": 10, "remark": ""}}
-  ]
+  "evaluations": [
+    {
+      "task_id": "",
+      "decision": "skip | send",
+      "reason": "",
+      "evidence_refs": []
+    }
+  ],
+  "selected_task_id": "",
+  "transition_text": ""
 }
 
-`send` 时 `reply_messages` 必须非空。`no_send` 时 `reply_messages` 必须为空，但也必须输出 sceneName、sceneCode、reason_code 和 remark 用于回写。
-不再从平台知识库选内容，`knowledgeId` 和 `knowledgeParagraphNo` 固定为 0。
-发送时使用 `正常推进｜平台任务内容`，`sceneCode` 使用 `normal_platform_intent`；不发送时按硬边界填写对应场景和编码。
+若全部不适合发送，所有任务均输出 `skip`，`selected_task_id` 和 `transition_text` 为空。
 """.strip()
 
-SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
-# 角色
-你是第三方平台 SOP 到期任务的发送审核与轻量润色节点。平台决定任务时间、频率和候选消息；你只判断当前任务现在发送还是不发送，并在允许发送时输出最终消息。
 
-# 输入边界
-- `task.required_delivery` 是本次必须审核的唯一消息来源。
-- `latest_context` 是最近聊天、客户关系、业务状态、近期已发媒体和禁止重复素材指纹。
-- `authoritative_business_facts` 高于历史聊天中的旧价格和旧口径。
-- `scene_catalog` 是唯一合法业务场景。你只能输出其中一个 `sceneCode`，不得创造新标签。
-- `knowledge_scene_catalog` 只用于记录知识命中。没有真实命中时 `knowledgeId` 和 `knowledgeParagraphNo` 都输出 0。
+SOP_TRANSITION_FACT_AUDIT_PROMPT = """
+你只审查一条 SOP 过渡句是否加入了新的业务事实。不要评价销售力度、语气或是否应该发送，也不要改写文本。
 
-# 决策原则
-1. 默认发送。普通沉默、考虑、距离、价格、效果或时间顾虑都不是不发送理由。
-2. 只有场景目录中的不发送业务场景才允许 `no_send`：严重客诉或退款纠纷、明确停止联系、客户关系删除、健康风险、已付或已预约冲突、人工正在连续接待、平台内容与当前事实明确冲突。
-3. 客户存在距离、效果、价格或时间异议时，选择对应异议场景，并在保留本次平台交付目标的前提下自然承接。不得改成另一套销售流程。
-4. 没有明确异议时，根据平台内容选择“平台任务内容、轻触达效果展示、活动价格”之一。
-5. 图片、视频、链接和预约金卡的类型、URL、数量和顺序必须与平台原始消息一致；只能润色已有文字，不得生成新素材或卡片。
-6. 不得虚构门店、订单、支付、预约、价格、赠品或服务。使用中性称谓，不推断性别。
-7. `sceneEvidence` 必须引用本轮可见事实，简短说明为什么选择该场景。
-8. 若填写 `knowledgeId`，它必须与所选 `sceneCode` 在 `knowledge_scene_catalog` 中匹配；`knowledgeParagraphNo` 必须大于 0。否则两者都填 0。
+允许：称呼、承接客户上一句话、说明接下来发送平台原始内容的纯连接表达。
+禁止：任何输入证据中没有直接支持的价格、项目、效果、退款、预约金、名额、赠品、门店、距离、营业时间、到店时间、支付或预约事实。
 
-# 输出合同
-只返回 JSON，不要 Markdown 或额外字段：
-{
-  "decision": "send | no_send",
-  "sceneCode": "scene_catalog 中的合法编码",
-  "sceneEvidence": "场景证据",
-  "knowledgeId": 0,
-  "knowledgeParagraphNo": 0,
-  "reason": "处理依据",
-  "remark": "策略回传备注",
-  "reply_messages": []
-}
-
-`send` 时 `reply_messages` 必须非空；`no_send` 时必须为空。不要输出 `sceneName`，名称由代码根据注册表生成。
+只返回小写 json：
+{"status":"pass | fail","reason":""}
 """.strip()
 
-# Backward-compatible export; the retired pre-dispatch prompt must not be used.
-SOP_PLATFORM_TASK_SYSTEM_PROMPT = SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT
+
+def _sop_platform_batch_business_facts_for_model() -> dict[str, Any]:
+    source = sop_platform_business_facts_for_model()
+    offer = source.get("offer") if isinstance(source.get("offer"), dict) else {}
+    transaction = (
+        source.get("transaction_policy")
+        if isinstance(source.get("transaction_policy"), dict)
+        else {}
+    )
+    return {
+        "version": source.get("version"),
+        "offer": {
+            key: offer.get(key)
+            for key in (
+                "new_customer_price",
+                "prepay_amount",
+                "tail_amount",
+                "refund_rule",
+                "quota",
+                "registration_gift",
+            )
+            if offer.get(key) not in (None, "", [], {})
+        },
+        "transaction_policy": {
+            key: transaction.get(key)
+            for key in (
+                "payment_order_policy",
+                "appointment_flow_mode",
+                "post_paid_flow_description",
+                "payment_hard_blocks",
+            )
+            if transaction.get(key) not in (None, "", [], {})
+        },
+        "hard_forbidden": source.get("hard_forbidden") or [],
+    }
+
+
+def _sop_platform_decision_model_options(settings: Any) -> dict[str, Any]:
+    primary = str(getattr(settings, "sop_platform_decision_model", "") or "").strip()
+    api_key = str(getattr(settings, "sop_platform_decision_api_key", "") or "").strip()
+    if not primary or not api_key:
+        return {}
+    return {
+        "model_names_override": [primary],
+        "api_key_override": api_key,
+        "base_url_override": str(getattr(settings, "sop_platform_decision_base_url", "") or "").strip(),
+        "request_body_overrides": {"thinking": {"type": "disabled"}},
+    }
+
+
+def _sop_platform_decision_fallback_models(settings: Any) -> list[str]:
+    fallback_text = str(getattr(settings, "sop_platform_decision_model_fallbacks", "") or "")
+    return list(dict.fromkeys(item.strip() for item in fallback_text.split(",") if item.strip()))
 
 
 class SopPlatformTaskService:
@@ -319,10 +272,10 @@ class SopPlatformTaskService:
         "platform_judging",
         "platform_processing",
         "platform_processing_retry",
-        "platform_send_retry",
         "platform_send_uncertain",
         "platform_complete_pending",
-        "platform_terminal_pending",
+        "platform_batch_send_retry",
+        "platform_batch_consume_pending",
     ]
 
     def __init__(
@@ -348,9 +301,9 @@ class SopPlatformTaskService:
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=queue_size)
         self._queued_ids: set[str] = set()
         self._in_flight_ids: set[str] = set()
+        self._reserved_prefix_ids: set[str] = set()
         self._terminal_ids: set[str] = set()
         self._terminal_order: deque[str] = deque()
-        self._terminal_reack_at: dict[str, float] = {}
         self._workers: list[asyncio.Task[None]] = []
         self._recovery_worker: asyncio.Task[None] | None = None
         self._running = False
@@ -409,6 +362,7 @@ class SopPlatformTaskService:
             self._recovery_worker = None
 
     async def poll_once(self) -> dict[str, int]:
+        self._restore_reserved_prefix_ids()
         free_slots = max(0, self._queue.maxsize - self._queue.qsize())
         if free_slots <= 0:
             return {
@@ -418,12 +372,23 @@ class SopPlatformTaskService:
                 "in_flight_count": len(self._in_flight_ids),
                 "error_count": 0,
             }
-        configured_limit = max(1, min(int(self.settings.sop_platform_batch_size), 500))
-        limit = max(1, min(max(configured_limit, free_slots * 20), 500))
         started = time.perf_counter()
         self._last_poll_at = utc_now_iso()
         try:
-            page = await self.platform_client.pending(limit=limit)
+            online_page = await self.platform_client.pending(limit=500)
+            online_items = (
+                online_page
+                if isinstance(online_page, list)
+                else online_page.get("items") if isinstance(online_page, dict) else []
+            )
+            needs_content_lookup = any(
+                isinstance(item, dict) and not _platform_messages(item)
+                for item in (online_items if isinstance(online_items, list) else [])
+            )
+            if needs_content_lookup:
+                store_visit_page = await self.platform_client.store_visit_pending(limit=500)
+            else:
+                store_visit_page = {"items": [], "total": 0}
             self._last_poll_error = ""
         except Exception as exc:
             self._last_poll_error = f"{type(exc).__name__}: {exc}"
@@ -431,14 +396,51 @@ class SopPlatformTaskService:
             raise
         finally:
             self._observe("pull", time.perf_counter() - started)
-        if isinstance(page, list):
-            page = {"items": page, "total": len(page)}
-        tasks = page.get("items") if isinstance(page.get("items"), list) else []
-        tasks = sorted(
-            (dict(item) for item in tasks if isinstance(item, dict)),
-            key=lambda item: (_task_scheduled_epoch(item) or float("inf"), _task_id(item)),
+        if isinstance(online_page, list):
+            online_page = {"items": online_page, "total": len(online_page)}
+        if isinstance(store_visit_page, list):
+            store_visit_page = {"items": store_visit_page, "total": len(store_visit_page)}
+        pages = []
+        for biz_type, page in (("online_service", online_page), ("store_visit", store_visit_page)):
+            if isinstance(page, list):
+                page = {"items": page, "total": len(page)}
+            page = dict(page or {})
+            page["biz_type"] = biz_type
+            pages.append(page)
+        incomplete = [
+            page
+            for page in pages
+            if int(page.get("total") or 0)
+            > len(page.get("items") if isinstance(page.get("items"), list) else [])
+        ]
+        # `/pending` is the due-time driver. New tasks may omit message_content and
+        # expose their full message groups through `/store-visit-pending` instead.
+        # The latter is therefore a content source, not an additional business queue.
+        self._pending_total = max(
+            len(online_page.get("items") or []),
+            int(online_page.get("total") or 0),
         )
-        self._pending_total = max(len(tasks), int(page.get("total") or 0))
+        if incomplete:
+            self._last_poll_error = "pending_page_incomplete"
+            self._counters["pending_page_incomplete"] += 1
+            return {
+                "pending_count": self._pending_total,
+                "enqueued_count": 0,
+                "queue_depth": self._queue.qsize(),
+                "in_flight_count": len(self._in_flight_ids),
+                "error_count": 1,
+            }
+        tasks, unresolved_content_triggers = _resolve_compatible_pending_tasks(
+            online_page.get("items") if isinstance(online_page.get("items"), list) else [],
+            store_visit_page.get("items") if isinstance(store_visit_page.get("items"), list) else [],
+        )
+        if unresolved_content_triggers:
+            self._counters["pending_content_lookup_missing"] += len(unresolved_content_triggers)
+            logger.warning(
+                "Third-party SOP due triggers have no matching full message groups: %s",
+                [_task_id(task) for task in unresolved_content_triggers],
+            )
+        tasks.sort(key=_task_batch_sort_key)
         now_epoch = time.time()
         lags = [max(0.0, now_epoch - value) for value in map(_task_scheduled_epoch, tasks) if value]
         self._oldest_due_lag_seconds = max(lags, default=0.0)
@@ -448,41 +450,85 @@ class SopPlatformTaskService:
                 self._oldest_due_lag_seconds,
                 self._pending_total,
             )
+        if _in_configured_quiet_hours(settings=self.settings):
+            self._counters["quiet_poll_only"] += len(tasks)
+            return {
+                "pending_count": self._pending_total,
+                "enqueued_count": 0,
+                "queue_depth": self._queue.qsize(),
+                "in_flight_count": len(self._in_flight_ids),
+                "error_count": 0,
+            }
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for task in tasks:
+            grouped.setdefault(_customer_batch_key(task), []).append(task)
+
         enqueued = 0
         pulled_at = utc_now_iso()
-        for task in tasks:
-            task_id = _task_id(task)
-            if (
-                not task_id
-                or task_id in self._queued_ids
+        for batch_key, batch_tasks in grouped.items():
+            trigger_tasks = _batch_compat_trigger_tasks({"tasks": batch_tasks})
+            trigger_ids = {_task_id(task) for task in trigger_tasks if _task_id(task)}
+            if any(
+                task_id in self._queued_ids
                 or task_id in self._in_flight_ids
+                or task_id in self._reserved_prefix_ids
                 or task_id in self._terminal_ids
+                for task_id in trigger_ids
             ):
-                if task_id and task_id in self._terminal_ids:
-                    await self._reack_terminal_pending_task(task_id)
-                self._counters["duplicate_poll"] += 1
+                self._counters["duplicate_poll"] += len(batch_tasks)
+                continue
+            eligible = []
+            for task in batch_tasks:
+                task_id = _task_id(task)
+                if (
+                    not task_id
+                    or task_id in self._queued_ids
+                    or task_id in self._in_flight_ids
+                    or task_id in self._reserved_prefix_ids
+                    or task_id in self._terminal_ids
+                ):
+                    self._counters["duplicate_poll"] += 1
+                    continue
+                eligible.append(task)
+            if not eligible:
                 continue
             if self._queue.full():
                 break
-            task["_aics_pulled_at"] = pulled_at
-            try:
-                event, local_task = await asyncio.to_thread(
-                    self._ensure_local_task,
-                    task,
-                    status="platform_queued",
-                )
-            except Exception:
-                self._counters["persistence_error"] += 1
-                logger.exception("Unable to persist pulled third-party SOP task: %s", task_id)
+            persisted: list[dict[str, Any]] = []
+            for task in eligible:
+                task["_aics_pulled_at"] = pulled_at
+                try:
+                    self._ensure_local_task(task, status="platform_queued")
+                except Exception:
+                    self._counters["persistence_error"] += 1
+                    logger.exception("Unable to persist pulled third-party SOP task: %s", _task_id(task))
+                    continue
+                persisted.append(task)
+            if not persisted:
                 continue
-            if str(event.get("status") or "") in self.RECOVERY_STATUSES or str(
-                local_task.get("status") or ""
-            ) in {"judging", "processing_retry", "sending", "failed"}:
-                self._counters["recovery_deferred"] += 1
-                continue
-            self._queued_ids.add(task_id)
-            self._queue.put_nowait(task)
-            enqueued += 1
+            trigger_tasks = _batch_compat_trigger_tasks({"tasks": persisted})
+            for trigger_task in trigger_tasks:
+                try:
+                    self._ensure_local_task(trigger_task, status="platform_waiting_content_resolution")
+                except Exception:
+                    self._counters["persistence_error"] += 1
+                    logger.exception(
+                        "Unable to persist third-party SOP compatibility trigger: %s",
+                        _task_id(trigger_task),
+                    )
+            for task in [*persisted, *trigger_tasks]:
+                self._queued_ids.add(_task_id(task))
+            self._queue.put_nowait(
+                {
+                    "_aics_customer_batch": True,
+                    "batch_key": batch_key,
+                    "biz_type": "online_service",
+                    "tasks": persisted,
+                    "compat_trigger_tasks": trigger_tasks,
+                }
+            )
+            enqueued += len(persisted)
         self._counters["fetched"] += len(tasks)
         self._counters["enqueued"] += enqueued
         return {
@@ -496,25 +542,38 @@ class SopPlatformTaskService:
 
     async def _queue_worker(self, _index: int) -> None:
         while True:
-            platform_task = await self._queue.get()
-            task_id = _task_id(platform_task)
-            self._queued_ids.discard(task_id)
-            self._in_flight_ids.add(task_id)
+            queue_item = await self._queue.get()
+            batch_tasks = _batch_tasks(queue_item)
+            trigger_tasks = _batch_compat_trigger_tasks(queue_item)
+            task_ids = list(
+                dict.fromkeys(
+                    _task_id(task)
+                    for task in [*batch_tasks, *trigger_tasks]
+                    if _task_id(task)
+                )
+            )
+            for task_id in task_ids:
+                self._queued_ids.discard(task_id)
+                self._in_flight_ids.add(task_id)
             started = time.perf_counter()
-            scheduled = _task_scheduled_epoch(platform_task)
+            scheduled = min((_task_scheduled_epoch(task) for task in batch_tasks if _task_scheduled_epoch(task)), default=0.0)
             if scheduled:
                 self._observe("queue_lag", max(0.0, time.time() - scheduled))
             try:
-                result = await self.process_task(platform_task)
+                if queue_item.get("_aics_customer_batch"):
+                    result = await self.process_customer_batch(queue_item)
+                else:
+                    result = await self.process_task(queue_item)
                 self._record_result(result)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self._counters["retry"] += 1
-                logger.exception("Third-party SOP task failed and remains recoverable: %s", task_id)
+                logger.exception("Third-party SOP customer batch failed and remains recoverable: %s", task_ids)
             finally:
                 self._observe("task", time.perf_counter() - started)
-                self._in_flight_ids.discard(task_id)
+                for task_id in task_ids:
+                    self._in_flight_ids.discard(task_id)
                 self._queue.task_done()
 
     async def _recovery_loop(self) -> None:
@@ -529,8 +588,10 @@ class SopPlatformTaskService:
             await asyncio.sleep(max(1.0, float(self.settings.sop_platform_poll_seconds)))
 
     async def process_recoveries(self) -> int:
-        events = await asyncio.to_thread(
-            self.repository.list_sop_events_by_statuses,
+        if _in_configured_quiet_hours(settings=self.settings):
+            self._counters["quiet_recovery_blocked"] += 1
+            return 0
+        events = self.repository.list_sop_events_by_statuses(
             self.RECOVERY_STATUSES,
             limit=self.settings.sop_platform_recovery_batch_size,
             event_type="platform_sop_task",
@@ -542,33 +603,8 @@ class SopPlatformTaskService:
             payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
             task = payload.get("platform_task") if isinstance(payload.get("platform_task"), dict) else {}
             if not task:
-                event_id = str(event.get("event_id") or "")
-                task_id = event_id.split(":", 1)[1] if event_id.startswith("platform_sop_task:") else ""
-                if task_id:
-                    try:
-                        self.repository.update_sop_event_status(
-                            event_id,
-                            status="platform_terminal_pending",
-                            error="missing_platform_task_payload",
-                        )
-                        response = await self.platform_client.consume(
-                            task_id=task_id,
-                            status=70,
-                            remark="missing_platform_task_payload",
-                        )
-                        _require_platform_status(response, 70)
-                        self.repository.update_sop_event_status(
-                            event_id,
-                            status="platform_failed",
-                            error="missing_platform_task_payload",
-                        )
-                        self._remember_terminal(task_id)
-                        self._counters["failed"] += 1
-                        return 1
-                    except Exception:
-                        return 0
                 self.repository.update_sop_event_status(
-                    event_id,
+                    str(event.get("event_id") or ""),
                     status="platform_failed",
                     error="missing_platform_task_payload",
                 )
@@ -592,303 +628,482 @@ class SopPlatformTaskService:
         task_id = _task_id(platform_task)
         if not task_id:
             raise ValueError("platform task_id is required")
-        try:
-            lock = self._locks.setdefault(task_id, asyncio.Lock())
-            async with lock:
-                contact_lock_key = _platform_contact_lock_key(platform_task)
-                if contact_lock_key:
-                    contact_lock = self._locks.setdefault(f"platform-contact:{contact_lock_key}", asyncio.Lock())
-                    async with contact_lock:
-                        return await self._process_with_content_lock(
-                            platform_task,
-                            task_id=task_id,
-                            recovery_status=recovery_status,
-                        )
-                return await self._process_with_content_lock(
-                    platform_task,
-                    task_id=task_id,
-                    recovery_status=recovery_status,
-                )
-        except SopPlatformTaskStateError as exc:
-            return self._finish_terminal_platform_task(platform_task, task_id=task_id, error=exc)
+        if _in_configured_quiet_hours(settings=self.settings):
+            self._counters["quiet_execution_deferred"] += 1
+            return {"processed": False, "status": "quiet_deferred", "task_id": task_id}
+        lock = self._locks.setdefault(task_id, asyncio.Lock())
+        async with lock:
+            duplicate_key = _platform_duplicate_send_once_key(platform_task)
+            if duplicate_key:
+                content_lock = self._locks.setdefault(f"platform-content:{duplicate_key}", asyncio.Lock())
+                async with content_lock:
+                    return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
+            return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
 
-    def _finish_terminal_platform_task(
+    async def process_customer_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+        tasks = sorted(_batch_tasks(batch), key=_task_batch_sort_key)
+        trigger_tasks = sorted(_batch_compat_trigger_tasks(batch), key=_task_batch_sort_key)
+        if not tasks:
+            return {"processed": False, "status": "empty_batch", "task_ids": []}
+        batch_key = str(batch.get("batch_key") or _customer_batch_key(tasks[0]))
+        lock = self._locks.setdefault(f"customer-batch:{batch_key}", asyncio.Lock())
+        async with lock:
+            return await self._process_customer_batch_locked(
+                tasks,
+                trigger_tasks=trigger_tasks,
+                batch_key=batch_key,
+                biz_type=str(batch.get("biz_type") or tasks[0].get("_aics_biz_type") or "online_service"),
+            )
+
+    async def _process_customer_batch_locked(
+        self,
+        tasks: list[dict[str, Any]],
+        *,
+        trigger_tasks: list[dict[str, Any]],
+        batch_key: str,
+        biz_type: str,
+    ) -> dict[str, Any]:
+        if _in_configured_quiet_hours(settings=self.settings):
+            self._counters["quiet_execution_deferred"] += len(tasks)
+            return {
+                "processed": False,
+                "status": "quiet_deferred",
+                "task_ids": [_task_id(task) for task in tasks],
+            }
+        identity = _task_identity(tasks[0])
+        batch_task_ids = [_task_id(task) for task in tasks]
+        batch_run_id = f"{biz_type}:{batch_task_ids[0]}"
+        if not _batch_identity_is_consistent([*tasks, *trigger_tasks], identity=identity):
+            raise RuntimeError("platform customer batch contains mixed identities")
+        missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
+        if missing:
+            raise RuntimeError(f"platform customer batch missing identity: {','.join(missing)}")
+        for task in [*tasks, *trigger_tasks]:
+            self._ensure_local_task(task, status="platform_queued")
+
+        conversation = await self.system_client.conversation(**identity, limit=50)
+        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        if not isinstance(data, dict):
+            raise RuntimeError("platform customer conversation response is invalid")
+        ai_auto_reply = _conversation_ai_auto_reply(data)
+        if ai_auto_reply is None:
+            raise RuntimeError("platform customer conversation is missing ai_auto_reply")
+        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
+        raw_messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        timeline = _conversation_timeline(raw_messages)
+        timeline_structure = _timeline_structure(timeline)
+        base_audit_context = {
+            "management_mode": "ai" if ai_auto_reply else "human",
+            "management_source": "conversation.ai_auto_reply",
+            "timeline_structure": timeline_structure,
+            "customer_opened": bool(timeline_structure.get("customer_message_count")),
+            "customer_relation": _compact_customer_relation(relation),
+        }
+        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+            return await self._consume_batch_without_send(
+                tasks,
+                trigger_tasks=trigger_tasks,
+                reason="customer_relation_deleted",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                audit_context=base_audit_context,
+            )
+        if ai_auto_reply is False:
+            return await self._consume_batch_without_send(
+                tasks,
+                trigger_tasks=trigger_tasks,
+                reason="human_takeover",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                audit_context=base_audit_context,
+            )
+
+        context = await self._load_batch_context(
+            tasks[0],
+            identity=identity,
+            relation=relation,
+            timeline=timeline,
+        )
+        same_day_unopened = _is_same_day_unopened(tasks, timeline=timeline)
+        context.update(
+            {
+                **base_audit_context,
+                "same_day_unopened": same_day_unopened,
+            }
+        )
+        if same_day_unopened:
+            decision = {
+                "evaluations": [
+                    {
+                        "task_id": _task_id(tasks[0]),
+                        "decision": "send",
+                        "reason": "same_day_unopened_earliest_direct",
+                        "evidence_refs": [f"task:{_task_id(tasks[0])}"],
+                    }
+                ],
+                "selected_task_id": _task_id(tasks[0]),
+                "transition_text": "",
+                "decision_source": "same_day_unopened_direct",
+            }
+        else:
+            decision = await self._decide_customer_batch(tasks, context=context)
+
+        selected_id = str(decision.get("selected_task_id") or "").strip()
+        if not selected_id:
+            return await self._consume_batch_without_send(
+                tasks,
+                trigger_tasks=trigger_tasks,
+                reason="all_due_groups_filtered",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                decision=decision,
+                audit_context=context,
+            )
+        selected_index = next((index for index, task in enumerate(tasks) if _task_id(task) == selected_id), -1)
+        if selected_index < 0:
+            raise RuntimeError("batch model selected an unknown task_id")
+        selected_task = tasks[selected_index]
+        skipped_prefix = tasks[:selected_index]
+        transition_text = str(decision.get("transition_text") or "").strip()
+        if transition_text:
+            passed = await self._transition_fact_audit(
+                transition_text,
+                selected_task=selected_task,
+                context=context,
+            )
+            if not passed:
+                transition_text = ""
+                decision["transition_text"] = ""
+                decision["transition_audit"] = "dropped_new_fact_risk"
+        return await self._send_selected_batch_task(
+            selected_task,
+            skipped_prefix=skipped_prefix,
+            trigger_tasks=trigger_tasks,
+            transition_text=transition_text,
+            decision=decision,
+            context=context,
+            identity=identity,
+            batch_key=batch_key,
+            biz_type=biz_type,
+            batch_run_id=batch_run_id,
+            batch_task_ids=batch_task_ids,
+        )
+
+    async def _load_batch_context(
         self,
         platform_task: dict[str, Any],
         *,
-        task_id: str,
-        error: SopPlatformTaskStateError,
+        identity: dict[str, str],
+        relation: dict[str, Any],
+        timeline: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        event_id = f"platform_sop_task:{task_id}"
-        local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
-        state_contract = {
-            "已取消": ("platform_task_cancelled", "platform_cancelled", "completed_without_send"),
-            "已完成": ("platform_task_already_completed", "platform_completed", "completed_without_send"),
-            "已失败": ("platform_task_already_failed", "platform_failed", "failed"),
-            "失败": ("platform_task_already_failed", "platform_failed", "failed"),
-            "已不发送": ("platform_task_already_no_send", "platform_no_send", "completed_without_send"),
-            "不发送": ("platform_task_already_no_send", "platform_no_send", "completed_without_send"),
+        request_context = {
+            "source_protocol": "third_party_sop_pending_batch",
+            **identity,
+            "order_id": platform_task.get("orderId") or platform_task.get("order_id"),
+            "order_no": platform_task.get("orderNo") or platform_task.get("order_no"),
         }
-        reason, event_status, task_status = state_contract.get(
-            error.state,
-            ("platform_task_already_completed", "platform_completed", "completed_without_send"),
+        customer_context = await asyncio.to_thread(
+            self.customer_context_service.load,
+            customer_id=identity["customer_id"],
+            memory={},
+            request_context=request_context,
         )
-        if local_task:
-            self.repository.update_sop_send_task(
-                str(local_task.get("id") or ""),
-                status=task_status,
-                send_response={"platform_terminal_state": error.state, "response": error.payload},
-                error=reason,
+        return {
+            "customer_relation": _compact_customer_relation(relation),
+            "conversation_timeline": timeline,
+            "timeline_structure": _timeline_structure(timeline),
+            "business_state": _compact_business_state(customer_context),
+        }
+
+    async def _decide_customer_batch(
+        self,
+        tasks: list[dict[str, Any]],
+        *,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        groups = []
+        for sequence_index, task in enumerate(tasks, start=1):
+            task_id = _task_id(task)
+            groups.append(
+                {
+                    "sequence_index": sequence_index,
+                    "task_id": task_id,
+                    "task_ref": f"task:{task_id}",
+                    "scheduled_at": task.get("scheduledAt") or task.get("scheduled_at"),
+                    "sort_order": task.get("sortOrder") or task.get("sort_order"),
+                    "trigger_event": task.get("triggerEvent") or task.get("trigger_event"),
+                    "use_ai_copy": _bool(task.get("useAiCopy", task.get("use_ai_copy"))),
+                    "scene": task.get("scene") if isinstance(task.get("scene"), dict) else {},
+                    "message_content": _platform_messages(task),
+                }
             )
-        self.repository.update_sop_event_status(event_id, status=event_status, error=reason)
-        self._counters[reason] += 1
-        logger.info("Third-party SOP task %s reached platform terminal state: %s", task_id, error.state)
+        model_input = {
+            "latest_context": context,
+            "pending_groups": groups,
+            "authoritative_business_facts": _sop_platform_batch_business_facts_for_model(),
+        }
+        model_messages = [
+            {"role": "system", "content": SOP_PLATFORM_BATCH_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(model_input, ensure_ascii=False)},
+        ]
+        deadline = time.monotonic() + max(5.0, float(self.settings.sop_platform_model_timeout_seconds))
+        raw = await self._chat_batch_decision_json(model_messages, deadline=deadline)
+        error = _batch_decision_error(raw, tasks=tasks, context=context)
+        if error:
+            raw = await self._chat_batch_decision_json(
+                [
+                    *model_messages,
+                    {"role": "assistant", "content": json.dumps(raw, ensure_ascii=False)},
+                    {
+                        "role": "user",
+                        "content": f"输出结构不合法：{error}。只修结构，严格按任务顺序返回小写 json。",
+                    },
+                ],
+                deadline=deadline,
+            )
+            error = _batch_decision_error(raw, tasks=tasks, context=context)
+        if error:
+            raise RuntimeError(f"invalid_sop_platform_batch_model_output: {error}")
+        return dict(raw)
+
+    async def _chat_batch_decision_json(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        deadline: float,
+    ) -> dict[str, Any]:
+        primary_options = _sop_platform_decision_model_options(self.settings)
+        if primary_options:
+            primary_timeout = max(
+                1.0,
+                float(getattr(self.settings, "sop_platform_decision_primary_timeout_seconds", 12.0) or 12.0),
+            )
+            primary_deadline = min(deadline, time.monotonic() + primary_timeout)
+            try:
+                return await self.model_client.chat_json(
+                    messages,
+                    tier="balanced",
+                    temperature=0.0,
+                    deadline_monotonic=primary_deadline,
+                    max_parallel_candidates=1,
+                    **primary_options,
+                )
+            except Exception as exc:
+                logger.warning("DeepSeek SOP sequence decision failed; trying configured GPT fallbacks: %s", exc)
+        fallback_models = _sop_platform_decision_fallback_models(self.settings)
+        fallback_options = {"model_names_override": fallback_models} if fallback_models else {}
+        return await self.model_client.chat_json(
+            messages,
+            tier="balanced",
+            temperature=0.0,
+            deadline_monotonic=deadline,
+            max_parallel_candidates=1,
+            **fallback_options,
+        )
+
+    async def _transition_fact_audit(
+        self,
+        transition_text: str,
+        *,
+        selected_task: dict[str, Any],
+        context: dict[str, Any],
+    ) -> bool:
+        if len(transition_text) > 80 or "http://" in transition_text.lower() or "https://" in transition_text.lower():
+            return False
+        audit_input = {
+            "transition_text": transition_text,
+            "conversation_timeline": context.get("conversation_timeline") or [],
+            "selected_platform_messages": _platform_messages(selected_task),
+            "authoritative_business_facts": sop_platform_business_facts_for_model(),
+        }
+        deadline = time.monotonic() + max(5.0, float(self.settings.sop_platform_model_timeout_seconds))
+        try:
+            result = await self.model_client.chat_json(
+                [
+                    {"role": "system", "content": SOP_TRANSITION_FACT_AUDIT_PROMPT},
+                    {"role": "user", "content": json.dumps(audit_input, ensure_ascii=False)},
+                ],
+                tier="fast",
+                temperature=0.0,
+                deadline_monotonic=deadline,
+                max_parallel_candidates=1,
+            )
+        except Exception:
+            return False
+        return isinstance(result, dict) and str(result.get("status") or "").strip().lower() == "pass"
+
+    async def _consume_batch_without_send(
+        self,
+        tasks: list[dict[str, Any]],
+        *,
+        trigger_tasks: list[dict[str, Any]] | None = None,
+        reason: str,
+        batch_key: str,
+        biz_type: str,
+        batch_run_id: str,
+        decision: dict[str, Any] | None = None,
+        audit_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        trigger_tasks = trigger_tasks or []
+        terminal_tasks = _dedupe_tasks([*tasks, *trigger_tasks])
+        terminal_ids: list[str] = []
+        audit = {
+            "audit_schema_version": 2,
+            "processing_mode": "customer_batch_sequence",
+            "batch_run_id": batch_run_id,
+            "batch_key": batch_key,
+            "biz_type": biz_type,
+            "batch_task_ids": [_task_id(task) for task in tasks],
+            "compat_trigger_task_ids": [_task_id(task) for task in trigger_tasks],
+            "decision": decision or {"selected_task_id": "", "evaluations": []},
+            "reason": reason,
+            "context": _context_audit(audit_context or {}),
+            "consume_results": [],
+        }
+        if self.settings.sop_platform_shadow_mode:
+            for task in terminal_tasks:
+                self._mark_local_task(task, status="shadow_no_send", send_payload=audit)
+            return {
+                "processed": True,
+                "status": "shadow_no_send",
+                "task_ids": [_task_id(task) for task in terminal_tasks],
+                "terminal_task_ids": [_task_id(task) for task in terminal_tasks],
+                "decision": audit["decision"],
+            }
+        for task in terminal_tasks:
+            task_id = _task_id(task)
+            response = await self.platform_client.consume(task_id=task_id, status=70, remark=reason)
+            _require_platform_status(response, 70)
+            audit["consume_results"].append(
+                {"task_id": task_id, "status": 70, "remark": reason, "response": response}
+            )
+            self._mark_local_task(task, status="completed_without_send", send_payload=audit)
+            self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
+            terminal_ids.append(task_id)
+        for task in terminal_tasks:
+            self._mark_local_task(task, status="completed_without_send", send_payload=audit)
         return {
             "processed": True,
-            "status": task_status,
-            "task_id": task_id,
-            "reason": reason,
-            "platform_response": error.payload,
+            "status": "completed_without_send",
+            "task_ids": [_task_id(task) for task in terminal_tasks],
+            "terminal_task_ids": terminal_ids,
+            "decision": audit["decision"],
         }
 
-    async def _commit_platform_terminal(
+    async def _send_selected_batch_task(
         self,
+        selected_task: dict[str, Any],
         *,
-        task_id: str,
-        event_id: str,
-        terminal_status: int,
-        event_status: str = "",
-        remark: str | None = None,
+        skipped_prefix: list[dict[str, Any]],
+        trigger_tasks: list[dict[str, Any]],
+        transition_text: str,
+        decision: dict[str, Any],
+        context: dict[str, Any],
+        identity: dict[str, str],
+        batch_key: str,
+        biz_type: str,
+        batch_run_id: str,
+        batch_task_ids: list[str],
     ) -> dict[str, Any]:
-        if terminal_status not in {30, 70}:
-            raise ValueError(f"unsupported platform terminal status: {terminal_status}")
-        local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
-        if local_task:
-            audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
-            self.repository.update_sop_send_task(
-                str(local_task.get("id") or ""),
-                status=str(local_task.get("status") or "platform_received"),
-                send_payload={
-                    **audit,
-                    "platform_terminal_status": terminal_status,
-                    "platform_terminal_event_status": event_status,
-                    "platform_terminal_remark": str(remark if remark is not None else local_task.get("error") or ""),
-                },
-                error=str(local_task.get("error") or ""),
-            )
-        self.repository.update_sop_event_status(event_id, status="platform_terminal_pending")
-        response = await self.platform_client.consume(
-            task_id=task_id,
-            status=terminal_status,
-            remark=_platform_consume_remark(local_task) if remark is None else str(remark)[:500],
-        )
-        _require_platform_status(response, terminal_status)
-        self.repository.update_sop_event_status(
-            event_id,
-            status=event_status or {30: "platform_completed", 70: "platform_no_send"}[terminal_status],
-        )
-        return response
-
-    def _stored_terminal_status(self, local_task: dict[str, Any]) -> int:
-        payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
-        try:
-            explicit = int(payload.get("platform_terminal_status") or 0)
-        except (TypeError, ValueError):
-            explicit = 0
-        if explicit in {30, 70}:
-            return explicit
-        if explicit == 40:
-            return 70
-        task_status = str(local_task.get("status") or "")
-        error = str(local_task.get("error") or "")
-        decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
-        reason_code = str(decision.get("reason_code") or "")
-        if task_status == "sent":
-            return 30
-        if task_status == "failed":
-            return 70
-        if task_status in {"completed_without_send", "shadow_no_send"}:
-            return 70
-        if error or reason_code == "no_send_downstream_rejected":
-            return 70
-        return 70
-
-    def _stored_terminal_event_status(self, local_task: dict[str, Any]) -> str:
-        payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
-        explicit = str(payload.get("platform_terminal_event_status") or "")
-        if explicit in {"platform_completed", "platform_failed", "platform_no_send"}:
-            return explicit
-        return "platform_failed" if str(local_task.get("status") or "") == "failed" else ""
-
-    def _defer_platform_send_retry(
-        self,
-        *,
-        task_id: str,
-        event_id: str,
-        local_task: dict[str, Any],
-        send_payload: dict[str, Any],
-        failure: dict[str, Any],
-        error: Exception,
-    ) -> dict[str, Any]:
-        previous_retry = (
-            send_payload.get("delivery_retry")
-            if isinstance(send_payload.get("delivery_retry"), dict)
-            else {}
-        )
-        attempt_count = max(0, int(previous_retry.get("attempt_count") or 0)) + 1
-        delay_seconds = 0 if attempt_count == 1 else min(300, 15 * (2 ** min(attempt_count - 2, 5)))
-        next_retry_at = (
-            datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
-        ).isoformat()
-        retry_state = {
-            "attempt_count": attempt_count,
-            "next_retry_at": next_retry_at,
-            "last_failure": failure,
-            "last_error": f"{type(error).__name__}: {error}",
-        }
-        payload = {
-            **send_payload,
-            "platform_task_id": task_id,
-            "delivery_retry": retry_state,
-        }
-        self.repository.update_sop_send_task(
-            str(local_task.get("id") or ""),
-            status="processing_retry",
-            send_payload=payload,
-            error=retry_state["last_error"],
-        )
-        self.repository.update_sop_event_status(
-            event_id,
-            status="platform_send_retry",
-            error=retry_state["last_error"],
-        )
-        self._counters["send_retry_deferred"] += 1
-        return {
-            "processed": False,
-            "status": "processing_retry",
-            "task_id": task_id,
-            "retry": retry_state,
-            "error": retry_state["last_error"],
-        }
-
-    async def _retry_platform_send(
-        self,
-        platform_task: dict[str, Any],
-        *,
-        task_id: str,
-        event_id: str,
-        local_task: dict[str, Any],
-    ) -> dict[str, Any]:
-        stored_payload = (
-            local_task.get("send_payload")
-            if isinstance(local_task.get("send_payload"), dict)
-            else {}
-        )
-        send_payload = (
-            stored_payload.get("request")
-            if isinstance(stored_payload.get("request"), dict)
-            else {}
-        )
-        decision = (
-            stored_payload.get("decision")
-            if isinstance(stored_payload.get("decision"), dict)
-            else {}
-        )
-        if not send_payload or not decision:
-            raise RuntimeError("platform send retry is missing the immutable request or decision")
-
-        retry_state = (
-            stored_payload.get("delivery_retry")
-            if isinstance(stored_payload.get("delivery_retry"), dict)
-            else {}
-        )
-        next_retry_epoch = _parse_epoch(retry_state.get("next_retry_at"))
-        if next_retry_epoch and next_retry_epoch > time.time():
+        selected_id = _task_id(selected_task)
+        if _in_configured_quiet_hours(settings=self.settings):
+            self._counters["quiet_execution_deferred"] += 1
             return {
                 "processed": False,
-                "status": "retry_waiting",
-                "task_id": task_id,
-                "retry": retry_state,
+                "status": "quiet_deferred",
+                "task_id": selected_id,
+                "terminal_task_ids": [],
             }
-        if _quiet_hours_base_summary({}, settings=self.settings)["in_quiet_hours"]:
+        original_messages = _platform_messages(selected_task)
+        if not original_messages:
+            raise RuntimeError("selected platform task has no sendable original messages")
+        final_messages = list(original_messages)
+        if transition_text:
+            final_messages = [{"type": "text", "order": 1, "content": {"text": transition_text}}] + [
+                {**message, "order": index + 2}
+                for index, message in enumerate(original_messages)
+            ]
+        skipped_ids = [_task_id(task) for task in skipped_prefix]
+        trigger_ids = [
+            task_id
+            for task_id in (_task_id(task) for task in trigger_tasks)
+            if task_id and task_id not in {*skipped_ids, selected_id}
+        ]
+        audit = {
+            "audit_schema_version": 2,
+            "processing_mode": "customer_batch_sequence",
+            "batch_run_id": batch_run_id,
+            "batch_key": batch_key,
+            "biz_type": biz_type,
+            "batch_task_ids": batch_task_ids,
+            "decision": decision,
+            "original_messages": original_messages,
+            "transition_text": transition_text,
+            "final_messages": final_messages,
+            "context": _context_audit(context),
+            "skipped_prefix_task_ids": skipped_ids,
+            "compat_trigger_task_ids": trigger_ids,
+            "consume_results": [],
+        }
+        if self.settings.sop_platform_shadow_mode:
+            for task in skipped_prefix:
+                self._mark_local_task(task, status="shadow_no_send", send_payload=audit)
+            for task in trigger_tasks:
+                self._mark_local_task(task, status="shadow_no_send", send_payload=audit)
+            self._mark_local_task(selected_task, status="shadow_send", send_payload=audit)
             return {
-                "processed": False,
-                "status": "retry_waiting_quiet_hours",
-                "task_id": task_id,
-                "retry": retry_state,
+                "processed": True,
+                "status": "shadow_send",
+                "task_id": selected_id,
+                "task_ids": [*skipped_ids, selected_id, *trigger_ids],
+                "terminal_task_ids": [*skipped_ids, selected_id, *trigger_ids],
+                "decision": decision,
+                "reply_messages": final_messages,
             }
 
-        started = time.perf_counter()
+        claimed = await self.platform_client.consume(task_id=selected_id, status=20)
+        _require_platform_status(claimed, 20)
+        self.repository.update_sop_event_status(f"platform_sop_task:{selected_id}", status="platform_processing")
+        local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{selected_id}")
+        local_task_id = str(local_task.get("id") or "")
+        self.repository.update_sop_send_task(local_task_id, status="sending", send_payload=audit)
+        send_payload = {
+            **identity,
+            "plan_id": f"platform-sop-{selected_id}",
+            "task_id": f"platform-sop-send-{selected_id}",
+            "reply_messages": final_messages,
+        }
+        for task_id in [*skipped_ids, selected_id, *trigger_ids]:
+            self._reserved_prefix_ids.add(task_id)
         try:
             send_result = await self.system_client.send(
                 **send_payload,
                 source_channel="proactive_message",
                 source_kind="sop_platform_task",
-                source_request_id=event_id,
-                source_task_id=str(local_task.get("id") or ""),
+                source_request_id=f"platform_sop_task:{selected_id}",
+                source_task_id=local_task_id,
                 source_context={
-                    "sop_send_task_id": str(local_task.get("id") or ""),
-                    "sop_event_id": event_id,
-                    "platform_task_id": task_id,
+                    "sop_send_task_id": local_task_id,
+                    "sop_event_id": f"platform_sop_task:{selected_id}",
+                    "platform_task_id": selected_id,
+                    "skipped_prefix_task_ids": skipped_ids,
+                    "compat_trigger_task_ids": trigger_ids,
+                    "batch_key": batch_key,
+                    "biz_type": biz_type,
                 },
-                delivery_idempotency_key=f"sop_platform_task:{local_task.get('id')}",
+                delivery_idempotency_key=f"sop_platform_task:{local_task_id}",
             )
         except Exception as exc:
-            self._observe("send", time.perf_counter() - started)
-            retryable_failure = _retryable_delivery_failure(exc)
-            if retryable_failure:
-                return self._defer_platform_send_retry(
-                    task_id=task_id,
-                    event_id=event_id,
-                    local_task=local_task,
-                    send_payload=stored_payload,
-                    failure=retryable_failure,
-                    error=exc,
-                )
-            terminal_failure = _terminal_delivery_failure(exc)
-            if not terminal_failure:
-                raise
-            business_no_send = _delivery_rejection_is_no_send(terminal_failure)
-            failed_decision = {
-                **decision,
-                "decision": "no_send",
-                "reason": "downstream_delivery_rejected",
-                "reason_code": "no_send_downstream_rejected",
-                "sceneName": sop_platform_scene_name("no_send_downstream_rejected"),
-                "sceneCode": "no_send_downstream_rejected",
-                "knowledgeId": 0,
-                "knowledgeParagraphNo": 0,
-                "remark": f"Delivery rejected by downstream system: HTTP {terminal_failure['http_status']}.",
-                "reply_messages": [],
-            }
-            self.repository.update_sop_send_task(
-                str(local_task.get("id") or ""),
-                status="completed_without_send" if business_no_send else "failed",
-                send_payload={
-                    **stored_payload,
-                    "decision": failed_decision,
-                    "attempted_decision": decision,
-                    "delivery_failure": terminal_failure,
-                },
-                error=f"{type(exc).__name__}: {exc}",
+            return self._defer_batch_send_retry(
+                selected_task_id=selected_id,
+                local_task_id=local_task_id,
+                audit=audit,
+                error=exc,
             )
-            completed = await self._commit_platform_terminal(
-                task_id=task_id,
-                event_id=event_id,
-                terminal_status=70,
-                event_status="" if business_no_send else "platform_failed",
-                remark=str(failed_decision.get("remark") or ""),
-            )
-            return {
-                "processed": True,
-                "status": "completed_without_send" if business_no_send else "failed",
-                "task_id": task_id,
-                "decision": failed_decision,
-                "delivery_failure": terminal_failure,
-                "platform_response": completed,
-            }
-
-        self._observe("send", time.perf_counter() - started)
         send_data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
         delivery_status = str(send_data.get("delivery_status") or "")
         if bool(send_data.get("callback_required")) and delivery_status in {
@@ -896,75 +1111,354 @@ class SopPlatformTaskService:
             "submission_unknown",
             "sending",
         }:
-            self.repository.update_sop_event_status(event_id, status="platform_delivery_pending", error="")
             self.repository.update_sop_send_task(
-                str(local_task.get("id") or ""),
+                local_task_id,
                 status="sending",
-                send_payload=stored_payload,
+                send_payload=audit,
                 send_response=send_result,
                 error="",
+            )
+            self.repository.update_sop_event_status(
+                f"platform_sop_task:{selected_id}",
+                status="platform_delivery_pending",
             )
             return {
                 "processed": True,
                 "status": "accepted",
-                "task_id": task_id,
+                "task_id": selected_id,
+                "task_ids": [*skipped_ids, selected_id],
+                "terminal_task_ids": [],
                 "send_response": send_result,
             }
 
-        send_status = str(send_data.get("send_status") or send_result.get("msg") or "")
-        if send_status == "accepted_no_response":
-            send_result = {
-                **send_result,
-                "msg": "accepted_no_response_assumed_sent",
-                "data": {**send_data, "assumed_sent": True},
+        if _in_configured_quiet_hours(settings=self.settings):
+            self.repository.update_sop_send_task(
+                local_task_id,
+                status="sent",
+                send_payload=audit,
+                send_response=send_result,
+                sent_at=utc_now_iso(),
+            )
+            self.repository.update_sop_event_status(
+                f"platform_sop_task:{selected_id}",
+                status="platform_batch_consume_pending",
+            )
+            return {
+                "processed": True,
+                "status": "sent_consume_deferred",
+                "task_id": selected_id,
+                "task_ids": [*skipped_ids, selected_id],
+                "terminal_task_ids": [],
+                "reply_messages": final_messages,
+                "send_response": send_result,
             }
-        rule_data_audit = await self._report_rule_data(
-            platform_task,
-            decision=decision,
-            sent=True,
+
+        terminal_ids = await self._finalize_batch_prefix(
+            selected_task_id=selected_id,
+            skipped_prefix_task_ids=skipped_ids,
+            compat_trigger_task_ids=trigger_ids,
+            audit=audit,
         )
         self.repository.update_sop_send_task(
-            str(local_task.get("id") or ""),
+            local_task_id,
+            status="sent",
+            send_payload=audit,
+            send_response=send_result,
+            sent_at=utc_now_iso(),
+        )
+        return {
+            "processed": True,
+            "status": "sent",
+            "task_id": selected_id,
+            "task_ids": [*skipped_ids, selected_id],
+            "terminal_task_ids": terminal_ids,
+            "reply_messages": final_messages,
+            "send_response": send_result,
+        }
+
+    def _defer_batch_send_retry(
+        self,
+        *,
+        selected_task_id: str,
+        local_task_id: str,
+        audit: dict[str, Any],
+        error: Exception,
+    ) -> dict[str, Any]:
+        previous = audit.get("delivery_retry") if isinstance(audit.get("delivery_retry"), dict) else {}
+        attempt_count = max(0, int(previous.get("attempt_count") or 0)) + 1
+        delay_seconds = 0 if attempt_count == 1 else min(300, 15 * (2 ** min(attempt_count - 2, 5)))
+        retry_state = {
+            "attempt_count": attempt_count,
+            "next_retry_at": (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat(),
+            "last_failure": _retryable_delivery_failure(error),
+            "last_error": f"{type(error).__name__}: {error}",
+        }
+        retry_audit = {**audit, "delivery_retry": retry_state}
+        self.repository.update_sop_send_task(
+            local_task_id,
+            status="processing_retry",
+            send_payload=retry_audit,
+            error=retry_state["last_error"],
+        )
+        self.repository.update_sop_event_status(
+            f"platform_sop_task:{selected_task_id}",
+            status="platform_batch_send_retry",
+            error=retry_state["last_error"],
+        )
+        self._counters["send_retry_deferred"] += 1
+        return {
+            "processed": False,
+            "status": "processing_retry",
+            "task_id": selected_task_id,
+            "terminal_task_ids": [],
+            "retry": retry_state,
+            "error": retry_state["last_error"],
+        }
+
+    async def _retry_batch_send(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        local_task: dict[str, Any],
+    ) -> dict[str, Any]:
+        selected_id = _task_id(platform_task)
+        identity = _task_identity(platform_task)
+        audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        final_messages = audit.get("final_messages") if isinstance(audit.get("final_messages"), list) else []
+        skipped_ids = [
+            str(value).strip()
+            for value in audit.get("skipped_prefix_task_ids", [])
+            if str(value).strip()
+        ] if isinstance(audit.get("skipped_prefix_task_ids"), list) else []
+        trigger_ids = [
+            str(value).strip()
+            for value in audit.get("compat_trigger_task_ids", [])
+            if str(value).strip()
+        ] if isinstance(audit.get("compat_trigger_task_ids"), list) else []
+        local_task_id = str(local_task.get("id") or "")
+        if not final_messages or not local_task_id:
+            raise RuntimeError("batch retry is missing immutable send payload")
+        retry_state = audit.get("delivery_retry") if isinstance(audit.get("delivery_retry"), dict) else {}
+        next_retry_epoch = _parse_epoch(retry_state.get("next_retry_at"))
+        if next_retry_epoch and next_retry_epoch > time.time():
+            return {
+                "processed": False,
+                "status": "retry_waiting",
+                "task_id": selected_id,
+                "retry": retry_state,
+            }
+        for task_id in [*skipped_ids, selected_id, *trigger_ids]:
+            self._reserved_prefix_ids.add(task_id)
+        try:
+            send_result = await self.system_client.send(
+                **identity,
+                plan_id=f"platform-sop-{selected_id}",
+                task_id=f"platform-sop-send-{selected_id}",
+                reply_messages=final_messages,
+                source_channel="proactive_message",
+                source_kind="sop_platform_task",
+                source_request_id=f"platform_sop_task:{selected_id}",
+                source_task_id=local_task_id,
+                source_context={
+                    "sop_send_task_id": local_task_id,
+                    "sop_event_id": f"platform_sop_task:{selected_id}",
+                    "platform_task_id": selected_id,
+                    "skipped_prefix_task_ids": skipped_ids,
+                    "compat_trigger_task_ids": trigger_ids,
+                    "batch_key": str(audit.get("batch_key") or ""),
+                    "biz_type": str(audit.get("biz_type") or ""),
+                },
+                delivery_idempotency_key=f"sop_platform_task:{local_task_id}",
+            )
+        except Exception as exc:
+            return self._defer_batch_send_retry(
+                selected_task_id=selected_id,
+                local_task_id=local_task_id,
+                audit=audit,
+                error=exc,
+            )
+        send_data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
+        delivery_status = str(send_data.get("delivery_status") or "")
+        if bool(send_data.get("callback_required")) and delivery_status in {
+            "platform_accepted",
+            "submission_unknown",
+            "sending",
+        }:
+            self.repository.update_sop_send_task(
+                local_task_id,
+                status="sending",
+                send_payload=audit,
+                send_response=send_result,
+                error="",
+            )
+            self.repository.update_sop_event_status(
+                f"platform_sop_task:{selected_id}",
+                status="platform_delivery_pending",
+                error="",
+            )
+            return {"processed": True, "status": "accepted", "task_id": selected_id}
+        if _in_configured_quiet_hours(settings=self.settings):
+            self.repository.update_sop_send_task(
+                local_task_id,
+                status="sent",
+                send_payload=audit,
+                send_response=send_result,
+                error="",
+                sent_at=utc_now_iso(),
+            )
+            self.repository.update_sop_event_status(
+                f"platform_sop_task:{selected_id}",
+                status="platform_batch_consume_pending",
+                error="",
+            )
+            return {
+                "processed": True,
+                "status": "sent_consume_deferred",
+                "task_id": selected_id,
+                "terminal_task_ids": [],
+            }
+
+        terminal_ids = await self._finalize_batch_prefix(
+            selected_task_id=selected_id,
+            skipped_prefix_task_ids=skipped_ids,
+            compat_trigger_task_ids=trigger_ids,
+            audit=audit,
+        )
+        self.repository.update_sop_send_task(
+            local_task_id,
             status="sent",
             send_payload={
-                **stored_payload,
-                "delivery_retry": {
-                    **retry_state,
-                    "resolved_at": utc_now_iso(),
-                },
-                **rule_data_audit,
+                **audit,
+                "delivery_retry": {**retry_state, "resolved_at": utc_now_iso()},
             },
             send_response=send_result,
             error="",
             sent_at=utc_now_iso(),
         )
-        completed = await self._commit_platform_terminal(
-            task_id=task_id,
-            event_id=event_id,
-            terminal_status=30,
-        )
-        self._counters["send_retry_recovered"] += 1
         return {
             "processed": True,
             "status": "sent",
-            "task_id": task_id,
-            "platform_response": completed,
-            "send_response": send_result,
+            "task_id": selected_id,
+            "terminal_task_ids": terminal_ids,
         }
 
-    async def _process_with_content_lock(
+    def _restore_reserved_prefix_ids(self) -> None:
+        events = self.repository.list_sop_events_by_statuses(
+            ["platform_batch_send_retry", "platform_delivery_pending", "platform_batch_consume_pending"],
+            limit=500,
+            event_type="platform_sop_task",
+        )
+        for event in events:
+            event_id = str(event.get("event_id") or "")
+            selected_id = event_id.rsplit(":", 1)[-1]
+            local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{selected_id}")
+            audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            self._reserved_prefix_ids.add(selected_id)
+            for value in audit.get("skipped_prefix_task_ids", []) if isinstance(audit.get("skipped_prefix_task_ids"), list) else []:
+                if str(value).strip():
+                    self._reserved_prefix_ids.add(str(value).strip())
+            for value in audit.get("compat_trigger_task_ids", []) if isinstance(audit.get("compat_trigger_task_ids"), list) else []:
+                if str(value).strip():
+                    self._reserved_prefix_ids.add(str(value).strip())
+
+    async def _finalize_batch_prefix(
         self,
-        platform_task: dict[str, Any],
         *,
-        task_id: str,
-        recovery_status: str,
-    ) -> dict[str, Any]:
-        duplicate_key = _platform_duplicate_send_once_key(platform_task)
-        if duplicate_key:
-            content_lock = self._locks.setdefault(f"platform-content:{duplicate_key}", asyncio.Lock())
-            async with content_lock:
-                return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
-        return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
+        selected_task_id: str,
+        skipped_prefix_task_ids: list[str],
+        compat_trigger_task_ids: list[str] | None = None,
+        audit: dict[str, Any] | None = None,
+    ) -> list[str]:
+        terminal_ids: list[str] = []
+        consume_results = audit.setdefault("consume_results", []) if isinstance(audit, dict) else []
+        if not isinstance(consume_results, list):
+            consume_results = []
+            if isinstance(audit, dict):
+                audit["consume_results"] = consume_results
+        for task_id in skipped_prefix_task_ids:
+            response = await self.platform_client.consume(
+                task_id=task_id,
+                status=70,
+                remark="superseded_by_later_sendable_group",
+            )
+            _require_platform_status(response, 70)
+            consume_results[:] = [
+                item
+                for item in consume_results
+                if not isinstance(item, dict) or str(item.get("task_id") or "") != task_id
+            ]
+            consume_results.append(
+                {
+                    "task_id": task_id,
+                    "status": 70,
+                    "remark": "superseded_by_later_sendable_group",
+                    "response": response,
+                }
+            )
+            task = self._platform_task_from_local(task_id)
+            if task:
+                self._mark_local_task(task, status="completed_without_send", send_payload=audit or {})
+            self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
+            terminal_ids.append(task_id)
+        response = await self.platform_client.consume(task_id=selected_task_id, status=30)
+        _require_platform_status(response, 30)
+        consume_results[:] = [
+            item
+            for item in consume_results
+            if not isinstance(item, dict) or str(item.get("task_id") or "") != selected_task_id
+        ]
+        consume_results.append(
+            {"task_id": selected_task_id, "status": 30, "remark": "", "response": response}
+        )
+        self.repository.update_sop_event_status(
+            f"platform_sop_task:{selected_task_id}",
+            status="platform_completed",
+        )
+        terminal_ids.append(selected_task_id)
+        trigger_ids = compat_trigger_task_ids
+        if trigger_ids is None and isinstance(audit, dict):
+            raw_trigger_ids = audit.get("compat_trigger_task_ids")
+            trigger_ids = raw_trigger_ids if isinstance(raw_trigger_ids, list) else []
+        for raw_task_id in trigger_ids or []:
+            task_id = str(raw_task_id or "").strip()
+            if not task_id or task_id in terminal_ids:
+                continue
+            response = await self.platform_client.consume(
+                task_id=task_id,
+                status=70,
+                remark="content_resolved_from_store_visit_queue",
+            )
+            _require_platform_status(response, 70)
+            consume_results.append(
+                {
+                    "task_id": task_id,
+                    "status": 70,
+                    "remark": "content_resolved_from_store_visit_queue",
+                    "response": response,
+                }
+            )
+            self.repository.update_sop_event_status(
+                f"platform_sop_task:{task_id}",
+                status="platform_completed",
+            )
+            terminal_ids.append(task_id)
+        reserved_prefix_ids = getattr(self, "_reserved_prefix_ids", None)
+        if isinstance(reserved_prefix_ids, set):
+            for task_id in terminal_ids:
+                reserved_prefix_ids.discard(task_id)
+        return terminal_ids
+
+    def _platform_task_from_local(self, task_id: str) -> dict[str, Any]:
+        event = self.repository.get_sop_event(f"platform_sop_task:{task_id}")
+        payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        return payload.get("platform_task") if isinstance(payload.get("platform_task"), dict) else {}
+
+    def _mark_local_task(self, platform_task: dict[str, Any], *, status: str, send_payload: dict[str, Any]) -> None:
+        task_id = _task_id(platform_task)
+        local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
+        local_task_id = str(local_task.get("id") or "")
+        if local_task_id:
+            self.repository.update_sop_send_task(local_task_id, status=status, send_payload=send_payload)
 
     def runtime_status(self) -> dict[str, Any]:
         return {
@@ -973,6 +1467,8 @@ class SopPlatformTaskService:
             "queue_capacity": self._queue.maxsize,
             "queued_count": len(self._queued_ids),
             "in_flight_count": len(self._in_flight_ids),
+            "reserved_prefix_count": len(self._reserved_prefix_ids),
+            "processing_mode": "customer_batch_sequence",
             "pending_total": self._pending_total,
             "oldest_due_lag_seconds": round(self._oldest_due_lag_seconds, 3),
             "last_poll_at": self._last_poll_at,
@@ -1005,6 +1501,10 @@ class SopPlatformTaskService:
         decision: str = "",
         task_id: str = "",
         customer_id: str = "",
+        external_userid: str = "",
+        wechat: str = "",
+        date_from: str = "",
+        date_to: str = "",
         refresh_platform: bool = True,
     ) -> dict[str, Any]:
         safe_limit = max(1, min(int(limit or 100), 500))
@@ -1012,13 +1512,33 @@ class SopPlatformTaskService:
         platform_error = ""
         if refresh_platform:
             try:
-                platform_page = await self.platform_client.pending(limit=safe_limit)
+                online_page, store_visit_page = await asyncio.gather(
+                    self.platform_client.pending(limit=safe_limit),
+                    self.platform_client.store_visit_pending(limit=safe_limit),
+                )
+                online_items = online_page.get("items") if isinstance(online_page.get("items"), list) else []
+                store_visit_items = (
+                    store_visit_page.get("items") if isinstance(store_visit_page.get("items"), list) else []
+                )
+                platform_page = {
+                    "items": [
+                        *({**item, "_aics_biz_type": "online_service"} for item in online_items),
+                        *({**item, "_aics_biz_type": "store_visit"} for item in store_visit_items),
+                    ],
+                    "total": int(online_page.get("total") or 0) + int(store_visit_page.get("total") or 0),
+                    "online_service_total": int(online_page.get("total") or 0),
+                    "store_visit_total": int(store_visit_page.get("total") or 0),
+                }
             except Exception as exc:
                 platform_error = f"{type(exc).__name__}: {exc}"
         local_records = self.repository.list_platform_sop_task_records(
             limit=safe_limit,
             task_id=task_id,
             customer_id=customer_id,
+            external_userid=external_userid,
+            wechat=wechat,
+            date_from=_admin_date_filter_iso(date_from),
+            date_to=_admin_date_filter_iso(date_to),
         )
         platform_items = platform_page.get("items") if isinstance(platform_page.get("items"), list) else []
         items = _merge_platform_task_logs(platform_items=platform_items, local_records=local_records)
@@ -1043,33 +1563,97 @@ class SopPlatformTaskService:
                 "judged_no_send": summary["judged_no_send"],
                 "sending": summary["sending"],
                 "sent": summary["sent"],
-                "failed": summary["failed"],
                 "recovery": summary["recovery"],
             },
             "platform": {
                 "refreshed": refresh_platform,
                 "error": platform_error,
-                "query_start_time": platform_page.get("start_time"),
-                "query_end_time": platform_page.get("end_time"),
+                "online_service_total": int(platform_page.get("online_service_total") or 0),
+                "store_visit_total": int(platform_page.get("store_visit_total") or 0),
             },
             "worker": self.runtime_status(),
             "items": items,
+        }
+
+    async def admin_run_logs(
+        self,
+        *,
+        limit: int = 100,
+        status: str = "",
+        log_version: str = "",
+        biz_type: str = "",
+        task_id: str = "",
+        customer_id: str = "",
+        external_userid: str = "",
+        wechat: str = "",
+        query: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        refresh_platform: bool = True,
+    ) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 100), 500))
+        task_page = await self.admin_task_logs(
+            limit=500,
+            task_id=task_id,
+            customer_id=customer_id,
+            external_userid=external_userid,
+            wechat=wechat,
+            date_from=date_from,
+            date_to=date_to,
+            refresh_platform=refresh_platform,
+        )
+        task_items = task_page.get("items") if isinstance(task_page.get("items"), list) else []
+        runs = _merge_platform_task_runs(task_items)
+        clean_external = str(external_userid or "").strip().lower()
+        clean_wechat = str(wechat or "").strip().lower()
+        clean_query = str(query or "").strip().lower()
+        from_epoch = _parse_epoch(date_from)
+        to_epoch = _parse_epoch(date_to)
+        if status:
+            runs = [run for run in runs if run["status"] == str(status).strip()]
+        if log_version:
+            runs = [run for run in runs if run["log_version"] == str(log_version).strip()]
+        if biz_type:
+            runs = [run for run in runs if run["biz_type"] == str(biz_type).strip()]
+        if clean_external:
+            runs = [run for run in runs if str(run.get("external_userid") or "").lower() == clean_external]
+        if clean_wechat:
+            runs = [run for run in runs if str(run.get("wechat") or "").lower() == clean_wechat]
+        if clean_query:
+            runs = [run for run in runs if clean_query in _platform_run_search_text(run)]
+        if from_epoch:
+            runs = [run for run in runs if _parse_epoch(run.get("occurred_at")) >= from_epoch]
+        if to_epoch:
+            runs = [run for run in runs if _parse_epoch(run.get("occurred_at")) <= to_epoch]
+        runs = runs[:safe_limit]
+        summary = Counter(run["status"] for run in runs)
+        versions = Counter(run["log_version"] for run in runs)
+        return {
+            "schema_version": "sop_platform_run_view_v2",
+            "summary": {
+                "visible_total": len(runs),
+                "pending": summary["pending"],
+                "processing": summary["processing"],
+                "delivery_pending": summary["delivery_pending"],
+                "consume_pending": summary["consume_pending"],
+                "completed": summary["completed"],
+                "no_send": summary["no_send"],
+                "exception": summary["exception"],
+                "batch_v2": versions["batch_v2"],
+                "legacy_single": versions["legacy_single"],
+                "platform_pending": versions["platform_pending"],
+            },
+            "platform": task_page.get("platform") or {},
+            "worker": task_page.get("worker") or {},
+            "runs": runs,
         }
 
     async def admin_resend_task(self, task_id: str) -> dict[str, Any]:
         clean_task_id = str(task_id or "").strip()
         if not clean_task_id:
             raise ValueError("task_id is required")
-        event = self.repository.get_sop_event(f"platform_sop_task:{clean_task_id}")
-        raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
-        platform_task = raw_payload.get("platform_task") if isinstance(raw_payload.get("platform_task"), dict) else {}
         lock = self._locks.setdefault(clean_task_id, asyncio.Lock())
         async with lock:
-            contact_lock_key = _platform_contact_lock_key(platform_task)
-            if contact_lock_key:
-                contact_lock = self._locks.setdefault(f"platform-contact:{contact_lock_key}", asyncio.Lock())
-                async with contact_lock:
-                    return await self._admin_resend_task_locked(clean_task_id)
             return await self._admin_resend_task_locked(clean_task_id)
 
     async def _admin_resend_task_locked(self, task_id: str) -> dict[str, Any]:
@@ -1081,6 +1665,7 @@ class SopPlatformTaskService:
         platform_task = payload.get("platform_task") if isinstance(payload.get("platform_task"), dict) else {}
         if not platform_task:
             raise ValueError("platform task payload is missing")
+
         event_status = str(event.get("status") or "")
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
         if not local_task:
@@ -1090,41 +1675,24 @@ class SopPlatformTaskService:
             raise RuntimeError("task already sent or sending")
 
         identity = _task_identity(platform_task)
-        if _quiet_hours_base_summary({}, settings=self.settings)["in_quiet_hours"]:
-            raise RuntimeError("task cannot be resent: quiet_hours_all_sop_blocked")
-        preflight_reason = _manual_resend_preflight_block_reason(
+        preflight_reason = _task_preflight_no_send_reason(
             platform_task,
             identity=identity,
             settings=self.settings,
         )
-        if preflight_reason:
+        if preflight_reason and preflight_reason != "pre_cutover_task":
             raise RuntimeError(f"task cannot be resent: {preflight_reason}")
 
         await self._manual_resend_relation_guard(identity)
-        resend_context = await self._load_context(platform_task, identity=identity)
-        resend_opening_state = (
-            resend_context.get("opening_state")
-            if isinstance(resend_context.get("opening_state"), dict)
-            else {}
-        )
-        resend_guard = self._platform_contact_delivery_guard(
-            identity=identity,
-            task_id=task_id,
-            opening_state=resend_opening_state,
-        )
-        if resend_guard.get("blocked"):
-            raise RuntimeError(f"task cannot be resent: {resend_guard.get('reason')}")
         messages = _manual_resend_messages(local_task, platform_task)
         decision_reason = "manual_resend"
         context: dict[str, Any] = {
             "source": "manual_resend",
             "original_event_status": event_status,
             "original_task_status": task_status,
-            "platform_contact_delivery_guard": resend_guard,
         }
         if not messages:
-            context = resend_context
-            context["platform_contact_delivery_guard"] = resend_guard
+            context = await self._load_context(platform_task, identity=identity)
             decision = await self._decide(platform_task, context=context)
             if decision["decision"] != "send" or not decision["reply_messages"]:
                 raise RuntimeError(f"manual resend produced no sendable content: {decision.get('reason') or 'no_send'}")
@@ -1134,7 +1702,7 @@ class SopPlatformTaskService:
         send_payload = {
             **identity,
             "plan_id": f"platform-sop-{task_id}",
-            **_platform_send_trace_fields(platform_task),
+            "task_id": f"platform-sop-send-{task_id}",
             "reply_messages": messages,
         }
         audit_payload = {
@@ -1142,15 +1710,6 @@ class SopPlatformTaskService:
             "request": send_payload,
             "context": _context_audit(context),
         }
-        original_terminal_status = {
-            "platform_completed": 30,
-            "platform_failed": 70,
-            "platform_no_send": 70,
-        }.get(event_status)
-        if original_terminal_status:
-            audit_payload["platform_terminal_status"] = original_terminal_status
-        if _quiet_hours_base_summary({}, settings=self.settings)["in_quiet_hours"]:
-            raise RuntimeError("task cannot be resent: quiet_hours_all_sop_blocked")
         self.repository.update_sop_send_task(str(local_task.get("id") or ""), status="sending", send_payload=audit_payload)
         started = time.perf_counter()
         send_result = await self.system_client.send(
@@ -1207,8 +1766,11 @@ class SopPlatformTaskService:
             send_response=send_result,
             sent_at=utc_now_iso(),
         )
-        if event_status not in {"platform_completed", "platform_failed", "platform_no_send"} and not self.settings.sop_platform_shadow_mode:
-            await self._commit_platform_terminal(task_id=task_id, event_id=event_id, terminal_status=30)
+        if event_status != "platform_completed" and not self.settings.sop_platform_shadow_mode:
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
         self._remember_terminal(task_id)
         self._counters["manual_resend"] += 1
         return {
@@ -1253,56 +1815,6 @@ class SopPlatformTaskService:
             ),
         )
 
-    async def _recent_near_duplicate_platform_delivery(
-        self,
-        *,
-        identity: dict[str, str],
-        task_id: str,
-        reply_messages: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        if not hasattr(self.repository, "list_platform_sop_task_records"):
-            return {"found": False, "match_type": "unsupported"}
-        try:
-            records = self.repository.list_platform_sop_task_records(
-                limit=500,
-                customer_id=identity.get("customer_id") or "",
-            )
-        except Exception as exc:
-            return {"found": False, "match_type": "lookup_error", "error": f"{type(exc).__name__}: {exc}"}
-        return _platform_near_duplicate_delivery_match(
-            records if isinstance(records, list) else [],
-            identity=identity,
-            current_task_id=task_id,
-            reply_messages=reply_messages,
-        )
-
-    def _platform_contact_delivery_guard(
-        self,
-        *,
-        identity: dict[str, str],
-        task_id: str,
-        opening_state: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not hasattr(self.repository, "list_platform_sop_task_records"):
-            return {"blocked": False, "reason": "history_lookup_unsupported"}
-        try:
-            records = self.repository.list_platform_sop_task_records(
-                limit=500,
-                customer_id=identity.get("customer_id") or "",
-            )
-        except Exception as exc:
-            return {
-                "blocked": False,
-                "reason": "history_lookup_error",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        return _platform_contact_delivery_guard(
-            records if isinstance(records, list) else [],
-            identity=identity,
-            current_task_id=task_id,
-            latest_customer_at=opening_state.get("latest_real_customer_at_beijing"),
-        )
-
     def _observe(self, name: str, elapsed_seconds: float) -> None:
         values = self._timings.get(name)
         if values is not None:
@@ -1310,23 +1822,19 @@ class SopPlatformTaskService:
 
     def _record_result(self, result: dict[str, Any]) -> None:
         status = str(result.get("status") or "unknown")
-        if status in {
-            "sent",
-            "failed",
-            "completed_without_send",
-            "platform_completed",
-            "platform_failed",
-            "platform_no_send",
-            "shadow_send",
-            "shadow_no_send",
-        }:
+        terminal_task_ids = [
+            str(value).strip()
+            for value in result.get("terminal_task_ids", [])
+            if str(value).strip()
+        ] if isinstance(result.get("terminal_task_ids"), list) else []
+        for task_id in terminal_task_ids:
+            self._remember_terminal(task_id)
+        if status in {"sent", "completed_without_send", "platform_completed", "shadow_send", "shadow_no_send"}:
             self._remember_terminal(str(result.get("task_id") or ""))
         if status == "sent":
             self._counters["sent"] += 1
         elif status in {"completed_without_send", "shadow_no_send"}:
             self._counters["no_send"] += 1
-        elif status in {"failed", "platform_failed"}:
-            self._counters["failed"] += 1
         elif status == "shadow_send":
             self._counters["shadow_send"] += 1
         elif status == "platform_send_uncertain":
@@ -1339,42 +1847,7 @@ class SopPlatformTaskService:
         self._terminal_ids.add(task_id)
         self._terminal_order.append(task_id)
         while len(self._terminal_order) > 50_000:
-            removed = self._terminal_order.popleft()
-            self._terminal_ids.discard(removed)
-            self._terminal_reack_at.pop(removed, None)
-
-    async def _reack_terminal_pending_task(self, task_id: str, *, event_status: str = "") -> None:
-        if self.settings.sop_platform_shadow_mode:
-            return
-        if not event_status:
-            event = self.repository.get_sop_event(f"platform_sop_task:{task_id}")
-            event_status = str(event.get("status") or "") if isinstance(event, dict) else ""
-        now = time.time()
-        last = self._terminal_reack_at.get(task_id, 0.0)
-        if now - last < 300:
-            return
-        self._terminal_reack_at[task_id] = now
-        try:
-            terminal_status = {
-                "platform_completed": 30,
-                "platform_failed": 70,
-                "platform_no_send": 70,
-            }.get(event_status, 30)
-            local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
-            completed = await self.platform_client.consume(
-                task_id=task_id,
-                status=terminal_status,
-                remark=_platform_consume_remark(local_task),
-            )
-            _require_platform_status(completed, terminal_status)
-            self._counters["terminal_reack"] += 1
-        except Exception as exc:
-            self._counters["terminal_reack_error"] += 1
-            logger.warning(
-                "Third-party SOP terminal task still appeared pending and re-ack failed: task_id=%s error=%s",
-                task_id,
-                f"{type(exc).__name__}: {exc}",
-            )
+            self._terminal_ids.discard(self._terminal_order.popleft())
 
     def _ensure_local_task(
         self,
@@ -1436,8 +1909,7 @@ class SopPlatformTaskService:
         }
         event = self.repository.create_sop_event(event_payload)
         current_status = str(event.get("status") or "")
-        if current_status in {"platform_completed", "platform_failed", "platform_no_send"}:
-            await self._reack_terminal_pending_task(task_id, event_status=current_status)
+        if current_status == "platform_completed":
             return {"processed": False, "status": current_status, "task_id": task_id}
         identity = _task_identity(platform_task)
         local_task = self.repository.create_sop_send_task(
@@ -1457,36 +1929,32 @@ class SopPlatformTaskService:
             status="platform_received",
         )
         local_status = str(local_task.get("status") or "")
-        dispatch_mode = "deprecated_ignored"
-        if not self.settings.sop_platform_shadow_mode and recovery_status in {
-            "platform_claiming",
-            "platform_judging",
-            "platform_processing",
-            "platform_processing_retry",
-        }:
-            error = str(local_task.get("error") or recovery_status or "platform_processing_abandoned")
-            stored_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
-            self.repository.update_sop_send_task(
-                str(local_task.get("id") or ""),
-                status="failed",
-                send_payload=stored_payload,
-                error=error,
+        if recovery_status == "platform_batch_send_retry":
+            return await self._retry_batch_send(platform_task, local_task=local_task)
+        if recovery_status == "platform_batch_consume_pending":
+            audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            skipped_ids = [
+                str(value).strip()
+                for value in audit.get("skipped_prefix_task_ids", [])
+                if str(value).strip()
+            ] if isinstance(audit.get("skipped_prefix_task_ids"), list) else []
+            terminal_ids = await self._finalize_batch_prefix(
+                selected_task_id=task_id,
+                skipped_prefix_task_ids=skipped_ids,
+                audit=audit,
             )
-            completed = await self._commit_platform_terminal(
-                task_id=task_id,
-                event_id=event_id,
-                terminal_status=70,
-                event_status="platform_failed",
-                remark=error,
-            )
+            self.repository.update_sop_event_status(event_id, status="platform_completed", error="")
             return {
                 "processed": True,
-                "status": "failed",
+                "status": "sent",
                 "task_id": task_id,
-                "platform_response": completed,
-                "error": error,
+                "task_ids": [*skipped_ids, task_id],
+                "terminal_task_ids": terminal_ids,
             }
-        if current_status == "platform_delivery_pending":
+        if (
+            recovery_status != "platform_send_uncertain"
+            and (local_status == "sending" or current_status == "platform_delivery_pending")
+        ):
             return {
                 "processed": False,
                 "status": "accepted",
@@ -1499,17 +1967,7 @@ class SopPlatformTaskService:
             task_id=task_id,
         )
         if duplicate_reason:
-            decision = {
-                "decision": "no_send",
-                "reason": duplicate_reason,
-                "reason_code": "no_send_duplicate",
-                "sceneName": sop_platform_scene_name("no_send_duplicate"),
-                "sceneCode": "no_send_duplicate",
-                "knowledgeId": 0,
-                "knowledgeParagraphNo": 0,
-                "remark": "同一平台任务或同一触达内容已处理，消费但不重复发送",
-                "reply_messages": [],
-            }
+            decision = {"decision": "no_send", "reason": duplicate_reason, "reply_messages": []}
             context = {
                 "source": "duplicate_platform_task_content",
                 "duplicate_of_task_id": str(local_task.get("duplicate_of_task_id") or ""),
@@ -1530,21 +1988,12 @@ class SopPlatformTaskService:
             self.repository.update_sop_send_task(
                 str(local_task.get("id") or ""),
                 status="completed_without_send",
-                send_payload={
-                    "decision": decision,
-                    "context": context,
-                    "rule_data_response": await self._report_rule_data(
-                        platform_task,
-                        decision=decision,
-                        sent=False,
-                    ),
-                },
+                send_payload={"decision": decision, "context": context},
             )
-            completed = await self._commit_platform_terminal(
-                task_id=task_id,
-                event_id=event_id,
-                terminal_status=70,
-            )
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
             self._counters[duplicate_reason] += 1
             return {
                 "processed": True,
@@ -1556,21 +2005,12 @@ class SopPlatformTaskService:
         if self.settings.sop_platform_shadow_mode and local_status in {"shadow_send", "shadow_no_send"}:
             return {"processed": False, "status": local_status, "task_id": task_id}
 
-        if not self.settings.sop_platform_shadow_mode and recovery_status in {
-            "platform_complete_pending",
-            "platform_terminal_pending",
-        }:
+        if not self.settings.sop_platform_shadow_mode and recovery_status == "platform_complete_pending":
             started = time.perf_counter()
-            terminal_status = self._stored_terminal_status(local_task)
-            if recovery_status == "platform_complete_pending" and str(local_task.get("status") or "") == "platform_received":
-                terminal_status = 30
-            completed = await self._commit_platform_terminal(
-                task_id=task_id,
-                event_id=event_id,
-                terminal_status=terminal_status,
-                event_status=self._stored_terminal_event_status(local_task),
-            )
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
             self._observe("claim", time.perf_counter() - started)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
             return {
                 "processed": True,
                 "status": local_status or "completed",
@@ -1578,19 +2018,10 @@ class SopPlatformTaskService:
                 "platform_response": completed,
             }
 
-        if not self.settings.sop_platform_shadow_mode and recovery_status == "platform_send_retry":
-            return await self._retry_platform_send(
-                platform_task,
-                task_id=task_id,
-                event_id=event_id,
-                local_task=local_task,
-            )
-
         preflight_reason = _task_preflight_no_send_reason(
             platform_task,
             identity=identity,
             settings=self.settings,
-            dispatch_mode=dispatch_mode,
         )
         quiet_hours: dict[str, Any] = {}
         if not preflight_reason:
@@ -1598,7 +2029,7 @@ class SopPlatformTaskService:
             if quiet_hours.get("blocked"):
                 preflight_reason = str(quiet_hours.get("reason") or "quiet_hours_blocked")
         if self.settings.sop_platform_shadow_mode and preflight_reason:
-            decision = _preflight_no_send_decision(platform_task, reason=preflight_reason)
+            decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
             self.repository.update_sop_send_task(
                 str(local_task.get("id") or ""),
                 status="shadow_no_send",
@@ -1614,6 +2045,7 @@ class SopPlatformTaskService:
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
+        use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
         processing_status = "platform_judging"
         self.repository.update_sop_event_status(event_id, status=processing_status)
         self.repository.update_sop_send_task(
@@ -1621,8 +2053,7 @@ class SopPlatformTaskService:
             status="judging",
             send_payload={
                 "platform_task_id": task_id,
-                "phase": "loading_opening_state",
-                "dispatch_mode": dispatch_mode,
+                "phase": "loading_latest_context",
             },
         )
 
@@ -1631,7 +2062,6 @@ class SopPlatformTaskService:
             "platform_processing_retry",
             "platform_send_uncertain",
             "platform_complete_pending",
-            "platform_terminal_pending",
         }
         if not self.settings.sop_platform_shadow_mode and not claimed:
             self.repository.update_sop_event_status(event_id, status="platform_claiming")
@@ -1657,11 +2087,10 @@ class SopPlatformTaskService:
                 },
                 sent_at=utc_now_iso(),
             )
-            completed = await self._commit_platform_terminal(
-                task_id=task_id,
-                event_id=event_id,
-                terminal_status=30,
-            )
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
             return {
                 "processed": True,
                 "status": "sent",
@@ -1669,141 +2098,22 @@ class SopPlatformTaskService:
                 "platform_response": completed,
             }
 
-        takeover_status: dict[str, Any] = {}
-        takeover_decision: dict[str, Any] | None = None
-        if not preflight_reason and all(identity.get(key) for key in ("corp_id", "customer_id", "wechat")):
-            try:
-                takeover_status = await self.system_client.conversation_status(**identity)
-            except Exception as exc:
-                takeover_decision = {
-                    "decision": "no_send",
-                    "reason": "takeover_status_unavailable",
-                    "reason_code": "no_send_downstream_rejected",
-                    "sceneName": sop_platform_scene_name("no_send_downstream_rejected"),
-                    "sceneCode": "no_send_downstream_rejected",
-                    "knowledgeId": 0,
-                    "knowledgeParagraphNo": 0,
-                    "remark": f"会话接管状态查询失败，保守不发送：{type(exc).__name__}",
-                    "reply_messages": [],
-                }
-                self._counters["takeover_status_unavailable"] += 1
-            else:
-                if _is_human_takeover_status(takeover_status):
-                    takeover_decision = {
-                        "decision": "no_send",
-                        "reason": "human_takeover_active",
-                        "reason_code": "human_takeover",
-                        "sceneName": sop_platform_scene_name("no_send_human_takeover"),
-                        "sceneCode": "no_send_human_takeover",
-                        "knowledgeId": 0,
-                        "knowledgeParagraphNo": 0,
-                        "remark": "当前会话已由人工接管，平台任务消费但不发送",
-                        "reply_messages": [],
-                    }
-                    self._counters["human_takeover_status"] += 1
-
         try:
-            if takeover_decision:
-                context = {
-                    "source": "conversation_takeover_status",
-                    "dispatch_mode": dispatch_mode,
-                    "task_timing": _task_timing(platform_task),
-                    "takeover_status": _compact_takeover_status(takeover_status),
-                }
-                decision = takeover_decision
-            elif preflight_reason:
+            if preflight_reason:
                 context = {
                     "source": "preflight",
-                    "dispatch_mode": dispatch_mode,
                     "task_timing": _task_timing(platform_task),
                     "quiet_hours": quiet_hours,
                 }
-                decision = _preflight_no_send_decision(platform_task, reason=preflight_reason)
+                decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
                 self._counters[preflight_reason] += 1
             else:
                 started = time.perf_counter()
                 context = await self._load_context(platform_task, identity=identity)
                 self._observe("context", time.perf_counter() - started)
-                context["dispatch_mode"] = dispatch_mode
-                opening_state = (
-                    context.get("opening_state")
-                    if isinstance(context.get("opening_state"), dict)
-                    else {}
-                )
-                delivery_guard = self._platform_contact_delivery_guard(
-                    identity=identity,
-                    task_id=task_id,
-                    opening_state=opening_state,
-                )
-                context["platform_contact_delivery_guard"] = delivery_guard
-                relation = (
-                    context.get("customer_relation")
-                    if isinstance(context.get("customer_relation"), dict)
-                    else {}
-                )
-                if delivery_guard.get("blocked"):
-                    guard_reason = str(delivery_guard.get("reason") or "platform_contact_send_cooldown")
-                    decision = {
-                        "decision": "no_send",
-                        "reason": guard_reason,
-                        "reason_code": guard_reason,
-                        "sceneName": sop_platform_scene_name("no_send_contact_cooldown"),
-                        "sceneCode": "no_send_contact_cooldown",
-                        "knowledgeId": 0,
-                        "knowledgeParagraphNo": 0,
-                        "remark": "同一客户与企微账号5分钟内已有第三方SOP成功发送，本任务消费但不发送。",
-                        "reply_messages": [],
-                    }
-                    self._counters[guard_reason] += 1
-                elif relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
-                    decision = await self._decide(platform_task, context=context)
-                elif opening_state.get("has_real_customer_message") is not True:
-                    original_messages = _platform_messages(platform_task)
-                    message_error = _platform_message_error(platform_task)
-                    if original_messages and not message_error:
-                        decision = {
-                            "decision": "send",
-                            "reason": "unopened_or_conversation_unavailable_platform_passthrough",
-                            "reason_code": "send",
-                            "sceneName": sop_platform_scene_name("ai_service_unopened_passthrough"),
-                            "sceneCode": "ai_service_unopened_passthrough",
-                            "knowledgeId": 0,
-                            "knowledgeParagraphNo": 0,
-                            "remark": "客户未真实开口或会话状态不可得，按平台消息原类型、原内容、原顺序发送",
-                            "reply_messages": original_messages,
-                        }
-                        if not context.get("source"):
-                            context["source"] = "unopened_platform_passthrough"
-                        context["routing_decision"] = "unopened_or_conversation_unavailable_platform_passthrough"
-                        context["knowledge_loaded"] = False
-                        context["model_called"] = False
-                        context["first_day_platform_sop_route"] = {
-                            "route_checked": True,
-                            "opening_state": opening_state,
-                            "route_reason": "unopened_or_conversation_unavailable_platform_passthrough",
-                        }
-                    else:
-                        decision = {
-                            "decision": "no_send",
-                            "reason": message_error or "invalid_message_content",
-                            "reason_code": "invalid_message_content",
-                            "sceneName": sop_platform_scene_name("no_send_invalid_message_content"),
-                            "sceneCode": "no_send_invalid_message_content",
-                            "knowledgeId": 0,
-                            "knowledgeParagraphNo": 0,
-                            "remark": f"客户未开口但平台任务没有可原样发送的合法消息：{message_error or 'empty_messages'}",
-                            "reply_messages": [],
-                        }
-                else:
-                    started = time.perf_counter()
-                    decision = await self._decide(platform_task, context=context)
-                    self._observe("model", time.perf_counter() - started)
-            context["takeover_status"] = {
-                **_compact_takeover_status(takeover_status),
-                "checked": not bool(preflight_reason) and all(identity.get(key) for key in ("corp_id", "customer_id", "wechat")),
-                "query_failed": bool(takeover_decision and takeover_decision.get("reason") == "takeover_status_unavailable"),
-            }
-            context["quiet_hours"] = quiet_hours
+                started = time.perf_counter()
+                decision = await self._decide(platform_task, context=context)
+                self._observe("model", time.perf_counter() - started)
             if self.settings.sop_platform_shadow_mode:
                 status = f"shadow_{decision['decision']}"
                 self.repository.update_sop_send_task(
@@ -1815,52 +2125,25 @@ class SopPlatformTaskService:
                 return {"processed": True, "status": status, "task_id": task_id, "decision": decision}
 
             if decision["decision"] == "no_send":
-                rule_data_audit = await self._report_rule_data(
-                    platform_task,
-                    decision=decision,
-                    sent=False,
-                )
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="completed_without_send",
-                    send_payload={
-                        "decision": decision,
-                        "context": _context_audit(context),
-                        **rule_data_audit,
-                    },
+                    send_payload={"decision": decision, "context": _context_audit(context)},
                 )
             else:
                 send_payload = {
                     **identity,
                     "plan_id": f"platform-sop-{task_id}",
-                    **_platform_send_trace_fields(platform_task),
+                    "task_id": f"platform-sop-send-{task_id}",
                     "reply_messages": decision["reply_messages"],
                 }
-                media_delivery_audit = {
-                    "original": _platform_media_refs(_platform_messages(platform_task)),
-                    "final": _platform_media_refs(decision["reply_messages"]),
-                }
-                existing_delivery = await self._existing_platform_delivery(
-                    identity=identity,
-                    send_payload=send_payload,
-                )
+                existing_delivery = await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
                 if existing_delivery.get("found"):
                     duplicate_decision = {
                         "decision": "no_send",
                         "reason": "existing_platform_delivery",
-                        "reason_code": "exact_duplicate",
-                        "sceneName": sop_platform_scene_name("no_send_duplicate"),
-                        "sceneCode": "no_send_duplicate",
-                        "knowledgeId": 0,
-                        "knowledgeParagraphNo": 0,
-                        "remark": "本地检测到同批平台触达已发送，消费但不重复发送",
                         "reply_messages": [],
                     }
-                    rule_data_audit = await self._report_rule_data(
-                        platform_task,
-                        decision=duplicate_decision,
-                        sent=False,
-                    )
                     self.repository.update_sop_send_task(
                         str(local_task.get("id") or ""),
                         status="completed_without_send",
@@ -1870,71 +2153,13 @@ class SopPlatformTaskService:
                             "context": {
                                 **_context_audit(context),
                                 "existing_delivery": existing_delivery,
-                                "media_delivery": media_delivery_audit,
                             },
-                            **rule_data_audit,
                         },
                     )
-                    completed = await self._commit_platform_terminal(
-                        task_id=task_id,
-                        event_id=event_id,
-                        terminal_status=70,
-                    )
-                    return {
-                        "processed": True,
-                        "status": "completed_without_send",
-                        "task_id": task_id,
-                        "decision": duplicate_decision,
-                        "platform_response": completed,
-                    }
-                near_duplicate = await self._recent_near_duplicate_platform_delivery(
-                    identity=identity,
-                    task_id=task_id,
-                    reply_messages=decision["reply_messages"],
-                )
-                duplicate_repair: dict[str, Any] = {}
-                if near_duplicate.get("found"):
-                    media_duplicate = near_duplicate.get("match_type") == "duplicate_media"
-                    if media_duplicate:
-                        duplicate_reason = "duplicate_media_delivery"
-                    else:
-                        duplicate_reason = "near_duplicate_platform_delivery"
-                    duplicate_decision = {
-                        "decision": "no_send",
-                        "reason": duplicate_reason,
-                        "reason_code": "exact_duplicate",
-                        "sceneName": sop_platform_scene_name("no_send_duplicate"),
-                        "sceneCode": "no_send_duplicate",
-                        "knowledgeId": 0,
-                        "knowledgeParagraphNo": 0,
-                        "remark": "本地检测到同客户近期第三方SOP最终文案高度重复，消费但不重复发送。",
-                        "reply_messages": [],
-                    }
-                    rule_data_audit = await self._report_rule_data(
-                        platform_task,
-                        decision=duplicate_decision,
-                        sent=False,
-                    )
-                    self.repository.update_sop_send_task(
-                        str(local_task.get("id") or ""),
-                        status="completed_without_send",
-                        send_payload={
-                            "decision": duplicate_decision,
-                            "request": send_payload,
-                            "context": {
-                                **_context_audit(context),
-                                "near_duplicate_delivery": near_duplicate,
-                                "duplicate_media_repair": duplicate_repair,
-                                "media_delivery": media_delivery_audit,
-                            },
-                            **rule_data_audit,
-                        },
-                    )
-                    completed = await self._commit_platform_terminal(
-                        task_id=task_id,
-                        event_id=event_id,
-                        terminal_status=70,
-                    )
+                    self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+                    completed = await self.platform_client.consume(task_id=task_id, status=30)
+                    _require_platform_status(completed, 30)
+                    self.repository.update_sop_event_status(event_id, status="platform_completed")
                     return {
                         "processed": True,
                         "status": "completed_without_send",
@@ -1945,121 +2170,22 @@ class SopPlatformTaskService:
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="sending",
-                    send_payload={
-                        "decision": decision,
-                        "request": send_payload,
-                        "context": {
-                            **_context_audit(context),
-                            "media_delivery": media_delivery_audit,
-                            "duplicate_media_repair": duplicate_repair,
-                        },
-                    },
+                    send_payload={"decision": decision, "request": send_payload, "context": _context_audit(context)},
                 )
                 started = time.perf_counter()
-                send_time_quiet = _quiet_hours_base_summary({}, settings=self.settings)
-                if send_time_quiet["in_quiet_hours"]:
-                    decision = _preflight_no_send_decision(platform_task, reason="quiet_hours_all_sop_blocked")
-                    context["quiet_hours"] = send_time_quiet
-                    rule_data_audit = await self._report_rule_data(platform_task, decision=decision, sent=False)
-                    self.repository.update_sop_send_task(
-                        str(local_task.get("id") or ""),
-                        status="completed_without_send",
-                        send_payload={"decision": decision, "context": _context_audit(context), **rule_data_audit},
-                    )
-                    await self._commit_platform_terminal(task_id=task_id, event_id=event_id, terminal_status=70)
-                    return {"processed": True, "status": "completed_without_send", "task_id": task_id}
-                try:
-                    send_result = await self.system_client.send(
-                        **send_payload,
-                        source_channel="proactive_message",
-                        source_kind="sop_platform_task",
-                        source_request_id=event_id,
-                        source_task_id=str(local_task.get("id") or ""),
-                        source_context={
-                            "sop_send_task_id": str(local_task.get("id") or ""),
-                            "sop_event_id": event_id,
-                            "platform_task_id": task_id,
-                        },
-                        delivery_idempotency_key=f"sop_platform_task:{local_task.get('id')}",
-                    )
-                except Exception as exc:
-                    retryable_failure = _retryable_delivery_failure(exc)
-                    if retryable_failure:
-                        self._observe("send", time.perf_counter() - started)
-                        return self._defer_platform_send_retry(
-                            task_id=task_id,
-                            event_id=event_id,
-                            local_task=local_task,
-                            send_payload={
-                                "decision": decision,
-                                "request": send_payload,
-                                "context": {
-                                    **_context_audit(context),
-                                    "media_delivery": media_delivery_audit,
-                                    "duplicate_media_repair": duplicate_repair,
-                                },
-                            },
-                            failure=retryable_failure,
-                            error=exc,
-                        )
-                    delivery_failure = _terminal_delivery_failure(exc)
-                    if not delivery_failure:
-                        raise
-                    self._observe("send", time.perf_counter() - started)
-                    business_no_send = _delivery_rejection_is_no_send(delivery_failure)
-                    failed_decision = {
-                        **decision,
-                        "decision": "no_send",
-                        "reason": "downstream_delivery_rejected",
-                        "reason_code": "no_send_downstream_rejected",
-                        "sceneName": sop_platform_scene_name("no_send_downstream_rejected"),
-                        "sceneCode": "no_send_downstream_rejected",
-                        "knowledgeId": 0,
-                        "knowledgeParagraphNo": 0,
-                        "remark": (
-                            f"{str(decision.get('remark') or '').strip()} "
-                            f"Delivery rejected by downstream system: HTTP {delivery_failure['http_status']}."
-                        ).strip(),
-                        "reply_messages": [],
-                    }
-                    rule_data_audit = await self._report_rule_data(
-                        platform_task,
-                        decision=failed_decision,
-                        sent=False,
-                    )
-                    self.repository.update_sop_send_task(
-                        str(local_task.get("id") or ""),
-                        status="completed_without_send" if business_no_send else "failed",
-                        send_payload={
-                            "decision": failed_decision,
-                            "attempted_decision": decision,
-                            "request": send_payload,
-                            "context": {
-                                **_context_audit(context),
-                                "media_delivery": media_delivery_audit,
-                                "duplicate_media_repair": duplicate_repair,
-                            },
-                            "delivery_failure": delivery_failure,
-                            **rule_data_audit,
-                        },
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                    completed = await self._commit_platform_terminal(
-                        task_id=task_id,
-                        event_id=event_id,
-                        terminal_status=70,
-                        event_status="" if business_no_send else "platform_failed",
-                        remark=str(failed_decision.get("remark") or ""),
-                    )
-                    self._counters["terminal_delivery_rejected"] += 1
-                    return {
-                        "processed": True,
-                        "status": "completed_without_send" if business_no_send else "failed",
-                        "task_id": task_id,
-                        "decision": failed_decision,
-                        "delivery_failure": delivery_failure,
-                        "platform_response": completed,
-                    }
+                send_result = await self.system_client.send(
+                    **send_payload,
+                    source_channel="proactive_message",
+                    source_kind="sop_platform_task",
+                    source_request_id=event_id,
+                    source_task_id=str(local_task.get("id") or ""),
+                    source_context={
+                        "sop_send_task_id": str(local_task.get("id") or ""),
+                        "sop_event_id": event_id,
+                        "platform_task_id": task_id,
+                    },
+                    delivery_idempotency_key=f"sop_platform_task:{local_task.get('id')}",
+                )
                 self._observe("send", time.perf_counter() - started)
                 send_data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
                 delivery_status = str(send_data.get("delivery_status") or "")
@@ -2092,105 +2218,39 @@ class SopPlatformTaskService:
                             "assumed_sent": True,
                         },
                     }
-                rule_data_audit = await self._report_rule_data(
-                    platform_task,
-                    decision=decision,
-                    sent=True,
-                )
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="sent",
-                    send_payload={
-                        "decision": decision,
-                        "request": send_payload,
-                        "context": {
-                            **_context_audit(context),
-                            "media_delivery": media_delivery_audit,
-                            "duplicate_media_repair": duplicate_repair,
-                        },
-                        **rule_data_audit,
-                    },
+                    send_payload={"decision": decision, "request": send_payload, "context": _context_audit(context)},
                     send_response=send_result,
                     sent_at=utc_now_iso(),
                 )
-            terminal_status = 30 if decision["decision"] == "send" else 70
-            processing_failure = decision["decision"] != "send" and _decision_is_processing_failure(decision)
-            if processing_failure:
-                current_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
-                current_payload = (
-                    current_task.get("send_payload")
-                    if isinstance(current_task.get("send_payload"), dict)
-                    else {}
-                )
-                self.repository.update_sop_send_task(
-                    str(current_task.get("id") or local_task.get("id") or ""),
-                    status="failed",
-                    send_payload=current_payload,
-                    error=str(decision.get("reason") or decision.get("reason_code") or "platform_task_failed"),
-                )
-            completed = await self._commit_platform_terminal(
-                task_id=task_id,
-                event_id=event_id,
-                terminal_status=terminal_status,
-                event_status="platform_failed" if processing_failure else "",
-                remark=str(decision.get("remark") or decision.get("reason") or ""),
-            )
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
             return {
                 "processed": True,
-                "status": (
-                    "sent"
-                    if decision["decision"] == "send"
-                    else "failed"
-                    if processing_failure
-                    else "completed_without_send"
-                ),
+                "status": "sent" if decision["decision"] == "send" else "completed_without_send",
                 "task_id": task_id,
                 "platform_response": completed,
             }
         except Exception as exc:
             event_after_error = self.repository.get_sop_event(event_id)
             event_status = str(event_after_error.get("status") or "")
-            if event_status not in {
-                "platform_send_uncertain",
-                "platform_complete_pending",
-                "platform_terminal_pending",
-            }:
-                error = f"{type(exc).__name__}: {exc}"
-                current_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
-                current_payload = (
-                    current_task.get("send_payload")
-                    if isinstance(current_task.get("send_payload"), dict)
-                    else {}
+            if event_status not in {"platform_send_uncertain", "platform_complete_pending"}:
+                self.repository.update_sop_event_status(
+                    event_id,
+                    status="platform_processing_retry",
+                    error=f"{type(exc).__name__}: {exc}",
                 )
+            if event_status not in {"platform_send_uncertain", "platform_complete_pending"}:
                 self.repository.update_sop_send_task(
-                    str(current_task.get("id") or local_task.get("id") or ""),
-                    status="failed",
-                    send_payload={
-                        **current_payload,
-                        "platform_task_id": task_id,
-                        "retry_cancelled": True,
-                        "execution_failure": {
-                            "type": type(exc).__name__,
-                            "message": str(exc),
-                            "phase": str(current_task.get("status") or "processing"),
-                        },
-                    },
-                    error=error,
+                    str(local_task.get("id") or ""),
+                    status="processing_retry",
+                    send_payload={"platform_task_id": task_id},
+                    error=f"{type(exc).__name__}: {exc}",
                 )
-                completed = await self._commit_platform_terminal(
-                    task_id=task_id,
-                    event_id=event_id,
-                    terminal_status=70,
-                    event_status="platform_failed",
-                    remark=error,
-                )
-                return {
-                    "processed": True,
-                    "status": "failed",
-                    "task_id": task_id,
-                    "platform_response": completed,
-                    "error": error,
-                }
             raise
 
     async def finalize_message_delivery(self, dispatch: dict[str, Any]) -> None:
@@ -2198,68 +2258,146 @@ class SopPlatformTaskService:
         local_task_id = str(context.get("sop_send_task_id") or dispatch.get("source_task_id") or "").strip()
         event_id = str(context.get("sop_event_id") or "").strip()
         platform_task_id = str(context.get("platform_task_id") or dispatch.get("task_id") or "").strip()
+        skipped_prefix_task_ids = [
+            str(value).strip()
+            for value in context.get("skipped_prefix_task_ids", [])
+            if str(value).strip()
+        ] if isinstance(context.get("skipped_prefix_task_ids"), list) else []
+        compat_trigger_task_ids = [
+            str(value).strip()
+            for value in context.get("compat_trigger_task_ids", [])
+            if str(value).strip()
+        ] if isinstance(context.get("compat_trigger_task_ids"), list) else []
         if not local_task_id:
             raise ValueError("Platform SOP delivery dispatch is missing sop_send_task_id")
-        local_task = self.repository.get_sop_send_task(local_task_id)
-        if not local_task:
-            raise ValueError(f"Platform SOP send task not found: {local_task_id}")
-        event_id = event_id or str(local_task.get("event_id") or "").strip()
+        local_task = (
+            self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{platform_task_id}")
+            if platform_task_id
+            else {}
+        )
+        audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
         event = self.repository.get_sop_event(event_id) if event_id else {}
         raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
         platform_task = raw_payload.get("platform_task") if isinstance(raw_payload.get("platform_task"), dict) else {}
-        send_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
-        send_response = local_task.get("send_response") if isinstance(local_task.get("send_response"), dict) else {}
-        decision = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
+        decision = audit.get("decision") if isinstance(audit.get("decision"), dict) else {}
+        previous_send_response = (
+            local_task.get("send_response") if isinstance(local_task.get("send_response"), dict) else {}
+        )
+        callback_response = {**previous_send_response, "message_delivery": dispatch}
         status = str(dispatch.get("status") or "")
         if platform_task and decision and status in {"send_succeeded", "send_failed", "partial_failed"}:
-            send_payload = {
-                **send_payload,
+            audit = {
+                **audit,
                 "rule_data_response": await self._report_rule_data(
                     platform_task,
                     decision=decision,
                     sent=status == "send_succeeded",
                 ),
             }
-        callback_response = {**send_response, "message_delivery": dispatch}
         if status in {"send_failed", "partial_failed"}:
-            error = str(dispatch.get("error_message") or status)
             self.repository.update_sop_send_task(
                 local_task_id,
-                status="failed" if status == "send_failed" else "partial_failed",
-                send_payload=send_payload,
+                status="processing_retry",
+                send_payload=audit,
                 send_response=callback_response,
-                error=error,
+                error=str(dispatch.get("error_message") or status),
             )
-            if platform_task_id and not self.settings.sop_platform_shadow_mode:
-                completed = await self._commit_platform_terminal(
-                    task_id=platform_task_id,
-                    event_id=event_id,
-                    terminal_status=70,
-                    event_status="platform_failed",
-                    remark=error,
+            if event_id:
+                self.repository.update_sop_event_status(
+                    event_id,
+                    status="platform_batch_send_retry",
+                    error=str(dispatch.get("error_message") or status),
                 )
-                _require_platform_status(completed, 70)
-            elif event_id:
-                self.repository.update_sop_event_status(event_id, status="platform_failed", error=error)
-            self._remember_terminal(platform_task_id)
             return
         if status != "send_succeeded":
             return
         self.repository.update_sop_send_task(
             local_task_id,
             status="sent",
-            send_payload=send_payload,
+            send_payload=audit,
             send_response=callback_response,
             sent_at=str(dispatch.get("confirmed_at") or "") or utc_now_iso(),
         )
         if event_id:
             self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+        if platform_task_id and _in_configured_quiet_hours(settings=self.settings):
+            if event_id:
+                self.repository.update_sop_event_status(event_id, status="platform_batch_consume_pending")
+            return
         if platform_task_id and not self.settings.sop_platform_shadow_mode:
-            completed = await self.platform_client.consume(task_id=platform_task_id, status=30)
-            _require_platform_status(completed, 30)
+            await self._finalize_batch_prefix(
+                selected_task_id=platform_task_id,
+                skipped_prefix_task_ids=skipped_prefix_task_ids,
+                compat_trigger_task_ids=compat_trigger_task_ids,
+                audit=audit,
+            )
+            self.repository.update_sop_send_task(
+                local_task_id,
+                status="sent",
+                send_payload=audit,
+                send_response=callback_response,
+                sent_at=str(dispatch.get("confirmed_at") or "") or utc_now_iso(),
+            )
         if event_id:
             self.repository.update_sop_event_status(event_id, status="platform_completed")
-        self._remember_terminal(platform_task_id)
+        for task_id in [*skipped_prefix_task_ids, platform_task_id, *compat_trigger_task_ids]:
+            self._remember_terminal(task_id)
+
+    async def _report_rule_data(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        decision: dict[str, Any],
+        sent: bool,
+    ) -> dict[str, Any]:
+        reporter = getattr(self.platform_client, "service_rule_data", None)
+        task_id = _task_id(platform_task)
+        if not callable(reporter) or not task_id:
+            return {
+                "rule_data_request": {},
+                "rule_data_response": {"skipped": True, "reason": "rule_data_api_unavailable"},
+            }
+        reply_messages = decision.get("reply_messages") if isinstance(decision.get("reply_messages"), list) else []
+        send_texts: list[str] = []
+        for item in reply_messages:
+            if not isinstance(item, dict) or str(item.get("type") or "") != "text":
+                continue
+            content = item.get("content")
+            send_texts.append(str(content.get("text") or "") if isinstance(content, dict) else str(content or ""))
+        send_content = "\n".join(send_texts)
+        request = {
+            "task_id": task_id,
+            "scene_name": str(decision.get("sceneName") or decision.get("scene_name") or "SOP任务"),
+            "scene_code": str(decision.get("sceneCode") or decision.get("scene_code") or ""),
+            "send_status": 10 if sent else 20,
+            "knowledge_id": _int_or_zero(decision.get("knowledgeId") or decision.get("knowledge_id")) or None,
+            "knowledge_paragraph_no": (
+                _int_or_zero(decision.get("knowledgeParagraphNo") or decision.get("knowledge_paragraph_no")) or None
+            ),
+            "remark": str(decision.get("remark") or decision.get("reason") or "")[:500],
+            "send_content": send_content[:10000],
+        }
+        try:
+            response = await reporter(**request)
+        except Exception as exc:
+            response = {
+                "error": "service_rule_data_failed",
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+            }
+        return {
+            "rule_data_request": {
+                "taskId": task_id,
+                "sceneName": request["scene_name"],
+                "sceneCode": request["scene_code"],
+                "sendStatus": request["send_status"],
+                "knowledgeId": request["knowledge_id"],
+                "knowledgeParagraphNo": request["knowledge_paragraph_no"],
+                "remark": request["remark"],
+                "sendContent": request["send_content"],
+            },
+            "rule_data_response": response,
+        }
 
     async def _quiet_hours_guard(
         self,
@@ -2270,10 +2408,8 @@ class SopPlatformTaskService:
         summary = _quiet_hours_base_summary(platform_task, settings=self.settings)
         if not summary.get("in_quiet_hours"):
             return summary
-
         return {
             **summary,
-            "task_type": _task_type(platform_task),
             "blocked": True,
             "reason": "quiet_hours_all_sop_blocked",
         }
@@ -2281,71 +2417,21 @@ class SopPlatformTaskService:
     async def _load_context(self, platform_task: dict[str, Any], *, identity: dict[str, str]) -> dict[str, Any]:
         missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
         if missing:
-            return {
-                "source": "identity_incomplete",
-                "conversation_loaded": False,
-                "conversation_error": f"missing_identity:{','.join(missing)}",
-                "customer_relation": {},
-                "conversation_timeline": [],
-                "conversation_count": 0,
-                "opening_state": {
-                    "has_real_customer_message": None,
-                    "opening_state_reliable": False,
-                },
-                "business_state": {"source": "skipped_identity_incomplete"},
-                "task_timing": _task_timing(platform_task),
-            }
-        try:
-            conversation = await self.system_client.conversation(**identity, limit=80)
-        except Exception as exc:
-            return {
-                "source": "conversation_unavailable",
-                "conversation_loaded": False,
-                "conversation_error": f"{type(exc).__name__}: {exc}",
-                "customer_relation": {},
-                "conversation_timeline": [],
-                "conversation_count": 0,
-                "opening_state": {
-                    "has_real_customer_message": None,
-                    "opening_state_reliable": False,
-                },
-                "business_state": {"source": "skipped_conversation_unavailable"},
-                "task_timing": _task_timing(platform_task),
-            }
+            raise RuntimeError(f"platform task missing identity: {','.join(missing)}")
+        conversation = await self.system_client.conversation(**identity, limit=80)
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
-        task_timing = _task_timing(
-            platform_task,
-            conversation_added_at=data.get("added_at"),
-        )
         relation = _compact_customer_relation(
             data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
         )
         messages = data.get("messages") if isinstance(data.get("messages"), list) else []
         timeline = _conversation_timeline(messages[-80:])
-        opening_state = _conversation_opening_state(
-            messages,
-            conversation_added_at=data.get("added_at"),
-        )
-        opening_state["opening_state_reliable"] = True
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
             return {
-                "conversation_loaded": True,
                 "customer_relation": relation,
                 "conversation_timeline": timeline,
                 "conversation_count": len(messages),
-                "opening_state": opening_state,
                 "business_state": {"source": "skipped_customer_deleted"},
-                "task_timing": task_timing,
-            }
-        if opening_state.get("has_real_customer_message") is not True:
-            return {
-                "conversation_loaded": True,
-                "customer_relation": relation,
-                "conversation_timeline": timeline,
-                "conversation_count": len(messages),
-                "opening_state": opening_state,
-                "business_state": {"source": "skipped_for_unopened_passthrough"},
-                "task_timing": task_timing,
+                "task_timing": _task_timing(platform_task),
             }
         request_context = {
             "source_protocol": "third_party_sop_pending",
@@ -2357,124 +2443,31 @@ class SopPlatformTaskService:
             "order_id": platform_task.get("orderId") or platform_task.get("order_id"),
             "order_no": platform_task.get("orderNo") or platform_task.get("order_no"),
         }
-        try:
-            customer_context = await asyncio.to_thread(
-                self.customer_context_service.load,
-                customer_id=identity["customer_id"],
-                memory={},
-                request_context=request_context,
-            )
-            business_state = _compact_business_state(customer_context)
-        except Exception as exc:
-            business_state = {
-                "source": "customer_context_unavailable",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+        customer_context = await asyncio.to_thread(
+            self.customer_context_service.load,
+            customer_id=identity["customer_id"],
+            memory={},
+            request_context=request_context,
+        )
         return {
-            "conversation_loaded": True,
             "customer_relation": relation,
             "conversation_timeline": timeline,
             "conversation_count": len(messages),
-            "opening_state": opening_state,
-            "business_state": business_state,
-            "task_timing": task_timing,
+            "business_state": _compact_business_state(customer_context),
+            "task_timing": _task_timing(platform_task),
         }
-
-    async def _report_rule_data(
-        self,
-        platform_task: dict[str, Any],
-        *,
-        decision: dict[str, Any],
-        sent: bool,
-    ) -> dict[str, Any]:
-        if not callable(getattr(self.platform_client, "service_rule_data", None)):
-            return {
-                "rule_data_request": {},
-                "rule_data_response": {"skipped": True, "reason": "platform_client_rule_data_api_unavailable"},
-            }
-        task_id = _task_id(platform_task)
-        if not task_id:
-            return {
-                "rule_data_request": {},
-                "rule_data_response": {"skipped": True, "reason": "missing_task_id"},
-            }
-        internal_scene_code = str(decision.get("sceneCode") or decision.get("scene_code") or "").strip()
-        callback_scene = sop_platform_callback_scene(
-            internal_scene_code=internal_scene_code,
-            sent=sent,
-        )
-        request_body = service_rule_data_payload(
-            task_id=task_id,
-            scene_name=callback_scene.name,
-            scene_code=callback_scene.code,
-            send_status=10 if sent else 20,
-            knowledge_id=_int(decision.get("knowledgeId", decision.get("knowledge_id")), 0) or None,
-            knowledge_paragraph_no=_int(
-                decision.get("knowledgeParagraphNo", decision.get("knowledge_paragraph_no")),
-                0,
-            )
-            or None,
-            remark=str(decision.get("remark") or decision.get("reason") or ""),
-            send_content=_send_content_for_rule_data(decision.get("reply_messages") or []),
-        )
-        try:
-            response = await self.platform_client.service_rule_data(
-                task_id=request_body["taskId"],
-                scene_name=str(request_body["sceneName"]),
-                scene_code=str(request_body.get("sceneCode") or ""),
-                send_status=int(request_body["sendStatus"]),
-                knowledge_id=_int(request_body.get("knowledgeId"), 0) or None,
-                knowledge_paragraph_no=_int(request_body.get("knowledgeParagraphNo"), 0) or None,
-                remark=str(request_body.get("remark") or ""),
-                send_content=str(request_body.get("sendContent") or ""),
-            )
-            return {"rule_data_request": request_body, "rule_data_response": response}
-        except Exception as exc:
-            logger.warning(
-                "Failed to report platform SOP rule data for task %s: %s: %s",
-                task_id,
-                type(exc).__name__,
-                exc,
-            )
-            return {
-                "rule_data_request": request_body,
-                "rule_data_response": {
-                    "error": "service_rule_data_failed",
-                    "exception_type": type(exc).__name__,
-                    "message": str(exc),
-                },
-            }
 
     async def _decide(self, platform_task: dict[str, Any], *, context: dict[str, Any]) -> dict[str, Any]:
         relation = context.get("customer_relation") if isinstance(context.get("customer_relation"), dict) else {}
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
-            return {
-                "decision": "no_send",
-                "reason": "customer_relation_deleted",
-                "reason_code": "no_send_customer_deleted",
-                "sceneName": sop_platform_scene_name("no_send_customer_deleted"),
-                "sceneCode": "no_send_customer_deleted",
-                "knowledgeId": 0,
-                "knowledgeParagraphNo": 0,
-                "remark": "客户关系已删除，停止触达",
-                "reply_messages": [],
-            }
+            return {"decision": "no_send", "reason": "customer_relation_deleted", "reply_messages": []}
         original_messages = _platform_messages(platform_task)
-        recent_media_lookup = await self._recent_near_duplicate_platform_delivery(
-            identity=_task_identity(platform_task),
-            task_id=_task_id(platform_task),
-            reply_messages=[],
-        )
-        recent_sent_media = (
-            recent_media_lookup.get("sent_media")
-            if isinstance(recent_media_lookup.get("sent_media"), list)
-            else []
-        )
-        sent_fingerprints = {
-            str(item.get("fingerprint") or "")
-            for item in recent_sent_media
-            if isinstance(item, dict)
-        }
+        use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
+        if not original_messages and not use_ai_copy:
+            raise RuntimeError("platform task message_content is empty or unsupported")
+        if not original_messages and not _has_trusted_ai_copy_source(platform_task):
+            return {"decision": "no_send", "reason": "missing_trusted_platform_content", "reply_messages": []}
+        material_library = _material_catalog_for_model(self.objection_material_service)
         model_input = {
             "task": {
                 "task_id": _task_id(platform_task),
@@ -2486,45 +2479,35 @@ class SopPlatformTaskService:
                     or ""
                 ),
                 "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
-                "scene_role": "current_delivery_context",
-                "original_message_content": original_messages,
-                "required_delivery": original_messages,
-                "original_message_content_role": "locked_platform_delivery_model_may_only_review_or_polish",
+                "scene_role": "supporting_context",
+                "use_ai_copy": use_ai_copy,
+                "message_content": original_messages,
+                "message_content_role": "executable_candidate",
                 "platform_metadata": {
                     "rule_id": platform_task.get("ruleId") or platform_task.get("rule_id"),
                     "rule_name": platform_task.get("ruleName") or platform_task.get("rule_name"),
                     "scene_id": platform_task.get("sceneId") or platform_task.get("scene_id"),
                 },
-                "timing": (
-                    context.get("task_timing")
-                    if isinstance(context.get("task_timing"), dict)
-                    else _task_timing(platform_task)
-                ),
+                "timing": _task_timing(platform_task),
             },
             "latest_context": {
                 "customer_relation": context.get("customer_relation") or {},
                 "conversation_timeline": context.get("conversation_timeline") or [],
                 "timeline_structure": _timeline_structure(context.get("conversation_timeline") or []),
                 "business_state": context.get("business_state") or {},
-                "recent_sent_media": recent_sent_media,
-                "forbidden_media_fingerprints": sorted(value for value in sent_fingerprints if value),
             },
+            "material_library": material_library,
             "authoritative_business_facts": sop_platform_business_facts_for_model(),
-            "scene_catalog": sop_platform_model_scene_catalog(),
-            "knowledge_scene_catalog": sop_platform_knowledge_scene_catalog(),
             "output_contract": {
                 "decision": "send | no_send",
+                "reason_code": "required for no_send; optional for send",
                 "reason": "string",
-                "sceneCode": "required; one code from scene_catalog",
-                "sceneEvidence": "required; short evidence from supplied context",
-                "knowledgeId": "0 or a matching id from knowledge_scene_catalog",
-                "knowledgeParagraphNo": "0 with no knowledge hit; otherwise positive",
-                "remark": "required callback remark",
                 "reply_messages": "send must be non-empty; no_send must be []",
+                "first_add_no_send_allowed_reason_codes": sorted(FIRST_ADD_NO_SEND_REASON_CODES),
             },
         }
         messages = [
-            {"role": "system", "content": SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT},
+            {"role": "system", "content": SOP_PLATFORM_TASK_SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(model_input, ensure_ascii=False)},
         ]
         deadline = time.monotonic() + max(5.0, float(self.settings.sop_platform_model_timeout_seconds))
@@ -2535,11 +2518,8 @@ class SopPlatformTaskService:
             deadline_monotonic=deadline,
             max_parallel_candidates=1,
         )
-        raw = _normalize_knowledge_decision_callback_fields(raw)
-        error = _decision_error(raw)
-        if not error:
-            error = _platform_send_contract_error(raw, original_messages=original_messages)
-        policy_error = "" if error else _decision_policy_error(raw)
+        error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+        policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if error:
             repair_messages = [
                 *messages,
@@ -2558,23 +2538,19 @@ class SopPlatformTaskService:
                 deadline_monotonic=deadline,
                 max_parallel_candidates=1,
             )
-            raw = _normalize_knowledge_decision_callback_fields(raw)
-            error = _decision_error(raw)
-            if not error:
-                error = _platform_send_contract_error(raw, original_messages=original_messages)
-            policy_error = "" if error else _decision_policy_error(raw)
-        if error or policy_error:
+            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+            policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
+        if not error and policy_error:
             repair_messages = [
                 *messages,
                 {"role": "assistant", "content": json.dumps(raw, ensure_ascii=False)},
                 {
                     "role": "user",
                     "content": (
-                        f"第二次修复：输出违反第三方 SOP 发送审核合同：{error or policy_error}。"
-                        "只返回合法 JSON。除严重客诉、明确停止联系、客户关系删除、健康高风险、"
-                        "已付/已预约冲突、人工接管、平台内容冲突或重复外，必须改为 send，并以"
-                        "task.required_delivery 为唯一内容来源做必要润色。普通沉默、普通考虑、"
-                        "价格/效果/距离/时间顾虑都不能 no_send。"
+                        f"Decision violates first-add policy: {policy_error}. "
+                        "Return valid json only. If this is a first-add no_send, use one allowed reason_code "
+                        "with concrete evidence. Similar wording, normal silence, no demand, old resolved context, "
+                        "or use_ai_copy=false are not allowed no_send reasons."
                     ),
                 },
             ]
@@ -2585,277 +2561,97 @@ class SopPlatformTaskService:
                 deadline_monotonic=deadline,
                 max_parallel_candidates=1,
             )
-            raw = _normalize_knowledge_decision_callback_fields(raw)
-            error = _decision_error(raw)
-            if not error:
-                error = _platform_send_contract_error(raw, original_messages=original_messages)
-            policy_error = "" if error else _decision_policy_error(raw)
+            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+            policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if error:
             raise RuntimeError(f"invalid_sop_platform_model_output: {error}")
         if policy_error:
+            if _task_type(platform_task) == "add_wecom" and original_messages:
+                return {
+                    "decision": "send",
+                    "reason": "first_add_default_send_after_invalid_no_send_reason",
+                    "reason_code": "send",
+                    "reply_messages": original_messages,
+                }
             raise RuntimeError(f"invalid_sop_platform_model_output: {policy_error}")
         decision = str(raw.get("decision") or "")
         if decision == "no_send":
             return {
                 "decision": decision,
                 "reason": str(raw.get("reason") or ""),
-                "reason_code": str(raw.get("sceneCode") or ""),
-                "sceneName": sop_platform_scene_name(str(raw.get("sceneCode") or "")),
-                "sceneCode": str(raw.get("sceneCode") or ""),
-                "sceneEvidence": str(raw.get("sceneEvidence") or ""),
-                "knowledgeId": _int(raw.get("knowledgeId"), 0),
-                "knowledgeParagraphNo": _int(raw.get("knowledgeParagraphNo"), 0),
-                "remark": str(raw.get("remark") or raw.get("reason") or ""),
+                "reason_code": str(raw.get("reason_code") or ""),
                 "reply_messages": [],
             }
         output_messages = raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else []
+        if not model_input["task"]["use_ai_copy"]:
+            output_messages = original_messages
         return {
             "decision": decision,
             "reason": str(raw.get("reason") or ""),
-            "reason_code": str(raw.get("sceneCode") or ""),
-            "sceneName": sop_platform_scene_name(str(raw.get("sceneCode") or "")),
-            "sceneCode": str(raw.get("sceneCode") or ""),
-            "sceneEvidence": str(raw.get("sceneEvidence") or ""),
-            "knowledgeId": _int(raw.get("knowledgeId"), 0),
-            "knowledgeParagraphNo": _int(raw.get("knowledgeParagraphNo"), 0),
-            "remark": str(raw.get("remark") or raw.get("reason") or ""),
+            "reason_code": str(raw.get("reason_code") or ""),
             "reply_messages": output_messages,
         }
 
 
-def _legacy_decision_error(raw: Any) -> str:
+def _decision_error(raw: Any, *, original_messages: list[dict[str, Any]], use_ai_copy: bool) -> str:
     if not isinstance(raw, dict):
         return "output must be an object"
-    unexpected = set(raw).difference(
-        {
-            "decision",
-            "reason",
-            "reason_code",
-            "sceneName",
-            "scene_name",
-            "sceneCode",
-            "scene_code",
-            "knowledgeId",
-            "knowledge_id",
-            "knowledgeParagraphNo",
-            "knowledge_paragraph_no",
-            "remark",
-            "reply_messages",
-        }
-    )
+    unexpected = set(raw).difference({"decision", "reason", "reason_code", "reply_messages"})
     if unexpected:
         return f"unexpected output fields: {','.join(sorted(unexpected))}"
     decision = str(raw.get("decision") or "").strip()
     if decision not in {"send", "no_send"}:
         return "decision must be send or no_send"
-    if not str(raw.get("sceneName") or raw.get("scene_name") or "").strip():
-        return "sceneName is required"
-    if not str(raw.get("sceneCode") or raw.get("scene_code") or "").strip():
-        return "sceneCode is required"
-    if raw.get("knowledgeId", raw.get("knowledge_id", 0)) not in (None, ""):
-        try:
-            int(raw.get("knowledgeId", raw.get("knowledge_id", 0)) or 0)
-        except (TypeError, ValueError):
-            return "knowledgeId must be an integer"
-    if raw.get("knowledgeParagraphNo", raw.get("knowledge_paragraph_no", 0)) not in (None, ""):
-        try:
-            int(raw.get("knowledgeParagraphNo", raw.get("knowledge_paragraph_no", 0)) or 0)
-        except (TypeError, ValueError):
-            return "knowledgeParagraphNo must be an integer"
     messages = raw.get("reply_messages")
     if not isinstance(messages, list):
         return "reply_messages must be a list"
     if decision == "no_send":
-        code = str(raw.get("reason_code") or "").strip()
-        if code not in SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES:
-            return "no_send reason_code must be one allowed hard-boundary code"
         return "no_send reply_messages must be empty" if messages else ""
     if not messages:
         return "send reply_messages must not be empty"
-    if len(messages) > 6:
-        return "send reply_messages may contain at most six messages"
-    for index, candidate in enumerate(messages, start=1):
+    if not use_ai_copy:
+        return ""
+    if not original_messages:
+        if len(messages) > 2:
+            return "AI copy without message_content may contain at most two text messages"
+        for index, candidate in enumerate(messages, start=1):
+            if not isinstance(candidate, dict) or candidate.get("type") != "text":
+                return f"generated reply message {index} must be text"
+            if candidate.get("order") != index:
+                return f"generated reply message {index} order must be {index}"
+            content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+            if not str(content.get("text") or "").strip():
+                return f"generated reply message {index} text is empty"
+        return ""
+    if len(messages) != len(original_messages):
+        return "AI copy may not add or remove platform messages"
+    for index, (candidate, original) in enumerate(zip(messages, original_messages), start=1):
         if not isinstance(candidate, dict):
             return f"reply message {index} must be an object"
-        if candidate.get("order") != index:
-            return f"reply message {index} order must be {index}"
-        message_type = str(candidate.get("type") or "").strip()
-        if message_type not in {"text", "image", "video", "payment_collection"}:
-            return f"reply message {index} type must be text, image, video, or payment_collection"
-        content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+        if candidate.get("type") != original.get("type") or candidate.get("order") != original.get("order"):
+            return f"reply message {index} type/order must remain unchanged"
+        message_type = str(original.get("type") or "")
         if message_type == "text":
+            content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
             if not str(content.get("text") or "").strip():
                 return f"reply message {index} text is empty"
-        elif message_type in {"image", "video"} and not str(content.get("url") or "").strip():
-            return f"reply message {index} media url is empty"
-        elif message_type == "payment_collection":
-            try:
-                amount = int(content.get("amount") or 0)
-            except (TypeError, ValueError):
-                return f"reply message {index} payment amount must be an integer"
-            if amount not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
-                return f"reply message {index} payment amount must be 10, 20, 30, or 40"
+        elif candidate != original:
+            return f"reply message {index} media/link content must remain unchanged"
     return ""
 
 
-def _legacy_normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
-    if not isinstance(raw, dict):
-        return raw
-    output = dict(raw)
-    decision = str(output.get("decision") or "").strip()
-    if "scene_name" in output and "sceneName" not in output:
-        output["sceneName"] = output.pop("scene_name")
-    if "scene_code" in output and "sceneCode" not in output:
-        output["sceneCode"] = output.pop("scene_code")
-    if "knowledge_id" in output and "knowledgeId" not in output:
-        output["knowledgeId"] = output.pop("knowledge_id")
-    if "knowledge_paragraph_no" in output and "knowledgeParagraphNo" not in output:
-        output["knowledgeParagraphNo"] = output.pop("knowledge_paragraph_no")
-    if not str(output.get("sceneName") or "").strip():
-        output["sceneName"] = "正常推进｜活动价格" if decision == "send" else "不发送｜硬边界"
-    if not str(output.get("sceneCode") or "").strip():
-        output["sceneCode"] = "normal_activity_price" if decision == "send" else "no_send_hard_boundary"
-    if output.get("knowledgeId") in (None, ""):
-        output["knowledgeId"] = 0
-    if output.get("knowledgeParagraphNo") in (None, ""):
-        output["knowledgeParagraphNo"] = 0
-    if not str(output.get("remark") or "").strip():
-        output["remark"] = str(output.get("reason") or "")
-    if decision == "send" and not str(output.get("reason_code") or "").strip():
-        output["reason_code"] = str(output.get("sceneCode") or "send")
-    return output
-
-
-def _decision_policy_error(raw: dict[str, Any]) -> str:
-    return ""
-
-
-def _normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
-    if not isinstance(raw, dict):
-        return raw
-    output = dict(raw)
-    if "scene_code" in output and "sceneCode" not in output:
-        output["sceneCode"] = output.pop("scene_code")
-    if "scene_evidence" in output and "sceneEvidence" not in output:
-        output["sceneEvidence"] = output.pop("scene_evidence")
-    if "knowledge_id" in output and "knowledgeId" not in output:
-        output["knowledgeId"] = output.pop("knowledge_id")
-    if "knowledge_paragraph_no" in output and "knowledgeParagraphNo" not in output:
-        output["knowledgeParagraphNo"] = output.pop("knowledge_paragraph_no")
-    output.pop("reason_code", None)
-    if output.get("knowledgeId") in (None, ""):
-        output["knowledgeId"] = 0
-    if output.get("knowledgeParagraphNo") in (None, ""):
-        output["knowledgeParagraphNo"] = 0
-    if not str(output.get("remark") or "").strip():
-        output["remark"] = str(output.get("reason") or "")
-    return output
-
-
-def _decision_error(raw: Any) -> str:
-    if not isinstance(raw, dict):
-        return "output must be an object"
-    allowed_fields = {
-        "decision",
-        "reason",
-        "sceneCode",
-        "sceneEvidence",
-        "knowledgeId",
-        "knowledgeParagraphNo",
-        "remark",
-        "reply_messages",
-    }
-    unexpected = set(raw).difference(allowed_fields)
-    if unexpected:
-        return f"unexpected output fields: {','.join(sorted(unexpected))}"
-    decision = str(raw.get("decision") or "").strip()
-    if decision not in {"send", "no_send"}:
-        return "decision must be send or no_send"
-    scene_code = str(raw.get("sceneCode") or "").strip()
-    scene = sop_platform_scene(scene_code)
-    if scene is None or scene_code not in SOP_PLATFORM_MODEL_SCENE_CODES:
-        return "sceneCode must be one model-selectable code from scene_catalog"
-    if scene.decision != decision:
-        return f"sceneCode {scene_code} requires decision={scene.decision}"
-    if not str(raw.get("sceneEvidence") or "").strip():
-        return "sceneEvidence is required"
-    try:
-        knowledge_id = int(raw.get("knowledgeId") or 0)
-        paragraph_no = int(raw.get("knowledgeParagraphNo") or 0)
-    except (TypeError, ValueError):
-        return "knowledgeId and knowledgeParagraphNo must be integers"
-    if knowledge_id == 0:
-        if paragraph_no != 0:
-            return "knowledgeParagraphNo must be 0 when knowledgeId is 0"
-    else:
-        mapped_scene_code = SOP_PLATFORM_KNOWLEDGE_SCENE_CODES.get(knowledge_id)
-        if mapped_scene_code != scene_code:
-            return "knowledgeId does not match sceneCode"
-        if paragraph_no <= 0:
-            return "knowledgeParagraphNo must be positive when knowledgeId is set"
-    messages = raw.get("reply_messages")
-    if not isinstance(messages, list):
-        return "reply_messages must be a list"
-    if decision == "no_send":
-        return "no_send reply_messages must be empty" if messages else ""
-    if not messages:
-        return "send reply_messages must not be empty"
-    if len(messages) > 6:
-        return "send reply_messages may contain at most six messages"
-    for index, candidate in enumerate(messages, start=1):
-        if not isinstance(candidate, dict):
-            return f"reply message {index} must be an object"
-        if candidate.get("order") != index:
-            return f"reply message {index} order must be {index}"
-        message_type = str(candidate.get("type") or "").strip()
-        if message_type not in {"text", "image", "video", "payment_collection"}:
-            return f"reply message {index} has an unsupported type"
-        content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
-        if message_type == "text" and not str(content.get("text") or "").strip():
-            return f"reply message {index} text is empty"
-        if message_type in {"image", "video"} and not str(content.get("url") or "").strip():
-            return f"reply message {index} media url is empty"
-        if message_type == "payment_collection":
-            try:
-                amount = int(content.get("amount") or 0)
-            except (TypeError, ValueError):
-                return f"reply message {index} payment amount must be an integer"
-            if amount not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
-                return f"reply message {index} payment amount must be 10, 20, 30, or 40"
-    return ""
-
-
-def _platform_send_contract_error(
-    raw: dict[str, Any],
-    *,
-    original_messages: list[dict[str, Any]],
-) -> str:
-    if str(raw.get("decision") or "").strip() != "send":
+def _decision_policy_error(raw: dict[str, Any], *, platform_task: dict[str, Any]) -> str:
+    if str(raw.get("decision") or "").strip() != "no_send":
         return ""
-    output_messages = raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else []
-
-    def locked_messages(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
-        locked: list[tuple[str, str]] = []
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            message_type = str(message.get("type") or "").strip().lower()
-            if message_type == "text":
-                continue
-            content = message.get("content") if isinstance(message.get("content"), dict) else {}
-            locked.append(
-                (
-                    message_type,
-                    json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-                )
-            )
-        return locked
-
-    expected = locked_messages(original_messages)
-    actual = locked_messages(output_messages)
-    if actual != expected:
-        return "send must preserve all platform image/video/link/payment messages in original order and content"
-    return ""
+    if _task_type(platform_task) != "add_wecom":
+        return ""
+    code = str(raw.get("reason_code") or "").strip()
+    if code in FIRST_ADD_NO_SEND_REASON_CODES:
+        return ""
+    return (
+        "first-add no_send requires reason_code in "
+        + ",".join(sorted(FIRST_ADD_NO_SEND_REASON_CODES))
+    )
 
 
 def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2873,16 +2669,7 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
         if message_type == "text":
             text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
             if text:
-                if text == "预约卡片":
-                    output.append(
-                        {
-                            "type": "payment_collection",
-                            "order": index,
-                            "content": {"amount": PAYMENT_COLLECTION_UNIT_AMOUNT, "remark": ""},
-                        }
-                    )
-                else:
-                    output.append({"type": "text", "order": index, "content": {"text": text}})
+                output.append({"type": "text", "order": index, "content": {"text": text}})
         elif message_type in {"image", "video"}:
             url = str(content.get("url") if isinstance(content, dict) else content or "").strip()
             if url:
@@ -2919,99 +2706,6 @@ def _platform_duplicate_send_once_key(platform_task: dict[str, Any]) -> str:
     )
     task_type = _task_type(platform_task) or "unknown"
     return f"platform_sop_content:{contact}:{scheduled_day}:{task_type}:{content_hash}"
-
-
-def _platform_contact_lock_key(platform_task: dict[str, Any]) -> str:
-    identity = _task_identity(platform_task)
-    contact_id = identity.get("external_userid") or identity.get("customer_id")
-    if not identity.get("corp_id") or not identity.get("wechat") or not contact_id:
-        return ""
-    canonical = "|".join(
-        [identity["corp_id"].lower(), identity["wechat"].lower(), contact_id.lower()]
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
-
-
-_VOLATILE_MEDIA_QUERY_KEYS = {
-    "authorization",
-    "expires",
-    "ossaccesskeyid",
-    "signature",
-    "token",
-    "x-expires",
-    "x-signature",
-}
-
-
-def _canonical_platform_media_url(url: str) -> str:
-    value = unquote(str(url or "").strip())
-    parsed = urlparse(value)
-    if not parsed.scheme or not parsed.netloc:
-        return value
-    hostname = (parsed.hostname or "").lower()
-    try:
-        port = parsed.port
-    except ValueError:
-        return value
-    netloc = hostname
-    if port and not (
-        (parsed.scheme.lower() == "http" and port == 80)
-        or (parsed.scheme.lower() == "https" and port == 443)
-    ):
-        netloc = f"{hostname}:{port}"
-    query = []
-    for key, query_value in parse_qsl(parsed.query, keep_blank_values=True):
-        lowered = key.lower()
-        if (
-            lowered in _VOLATILE_MEDIA_QUERY_KEYS
-            or lowered.startswith("x-amz-")
-            or lowered.startswith("x-oss-")
-        ):
-            continue
-        query.append((key, query_value))
-    return urlunparse(
-        (
-            parsed.scheme.lower(),
-            netloc,
-            re.sub(r"/{2,}", "/", unquote(parsed.path or "/")),
-            "",
-            urlencode(sorted(query)),
-            "",
-        )
-    )
-
-
-def _platform_media_refs(messages: list[Any]) -> list[dict[str, str]]:
-    refs: list[dict[str, str]] = []
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        message_type = str(message.get("type") or "").strip().lower()
-        if message_type not in {"image", "video"}:
-            continue
-        content = message.get("content") if isinstance(message.get("content"), dict) else {}
-        asset_id = ""
-        for key in ("asset_id", "assetId", "media_id", "mediaId", "file_id", "fileId", "id"):
-            asset_id = str(content.get(key) or message.get(key) or "").strip()
-            if asset_id:
-                break
-        url = str(content.get("url") or content.get("content") or "").strip()
-        canonical_url = _canonical_platform_media_url(url) if url else ""
-        if asset_id:
-            fingerprint_source = f"{message_type}:asset:{asset_id}"
-        elif canonical_url:
-            fingerprint_source = f"{message_type}:url:{canonical_url}"
-        else:
-            continue
-        refs.append(
-            {
-                "type": message_type,
-                "asset_id": asset_id,
-                "canonical_url": canonical_url,
-                "fingerprint": hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest(),
-            }
-        )
-    return refs
 
 
 def _duplicate_platform_task_reason(
@@ -3098,238 +2792,8 @@ def _platform_delivery_match(
     }
 
 
-def _platform_near_duplicate_delivery_match(
-    records: list[dict[str, Any]],
-    *,
-    identity: dict[str, str],
-    current_task_id: str,
-    reply_messages: list[dict[str, Any]],
-) -> dict[str, Any]:
-    current_text = _platform_delivery_text(reply_messages)
-    current_normalized = _normalize_platform_delivery_text(current_text)
-    current_media = _platform_media_refs(reply_messages)
-    current_fingerprints = {item["fingerprint"] for item in current_media}
-    sent_media: list[dict[str, Any]] = []
-    media_match: dict[str, Any] = {}
-    text_match: dict[str, Any] = {}
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        if not _same_platform_contact(record, identity):
-            continue
-        if _platform_record_task_id(record) == str(current_task_id).strip():
-            continue
-        status = str(record.get("task_status") or "").strip()
-        if status not in {"sent", "sending"} and not str(record.get("sent_at") or "").strip():
-            continue
-        sent_messages = _platform_record_sent_messages(record)
-        record_media = _platform_media_refs(sent_messages)
-        for media in record_media:
-            sent_media.append(
-                {
-                    **media,
-                    "task_id": _platform_record_task_id(record),
-                    "event_id": str(record.get("event_id") or ""),
-                    "status": status,
-                    "sent_at": str(record.get("sent_at") or ""),
-                }
-            )
-        duplicate_media = [item for item in record_media if item["fingerprint"] in current_fingerprints]
-        if duplicate_media and not media_match:
-            media_match = {
-                "found": True,
-                "match_type": "duplicate_media",
-                "duplicate_media": duplicate_media,
-                "current_media": current_media,
-                "duplicate_event_id": str(record.get("event_id") or ""),
-                "duplicate_task_id": _platform_record_task_id(record),
-                "duplicate_status": status,
-                "duplicate_sent_at": str(record.get("sent_at") or ""),
-            }
-        if len(current_normalized) < 40:
-            continue
-        sent_text = _platform_delivery_text(sent_messages)
-        sent_normalized = _normalize_platform_delivery_text(sent_text)
-        if len(sent_normalized) < 40:
-            continue
-        ratio = SequenceMatcher(None, current_normalized, sent_normalized).ratio()
-        paragraph_match = _platform_paragraph_duplicate_match(current_text, sent_text)
-        if (ratio >= 0.92 or paragraph_match.get("matched")) and not text_match:
-            text_match = {
-                "found": True,
-                "match_type": "near_duplicate_text",
-                "ratio": round(ratio, 4),
-                "paragraph_match": paragraph_match,
-                "duplicate_event_id": str(record.get("event_id") or ""),
-                "duplicate_task_id": _platform_record_task_id(record),
-                "duplicate_status": status,
-                "duplicate_sent_at": str(record.get("sent_at") or ""),
-            }
-    if media_match:
-        return {**media_match, "sent_media": sent_media}
-    if text_match:
-        return {**text_match, "current_media": current_media, "sent_media": sent_media}
-    return {
-        "found": False,
-        "match_type": "text_too_short" if len(current_normalized) < 40 else "none",
-        "current_media": current_media,
-        "sent_media": sent_media,
-    }
-
-
-def _same_platform_contact(record: dict[str, Any], identity: dict[str, str]) -> bool:
-    if str(record.get("corp_id") or "").strip().lower() != str(identity.get("corp_id") or "").strip().lower():
-        return False
-    if str(record.get("wechat") or "").strip().lower() != str(identity.get("wechat") or "").strip().lower():
-        return False
-    record_external = str(record.get("external_userid") or "").strip().lower()
-    current_external = str(identity.get("external_userid") or "").strip().lower()
-    if record_external and current_external:
-        return record_external == current_external
-    return str(record.get("customer_id") or "").strip() == str(identity.get("customer_id") or "").strip()
-
-
-def _platform_contact_delivery_guard(
-    records: list[dict[str, Any]],
-    *,
-    identity: dict[str, str],
-    current_task_id: str,
-    latest_customer_at: Any,
-    now_epoch: float | None = None,
-) -> dict[str, Any]:
-    latest_customer_epoch = _parse_epoch(latest_customer_at)
-    all_successful_sends: list[dict[str, Any]] = []
-    successful_sends: list[dict[str, Any]] = []
-    for record in records:
-        if not isinstance(record, dict) or not _same_platform_contact(record, identity):
-            continue
-        if _platform_record_task_id(record) == str(current_task_id).strip():
-            continue
-        if str(record.get("task_status") or "").strip() != "sent":
-            continue
-        sent_epoch = _parse_epoch(record.get("sent_at"))
-        if not sent_epoch:
-            continue
-        sent_record = {
-            "task_id": _platform_record_task_id(record),
-            "sent_at": str(record.get("sent_at") or ""),
-            "sent_epoch": sent_epoch,
-        }
-        all_successful_sends.append(sent_record)
-        if not latest_customer_epoch or sent_epoch > latest_customer_epoch:
-            successful_sends.append(sent_record)
-
-    all_successful_sends.sort(key=lambda item: float(item["sent_epoch"]))
-    successful_sends.sort(key=lambda item: float(item["sent_epoch"]))
-    latest_send = all_successful_sends[-1] if all_successful_sends else {}
-    reference_epoch = now_epoch if now_epoch is not None else time.time()
-    seconds_since_latest_send = (
-        max(0.0, reference_epoch - float(latest_send["sent_epoch"]))
-        if latest_send
-        else None
-    )
-    reason = ""
-    if seconds_since_latest_send is not None and seconds_since_latest_send < 300:
-        reason = "platform_contact_send_cooldown"
-    return {
-        "blocked": bool(reason),
-        "reason": reason or "allowed",
-        "successful_send_count_since_last_customer_reply": len(successful_sends),
-        "latest_customer_at": str(latest_customer_at or ""),
-        "latest_successful_send_at": str(latest_send.get("sent_at") or ""),
-        "seconds_since_latest_successful_send": (
-            round(seconds_since_latest_send, 3)
-            if seconds_since_latest_send is not None
-            else None
-        ),
-        "successful_task_ids": [item["task_id"] for item in successful_sends[-2:]],
-        "cooldown_seconds": 300,
-    }
-
-
-def _platform_record_task_id(record: dict[str, Any]) -> str:
-    platform_task = record.get("platform_task") if isinstance(record.get("platform_task"), dict) else {}
-    task_id = str(platform_task.get("task_id") or platform_task.get("taskId") or "").strip()
-    if task_id:
-        return task_id
-    event_id = str(record.get("event_id") or "").strip()
-    if event_id.startswith("platform_sop_task:"):
-        return event_id.split(":", 1)[1]
-    return ""
-
-
-def _platform_record_sent_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
-    send_payload = record.get("send_payload") if isinstance(record.get("send_payload"), dict) else {}
-    request_payload = send_payload.get("request") if isinstance(send_payload.get("request"), dict) else {}
-    request_messages = request_payload.get("reply_messages")
-    if isinstance(request_messages, list) and request_messages:
-        return [item for item in request_messages if isinstance(item, dict)]
-    decision_payload = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
-    decision_messages = decision_payload.get("reply_messages")
-    if isinstance(decision_messages, list) and decision_messages:
-        return [item for item in decision_messages if isinstance(item, dict)]
-    stored_messages = record.get("reply_messages")
-    if isinstance(stored_messages, list):
-        return [item for item in stored_messages if isinstance(item, dict)]
-    return []
-
-
-def _platform_delivery_text(messages: list[Any]) -> str:
-    parts: list[str] = []
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        if str(message.get("type") or "").strip().lower() != "text":
-            continue
-        content = message.get("content") if isinstance(message.get("content"), dict) else {}
-        text = str(content.get("text") or content.get("content") or "").strip()
-        if text:
-            parts.append(text)
-    return "\n".join(parts)
-
-
-def _normalize_platform_delivery_text(text: str) -> str:
-    normalized = str(text or "").lower()
-    normalized = re.sub(r"https?://\S+", "", normalized)
-    return re.sub(r"[\s\W_]+", "", normalized, flags=re.UNICODE)
-
-
-def _platform_paragraph_duplicate_match(current_text: str, sent_text: str) -> dict[str, Any]:
-    current_parts = _platform_duplicate_paragraphs(current_text)
-    sent_parts = _platform_duplicate_paragraphs(sent_text)
-    matches: list[dict[str, Any]] = []
-    for current in current_parts:
-        current_normalized = _normalize_platform_delivery_text(current)
-        for sent in sent_parts:
-            sent_normalized = _normalize_platform_delivery_text(sent)
-            ratio = SequenceMatcher(None, current_normalized, sent_normalized).ratio()
-            if ratio >= 0.88:
-                matches.append(
-                    {
-                        "ratio": round(ratio, 4),
-                        "current_length": len(current_normalized),
-                        "sent_length": len(sent_normalized),
-                    }
-                )
-                break
-    if len(matches) >= 2:
-        return {"matched": True, "match_type": "multiple_paragraphs", "matches": matches[:5]}
-    if matches and max(match["current_length"] for match in matches) >= 80:
-        return {"matched": True, "match_type": "long_paragraph", "matches": matches[:5]}
-    return {"matched": False, "matches": matches[:5]}
-
-
-def _platform_duplicate_paragraphs(text: str) -> list[str]:
-    chunks = re.split(r"(?:\r?\n)+|[。！？!?；;]", str(text or ""))
-    paragraphs: list[str] = []
-    for chunk in chunks:
-        value = chunk.strip()
-        if len(_normalize_platform_delivery_text(value)) >= 18:
-            paragraphs.append(value)
-    return paragraphs
-
-
 def _manual_resend_messages(local_task: dict[str, Any], platform_task: dict[str, Any]) -> list[dict[str, Any]]:
+    use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
     send_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
     request_payload = send_payload.get("request") if isinstance(send_payload.get("request"), dict) else {}
     request_messages = request_payload.get("reply_messages")
@@ -3339,7 +2803,7 @@ def _manual_resend_messages(local_task: dict[str, Any], platform_task: dict[str,
     decision_messages = decision_payload.get("reply_messages")
     if isinstance(decision_messages, list) and decision_messages:
         return decision_messages
-    if _dispatch_mode(platform_task) == "ai_service":
+    if use_ai_copy:
         return []
     stored_messages = local_task.get("reply_messages")
     if isinstance(stored_messages, list) and stored_messages:
@@ -3352,49 +2816,27 @@ def _task_preflight_no_send_reason(
     *,
     identity: dict[str, str],
     settings: Any,
-    dispatch_mode: str | None = None,
 ) -> str:
-    del settings, dispatch_mode
-    missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity.get(key)]
+    missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
     if missing:
-        return f"invalid_identity:{','.join(missing)}"
-    return "invalid_message_content" if _platform_message_error(platform_task) or not _platform_messages(platform_task) else ""
-
-
-def _preflight_no_send_decision(platform_task: dict[str, Any], *, reason: str) -> dict[str, Any]:
-    quiet_first_add = reason.startswith("quiet_hours_") and _task_type(platform_task) == "add_wecom"
-    scene_code = "quiet_first_add_backlog" if quiet_first_add else "no_send_invalid_message_content"
-    return {
-        "decision": "no_send",
-        "reason": reason,
-        "reason_code": reason,
-        "sceneName": sop_platform_scene_name(scene_code),
-        "sceneCode": scene_code,
-        "knowledgeId": 0,
-        "knowledgeParagraphNo": 0,
-        "remark": (
-            "首加SOP在夜间被拦截，当前任务已消费，原始内容进入次日08:30融合补触达"
-            if quiet_first_add
-            else f"前置保护命中：{reason}"
-        ),
-        "reply_messages": [],
-    }
-
-
-def _manual_resend_preflight_block_reason(
-    platform_task: dict[str, Any],
-    *,
-    identity: dict[str, str],
-    settings: Any,
-) -> str:
-    reason = _task_preflight_no_send_reason(
-        platform_task,
-        identity=identity,
-        settings=settings,
-    )
-    if reason in {"", "stale_task", "pre_cutover_task"}:
-        return ""
-    return reason
+        return "invalid_identity"
+    payload_error = _platform_message_error(platform_task)
+    if payload_error:
+        return "invalid_message_content"
+    messages = _platform_messages(platform_task)
+    use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
+    if not messages and not use_ai_copy:
+        return "invalid_message_content"
+    if not messages and not _has_trusted_ai_copy_source(platform_task):
+        return "missing_trusted_platform_content"
+    scheduled = _task_scheduled_epoch(platform_task)
+    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 21600) or 0))
+    if use_ai_copy and scheduled and max_age and time.time() - scheduled > max_age:
+        return "stale_task"
+    live_not_before = _parse_epoch(getattr(settings, "sop_platform_live_not_before", ""))
+    if live_not_before and (not scheduled or scheduled < live_not_before):
+        return "pre_cutover_task"
+    return ""
 
 
 def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -> dict[str, Any]:
@@ -3411,10 +2853,13 @@ def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -
     reference_epoch = scheduled_epoch or time.time()
     local_time = datetime.fromtimestamp(reference_epoch, tz=_BEIJING_TZ)
     processing_time = datetime.fromtimestamp(time.time(), tz=_BEIJING_TZ)
-    in_quiet_hours = bool(enabled and (
-        _hour_in_window(local_time.hour, start_hour=start_hour, end_hour=end_hour)
-        or _hour_in_window(processing_time.hour, start_hour=start_hour, end_hour=end_hour)
-    ))
+    in_quiet_hours = bool(
+        enabled
+        and (
+            _hour_in_window(local_time.hour, start_hour=start_hour, end_hour=end_hour)
+            or _hour_in_window(processing_time.hour, start_hour=start_hour, end_hour=end_hour)
+        )
+    )
     return {
         "enabled": enabled,
         "timezone": "Asia/Shanghai",
@@ -3486,49 +2931,6 @@ def _quiet_hours_activity(messages: list[Any], *, before_epoch: float) -> dict[s
     }
 
 
-def _conversation_opening_state(
-    messages: list[Any],
-    *,
-    conversation_added_at: Any,
-    now_epoch: float | None = None,
-) -> dict[str, Any]:
-    real_customer_messages: list[dict[str, Any]] = []
-    auto_opening_count = 0
-    for item in messages:
-        if not isinstance(item, dict) or _raw_message_role(item) != "customer":
-            continue
-        content = _timeline_message_content(item.get("content"))
-        if is_platform_auto_opening_message(content):
-            auto_opening_count += 1
-            continue
-        real_customer_messages.append(item)
-
-    first_added_epoch = _parse_epoch(conversation_added_at)
-    reference_epoch = now_epoch if now_epoch is not None else time.time()
-    first_added_today: bool | None = None
-    if first_added_epoch:
-        first_added_today = (
-            datetime.fromtimestamp(first_added_epoch, tz=_BEIJING_TZ).date()
-            == datetime.fromtimestamp(reference_epoch, tz=_BEIJING_TZ).date()
-        )
-    latest_real_customer_epoch = max(
-        (_raw_message_epoch(item) for item in real_customer_messages),
-        default=0.0,
-    )
-    return {
-        "has_real_customer_message": bool(real_customer_messages),
-        "real_customer_message_count": len(real_customer_messages),
-        "auto_opening_message_count": auto_opening_count,
-        "first_added_at_reliable": bool(first_added_epoch),
-        "first_added_today": first_added_today,
-        "latest_real_customer_at_beijing": (
-            datetime.fromtimestamp(latest_real_customer_epoch, tz=_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            if latest_real_customer_epoch
-            else ""
-        ),
-    }
-
-
 def _raw_message_role(item: dict[str, Any]) -> str:
     value = str(
         item.get("direction")
@@ -3559,139 +2961,6 @@ def _task_type(task: dict[str, Any]) -> str:
         or task.get("event_type")
         or ""
     ).strip().lower()
-
-
-def _dispatch_mode(task: dict[str, Any]) -> str:
-    value = str(task.get("dispatchMode") or task.get("dispatch_mode") or "").strip().lower()
-    return "direct" if value == "direct" else "ai_service"
-
-
-def _retryable_delivery_failure(exc: Exception) -> dict[str, Any]:
-    message = str(exc)
-    matched = re.search(r"outreach_system_http_(\d{3})\s*:\s*(.*)", message, flags=re.DOTALL)
-    if matched:
-        status = int(matched.group(1))
-        if status not in {408, 425, 429} and status < 500:
-            return {}
-        return {
-            "kind": "downstream_transient_http_error",
-            "http_status": status,
-            "detail": matched.group(2).strip()[:2000],
-            "retryable": True,
-        }
-    if type(exc).__name__ not in {
-        "ConnectError",
-        "ConnectTimeout",
-        "NetworkError",
-        "PoolTimeout",
-        "ReadError",
-        "RemoteProtocolError",
-        "WriteError",
-        "WriteTimeout",
-    }:
-        return {}
-    return {
-        "kind": "downstream_transient_network_error",
-        "http_status": 0,
-        "detail": message[:2000],
-        "retryable": True,
-    }
-
-
-def _terminal_delivery_failure(exc: Exception) -> dict[str, Any]:
-    message = str(exc)
-    matched = re.search(r"outreach_system_http_(\d{3})\s*:\s*(.*)", message, flags=re.DOTALL)
-    if not matched:
-        return {}
-    status = int(matched.group(1))
-    detail = matched.group(2).strip()
-    if status < 400 or status >= 500 or status in {408, 429}:
-        return {}
-    payload: dict[str, Any] = {}
-    try:
-        decoded = json.loads(detail)
-        payload = decoded if isinstance(decoded, dict) else {}
-    except (TypeError, ValueError):
-        payload = {}
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    reason_code = str(data.get("reason_code") or data.get("reason") or "").strip()
-    return {
-        "kind": "downstream_http_rejection",
-        "http_status": status,
-        "detail": detail[:2000],
-        "reason_code": reason_code,
-        "retryable": False,
-    }
-
-
-def _delivery_rejection_is_no_send(failure: dict[str, Any]) -> bool:
-    reason_code = str(failure.get("reason_code") or "").strip().lower()
-    if reason_code in {
-        "target_ai_disabled",
-        "customer_deleted",
-        "customer_relation_deleted",
-        "human_takeover",
-        "manual_takeover",
-    }:
-        return True
-    detail = str(failure.get("detail") or "").lower()
-    if "outside enabled ai scope" in detail or "manual handoff" in detail or "human takeover" in detail:
-        return True
-    return False
-
-
-def _is_human_takeover_status(payload: dict[str, Any]) -> bool:
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
-    outreach = data.get("ai_outreach") if isinstance(data.get("ai_outreach"), dict) else {}
-    mode = str(takeover.get("mode") or "").strip().lower()
-    reason_code = str(outreach.get("reason_code") or takeover.get("reason_code") or "").strip().lower()
-    return (
-        takeover.get("is_human") is True
-        or mode == "human"
-        or (
-            outreach.get("send_allowed") is False
-            and reason_code in {"handoff_human_active", "human_takeover", "manual_takeover"}
-        )
-    )
-
-
-def _compact_takeover_status(payload: dict[str, Any]) -> dict[str, Any]:
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
-    outreach = data.get("ai_outreach") if isinstance(data.get("ai_outreach"), dict) else {}
-    return {
-        "conversation_id": str(data.get("conversation_id") or ""),
-        "mode": str(takeover.get("mode") or ""),
-        "is_human": takeover.get("is_human"),
-        "is_ai": takeover.get("is_ai"),
-        "handoff_status": str(takeover.get("handoff_status") or ""),
-        "reason_code": str(outreach.get("reason_code") or takeover.get("reason_code") or ""),
-        "send_allowed": outreach.get("send_allowed"),
-    }
-
-
-def _decision_is_processing_failure(decision: dict[str, Any]) -> bool:
-    reason = str(decision.get("reason") or "").strip().lower()
-    reason_code = str(decision.get("reason_code") or "").strip().lower()
-    scene_code = str(decision.get("sceneCode") or "").strip().lower()
-    if reason.startswith("quiet_hours_") or reason_code.startswith("quiet_hours_"):
-        return False
-    if (
-        reason.startswith("invalid_")
-        or reason_code.startswith("invalid_")
-        or scene_code == "no_send_invalid_message_content"
-    ):
-        return True
-    return False
-
-
-def _platform_consume_remark(local_task: dict[str, Any] | None) -> str:
-    if not isinstance(local_task, dict):
-        return ""
-    payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
-    decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
-    return str(decision.get("remark") or "")[:500]
 
 
 def _bounded_hour(value: Any, *, default: int) -> int:
@@ -3760,29 +3029,6 @@ def _task_id(task: dict[str, Any]) -> str:
     return str(task.get("task_id") or task.get("taskId") or task.get("id") or "").strip()
 
 
-def _platform_send_trace_fields(task: dict[str, Any]) -> dict[str, Any]:
-    fields: dict[str, Any] = {
-        "task_id": _task_id(task),
-    }
-    for output_key, source_keys in (
-        ("run_id", ("runId", "run_id")),
-        ("rule_id", ("ruleId", "rule_id")),
-        ("rule_name", ("ruleName", "rule_name")),
-        ("rule_task_id", ("ruleTaskId", "rule_task_id")),
-    ):
-        value = _first_present_task_field(task, *source_keys)
-        if value is not None:
-            fields[output_key] = value
-    return fields
-
-
-def _first_present_task_field(task: dict[str, Any], *keys: str) -> Any:
-    for key in keys:
-        if key in task and task[key] is not None:
-            return task[key]
-    return None
-
-
 def _task_scheduled_epoch(task: dict[str, Any]) -> float:
     return _parse_epoch(
         task.get("scheduledAt")
@@ -3814,21 +3060,17 @@ def _parse_epoch(value: Any) -> float:
     return parsed.timestamp()
 
 
-def _task_timing(
-    task: dict[str, Any],
-    *,
-    conversation_added_at: Any = None,
-) -> dict[str, Any]:
+def _admin_date_filter_iso(value: Any) -> str:
+    epoch = _parse_epoch(value)
+    if not epoch:
+        return ""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _task_timing(task: dict[str, Any]) -> dict[str, Any]:
     scheduled = _task_scheduled_epoch(task)
-    first_add_epoch = _parse_epoch(conversation_added_at)
     return {
         "scheduled_at": task.get("scheduledAt") or task.get("scheduled_at") or "",
-        "first_added_at": (
-            datetime.fromtimestamp(first_add_epoch, tz=_BEIJING_TZ).isoformat()
-            if first_add_epoch
-            else ""
-        ),
-        "first_added_at_source": "conversation.added_at" if first_add_epoch else "",
         "pulled_at": task.get("_aics_pulled_at") or "",
         "lateness_seconds": round(max(0.0, time.time() - scheduled), 3) if scheduled else None,
     }
@@ -3873,6 +3115,373 @@ def _merge_platform_task_logs(
     return merged
 
 
+def _merge_platform_task_runs(task_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_task_id = {
+        str(item.get("task_id") or ""): item
+        for item in task_items
+        if isinstance(item, dict) and str(item.get("task_id") or "")
+    }
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in task_items:
+        if not isinstance(item, dict):
+            continue
+        task_id = str(item.get("task_id") or "")
+        version = str(item.get("log_version") or "legacy_single")
+        if version == "batch_v2":
+            group_id = str(item.get("batch_run_id") or f"batch:{task_id}")
+        elif version == "platform_pending":
+            group_id = f"pending:{item.get('batch_key') or task_id}"
+        else:
+            group_id = f"legacy:{task_id}"
+        grouped.setdefault(group_id, []).append(item)
+
+    runs: list[dict[str, Any]] = []
+    for group_id, group_items in grouped.items():
+        representative = max(group_items, key=_platform_log_item_richness)
+        version = str(representative.get("log_version") or "legacy_single")
+        selected_task_id = str(representative.get("selected_task_id") or "")
+        if version == "legacy_single" and str(representative.get("decision") or "") == "send":
+            selected_task_id = str(representative.get("task_id") or "")
+        batch_task_ids = [
+            str(value).strip()
+            for value in representative.get("batch_task_ids", [])
+            if str(value).strip()
+        ] if isinstance(representative.get("batch_task_ids"), list) else []
+        if not batch_task_ids:
+            batch_task_ids = [
+                str(item.get("task_id") or "")
+                for item in sorted(group_items, key=_platform_run_task_sort_key)
+                if str(item.get("task_id") or "")
+            ]
+        ordered_items: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for task_id in batch_task_ids:
+            candidate = by_task_id.get(task_id)
+            if candidate:
+                ordered_items.append(candidate)
+            else:
+                ordered_items.append(
+                    {
+                        "task_id": task_id,
+                        "log_version": version,
+                        "stage_label": "历史记录缺失",
+                        "original_messages": [],
+                    }
+                )
+            seen_ids.add(task_id)
+        for item in sorted(group_items, key=_platform_run_task_sort_key):
+            task_id = str(item.get("task_id") or "")
+            if task_id and task_id not in seen_ids:
+                ordered_items.append(item)
+                seen_ids.add(task_id)
+
+        evaluations = representative.get("evaluations") if isinstance(representative.get("evaluations"), list) else []
+        evaluation_by_id = {
+            str(item.get("task_id") or ""): item
+            for item in evaluations
+            if isinstance(item, dict) and str(item.get("task_id") or "")
+        }
+        skipped_ids = {
+            str(value).strip()
+            for value in representative.get("skipped_prefix_task_ids", [])
+            if str(value).strip()
+        } if isinstance(representative.get("skipped_prefix_task_ids"), list) else set()
+        consume_results = (
+            representative.get("consume_results") if isinstance(representative.get("consume_results"), list) else []
+        )
+        consume_by_id = {
+            str(item.get("task_id") or ""): item
+            for item in consume_results
+            if isinstance(item, dict) and str(item.get("task_id") or "")
+        }
+        run_tasks = [
+            _platform_run_task_item(
+                item,
+                sequence=index,
+                selected_task_id=selected_task_id,
+                skipped_ids=skipped_ids,
+                evaluation=evaluation_by_id.get(str(item.get("task_id") or ""), {}),
+                consume_result=consume_by_id.get(str(item.get("task_id") or ""), {}),
+                version=version,
+            )
+            for index, item in enumerate(ordered_items, start=1)
+        ]
+        status = _platform_run_status(version=version, representative=representative, tasks=run_tasks)
+        selected_task = next(
+            (item for item in ordered_items if str(item.get("task_id") or "") == selected_task_id),
+            representative,
+        )
+        context_summary = (
+            representative.get("context_summary") if isinstance(representative.get("context_summary"), dict) else {}
+        )
+        send_response = (
+            selected_task.get("send_response") if isinstance(selected_task.get("send_response"), dict) else {}
+        )
+        delivery_data = send_response.get("data") if isinstance(send_response.get("data"), dict) else {}
+        callback = (
+            send_response.get("message_delivery")
+            if isinstance(send_response.get("message_delivery"), dict)
+            else {}
+        )
+        occurred_at = next(
+            (
+                str(item.get("scheduled_at") or item.get("pulled_at") or "")
+                for item in ordered_items
+                if item.get("scheduled_at") or item.get("pulled_at")
+            ),
+            str(representative.get("updated_at") or ""),
+        )
+        missing_fields = []
+        if version == "legacy_single":
+            missing_fields = [
+                "客户批次",
+                "人工/AI状态来源",
+                "是否开口",
+                "顺序判断",
+                "连续前缀消费",
+            ]
+        runs.append(
+            {
+                "run_id": group_id,
+                "log_version": version,
+                "version_label": _PLATFORM_LOG_VERSION_LABELS[version],
+                "batch_key": str(representative.get("batch_key") or ""),
+                "biz_type": str(representative.get("biz_type") or "online_service"),
+                "customer_id": str(representative.get("customer_id") or ""),
+                "external_userid": str(representative.get("external_userid") or ""),
+                "corp_id": str(representative.get("corp_id") or ""),
+                "user_id": str(representative.get("user_id") or ""),
+                "wechat": str(representative.get("wechat") or ""),
+                "occurred_at": occurred_at,
+                "updated_at": str(representative.get("updated_at") or ""),
+                "status": status,
+                "status_label": _PLATFORM_RUN_STATUS_LABELS[status],
+                "summary_text": _platform_run_summary(
+                    version=version,
+                    status=status,
+                    tasks=run_tasks,
+                    selected_task_id=selected_task_id,
+                    reason=str(representative.get("batch_reason") or representative.get("decision_reason") or ""),
+                ),
+                "selected_task_id": selected_task_id,
+                "task_count": len(run_tasks),
+                "tasks": run_tasks,
+                "customer_state": {
+                    "management_mode": context_summary.get("management_mode"),
+                    "management_source": context_summary.get("management_source"),
+                    "customer_opened": context_summary.get("customer_opened"),
+                    "same_day_unopened": context_summary.get("same_day_unopened"),
+                    "timeline_structure": (
+                        context_summary.get("timeline_structure")
+                        if isinstance(context_summary.get("timeline_structure"), dict)
+                        else {}
+                    ),
+                },
+                "transition_text": str(representative.get("transition_text") or ""),
+                "original_messages": (
+                    selected_task.get("original_messages")
+                    if isinstance(selected_task.get("original_messages"), list)
+                    else []
+                ),
+                "final_messages": (
+                    selected_task.get("final_messages")
+                    if isinstance(selected_task.get("final_messages"), list)
+                    else []
+                ),
+                "delivery": {
+                    "status": str(callback.get("status") or delivery_data.get("delivery_status") or ""),
+                    "callback_required": bool(delivery_data.get("callback_required")),
+                    "confirmed_at": str(callback.get("confirmed_at") or selected_task.get("sent_at") or ""),
+                    "error": str(
+                        callback.get("error_message")
+                        or selected_task.get("error")
+                        or representative.get("error")
+                        or ""
+                    ),
+                    "response": send_response,
+                },
+                "consume": {
+                    "results": consume_results,
+                    "completed_count": sum(
+                        _int_or_zero(item.get("consume_status")) in {30, 70} for item in run_tasks
+                    ),
+                    "pending_count": sum(
+                        _int_or_zero(item.get("consume_status")) not in {30, 70} for item in run_tasks
+                    ),
+                },
+                "missing_fields": missing_fields,
+                "raw_debug": {
+                    "event_status": representative.get("event_status"),
+                    "task_status": representative.get("task_status"),
+                    "platform_status": representative.get("platform_status"),
+                    "decision": {
+                        "selected_task_id": selected_task_id,
+                        "evaluations": evaluations,
+                    },
+                    "send_response": send_response,
+                },
+            }
+        )
+    runs.sort(key=lambda run: _parse_epoch(run.get("occurred_at")), reverse=True)
+    return runs
+
+
+def _platform_log_item_richness(item: dict[str, Any]) -> tuple[int, int, float]:
+    return (
+        1 if str(item.get("task_id") or "") == str(item.get("selected_task_id") or "") else 0,
+        len(item.get("evaluations") or []) + len(item.get("consume_results") or []),
+        _parse_epoch(item.get("updated_at") or item.get("scheduled_at")),
+    )
+
+
+def _platform_run_task_sort_key(item: dict[str, Any]) -> tuple[float, str]:
+    return (_parse_epoch(item.get("scheduled_at")) or float("inf"), str(item.get("task_id") or ""))
+
+
+def _platform_run_task_item(
+    item: dict[str, Any],
+    *,
+    sequence: int,
+    selected_task_id: str,
+    skipped_ids: set[str],
+    evaluation: dict[str, Any],
+    consume_result: dict[str, Any],
+    version: str,
+) -> dict[str, Any]:
+    task_id = str(item.get("task_id") or "")
+    if task_id == selected_task_id:
+        sequence_state = "selected"
+    elif task_id in skipped_ids:
+        sequence_state = "skipped"
+    elif version == "legacy_single":
+        sequence_state = "legacy"
+    elif version == "platform_pending":
+        sequence_state = "pending"
+    else:
+        sequence_state = "untouched"
+    consume_status = _int_or_zero(consume_result.get("status"))
+    if not consume_status and sequence_state == "selected":
+        if str(item.get("task_status") or "") == "sending":
+            consume_status = 20
+        elif str(item.get("task_status") or "") == "sent" and str(item.get("event_status") or "") == "platform_completed":
+            consume_status = 30
+    if not consume_status and sequence_state == "skipped" and str(item.get("event_status") or "") == "platform_completed":
+        consume_status = 70
+    decision = str(evaluation.get("decision") or "")
+    if not decision:
+        decision = "send" if sequence_state == "selected" else "skip" if sequence_state == "skipped" else ""
+    if version == "legacy_single":
+        decision = str(item.get("decision") or decision)
+    return {
+        "task_id": task_id,
+        "sequence": sequence,
+        "sequence_state": sequence_state,
+        "decision": decision,
+        "reason": str(evaluation.get("reason") or item.get("decision_reason") or ""),
+        "evidence_refs": evaluation.get("evidence_refs") if isinstance(evaluation.get("evidence_refs"), list) else [],
+        "consume_status": consume_status or None,
+        "consume_remark": str(consume_result.get("remark") or ""),
+        "rule_name": str(item.get("rule_name") or ""),
+        "scheduled_at": item.get("scheduled_at"),
+        "platform_status": str(item.get("platform_status") or ""),
+        "event_status": str(item.get("event_status") or ""),
+        "task_status": str(item.get("task_status") or ""),
+        "original_messages": item.get("original_messages") if isinstance(item.get("original_messages"), list) else [],
+        "error": str(item.get("error") or ""),
+    }
+
+
+def _platform_run_status(*, version: str, representative: dict[str, Any], tasks: list[dict[str, Any]]) -> str:
+    event_statuses = {str(task.get("event_status") or "") for task in tasks}
+    task_statuses = {str(task.get("task_status") or "") for task in tasks}
+    if any(task.get("error") for task in tasks) or event_statuses.intersection(
+        {"platform_batch_send_retry", "platform_processing_retry", "platform_send_uncertain", "platform_failed"}
+    ):
+        return "exception"
+    if "platform_delivery_pending" in event_statuses or "sending" in task_statuses:
+        return "delivery_pending"
+    if event_statuses.intersection({"platform_batch_consume_pending", "platform_complete_pending"}):
+        return "consume_pending"
+    if version == "platform_pending":
+        return "pending"
+    selected_task_id = str(representative.get("selected_task_id") or "")
+    if selected_task_id:
+        selected = next((task for task in tasks if task.get("task_id") == selected_task_id), {})
+        if selected.get("consume_status") == 30 or selected.get("task_status") in {"sent", "shadow_send"}:
+            return "completed"
+        return "processing"
+    if str(representative.get("decision") or "") == "send":
+        return "completed" if str(representative.get("task_status") or "") == "sent" else "processing"
+    if tasks and all(
+        task.get("consume_status") == 70
+        or task.get("task_status") in {"completed_without_send", "shadow_no_send"}
+        or task.get("decision") in {"no_send", "skip"}
+        for task in tasks
+    ):
+        return "no_send"
+    if str(representative.get("bucket") or "") in {"judging", "pulled_unjudged"}:
+        return "processing"
+    return "pending"
+
+
+def _platform_run_summary(
+    *,
+    version: str,
+    status: str,
+    tasks: list[dict[str, Any]],
+    selected_task_id: str,
+    reason: str,
+) -> str:
+    if version == "legacy_single":
+        return f"历史单任务：{_PLATFORM_RUN_STATUS_LABELS[status]}"
+    if version == "platform_pending":
+        return f"{len(tasks)} 条任务等待处理"
+    if selected_task_id:
+        selected_index = next(
+            (index for index, task in enumerate(tasks) if task.get("task_id") == selected_task_id),
+            0,
+        )
+        remaining = max(0, len(tasks) - selected_index - 1)
+        return f"跳过 {selected_index} 条，发送第 {selected_index + 1} 条，剩余 {remaining} 条未处理"
+    if reason == "human_takeover":
+        return f"人工接管，{len(tasks)} 条任务无需发送"
+    if reason == "customer_relation_deleted":
+        return f"客户关系已失效，{len(tasks)} 条任务无需发送"
+    return f"{len(tasks)} 条任务均无需发送"
+
+
+def _platform_run_search_text(run: dict[str, Any]) -> str:
+    values = [
+        run.get("run_id"),
+        run.get("batch_key"),
+        run.get("customer_id"),
+        run.get("external_userid"),
+        run.get("wechat"),
+        run.get("summary_text"),
+    ]
+    values.extend(task.get("task_id") for task in run.get("tasks", []) if isinstance(task, dict))
+    values.extend(task.get("rule_name") for task in run.get("tasks", []) if isinstance(task, dict))
+    return " ".join(str(value or "").lower() for value in values)
+
+
+_PLATFORM_LOG_VERSION_LABELS = {
+    "batch_v2": "顺序批次",
+    "legacy_single": "历史单任务",
+    "platform_pending": "平台实时待处理",
+}
+
+
+_PLATFORM_RUN_STATUS_LABELS = {
+    "pending": "等待处理",
+    "processing": "处理中",
+    "delivery_pending": "等待发送回调",
+    "consume_pending": "等待消费回传",
+    "completed": "发送完成",
+    "no_send": "无需发送",
+    "exception": "处理异常",
+}
+
+
 def _platform_task_log_item(
     *,
     platform_task: dict[str, Any],
@@ -3884,34 +3493,7 @@ def _platform_task_log_item(
     task_status = str(local_record.get("task_status") or "")
     bucket = _platform_task_bucket(event_status=event_status, task_status=task_status, has_local=bool(local_record))
     send_payload = local_record.get("send_payload") if isinstance(local_record.get("send_payload"), dict) else {}
-    rule_data_request = (
-        send_payload.get("rule_data_request")
-        if isinstance(send_payload.get("rule_data_request"), dict)
-        else {}
-    )
-    rule_data_response = (
-        send_payload.get("rule_data_response")
-        if isinstance(send_payload.get("rule_data_response"), dict)
-        else {}
-    )
-    rule_data_request_source = "stored" if rule_data_request else ""
-    if not rule_data_request and rule_data_response:
-        rule_data_request = _legacy_rule_data_request(rule_data_response)
-        if rule_data_request:
-            rule_data_request_source = "response_echo"
-    try:
-        platform_terminal_status = int(send_payload.get("platform_terminal_status") or 0)
-    except (TypeError, ValueError):
-        platform_terminal_status = 0
-    if platform_terminal_status not in {30, 40, 70}:
-        platform_terminal_status = 0
     decision_payload = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
-    context_payload = send_payload.get("context") if isinstance(send_payload.get("context"), dict) else {}
-    timing_payload = (
-        context_payload.get("task_timing")
-        if isinstance(context_payload.get("task_timing"), dict)
-        else {}
-    )
     decision = str(decision_payload.get("decision") or "")
     if not decision and task_status in {"shadow_send", "sending", "sent"}:
         decision = "send"
@@ -3919,6 +3501,10 @@ def _platform_task_log_item(
         decision = "no_send"
     request_payload = send_payload.get("request") if isinstance(send_payload.get("request"), dict) else {}
     final_messages = request_payload.get("reply_messages") if isinstance(request_payload.get("reply_messages"), list) else []
+    if not final_messages:
+        final_messages = (
+            send_payload.get("final_messages") if isinstance(send_payload.get("final_messages"), list) else []
+        )
     if not final_messages:
         final_messages = (
             decision_payload.get("reply_messages")
@@ -3934,28 +3520,39 @@ def _platform_task_log_item(
     scheduled_at = platform_task.get("scheduledAt") or platform_task.get("scheduled_at") or ""
     scheduled_epoch = _task_scheduled_epoch(platform_task)
     received_at = str(local_record.get("received_at") or "")
+    batch_key = str(send_payload.get("batch_key") or "")
+    processing_mode = str(send_payload.get("processing_mode") or "")
+    evaluations = decision_payload.get("evaluations") if isinstance(decision_payload.get("evaluations"), list) else []
+    selected_task_id = str(decision_payload.get("selected_task_id") or "")
+    audit_schema_version = _int_or_zero(send_payload.get("audit_schema_version"))
+    has_batch_audit = bool(batch_key or processing_mode == "customer_batch_sequence" or evaluations)
+    pending_without_decision = platform_visible and not decision and task_status in {"", "platform_received", "platform_queued"}
+    log_version = "batch_v2" if has_batch_audit else "platform_pending" if pending_without_decision else "legacy_single"
+    inferred_batch_key = batch_key or (
+        _customer_batch_key(platform_task) if log_version == "platform_pending" and platform_task else ""
+    )
+    batch_task_ids = [
+        str(value).strip()
+        for value in send_payload.get("batch_task_ids", [])
+        if str(value).strip()
+    ] if isinstance(send_payload.get("batch_task_ids"), list) else []
+    if not batch_task_ids and evaluations:
+        batch_task_ids = [
+            str(item.get("task_id") or "").strip()
+            for item in evaluations
+            if isinstance(item, dict) and str(item.get("task_id") or "").strip()
+        ]
+    inferred_run_anchor = selected_task_id or (batch_task_ids[0] if batch_task_ids else task_id)
     return {
         "task_id": task_id,
         "bucket": bucket,
         "stage_label": _PLATFORM_TASK_BUCKET_LABELS[bucket],
-        "platform_status": str(
-            platform_task.get("status")
-            or ("10" if platform_visible else platform_terminal_status or "")
-        ),
-        "platform_terminal_status": platform_terminal_status or None,
+        "platform_status": str(platform_task.get("status") or ("10" if platform_visible else "")),
         "platform_visible": platform_visible,
         "event_status": event_status,
         "task_status": task_status,
         "decision": decision,
         "decision_reason": str(decision_payload.get("reason") or ""),
-        "decision_reason_code": str(
-            decision_payload.get("reason_code")
-            or decision_payload.get("sceneCode")
-            or decision_payload.get("scene_code")
-            or decision_payload.get("reason")
-            or ""
-        ),
-        "decision_reason_cn": _decision_reason_cn(decision_payload, decision=decision),
         "error": str(local_record.get("task_error") or local_record.get("event_error") or ""),
         "customer_id": identity["customer_id"],
         "external_userid": identity["external_userid"],
@@ -3964,9 +3561,7 @@ def _platform_task_log_item(
         "wechat": identity["wechat"],
         "rule_name": str(platform_task.get("ruleName") or platform_task.get("sceneName") or local_record.get("sop_pack_name") or ""),
         "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
-        "dispatch_mode": _dispatch_mode(platform_task),
-        "first_added_at": str(timing_payload.get("first_added_at") or ""),
-        "first_added_at_source": str(timing_payload.get("first_added_at_source") or ""),
+        "use_ai_copy": _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy"))),
         "scheduled_at": scheduled_at,
         "pulled_at": str(platform_task.get("_aics_pulled_at") or received_at),
         "updated_at": str(local_record.get("task_updated_at") or local_record.get("event_updated_at") or ""),
@@ -3975,63 +3570,28 @@ def _platform_task_log_item(
         "original_messages": _platform_messages(platform_task),
         "final_messages": final_messages,
         "send_response": local_record.get("send_response") if isinstance(local_record.get("send_response"), dict) else {},
-        "rule_data_callback": redact_first_day_log_value(
-            {
-                "attempted": bool(rule_data_request or rule_data_response),
-                "success": _rule_data_response_succeeded(rule_data_response),
-                "request_source": rule_data_request_source,
-                "request": rule_data_request,
-                "response": rule_data_response,
-            }
+        "audit_schema_version": audit_schema_version,
+        "log_version": log_version,
+        "processing_mode": processing_mode,
+        "batch_key": inferred_batch_key,
+        "batch_run_id": str(send_payload.get("batch_run_id") or (f"batch:{inferred_run_anchor}" if has_batch_audit else "")),
+        "biz_type": str(send_payload.get("biz_type") or platform_task.get("_aics_biz_type") or ""),
+        "batch_task_ids": batch_task_ids,
+        "selected_task_id": selected_task_id,
+        "evaluations": evaluations,
+        "transition_text": str(send_payload.get("transition_text") or ""),
+        "skipped_prefix_task_ids": (
+            [str(value).strip() for value in send_payload.get("skipped_prefix_task_ids", []) if str(value).strip()]
+            if isinstance(send_payload.get("skipped_prefix_task_ids"), list)
+            else []
         ),
+        "consume_results": (
+            send_payload.get("consume_results") if isinstance(send_payload.get("consume_results"), list) else []
+        ),
+        "context_summary": send_payload.get("context") if isinstance(send_payload.get("context"), dict) else {},
+        "batch_reason": str(send_payload.get("reason") or ""),
         "_sort_epoch": max(scheduled_epoch, _parse_epoch(received_at)),
     }
-
-
-def _legacy_rule_data_request(response: dict[str, Any]) -> dict[str, Any]:
-    data = response.get("data") if isinstance(response.get("data"), dict) else {}
-    task_id = data.get("taskId") or data.get("waitId")
-    scene_name = data.get("sceneTypeName")
-    send_status = data.get("sendStatus")
-    if task_id in (None, "") or scene_name in (None, "") or send_status in (None, ""):
-        return {}
-    request: dict[str, Any] = {
-        "taskId": task_id,
-        "sceneName": scene_name,
-        "sendStatus": send_status,
-        "remark": data.get("remark") or "",
-        "sendContent": data.get("sendContent") or "",
-    }
-    optional = {
-        "sceneCode": data.get("sceneTypeCode"),
-        "knowledgeId": data.get("knowledgeGroupId"),
-        "knowledgeParagraphNo": data.get("knowledgeParagraphNo"),
-    }
-    for key, value in optional.items():
-        if value not in (None, "", 0, "0"):
-            request[key] = value
-    return request
-
-
-def _decision_reason_cn(decision_payload: dict[str, Any], *, decision: str) -> str:
-    for value in (
-        decision_payload.get("remark"),
-        decision_payload.get("sceneName"),
-        decision_payload.get("scene_name"),
-    ):
-        text = str(value or "").strip()
-        if text and re.search(r"[\u4e00-\u9fff]", text):
-            return text
-    return "审核通过，发送本次平台 SOP 内容" if decision == "send" else "审核未通过，本次平台 SOP 不发送"
-
-
-def _rule_data_response_succeeded(response: dict[str, Any]) -> bool:
-    if not response or response.get("error") or response.get("skipped"):
-        return False
-    try:
-        return int(response.get("code")) == 200
-    except (TypeError, ValueError):
-        return False
 
 
 def _record_task_id(record: dict[str, Any]) -> str:
@@ -4046,15 +3606,7 @@ def _record_task_id(record: dict[str, Any]) -> str:
 def _platform_task_bucket(*, event_status: str, task_status: str, has_local: bool) -> str:
     if not has_local:
         return "platform_pending"
-    if event_status == "platform_failed" or task_status == "failed":
-        return "failed"
-    if event_status in {
-        "platform_send_retry",
-        "platform_send_uncertain",
-        "platform_processing_retry",
-        "platform_complete_pending",
-        "platform_terminal_pending",
-    } or task_status in {"processing_retry"}:
+    if event_status in {"platform_send_uncertain", "platform_processing_retry", "platform_complete_pending", "platform_failed"} or task_status in {"processing_retry"}:
         return "recovery"
     if task_status == "sent":
         return "sent"
@@ -4077,7 +3629,6 @@ _PLATFORM_TASK_BUCKET_LABELS = {
     "judged_no_send": "已判断不发",
     "sending": "发送中",
     "sent": "已发送",
-    "failed": "处理失败",
     "recovery": "恢复中",
 }
 
@@ -4104,6 +3655,297 @@ def _bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _retryable_delivery_failure(exc: Exception) -> dict[str, Any]:
+    message = str(exc)
+    matched = re.search(r"outreach_system_http_(\d{3})\s*:\s*(.*)", message, flags=re.DOTALL)
+    if matched:
+        return {
+            "kind": "downstream_http_error",
+            "http_status": int(matched.group(1)),
+            "detail": matched.group(2).strip()[:2000],
+        }
+    return {
+        "kind": "downstream_send_error",
+        "http_status": 0,
+        "detail": message[:2000],
+    }
+
+
+def _batch_tasks(value: dict[str, Any]) -> list[dict[str, Any]]:
+    if value.get("_aics_customer_batch") and isinstance(value.get("tasks"), list):
+        return [dict(item) for item in value["tasks"] if isinstance(item, dict)]
+    return [dict(value)] if isinstance(value, dict) else []
+
+
+def _batch_compat_trigger_tasks(value: dict[str, Any]) -> list[dict[str, Any]]:
+    direct = value.get("compat_trigger_tasks")
+    if isinstance(direct, list):
+        return _dedupe_tasks([dict(item) for item in direct if isinstance(item, dict)])
+    raw_tasks = value.get("tasks")
+    tasks = (
+        [dict(item) for item in raw_tasks if isinstance(item, dict)]
+        if isinstance(raw_tasks, list)
+        else _batch_tasks(value)
+    )
+    collected: list[dict[str, Any]] = []
+    for task in tasks:
+        raw = task.get("_aics_compat_trigger_tasks")
+        if isinstance(raw, list):
+            collected.extend(dict(item) for item in raw if isinstance(item, dict))
+    return _dedupe_tasks(collected)
+
+
+def _dedupe_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for task in tasks:
+        task_id = _task_id(task)
+        if not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        output.append(task)
+    return output
+
+
+def _compat_contact_key(task: dict[str, Any]) -> str:
+    identity = _task_identity(task)
+    return "|".join(
+        (
+            identity["corp_id"].lower(),
+            identity["wechat"].lower(),
+            identity["external_userid"].lower(),
+        )
+    )
+
+
+def _resolve_compatible_pending_tasks(
+    online_items: list[dict[str, Any]],
+    store_visit_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve legacy inline tasks and new time-trigger/full-content task pairs."""
+
+    legacy_tasks = [
+        {**item, "_aics_biz_type": "online_service", "_aics_content_source": "pending_inline"}
+        for item in online_items
+        if isinstance(item, dict) and _platform_messages(item)
+    ]
+    empty_triggers = [
+        {**item, "_aics_biz_type": "online_service", "_aics_content_source": "pending_time_trigger"}
+        for item in online_items
+        if isinstance(item, dict) and not _platform_messages(item)
+    ]
+    full_content_by_contact: dict[str, list[dict[str, Any]]] = {}
+    for item in store_visit_items:
+        if not isinstance(item, dict) or not _platform_messages(item):
+            continue
+        content_task = {
+            **item,
+            "_aics_biz_type": "online_service",
+            "_aics_content_source": "store_visit_pending",
+        }
+        full_content_by_contact.setdefault(_compat_contact_key(content_task), []).append(content_task)
+
+    triggers_by_contact: dict[str, list[dict[str, Any]]] = {}
+    for trigger in empty_triggers:
+        triggers_by_contact.setdefault(_compat_contact_key(trigger), []).append(trigger)
+
+    resolved = list(legacy_tasks)
+    unresolved: list[dict[str, Any]] = []
+    legacy_ids = {_task_id(task) for task in legacy_tasks}
+    for contact_key, triggers in triggers_by_contact.items():
+        content_tasks = full_content_by_contact.get(contact_key) or []
+        if not content_tasks:
+            unresolved.extend(triggers)
+            continue
+        for content_task in content_tasks:
+            if _task_id(content_task) in legacy_ids:
+                continue
+            resolved.append(
+                {
+                    **content_task,
+                    "_aics_compat_trigger_tasks": _dedupe_tasks(triggers),
+                }
+            )
+    return _dedupe_tasks(resolved), _dedupe_tasks(unresolved)
+
+
+def _task_batch_sort_key(task: dict[str, Any]) -> tuple[float, int, str]:
+    try:
+        sort_order = int(task.get("sortOrder") or task.get("sort_order") or 0)
+    except (TypeError, ValueError):
+        sort_order = 0
+    return (_task_scheduled_epoch(task) or float("inf"), sort_order, _task_id(task))
+
+
+def _customer_batch_key(task: dict[str, Any]) -> str:
+    identity = _task_identity(task)
+    return "|".join(
+        (
+            str(task.get("_aics_biz_type") or "online_service"),
+            identity["corp_id"].lower(),
+            identity["wechat"].lower(),
+            identity["external_userid"].lower(),
+        )
+    )
+
+
+def _batch_identity_is_consistent(tasks: list[dict[str, Any]], *, identity: dict[str, str]) -> bool:
+    expected = tuple(identity[key].lower() for key in ("corp_id", "wechat", "external_userid"))
+    return all(
+        tuple(_task_identity(task)[key].lower() for key in ("corp_id", "wechat", "external_userid"))
+        == expected
+        for task in tasks
+    )
+
+
+def _in_configured_quiet_hours(*, settings: Any, now: datetime | None = None) -> bool:
+    if not bool(getattr(settings, "sop_platform_quiet_hours_enabled", True)):
+        return False
+    local_now = now.astimezone(_BEIJING_TZ) if now is not None else datetime.now(_BEIJING_TZ)
+    start = _bounded_hour(getattr(settings, "sop_platform_quiet_start_hour", 0), default=0)
+    end = _bounded_hour(getattr(settings, "sop_platform_quiet_end_hour", 8), default=8)
+    if start == end:
+        return True
+    if start < end:
+        return start <= local_now.hour < end
+    return local_now.hour >= start or local_now.hour < end
+
+
+def _conversation_ai_auto_reply(data: dict[str, Any]) -> bool | None:
+    candidates = [
+        data.get("ai_auto_reply"),
+        data.get("aiAutoReply"),
+    ]
+    for key in ("conversation", "customer", "session"):
+        nested = data.get(key) if isinstance(data.get(key), dict) else {}
+        candidates.extend((nested.get("ai_auto_reply"), nested.get("aiAutoReply")))
+    for value in candidates:
+        if isinstance(value, bool):
+            return value
+        normalized = str(value or "").strip().lower()
+        if normalized in {"1", "true", "yes", "on", "ai"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "human", "manual"}:
+            return False
+    return None
+
+
+def _is_same_day_unopened(tasks: list[dict[str, Any]], *, timeline: list[dict[str, Any]]) -> bool:
+    add_task = next(
+        (
+            task
+            for task in tasks
+            if str(task.get("triggerEvent") or task.get("trigger_event") or "").strip().lower()
+            == "add_wecom"
+        ),
+        None,
+    )
+    if not add_task:
+        return False
+    add_epoch = _parse_epoch(
+        add_task.get("operateTime")
+        or add_task.get("operate_time")
+        or add_task.get("createTime")
+        or add_task.get("create_time")
+        or add_task.get("scheduledAt")
+        or add_task.get("scheduled_at")
+    )
+    if not add_epoch:
+        return False
+    if datetime.fromtimestamp(add_epoch, tz=_BEIJING_TZ).date() != datetime.now(_BEIJING_TZ).date():
+        return False
+    for item in timeline:
+        if item.get("role") != "customer":
+            continue
+        content = str(item.get("content") or "").strip()
+        if content and not is_platform_auto_opening_message(content):
+            return False
+    return True
+
+
+def _batch_decision_error(
+    raw: Any,
+    *,
+    tasks: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+) -> str:
+    if not isinstance(raw, dict):
+        return "output must be an object"
+    if set(raw).difference({"evaluations", "selected_task_id", "transition_text"}):
+        return "output contains unexpected fields"
+    evaluations = raw.get("evaluations")
+    if not isinstance(evaluations, list) or not evaluations:
+        return "evaluations must be a non-empty list"
+    ordered_ids = [_task_id(task) for task in tasks]
+    selected_id = str(raw.get("selected_task_id") or "").strip()
+    seen_send = False
+    valid_refs = {f"task:{task_id}" for task_id in ordered_ids}
+    for item in (context or {}).get("conversation_timeline", []):
+        if isinstance(item, dict) and str(item.get("message_ref") or "").strip():
+            valid_refs.add(str(item["message_ref"]))
+    for index, evaluation in enumerate(evaluations):
+        if not isinstance(evaluation, dict):
+            return f"evaluation {index + 1} must be an object"
+        if set(evaluation).difference({"task_id", "decision", "reason", "evidence_refs"}):
+            return f"evaluation {index + 1} contains unexpected fields"
+        task_id = str(evaluation.get("task_id") or "").strip()
+        if index >= len(ordered_ids) or task_id != ordered_ids[index]:
+            return "evaluations must follow pending task order without gaps"
+        decision = str(evaluation.get("decision") or "").strip()
+        if decision not in {"skip", "send"}:
+            return f"evaluation {index + 1} decision must be skip or send"
+        if not str(evaluation.get("reason") or "").strip():
+            return f"evaluation {index + 1} reason is required"
+        refs = evaluation.get("evidence_refs")
+        if not isinstance(refs, list) or any(str(ref) not in valid_refs for ref in refs):
+            return f"evaluation {index + 1} evidence_refs contain unknown references"
+        if decision == "send":
+            if seen_send or index != len(evaluations) - 1:
+                return "the first send decision must end evaluations"
+            seen_send = True
+            if selected_id != task_id:
+                return "selected_task_id must equal the send evaluation task_id"
+    if seen_send:
+        if not selected_id:
+            return "selected_task_id is required when a task is sendable"
+    else:
+        if selected_id:
+            return "selected_task_id must be empty when all tasks are skipped"
+        if len(evaluations) != len(tasks):
+            return "all tasks must be evaluated when none is sendable"
+        if str(raw.get("transition_text") or "").strip():
+            return "transition_text must be empty when none is sendable"
+    return ""
+
+
+def _has_trusted_ai_copy_source(task: dict[str, Any]) -> bool:
+    scene = task.get("scene") if isinstance(task.get("scene"), dict) else {}
+    engine = scene.get("engine") if isinstance(scene.get("engine"), dict) else {}
+    return bool(
+        str(
+            task.get("triggerEvent")
+            or task.get("trigger_event")
+            or task.get("eventType")
+            or task.get("event_type")
+            or ""
+        ).strip()
+    ) or any(
+        str(value or "").strip()
+        for value in (
+            scene.get("sceneDesc"),
+            scene.get("knowledgeText"),
+            engine.get("generateNote"),
+        )
+    )
 
 
 def _require_platform_status(response: dict[str, Any], expected: int) -> None:
@@ -4286,111 +4128,61 @@ def _compact_business_state(context: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in output.items() if value not in (None, "", [], {})}
 
 
-def _paid_or_appointment_delivery_conflict(business_state: dict[str, Any]) -> str:
-    appointment = (
-        business_state.get("appointment")
-        if isinstance(business_state.get("appointment"), dict)
-        else {}
-    )
-    appointment_status = str(appointment.get("status") or "").strip().lower()
-    if appointment.get("has_active") is True or appointment_status in {
-        "confirmed",
-        "waiting_schedule",
-        "scheduled",
-    }:
-        return "active_appointment_conflict"
-
-    for order in business_state.get("orders") or []:
-        if not isinstance(order, dict):
-            continue
-        protection_status = str(order.get("paid_protection_status") or "").strip().lower()
-        if protection_status in {
-            "expired",
-            "inactive_order_expired",
-            "completed_order_expired",
-        }:
-            continue
-        paid = order.get("prepay_paid")
-        try:
-            paid_amount = float(paid or 0)
-        except (TypeError, ValueError):
-            paid_amount = 0.0
-        deposit_state = str(order.get("deposit_state") or "").strip().lower()
-        if paid_amount > 0 or deposit_state == "paid_by_order":
-            return "active_paid_order_conflict"
-        if str(order.get("status") or "").strip().lower() in {"waiting_schedule", "scheduled"}:
-            return "active_appointment_order_conflict"
-    return ""
-
-
-def _int(value: Any, default: int = 0) -> int:
+def _material_catalog_for_model(service: Any | None) -> list[dict[str, Any]]:
+    if service is None:
+        return []
     try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _send_content_for_rule_data(messages: list[Any]) -> str:
-    parts: list[str] = []
-    for message in messages:
-        if not isinstance(message, dict):
+        payload = service.load()
+    except Exception as exc:
+        logger.warning("Unable to load SOP objection materials: %s: %s", type(exc).__name__, exc)
+        return []
+    materials = payload.get("materials") if isinstance(payload, dict) else []
+    if not isinstance(materials, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for item in materials[:100]:
+        if not isinstance(item, dict):
             continue
-        message_type = str(message.get("type") or "").strip().lower()
-        content = message.get("content") if isinstance(message.get("content"), dict) else {}
-        if message_type == "text":
-            text = str(content.get("text") or content.get("content") or "").strip()
-            if text:
-                parts.append(text)
-        elif message_type in {"image", "video"}:
-            url = str(content.get("url") or content.get("content") or "").strip()
-            if url:
-                parts.append(f"[{message_type}]{url}")
-        elif message_type == "payment_collection":
-            amount = content.get("amount")
-            parts.append(f"[payment_collection]{amount}")
-    return "\n".join(parts)[:10000]
+        output.append(
+            {
+                "material_id": str(item.get("material_id") or "")[:120],
+                "name": str(item.get("name") or "")[:160],
+                "category": str(item.get("category") or "")[:120],
+                "tags": [str(value)[:80] for value in item.get("tags", [])[:20]],
+                "applicable_scenes": [
+                    str(value)[:120] for value in item.get("applicable_scenes", [])[:20]
+                ],
+                "response_approach": str(item.get("response_approach") or "")[:1000],
+                "example_contents": [
+                    str(value)[:1000] for value in item.get("example_contents", [])[:10]
+                ],
+            }
+        )
+    return output
 
 
 def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
     relation = context.get("customer_relation") if isinstance(context.get("customer_relation"), dict) else {}
     customer_context = context.get("business_state") if isinstance(context.get("business_state"), dict) else {}
     quiet_hours = context.get("quiet_hours") if isinstance(context.get("quiet_hours"), dict) else {}
-    first_day_route = (
-        context.get("first_day_platform_sop_route")
-        if isinstance(context.get("first_day_platform_sop_route"), dict)
-        else {}
+    timeline_structure = (
+        context.get("timeline_structure") if isinstance(context.get("timeline_structure"), dict) else {}
     )
-    if not first_day_route and context.get("source") == "first_day_platform_sop_route":
-        first_day_route = {
-            key: context.get(key)
-            for key in (
-                "route_checked",
-                "opening_state",
-                "route_reason",
-                "first_add_age_seconds",
-                "activity",
-                "conversation_error",
-            )
-            if context.get(key) not in (None, "")
-        }
     return {
         "source": str(context.get("source") or ""),
-        "routing_decision": str(context.get("routing_decision") or ""),
-        "dispatch_mode": str(context.get("dispatch_mode") or ""),
-        "conversation_loaded": context.get("conversation_loaded"),
-        "conversation_error": str(context.get("conversation_error") or ""),
-        "conversation_count": int(context.get("conversation_count") or 0),
+        "management_mode": str(context.get("management_mode") or ""),
+        "management_source": str(context.get("management_source") or ""),
+        "customer_opened": context.get("customer_opened") if isinstance(context.get("customer_opened"), bool) else None,
+        "same_day_unopened": (
+            context.get("same_day_unopened") if isinstance(context.get("same_day_unopened"), bool) else None
+        ),
+        "conversation_count": int(
+            context.get("conversation_count") or timeline_structure.get("message_count") or 0
+        ),
+        "timeline_structure": timeline_structure,
         "customer_relation": relation,
         "customer_context_source": customer_context.get("source"),
         "customer_context_error": customer_context.get("error"),
         "task_timing": context.get("task_timing") if isinstance(context.get("task_timing"), dict) else {},
         "quiet_hours": quiet_hours,
-        "takeover_status": context.get("takeover_status") or {},
-        "opening_state": context.get("opening_state") if isinstance(context.get("opening_state"), dict) else {},
-        "platform_contact_delivery_guard": (
-            context.get("platform_contact_delivery_guard")
-            if isinstance(context.get("platform_contact_delivery_guard"), dict)
-            else {}
-        ),
-        "first_day_platform_sop_route": first_day_route,
     }

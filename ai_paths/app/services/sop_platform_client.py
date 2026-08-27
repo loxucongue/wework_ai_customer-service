@@ -34,15 +34,53 @@ class SopPlatformClient:
     def available(self) -> bool:
         return bool(self.settings.sop_platform_token)
 
-    async def pending(self, *, limit: int | None = None) -> dict[str, Any]:
+    async def pending(
+        self,
+        *,
+        limit: int | None = None,
+        corp_id: str = "",
+        wechat: str = "",
+    ) -> dict[str, Any]:
+        return await self._pending_page(
+            path="/event/trigger/pending",
+            biz_type="online_service",
+            limit=limit,
+            corp_id=corp_id,
+            wechat=wechat,
+        )
+
+    async def store_visit_pending(
+        self,
+        *,
+        limit: int | None = None,
+        corp_id: str = "",
+        wechat: str = "",
+    ) -> dict[str, Any]:
+        return await self._pending_page(
+            path="/event/trigger/store-visit-pending",
+            biz_type="store_visit",
+            limit=limit,
+            corp_id=corp_id,
+            wechat=wechat,
+        )
+
+    async def _pending_page(
+        self,
+        *,
+        path: str,
+        biz_type: str,
+        limit: int | None,
+        corp_id: str,
+        wechat: str,
+    ) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("SOP_PLATFORM_TOKEN is not configured")
         payload = {
-            "corp_id": "",
-            "wechat": "",
+            "corp_id": str(corp_id or "").strip(),
+            "wechat": str(wechat or "").strip(),
             "limit": max(1, min(int(limit or self.settings.sop_platform_batch_size), 500)),
         }
-        response = await self._request("POST", "/event/trigger/pending", json_body=payload)
+        response = await self._request("POST", path, json_body=payload)
         data = response.get("data")
         items: list[dict[str, Any]] = []
         total = 0
@@ -65,6 +103,8 @@ class SopPlatformClient:
             "items": items,
             "total": total,
             "limit": payload["limit"],
+            "biz_type": biz_type,
+            "complete": total <= len(items),
         }
 
     async def consume(
@@ -73,13 +113,21 @@ class SopPlatformClient:
         task_id: str | int,
         status: int,
         remark: str = "",
+        content_exhausted: bool | None = None,
     ) -> dict[str, Any]:
         if status not in {20, 30, 70}:
             raise ValueError("platform SOP status must be 20, 30, or 70")
+        payload: dict[str, Any] = {
+            "taskId": task_id,
+            "status": status,
+            "remark": str(remark or "")[:500],
+        }
+        if content_exhausted is not None:
+            payload["contentExhausted"] = bool(content_exhausted)
         return await self._request(
             "POST",
             "/event/trigger/consume",
-            json_body={"taskId": task_id, "status": status, "remark": str(remark or "")[:500]},
+            json_body=payload,
         )
 
     async def knowledge_categories(

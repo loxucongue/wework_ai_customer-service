@@ -1,78 +1,101 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlertTriangle,
-  ArrowLeft,
-  Ban,
-  Brain,
+  Bot,
   CheckCircle2,
+  CircleDot,
   Clock3,
   Database,
-  Library,
+  History,
+  Inbox,
   LoaderCircle,
   RefreshCw,
   Search,
   Send,
+  UserRound,
+  XCircle,
 } from "lucide-react";
 
 type JsonRecord = Record<string, unknown>;
 
-type TaskItem = {
+type RunTask = {
   task_id: string;
-  bucket: string;
-  stage_label: string;
+  sequence: number;
+  sequence_state: "selected" | "skipped" | "untouched" | "pending" | "legacy";
+  decision?: string;
+  reason?: string;
+  evidence_refs?: string[];
+  consume_status?: number | null;
+  consume_remark?: string;
+  rule_name?: string;
+  scheduled_at?: string | number;
   platform_status?: string;
-  platform_terminal_status?: number | null;
-  platform_visible?: boolean;
   event_status?: string;
   task_status?: string;
-  decision?: string;
-  decision_reason?: string;
-  decision_reason_code?: string;
-  decision_reason_cn?: string;
+  original_messages?: unknown[];
   error?: string;
+};
+
+type RunItem = {
+  run_id: string;
+  log_version: "batch_v2" | "legacy_single" | "platform_pending";
+  version_label: string;
+  batch_key?: string;
+  biz_type?: string;
   customer_id?: string;
   external_userid?: string;
   corp_id?: string;
   user_id?: string;
   wechat?: string;
-  rule_name?: string;
-  scene?: JsonRecord;
-  dispatch_mode?: string;
-  first_added_at?: string;
-  first_added_at_source?: string;
-  scheduled_at?: string | number;
-  pulled_at?: string;
+  occurred_at?: string | number;
   updated_at?: string;
-  sent_at?: string;
-  lateness_seconds?: number | null;
+  status: string;
+  status_label: string;
+  summary_text: string;
+  selected_task_id?: string;
+  task_count: number;
+  tasks: RunTask[];
+  customer_state?: {
+    management_mode?: string | null;
+    management_source?: string | null;
+    customer_opened?: boolean | null;
+    same_day_unopened?: boolean | null;
+    timeline_structure?: JsonRecord;
+  };
+  transition_text?: string;
   original_messages?: unknown[];
   final_messages?: unknown[];
-  send_response?: JsonRecord;
-  rule_data_callback?: {
-    attempted?: boolean;
-    success?: boolean;
-    request_source?: "stored" | "response_echo" | string;
-    request?: JsonRecord;
+  delivery?: {
+    status?: string;
+    callback_required?: boolean;
+    confirmed_at?: string;
+    error?: string;
     response?: JsonRecord;
   };
+  consume?: {
+    results?: unknown[];
+    completed_count?: number;
+    pending_count?: number;
+  };
+  missing_fields?: string[];
+  raw_debug?: JsonRecord;
 };
 
 type Summary = {
-  platform_pending_total?: number;
   visible_total?: number;
+  pending?: number;
+  processing?: number;
+  delivery_pending?: number;
+  consume_pending?: number;
+  completed?: number;
+  no_send?: number;
+  exception?: number;
+  batch_v2?: number;
+  legacy_single?: number;
   platform_pending?: number;
-  pulled_unjudged?: number;
-  judging?: number;
-  judged_send?: number;
-  judged_no_send?: number;
-  sending?: number;
-  sent?: number;
-  failed?: number;
-  recovery?: number;
 };
 
 type Worker = {
@@ -80,39 +103,53 @@ type Worker = {
   queue_depth?: number;
   queue_capacity?: number;
   in_flight_count?: number;
+  pending_total?: number;
+  oldest_due_lag_seconds?: number;
   last_poll_at?: string;
   last_poll_error?: string;
+  processing_mode?: string;
+  quiet_hours?: { enabled?: boolean; start_hour?: number; end_hour?: number };
 };
 
 type ApiResult = {
+  schema_version?: string;
   summary?: Summary;
-  platform?: { refreshed?: boolean; error?: string };
+  platform?: { refreshed?: boolean; error?: string; online_service_total?: number; store_visit_total?: number };
   worker?: Worker;
-  items?: TaskItem[];
+  runs?: RunItem[];
   error?: string;
 };
 
-const BUCKETS = [
-  ["", "全部阶段"],
-  ["platform_pending", "平台待拉取"],
-  ["pulled_unjudged", "已拉取待判断"],
-  ["judging", "判断中"],
-  ["judged_send", "已判断发送"],
-  ["judged_no_send", "已判断不发"],
-  ["sending", "发送中"],
-  ["sent", "已发送"],
-  ["failed", "处理失败"],
-  ["recovery", "恢复中"],
-] as const;
-
 const INITIAL_FILTERS = {
-  task_id: "",
+  query: "",
   customer_id: "",
-  bucket: "",
-  decision: "",
+  wechat: "",
+  status: "",
+  log_version: "",
+  biz_type: "",
+  date_from: "",
+  date_to: "",
   limit: "100",
   refresh_platform: "true",
 };
+
+const STATUS_OPTIONS = [
+  ["", "全部状态"],
+  ["pending", "等待处理"],
+  ["processing", "处理中"],
+  ["delivery_pending", "等待发送回调"],
+  ["consume_pending", "等待消费回传"],
+  ["completed", "发送完成"],
+  ["no_send", "无需发送"],
+  ["exception", "处理异常"],
+] as const;
+
+const VERSION_OPTIONS = [
+  ["", "全部版本"],
+  ["batch_v2", "顺序批次"],
+  ["legacy_single", "历史单任务"],
+  ["platform_pending", "平台实时待处理"],
+] as const;
 
 export function SopPlatformLogViewer() {
   const [filters, setFilters] = useState(INITIAL_FILTERS);
@@ -120,27 +157,26 @@ export function SopPlatformLogViewer() {
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [resendingId, setResendingId] = useState("");
-  const [notice, setNotice] = useState("");
 
-  const items = data.items || [];
+  const runs = useMemo(() => data.runs || [], [data.runs]);
   const selected = useMemo(
-    () => items.find((item) => item.task_id === selectedId) || items[0] || null,
-    [items, selectedId]
+    () => runs.find((run) => run.run_id === selectedId) || runs[0] || null,
+    [runs, selectedId]
   );
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    const search = new URLSearchParams(filters);
     try {
-      const response = await fetch(`/api/logs/sop-platform?${search.toString()}`, { cache: "no-store" });
+      const search = new URLSearchParams(filters);
+      const response = await fetch(`/api/logs/sop-platform-runs?${search.toString()}`, { cache: "no-store" });
       const payload = (await response.json()) as ApiResult;
-      if (!response.ok) throw new Error(payload.error || "加载第三方 SOP 任务失败");
-      const nextItems = Array.isArray(payload.items) ? payload.items : [];
+      if (!response.ok) throw new Error(payload.error || "加载第三方 SOP 日志失败");
+      const nextRuns = Array.isArray(payload.runs) ? payload.runs : [];
       setData(payload);
-      setSelectedId((current) => (nextItems.some((item) => item.task_id === current) ? current : nextItems[0]?.task_id || ""));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载第三方 SOP 任务失败");
+      setSelectedId((current) => (nextRuns.some((run) => run.run_id === current) ? current : nextRuns[0]?.run_id || ""));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "加载第三方 SOP 日志失败");
     } finally {
       setLoading(false);
     }
@@ -150,406 +186,384 @@ export function SopPlatformLogViewer() {
     void load();
   }, [load]);
 
-  const resend = useCallback(
-    async (task: TaskItem) => {
-      if (!task.task_id || resendingId) return;
-      if (!window.confirm(`确认补发任务 #${task.task_id} 吗？系统会按同一幂等 ID 发送，已发送任务会被后端拒绝。`)) {
-        return;
-      }
-      setResendingId(task.task_id);
-      setNotice("");
-      setError("");
-      try {
-        const response = await fetch(`/api/logs/sop-platform/${encodeURIComponent(task.task_id)}/resend`, {
-          method: "POST",
-          cache: "no-store",
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          const detail = isRecord(payload) ? String(payload.detail || payload.error || "") : "";
-          throw new Error(detail || `补发失败：${response.status}`);
-        }
-        setNotice(`任务 #${task.task_id} 已补发成功`);
-        await load();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "补发失败");
-      } finally {
-        setResendingId("");
-      }
-    },
-    [load, resendingId]
-  );
-
   const summary = data.summary || {};
   const worker = data.worker || {};
 
   return (
     <main className="flex min-h-screen flex-col bg-slate-50 text-slate-950">
-      <header className="border-b bg-white px-5 py-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <Link href="/logs" className="inline-flex h-9 w-9 items-center justify-center rounded-md border hover:bg-slate-50" title="返回运行日志">
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
-            <div>
-              <h1 className="text-lg font-semibold">第三方 SOP 任务</h1>
-              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                <span className="inline-flex items-center gap-1">
-                  <span className={`h-2 w-2 rounded-full ${worker.running ? "bg-emerald-500" : "bg-slate-300"}`} />
-                  Worker {worker.running ? "运行中" : "已关闭"}
-                </span>
-                <span>队列 {worker.queue_depth || 0}/{worker.queue_capacity || 0}</span>
-                <span>执行中 {worker.in_flight_count || 0}</span>
-                <span>最近拉取 {formatTime(worker.last_poll_at)}</span>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Link
-              href="/logs/sop-platform?view=quiet-backlog"
-              className="inline-flex items-center gap-2 rounded-md border bg-white px-4 py-2 text-sm hover:bg-slate-50"
-            >
-              <Clock3 className="h-4 w-4" />
-              夜间补发
-            </Link>
-            <Link
-              href="/sop-materials"
-              className="inline-flex items-center gap-2 rounded-md border bg-white px-4 py-2 text-sm hover:bg-slate-50"
-            >
-              <Library className="h-4 w-4" />
-              异议素材库
-            </Link>
-            <button
-              type="button"
-              onClick={() => { void load(); }}
-              disabled={loading}
-              className="inline-flex items-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm text-white disabled:opacity-60"
-            >
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-              刷新
-            </button>
+      <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b bg-white px-5 py-3">
+        <div>
+          <h1 className="text-lg font-semibold">第三方 SOP 运行日志</h1>
+          <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+            <span className="inline-flex items-center gap-1.5">
+              <span className={`h-2 w-2 rounded-full ${worker.running ? "bg-emerald-500" : "bg-slate-300"}`} />
+              {worker.running ? "任务服务运行中" : "任务服务已关闭"}
+            </span>
+            <span>队列 {worker.queue_depth || 0}/{worker.queue_capacity || 0}</span>
+            <span>执行中 {worker.in_flight_count || 0}</span>
+            <span>最近拉取 {formatTime(worker.last_poll_at)}</span>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={loading}
+          className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm text-white disabled:opacity-60"
+        >
+          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          刷新
+        </button>
       </header>
 
-      <section className="border-b bg-white px-5 py-4">
-        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border bg-slate-200 sm:grid-cols-4 xl:grid-cols-9">
-          <Metric label="平台状态10" value={summary.platform_pending_total} icon={<Database className="h-4 w-4" />} />
-          <Metric label="平台待拉取" value={summary.platform_pending} icon={<Clock3 className="h-4 w-4" />} />
-          <Metric label="已拉取待判断" value={summary.pulled_unjudged} icon={<LoaderCircle className="h-4 w-4" />} />
-          <Metric label="判断中" value={summary.judging} icon={<Brain className="h-4 w-4" />} />
-          <Metric label="判断发送" value={summary.judged_send} icon={<Send className="h-4 w-4" />} />
-          <Metric label="判断不发" value={summary.judged_no_send} icon={<Ban className="h-4 w-4" />} />
-          <Metric label="发送中" value={summary.sending} icon={<LoaderCircle className="h-4 w-4" />} />
-          <Metric label="已发送" value={summary.sent} icon={<CheckCircle2 className="h-4 w-4" />} />
-          <Metric label="处理失败" value={summary.failed} icon={<AlertTriangle className="h-4 w-4" />} />
+      <section className="border-b bg-white px-5 py-3">
+        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border bg-slate-200 sm:grid-cols-4 xl:grid-cols-7 [&>*:last-child]:col-span-2 sm:[&>*:last-child]:col-span-4 xl:[&>*:last-child]:col-span-1">
+          <Metric label="等待处理" value={summary.pending} icon={<Inbox className="h-4 w-4" />} />
+          <Metric label="处理中" value={summary.processing} icon={<LoaderCircle className="h-4 w-4" />} />
+          <Metric label="等待回调" value={summary.delivery_pending} icon={<Send className="h-4 w-4" />} />
+          <Metric label="等待消费" value={summary.consume_pending} icon={<Clock3 className="h-4 w-4" />} />
+          <Metric label="发送完成" value={summary.completed} icon={<CheckCircle2 className="h-4 w-4" />} />
+          <Metric label="无需发送" value={summary.no_send} icon={<XCircle className="h-4 w-4" />} />
+          <Metric label="异常" value={summary.exception} icon={<AlertTriangle className="h-4 w-4" />} />
         </div>
-        <div className="mt-4 flex flex-wrap items-end gap-3">
-          <FilterInput label="任务 ID" value={filters.task_id} onChange={(value) => setFilters((prev) => ({ ...prev, task_id: value }))} />
-          <FilterInput label="客户 ID" value={filters.customer_id} onChange={(value) => setFilters((prev) => ({ ...prev, customer_id: value }))} />
-          <FilterSelect label="处理阶段" value={filters.bucket} options={BUCKETS} onChange={(value) => setFilters((prev) => ({ ...prev, bucket: value }))} />
-          <FilterSelect
-            label="模型结论"
-            value={filters.decision}
-            options={[["", "全部结论"], ["send", "发送"], ["no_send", "不发送"]]}
-            onChange={(value) => setFilters((prev) => ({ ...prev, decision: value }))}
+
+        <div className="mt-3 grid gap-2 lg:grid-cols-[minmax(220px,1.3fr)_minmax(150px,.7fr)_repeat(4,minmax(130px,.55fr))_auto]">
+          <SearchInput
+            value={filters.query}
+            placeholder="批次、任务、规则、客户"
+            onChange={(value) => setFilters((current) => ({ ...current, query: value }))}
           />
-          <FilterSelect
-            label="数据范围"
-            value={filters.refresh_platform}
-            options={[["true", "平台实时 + 本地"], ["false", "仅本地审计"]]}
-            onChange={(value) => setFilters((prev) => ({ ...prev, refresh_platform: value }))}
+          <CompactInput
+            value={filters.customer_id}
+            placeholder="客户 ID"
+            onChange={(value) => setFilters((current) => ({ ...current, customer_id: value }))}
           />
-          <FilterSelect
-            label="显示数量"
-            value={filters.limit}
-            options={[["50", "50"], ["100", "100"], ["200", "200"], ["500", "500"]]}
-            onChange={(value) => setFilters((prev) => ({ ...prev, limit: value }))}
+          <CompactInput
+            value={filters.wechat}
+            placeholder="企微账号"
+            onChange={(value) => setFilters((current) => ({ ...current, wechat: value }))}
           />
-          <button type="button" onClick={() => void load()} className="inline-flex h-9 items-center gap-2 rounded-md border bg-white px-4 text-sm hover:bg-slate-50">
+          <CompactSelect
+            value={filters.status}
+            options={STATUS_OPTIONS}
+            onChange={(value) => setFilters((current) => ({ ...current, status: value }))}
+          />
+          <CompactSelect
+            value={filters.log_version}
+            options={VERSION_OPTIONS}
+            onChange={(value) => setFilters((current) => ({ ...current, log_version: value }))}
+          />
+          <CompactSelect
+            value={filters.biz_type}
+            options={[["", "全部队列"], ["online_service", "线上客服"], ["store_visit", "门店回访"]]}
+            onChange={(value) => setFilters((current) => ({ ...current, biz_type: value }))}
+          />
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-white px-4 text-sm hover:bg-slate-50"
+          >
             <Search className="h-4 w-4" />
             查询
           </button>
         </div>
-        {data.platform?.error ? (
-          <div className="mt-3 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            平台实时队列读取失败，当前仅显示本地审计：{data.platform.error}
+
+        <details className="mt-2 text-xs text-slate-500">
+          <summary className="w-fit cursor-pointer select-none py-1">更多筛选</summary>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <CompactInput
+              type="datetime-local"
+              value={filters.date_from}
+              onChange={(value) => setFilters((current) => ({ ...current, date_from: value }))}
+            />
+            <CompactInput
+              type="datetime-local"
+              value={filters.date_to}
+              onChange={(value) => setFilters((current) => ({ ...current, date_to: value }))}
+            />
+            <CompactSelect
+              value={filters.refresh_platform}
+              options={[["true", "实时队列 + 历史"], ["false", "仅历史记录"]]}
+              onChange={(value) => setFilters((current) => ({ ...current, refresh_platform: value }))}
+            />
+            <CompactSelect
+              value={filters.limit}
+              options={[["50", "50 条"], ["100", "100 条"], ["200", "200 条"], ["500", "500 条"]]}
+              onChange={(value) => setFilters((current) => ({ ...current, limit: value }))}
+            />
           </div>
-        ) : null}
-        {error ? (
-          <div className="mt-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            {error}
-          </div>
-        ) : null}
-        {notice ? (
-          <div className="mt-3 flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-            {notice}
-          </div>
-        ) : null}
+        </details>
+
+        {data.platform?.error ? <Notice tone="warning">平台实时队列读取失败，当前仅显示历史记录：{data.platform.error}</Notice> : null}
+        {worker.last_poll_error ? <Notice tone="warning">最近一次拉取异常：{worker.last_poll_error}</Notice> : null}
+        {error ? <Notice tone="error">{error}</Notice> : null}
       </section>
 
-      <section className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)]">
-        <aside className="max-h-[calc(100vh-260px)] overflow-y-auto border-r bg-white">
-          <div className="sticky top-0 z-10 border-b bg-white px-4 py-3 text-xs font-medium text-slate-500">
-            当前结果 {summary.visible_total || items.length} 条
+      <section className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)]">
+        <aside className="max-h-[calc(100vh-250px)] overflow-y-auto border-r bg-white">
+          <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-4 py-2.5 text-xs text-slate-500">
+            <span>{summary.visible_total || runs.length} 个处理批次</span>
+            <span>新版 {summary.batch_v2 || 0} · 历史 {summary.legacy_single || 0}</span>
           </div>
-          {items.map((item) => (
+          {runs.map((run) => (
             <button
-              key={item.task_id}
+              key={run.run_id}
               type="button"
-              onClick={() => setSelectedId(item.task_id)}
-              className={`w-full border-b px-4 py-3 text-left hover:bg-slate-50 ${selected?.task_id === item.task_id ? "bg-slate-100" : "bg-white"}`}
+              onClick={() => setSelectedId(run.run_id)}
+              className={`w-full border-b px-4 py-3 text-left hover:bg-slate-50 ${selected?.run_id === run.run_id ? "bg-slate-100" : "bg-white"}`}
             >
-              <div className="flex items-center justify-between gap-3">
-                <span className="truncate font-mono text-sm font-semibold">#{item.task_id}</span>
-                <StageBadge bucket={item.bucket} label={item.stage_label} />
+              <div className="flex items-center justify-between gap-2">
+                <VersionBadge version={run.log_version} label={run.version_label} />
+                <StatusBadge status={run.status} label={run.status_label} />
               </div>
-              <div className="mt-2 truncate text-sm">{item.rule_name || "未命名任务"}</div>
-              <div className="mt-1 flex items-center justify-between gap-2 text-xs text-slate-500">
-                <span className="truncate">客户 {item.customer_id || "身份缺失"}</span>
-                <span className="shrink-0">{formatTime(item.scheduled_at)}</span>
+              <div className="mt-2 line-clamp-2 text-sm font-medium leading-5">{run.summary_text}</div>
+              <div className="mt-2 flex items-center justify-between gap-3 text-xs text-slate-500">
+                <span className="truncate">{run.customer_id || run.external_userid || "身份未记录"}</span>
+                <span className="shrink-0">{formatTime(run.occurred_at)}</span>
               </div>
-              {item.decision_reason_cn ? <div className="mt-2 line-clamp-2 text-xs text-slate-500">{item.decision_reason_cn}</div> : null}
+              <div className="mt-1 flex items-center justify-between gap-3 text-xs text-slate-400">
+                <span>{run.wechat || "企微未记录"}</span>
+                <span>{bizTypeLabel(run.biz_type)} · {run.task_count} 条</span>
+              </div>
             </button>
           ))}
-          {!loading && items.length === 0 ? <div className="p-8 text-center text-sm text-slate-500">暂无匹配任务</div> : null}
+          {!loading && runs.length === 0 ? <div className="p-10 text-center text-sm text-slate-500">暂无匹配日志</div> : null}
         </aside>
 
-        <div className="max-h-[calc(100vh-260px)] overflow-y-auto p-5">
-          {selected ? (
-            <TaskDetail task={selected} onResend={resend} resending={resendingId === selected.task_id} />
-          ) : (
-            <div className="border bg-white p-8 text-sm text-slate-500">请选择任务</div>
-          )}
+        <div className="max-h-[calc(100vh-250px)] overflow-y-auto">
+          {selected ? <RunDetail run={selected} /> : <div className="p-10 text-sm text-slate-500">请选择一个处理批次</div>}
         </div>
       </section>
     </main>
   );
 }
 
-function Metric({ label, value, icon }: { label: string; value?: number; icon: ReactNode }) {
-  return (
-    <div className="bg-white px-4 py-3">
-      <div className="flex items-center gap-2 text-xs text-slate-500">{icon}{label}</div>
-      <div className="mt-2 text-xl font-semibold tabular-nums">{value || 0}</div>
-    </div>
-  );
-}
+function RunDetail({ run }: { run: RunItem }) {
+  const state = run.customer_state || {};
+  const timeline = state.timeline_structure || {};
+  const selectedTask = run.tasks.find((task) => task.task_id === run.selected_task_id);
+  const callbackRecorded = Boolean(run.delivery?.status || run.delivery?.confirmed_at || run.delivery?.error);
+  const consumeCompleted = (run.consume?.pending_count || 0) === 0 && (run.consume?.completed_count || 0) > 0;
 
-function FilterInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
-    <label className="text-xs font-medium text-slate-600">
-      {label}
-      <input value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 block h-9 w-44 rounded-md border bg-white px-3 text-sm" />
-    </label>
-  );
-}
-
-function FilterSelect({ label, value, options, onChange }: { label: string; value: string; options: readonly (readonly [string, string])[]; onChange: (value: string) => void }) {
-  return (
-    <label className="text-xs font-medium text-slate-600">
-      {label}
-      <select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 block h-9 rounded-md border bg-white px-3 text-sm">
-        {options.map(([optionValue, optionLabel]) => <option key={optionValue} value={optionValue}>{optionLabel}</option>)}
-      </select>
-    </label>
-  );
-}
-
-function TaskDetail({ task, onResend, resending }: { task: TaskItem; onResend: (task: TaskItem) => void; resending: boolean }) {
-  const canResend = isResendable(task);
-  const callback = task.rule_data_callback || {};
-  const callbackRequest = callback.request || {};
-  const callbackResponse = callback.response || {};
-  const callbackData = isRecord(callbackResponse.data) ? callbackResponse.data : {};
-  const callbackError = String(callbackResponse.error || callbackResponse.message || "");
-  return (
-    <div className="space-y-4">
-      <section className="border bg-white p-5">
+    <div className="space-y-0">
+      <section className="border-b bg-white px-6 py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="font-mono text-base font-semibold">任务 #{task.task_id}</h2>
-              <StageBadge bucket={task.bucket} label={task.stage_label} />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <VersionBadge version={run.log_version} label={run.version_label} />
+              <StatusBadge status={run.status} label={run.status_label} />
+              <span className="text-xs text-slate-500">{bizTypeLabel(run.biz_type)}</span>
             </div>
-            <p className="mt-2 text-sm text-slate-600">{task.rule_name || "未命名任务"}</p>
+            <h2 className="mt-3 text-lg font-semibold">{run.summary_text}</h2>
+            <div className="mt-1 break-all font-mono text-xs text-slate-400">{run.run_id}</div>
           </div>
-          <div className="text-right text-xs text-slate-500">
-            <div>平台状态 {task.platform_status || "-"}</div>
-            <div className="mt-1">本地状态 {task.task_status || task.event_status || "尚未拉取"}</div>
-            <button
-              type="button"
-              onClick={() => onResend(task)}
-              disabled={!canResend || resending}
-              title={canResend ? "按当前任务内容手动补发" : "已发送、发送中或平台待拉取任务不能补发"}
-              className="mt-3 inline-flex items-center gap-2 rounded-md border bg-white px-3 py-2 text-sm text-slate-900 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {resending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              补发
-            </button>
+          <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm sm:grid-cols-3">
+            <Fact label="客户 ID" value={run.customer_id} />
+            <Fact label="企微账号" value={run.wechat} />
+            <Fact label="发生时间" value={formatTime(run.occurred_at)} />
           </div>
-        </div>
-        <div className="mt-5 grid gap-x-6 gap-y-3 border-t pt-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
-          <Fact label="客户 ID" value={task.customer_id} />
-          <Fact label="企微账号" value={task.wechat} />
-          <Fact label="员工 ID" value={task.user_id} />
-          <Fact label="下发方式" value={task.dispatch_mode === "direct" ? "直接下发" : "AI 客服处理"} />
-          <Fact label="加微时间" value={formatTime(task.first_added_at)} />
-          <Fact label="时间来源" value={task.first_added_at_source || "-"} />
-          <Fact label="企业 ID" value={task.corp_id} />
-          <Fact label="external_userid" value={task.external_userid} />
-          <Fact label="计划时间" value={formatTime(task.scheduled_at)} />
-          <Fact label="已延迟" value={formatLag(task.lateness_seconds)} />
         </div>
       </section>
 
-      <section className="border bg-white p-5">
-        <h3 className="text-sm font-semibold">处理时间线</h3>
-        <div className="mt-4 grid gap-2 md:grid-cols-4">
-          <TimelineStep label="平台到期" time={formatTime(task.scheduled_at)} done />
-          <TimelineStep label="AI 已拉取" time={formatTime(task.pulled_at)} done={task.bucket !== "platform_pending"} />
-          <TimelineStep label="模型判断" time={task.decision ? `${task.decision === "send" ? "发送" : "不发送"} · ${formatTime(task.updated_at)}` : "尚未完成"} done={Boolean(task.decision)} />
-          <TimelineStep label="客户发送" time={task.sent_at ? formatTime(task.sent_at) : task.decision === "no_send" ? "无需发送" : "尚未发送"} done={Boolean(task.sent_at) || task.decision === "no_send"} />
-        </div>
-      </section>
-
-      {task.decision || task.error ? (
-        <section className={`border p-5 ${task.error ? "border-red-200 bg-red-50" : task.decision === "no_send" ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            {task.error ? <AlertTriangle className="h-4 w-4" /> : task.decision === "no_send" ? <Ban className="h-4 w-4" /> : <Brain className="h-4 w-4" />}
-            {task.error ? "处理异常" : task.decision === "no_send" ? "模型判断：不发送" : "模型判断：发送"}
+      {run.missing_fields?.length ? (
+        <section className="border-b border-amber-200 bg-amber-50 px-6 py-3 text-sm text-amber-900">
+          <div className="flex items-start gap-2">
+            <History className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>该历史版本未记录：{run.missing_fields.join("、")}</div>
           </div>
-          <p className="mt-2 whitespace-pre-wrap text-sm">{task.error || task.decision_reason_cn || "未记录判断原因"}</p>
-          {!task.error && (task.decision_reason_code || task.decision_reason) ? (
-            <div className="mt-3 border-t border-current/15 pt-2 font-mono text-xs opacity-70">
-              原始标识：{task.decision_reason_code || task.decision_reason}
-            </div>
-          ) : null}
         </section>
       ) : null}
 
-      <section className="grid gap-4 xl:grid-cols-2">
-        <MessagePanel title="平台原始内容" messages={task.original_messages || []} empty="平台未提供消息内容" />
-        <MessagePanel
-          title={task.sent_at ? "实际发送内容" : task.decision === "send" ? "模型判断发送内容（尚未发出）" : "最终内容"}
-          messages={task.final_messages || []}
-          empty={task.decision === "no_send" ? "本任务已判断不发送" : "尚未生成最终内容"}
-        />
+      <section className="border-b bg-white px-6 py-5">
+        <h3 className="text-sm font-semibold">处理链路</h3>
+        <div className="mt-4 grid gap-2 md:grid-cols-5">
+          <ProcessStep icon={<Inbox />} label="任务到期" detail={`${run.task_count} 条`} done />
+          <ProcessStep
+            icon={state.management_mode === "human" ? <UserRound /> : <Bot />}
+            label="会话状态"
+            detail={managementModeLabel(state.management_mode)}
+            done={state.management_mode !== undefined && state.management_mode !== null}
+            unknown={run.log_version === "legacy_single"}
+          />
+          <ProcessStep
+            icon={<CircleDot />}
+            label="顺序判断"
+            detail={run.selected_task_id ? `选中 #${run.selected_task_id}` : run.status === "no_send" ? "均无需发送" : "未完成"}
+            done={run.log_version === "batch_v2" && (Boolean(run.selected_task_id) || run.status === "no_send")}
+            unknown={run.log_version !== "batch_v2"}
+          />
+          <ProcessStep
+            icon={<Send />}
+            label="发送回调"
+            detail={run.delivery?.status || (run.selected_task_id ? "尚未回调" : "未发送")}
+            done={callbackRecorded || run.status === "completed"}
+            unknown={run.log_version === "legacy_single" && !callbackRecorded}
+          />
+          <ProcessStep
+            icon={<Database />}
+            label="消费回传"
+            detail={consumeCompleted ? "已完成" : run.consume?.pending_count ? `${run.consume.pending_count} 条待处理` : "未记录"}
+            done={consumeCompleted}
+            unknown={run.log_version === "legacy_single"}
+          />
+        </div>
       </section>
 
-      <section className="border bg-white">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b bg-slate-50 px-4 py-3">
-          <div>
-            <h3 className="text-sm font-semibold">策略数据回写</h3>
-            <p className="mt-1 text-xs text-slate-500">回写接口：/event/trigger/service-rule-data</p>
+      <section className="grid border-b bg-white xl:grid-cols-[minmax(0,1.55fr)_minmax(280px,.75fr)]">
+        <div className="border-b px-6 py-5 xl:border-b-0 xl:border-r">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold">任务顺序</h3>
+            <span className="text-xs text-slate-500">严格按计划时间处理</span>
           </div>
-          <CallbackBadge attempted={Boolean(callback.attempted)} success={Boolean(callback.success)} />
+          <div className="mt-4 divide-y border-y">
+            {run.tasks.map((task) => <TaskSequenceRow key={task.task_id} task={task} />)}
+          </div>
         </div>
-        <div className="grid gap-x-6 gap-y-3 border-b px-4 py-4 text-sm sm:grid-cols-2 xl:grid-cols-5">
-          <Fact label="场景编码" value={String(callbackData.sceneTypeCode || callbackRequest.sceneCode || "-")} />
-          <Fact label="场景名称" value={String(callbackData.sceneTypeName || callbackRequest.sceneName || "-")} />
-          <Fact label="发送状态" value={callbackSendStatus(callbackRequest, callbackData)} />
-          <Fact label="平台记录 ID" value={String(callbackData.id || "-")} />
-          <Fact label="回写结果" value={callback.success ? "成功" : callback.attempted ? callbackError || "失败" : "尚未回写"} />
+        <div className="px-6 py-5">
+          <h3 className="text-sm font-semibold">会话判断事实</h3>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
+            <Fact label="托管状态" value={managementModeLabel(state.management_mode)} />
+            <Fact label="状态来源" value={nullableText(state.management_source)} />
+            <Fact label="客户是否开口" value={booleanLabel(state.customer_opened)} />
+            <Fact label="加微当天未开口" value={booleanLabel(state.same_day_unopened)} />
+            <Fact label="会话消息" value={numberFact(timeline.message_count)} />
+            <Fact label="客户消息" value={numberFact(timeline.customer_message_count)} />
+          </div>
         </div>
-        {callback.request_source === "response_echo" ? (
-          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
-            该历史任务未单独保存请求体，以下请求 JSON 根据平台响应回显字段还原；无法确认的字段未补写。
+      </section>
+
+      <section className="border-b bg-white px-6 py-5">
+        <h3 className="text-sm font-semibold">消息内容</h3>
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <MessagePanel
+            title={selectedTask ? `选中任务 #${selectedTask.task_id} 原始内容` : "平台原始内容"}
+            messages={run.original_messages || []}
+            empty={run.selected_task_id ? "原始内容未记录" : "本批次没有发送任务"}
+          />
+          <MessagePanel
+            title="实际发送内容"
+            messages={run.final_messages || []}
+            empty={run.status === "no_send" ? "本批次无需发送" : "尚未形成或未记录实际发送内容"}
+          />
+        </div>
+        {run.transition_text ? (
+          <div className="mt-4 border-l-4 border-blue-500 bg-blue-50 px-4 py-3">
+            <div className="text-xs font-medium text-blue-700">独立过渡句</div>
+            <div className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-800">{run.transition_text}</div>
           </div>
         ) : null}
-        <div className="grid gap-4 p-4 xl:grid-cols-2">
-          <JsonPanel
-            title="完整 JSON 请求体"
-            value={callbackRequest}
-            empty={callback.attempted ? "该任务未保存可确认的回写请求体" : "该任务尚未执行策略数据回写"}
-          />
-          <JsonPanel
-            title="完整 JSON 响应体"
-            value={callbackResponse}
-            empty={callback.attempted ? "接口未返回可记录的响应体" : "该任务尚未执行策略数据回写"}
-          />
+      </section>
+
+      <section className="grid border-b bg-white xl:grid-cols-2">
+        <div className="border-b px-6 py-5 xl:border-b-0 xl:border-r">
+          <h3 className="text-sm font-semibold">发送结果</h3>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Fact label="回调状态" value={run.delivery?.status || "未记录"} />
+            <Fact label="确认时间" value={formatTime(run.delivery?.confirmed_at)} />
+            <Fact label="是否要求回调" value={booleanLabel(run.delivery?.callback_required)} />
+            <Fact label="发送异常" value={run.delivery?.error || "无"} />
+          </div>
         </div>
-        <div className="border-t px-4 py-2 text-xs text-slate-500">
-          页面展示保留完整业务字段；Authorization、Token、Cookie 和 OSS 签名参数会自动脱敏。
+        <div className="px-6 py-5">
+          <h3 className="text-sm font-semibold">平台消费回传</h3>
+          <div className="mt-4 flex items-center gap-6 text-sm">
+            <span>已结束 <strong>{run.consume?.completed_count || 0}</strong></span>
+            <span>待处理 <strong>{run.consume?.pending_count || 0}</strong></span>
+          </div>
+          <ConsumeResults results={run.consume?.results || []} />
         </div>
       </section>
 
-      {task.scene && Object.keys(task.scene).length ? (
-        <section className="border bg-white p-5">
-          <h3 className="text-sm font-semibold">平台场景</h3>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            {Object.entries(task.scene).map(([key, value]) => <Fact key={key} label={key} value={displayValue(value)} />)}
-          </div>
-        </section>
-      ) : null}
+      <details className="bg-white px-6 py-5">
+        <summary className="cursor-pointer text-sm font-medium">原始调试数据</summary>
+        <pre className="mt-4 max-h-96 overflow-auto border bg-slate-950 p-4 text-xs leading-5 text-slate-100">
+          {JSON.stringify(run.raw_debug || {}, null, 2)}
+        </pre>
+      </details>
     </div>
   );
 }
 
-function CallbackBadge({ attempted, success }: { attempted: boolean; success: boolean }) {
-  const label = success ? "回写成功" : attempted ? "回写失败" : "尚未回写";
-  const tone = success
-    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-    : attempted
-      ? "border-red-200 bg-red-50 text-red-700"
-      : "border-slate-200 bg-white text-slate-600";
-  return <span className={`rounded-md border px-2 py-1 text-xs font-medium ${tone}`}>{label}</span>;
-}
-
-function JsonPanel({ title, value, empty }: { title: string; value: JsonRecord; empty: string }) {
-  const hasValue = Object.keys(value).length > 0;
+function TaskSequenceRow({ task }: { task: RunTask }) {
+  const state = taskSequenceLabel(task.sequence_state);
   return (
-    <div className="min-w-0 overflow-hidden border bg-slate-950">
-      <div className="border-b border-slate-700 px-3 py-2 text-xs font-medium text-slate-200">{title}</div>
-      {hasValue ? (
-        <pre className="max-h-[420px] overflow-auto p-3 text-xs leading-5 text-slate-100">{JSON.stringify(value, null, 2)}</pre>
-      ) : (
-        <div className="bg-white px-3 py-8 text-center text-sm text-slate-500">{empty}</div>
-      )}
+    <div className={`grid gap-3 py-4 sm:grid-cols-[36px_minmax(0,1fr)_auto] ${task.sequence_state === "selected" ? "bg-emerald-50/60" : ""}`}>
+      <div className="flex h-7 w-7 items-center justify-center rounded-full border bg-white text-xs font-semibold">{task.sequence}</div>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-xs font-semibold">#{task.task_id}</span>
+          <span className="text-sm font-medium">{task.rule_name || "未命名任务"}</span>
+          <span className="text-xs text-slate-400">{formatTime(task.scheduled_at)}</span>
+        </div>
+        <MessagePreview messages={task.original_messages || []} />
+        {task.reason ? <div className="mt-2 text-xs leading-5 text-slate-600">判断：{task.reason}</div> : null}
+        {task.error ? <div className="mt-2 text-xs text-red-700">异常：{task.error}</div> : null}
+      </div>
+      <div className="flex flex-row items-start gap-2 sm:flex-col sm:items-end">
+        <span className={`rounded-md border px-2 py-1 text-xs ${state.tone}`}>{state.label}</span>
+        <ConsumeBadge status={task.consume_status} />
+      </div>
     </div>
   );
 }
 
-function callbackSendStatus(request: JsonRecord, data: JsonRecord) {
-  const raw = request.sendStatus ?? data.sendStatus;
-  const value = String(raw ?? "");
-  if (value === "10") return "10 · 成功";
-  if (value === "20") return "20 · 失败/不发送";
-  return value || "-";
+function MessagePreview({ messages }: { messages: unknown[] }) {
+  const summary = messages.slice(0, 2).map((message) => {
+    const item = isRecord(message) ? message : {};
+    const type = String(item.type || "unknown");
+    const content = item.content;
+    if (type === "text") return isRecord(content) ? String(content.text || "") : String(content || "");
+    return `[${type}]`;
+  }).join(" · ");
+  return summary ? <div className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{summary}</div> : null;
 }
 
-function isResendable(task: TaskItem) {
-  if (!task.task_id || task.bucket === "platform_pending" || task.sent_at) return false;
-  if (task.task_status === "sent" || task.task_status === "sending" || task.event_status === "platform_send_uncertain") {
-    return false;
-  }
-  return ["judged_no_send", "judged_send", "failed", "recovery", "pulled_unjudged"].includes(task.bucket);
-}
-
-function TimelineStep({ label, time, done }: { label: string; time: string; done: boolean }) {
+function ConsumeResults({ results }: { results: unknown[] }) {
+  const normalized = results.filter(isRecord);
+  if (!normalized.length) return <div className="mt-3 text-xs text-slate-500">未记录逐条消费响应</div>;
   return (
-    <div className={`border px-3 py-3 ${done ? "bg-slate-50" : "bg-white"}`}>
+    <div className="mt-3 divide-y border-y">
+      {normalized.map((result, index) => (
+        <div key={`${String(result.task_id || "")}-${index}`} className="flex items-center justify-between gap-3 py-2 text-xs">
+          <span className="font-mono">#{String(result.task_id || "-")}</span>
+          <span>{consumeStatusLabel(Number(result.status || 0))}</span>
+          <span className="truncate text-slate-500">{String(result.remark || "-")}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Metric({ label, value, icon }: { label: string; value?: number; icon: ReactNode }) {
+  return (
+    <div className="bg-white px-3 py-2.5">
+      <div className="flex items-center gap-2 text-xs text-slate-500">{icon}{label}</div>
+      <div className="mt-1 text-lg font-semibold tabular-nums">{value || 0}</div>
+    </div>
+  );
+}
+
+function ProcessStep({ icon, label, detail, done, unknown = false }: { icon: ReactNode; label: string; detail: string; done: boolean; unknown?: boolean }) {
+  return (
+    <div className={`min-w-0 border px-3 py-3 ${done ? "bg-slate-50" : "bg-white"}`}>
       <div className="flex items-center gap-2 text-sm font-medium">
-        {done ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <Clock3 className="h-4 w-4 text-slate-400" />}
+        <span className={`[&>svg]:h-4 [&>svg]:w-4 ${done ? "text-emerald-600" : "text-slate-400"}`}>{icon}</span>
         {label}
       </div>
-      <div className="mt-2 text-xs text-slate-500">{time || "-"}</div>
+      <div className="mt-2 truncate text-xs text-slate-500">{unknown ? "历史版本未记录" : detail}</div>
     </div>
   );
 }
 
 function MessagePanel({ title, messages, empty }: { title: string; messages: unknown[]; empty: string }) {
   return (
-    <section className="border bg-white">
-      <h3 className="border-b bg-slate-50 px-4 py-3 text-sm font-semibold">{title}</h3>
+    <div className="border">
+      <div className="border-b bg-slate-50 px-4 py-2.5 text-sm font-medium">{title}</div>
       <div className="space-y-3 p-4">
         {messages.map((message, index) => <MessageItem key={index} message={message} index={index} />)}
         {!messages.length ? <div className="py-6 text-center text-sm text-slate-500">{empty}</div> : null}
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -559,12 +573,13 @@ function MessageItem({ message, index }: { message: unknown; index: number }) {
   const content = item.content;
   if (type === "text") {
     const text = isRecord(content) ? String(content.text || "") : String(content || "");
-    return <div className="border bg-slate-50 p-3"><div className="mb-2 text-xs text-slate-500">#{index + 1} 文字</div><div className="whitespace-pre-wrap text-sm leading-6">{text}</div></div>;
+    return <div className="bg-slate-50 p-3 text-sm leading-6"><div className="mb-1 text-xs text-slate-400">#{index + 1} 文字</div><div className="whitespace-pre-wrap">{text}</div></div>;
   }
   const url = isRecord(content) ? String(content.url || "") : String(content || "");
   return (
-    <div className="border bg-slate-50 p-3">
-      <div className="mb-2 text-xs text-slate-500">#{index + 1} {type}</div>
+    <div className="bg-slate-50 p-3">
+      <div className="mb-2 text-xs text-slate-400">#{index + 1} {type}</div>
+      {/* eslint-disable-next-line @next/next/no-img-element -- URLs are runtime audit evidence, not managed site assets. */}
       {type === "image" && url ? <img src={url} alt="SOP 素材" className="mb-2 max-h-56 max-w-full border object-contain" /> : null}
       {type === "video" && url ? <video src={url} controls preload="metadata" className="mb-2 max-h-56 max-w-full border bg-black" /> : null}
       {url ? <a href={url} target="_blank" rel="noreferrer" className="break-all text-xs text-blue-600 hover:underline">{url}</a> : <div className="text-xs text-slate-500">{displayValue(content)}</div>}
@@ -572,39 +587,112 @@ function MessageItem({ message, index }: { message: unknown; index: number }) {
   );
 }
 
-function StageBadge({ bucket, label }: { bucket: string; label: string }) {
+function SearchInput({ value, placeholder, onChange }: { value: string; placeholder: string; onChange: (value: string) => void }) {
+  return (
+    <label className="relative block">
+      <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+      <input value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} className="h-9 w-full rounded-md border bg-white pl-9 pr-3 text-sm" />
+    </label>
+  );
+}
+
+function CompactInput({ value, placeholder = "", type = "text", onChange }: { value: string; placeholder?: string; type?: string; onChange: (value: string) => void }) {
+  return <input type={type} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} className="h-9 min-w-36 rounded-md border bg-white px-3 text-sm" />;
+}
+
+function CompactSelect({ value, options, onChange }: { value: string; options: readonly (readonly [string, string])[]; onChange: (value: string) => void }) {
+  return (
+    <select value={value} onChange={(event) => onChange(event.target.value)} className="h-9 min-w-32 rounded-md border bg-white px-3 text-sm">
+      {options.map(([optionValue, label]) => <option key={optionValue} value={optionValue}>{label}</option>)}
+    </select>
+  );
+}
+
+function Notice({ tone, children }: { tone: "warning" | "error"; children: ReactNode }) {
+  const styles = tone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-800";
+  return <div className={`mt-3 flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${styles}`}><AlertTriangle className="h-4 w-4 shrink-0" />{children}</div>;
+}
+
+function StatusBadge({ status, label }: { status: string; label: string }) {
   const tones: Record<string, string> = {
-    platform_pending: "border-slate-200 bg-slate-100 text-slate-700",
-    pulled_unjudged: "border-blue-200 bg-blue-50 text-blue-700",
-    judging: "border-violet-200 bg-violet-50 text-violet-700",
-    judged_send: "border-cyan-200 bg-cyan-50 text-cyan-700",
-    judged_no_send: "border-amber-200 bg-amber-50 text-amber-800",
-    sending: "border-indigo-200 bg-indigo-50 text-indigo-700",
-    sent: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    failed: "border-red-200 bg-red-50 text-red-700",
-    recovery: "border-red-200 bg-red-50 text-red-700",
+    pending: "border-slate-200 bg-slate-100 text-slate-700",
+    processing: "border-blue-200 bg-blue-50 text-blue-700",
+    delivery_pending: "border-indigo-200 bg-indigo-50 text-indigo-700",
+    consume_pending: "border-violet-200 bg-violet-50 text-violet-700",
+    completed: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    no_send: "border-amber-200 bg-amber-50 text-amber-800",
+    exception: "border-red-200 bg-red-50 text-red-700",
   };
-  return <span className={`shrink-0 rounded-md border px-2 py-1 text-xs ${tones[bucket] || tones.platform_pending}`}>{label}</span>;
+  return <span className={`rounded-md border px-2 py-1 text-xs ${tones[status] || tones.pending}`}>{label}</span>;
+}
+
+function VersionBadge({ version, label }: { version: string; label: string }) {
+  const tones: Record<string, string> = {
+    batch_v2: "border-cyan-200 bg-cyan-50 text-cyan-800",
+    legacy_single: "border-slate-200 bg-white text-slate-600",
+    platform_pending: "border-blue-200 bg-blue-50 text-blue-700",
+  };
+  return <span className={`rounded-md border px-2 py-1 text-xs ${tones[version] || tones.legacy_single}`}>{label}</span>;
+}
+
+function ConsumeBadge({ status }: { status?: number | null }) {
+  if (!status) return <span className="text-xs text-slate-400">未回传</span>;
+  const tone = status === 30 ? "text-emerald-700" : status === 70 ? "text-amber-700" : "text-blue-700";
+  return <span className={`text-xs ${tone}`}>{consumeStatusLabel(status)}</span>;
 }
 
 function Fact({ label, value }: { label: string; value?: string }) {
-  return <div className="min-w-0"><div className="text-xs text-slate-500">{label}</div><div className="mt-1 break-all text-sm">{value || "-"}</div></div>;
+  return <div className="min-w-0"><div className="text-xs text-slate-500">{label}</div><div className="mt-1 break-all text-sm">{value || "未记录"}</div></div>;
+}
+
+function taskSequenceLabel(state: RunTask["sequence_state"]) {
+  const labels = {
+    selected: { label: "本轮发送", tone: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+    skipped: { label: "过滤并消费", tone: "border-amber-200 bg-amber-50 text-amber-800" },
+    untouched: { label: "本轮未判断", tone: "border-slate-200 bg-white text-slate-600" },
+    pending: { label: "等待处理", tone: "border-blue-200 bg-blue-50 text-blue-700" },
+    legacy: { label: "历史单任务", tone: "border-slate-200 bg-slate-100 text-slate-600" },
+  };
+  return labels[state] || labels.legacy;
+}
+
+function managementModeLabel(value: unknown) {
+  if (value === "ai") return "AI 托管";
+  if (value === "human") return "人工接管";
+  return "未记录";
+}
+
+function booleanLabel(value: unknown) {
+  if (value === true) return "是";
+  if (value === false) return "否";
+  return "未记录";
+}
+
+function numberFact(value: unknown) {
+  return typeof value === "number" ? `${value} 条` : "未记录";
+}
+
+function nullableText(value: unknown) {
+  return typeof value === "string" && value ? value : "未记录";
+}
+
+function bizTypeLabel(value?: string) {
+  return value === "store_visit" ? "门店回访" : value === "online_service" ? "线上客服" : "队列未记录";
+}
+
+function consumeStatusLabel(status: number) {
+  if (status === 20) return "20 发送中";
+  if (status === 30) return "30 发送成功";
+  if (status === 70) return "70 无需发送";
+  return status ? String(status) : "未回传";
 }
 
 function formatTime(value?: string | number) {
-  if (value === undefined || value === null || value === "") return "-";
+  if (value === undefined || value === null || value === "") return "未记录";
   const raw = typeof value === "number" || /^\d+(\.\d+)?$/.test(String(value)) ? Number(value) : value;
   const date = typeof raw === "number" ? new Date(raw > 10_000_000_000 ? raw : raw * 1000) : new Date(raw);
   if (Number.isNaN(date.getTime())) return String(value);
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(date);
-}
-
-function formatLag(value?: number | null) {
-  if (value === undefined || value === null) return "-";
-  if (value < 60) return `${Math.round(value)} 秒`;
-  if (value < 3600) return `${Math.round(value / 60)} 分钟`;
-  if (value < 86400) return `${(value / 3600).toFixed(1)} 小时`;
-  return `${(value / 86400).toFixed(1)} 天`;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
