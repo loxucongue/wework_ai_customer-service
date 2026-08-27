@@ -434,12 +434,23 @@ class SopPlatformTaskService:
             online_page.get("items") if isinstance(online_page.get("items"), list) else [],
             store_visit_page.get("items") if isinstance(store_visit_page.get("items"), list) else [],
         )
+        quiet_mode = _in_configured_quiet_hours(settings=self.settings)
         if unresolved_content_triggers:
             self._counters["pending_content_lookup_missing"] += len(unresolved_content_triggers)
             logger.warning(
                 "Third-party SOP due triggers have no matching full message groups: %s",
                 [_task_id(task) for task in unresolved_content_triggers],
             )
+            quiet_unresolved_triggers = [
+                trigger
+                for trigger in unresolved_content_triggers
+                if quiet_mode
+                or bool(_quiet_hours_base_summary(trigger, settings=self.settings).get("in_quiet_hours"))
+            ]
+            if quiet_unresolved_triggers:
+                for trigger in quiet_unresolved_triggers:
+                    trigger["_aics_content_unavailable"] = True
+                tasks = _dedupe_tasks([*tasks, *quiet_unresolved_triggers])
         tasks.sort(key=_task_batch_sort_key)
         now_epoch = time.time()
         lags = [max(0.0, now_epoch - value) for value in map(_task_scheduled_epoch, tasks) if value]
@@ -450,16 +461,6 @@ class SopPlatformTaskService:
                 self._oldest_due_lag_seconds,
                 self._pending_total,
             )
-        if _in_configured_quiet_hours(settings=self.settings):
-            self._counters["quiet_poll_only"] += len(tasks)
-            return {
-                "pending_count": self._pending_total,
-                "enqueued_count": 0,
-                "queue_depth": self._queue.qsize(),
-                "in_flight_count": len(self._in_flight_ids),
-                "error_count": 0,
-            }
-
         grouped: dict[str, list[dict[str, Any]]] = {}
         for task in tasks:
             grouped.setdefault(_customer_batch_key(task), []).append(task)
@@ -531,6 +532,8 @@ class SopPlatformTaskService:
             enqueued += len(persisted)
         self._counters["fetched"] += len(tasks)
         self._counters["enqueued"] += enqueued
+        if quiet_mode:
+            self._counters["quiet_enqueued_for_no_replay"] += enqueued
         return {
             "pending_count": self._pending_total,
             "enqueued_count": enqueued,
@@ -663,16 +666,25 @@ class SopPlatformTaskService:
         batch_key: str,
         biz_type: str,
     ) -> dict[str, Any]:
-        if _in_configured_quiet_hours(settings=self.settings):
-            self._counters["quiet_execution_deferred"] += len(tasks)
-            return {
-                "processed": False,
-                "status": "quiet_deferred",
-                "task_ids": [_task_id(task) for task in tasks],
-            }
         identity = _task_identity(tasks[0])
         batch_task_ids = [_task_id(task) for task in tasks]
         batch_run_id = f"{biz_type}:{batch_task_ids[0]}"
+        quiet_hours = _quiet_hours_base_summary(tasks[0], settings=self.settings)
+        if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
+            for task in [*tasks, *trigger_tasks]:
+                self._ensure_local_task(task, status="platform_queued")
+            self._counters["quiet_consumed_without_replay"] += len(tasks)
+            quiet_hours.update({"blocked": True, "reason": "quiet_hours_no_replay"})
+            return await self._consume_batch_without_send(
+                tasks,
+                trigger_tasks=trigger_tasks,
+                reason="quiet_hours_no_replay",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                decision=_quiet_hours_no_replay_decision(tasks),
+                audit_context={"quiet_hours": quiet_hours},
+            )
         if not _batch_identity_is_consistent([*tasks, *trigger_tasks], identity=identity):
             raise RuntimeError("platform customer batch contains mixed identities")
         missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
@@ -975,6 +987,11 @@ class SopPlatformTaskService:
             "context": _context_audit(audit_context or {}),
             "consume_results": [],
         }
+        if reason == "quiet_hours_no_replay":
+            audit["quiet_hours_archive"] = _quiet_hours_no_replay_archive(
+                terminal_tasks,
+                settings=self.settings,
+            )
         if self.settings.sop_platform_shadow_mode:
             for task in terminal_tasks:
                 self._mark_local_task(task, status="shadow_no_send", send_payload=audit)
@@ -1021,14 +1038,21 @@ class SopPlatformTaskService:
         batch_task_ids: list[str],
     ) -> dict[str, Any]:
         selected_id = _task_id(selected_task)
-        if _in_configured_quiet_hours(settings=self.settings):
-            self._counters["quiet_execution_deferred"] += 1
-            return {
-                "processed": False,
-                "status": "quiet_deferred",
-                "task_id": selected_id,
-                "terminal_task_ids": [],
-            }
+        quiet_hours = _quiet_hours_base_summary(selected_task, settings=self.settings)
+        if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
+            quiet_tasks = [*skipped_prefix, selected_task]
+            self._counters["quiet_consumed_without_replay"] += len(quiet_tasks)
+            quiet_hours.update({"blocked": True, "reason": "quiet_hours_no_replay"})
+            return await self._consume_batch_without_send(
+                quiet_tasks,
+                trigger_tasks=trigger_tasks,
+                reason="quiet_hours_no_replay",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                decision=_quiet_hours_no_replay_decision(quiet_tasks),
+                audit_context={**context, "quiet_hours": quiet_hours},
+            )
         original_messages = _platform_messages(selected_task)
         if not original_messages:
             raise RuntimeError("selected platform task has no sendable original messages")
@@ -3320,6 +3344,11 @@ def _merge_platform_task_runs(task_items: list[dict[str, Any]]) -> list[dict[str
                         _int_or_zero(item.get("consume_status")) not in {30, 70} for item in run_tasks
                     ),
                 },
+                "quiet_hours_archive": (
+                    representative.get("quiet_hours_archive")
+                    if isinstance(representative.get("quiet_hours_archive"), dict)
+                    else {}
+                ),
                 "missing_fields": missing_fields,
                 "raw_debug": {
                     "event_status": representative.get("event_status"),
@@ -3458,6 +3487,8 @@ def _platform_run_summary(
         return f"人工接管，{len(tasks)} 条任务无需发送"
     if reason == "customer_relation_deleted":
         return f"客户关系已失效，{len(tasks)} 条任务无需发送"
+    if reason == "quiet_hours_no_replay":
+        return f"夜间拦截并记录，{len(tasks)} 条任务不补发"
     return f"{len(tasks)} 条任务均无需发送"
 
 
@@ -3598,6 +3629,11 @@ def _platform_task_log_item(
         ),
         "consume_results": (
             send_payload.get("consume_results") if isinstance(send_payload.get("consume_results"), list) else []
+        ),
+        "quiet_hours_archive": (
+            send_payload.get("quiet_hours_archive")
+            if isinstance(send_payload.get("quiet_hours_archive"), dict)
+            else {}
         ),
         "context_summary": send_payload.get("context") if isinstance(send_payload.get("context"), dict) else {},
         "batch_reason": str(send_payload.get("reason") or ""),
@@ -3829,6 +3865,47 @@ def _in_configured_quiet_hours(*, settings: Any, now: datetime | None = None) ->
     if start < end:
         return start <= local_now.hour < end
     return local_now.hour >= start or local_now.hour < end
+
+
+def _quiet_hours_no_replay_decision(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "evaluations": [
+            {
+                "task_id": _task_id(task),
+                "decision": "skip",
+                "reason": "quiet_hours_no_replay",
+                "evidence_refs": [f"task:{_task_id(task)}"],
+            }
+            for task in tasks
+        ],
+        "selected_task_id": "",
+        "transition_text": "",
+        "decision_source": "deterministic_quiet_hours",
+    }
+
+
+def _quiet_hours_no_replay_archive(tasks: list[dict[str, Any]], *, settings: Any) -> dict[str, Any]:
+    start = _bounded_hour(getattr(settings, "sop_platform_quiet_start_hour", 0), default=0)
+    end = _bounded_hour(getattr(settings, "sop_platform_quiet_end_hour", 8), default=8)
+    ordered_tasks = sorted(tasks, key=_task_batch_sort_key)
+    return {
+        "recorded_at": utc_now_iso(),
+        "timezone": "Asia/Shanghai",
+        "window": f"{start:02d}:00-{end:02d}:00",
+        "no_replay": True,
+        "ordered_groups": [
+            {
+                "sequence": index,
+                "task_id": _task_id(task),
+                "scheduled_at": task.get("scheduledAt") or task.get("scheduled_at") or "",
+                "sort_order": task.get("sortOrder") or task.get("sort_order"),
+                "rule_name": task.get("ruleName") or task.get("sceneName") or "",
+                "content_available": bool(_platform_messages(task)),
+                "original_messages": _platform_messages(task),
+            }
+            for index, task in enumerate(ordered_tasks, start=1)
+        ],
+    }
 
 
 def _conversation_ai_auto_reply(data: dict[str, Any]) -> bool | None:

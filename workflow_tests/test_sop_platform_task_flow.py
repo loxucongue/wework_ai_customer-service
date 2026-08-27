@@ -1055,7 +1055,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(maximum, 6)
         self.assertEqual(service.runtime_status()["queue_depth"], 0)
 
-    async def test_quiet_poll_reads_but_does_not_persist_or_enqueue(self) -> None:
+    async def test_quiet_poll_persists_and_enqueues_for_no_replay_consumption(self) -> None:
         settings = _settings(quiet_hours_enabled=True)
         settings.sop_platform_quiet_start_hour = 0
         settings.sop_platform_quiet_end_hour = 0
@@ -1066,12 +1066,12 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.poll_once()
 
         self.assertEqual(result["pending_count"], 1)
-        self.assertEqual(result["enqueued_count"], 0)
-        self.assertEqual(repo.events, {})
-        self.assertEqual(repo.tasks, {})
+        self.assertEqual(result["enqueued_count"], 1)
+        self.assertEqual(len(repo.events), 1)
+        self.assertEqual(len(repo.tasks), 1)
         self.assertEqual(platform.consume_calls, [])
 
-    async def test_batch_queued_before_quiet_hours_is_deferred_without_side_effects(self) -> None:
+    async def test_batch_queued_before_quiet_hours_is_archived_and_consumed_without_send(self) -> None:
         settings = _settings(quiet_hours_enabled=True)
         settings.sop_platform_quiet_start_hour = 0
         settings.sop_platform_quiet_end_hour = 0
@@ -1079,12 +1079,48 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_customer_batch(_customer_batch(_batch_task("1")))
 
-        self.assertEqual(result["status"], "quiet_deferred")
-        self.assertEqual(repo.events, {})
-        self.assertEqual(repo.tasks, {})
-        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("1", 70)])
+        self.assertEqual(platform.consume_details[0]["remark"], "quiet_hours_no_replay")
         self.assertEqual(system.conversation_calls, 0)
         self.assertEqual(system.send_calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        archive = payload["quiet_hours_archive"]
+        self.assertTrue(archive["no_replay"])
+        self.assertEqual(archive["ordered_groups"][0]["task_id"], "1")
+        self.assertEqual(
+            archive["ordered_groups"][0]["original_messages"],
+            [{"type": "text", "order": 1, "content": {"text": "平台原文"}}],
+        )
+
+    async def test_quiet_hours_archives_and_consumes_all_customer_groups_in_order(self) -> None:
+        settings = _settings(quiet_hours_enabled=True)
+        settings.sop_platform_quiet_start_hour = 0
+        settings.sop_platform_quiet_end_hour = 0
+        model = _Model([])
+        service, repo, platform, system = _service(model=model, settings=settings)
+
+        result = await service.process_customer_batch(
+            _customer_batch(
+                _batch_task("3", text="第三条，价格原文不改"),
+                _batch_task("1", text="第一条，价格原文不改"),
+                _batch_task("2", text="第二条，价格原文不改"),
+            )
+        )
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70), ("3", 70)])
+        self.assertTrue(all(item["remark"] == "quiet_hours_no_replay" for item in platform.consume_details))
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        groups = payload["quiet_hours_archive"]["ordered_groups"]
+        self.assertEqual([item["task_id"] for item in groups], ["1", "2", "3"])
+        self.assertEqual(
+            [item["original_messages"][0]["content"]["text"] for item in groups],
+            ["第一条，价格原文不改", "第二条，价格原文不改", "第三条，价格原文不改"],
+        )
 
     async def test_incomplete_pending_page_is_not_processed(self) -> None:
         service, repo, platform, _system = _service(model=_Model([]))
@@ -1386,7 +1422,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "processing_retry")
         self.assertEqual(platform.consume_calls, [("2", 20)])
 
-    async def test_batch_crossing_into_quiet_hours_does_not_send_or_consume(self) -> None:
+    async def test_batch_crossing_into_quiet_hours_is_archived_and_consumed_without_send(self) -> None:
         model = _Model(
             [
                 {
@@ -1401,13 +1437,16 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         service, _repo, platform, system = _service(model=model)
 
         with patch(
-            "app.services.sop_platform_task_service._in_configured_quiet_hours",
-            side_effect=[False, True],
+            "app.services.sop_platform_task_service._quiet_hours_base_summary",
+            side_effect=[
+                {"in_quiet_hours": False, "window": "00:00-08:00"},
+                {"in_quiet_hours": True, "window": "00:00-08:00"},
+            ],
         ):
             result = await service.process_customer_batch(_customer_batch(_batch_task("1")))
 
-        self.assertEqual(result["status"], "quiet_deferred")
-        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("1", 70)])
         self.assertEqual(system.send_calls, [])
 
     async def test_resolved_content_send_failure_keeps_compat_trigger_unconsumed(self) -> None:

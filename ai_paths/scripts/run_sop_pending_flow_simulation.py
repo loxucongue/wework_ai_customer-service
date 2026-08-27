@@ -148,6 +148,17 @@ class SimulationSystem:
         self.send_calls: list[dict[str, Any]] = []
         self.conversation_calls: list[dict[str, Any]] = []
 
+    async def conversation_status(self, **_kwargs: Any) -> dict[str, Any]:
+        data = self.conversation_payload.get("data") if isinstance(self.conversation_payload.get("data"), dict) else {}
+        ai_auto_reply = data.get("ai_auto_reply", True)
+        return {
+            "code": 0,
+            "data": {
+                "takeover": {"ai_auto_reply": ai_auto_reply},
+                "ai_auto_reply": ai_auto_reply,
+            },
+        }
+
     async def conversation(self, **kwargs: Any) -> dict[str, Any]:
         self.conversation_calls.append(kwargs)
         return self.conversation_payload
@@ -459,7 +470,7 @@ def scenarios() -> list[dict[str, Any]]:
             "conversation": conversation(),
             "model": [],
             "quiet": True,
-            "expected_consume": [],
+            "expected_consume": [("1001", 70)],
             "expected_send_count": 0,
             "expected_selected": "",
         },
