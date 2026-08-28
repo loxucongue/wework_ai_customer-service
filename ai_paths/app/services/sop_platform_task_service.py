@@ -4270,6 +4270,7 @@ def _collect_identifier_items(
                 child_path = f"{path}.{key}" if path else key
                 is_identifier = (
                     key.lower() == "id"
+                    or key.lower() in {"msgid", "msgids", "system_msgids", "archive_msgid"}
                     or key.lower().endswith("_id")
                     or key.lower().endswith("_ids")
                     or key.endswith("Id")

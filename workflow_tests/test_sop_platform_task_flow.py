@@ -989,7 +989,17 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
                 "task_status": status,
                 "reply_messages": [_text(f"原始消息{task_id}")],
                 "send_payload": send_payload,
-                "send_response": {"data": {"delivery_status": "sent"}} if task_id == "103" else {},
+                "send_response": (
+                    {
+                        "data": {
+                            "delivery_status": "sent",
+                            "system_msgid": "system-message-103",
+                            "system_msgids": ["system-message-103", "system-message-104"],
+                        }
+                    }
+                    if task_id == "103"
+                    else {}
+                ),
                 "task_error": "",
                 "task_created_at": "2026-08-27T01:00:00+00:00",
                 "task_updated_at": "2026-08-27T01:10:00+00:00",
@@ -1035,6 +1045,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("platform_task.task_id", "101", "第三方任务"), identifiers)
         self.assertIn(("event_id", "platform_sop_task:101", "本地事件"), identifiers)
         self.assertIn(("local_task_id", "local-101", "本地发送任务"), identifiers)
+        self.assertIn(("send_response.data.system_msgids[1]", "system-message-104", "消息发送"), identifiers)
         self.assertEqual(repository_filters["wechat"], "dy258")
         self.assertEqual(repository_filters["date_from"], "2026-08-26T00:00:00+00:00")
         self.assertEqual(repository_filters["date_to"], "2026-08-27T02:00:00+00:00")
