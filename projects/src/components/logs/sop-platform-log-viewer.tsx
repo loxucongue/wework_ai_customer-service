@@ -36,7 +36,11 @@ type RunTask = {
   evidence_refs?: string[];
   consume_status?: number | null;
   consume_remark?: string;
+  consume?: { strategy?: string[]; attempted?: boolean; latest_status?: number | null; terminal?: boolean; content_exhausted?: boolean | null; attempts?: unknown[] };
+  send?: { decision?: string; submitted?: boolean; delivery_status?: string; error?: string };
   rule_name?: string;
+  scene?: { name?: string; code?: string; raw?: JsonRecord };
+  use_ai_copy?: boolean | null;
   scheduled_at?: string | number;
   platform_status?: string;
   event_status?: string;
@@ -81,6 +85,7 @@ type RunItem = {
     error?: string;
     response?: JsonRecord;
   };
+  send?: { decision?: string; submitted?: boolean; delivery_status?: string; error?: string };
   consume?: {
     results?: unknown[];
     completed_count?: number;
@@ -89,6 +94,7 @@ type RunItem = {
   identifiers?: IdentifierItem[];
   missing_fields?: string[];
   raw_debug?: JsonRecord;
+  raw_data?: { platform_tasks?: unknown[]; local_audit?: JsonRecord; message_delivery?: JsonRecord; consume_attempts?: unknown[] };
 };
 
 type Summary = {
@@ -474,9 +480,11 @@ function RunDetail({ run }: { run: RunItem }) {
         <div className="border-b px-6 py-5 xl:border-b-0 xl:border-r">
           <h3 className="text-sm font-semibold">发送结果</h3>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <Fact label="回调状态" value={run.delivery?.status || "未记录"} />
-            <Fact label="确认时间" value={formatTime(run.delivery?.confirmed_at)} />
-            <Fact label="是否要求回调" value={booleanLabel(run.delivery?.callback_required)} />
+            <Fact label="是否决定发送" value={sendDecisionLabel(run.send?.decision)} />
+            <Fact label="是否实际提交" value={booleanLabel(run.send?.submitted)} />
+            <Fact label="实际送达状态" value={run.delivery?.status || run.send?.delivery_status || "未记录"} />
+            <Fact label="是否要求送达回调" value={booleanLabel(run.delivery?.callback_required)} />
+            <Fact label="送达确认时间" value={formatTime(run.delivery?.confirmed_at)} />
             <Fact label="发送异常" value={run.delivery?.error || "无"} />
           </div>
         </div>
@@ -486,16 +494,17 @@ function RunDetail({ run }: { run: RunItem }) {
             <span>已结束 <strong>{run.consume?.completed_count || 0}</strong></span>
             <span>待处理 <strong>{run.consume?.pending_count || 0}</strong></span>
           </div>
-          <ConsumeResults results={run.consume?.results || []} />
+          <ConsumeResults results={run.consume?.results || []} tasks={run.tasks} />
         </div>
       </section>
 
-      <details className="bg-white px-6 py-5">
-        <summary className="cursor-pointer text-sm font-medium">原始调试数据</summary>
-        <pre className="mt-4 max-h-96 overflow-auto border bg-slate-950 p-4 text-xs leading-5 text-slate-100">
-          {JSON.stringify(run.raw_debug || {}, null, 2)}
-        </pre>
-      </details>
+      <section className="bg-white px-6 py-5">
+        <h3 className="text-sm font-semibold">完整原始数据</h3>
+        <RawJsonDetails title="第三方原始任务" value={run.raw_data?.platform_tasks || []} />
+        <RawJsonDetails title="本地处理审计" value={run.raw_data?.local_audit || run.raw_debug || {}} />
+        <RawJsonDetails title="消息发送原始数据" value={run.raw_data?.message_delivery || run.delivery?.response || {}} />
+        <RawJsonDetails title="SOP 消费回传原始数据" value={run.raw_data?.consume_attempts || run.consume?.results || []} />
+      </section>
     </div>
   );
 }
@@ -511,6 +520,11 @@ function TaskSequenceRow({ task }: { task: RunTask }) {
           <span className="text-sm font-medium">{task.rule_name || "未命名任务"}</span>
           <span className="text-xs text-slate-400">{formatTime(task.scheduled_at)}</span>
         </div>
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+          <span>场景：{task.scene?.name || "未记录"}</span>
+          <span>编码：{task.scene?.code || "未记录"}</span>
+          <span>AI 改写：{booleanLabel(task.use_ai_copy)}</span>
+        </div>
         <MessagePreview messages={task.original_messages || []} />
         {task.reason ? <div className="mt-2 text-xs leading-5 text-slate-600">判断：{task.reason}</div> : null}
         {task.error ? <div className="mt-2 text-xs text-red-700">异常：{task.error}</div> : null}
@@ -518,6 +532,7 @@ function TaskSequenceRow({ task }: { task: RunTask }) {
       <div className="flex flex-row items-start gap-2 sm:flex-col sm:items-end">
         <span className={`rounded-md border px-2 py-1 text-xs ${state.tone}`}>{state.label}</span>
         <ConsumeBadge status={task.consume_status} />
+        <span className="max-w-48 text-right text-xs text-slate-400">{consumeStrategyLabel(task.consume?.strategy)}</span>
       </div>
     </div>
   );
@@ -534,20 +549,32 @@ function MessagePreview({ messages }: { messages: unknown[] }) {
   return summary ? <div className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{summary}</div> : null;
 }
 
-function ConsumeResults({ results }: { results: unknown[] }) {
+function ConsumeResults({ results, tasks }: { results: unknown[]; tasks: RunTask[] }) {
   const normalized = results.filter(isRecord);
-  if (!normalized.length) return <div className="mt-3 text-xs text-slate-500">未记录逐条消费响应</div>;
   return (
-    <div className="mt-3 divide-y border-y">
+    <div className="mt-3 space-y-3">
+      <div className="grid gap-3 border bg-slate-50 p-3 text-xs sm:grid-cols-3">
+        <Fact label="是否已回传" value={booleanLabel(normalized.length > 0)} />
+        <Fact label="终态任务" value={`${tasks.filter((task) => task.consume?.terminal).length}/${tasks.length}`} />
+        <Fact label="内容是否耗尽" value={triStateLabel(tasks.find((task) => task.consume?.content_exhausted !== null && task.consume?.content_exhausted !== undefined)?.consume?.content_exhausted)} />
+      </div>
+      <div className="divide-y border-y">
       {normalized.map((result, index) => (
-        <div key={`${String(result.task_id || "")}-${index}`} className="flex items-center justify-between gap-3 py-2 text-xs">
+        <div key={`${String(result.attempt_id || result.task_id || "")}-${index}`} className="grid gap-2 py-3 text-xs sm:grid-cols-[minmax(100px,.7fr)_minmax(120px,.8fr)_minmax(100px,.7fr)_minmax(160px,1.3fr)]">
           <span className="font-mono">#{String(result.task_id || "-")}</span>
           <span>{consumeStatusLabel(Number(result.status || 0))}</span>
-          <span className="truncate text-slate-500">{String(result.remark || "-")}</span>
+          <span>{result.success === false ? "回传失败" : result.success === true ? "回传成功" : "历史未记录"}</span>
+          <span className={result.error ? "text-red-700" : "text-slate-500"}>{String(result.error || result.remark || result.phase || "-")}</span>
         </div>
       ))}
+      {!normalized.length ? <div className="py-3 text-xs text-slate-500">未记录逐条消费响应</div> : null}
+      </div>
     </div>
   );
+}
+
+function RawJsonDetails({ title, value }: { title: string; value: unknown }) {
+  return <details className="mt-3 border"><summary className="cursor-pointer bg-slate-50 px-4 py-3 text-sm font-medium">{title}</summary><pre className="max-h-[32rem] overflow-auto bg-slate-950 p-4 text-xs leading-5 text-slate-100">{JSON.stringify(value, null, 2)}</pre></details>;
 }
 
 function IdentifierPanel({ identifiers }: { identifiers: IdentifierItem[] }) {
@@ -710,6 +737,18 @@ function booleanLabel(value: unknown) {
   return "未记录";
 }
 
+function triStateLabel(value: unknown) {
+  if (value === true) return "是";
+  if (value === false) return "否";
+  return "未记录";
+}
+
+function sendDecisionLabel(value?: string) {
+  if (value === "send") return "是";
+  if (value === "no_send" || value === "skip") return "否";
+  return "未记录";
+}
+
 function numberFact(value: unknown) {
   return typeof value === "number" ? `${value} 条` : "未记录";
 }
@@ -727,6 +766,11 @@ function consumeStatusLabel(status: number) {
   if (status === 30) return "30 发送成功";
   if (status === 70) return "70 无需发送";
   return status ? String(status) : "未回传";
+}
+
+function consumeStrategyLabel(strategy?: string[]) {
+  if (!strategy?.length) return "无回传策略";
+  return strategy.map((item) => item === "20_before_send" ? "发送前回传 20" : item === "30_after_delivery" ? "送达后回传 30" : item === "70_without_send" ? "无需发送回传 70" : item).join(" → ");
 }
 
 function formatTime(value?: string | number) {

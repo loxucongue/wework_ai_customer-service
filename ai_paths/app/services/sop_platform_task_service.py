@@ -1031,22 +1031,15 @@ class SopPlatformTaskService:
         for index, task in enumerate(terminal_tasks):
             task_id = _task_id(task)
             exhaust_this_task = content_exhausted is True and last_run_indexes[run_keys[index]] == index
-            response = await self.platform_client.consume(
+            response = await self._consume_with_audit(
                 task_id=task_id,
                 status=70,
                 remark=reason,
                 content_exhausted=True if exhaust_this_task else None,
+                phase="complete_without_send",
+                audit=audit,
             )
             _require_platform_status(response, 70)
-            audit["consume_results"].append(
-                {
-                    "task_id": task_id,
-                    "status": 70,
-                    "remark": reason,
-                    "content_exhausted": True if exhaust_this_task else None,
-                    "response": response,
-                }
-            )
             self._mark_local_task(task, status="completed_without_send", send_payload=audit)
             self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
             terminal_ids.append(task_id)
@@ -1500,7 +1493,12 @@ class SopPlatformTaskService:
                 "reply_messages": final_messages,
             }
 
-        claimed = await self.platform_client.consume(task_id=selected_id, status=20)
+        claimed = await self._consume_with_audit(
+            task_id=selected_id,
+            status=20,
+            phase="claim_before_send",
+            audit=audit,
+        )
         _require_platform_status(claimed, 20)
         self.repository.update_sop_event_status(f"platform_sop_task:{selected_id}", status="platform_processing")
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{selected_id}")
@@ -1966,6 +1964,62 @@ class SopPlatformTaskService:
                 if str(value).strip():
                     self._reserved_prefix_ids.add(str(value).strip())
 
+    async def _consume_with_audit(
+        self,
+        *,
+        task_id: str,
+        status: int,
+        phase: str,
+        audit: dict[str, Any],
+        remark: str = "",
+        content_exhausted: bool | None = None,
+    ) -> dict[str, Any]:
+        consume_results = audit.setdefault("consume_results", [])
+        if not isinstance(consume_results, list):
+            consume_results = []
+            audit["consume_results"] = consume_results
+        request: dict[str, Any] = {"taskId": task_id, "status": status}
+        if remark:
+            request["remark"] = remark
+        if content_exhausted is not None:
+            request["contentExhausted"] = content_exhausted
+        requested_at = utc_now_iso()
+        attempt: dict[str, Any] = {
+            "attempt_id": f"{task_id}:{status}:{len(consume_results) + 1}:{requested_at}",
+            "task_id": task_id,
+            "phase": phase,
+            "status": status,
+            "remark": remark,
+            "content_exhausted": content_exhausted,
+            "requested_at": requested_at,
+            "completed_at": "",
+            "request": request,
+            "response": {},
+            "success": False,
+            "error": "",
+        }
+        consume_results.append(attempt)
+        try:
+            response = await self.platform_client.consume(
+                task_id=task_id,
+                status=status,
+                remark=remark,
+                content_exhausted=content_exhausted,
+            )
+        except Exception as exc:
+            attempt["completed_at"] = utc_now_iso()
+            attempt["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        attempt["completed_at"] = utc_now_iso()
+        attempt["response"] = response
+        attempt["success"] = True
+        response_data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        if attempt["content_exhausted"] is None:
+            response_content_exhausted = response_data.get("contentExhausted", response_data.get("content_exhausted"))
+            if isinstance(response_content_exhausted, bool):
+                attempt["content_exhausted"] = response_content_exhausted
+        return response
+
     async def _finalize_batch_prefix(
         self,
         *,
@@ -1981,40 +2035,26 @@ class SopPlatformTaskService:
             if isinstance(audit, dict):
                 audit["consume_results"] = consume_results
         for task_id in skipped_prefix_task_ids:
-            response = await self.platform_client.consume(
+            response = await self._consume_with_audit(
                 task_id=task_id,
                 status=70,
                 remark="superseded_by_later_sendable_group",
+                phase="skip_superseded_prefix",
+                audit=audit if isinstance(audit, dict) else {},
             )
             _require_platform_status(response, 70)
-            consume_results[:] = [
-                item
-                for item in consume_results
-                if not isinstance(item, dict) or str(item.get("task_id") or "") != task_id
-            ]
-            consume_results.append(
-                {
-                    "task_id": task_id,
-                    "status": 70,
-                    "remark": "superseded_by_later_sendable_group",
-                    "response": response,
-                }
-            )
             task = self._platform_task_from_local(task_id)
             if task:
                 self._mark_local_task(task, status="completed_without_send", send_payload=audit or {})
             self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
             terminal_ids.append(task_id)
-        response = await self.platform_client.consume(task_id=selected_task_id, status=30)
-        _require_platform_status(response, 30)
-        consume_results[:] = [
-            item
-            for item in consume_results
-            if not isinstance(item, dict) or str(item.get("task_id") or "") != selected_task_id
-        ]
-        consume_results.append(
-            {"task_id": selected_task_id, "status": 30, "remark": "", "response": response}
+        response = await self._consume_with_audit(
+            task_id=selected_task_id,
+            status=30,
+            phase="complete_after_delivery",
+            audit=audit if isinstance(audit, dict) else {},
         )
+        _require_platform_status(response, 30)
         self.repository.update_sop_event_status(
             f"platform_sop_task:{selected_task_id}",
             status="platform_completed",
@@ -2028,20 +2068,14 @@ class SopPlatformTaskService:
             task_id = str(raw_task_id or "").strip()
             if not task_id or task_id in terminal_ids:
                 continue
-            response = await self.platform_client.consume(
+            response = await self._consume_with_audit(
                 task_id=task_id,
                 status=70,
                 remark="content_resolved_from_store_visit_queue",
+                phase="complete_compat_trigger",
+                audit=audit if isinstance(audit, dict) else {},
             )
             _require_platform_status(response, 70)
-            consume_results.append(
-                {
-                    "task_id": task_id,
-                    "status": 70,
-                    "remark": "content_resolved_from_store_visit_queue",
-                    "response": response,
-                }
-            )
             self.repository.update_sop_event_status(
                 f"platform_sop_task:{task_id}",
                 status="platform_completed",
@@ -2234,7 +2268,7 @@ class SopPlatformTaskService:
         summary = Counter(run["status"] for run in runs)
         versions = Counter(run["log_version"] for run in runs)
         return {
-            "schema_version": "sop_platform_run_view_v2",
+            "schema_version": "sop_platform_run_view_v3",
             "summary": {
                 "visible_total": len(runs),
                 "pending": summary["pending"],
@@ -3863,11 +3897,13 @@ def _merge_platform_task_runs(task_items: list[dict[str, Any]]) -> list[dict[str
         consume_results = (
             representative.get("consume_results") if isinstance(representative.get("consume_results"), list) else []
         )
-        consume_by_id = {
-            str(item.get("task_id") or ""): item
-            for item in consume_results
-            if isinstance(item, dict) and str(item.get("task_id") or "")
-        }
+        consume_by_id: dict[str, list[dict[str, Any]]] = {}
+        for consume_item in consume_results:
+            if not isinstance(consume_item, dict):
+                continue
+            consume_task_id = str(consume_item.get("task_id") or "")
+            if consume_task_id:
+                consume_by_id.setdefault(consume_task_id, []).append(consume_item)
         run_tasks = [
             _platform_run_task_item(
                 item,
@@ -3875,7 +3911,7 @@ def _merge_platform_task_runs(task_items: list[dict[str, Any]]) -> list[dict[str
                 selected_task_id=selected_task_id,
                 skipped_ids=skipped_ids,
                 evaluation=evaluation_by_id.get(str(item.get("task_id") or ""), {}),
-                consume_result=consume_by_id.get(str(item.get("task_id") or ""), {}),
+                consume_attempts=consume_by_id.get(str(item.get("task_id") or ""), []),
                 version=version,
             )
             for index, item in enumerate(ordered_items, start=1)
@@ -3884,6 +3920,10 @@ def _merge_platform_task_runs(task_items: list[dict[str, Any]]) -> list[dict[str
         selected_task = next(
             (item for item in ordered_items if str(item.get("task_id") or "") == selected_task_id),
             representative,
+        )
+        selected_run_task = next(
+            (item for item in run_tasks if str(item.get("task_id") or "") == selected_task_id),
+            {},
         )
         context_summary = (
             representative.get("context_summary") if isinstance(representative.get("context_summary"), dict) else {}
@@ -3962,6 +4002,16 @@ def _merge_platform_task_runs(task_items: list[dict[str, Any]]) -> list[dict[str
                     if isinstance(selected_task.get("final_messages"), list)
                     else []
                 ),
+                "send": (
+                    selected_run_task.get("send")
+                    if isinstance(selected_run_task.get("send"), dict)
+                    else {
+                        "decision": str(representative.get("decision") or ""),
+                        "submitted": False,
+                        "delivery_status": "",
+                        "error": str(representative.get("error") or ""),
+                    }
+                ),
                 "delivery": {
                     "status": str(callback.get("status") or delivery_data.get("delivery_status") or ""),
                     "callback_required": bool(delivery_data.get("callback_required")),
@@ -4033,6 +4083,32 @@ def _merge_platform_task_runs(task_items: list[dict[str, Any]]) -> list[dict[str
                     else {}
                 ),
                 "missing_fields": missing_fields,
+                "raw_data": {
+                    "platform_tasks": [
+                        item.get("raw", {}).get("platform_task", {})
+                        for item in ordered_items
+                        if isinstance(item.get("raw"), dict)
+                    ],
+                    "local_audit": {
+                        "events": [
+                            item.get("raw", {}).get("local_event", {})
+                            for item in ordered_items
+                            if isinstance(item.get("raw"), dict)
+                        ],
+                        "decision": {"selected_task_id": selected_task_id, "evaluations": evaluations},
+                        "context": context_summary,
+                    },
+                    "message_delivery": {
+                        "send_payload": (
+                            selected_task.get("raw", {}).get("send_payload", {})
+                            if isinstance(selected_task.get("raw"), dict)
+                            else {}
+                        ),
+                        "send_response": send_response,
+                        "callback": callback,
+                    },
+                    "consume_attempts": consume_results,
+                },
                 "raw_debug": {
                     "event_status": representative.get("event_status"),
                     "task_status": representative.get("task_status"),
@@ -4068,7 +4144,7 @@ def _platform_run_task_item(
     selected_task_id: str,
     skipped_ids: set[str],
     evaluation: dict[str, Any],
-    consume_result: dict[str, Any],
+    consume_attempts: list[dict[str, Any]],
     version: str,
 ) -> dict[str, Any]:
     task_id = str(item.get("task_id") or "")
@@ -4082,7 +4158,8 @@ def _platform_run_task_item(
         sequence_state = "pending"
     else:
         sequence_state = "untouched"
-    consume_status = _int_or_zero(consume_result.get("status"))
+    latest_consume = consume_attempts[-1] if consume_attempts else {}
+    consume_status = _int_or_zero(latest_consume.get("status"))
     if not consume_status and sequence_state == "selected":
         if str(item.get("task_status") or "") == "sending":
             consume_status = 20
@@ -4095,6 +4172,12 @@ def _platform_run_task_item(
         decision = "send" if sequence_state == "selected" else "skip" if sequence_state == "skipped" else ""
     if version == "legacy_single":
         decision = str(item.get("decision") or decision)
+    scene = item.get("scene") if isinstance(item.get("scene"), dict) else {}
+    send_response = item.get("send_response") if isinstance(item.get("send_response"), dict) else {}
+    send_data = send_response.get("data") if isinstance(send_response.get("data"), dict) else {}
+    submitted = bool(send_response) or str(item.get("task_status") or "") in {"sending", "sent", "sent_recovered"}
+    strategy = ["20_before_send", "30_after_delivery"] if sequence_state == "selected" else ["70_without_send"] if sequence_state == "skipped" else []
+    content_exhausted = next((attempt.get("content_exhausted") for attempt in reversed(consume_attempts) if attempt.get("content_exhausted") is not None), None)
     return {
         "task_id": task_id,
         "sequence": sequence,
@@ -4103,13 +4186,30 @@ def _platform_run_task_item(
         "reason": str(evaluation.get("reason") or item.get("decision_reason") or ""),
         "evidence_refs": evaluation.get("evidence_refs") if isinstance(evaluation.get("evidence_refs"), list) else [],
         "consume_status": consume_status or None,
-        "consume_remark": str(consume_result.get("remark") or ""),
+        "consume_remark": str(latest_consume.get("remark") or ""),
+        "consume": {
+            "strategy": strategy,
+            "attempted": bool(consume_attempts),
+            "latest_status": consume_status or None,
+            "terminal": consume_status in {30, 70},
+            "content_exhausted": content_exhausted,
+            "attempts": consume_attempts,
+        },
+        "send": {
+            "decision": decision,
+            "submitted": submitted,
+            "delivery_status": str(send_data.get("delivery_status") or send_data.get("send_status") or ""),
+            "error": str(item.get("error") or ""),
+        },
         "rule_name": str(item.get("rule_name") or ""),
+        "scene": scene,
+        "use_ai_copy": item.get("use_ai_copy"),
         "scheduled_at": item.get("scheduled_at"),
         "platform_status": str(item.get("platform_status") or ""),
         "event_status": str(item.get("event_status") or ""),
         "task_status": str(item.get("task_status") or ""),
         "original_messages": item.get("original_messages") if isinstance(item.get("original_messages"), list) else [],
+        "raw": item.get("raw") if isinstance(item.get("raw"), dict) else {},
         "error": str(item.get("error") or ""),
     }
 
@@ -4207,6 +4307,13 @@ _PLATFORM_RUN_STATUS_LABELS = {
     "no_send": "无需发送",
     "exception": "处理异常",
 }
+
+
+def _normalized_platform_scene(platform_task: dict[str, Any]) -> dict[str, Any]:
+    raw_scene = platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {}
+    name = next((str(value).strip() for value in (raw_scene.get("name"), raw_scene.get("sceneName"), platform_task.get("sceneName")) if str(value or "").strip()), "")
+    code = next((str(value).strip() for value in (raw_scene.get("code"), raw_scene.get("sceneCode"), raw_scene.get("id"), platform_task.get("sceneCode"), platform_task.get("sceneId"), platform_task.get("scene_id")) if str(value or "").strip()), "")
+    return {"name": name, "code": code, "raw": raw_scene}
 
 
 def _platform_task_log_item(
@@ -4308,7 +4415,7 @@ def _platform_task_log_item(
         "user_id": identity["user_id"],
         "wechat": identity["wechat"],
         "rule_name": str(platform_task.get("ruleName") or platform_task.get("sceneName") or local_record.get("sop_pack_name") or ""),
-        "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
+        "scene": _normalized_platform_scene(platform_task),
         "use_ai_copy": _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy"))),
         "scheduled_at": scheduled_at,
         "pulled_at": str(platform_task.get("_aics_pulled_at") or received_at),
@@ -4344,6 +4451,21 @@ def _platform_task_log_item(
         ),
         "context_summary": send_payload.get("context") if isinstance(send_payload.get("context"), dict) else {},
         "batch_reason": str(send_payload.get("reason") or ""),
+        "raw": {
+            "platform_task": platform_task,
+            "local_event": {
+                "event_id": str(local_record.get("event_id") or ""),
+                "event_status": event_status,
+                "event_error": str(local_record.get("event_error") or ""),
+                "received_at": received_at,
+                "updated_at": str(local_record.get("event_updated_at") or ""),
+                "local_task_id": str(local_record.get("local_task_id") or ""),
+                "task_status": task_status,
+                "task_error": str(local_record.get("task_error") or ""),
+            },
+            "send_payload": send_payload,
+            "send_response": local_record.get("send_response") if isinstance(local_record.get("send_response"), dict) else {},
+        },
         "_sort_epoch": max(scheduled_epoch, _parse_epoch(received_at)),
     }
 

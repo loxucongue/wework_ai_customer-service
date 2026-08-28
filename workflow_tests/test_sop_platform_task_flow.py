@@ -1035,11 +1035,16 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         batch = next(run for run in result["runs"] if run["log_version"] == "batch_v2")
+        self.assertEqual(result["schema_version"], "sop_platform_run_view_v3")
         self.assertEqual(batch["status"], "completed")
         self.assertEqual(batch["summary_text"], "跳过 2 条，发送第 3 条，剩余 1 条未处理")
         self.assertEqual([item["sequence_state"] for item in batch["tasks"]], ["skipped", "skipped", "selected", "untouched"])
         self.assertEqual([item["consume_status"] for item in batch["tasks"]], [70, 70, 30, None])
         self.assertEqual(batch["customer_state"]["management_mode"], "ai")
+        self.assertEqual(batch["tasks"][2]["scene"]["code"], "scene_test")
+        self.assertTrue(batch["tasks"][2]["send"]["submitted"])
+        self.assertTrue(batch["tasks"][2]["consume"]["terminal"])
+        self.assertEqual(len(batch["raw_data"]["platform_tasks"]), 4)
         identifiers = {(item["key"], item["value"], item["source"]) for item in batch["identifiers"]}
         self.assertIn(("run_id", "online_service:101", "运行批次"), identifiers)
         self.assertIn(("platform_task.task_id", "101", "第三方任务"), identifiers)
@@ -1622,8 +1627,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(audit["context"]["customer_opened"])
         self.assertEqual(
             [(item["task_id"], item["status"]) for item in audit["consume_results"]],
-            [("1", 70), ("2", 70), ("3", 30)],
+            [("3", 20), ("1", 70), ("2", 70), ("3", 30)],
         )
+        self.assertEqual(audit["consume_results"][0]["phase"], "claim_before_send")
+        self.assertTrue(audit["consume_results"][0]["success"])
 
     async def test_successful_resolved_content_send_consumes_compat_trigger_after_delivery(self) -> None:
         model = _Model(
@@ -2093,7 +2100,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audit["batch_run_id"], "online_service:1")
         self.assertEqual(
             [(item["task_id"], item["status"]) for item in audit["consume_results"]],
-            [("1", 70), ("2", 30)],
+            [("2", 20), ("1", 70), ("2", 30)],
         )
 
     async def test_success_callback_during_quiet_hours_defers_consume_without_resend(self) -> None:
@@ -2436,7 +2443,7 @@ def _task(*, use_ai_copy: bool = True, message_content: list[dict[str, Any]] | N
         "user_wechat_id": "7294",
         "user_wechat": "DY258",
         "useAiCopy": use_ai_copy,
-        "scene": {"name": "test"},
+        "scene": {"name": "test", "sceneCode": "scene_test"},
         "message_content": (
             message_content if message_content is not None else [{"type": "text", "content": "平台原文"}]
         ),
