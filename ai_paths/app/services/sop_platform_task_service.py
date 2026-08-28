@@ -4132,6 +4132,8 @@ def _platform_run_status(*, version: str, representative: dict[str, Any], tasks:
         selected = next((task for task in tasks if task.get("task_id") == selected_task_id), {})
         if selected.get("consume_status") == 30 or selected.get("task_status") in {"sent", "sent_recovered", "shadow_send"}:
             return "completed"
+        if selected.get("consume_status") == 70 or selected.get("task_status") in {"completed_without_send", "shadow_no_send"}:
+            return "no_send"
         return "processing"
     if str(representative.get("decision") or "") == "send":
         return "completed" if str(representative.get("task_status") or "") in {"sent", "sent_recovered"} else "processing"
