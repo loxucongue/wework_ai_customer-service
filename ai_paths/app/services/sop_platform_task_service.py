@@ -609,7 +609,11 @@ class SopPlatformTaskService:
                 )
                 return 0
             task_id = _task_id(task)
-            if task_id in self._queued_ids or task_id in self._in_flight_ids:
+            # The platform keeps unconsumed tasks in the pending feed. An orphaned
+            # delivery can therefore be queued again while it still needs result
+            # reconciliation. Only an actively executing task blocks recovery;
+            # the per-task lock and dispatch idempotency serialize queued work.
+            if task_id in self._in_flight_ids:
                 return 0
             async with semaphore:
                 try:

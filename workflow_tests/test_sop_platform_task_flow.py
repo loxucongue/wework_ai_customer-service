@@ -1963,6 +1963,37 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent")
 
+    async def test_recovery_does_not_skip_orphan_also_present_in_pending_queue(self) -> None:
+        service, repo, platform, system = _service(model=_Model([]))
+        selected = _batch_task("2", text="already accepted")
+        service._ensure_local_task(selected, status="platform_processing")
+        local_task = repo.tasks["platform-sop:2"]
+        repo.update_sop_send_task(
+            local_task["id"],
+            status="sending",
+            send_payload={
+                "processing_mode": "customer_batch_sequence",
+                "selected_task_id": "2",
+                "final_messages": [_text("already accepted")],
+                "skipped_prefix_task_ids": [],
+                "consume_results": [],
+            },
+        )
+        repo.update_sop_event_status("platform_sop_task:2", status="platform_completed")
+        system.delivery_dispatch = lambda _key: {
+            "id": "dispatch-2",
+            "status": "platform_accepted",
+            "system_msgid": "system-message-2",
+        }
+        service._queued_ids.add("2")
+
+        recovered = await service.process_recoveries()
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(platform.consume_calls, [("2", 30)])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent")
+
     async def test_interrupted_batch_send_waits_when_delivery_check_is_unavailable(self) -> None:
         service, repo, platform, system = _service(model=_Model([]))
         selected = _batch_task("2", text="immutable message")
@@ -2460,6 +2491,16 @@ class _Repo:
             for item in self.events.values()
             if item["status"] in statuses and (not event_type or item["event_type"] == event_type)
         ][:limit]
+
+    def list_orphaned_platform_sop_events(self, *, limit=10):
+        records = []
+        for event in self.events.values():
+            if event.get("event_type") != "platform_sop_task" or event.get("status") != "platform_completed":
+                continue
+            task = next((item for item in self.tasks.values() if item.get("event_id") == event.get("event_id")), {})
+            if task.get("status") == "sending" and not task.get("send_response"):
+                records.append(dict(event))
+        return records[:limit]
 
 
 class _Platform:
