@@ -1862,12 +1862,54 @@ class SopPlatformTaskService:
             for value in recovered_audit.get("compat_trigger_task_ids", [])
             if str(value).strip()
         ] if isinstance(recovered_audit.get("compat_trigger_task_ids"), list) else []
-        terminal_ids = await self._finalize_batch_prefix(
-            selected_task_id=selected_id,
-            skipped_prefix_task_ids=skipped_ids,
-            compat_trigger_task_ids=trigger_ids,
-            audit=recovered_audit,
-        )
+        try:
+            terminal_ids = await self._finalize_batch_prefix(
+                selected_task_id=selected_id,
+                skipped_prefix_task_ids=skipped_ids,
+                compat_trigger_task_ids=trigger_ids,
+                audit=recovered_audit,
+            )
+        except RuntimeError as exc:
+            if not _platform_task_is_already_no_send(exc):
+                raise
+            recovered_audit.setdefault("consume_results", []).append(
+                {
+                    "task_id": selected_id,
+                    "status": 70,
+                    "remark": "platform_already_no_send",
+                    "response": {"code": 400, "message": str(exc)},
+                }
+            )
+            recovered_response = {
+                "code": 0,
+                "msg": "platform_task_already_no_send",
+                "data": {
+                    "send_status": "platform_already_no_send",
+                    "delivery_status": "platform_already_no_send",
+                    "callback_required": False,
+                    "delivery_recovery": recovery,
+                },
+            }
+            self.repository.update_sop_send_task(
+                local_task_id,
+                status="completed_without_send",
+                send_payload=recovered_audit,
+                send_response=recovered_response,
+                error="",
+            )
+            self.repository.update_sop_event_status(
+                f"platform_sop_task:{selected_id}",
+                status="platform_completed",
+                error="",
+            )
+            self._counters["platform_already_no_send"] += 1
+            return {
+                "processed": True,
+                "status": "completed_without_send",
+                "task_id": selected_id,
+                "terminal_task_ids": [selected_id],
+                "delivery_recovery": recovery,
+            }
         recovered_response = {
             "code": 0,
             "msg": "delivery_confirmed_after_interrupted_send",
@@ -1880,7 +1922,7 @@ class SopPlatformTaskService:
         }
         self.repository.update_sop_send_task(
             local_task_id,
-            status="sent",
+            status="sent_recovered",
             send_payload=recovered_audit,
             send_response=recovered_response,
             error="",
@@ -4088,11 +4130,11 @@ def _platform_run_status(*, version: str, representative: dict[str, Any], tasks:
     selected_task_id = str(representative.get("selected_task_id") or "")
     if selected_task_id:
         selected = next((task for task in tasks if task.get("task_id") == selected_task_id), {})
-        if selected.get("consume_status") == 30 or selected.get("task_status") in {"sent", "shadow_send"}:
+        if selected.get("consume_status") == 30 or selected.get("task_status") in {"sent", "sent_recovered", "shadow_send"}:
             return "completed"
         return "processing"
     if str(representative.get("decision") or "") == "send":
-        return "completed" if str(representative.get("task_status") or "") == "sent" else "processing"
+        return "completed" if str(representative.get("task_status") or "") in {"sent", "sent_recovered"} else "processing"
     if tasks and all(
         task.get("consume_status") == 70
         or task.get("task_status") in {"completed_without_send", "shadow_no_send"}
@@ -4850,6 +4892,11 @@ def _require_platform_status(response: dict[str, Any], expected: int) -> None:
         raise RuntimeError("platform consume response is missing status") from None
     if actual != expected:
         raise RuntimeError(f"platform consume status mismatch: expected {expected}, got {actual}")
+
+
+def _platform_task_is_already_no_send(error: Exception) -> bool:
+    message = str(error or "")
+    return "任务不可消费" in message and "当前状态：无需发送" in message
 
 
 _BEIJING_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")

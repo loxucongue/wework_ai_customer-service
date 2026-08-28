@@ -1928,7 +1928,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["delivery_recovery"]["match_type"], "platform_task_content")
         self.assertEqual(system.send_calls, [])
         self.assertEqual(platform.consume_calls, [("1", 70), ("2", 30)])
-        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent")
+        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent_recovered")
         self.assertEqual(repo.events["platform_sop_task:2"]["status"], "platform_completed")
 
     async def test_completed_event_with_sending_task_recovers_from_dispatch_and_consumes(self) -> None:
@@ -1961,7 +1961,41 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["delivery_recovery"]["status"], "confirmed_from_dispatch")
         self.assertEqual(platform.consume_calls, [("2", 30)])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent")
+        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent_recovered")
+
+    async def test_recovery_closes_task_already_marked_no_send_by_platform(self) -> None:
+        service, repo, platform, system = _service(model=_Model([]))
+        selected = _batch_task("2", text="duplicate already delivered")
+        service._ensure_local_task(selected, status="platform_processing")
+        local_task = repo.tasks["platform-sop:2"]
+        repo.update_sop_send_task(
+            local_task["id"],
+            status="sending",
+            send_payload={
+                "processing_mode": "customer_batch_sequence",
+                "selected_task_id": "2",
+                "final_messages": [_text("duplicate already delivered")],
+                "skipped_prefix_task_ids": [],
+                "consume_results": [],
+            },
+        )
+        repo.update_sop_event_status("platform_sop_task:2", status="platform_completed")
+        system.delivery_dispatch = lambda _key: {
+            "id": "dispatch-2",
+            "status": "platform_accepted",
+            "system_msgid": "system-message-2",
+        }
+        platform.consume = AsyncMock(
+            side_effect=RuntimeError(
+                "sop_platform_error: {'code': 400, 'message': '任务不可消费（当前状态：无需发送）'}"
+            )
+        )
+
+        result = await service.process_task(selected, recovery_status="platform_processing")
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "completed_without_send")
 
     async def test_recovery_does_not_skip_orphan_also_present_in_pending_queue(self) -> None:
         service, repo, platform, system = _service(model=_Model([]))
@@ -1993,7 +2027,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered, 1)
         self.assertEqual(platform.consume_calls, [("2", 30)])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent")
+        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent_recovered")
 
     async def test_interrupted_batch_send_waits_when_delivery_check_is_unavailable(self) -> None:
         service, repo, platform, system = _service(model=_Model([]))
