@@ -1986,6 +1986,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             "system_msgid": "system-message-2",
         }
         service._queued_ids.add("2")
+        service._in_flight_ids.add("2")
 
         recovered = await service.process_recoveries()
 

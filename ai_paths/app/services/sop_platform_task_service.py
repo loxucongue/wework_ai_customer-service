@@ -609,12 +609,11 @@ class SopPlatformTaskService:
                 )
                 return 0
             task_id = _task_id(task)
-            # The platform keeps unconsumed tasks in the pending feed. An orphaned
-            # delivery can therefore be queued again while it still needs result
-            # reconciliation. Only an actively executing task blocks recovery;
-            # the per-task lock and dispatch idempotency serialize queued work.
-            if task_id in self._in_flight_ids:
-                return 0
+            # The platform keeps unconsumed tasks in the pending feed, so an
+            # orphan can remain queued or in flight indefinitely. Recovery must
+            # still inspect its durable dispatch. The task lock, delivery
+            # idempotency key, and idempotent consume(30) keep reconciliation
+            # from producing a second customer message.
             async with semaphore:
                 try:
                     result = await self.process_task(task, recovery_status=str(event.get("status") or ""))
