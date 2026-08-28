@@ -75,6 +75,10 @@ def test_send_uses_distinct_external_userid_and_conversation_id_when_enabled() -
             rule_id=3,
             rule_name="加微后强触约策略A",
             rule_task_id=15,
+            trigger_event="add_wecom",
+            sort_order=2,
+            schedule_text="5 minutes",
+            scheduled_at="2026-08-28 19:31:17",
             reply_messages=[{"type": "text", "content": {"text": "test"}}],
         )
     )
@@ -87,6 +91,10 @@ def test_send_uses_distinct_external_userid_and_conversation_id_when_enabled() -
     assert captured["json_body"]["ruleId"] == 3
     assert captured["json_body"]["ruleName"] == "加微后强触约策略A"
     assert captured["json_body"]["ruleTaskId"] == 15
+    assert captured["json_body"]["triggerEvent"] == "add_wecom"
+    assert captured["json_body"]["sortOrder"] == 2
+    assert captured["json_body"]["scheduleText"] == "5 minutes"
+    assert captured["json_body"]["scheduledAt"] == "2026-08-28 19:31:17"
 
 
 def test_send_omits_conversation_id_until_downstream_contract_is_enabled() -> None:

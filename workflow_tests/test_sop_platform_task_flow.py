@@ -206,6 +206,17 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         service, repo, platform, system = _service(model=model)
         task = _task(use_ai_copy=False, message_content=[{"type": "text", "content": "平台原文"}])
+        task.update(
+            {
+                "runId": 0,
+                "ruleId": 81,
+                "ruleTaskId": 901,
+                "triggerEvent": "add_wecom",
+                "sortOrder": 3,
+                "scheduleText": "30 minutes",
+                "scheduledAt": "2026-08-24 10:30:00",
+            }
+        )
 
         result = await service.process_task(task)
 
@@ -214,6 +225,14 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
         self.assertEqual(system.send_calls[0]["plan_id"], "platform-sop-101")
         self.assertEqual(system.send_calls[0]["task_id"], "platform-sop-send-101")
+        self.assertEqual(system.send_calls[0]["run_id"], 0)
+        self.assertEqual(system.send_calls[0]["rule_id"], 81)
+        self.assertEqual(system.send_calls[0]["rule_name"], "test rule")
+        self.assertEqual(system.send_calls[0]["rule_task_id"], 901)
+        self.assertEqual(system.send_calls[0]["trigger_event"], "add_wecom")
+        self.assertEqual(system.send_calls[0]["sort_order"], 3)
+        self.assertEqual(system.send_calls[0]["schedule_text"], "30 minutes")
+        self.assertEqual(system.send_calls[0]["scheduled_at"], "2026-08-24 10:30:00")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(system.conversation_calls, 2)

@@ -88,6 +88,10 @@ class OutreachSystemClient:
         rule_id: str | int | None = None,
         rule_name: str | None = None,
         rule_task_id: str | int | None = None,
+        trigger_event: str | None = None,
+        sort_order: str | int | None = None,
+        schedule_text: str | None = None,
+        scheduled_at: str | int | None = None,
         source_channel: str = "proactive_message",
         source_kind: str = "proactive_message",
         source_request_id: str = "",
@@ -113,6 +117,14 @@ class OutreachSystemClient:
             body["ruleName"] = rule_name
         if rule_task_id is not None:
             body["ruleTaskId"] = rule_task_id
+        if trigger_event is not None:
+            body["triggerEvent"] = trigger_event
+        if sort_order is not None:
+            body["sortOrder"] = sort_order
+        if schedule_text is not None:
+            body["scheduleText"] = schedule_text
+        if scheduled_at is not None:
+            body["scheduledAt"] = scheduled_at
         if self.settings.outreach_system_send_conversation_id_enabled and conversation_id:
             body["conversation_id"] = conversation_id
         dispatch_id = ""

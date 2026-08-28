@@ -1288,6 +1288,7 @@ class SopPlatformTaskService:
                 **identity,
                 plan_id=f"platform-sop-deferred-{platform_task_id}",
                 task_id=f"platform-sop-deferred-send-{platform_task_id}",
+                **_platform_send_trace_fields(task),
                 reply_messages=final_messages,
                 source_channel="proactive_message",
                 source_kind="sop_platform_deferred_replay",
@@ -1503,13 +1504,15 @@ class SopPlatformTaskService:
         self.repository.update_sop_event_status(f"platform_sop_task:{selected_id}", status="platform_processing")
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{selected_id}")
         local_task_id = str(local_task.get("id") or "")
-        self.repository.update_sop_send_task(local_task_id, status="sending", send_payload=audit)
         send_payload = {
             **identity,
             "plan_id": f"platform-sop-{selected_id}",
             "task_id": f"platform-sop-send-{selected_id}",
+            **_platform_send_trace_fields(selected_task),
             "reply_messages": final_messages,
         }
+        audit["request"] = send_payload
+        self.repository.update_sop_send_task(local_task_id, status="sending", send_payload=audit)
         for task_id in [*skipped_ids, selected_id, *trigger_ids]:
             self._reserved_prefix_ids.add(task_id)
         try:
@@ -1683,11 +1686,17 @@ class SopPlatformTaskService:
         for task_id in [*skipped_ids, selected_id, *trigger_ids]:
             self._reserved_prefix_ids.add(task_id)
         try:
-            send_result = await self.system_client.send(
+            stored_request = audit.get("request") if isinstance(audit.get("request"), dict) else {}
+            send_payload = stored_request or {
                 **identity,
-                plan_id=f"platform-sop-{selected_id}",
-                task_id=f"platform-sop-send-{selected_id}",
-                reply_messages=final_messages,
+                "plan_id": f"platform-sop-{selected_id}",
+                "task_id": f"platform-sop-send-{selected_id}",
+                **_platform_send_trace_fields(platform_task),
+                "reply_messages": final_messages,
+            }
+            audit["request"] = send_payload
+            send_result = await self.system_client.send(
+                **send_payload,
                 source_channel="proactive_message",
                 source_kind="sop_platform_task",
                 source_request_id=f"platform_sop_task:{selected_id}",
@@ -1793,8 +1802,10 @@ class SopPlatformTaskService:
             **identity,
             "plan_id": f"platform-sop-{selected_id}",
             "task_id": f"platform-sop-send-{selected_id}",
+            **_platform_send_trace_fields(platform_task),
             "reply_messages": final_messages,
         }
+        audit["request"] = send_payload
         delivery_key = f"sop_platform_task:{local_task_id}"
         dispatch_loader = getattr(self.system_client, "delivery_dispatch", None)
         dispatch = dispatch_loader(delivery_key) if callable(dispatch_loader) else {}
@@ -2342,6 +2353,7 @@ class SopPlatformTaskService:
             **identity,
             "plan_id": f"platform-sop-{task_id}",
             "task_id": f"platform-sop-send-{task_id}",
+            **_platform_send_trace_fields(platform_task),
             "reply_messages": messages,
         }
         audit_payload = {
@@ -2781,6 +2793,7 @@ class SopPlatformTaskService:
                     **identity,
                     "plan_id": f"platform-sop-{task_id}",
                     "task_id": f"platform-sop-send-{task_id}",
+                    **_platform_send_trace_fields(platform_task),
                     "reply_messages": decision["reply_messages"],
                 }
                 existing_delivery = await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
@@ -3725,6 +3738,31 @@ def _task_identity(task: dict[str, Any]) -> dict[str, str]:
 
 def _task_id(task: dict[str, Any]) -> str:
     return str(task.get("task_id") or task.get("taskId") or task.get("id") or "").strip()
+
+
+def _platform_send_trace_fields(task: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for output_key, source_keys in (
+        ("run_id", ("runId", "run_id")),
+        ("rule_id", ("ruleId", "rule_id")),
+        ("rule_name", ("ruleName", "rule_name")),
+        ("rule_task_id", ("ruleTaskId", "rule_task_id")),
+        ("trigger_event", ("triggerEvent", "trigger_event")),
+        ("sort_order", ("sortOrder", "sort_order")),
+        ("schedule_text", ("scheduleText", "schedule_text")),
+        ("scheduled_at", ("scheduledAt", "scheduled_at")),
+    ):
+        value = _first_present_task_field(task, *source_keys)
+        if value is not None:
+            fields[output_key] = value
+    return fields
+
+
+def _first_present_task_field(task: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in task and task[key] is not None:
+            return task[key]
+    return None
 
 
 def _task_run_id(task: dict[str, Any]) -> str:
