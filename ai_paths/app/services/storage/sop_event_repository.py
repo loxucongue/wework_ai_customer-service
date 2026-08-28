@@ -213,6 +213,59 @@ class SopEventRepositoryMixin:
             records.append(row)
         return records
 
+    def list_deferred_platform_sop_tasks(
+        self,
+        *,
+        start_at: str,
+        end_at: str,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Return the bounded source rows used by the customer replay queue."""
+        safe_limit = max(1, min(int(limit or 5000), 10000))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    e.event_id,
+                    e.status AS event_status,
+                    e.raw_payload_json,
+                    t.id AS local_task_id,
+                    t.customer_id,
+                    t.external_userid,
+                    t.corp_id,
+                    t.user_id,
+                    t.wechat,
+                    t.status AS task_status,
+                    t.send_payload_json,
+                    t.send_response_json,
+                    t.error AS task_error,
+                    t.created_at AS task_created_at,
+                    t.updated_at AS task_updated_at,
+                    t.sent_at
+                FROM sop_events e
+                JOIN sop_send_tasks t ON t.event_id=e.event_id
+                WHERE e.event_type='platform_sop_task'
+                  AND t.created_at>=?
+                  AND t.created_at<?
+                ORDER BY t.created_at ASC
+                LIMIT ?
+                """,
+                (start_at, end_at, safe_limit),
+            ).fetchall()
+        records: list[dict[str, Any]] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            raw_payload = loads_dict(row.pop("raw_payload_json", "{}"))
+            row["platform_task"] = (
+                raw_payload.get("platform_task")
+                if isinstance(raw_payload.get("platform_task"), dict)
+                else {}
+            )
+            row["send_payload"] = loads_dict(row.pop("send_payload_json", "{}"))
+            row["send_response"] = loads_dict(row.pop("send_response_json", "{}"))
+            records.append(row)
+        return records
+
     def list_recent_platform_sop_wechats(self, *, days: int = 2) -> list[dict[str, Any]]:
         safe_days = max(1, min(int(days or 2), 30))
         beijing = timezone(timedelta(hours=8))

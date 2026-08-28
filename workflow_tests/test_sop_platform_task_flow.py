@@ -1086,7 +1086,9 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         payload = next(iter(repo.tasks.values()))["send_payload"]
         archive = payload["quiet_hours_archive"]
-        self.assertTrue(archive["no_replay"])
+        self.assertFalse(archive["no_replay"])
+        self.assertEqual(payload["deferred_replay"]["status"], "pending")
+        self.assertEqual(payload["deferred_replay"]["interval_seconds"], 600)
         self.assertEqual(archive["ordered_groups"][0]["task_id"], "1")
         self.assertEqual(
             archive["ordered_groups"][0]["original_messages"],
@@ -1120,6 +1122,125 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item["original_messages"][0]["content"]["text"] for item in groups],
             ["第一条，价格原文不改", "第二条，价格原文不改", "第三条，价格原文不改"],
+        )
+
+    async def test_deferred_replay_sends_only_earliest_original_group_per_interval(self) -> None:
+        settings = _settings(quiet_hours_enabled=True)
+        settings.sop_platform_quiet_start_hour = 0
+        settings.sop_platform_quiet_end_hour = 0
+        service, _repo, _platform, system = _service(model=_Model([]), settings=settings)
+        await service.process_customer_batch(
+            _customer_batch(
+                _batch_task("1", text="first original message"),
+                _batch_task("2", text="second original message"),
+            )
+        )
+        settings.sop_platform_quiet_hours_enabled = False
+
+        first = await service.process_deferred_replays()
+        immediate_second = await service.process_deferred_replays()
+
+        self.assertEqual(first, 1)
+        self.assertEqual(immediate_second, 0)
+        self.assertEqual(len(system.send_calls), 1)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("first original message")])
+
+        with patch(
+            "app.services.sop_platform_task_service.time.time",
+            return_value=time.time() + 601,
+        ):
+            second = await service.process_deferred_replays()
+
+        self.assertEqual(second, 1)
+        self.assertEqual(len(system.send_calls), 2)
+        self.assertEqual(system.send_calls[1]["reply_messages"], [_text("second original message")])
+
+    async def test_new_daytime_task_is_consumed_and_appended_behind_active_replay(self) -> None:
+        settings = _settings(quiet_hours_enabled=True)
+        settings.sop_platform_quiet_start_hour = 0
+        settings.sop_platform_quiet_end_hour = 0
+        service, repo, platform, system = _service(model=_Model([]), settings=settings)
+        await service.process_customer_batch(_customer_batch(_batch_task("1", text="night backlog")))
+        settings.sop_platform_quiet_hours_enabled = False
+        service._refresh_deferred_replay_keys()
+
+        result = await service.process_customer_batch(
+            _customer_batch(_batch_task("2", text="new daytime task"))
+        )
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70)])
+        self.assertEqual(system.send_calls, [])
+        payload = repo.tasks["platform-sop:2"]["send_payload"]
+        self.assertEqual(payload["reason"], "deferred_behind_quiet_backlog")
+        self.assertEqual(payload["deferred_replay"]["status"], "pending")
+
+    async def test_deferred_replay_waits_for_delivery_callback_before_next_group(self) -> None:
+        settings = _settings(quiet_hours_enabled=True)
+        settings.sop_platform_quiet_start_hour = 0
+        settings.sop_platform_quiet_end_hour = 0
+        service, repo, _platform, system = _service(model=_Model([]), settings=settings)
+        await service.process_customer_batch(
+            _customer_batch(_batch_task("1"), _batch_task("2"))
+        )
+        settings.sop_platform_quiet_hours_enabled = False
+        system.send_responses.append(
+            {
+                "code": 0,
+                "data": {
+                    "callback_required": True,
+                    "delivery_status": "platform_accepted",
+                },
+            }
+        )
+
+        accepted = await service.process_deferred_replays()
+        blocked_while_sending = await service.process_deferred_replays()
+
+        self.assertEqual(accepted, 1)
+        self.assertEqual(blocked_while_sending, 0)
+        first = repo.tasks["platform-sop:1"]
+        self.assertEqual(first["send_payload"]["deferred_replay"]["status"], "sending")
+
+        await service.finalize_message_delivery(
+            {
+                "status": "send_succeeded",
+                "confirmed_at": datetime.now(timezone.utc).isoformat(),
+                "source_task_id": first["id"],
+                "source_context": {
+                    "sop_send_task_id": first["id"],
+                    "sop_event_id": "platform_sop_task:1",
+                    "platform_task_id": "1",
+                    "deferred_replay": True,
+                },
+            }
+        )
+
+        self.assertEqual(
+            repo.tasks["platform-sop:1"]["send_payload"]["deferred_replay"]["status"],
+            "sent",
+        )
+
+    async def test_deferred_replay_human_takeover_skips_queue_without_sending(self) -> None:
+        settings = _settings(quiet_hours_enabled=True)
+        settings.sop_platform_quiet_start_hour = 0
+        settings.sop_platform_quiet_end_hour = 0
+        service, repo, _platform, system = _service(model=_Model([]), settings=settings)
+        await service.process_customer_batch(
+            _customer_batch(_batch_task("1"), _batch_task("2"))
+        )
+        settings.sop_platform_quiet_hours_enabled = False
+        system.conversation_payload["data"]["ai_auto_reply"] = False
+
+        result = await service.process_deferred_replays()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(system.send_calls, [])
+        self.assertTrue(
+            all(
+                task["send_payload"]["deferred_replay"]["status"] == "skipped"
+                for task in repo.tasks.values()
+            )
         )
 
     async def test_incomplete_pending_page_is_not_processed(self) -> None:
@@ -1875,6 +1996,9 @@ def _settings(*, shadow_mode: bool = False, quiet_hours_enabled: bool = False):
         sop_platform_quiet_hours_enabled=quiet_hours_enabled,
         sop_platform_quiet_start_hour=0,
         sop_platform_quiet_end_hour=8,
+        sop_platform_deferred_replay_enabled=True,
+        sop_platform_deferred_replay_interval_seconds=600,
+        sop_platform_deferred_replay_concurrency=6,
         sop_platform_quiet_first_add_grace_minutes=30,
     )
 
@@ -1928,6 +2052,29 @@ class _Repo:
 
     def get_sop_send_task_by_idempotency_key(self, idempotency_key):
         return dict(self.tasks.get(idempotency_key) or {})
+
+    def get_sop_send_task(self, task_id):
+        return dict(next((item for item in self.tasks.values() if item["id"] == task_id), {}))
+
+    def list_deferred_platform_sop_tasks(self, *, start_at, end_at, limit=5000):
+        del start_at, end_at, limit
+        records = []
+        for task in self.tasks.values():
+            event = self.events.get(task.get("event_id"), {})
+            raw = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+            platform_task = raw.get("platform_task") if isinstance(raw.get("platform_task"), dict) else {}
+            records.append(
+                {
+                    "event_id": task.get("event_id"),
+                    "local_task_id": task.get("id"),
+                    "task_status": task.get("status"),
+                    "send_payload": task.get("send_payload") or {},
+                    "send_response": task.get("send_response") or {},
+                    "sent_at": task.get("sent_at") or "",
+                    "platform_task": platform_task,
+                }
+            )
+        return records
 
     def find_sop_send_task_delivery_duplicate(self, send_once_key, *, exclude_idempotency_key=""):
         for task in self.tasks.values():
