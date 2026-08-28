@@ -1762,9 +1762,103 @@ class SopPlatformTaskService:
             "terminal_task_ids": terminal_ids,
         }
 
+    async def _recover_interrupted_batch_send(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        local_task: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Close the crash window between status=20, delivery, and status=30."""
+        selected_id = _task_id(platform_task)
+        identity = _task_identity(platform_task)
+        audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        final_messages = audit.get("final_messages") if isinstance(audit.get("final_messages"), list) else []
+        local_task_id = str(local_task.get("id") or "")
+        if not selected_id or not local_task_id or not final_messages:
+            raise RuntimeError("interrupted batch send recovery is missing immutable send facts")
+        send_payload = {
+            **identity,
+            "plan_id": f"platform-sop-{selected_id}",
+            "task_id": f"platform-sop-send-{selected_id}",
+            "reply_messages": final_messages,
+        }
+        existing_delivery = await self._existing_platform_delivery(
+            identity=identity,
+            send_payload=send_payload,
+        )
+        if existing_delivery.get("error"):
+            return {
+                "processed": False,
+                "status": "recovery_waiting",
+                "task_id": selected_id,
+                "reason": "conversation_delivery_check_failed",
+                "delivery_recovery": existing_delivery,
+            }
+        if not existing_delivery.get("found"):
+            return await self._retry_batch_send(platform_task, local_task=local_task)
+
+        recovery = {
+            "status": "confirmed_from_conversation",
+            "checked_at": utc_now_iso(),
+            **existing_delivery,
+        }
+        recovered_audit = {**audit, "delivery_recovery": recovery}
+        skipped_ids = [
+            str(value).strip()
+            for value in recovered_audit.get("skipped_prefix_task_ids", [])
+            if str(value).strip()
+        ] if isinstance(recovered_audit.get("skipped_prefix_task_ids"), list) else []
+        trigger_ids = [
+            str(value).strip()
+            for value in recovered_audit.get("compat_trigger_task_ids", [])
+            if str(value).strip()
+        ] if isinstance(recovered_audit.get("compat_trigger_task_ids"), list) else []
+        terminal_ids = await self._finalize_batch_prefix(
+            selected_task_id=selected_id,
+            skipped_prefix_task_ids=skipped_ids,
+            compat_trigger_task_ids=trigger_ids,
+            audit=recovered_audit,
+        )
+        recovered_response = {
+            "code": 0,
+            "msg": "delivery_confirmed_from_conversation_after_restart",
+            "data": {
+                "send_status": "confirmed_from_conversation",
+                "delivery_status": "delivered",
+                "callback_required": False,
+                "delivery_recovery": recovery,
+            },
+        }
+        self.repository.update_sop_send_task(
+            local_task_id,
+            status="sent",
+            send_payload=recovered_audit,
+            send_response=recovered_response,
+            error="",
+            sent_at=utc_now_iso(),
+        )
+        self.repository.update_sop_event_status(
+            f"platform_sop_task:{selected_id}",
+            status="platform_completed",
+            error="",
+        )
+        self._counters["send_recovered_from_conversation"] += 1
+        return {
+            "processed": True,
+            "status": "sent",
+            "task_id": selected_id,
+            "terminal_task_ids": terminal_ids,
+            "delivery_recovery": recovery,
+        }
+
     def _restore_reserved_prefix_ids(self) -> None:
         events = self.repository.list_sop_events_by_statuses(
-            ["platform_batch_send_retry", "platform_delivery_pending", "platform_batch_consume_pending"],
+            [
+                "platform_processing",
+                "platform_batch_send_retry",
+                "platform_delivery_pending",
+                "platform_batch_consume_pending",
+            ],
             limit=500,
             event_type="platform_sop_task",
         )
@@ -2349,6 +2443,13 @@ class SopPlatformTaskService:
             status="platform_received",
         )
         local_status = str(local_task.get("status") or "")
+        local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        if (
+            recovery_status == "platform_processing"
+            and local_status == "sending"
+            and str(local_audit.get("processing_mode") or "") == "customer_batch_sequence"
+        ):
+            return await self._recover_interrupted_batch_send(platform_task, local_task=local_task)
         if recovery_status == "platform_batch_send_retry":
             return await self._retry_batch_send(platform_task, local_task=local_task)
         if recovery_status == "platform_batch_consume_pending":
@@ -3791,6 +3892,50 @@ def _merge_platform_task_runs(task_items: list[dict[str, Any]]) -> list[dict[str
                         _int_or_zero(item.get("consume_status")) not in {30, 70} for item in run_tasks
                     ),
                 },
+                "identifiers": _dedupe_identifier_items(
+                    [
+                        {
+                            "key": "run_id",
+                            "value": group_id,
+                            "source": "运行批次",
+                        },
+                        {
+                            "key": "batch_key",
+                            "value": str(representative.get("batch_key") or ""),
+                            "source": "运行批次",
+                        },
+                        {
+                            "key": "customer_id",
+                            "value": str(representative.get("customer_id") or ""),
+                            "source": "客户边界",
+                        },
+                        {
+                            "key": "external_userid",
+                            "value": str(representative.get("external_userid") or ""),
+                            "source": "客户边界",
+                        },
+                        {
+                            "key": "corp_id",
+                            "value": str(representative.get("corp_id") or ""),
+                            "source": "客户边界",
+                        },
+                        {
+                            "key": "user_id",
+                            "value": str(representative.get("user_id") or ""),
+                            "source": "客户边界",
+                        },
+                        *(
+                            identifier
+                            for item in ordered_items
+                            for identifier in (
+                                item.get("identifiers")
+                                if isinstance(item.get("identifiers"), list)
+                                else []
+                            )
+                            if isinstance(identifier, dict)
+                        ),
+                    ]
+                ),
                 "quiet_hours_archive": (
                     representative.get("quiet_hours_archive")
                     if isinstance(representative.get("quiet_hours_archive"), dict)
@@ -4032,6 +4177,27 @@ def _platform_task_log_item(
             if isinstance(item, dict) and str(item.get("task_id") or "").strip()
         ]
     inferred_run_anchor = selected_task_id or (batch_task_ids[0] if batch_task_ids else task_id)
+    identifiers = _dedupe_identifier_items(
+        [
+            {
+                "key": "event_id",
+                "value": str(local_record.get("event_id") or f"platform_sop_task:{task_id}"),
+                "source": "本地事件",
+            },
+            {
+                "key": "local_task_id",
+                "value": str(local_record.get("local_task_id") or ""),
+                "source": "本地发送任务",
+            },
+            *_collect_identifier_items(platform_task, source="第三方任务", prefix="platform_task"),
+            *_collect_identifier_items(send_payload, source="处理与消费", prefix="send_payload"),
+            *_collect_identifier_items(
+                local_record.get("send_response") if isinstance(local_record.get("send_response"), dict) else {},
+                source="消息发送",
+                prefix="send_response",
+            ),
+        ]
+    )
     return {
         "task_id": task_id,
         "bucket": bucket,
@@ -4077,6 +4243,7 @@ def _platform_task_log_item(
         "consume_results": (
             send_payload.get("consume_results") if isinstance(send_payload.get("consume_results"), list) else []
         ),
+        "identifiers": identifiers,
         "quiet_hours_archive": (
             send_payload.get("quiet_hours_archive")
             if isinstance(send_payload.get("quiet_hours_archive"), dict)
@@ -4086,6 +4253,68 @@ def _platform_task_log_item(
         "batch_reason": str(send_payload.get("reason") or ""),
         "_sort_epoch": max(scheduled_epoch, _parse_epoch(received_at)),
     }
+
+
+def _collect_identifier_items(
+    value: Any,
+    *,
+    source: str,
+    prefix: str = "",
+) -> list[dict[str, str]]:
+    output: list[dict[str, str]] = []
+
+    def visit(current: Any, path: str) -> None:
+        if isinstance(current, dict):
+            for raw_key, child in current.items():
+                key = str(raw_key)
+                child_path = f"{path}.{key}" if path else key
+                is_identifier = (
+                    key.lower() == "id"
+                    or key.lower().endswith("_id")
+                    or key.lower().endswith("_ids")
+                    or key.endswith("Id")
+                    or key.endswith("Ids")
+                    or key.endswith("ID")
+                    or key.endswith("IDs")
+                )
+                if is_identifier and not isinstance(child, (dict, list)):
+                    text = str(child or "").strip()
+                    if text:
+                        output.append({"key": child_path, "value": text, "source": source})
+                elif is_identifier and isinstance(child, list):
+                    for index, item in enumerate(child):
+                        if not isinstance(item, (dict, list)) and str(item or "").strip():
+                            output.append(
+                                {
+                                    "key": f"{child_path}[{index}]",
+                                    "value": str(item).strip(),
+                                    "source": source,
+                                }
+                            )
+                visit(child, child_path)
+        elif isinstance(current, list):
+            for index, child in enumerate(current):
+                visit(child, f"{path}[{index}]")
+
+    visit(value, prefix)
+    return output
+
+
+def _dedupe_identifier_items(items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    output: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        key = str(item.get("key") or "").strip()
+        value = str(item.get("value") or "").strip()
+        source = str(item.get("source") or "").strip()
+        if not key or not value:
+            continue
+        marker = (source, key, value)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        output.append({"key": key, "value": value, "source": source})
+    return output
 
 
 def _record_task_id(record: dict[str, Any]) -> str:

@@ -1030,6 +1030,11 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["sequence_state"] for item in batch["tasks"]], ["skipped", "skipped", "selected", "untouched"])
         self.assertEqual([item["consume_status"] for item in batch["tasks"]], [70, 70, 30, None])
         self.assertEqual(batch["customer_state"]["management_mode"], "ai")
+        identifiers = {(item["key"], item["value"], item["source"]) for item in batch["identifiers"]}
+        self.assertIn(("run_id", "online_service:101", "运行批次"), identifiers)
+        self.assertIn(("platform_task.task_id", "101", "第三方任务"), identifiers)
+        self.assertIn(("event_id", "platform_sop_task:101", "本地事件"), identifiers)
+        self.assertIn(("local_task_id", "local-101", "本地发送任务"), identifiers)
         self.assertEqual(repository_filters["wechat"], "dy258")
         self.assertEqual(repository_filters["date_from"], "2026-08-26T00:00:00+00:00")
         self.assertEqual(repository_filters["date_to"], "2026-08-27T02:00:00+00:00")
@@ -1863,6 +1868,81 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(model.calls), 1)
         self.assertTrue(repo.tasks["platform-sop:2"]["send_payload"]["delivery_retry"]["resolved_at"])
+
+    async def test_interrupted_batch_send_confirms_delivery_before_consuming_without_resend(self) -> None:
+        service, repo, platform, system = _service(model=_Model([]))
+        selected = _batch_task("2", text="already delivered")
+        service._ensure_local_task(selected, status="platform_processing")
+        local_task = repo.tasks["platform-sop:2"]
+        audit = {
+            "processing_mode": "customer_batch_sequence",
+            "batch_run_id": "online_service:1",
+            "batch_key": "online_service|ww_corp|dy258|wm_external",
+            "biz_type": "online_service",
+            "batch_task_ids": ["1", "2", "3"],
+            "selected_task_id": "2",
+            "skipped_prefix_task_ids": ["1"],
+            "compat_trigger_task_ids": [],
+            "final_messages": [_text("already delivered")],
+            "consume_results": [],
+        }
+        repo.update_sop_send_task(local_task["id"], status="sending", send_payload=audit)
+        repo.create_sop_event(
+            {
+                "event_id": "platform_sop_task:1",
+                "event_type": "platform_sop_task",
+                "platform_task": _batch_task("1"),
+            }
+        )
+        repo.update_sop_event_status("platform_sop_task:1", status="platform_processing")
+        system.conversation_payload = {
+            "code": 0,
+            "data": {
+                "ai_auto_reply": True,
+                "customer_relation": {"status": "active", "is_deleted": False},
+                "messages": [
+                    {
+                        "direction": "assistant",
+                        "msgtype": "text",
+                        "content": "already delivered",
+                        "msgid": "platform-message-2001",
+                    }
+                ],
+            },
+        }
+
+        result = await service.process_task(selected, recovery_status="platform_processing")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["delivery_recovery"]["match_type"], "platform_task_content")
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(platform.consume_calls, [("1", 70), ("2", 30)])
+        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sent")
+        self.assertEqual(repo.events["platform_sop_task:2"]["status"], "platform_completed")
+
+    async def test_interrupted_batch_send_waits_when_delivery_check_is_unavailable(self) -> None:
+        service, repo, platform, system = _service(model=_Model([]))
+        selected = _batch_task("2", text="immutable message")
+        service._ensure_local_task(selected, status="platform_processing")
+        local_task = repo.tasks["platform-sop:2"]
+        repo.update_sop_send_task(
+            local_task["id"],
+            status="sending",
+            send_payload={
+                "processing_mode": "customer_batch_sequence",
+                "selected_task_id": "2",
+                "final_messages": [_text("immutable message")],
+                "skipped_prefix_task_ids": [],
+            },
+        )
+        system.conversation = AsyncMock(side_effect=RuntimeError("conversation unavailable"))
+
+        result = await service.process_task(selected, recovery_status="platform_processing")
+
+        self.assertEqual(result["status"], "recovery_waiting")
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(repo.tasks["platform-sop:2"]["status"], "sending")
 
     async def test_delivery_callback_consumes_prefix_only_after_confirmed_success(self) -> None:
         model = _Model(

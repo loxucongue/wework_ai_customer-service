@@ -21,6 +21,12 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 
+type IdentifierItem = {
+  key: string;
+  value: string;
+  source: string;
+};
+
 type RunTask = {
   task_id: string;
   sequence: number;
@@ -80,6 +86,7 @@ type RunItem = {
     completed_count?: number;
     pending_count?: number;
   };
+  identifiers?: IdentifierItem[];
   missing_fields?: string[];
   raw_debug?: JsonRecord;
 };
@@ -375,6 +382,14 @@ function RunDetail({ run }: { run: RunItem }) {
       ) : null}
 
       <section className="border-b bg-white px-6 py-5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">全部标识 ID</h3>
+          <span className="text-xs text-slate-500">{run.identifiers?.length || 0} 项</span>
+        </div>
+        <IdentifierPanel identifiers={run.identifiers || []} />
+      </section>
+
+      <section className="border-b bg-white px-6 py-5">
         <h3 className="text-sm font-semibold">处理链路</h3>
         <div className="mt-4 grid gap-2 md:grid-cols-5">
           <ProcessStep icon={<Inbox />} label="任务到期" detail={`${run.task_count} 条`} done />
@@ -528,6 +543,32 @@ function ConsumeResults({ results }: { results: unknown[] }) {
           <span className="font-mono">#{String(result.task_id || "-")}</span>
           <span>{consumeStatusLabel(Number(result.status || 0))}</span>
           <span className="truncate text-slate-500">{String(result.remark || "-")}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function IdentifierPanel({ identifiers }: { identifiers: IdentifierItem[] }) {
+  if (!identifiers.length) return <div className="mt-3 text-sm text-slate-500">该历史版本未记录标识信息</div>;
+  const grouped = identifiers.reduce<Record<string, IdentifierItem[]>>((result, item) => {
+    const source = item.source || "其他";
+    (result[source] ||= []).push(item);
+    return result;
+  }, {});
+  return (
+    <div className="mt-4 grid gap-4 xl:grid-cols-2">
+      {Object.entries(grouped).map(([source, items]) => (
+        <div key={source} className="min-w-0 border">
+          <div className="border-b bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">{source}</div>
+          <div className="divide-y">
+            {items.map((item, index) => (
+              <div key={`${item.key}-${item.value}-${index}`} className="grid gap-1 px-3 py-2 text-xs sm:grid-cols-[minmax(150px,.8fr)_minmax(0,1.2fr)]">
+                <span className="break-all font-mono text-slate-500">{item.key}</span>
+                <span className="break-all font-mono text-slate-900">{item.value}</span>
+              </div>
+            ))}
+          </div>
         </div>
       ))}
     </div>
