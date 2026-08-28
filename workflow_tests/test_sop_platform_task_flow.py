@@ -20,6 +20,7 @@ from app.services.sop_platform_task_service import (
     SopPlatformTaskService,
     _batch_decision_error,
     _resolve_compatible_pending_tasks,
+    _sop_platform_batch_business_facts_for_model,
 )
 from app.services.sop_reply_pack_service import SopReplyPackService
 
@@ -71,7 +72,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Settings.model_fields["sop_platform_poll_seconds"].default, 10.0)
 
     def test_platform_quiet_hours_defaults_match_production_contract(self) -> None:
-        self.assertTrue(Settings.model_fields["sop_platform_quiet_hours_enabled"].default)
+        self.assertFalse(Settings.model_fields["sop_platform_quiet_hours_enabled"].default)
+        self.assertFalse(Settings.model_fields["sop_platform_deferred_replay_enabled"].default)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_start_hour"].default, 0)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_end_hour"].default, 8)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_first_add_grace_minutes"].default, 30)
@@ -82,6 +84,23 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             Settings.model_fields["sop_platform_decision_model_fallbacks"].default,
             "gpt-5.4-mini,gpt-5.4",
         )
+
+    def test_platform_sequence_model_receives_safety_boundaries_without_activity_facts(self) -> None:
+        facts = _sop_platform_batch_business_facts_for_model()
+
+        self.assertEqual(facts["scope"], "safety_boundaries_only")
+        self.assertNotIn("offer", facts)
+        self.assertNotIn("transaction_policy", facts)
+        serialized = json.dumps(facts, ensure_ascii=False)
+        for forbidden_key in (
+            "new_customer_price",
+            "prepay_amount",
+            "tail_amount",
+            "refund_rule",
+            "quota",
+            "registration_gift",
+        ):
+            self.assertNotIn(forbidden_key, serialized)
 
     def test_platform_prompt_has_layered_send_audit_contract(self) -> None:
         required_sections = (

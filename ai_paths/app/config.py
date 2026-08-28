@@ -157,11 +157,11 @@ class Settings(BaseSettings):
     sop_platform_recovery_batch_size: int = Field(default=10, alias="SOP_PLATFORM_RECOVERY_BATCH_SIZE")
     sop_platform_max_task_age_seconds: int = Field(default=600, alias="SOP_PLATFORM_MAX_TASK_AGE_SECONDS")
     sop_platform_live_not_before: str = Field(default="", alias="SOP_PLATFORM_LIVE_NOT_BEFORE")
-    sop_platform_quiet_hours_enabled: bool = Field(default=True, alias="SOP_PLATFORM_QUIET_HOURS_ENABLED")
+    sop_platform_quiet_hours_enabled: bool = Field(default=False, alias="SOP_PLATFORM_QUIET_HOURS_ENABLED")
     sop_platform_quiet_start_hour: int = Field(default=0, alias="SOP_PLATFORM_QUIET_START_HOUR")
     sop_platform_quiet_end_hour: int = Field(default=8, alias="SOP_PLATFORM_QUIET_END_HOUR")
     sop_platform_deferred_replay_enabled: bool = Field(
-        default=True,
+        default=False,
         alias="SOP_PLATFORM_DEFERRED_REPLAY_ENABLED",
     )
     sop_platform_deferred_replay_interval_seconds: int = Field(

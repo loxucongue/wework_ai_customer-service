@@ -183,6 +183,7 @@ SOP_PLATFORM_BATCH_SYSTEM_PROMPT = """
 9. 客户提到“第一条、第二条”等顺序时，必须同时核对每组 `sequence_index` 和该组真实 `message_content`，不得只凭语义相近就把后一组内容错认成前一组。
 10. `evidence_refs` 只能引用输入中真实存在的 `msg_*` 或 `task:*` 引用。
 11. 只返回小写 json，不要 Markdown 或解释。
+12. 每个消息组中的价格、项目、邀约、退款说明、预约金和媒体，都是该任务自己的权威原始事实。不得与任何全局活动报价比较，不得因为不同任务价格或品项不同而判定冲突或跳过。
 
 输出：
 {
@@ -215,7 +216,6 @@ SOP_TRANSITION_FACT_AUDIT_PROMPT = """
 
 def _sop_platform_batch_business_facts_for_model() -> dict[str, Any]:
     source = sop_platform_business_facts_for_model()
-    offer = source.get("offer") if isinstance(source.get("offer"), dict) else {}
     transaction = (
         source.get("transaction_policy")
         if isinstance(source.get("transaction_policy"), dict)
@@ -223,28 +223,8 @@ def _sop_platform_batch_business_facts_for_model() -> dict[str, Any]:
     )
     return {
         "version": source.get("version"),
-        "offer": {
-            key: offer.get(key)
-            for key in (
-                "new_customer_price",
-                "prepay_amount",
-                "tail_amount",
-                "refund_rule",
-                "quota",
-                "registration_gift",
-            )
-            if offer.get(key) not in (None, "", [], {})
-        },
-        "transaction_policy": {
-            key: transaction.get(key)
-            for key in (
-                "payment_order_policy",
-                "appointment_flow_mode",
-                "post_paid_flow_description",
-                "payment_hard_blocks",
-            )
-            if transaction.get(key) not in (None, "", [], {})
-        },
+        "scope": "safety_boundaries_only",
+        "payment_hard_blocks": transaction.get("payment_hard_blocks") or [],
         "hard_forbidden": source.get("hard_forbidden") or [],
     }
 
@@ -961,7 +941,7 @@ class SopPlatformTaskService:
             "transition_text": transition_text,
             "conversation_timeline": context.get("conversation_timeline") or [],
             "selected_platform_messages": _platform_messages(selected_task),
-            "authoritative_business_facts": sop_platform_business_facts_for_model(),
+            "safety_boundaries": _sop_platform_batch_business_facts_for_model(),
         }
         deadline = time.monotonic() + max(5.0, float(self.settings.sop_platform_model_timeout_seconds))
         try:
@@ -2977,7 +2957,7 @@ class SopPlatformTaskService:
                 "business_state": context.get("business_state") or {},
             },
             "material_library": material_library,
-            "authoritative_business_facts": sop_platform_business_facts_for_model(),
+            "authoritative_business_facts": _sop_platform_batch_business_facts_for_model(),
             "output_contract": {
                 "decision": "send | no_send",
                 "reason_code": "required for no_send; optional for send",
