@@ -1479,6 +1479,16 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70)])
+        self.assertEqual(len(platform.rule_data_calls), 2)
+        self.assertTrue(
+            all(
+                call["scene_code"] == "humantakeover"
+                and call["scene_name"] == "人工接管"
+                and call["remark"] == "当前会话由人工接待"
+                and call["send_status"] == 20
+                for call in platform.rule_data_calls
+            )
+        )
         self.assertEqual(system.conversation_calls, 1)
         system.conversation_status.assert_awaited_once()
 
@@ -1496,6 +1506,16 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70)])
+        self.assertEqual(len(platform.rule_data_calls), 2)
+        self.assertTrue(
+            all(
+                call["scene_code"] == "customer_deleted"
+                and call["scene_name"] == "客户删除"
+                and call["remark"] == "客户关系已删除"
+                and call["send_status"] == 20
+                for call in platform.rule_data_calls
+            )
+        )
         self.assertTrue(
             all(item["remark"] == "customer_relation_deleted" for item in platform.consume_details)
         )
@@ -2568,6 +2588,7 @@ class _Platform:
     def __init__(self):
         self.consume_calls: list[tuple[str, int]] = []
         self.consume_responses: list[dict[str, Any]] = []
+        self.rule_data_calls: list[dict[str, Any]] = []
 
         self.consume_details: list[dict[str, Any]] = []
 
@@ -2584,6 +2605,10 @@ class _Platform:
         if self.consume_responses:
             return self.consume_responses.pop(0)
         return {"code": 200, "data": {"task_id": task_id, "status": status}}
+
+    async def service_rule_data(self, **kwargs):
+        self.rule_data_calls.append(dict(kwargs))
+        return {"code": 200, "data": {"task_id": kwargs.get("task_id")}}
 
     async def pending(self, *, limit=None):
         return {"items": [], "total": 0, "limit": limit}

@@ -20,6 +20,30 @@ from app.services.storage.serialization import utc_now_iso
 logger = logging.getLogger(__name__)
 
 
+# Stable platform contract. These values are persisted by the upstream strategy
+# service and must not be generated or rewritten by a model.
+SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
+    "sent": ("sop_sent", "SOP发送成功", "SOP消息已发送"),
+    "send_failed": ("sop_send_failed", "SOP发送失败", "SOP消息发送失败"),
+    "human_takeover": ("humantakeover", "人工接管", "当前会话由人工接待"),
+    "customer_relation_deleted": ("customer_deleted", "客户删除", "客户关系已删除"),
+    "all_due_groups_filtered": ("sop_no_send_all_filtered", "暂无合适内容", "当前没有适合发送的SOP内容"),
+    "superseded_by_later_sendable_group": (
+        "sop_no_send_skipped_prefix",
+        "前序内容已覆盖",
+        "前序SOP内容已处理，由后续可发送任务承接",
+    ),
+    "content_resolved_from_store_visit_queue": (
+        "sop_no_send_compat_resolved",
+        "兼容任务已处理",
+        "任务内容已从待消费内容队列处理",
+    ),
+    "duplicate": ("sop_no_send_duplicate", "内容重复", "SOP内容已发送，不重复触达"),
+    "invalid_content": ("sop_no_send_invalid_content", "平台内容无效", "平台任务没有合法消息内容"),
+    "quiet_hours_no_replay": ("sop_no_send_quiet_hours", "夜间禁止", "夜间SOP不发送"),
+}
+
+
 SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 # 1. 角色与任务
 你是第三方 SOP 到期任务的发送前审核与受限文案改写节点。
@@ -1040,6 +1064,21 @@ class SopPlatformTaskService:
                 audit=audit,
             )
             _require_platform_status(response, 70)
+            rule_data = await self._report_terminal_rule_data(
+                task,
+                outcome=reason,
+                sent=False,
+            )
+            audit["consume_results"].append(
+                {
+                    "task_id": task_id,
+                    "status": 70,
+                    "remark": reason,
+                    "content_exhausted": True if exhaust_this_task else None,
+                    "response": response,
+                    "rule_data": rule_data,
+                }
+            )
             self._mark_local_task(task, status="completed_without_send", send_payload=audit)
             self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
             terminal_ids.append(task_id)
@@ -2054,16 +2093,53 @@ class SopPlatformTaskService:
                 audit=audit if isinstance(audit, dict) else {},
             )
             _require_platform_status(response, 70)
-            task = self._platform_task_from_local(task_id)
+            skipped_task = self._platform_task_from_local(task_id)
+            rule_data = await self._report_terminal_rule_data(
+                skipped_task or {"task_id": task_id},
+                outcome="superseded_by_later_sendable_group",
+                sent=False,
+            )
+            consume_results[:] = [
+                item
+                for item in consume_results
+                if not isinstance(item, dict) or str(item.get("task_id") or "") != task_id
+            ]
+            consume_results.append(
+                {
+                    "task_id": task_id,
+                    "status": 70,
+                    "remark": "superseded_by_later_sendable_group",
+                    "response": response,
+                    "rule_data": rule_data,
+                }
+            )
+            task = skipped_task
             if task:
                 self._mark_local_task(task, status="completed_without_send", send_payload=audit or {})
             self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
             terminal_ids.append(task_id)
-        response = await self._consume_with_audit(
-            task_id=selected_task_id,
-            status=30,
-            phase="complete_after_delivery",
-            audit=audit if isinstance(audit, dict) else {},
+        response = await self.platform_client.consume(task_id=selected_task_id, status=30)
+        _require_platform_status(response, 30)
+        selected_task = self._platform_task_from_local(selected_task_id)
+        selected_rule_data = await self._report_terminal_rule_data(
+            selected_task or {"task_id": selected_task_id},
+            outcome="sent",
+            sent=True,
+            decision=(audit or {}).get("decision") if isinstance((audit or {}).get("decision"), dict) else None,
+        )
+        consume_results[:] = [
+            item
+            for item in consume_results
+            if not isinstance(item, dict) or str(item.get("task_id") or "") != selected_task_id
+        ]
+        consume_results.append(
+            {
+                "task_id": selected_task_id,
+                "status": 30,
+                "remark": "",
+                "response": response,
+                "rule_data": selected_rule_data,
+            }
         )
         _require_platform_status(response, 30)
         self.repository.update_sop_event_status(
@@ -2087,6 +2163,21 @@ class SopPlatformTaskService:
                 audit=audit if isinstance(audit, dict) else {},
             )
             _require_platform_status(response, 70)
+            compat_task = self._platform_task_from_local(task_id)
+            rule_data = await self._report_terminal_rule_data(
+                compat_task or {"task_id": task_id},
+                outcome="content_resolved_from_store_visit_queue",
+                sent=False,
+            )
+            consume_results.append(
+                {
+                    "task_id": task_id,
+                    "status": 70,
+                    "remark": "content_resolved_from_store_visit_queue",
+                    "response": response,
+                    "rule_data": rule_data,
+                }
+            )
             self.repository.update_sop_event_status(
                 f"platform_sop_task:{task_id}",
                 status="platform_completed",
@@ -2421,6 +2512,7 @@ class SopPlatformTaskService:
             self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
             completed = await self.platform_client.consume(task_id=task_id, status=30)
             _require_platform_status(completed, 30)
+            await self._report_terminal_rule_data(platform_task, outcome="sent", sent=True)
             self.repository.update_sop_event_status(event_id, status="platform_completed")
         self._remember_terminal(task_id)
         self._counters["manual_resend"] += 1
@@ -2651,6 +2743,7 @@ class SopPlatformTaskService:
             self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
             completed = await self.platform_client.consume(task_id=task_id, status=30)
             _require_platform_status(completed, 30)
+            await self._report_terminal_rule_data(platform_task, outcome="duplicate", sent=False)
             self.repository.update_sop_event_status(event_id, status="platform_completed")
             self._counters[duplicate_reason] += 1
             return {
@@ -2668,6 +2761,12 @@ class SopPlatformTaskService:
             completed = await self.platform_client.consume(task_id=task_id, status=30)
             self._observe("claim", time.perf_counter() - started)
             _require_platform_status(completed, 30)
+            recovery_sent = str(local_status or "") in {"sent", "sending"}
+            await self._report_terminal_rule_data(
+                platform_task,
+                outcome="sent" if recovery_sent else "all_due_groups_filtered",
+                sent=recovery_sent,
+            )
             self.repository.update_sop_event_status(event_id, status="platform_completed")
             return {
                 "processed": True,
@@ -2748,6 +2847,13 @@ class SopPlatformTaskService:
             self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
             completed = await self.platform_client.consume(task_id=task_id, status=30)
             _require_platform_status(completed, 30)
+            stored_decision = stored_payload.get("decision") if isinstance(stored_payload.get("decision"), dict) else {}
+            await self._report_terminal_rule_data(
+                platform_task,
+                outcome="sent",
+                sent=True,
+                decision=stored_decision,
+            )
             self.repository.update_sop_event_status(event_id, status="platform_completed")
             return {
                 "processed": True,
@@ -2818,6 +2924,12 @@ class SopPlatformTaskService:
                     self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
                     completed = await self.platform_client.consume(task_id=task_id, status=30)
                     _require_platform_status(completed, 30)
+                    await self._report_terminal_rule_data(
+                        platform_task,
+                        outcome="duplicate",
+                        sent=False,
+                        decision=duplicate_decision,
+                    )
                     self.repository.update_sop_event_status(event_id, status="platform_completed")
                     return {
                         "processed": True,
@@ -2887,6 +2999,12 @@ class SopPlatformTaskService:
             self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
             completed = await self.platform_client.consume(task_id=task_id, status=30)
             _require_platform_status(completed, 30)
+            await self._report_terminal_rule_data(
+                platform_task,
+                outcome="sent" if decision["decision"] == "send" else str(decision.get("reason") or "all_due_groups_filtered"),
+                sent=decision["decision"] == "send",
+                decision=decision,
+            )
             self.repository.update_sop_event_status(event_id, status="platform_completed")
             return {
                 "processed": True,
@@ -2984,13 +3102,14 @@ class SopPlatformTaskService:
                 )
                 self._counters["deferred_replay_sent"] += 1
             return
-        if platform_task and decision and status in {"send_succeeded", "send_failed", "partial_failed"}:
+        if platform_task and decision and status in {"send_failed", "partial_failed"}:
             audit = {
                 **audit,
-                "rule_data_response": await self._report_rule_data(
+                "rule_data_response": await self._report_terminal_rule_data(
                     platform_task,
+                    outcome="send_failed",
                     decision=decision,
-                    sent=status == "send_succeeded",
+                    sent=False,
                 ),
             }
         if status in {"send_failed", "partial_failed"}:
@@ -3097,6 +3216,43 @@ class SopPlatformTaskService:
             },
             "rule_data_response": response,
         }
+
+    async def _report_terminal_rule_data(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        outcome: str,
+        sent: bool,
+        decision: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Report one immutable strategy label after a terminal consume."""
+        normalized = str(outcome or "").strip()
+        if normalized not in SOP_TERMINAL_SCENES:
+            if "duplicate" in normalized:
+                normalized = "duplicate"
+            elif "invalid" in normalized or "missing" in normalized:
+                normalized = "invalid_content"
+            else:
+                normalized = "sent" if sent else "all_due_groups_filtered"
+        scene_code, scene_name, fixed_remark = SOP_TERMINAL_SCENES[normalized]
+        source = decision if isinstance(decision, dict) else {}
+        terminal_decision = {
+            "decision": "send" if sent else "no_send",
+            "reason": normalized,
+            "sceneCode": scene_code,
+            "sceneName": scene_name,
+            "remark": fixed_remark,
+            "knowledgeId": source.get("knowledgeId") or source.get("knowledge_id") or 0,
+            "knowledgeParagraphNo": (
+                source.get("knowledgeParagraphNo") or source.get("knowledge_paragraph_no") or 0
+            ),
+            "reply_messages": source.get("reply_messages") if sent else [],
+        }
+        return await self._report_rule_data(
+            platform_task,
+            decision=terminal_decision,
+            sent=sent,
+        )
 
     async def _quiet_hours_guard(
         self,
