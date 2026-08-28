@@ -583,6 +583,18 @@ class SopPlatformTaskService:
             limit=self.settings.sop_platform_recovery_batch_size,
             event_type="platform_sop_task",
         )
+        orphan_loader = getattr(self.repository, "list_orphaned_platform_sop_events", None)
+        orphan_events = (
+            orphan_loader(limit=self.settings.sop_platform_recovery_batch_size)
+            if callable(orphan_loader)
+            else []
+        )
+        known_event_ids = {str(event.get("event_id") or "") for event in events}
+        for orphan in orphan_events:
+            event_id = str(orphan.get("event_id") or "")
+            if event_id and event_id not in known_event_ids:
+                events.append({**orphan, "status": "platform_processing"})
+                known_event_ids.add(event_id)
         concurrency = max(1, int(getattr(self.settings, "sop_platform_recovery_concurrency", 2) or 2))
         semaphore = asyncio.Semaphore(concurrency)
 
@@ -1782,6 +1794,25 @@ class SopPlatformTaskService:
             "task_id": f"platform-sop-send-{selected_id}",
             "reply_messages": final_messages,
         }
+        delivery_key = f"sop_platform_task:{local_task_id}"
+        dispatch_loader = getattr(self.system_client, "delivery_dispatch", None)
+        dispatch = dispatch_loader(delivery_key) if callable(dispatch_loader) else {}
+        dispatch_status = str(dispatch.get("status") or "")
+        if dispatch_status in {"platform_accepted", "send_succeeded"}:
+            return await self._complete_recovered_batch_send(
+                selected_id=selected_id,
+                local_task_id=local_task_id,
+                audit=audit,
+                recovery={
+                    "status": "confirmed_from_dispatch",
+                    "checked_at": utc_now_iso(),
+                    "dispatch_id": str(dispatch.get("id") or ""),
+                    "dispatch_status": dispatch_status,
+                    "system_msgid": str(dispatch.get("system_msgid") or ""),
+                },
+            )
+        if dispatch_status in {"created", "submitting", "submission_unknown", "sending", "submission_failed"}:
+            return await self._retry_batch_send(platform_task, local_task=local_task)
         existing_delivery = await self._existing_platform_delivery(
             identity=identity,
             send_payload=send_payload,
@@ -1802,6 +1833,21 @@ class SopPlatformTaskService:
             "checked_at": utc_now_iso(),
             **existing_delivery,
         }
+        return await self._complete_recovered_batch_send(
+            selected_id=selected_id,
+            local_task_id=local_task_id,
+            audit=audit,
+            recovery=recovery,
+        )
+
+    async def _complete_recovered_batch_send(
+        self,
+        *,
+        selected_id: str,
+        local_task_id: str,
+        audit: dict[str, Any],
+        recovery: dict[str, Any],
+    ) -> dict[str, Any]:
         recovered_audit = {**audit, "delivery_recovery": recovery}
         skipped_ids = [
             str(value).strip()
@@ -1821,9 +1867,9 @@ class SopPlatformTaskService:
         )
         recovered_response = {
             "code": 0,
-            "msg": "delivery_confirmed_from_conversation_after_restart",
+            "msg": "delivery_confirmed_after_interrupted_send",
             "data": {
-                "send_status": "confirmed_from_conversation",
+                "send_status": str(recovery.get("status") or "confirmed_delivery"),
                 "delivery_status": "delivered",
                 "callback_required": False,
                 "delivery_recovery": recovery,
@@ -1842,7 +1888,7 @@ class SopPlatformTaskService:
             status="platform_completed",
             error="",
         )
-        self._counters["send_recovered_from_conversation"] += 1
+        self._counters[str(recovery.get("status") or "send_recovered")] += 1
         return {
             "processed": True,
             "status": "sent",
@@ -2423,7 +2469,7 @@ class SopPlatformTaskService:
         }
         event = self.repository.create_sop_event(event_payload)
         current_status = str(event.get("status") or "")
-        if current_status == "platform_completed":
+        if current_status == "platform_completed" and recovery_status != "platform_processing":
             return {"processed": False, "status": current_status, "task_id": task_id}
         identity = _task_identity(platform_task)
         local_task = self.repository.create_sop_send_task(
@@ -4108,7 +4154,7 @@ _PLATFORM_LOG_VERSION_LABELS = {
 _PLATFORM_RUN_STATUS_LABELS = {
     "pending": "等待处理",
     "processing": "处理中",
-    "delivery_pending": "等待发送回调",
+    "delivery_pending": "发送结果待确认",
     "consume_pending": "等待消费回传",
     "completed": "发送完成",
     "no_send": "无需发送",

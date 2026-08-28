@@ -144,7 +144,7 @@ const STATUS_OPTIONS = [
   ["", "全部状态"],
   ["pending", "等待处理"],
   ["processing", "处理中"],
-  ["delivery_pending", "等待发送回调"],
+  ["delivery_pending", "发送结果待确认"],
   ["consume_pending", "等待消费回传"],
   ["completed", "发送完成"],
   ["no_send", "无需发送"],
@@ -367,6 +367,7 @@ function RunDetail({ run }: { run: RunItem }) {
           <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm sm:grid-cols-3">
             <Fact label="客户 ID" value={run.customer_id} />
             <Fact label="企微账号" value={run.wechat} />
+            <Fact label="user_wechat_id" value={run.user_id} />
             <Fact label="发生时间" value={formatTime(run.occurred_at)} />
           </div>
         </div>

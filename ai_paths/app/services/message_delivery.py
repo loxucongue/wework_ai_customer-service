@@ -122,6 +122,9 @@ class MessageDeliveryService:
             error_message=error_message,
         )
 
+    def get_dispatch_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any]:
+        return self.repository.get_message_dispatch_by_idempotency_key(idempotency_key)
+
     def accept_callback(self, callback: MessageDeliveryCallback) -> dict[str, Any]:
         dispatch = self.repository.get_message_dispatch(callback.dispatch_id)
         if not dispatch:

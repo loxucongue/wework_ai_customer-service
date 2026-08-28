@@ -110,6 +110,17 @@ class MessageDeliveryRepositoryMixin:
             ).fetchall()
         return _decode_dispatch(row, items)
 
+    def get_message_dispatch_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any]:
+        clean_key = str(idempotency_key or "").strip()
+        if not clean_key:
+            return {}
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM message_dispatches WHERE idempotency_key=?",
+                (clean_key,),
+            ).fetchone()
+        return self.get_message_dispatch(str(row["id"] or "")) if row else {}
+
     def list_message_dispatches_for_request(self, source_request_id: str) -> list[dict[str, Any]]:
         clean_request_id = str(source_request_id or "").strip()
         if not clean_request_id:

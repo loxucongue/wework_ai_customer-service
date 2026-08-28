@@ -23,6 +23,11 @@ class OutreachSystemClient:
     def supports_conversation_id_send(self) -> bool:
         return bool(self.settings.outreach_system_send_conversation_id_enabled)
 
+    def delivery_dispatch(self, idempotency_key: str) -> dict[str, Any]:
+        if not self._delivery_service or not self._delivery_service.enabled:
+            return {}
+        return self._delivery_service.get_dispatch_by_idempotency_key(idempotency_key)
+
     async def conversation(
         self,
         *,

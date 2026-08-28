@@ -745,6 +745,26 @@ class SopEventRepositoryMixin:
             ).fetchall()
         return [self._decode_sop_event(dict(row)) for row in rows]
 
+    def list_orphaned_platform_sop_events(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Find completed events whose outbound task never reached a terminal state."""
+        safe_limit = max(1, min(int(limit or 10), 100))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT e.*
+                FROM sop_events e
+                JOIN sop_send_tasks t ON t.event_id=e.event_id
+                WHERE e.event_type='platform_sop_task'
+                  AND e.status='platform_completed'
+                  AND t.status='sending'
+                  AND COALESCE(NULLIF(TRIM(t.send_response_json), ''), '{}')='{}'
+                ORDER BY t.updated_at ASC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+        return [self._decode_sop_event(dict(row)) for row in rows]
+
     def list_sop_send_tasks_for_event(self, event_id: str) -> list[dict[str, Any]]:
         with self.store.connect() as conn:
             rows = conn.execute(
