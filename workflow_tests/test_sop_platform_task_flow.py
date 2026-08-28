@@ -1391,6 +1391,11 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70)])
         self.assertTrue(all(item["remark"] == "human_takeover" for item in platform.consume_details))
+        self.assertEqual(
+            [item["content_exhausted"] for item in platform.consume_details],
+            [None, True],
+        )
+        self.assertEqual(system.conversation_calls, 1)
         self.assertEqual(system.send_calls, [])
 
     async def test_management_mode_comes_from_status_endpoint_not_message_history(self) -> None:
@@ -1415,8 +1420,32 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70)])
-        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.conversation_calls, 1)
         system.conversation_status.assert_awaited_once()
+
+    async def test_deleted_relation_has_priority_over_human_takeover_and_exhausts_future_tasks(self) -> None:
+        service, _repo, platform, system = _service(model=_Model([]))
+        system.conversation_payload["data"]["ai_auto_reply"] = False
+        system.conversation_payload["data"]["customer_relation"] = {
+            "status": "deleted",
+            "is_deleted": True,
+        }
+
+        result = await service.process_customer_batch(
+            _customer_batch(_batch_task("1"), _batch_task("2"))
+        )
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70)])
+        self.assertTrue(
+            all(item["remark"] == "customer_relation_deleted" for item in platform.consume_details)
+        )
+        self.assertEqual(
+            [item["content_exhausted"] for item in platform.consume_details],
+            [None, True],
+        )
+        self.assertEqual(system.conversation_calls, 1)
+        self.assertEqual(system.send_calls, [])
 
     async def test_human_takeover_consumes_resolved_content_and_empty_trigger_without_send(self) -> None:
         service, _repo, platform, system = _service(model=_Model([]))
@@ -1432,7 +1461,40 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("201", 70), ("101", 70)])
         self.assertTrue(all(item["remark"] == "human_takeover" for item in platform.consume_details))
+        self.assertEqual(
+            [item["content_exhausted"] for item in platform.consume_details],
+            [None, True],
+        )
         self.assertEqual(system.send_calls, [])
+
+    async def test_missing_customer_relation_does_not_send_or_consume(self) -> None:
+        service, _repo, platform, system = _service(model=_Model([]))
+        system.conversation_payload["data"].pop("customer_relation")
+
+        with self.assertRaisesRegex(RuntimeError, "missing customer_relation"):
+            await service.process_customer_batch(_customer_batch(_batch_task("1")))
+
+        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(system.send_calls, [])
+
+    async def test_human_takeover_exhausts_each_distinct_platform_run_after_due_tasks(self) -> None:
+        service, _repo, platform, system = _service(model=_Model([]))
+        system.conversation_payload["data"]["ai_auto_reply"] = False
+        first = _batch_task("1")
+        second = _batch_task("2")
+        first["runId"] = "run-a"
+        second["runId"] = "run-b"
+
+        await service.process_customer_batch(_customer_batch(first, second))
+
+        self.assertEqual(
+            platform.consume_calls,
+            [("1", 70), ("2", 70)],
+        )
+        self.assertEqual(
+            [item["content_exhausted"] for item in platform.consume_details],
+            [True, True],
+        )
 
     async def test_same_day_unopened_sends_only_earliest_group_verbatim(self) -> None:
         service, _repo, platform, system = _service(model=_Model([]))
@@ -1448,6 +1510,52 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("1", 20), ("1", 30)])
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("第一组原文")])
+
+    async def test_same_day_unopened_maps_exact_reservation_marker_to_payment_card(self) -> None:
+        service, _repo, platform, system = _service(model=_Model([]))
+        system.conversation_payload["data"]["messages"] = [
+            {"direction": "customer", "content": "我已经添加了你，现在我们可以开始聊天了。"}
+        ]
+        today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+        task = _batch_task("1", trigger_event="add_wecom", operate_time=today)
+        task["message_content"] = [
+            {"type": "text", "content": "看一下报名方式"},
+            {"type": "text", "content": " 预约卡片 "},
+        ]
+
+        result = await service.process_customer_batch(_customer_batch(task))
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("1", 20), ("1", 30)])
+        self.assertEqual(
+            system.send_calls[0]["reply_messages"],
+            [
+                _text("看一下报名方式"),
+                {
+                    "type": "payment_collection",
+                    "order": 2,
+                    "content": {"amount": 10, "remark": ""},
+                },
+            ],
+        )
+
+    async def test_reservation_marker_phrase_remains_plain_text(self) -> None:
+        service, _repo, _platform, system = _service(model=_Model([]))
+        system.conversation_payload["data"]["messages"] = [
+            {"direction": "customer", "content": "我已经添加了你，现在我们可以开始聊天了。"}
+        ]
+        today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+        task = _batch_task("1", trigger_event="add_wecom", operate_time=today)
+        task["message_content"] = [
+            {"type": "text", "content": "我给您说明一下预约卡片怎么使用。"}
+        ]
+
+        await service.process_customer_batch(_customer_batch(task))
+
+        self.assertEqual(
+            system.send_calls[0]["reply_messages"],
+            [_text("我给您说明一下预约卡片怎么使用。")],
+        )
 
     async def test_opened_customer_consumes_skipped_prefix_after_selected_send(self) -> None:
         model = _Model(
@@ -2037,6 +2145,7 @@ def _batch_task(
         "operateTime": operate_time,
         "scheduledAt": f"2026-08-20 10:{numeric_id:02d}:00",
         "sortOrder": numeric_id,
+        "runId": "run-1",
         "_aics_biz_type": "online_service",
     }
 

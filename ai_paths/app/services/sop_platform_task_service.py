@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.policies.business_rules import sop_platform_business_facts_for_model
+from app.services.payment_collection import PAYMENT_COLLECTION_UNIT_AMOUNT
 from app.services.sop_execution_service import is_platform_auto_opening_message
 from app.services.storage.serialization import utc_now_iso
 
@@ -725,22 +726,13 @@ class SopPlatformTaskService:
             "management_source": "conversation_status.takeover.ai_auto_reply",
             "management_status": _compact_management_status(status_data),
         }
-        if ai_auto_reply is False:
-            return await self._consume_batch_without_send(
-                tasks,
-                trigger_tasks=trigger_tasks,
-                reason="human_takeover",
-                batch_key=batch_key,
-                biz_type=biz_type,
-                batch_run_id=batch_run_id,
-                audit_context=base_audit_context,
-            )
-
         conversation = await self.system_client.conversation(**identity, limit=50)
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
         if not isinstance(data, dict):
             raise RuntimeError("platform customer conversation response is invalid")
-        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
+        if not isinstance(data.get("customer_relation"), dict):
+            raise RuntimeError("platform customer conversation is missing customer_relation")
+        relation = data["customer_relation"]
         raw_messages = data.get("messages") if isinstance(data.get("messages"), list) else []
         timeline = _conversation_timeline(raw_messages)
         timeline_structure = _timeline_structure(timeline)
@@ -758,6 +750,18 @@ class SopPlatformTaskService:
                 biz_type=biz_type,
                 batch_run_id=batch_run_id,
                 audit_context=base_audit_context,
+                content_exhausted=True,
+            )
+        if ai_auto_reply is False:
+            return await self._consume_batch_without_send(
+                tasks,
+                trigger_tasks=trigger_tasks,
+                reason="human_takeover",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                audit_context=base_audit_context,
+                content_exhausted=True,
             )
         context = await self._load_batch_context(
             tasks[0],
@@ -986,6 +990,7 @@ class SopPlatformTaskService:
         batch_run_id: str,
         decision: dict[str, Any] | None = None,
         audit_context: dict[str, Any] | None = None,
+        content_exhausted: bool | None = None,
     ) -> dict[str, Any]:
         trigger_tasks = trigger_tasks or []
         terminal_tasks = _dedupe_tasks([*tasks, *trigger_tasks])
@@ -1000,6 +1005,7 @@ class SopPlatformTaskService:
             "compat_trigger_task_ids": [_task_id(task) for task in trigger_tasks],
             "decision": decision or {"selected_task_id": "", "evaluations": []},
             "reason": reason,
+            "content_exhausted": content_exhausted,
             "context": _context_audit(audit_context or {}),
             "consume_results": [],
         }
@@ -1025,12 +1031,26 @@ class SopPlatformTaskService:
                 "terminal_task_ids": [_task_id(task) for task in terminal_tasks],
                 "decision": audit["decision"],
             }
-        for task in terminal_tasks:
+        run_keys = [f"run:{_task_run_id(task)}" if _task_run_id(task) else "run:unknown" for task in terminal_tasks]
+        last_run_indexes = {key: index for index, key in enumerate(run_keys)}
+        for index, task in enumerate(terminal_tasks):
             task_id = _task_id(task)
-            response = await self.platform_client.consume(task_id=task_id, status=70, remark=reason)
+            exhaust_this_task = content_exhausted is True and last_run_indexes[run_keys[index]] == index
+            response = await self.platform_client.consume(
+                task_id=task_id,
+                status=70,
+                remark=reason,
+                content_exhausted=True if exhaust_this_task else None,
+            )
             _require_platform_status(response, 70)
             audit["consume_results"].append(
-                {"task_id": task_id, "status": 70, "remark": reason, "response": response}
+                {
+                    "task_id": task_id,
+                    "status": 70,
+                    "remark": reason,
+                    "content_exhausted": True if exhaust_this_task else None,
+                    "response": response,
+                }
             )
             self._mark_local_task(task, status="completed_without_send", send_payload=audit)
             self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
@@ -3129,7 +3149,19 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
         if message_type == "text":
             text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
             if text:
-                output.append({"type": "text", "order": index, "content": {"text": text}})
+                if text == "预约卡片":
+                    output.append(
+                        {
+                            "type": "payment_collection",
+                            "order": index,
+                            "content": {
+                                "amount": PAYMENT_COLLECTION_UNIT_AMOUNT,
+                                "remark": "",
+                            },
+                        }
+                    )
+                else:
+                    output.append({"type": "text", "order": index, "content": {"text": text}})
         elif message_type in {"image", "video"}:
             url = str(content.get("url") if isinstance(content, dict) else content or "").strip()
             if url:
@@ -3487,6 +3519,16 @@ def _task_identity(task: dict[str, Any]) -> dict[str, str]:
 
 def _task_id(task: dict[str, Any]) -> str:
     return str(task.get("task_id") or task.get("taskId") or task.get("id") or "").strip()
+
+
+def _task_run_id(task: dict[str, Any]) -> str:
+    return str(
+        task.get("runId")
+        or task.get("run_id")
+        or task.get("triggerRunId")
+        or task.get("trigger_run_id")
+        or ""
+    ).strip()
 
 
 def _task_scheduled_epoch(task: dict[str, Any]) -> float:
