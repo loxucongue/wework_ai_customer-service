@@ -1132,6 +1132,8 @@ class SopPlatformTaskService:
         ]
         if not active:
             return 0
+        if any(_deferred_replay_record_status(record) == "sending" for record in active):
+            return 0
         first_status = _deferred_replay_record_status(active[0])
         if first_status in {"sending", "blocked"}:
             return 0
@@ -1165,15 +1167,101 @@ class SopPlatformTaskService:
         if ai_auto_reply is None:
             return 0
         if ai_auto_reply is False:
-            for record in active:
-                self._mark_deferred_replay(record, status="skipped", error="human_takeover")
+            self._skip_deferred_replay_records(active, reason="human_takeover")
             self._counters["deferred_replay_human_skipped"] += len(active)
             return 0
+
+        conversation = await self.system_client.conversation(**identity, limit=50)
+        conversation_data = (
+            conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        )
+        if not isinstance(conversation_data, dict):
+            return 0
+        relation = (
+            conversation_data.get("customer_relation")
+            if isinstance(conversation_data.get("customer_relation"), dict)
+            else {}
+        )
+        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+            self._skip_deferred_replay_records(active, reason="customer_relation_deleted")
+            return 0
+        timeline = _conversation_timeline(
+            conversation_data.get("messages")
+            if isinstance(conversation_data.get("messages"), list)
+            else []
+        )
+        active_tasks = [
+            record.get("platform_task") if isinstance(record.get("platform_task"), dict) else {}
+            for record in active
+        ]
+        context = await self._load_batch_context(
+            active_tasks[0],
+            identity=identity,
+            relation=relation,
+            timeline=timeline,
+        )
+        context.update(
+            {
+                "management_mode": "ai",
+                "management_source": "conversation_status.takeover.ai_auto_reply",
+                "customer_opened": bool(_timeline_structure(timeline).get("customer_message_count")),
+                "deferred_replay": True,
+            }
+        )
+        if _is_same_day_unopened(active_tasks, timeline=timeline):
+            decision = {
+                "evaluations": [
+                    {
+                        "task_id": _task_id(active_tasks[0]),
+                        "decision": "send",
+                        "reason": "same_day_unopened_earliest_direct",
+                        "evidence_refs": [f"task:{_task_id(active_tasks[0])}"],
+                    }
+                ],
+                "selected_task_id": _task_id(active_tasks[0]),
+                "transition_text": "",
+                "decision_source": "same_day_unopened_direct",
+            }
+        else:
+            decision = await self._decide_customer_batch(active_tasks, context=context)
+
+        selected_id = str(decision.get("selected_task_id") or "").strip()
+        if not selected_id:
+            self._skip_deferred_replay_records(
+                active,
+                reason="all_due_groups_filtered",
+                decision=decision,
+            )
+            return 0
+        selected_index = next(
+            (index for index, candidate in enumerate(active_tasks) if _task_id(candidate) == selected_id),
+            -1,
+        )
+        if selected_index < 0:
+            raise RuntimeError("deferred replay model selected an unknown task_id")
+        selected = active[selected_index]
+        task = active_tasks[selected_index]
+        skipped_prefix = active[:selected_index]
         messages = _platform_messages(task)
         if not messages:
             self._mark_deferred_replay(selected, status="blocked", error="missing_original_messages")
             self._counters["deferred_replay_missing_content"] += 1
             return 0
+        transition_text = str(decision.get("transition_text") or "").strip()
+        if transition_text:
+            passed = await self._transition_fact_audit(
+                transition_text,
+                selected_task=task,
+                context=context,
+            )
+            if not passed:
+                transition_text = ""
+        final_messages = list(messages)
+        if transition_text:
+            final_messages = [{"type": "text", "order": 1, "content": {"text": transition_text}}] + [
+                {**message, "order": index + 2}
+                for index, message in enumerate(messages)
+            ]
         local_task_id = str(selected.get("local_task_id") or "")
         platform_task_id = _task_id(task)
         marker = {
@@ -1181,6 +1269,10 @@ class SopPlatformTaskService:
             "status": "sending",
             "started_at": utc_now_iso(),
             "platform_task_id": platform_task_id,
+            "decision": decision,
+            "skipped_prefix_local_task_ids": [
+                str(record.get("local_task_id") or "") for record in skipped_prefix
+            ],
         }
         self._mark_deferred_replay(selected, status="sending", marker=marker)
         try:
@@ -1188,7 +1280,7 @@ class SopPlatformTaskService:
                 **identity,
                 plan_id=f"platform-sop-deferred-{platform_task_id}",
                 task_id=f"platform-sop-deferred-send-{platform_task_id}",
-                reply_messages=messages,
+                reply_messages=final_messages,
                 source_channel="proactive_message",
                 source_kind="sop_platform_deferred_replay",
                 source_request_id=f"platform_sop_deferred:{platform_task_id}",
@@ -1228,8 +1320,61 @@ class SopPlatformTaskService:
             send_response=send_result,
             sent_at=sent_at,
         )
+        self._skip_deferred_replay_records(
+            skipped_prefix,
+            reason="filtered_before_selected",
+            decision=decision,
+        )
         self._counters["deferred_replay_sent"] += 1
         return 1
+
+    def _skip_deferred_replay_records(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        reason: str,
+        decision: dict[str, Any] | None = None,
+    ) -> None:
+        for record in records:
+            self._mark_deferred_replay(
+                record,
+                status="skipped",
+                error=reason,
+                marker={
+                    **_deferred_replay_marker(record),
+                    "status": "skipped",
+                    "skip_reason": reason,
+                    "decision": decision or {},
+                },
+            )
+
+    def _skip_deferred_replay_prefix_by_ids(
+        self,
+        local_task_ids: list[Any],
+        *,
+        decision: dict[str, Any] | None = None,
+    ) -> None:
+        records: list[dict[str, Any]] = []
+        for raw_id in local_task_ids:
+            local_task_id = str(raw_id or "").strip()
+            if not local_task_id:
+                continue
+            task = self.repository.get_sop_send_task(local_task_id)
+            if not task:
+                continue
+            records.append(
+                {
+                    "local_task_id": local_task_id,
+                    "send_payload": task.get("send_payload") or {},
+                    "task_status": task.get("status") or "",
+                    "sent_at": task.get("sent_at") or "",
+                }
+            )
+        self._skip_deferred_replay_records(
+            records,
+            reason="filtered_before_selected",
+            decision=decision,
+        )
 
     def _mark_deferred_replay(
         self,
@@ -2591,6 +2736,12 @@ class SopPlatformTaskService:
                     marker={**marker, "status": "sent", "sent_at": sent_at},
                     send_response=callback_response,
                     sent_at=sent_at,
+                )
+                self._skip_deferred_replay_prefix_by_ids(
+                    marker.get("skipped_prefix_local_task_ids")
+                    if isinstance(marker.get("skipped_prefix_local_task_ids"), list)
+                    else [],
+                    decision=marker.get("decision") if isinstance(marker.get("decision"), dict) else {},
                 )
                 self._counters["deferred_replay_sent"] += 1
             return
