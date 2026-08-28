@@ -247,6 +247,11 @@ class SopEventRepositoryMixin:
                 WHERE e.event_type='platform_sop_task'
                   AND t.created_at>=?
                   AND t.created_at<?
+                  AND (
+                        t.send_payload_json LIKE '%quiet_hours_no_replay%'
+                     OR t.send_payload_json LIKE '%deferred_behind_quiet_backlog%'
+                     OR t.status IN ('deferred_replay_sending','deferred_replay_retry')
+                  )
                 ORDER BY t.created_at ASC
                 LIMIT ?
                 """,
