@@ -68,6 +68,18 @@ def test_migration_contract_covers_every_runtime_table() -> None:
     )
 
 
+def test_compressed_loader_is_probed_before_schema_upgrade_and_reset() -> None:
+    source = Path("ai_paths/scripts/migrate_sqlite_to_mysql.py").read_text(
+        encoding="utf-8"
+    )
+
+    probe = source.index("loader_probe = _mysql_compressed_loader_connect(settings)")
+    upgrade = source.index("_run_alembic()", probe)
+    reset = source.index("_reset_aics_data(target)", probe)
+
+    assert probe < upgrade < reset
+
+
 def test_migration_integrity_digest_is_row_framed_and_chunked() -> None:
     spec = importlib.util.spec_from_file_location(
         "aics_migration_digest",

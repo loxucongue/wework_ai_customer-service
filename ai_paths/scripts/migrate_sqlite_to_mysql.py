@@ -682,6 +682,13 @@ def main() -> int:
                 raise RuntimeError("data load requires --reset-existing-aics-data")
             if args.mode == "delta" and not args.since:
                 raise RuntimeError("delta requires --since")
+            # Fail before Alembic or data reset when the optional compressed
+            # loader is unavailable or cannot connect. A rehearsal must never
+            # destroy an otherwise usable target merely because its bulk-load
+            # dependency was omitted from the runtime environment.
+            if args.compressed_loader:
+                loader_probe = _mysql_compressed_loader_connect(settings)
+                loader_probe.close()
             if args.mode in {"apply", "delta"}:
                 backup = _backup_sqlite(source, sqlite_path, output_dir)
                 report["backup"] = {"path": str(backup), "sha256": _sha256(backup)}
