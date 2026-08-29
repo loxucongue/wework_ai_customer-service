@@ -261,6 +261,30 @@ CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_pack ON sop_send_tasks(sop_pack_id
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_sales_contact
 ON sop_send_tasks(corp_id, wechat, external_userid, customer_id, status, created_at);
 
+CREATE TABLE IF NOT EXISTS strategy_data_outbox (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    record_kind TEXT NOT NULL DEFAULT '',
+    task_id TEXT NOT NULL DEFAULT '',
+    sales_contact_key TEXT NOT NULL DEFAULT '',
+    customer_id TEXT NOT NULL DEFAULT '',
+    interface_version TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TEXT NOT NULL DEFAULT '',
+    response_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    sent_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_data_outbox_due
+ON strategy_data_outbox(status, next_retry_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_strategy_data_outbox_contact
+ON strategy_data_outbox(sales_contact_key, created_at);
+
 CREATE TABLE IF NOT EXISTS message_dispatches (
     id TEXT PRIMARY KEY,
     idempotency_key TEXT NOT NULL UNIQUE,

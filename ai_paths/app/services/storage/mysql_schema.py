@@ -408,6 +408,31 @@ sop_send_tasks = Table(
     ),
 )
 
+strategy_data_outbox = Table(
+    f"{TABLE_PREFIX}strategy_data_outbox",
+    metadata,
+    _id("id", primary_key=True),
+    _id("idempotency_key"),
+    _short("record_kind", length=64),
+    _id("task_id"),
+    _id("sales_contact_key"),
+    _id("customer_id"),
+    _short("interface_version", length=32),
+    _json("payload_json", "{}"),
+    _short("status", "pending", length=32),
+    Column("retry_count", Integer, nullable=False, server_default="0"),
+    _time("next_retry_at", ""),
+    _json("response_json", "{}"),
+    _long("error"),
+    _time("created_at"),
+    _time("updated_at"),
+    _time("sent_at", ""),
+    UniqueConstraint("idempotency_key", name="uq_aics_strategy_data_outbox_idempotency"),
+    Index("idx_aics_strategy_data_outbox_due", "status", "next_retry_at", "created_at"),
+    Index("idx_aics_strategy_data_outbox_contact", "sales_contact_key", "created_at"),
+)
+
+
 message_dispatches = Table(
     f"{TABLE_PREFIX}message_dispatches",
     metadata,

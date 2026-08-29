@@ -50,6 +50,7 @@ DELTA_TIMESTAMP_COLUMNS = {
     "first_day_outreach_runs": "updated_at",
     "sop_events": "updated_at",
     "sop_send_tasks": "updated_at",
+    "strategy_data_outbox": "updated_at",
     "message_dispatches": "updated_at",
     "message_dispatch_items": "updated_at",
     "message_delivery_events": "received_at",
@@ -70,6 +71,7 @@ ACTIVE_TABLES = (
     "first_day_outreach_runs",
     "sop_events",
     "sop_send_tasks",
+    "strategy_data_outbox",
     "message_dispatches",
     "message_dispatch_items",
     "message_delivery_events",
@@ -99,6 +101,7 @@ JSON_COLUMNS = {
     ),
     "sop_events": ("raw_payload_json",),
     "sop_send_tasks": ("reply_messages_json", "send_payload_json", "send_response_json"),
+    "strategy_data_outbox": ("payload_json", "response_json"),
     "message_dispatches": ("reply_messages_json", "source_context_json"),
     "message_delivery_events": ("raw_payload_json",),
 }

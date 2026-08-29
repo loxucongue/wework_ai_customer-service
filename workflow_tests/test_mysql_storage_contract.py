@@ -43,8 +43,8 @@ def _settings() -> SimpleNamespace:
 
 
 def test_mysql_schema_contains_only_expected_aics_tables() -> None:
-    assert len(EXPECTED_TABLES) == 16
-    assert len(EXPECTED_ALL_TABLES) == 17
+    assert len(EXPECTED_TABLES) == 17
+    assert len(EXPECTED_ALL_TABLES) == 18
     assert VERSION_TABLE == "aics_schema_version"
     assert all(table.startswith("aics_") for table in EXPECTED_ALL_TABLES)
     assert {table.removeprefix("aics_") for table in EXPECTED_TABLES} == set(LOGICAL_TABLES)
@@ -65,6 +65,10 @@ def test_migration_contract_covers_every_runtime_table() -> None:
         "input_snapshot_json",
         "workflow_json",
         "final_plan_json",
+    )
+    assert module.JSON_COLUMNS["strategy_data_outbox"] == (
+        "payload_json",
+        "response_json",
     )
 
 
