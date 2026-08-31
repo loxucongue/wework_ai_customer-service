@@ -76,7 +76,7 @@ async def fetch_platform_conversation_history(
 
 def request_conversation_history(state: AgentState, *, limit: int) -> list[str]:
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    return [str(item)[:240] for item in history[-limit:] if str(item or "").strip()]
+    return [str(item) for item in history[-limit:] if str(item or "").strip()]
 
 
 def conversation_fetch_params(
@@ -102,7 +102,7 @@ def conversation_fetch_params(
 
 def platform_messages_to_history(messages: list[dict[str, Any]], *, limit: int) -> list[str]:
     output: list[str] = []
-    ordered_messages = _dedupe_platform_messages(_ordered_platform_messages(messages))
+    ordered_messages = _ordered_platform_messages(messages)
     for item in ordered_messages[-limit:]:
         if not isinstance(item, dict):
             continue
@@ -111,13 +111,13 @@ def platform_messages_to_history(messages: list[dict[str, Any]], *, limit: int) 
             text = message_text(item.get("text") or item.get("message") or item.get("body"))
         if not text:
             continue
-        output.append(f"{message_role_label(item)}: {text[:220]}")
+        output.append(f"{message_role_label(item)}: {text}")
     return output
 
 
 def platform_messages_to_turns(messages: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    ordered_messages = _dedupe_platform_messages(_ordered_platform_messages(messages))
+    ordered_messages = _ordered_platform_messages(messages)
     selected = ordered_messages[-limit:]
     latest_timestamp = next(
         (
@@ -137,11 +137,8 @@ def platform_messages_to_turns(messages: list[dict[str, Any]], *, limit: int) ->
         turn = {
             "message_ref": _message_ref(item, index=index),
             "role": message_role(item),
-            "content": text[:500],
+            "content": text,
         }
-        message_type = _message_type(item)
-        if message_type:
-            turn["message_type"] = message_type
         if timestamp is not None:
             occurred_at = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(BEIJING_TZ)
             turn["occurred_at"] = occurred_at.isoformat(timespec="seconds")
@@ -149,108 +146,6 @@ def platform_messages_to_turns(messages: list[dict[str, Any]], *, limit: int) ->
                 turn["minutes_before_latest"] = max(0, int((latest_timestamp - timestamp) / 60))
         output.append(turn)
     return output
-
-
-def newer_customer_message_after_trigger(
-    messages: list[dict[str, Any]],
-    *,
-    trigger_message_id: str,
-    trigger_events: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Backward-compatible customer-only view of newer conversation activity."""
-
-    result = newer_conversation_activity_after_trigger(
-        messages,
-        trigger_message_id=trigger_message_id,
-        trigger_events=trigger_events,
-    )
-    return {
-        "status": result["status"],
-        "newer_customer_message": result["newer_customer_message"],
-        "newer_message_refs": result["newer_customer_message_refs"],
-        "reason": result["reason"],
-    }
-
-
-def newer_conversation_activity_after_trigger(
-    messages: list[dict[str, Any]],
-    *,
-    trigger_message_id: str,
-    trigger_events: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Find customer or assistant turns that make a completed run stale."""
-
-    ordered = _dedupe_platform_messages(_ordered_platform_messages(messages))
-    trigger_id = str(trigger_message_id or "").strip()
-    if trigger_id:
-        trigger_index = next(
-            (
-                index
-                for index, item in enumerate(ordered)
-                if _message_ref(item, index=index + 1) == trigger_id
-            ),
-            None,
-        )
-        if trigger_index is not None:
-            customer_refs: list[str] = []
-            assistant_refs: list[str] = []
-            for index, item in enumerate(ordered[trigger_index + 1 :], start=trigger_index + 1):
-                role = message_role(item)
-                ref = _message_ref(item, index=index + 1)
-                if role == "customer":
-                    customer_refs.append(ref)
-                elif role == "assistant":
-                    assistant_refs.append(ref)
-            return {
-                "status": "checked",
-                "newer_customer_message": bool(customer_refs),
-                "newer_assistant_message": bool(assistant_refs),
-                "newer_customer_message_refs": customer_refs[-10:],
-                "newer_assistant_message_refs": assistant_refs[-10:],
-                "reason": "trigger_message_found",
-            }
-
-    trigger_event = _latest_trigger_event(trigger_events or [], trigger_id=trigger_id)
-    trigger_timestamp = _message_timestamp(trigger_event) if trigger_event else None
-    if trigger_timestamp is None:
-        return {
-            "status": "unavailable",
-            "newer_customer_message": False,
-            "newer_assistant_message": False,
-            "newer_customer_message_refs": [],
-            "newer_assistant_message_refs": [],
-            "reason": "trigger_message_not_found_and_timestamp_unavailable",
-        }
-    customer_refs: list[str] = []
-    assistant_refs: list[str] = []
-    trigger_echo_consumed = False
-    for index, item in enumerate(ordered, start=1):
-        timestamp = _message_timestamp(item)
-        if timestamp is None or timestamp <= trigger_timestamp:
-            continue
-        role = message_role(item)
-        if role == "assistant":
-            assistant_refs.append(_message_ref(item, index=index))
-            continue
-        if role != "customer":
-            continue
-        if (
-            not trigger_echo_consumed
-            and trigger_event
-            and timestamp - trigger_timestamp <= 2.0
-            and _same_customer_message(item, trigger_event)
-        ):
-            trigger_echo_consumed = True
-            continue
-        customer_refs.append(_message_ref(item, index=index))
-    return {
-        "status": "checked",
-        "newer_customer_message": bool(customer_refs),
-        "newer_assistant_message": bool(assistant_refs),
-        "newer_customer_message_refs": customer_refs[-10:],
-        "newer_assistant_message_refs": assistant_refs[-10:],
-        "reason": "trigger_timestamp_compared",
-    }
 
 
 def history_strings_to_turns(history: list[Any], *, limit: int = 50) -> list[dict[str, Any]]:
@@ -266,7 +161,7 @@ def history_strings_to_turns(history: list[Any], *, limit: int = 50) -> list[dic
                 role = candidate_role
                 content = text[len(prefix) :].strip()
                 break
-        output.append({"message_ref": f"history_{index:03d}", "role": role, "content": content[:500]})
+        output.append({"message_ref": f"history_{index:03d}", "role": role, "content": content})
     return output
 
 
@@ -280,105 +175,7 @@ def _ordered_platform_messages(messages: list[dict[str, Any]]) -> list[dict[str,
         if timestamp is None:
             return typed
         indexed.append((timestamp, index, item))
-    ordered = [item for _, _, item in sorted(indexed, key=lambda part: (part[0], part[1]))]
-    return _dedupe_local_platform_mirrors(ordered)
-
-
-def _dedupe_local_platform_mirrors(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse a local send trace and its later platform archive copy."""
-
-    output: list[dict[str, Any]] = []
-    for item in messages:
-        timestamp = _message_timestamp(item)
-        content = _normalized_mirror_text(item)
-        reference = _raw_message_ref(item)
-        if message_role(item) != "assistant" or timestamp is None or not content or not reference:
-            output.append(item)
-            continue
-
-        mirror_index: int | None = None
-        for index in range(len(output) - 1, -1, -1):
-            candidate = output[index]
-            candidate_timestamp = _message_timestamp(candidate)
-            if candidate_timestamp is None or timestamp - candidate_timestamp > 30:
-                break
-            candidate_reference = _raw_message_ref(candidate)
-            if (
-                message_role(candidate) == "assistant"
-                and _normalized_mirror_text(candidate) == content
-                and bool(candidate_reference.startswith("trace-")) != bool(reference.startswith("trace-"))
-            ):
-                mirror_index = index
-                break
-
-        if mirror_index is None:
-            output.append(item)
-            continue
-        if _raw_message_ref(output[mirror_index]).startswith("trace-") and not reference.startswith("trace-"):
-            output.pop(mirror_index)
-            output.append(item)
-    return output
-
-
-def _normalized_mirror_text(item: dict[str, Any]) -> str:
-    text = message_text(item.get("content"))
-    if not text:
-        text = message_text(item.get("text") or item.get("message") or item.get("body"))
-    return " ".join(text.split())
-
-
-def _raw_message_ref(item: dict[str, Any]) -> str:
-    for key in ("message_ref", "message_id", "msgid", "msg_id", "id"):
-        value = str(item.get(key) or "").strip()
-        if value:
-            return value[:120]
-    return ""
-
-
-def _dedupe_platform_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse platform echoes without hiding non-adjacent repeated customer intent."""
-
-    output: list[dict[str, Any]] = []
-    seen_refs: set[str] = set()
-    previous_signature = ""
-    previous_timestamp: float | None = None
-    previous_ref = ""
-    for index, item in enumerate(messages, start=1):
-        ref = _message_ref(item, index=index)
-        if ref and not ref.startswith("conv_") and ref in seen_refs:
-            continue
-        text = message_text(item.get("content")) or message_text(
-            item.get("text") or item.get("message") or item.get("body")
-        )
-        signature = "|".join(
-            (
-                message_role(item),
-                "".join(str(text or "").split()),
-                _message_type(item),
-            )
-        )
-        timestamp = _message_timestamp(item)
-        close_in_time = (
-            timestamp is None
-            or previous_timestamp is None
-            or abs(timestamp - previous_timestamp) <= 30
-        )
-        current_has_stable_ref = bool(ref and not ref.startswith("conv_"))
-        previous_has_stable_ref = bool(previous_ref and not previous_ref.startswith("conv_"))
-        if (
-            output
-            and signature == previous_signature
-            and close_in_time
-            and not (current_has_stable_ref and previous_has_stable_ref)
-        ):
-            continue
-        if ref and not ref.startswith("conv_"):
-            seen_refs.add(ref)
-        output.append(item)
-        previous_signature = signature
-        previous_timestamp = timestamp
-        previous_ref = ref
-    return output
+    return [item for _, _, item in sorted(indexed, key=lambda part: (part[0], part[1]))]
 
 
 def _message_timestamp(item: dict[str, Any]) -> float | None:
@@ -398,36 +195,6 @@ def _message_timestamp(item: dict[str, Any]) -> float | None:
         if parsed is not None:
             return parsed
     return None
-
-
-def _latest_trigger_event(events: list[dict[str, Any]], *, trigger_id: str) -> dict[str, Any]:
-    candidates: list[tuple[float, dict[str, Any]]] = []
-    for item in events:
-        if not isinstance(item, dict):
-            continue
-        event_id = str(item.get("msgid") or item.get("message_id") or item.get("id") or "").strip()
-        if trigger_id and event_id and event_id != trigger_id:
-            continue
-        parsed = _message_timestamp(item)
-        if parsed is not None:
-            candidates.append((parsed, item))
-    return max(candidates, key=lambda candidate: candidate[0])[1] if candidates else {}
-
-
-def _same_customer_message(message: dict[str, Any], trigger_event: dict[str, Any]) -> bool:
-    message_content = message_text(message.get("content")) or message_text(
-        message.get("text") or message.get("message") or message.get("body")
-    )
-    trigger_content = message_text(trigger_event.get("content")) or message_text(
-        trigger_event.get("text") or trigger_event.get("message") or trigger_event.get("body")
-    )
-    if not message_content or not trigger_content:
-        return False
-    if "".join(message_content.split()) != "".join(trigger_content.split()):
-        return False
-    message_type = _message_type(message)
-    trigger_type = _message_type(trigger_event)
-    return not message_type or not trigger_type or message_type == trigger_type
 
 
 def _parse_timestamp(value: Any) -> float | None:
@@ -478,21 +245,6 @@ def _message_ref(item: dict[str, Any], *, index: int) -> str:
         if value:
             return value[:120]
     return f"conv_{index:03d}"
-
-
-def _message_type(item: dict[str, Any]) -> str:
-    for key in ("msgtype", "message_type", "type", "content_type"):
-        value = str(item.get(key) or "").strip().lower()
-        if value:
-            return value
-    content = item.get("content")
-    if isinstance(content, dict):
-        value = str(content.get("type") or content.get("msgtype") or "").strip().lower()
-        if value:
-            return value
-        if "amount" in content:
-            return "payment_collection"
-    return ""
 
 
 def message_text(content: Any) -> str:

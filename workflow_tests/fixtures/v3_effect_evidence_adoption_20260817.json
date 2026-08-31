@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "purpose": "V3 direct effect evidence recall, adoption and non-repetition regression cases.",
+  "defaults": {
+    "initial": {
+      "customer": {
+        "name": "仿真客户"
+      },
+      "stores": [],
+      "case_facts": []
+    },
+    "expected": {
+      "must_reply": true
+    }
+  },
+  "scenarios": [
+    {
+      "id": "v3_effect_direct_spot_applicability",
+      "category": "效果案例",
+      "critical": true,
+      "semantic_goal": "客户询问自己的雀斑是否可以做时，先准确回答，并采用 Gate 提名的真实效果证据直接发送案例图；效果证据交付本身就是推进，不要改为重复追问重庆区域。",
+      "initial": {
+        "conversation": [
+          {
+            "role": "user",
+            "content": "我过两天回重庆"
+          },
+          {
+            "role": "assistant",
+            "content": "您回重庆后也可以匹配附近门店。"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "kind": "customer_message",
+          "content": "我雀斑可以做吗"
+        }
+      ],
+      "expected": {
+        "must_reply": true,
+        "required_types": [
+          "image"
+        ],
+        "forbidden_types": [
+          "payment_collection"
+        ]
+      }
+    },
+    {
+      "id": "v3_effect_age_followup_after_delivery",
+      "category": "效果案例",
+      "critical": true,
+      "semantic_goal": "客户在已经收到效果案例后补充年龄，承接年龄和适用性，不重复发送相同效果案例，也不要被更早的门店区域问题带偏；可以自然交付尚未介绍的相邻活动价值。",
+      "initial": {
+        "completed_sops": [
+          "s10_need_and_case"
+        ],
+        "conversation": [
+          {
+            "role": "user",
+            "content": "我过两天回重庆"
+          },
+          {
+            "role": "assistant",
+            "content": "您回重庆后可以匹配附近门店，方便时告诉我区域就行。"
+          },
+          {
+            "role": "user",
+            "content": "我雀斑可以做吗"
+          },
+          {
+            "role": "assistant",
+            "content": "雀斑在活动改善范围内，我给您发两个真实案例参考。"
+          },
+          {
+            "role": "assistant",
+            "type": "image",
+            "content": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_click_url-90f975480879.png"
+          },
+          {
+            "role": "assistant",
+            "type": "image",
+            "content": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_second-de0488d149ea.png"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "kind": "customer_message",
+          "content": "60多岁了"
+        }
+      ],
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": [
+          "payment_collection"
+        ]
+      }
+    }
+  ]
+}

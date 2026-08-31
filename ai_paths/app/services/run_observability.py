@@ -1,596 +1,527 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
+
+from app.services.run_observability_legacy import build_run_observability, trace_wall_duration_ms
 
 
-_NODE_KIND_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("send", ("send_reply", "async_final", "message_delivery", "dispatch")),
-    ("commit", ("commit", "persist", "record", "memory_update", "event_update")),
-    ("validation", ("validate", "validation", "audit", "repair", "quality")),
-    ("reply", ("reply_synth", "reply_generator", "finalize_reply", "reply_node")),
-    ("join", ("join", "merge_evidence", "deterministic_join")),
-    ("tool", ("tool_exec", "action_node", "store_resolution", "store_workflow", "execute_tools")),
-    ("planner", ("planner", "tool_plan")),
-    ("gate", ("sop_gate", "chat_gate", "content_gate", "gate")),
-    ("context", ("shared_context", "customer_context", "context_load", "context_build")),
-    ("preprocess", ("normalization", "normalize", "preprocess", "vision", "voice", "location_card")),
-)
+def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
+    """Project V3 runtime state into a stable, human-facing audit summary.
 
-_NODE_LABELS = {
-    "preprocess": "请求预处理",
-    "context": "上下文装配",
-    "gate": "内容与 SOP Gate",
-    "planner": "工具规划",
-    "tool": "工具执行",
-    "join": "证据合并",
-    "reply": "最终回复",
-    "validation": "结构与事实校验",
-    "commit": "状态提交",
-    "send": "消息发送",
-    "other": "其他节点",
-}
+    This module only joins structured facts and model-owned audit fields. It
+    never infers customer intent from visible reply text.
+    """
 
-_IMPORTANT_INPUT_FIELDS = (
-    ("content", "当前消息"),
-    ("normalized_content", "归一消息"),
-    ("msgtype", "消息类型"),
-    ("conversation_history_count", "历史消息数"),
-    ("customer_id", "客户 ID"),
-    ("wechat", "企微账号"),
-    ("deadline_remaining_seconds", "剩余预算"),
-)
+    context = _dict(state.get("request_context"))
+    interface_version = _text(
+        context.get("interface_version") or context.get("api_version")
+    ).lower()
+    if interface_version != "v3":
+        return {}
 
-_IMPORTANT_OUTPUT_FIELDS = (
-    ("decision", "决策"),
-    ("route", "路由"),
-    ("status", "状态"),
-    ("planner_decision", "Planner 决策"),
-    ("planner_stage", "Planner 阶段"),
-    ("reply_source", "回复来源"),
-    ("fallback_source", "异常恢复来源"),
-    ("store_resolution_fact", "门店事实"),
-    ("reply_messages", "回复消息"),
-    ("warnings", "警告"),
-    ("errors", "错误"),
-)
+    route = _dict(state.get("semantic_route"))
+    checkpoint = _dict(route.get("checkpoint"))
+    sequence_match = _dict(route.get("sequence_match"))
+    store_query = _dict(route.get("store_query"))
+    recall = _dict(state.get("sales_recall"))
+    selector = _dict(recall.get("selector"))
+    knowledge_use = _dict(state.get("reply_knowledge_use"))
+    content_metrics = _dict(state.get("content_selection_metrics"))
+    message_refs = _message_ref_map(state)
+    conversation = _conversation_view(state)
+    store_summary = _store_summary(state, store_query=store_query)
 
-
-def build_run_observability(
-    detail: dict[str, Any],
-    *,
-    raw_log: dict[str, Any] | None = None,
-    dispatches: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    run = detail.get("run") if isinstance(detail.get("run"), dict) else {}
-    traces = detail.get("node_traces") if isinstance(detail.get("node_traces"), list) else []
-    clean_traces = [item for item in traces if isinstance(item, dict)]
-    clean_dispatches = [item for item in (dispatches or []) if isinstance(item, dict)]
-    nodes = [_node_view(trace, index) for index, trace in enumerate(clean_traces)]
-    _assign_parallel_groups(nodes)
-
-    output = run.get("output_snapshot") if isinstance(run.get("output_snapshot"), dict) else {}
-    input_snapshot = run.get("input_snapshot") if isinstance(run.get("input_snapshot"), dict) else {}
-    request_context = input_snapshot.get("request_context") if isinstance(input_snapshot.get("request_context"), dict) else {}
-    model_calls = [call for node in nodes for call in node.get("model_calls", [])]
-    errors = _as_list(_safe_load_error(run.get("error")))
-    warnings = _as_list(output.get("warnings"))
-    final_messages = _final_messages(output, raw_log or {})
-    delivery = _delivery_view(clean_dispatches)
-    fallback_detected = _fallback_detected(output, final_messages, nodes)
-    wall_duration_ms = trace_wall_duration_ms(clean_traces)
-    if wall_duration_ms <= 0:
-        wall_duration_ms = int(run.get("duration_ms") or 0)
-
-    status = _overall_status(
-        errors=errors,
-        final_messages=final_messages,
-        fallback_detected=fallback_detected,
-        delivery_status=str(delivery.get("status") or ""),
-        node_statuses=[str(item.get("status") or "") for item in nodes],
+    matched_sequences = _matched_sequences(
+        recall,
+        sequence_match=sequence_match,
+        adopted=knowledge_use,
     )
-    slowest = max(nodes, key=lambda item: int(item.get("duration_ms") or 0), default={})
-    retry_count = sum(max(0, int(item.get("attempts") or 0) - 1) for item in model_calls)
-    fallback_count = sum(1 for item in model_calls if item.get("fallback_used") or item.get("hedge_started"))
+    script_candidates = _script_candidates(
+        recall,
+        adopted_script_ids={
+            _text(item)
+            for item in knowledge_use.get("selected_script_ids") or []
+            if _text(item)
+        },
+        delivered_content_ids={
+            _text(item)
+            for item in content_metrics.get("delivered_ids") or []
+            if _text(item)
+        },
+    )
+    errors = _dict_list(state.get("errors"))[:8]
+    warnings = _dict_list(state.get("warnings"))[:8]
+    fallback_source = _text(state.get("fallback_source"))
 
     return {
-        "contract_version": "run_observability_v1",
-        "summary": {
-            "status": status,
-            "request_id": str(run.get("request_id") or ""),
-            "created_at": str(run.get("created_at") or ""),
-            "interface_version": str(request_context.get("interface_version") or request_context.get("api_version") or "v1"),
-            "reply_chain_mode": str(request_context.get("reply_chain_mode") or ""),
-            "message_type": str(request_context.get("msgtype") or "text"),
-            "customer_message": str(input_snapshot.get("content") or ""),
-            "wall_duration_ms": wall_duration_ms,
-            "recorded_duration_ms": int(run.get("duration_ms") or 0),
-            "slowest_node": {
-                "node_name": slowest.get("node_name", ""),
-                "display_name": slowest.get("display_name", ""),
-                "duration_ms": int(slowest.get("duration_ms") or 0),
+        "schema_version": "v3_run_observability_v1",
+        "overview": {
+            "interface_version": "v3",
+            "reply_chain_mode": _text(context.get("reply_chain_mode")),
+            "status": "failed" if errors else "completed",
+            "fallback_used": bool(fallback_source),
+            "fallback_source": fallback_source,
+            "knowledge_matched": bool(matched_sequences or script_candidates),
+            "knowledge_adopted": bool(
+                knowledge_use.get("sequence_id")
+                or knowledge_use.get("selected_script_ids")
+            ),
+            "store_called": bool(store_summary.get("called")),
+        },
+        "customer_input": {
+            "content": _text(state.get("content")),
+            "message_type": _text(context.get("msgtype") or context.get("message_type") or "text"),
+            "conversation_count": len(conversation),
+            "conversation": conversation,
+        },
+        "checkpoint_decision": {
+            "classification_status": _text(route.get("classification_status")),
+            "primary": {
+                "type_id": _integer(checkpoint.get("primary_type_id")),
+                "code": _text(checkpoint.get("primary_code")),
+                "name": _text(checkpoint.get("primary_type_name")),
+                "tag_id": _integer(checkpoint.get("primary_tag_id")),
+                "tag_name": _text(checkpoint.get("primary_tag_name")),
             },
-            "model_call_count": len(model_calls),
-            "model_retry_count": retry_count,
-            "model_fallback_count": fallback_count,
-            "total_tokens": sum(int(item.get("total_tokens") or 0) for item in model_calls),
-            "fallback_detected": fallback_detected,
-            "error_count": len(errors),
-            "warning_count": len(warnings) + sum(len(item.get("warnings", [])) for item in nodes),
+            "secondary": {
+                "type_id": _integer(checkpoint.get("secondary_type_id")),
+                "code": _text(checkpoint.get("secondary_code")),
+                "name": _text(checkpoint.get("secondary_type_name")),
+                "tag_id": _integer(checkpoint.get("secondary_tag_id")),
+                "tag_name": _text(checkpoint.get("secondary_tag_name")),
+            },
+            "evidence": [
+                {
+                    "ref": ref,
+                    "quote": message_refs.get(ref, ""),
+                }
+                for ref in _string_list(checkpoint.get("evidence_refs"))
+            ],
+            "reason": _text(checkpoint.get("reason")),
+        },
+        "knowledge_match": {
+            "execution": {
+                "router_invoked": bool(route),
+                "router_status": _text(route.get("status") or ("completed" if route else "not_run")),
+                "router_phase": _text(route.get("phase")),
+                "sequence_index_count": len(recall.get("sequence_candidates") or []),
+                "knowledge_status": _text(recall.get("status") or ("completed" if recall else "not_run")),
+                "script_lookup_invoked": bool(recall.get("script_query_results")),
+                "script_lookup_count": len(recall.get("script_query_results") or []),
+                "selector_invoked": bool(selector),
+            },
+            "sequence_reason": _text(sequence_match.get("reason")),
+            "selector": {
+                "status": _text(selector.get("status")),
+                "reason": _text(selector.get("reason")),
+                "selected_groups": _dict_list(selector.get("selected_groups")),
+                "excluded_groups": _dict_list(selector.get("excluded_groups")),
+            },
+            "matched_sequences": matched_sequences,
+            "excluded_sequences": [
+                {
+                    "sequence_id": sequence_id,
+                    "reason": _text(
+                        _dict(sequence_match.get("exclusion_reasons")).get(sequence_id)
+                    ),
+                }
+                for sequence_id in _string_list(
+                    sequence_match.get("excluded_sequence_ids")
+                )
+            ],
+            "script_query_count": len(recall.get("script_query_results") or []),
+            "script_candidate_count": int(
+                recall.get("candidate_count") or len(script_candidates)
+            ),
+            "script_candidates": script_candidates,
+            "adopted": {
+                "sequence_id": _text(knowledge_use.get("sequence_id")),
+                "sequence_name": _text(knowledge_use.get("sequence_name")),
+                "step_id": _text(knowledge_use.get("step_id")),
+                "checkpoint_code": _text(knowledge_use.get("checkpoint_code")),
+                "action_code": _text(knowledge_use.get("action_code")),
+                "script_ids": _string_list(
+                    knowledge_use.get("selected_script_ids")
+                ),
+                "reason": _text(knowledge_use.get("reason")),
+            },
+            "delivered_content_ids": _string_list(
+                content_metrics.get("delivered_ids")
+            ),
+        },
+        "store_workflow": store_summary,
+        "reply_result": {
+            "messages": _dict_list(state.get("reply_messages")),
+            "source": _text(state.get("reply_source")),
+            "action": _text(state.get("reply_action") or "none"),
+            "action_reason": _text(state.get("reply_action_reason")),
+            "sales_judgment": _dict(state.get("reply_sales_judgment")),
+            "selected_content_ids": _string_list(
+                state.get("selected_content_ids")
+            ),
+            "content_decisions": _dict_list(
+                state.get("reply_content_decisions")
+            ),
+        },
+        "delivery": _initial_delivery_summary(state),
+        "strategy_callback": _dict(state.get("strategy_data_callback")),
+        "timing": _timing_summary(state.get("trace")),
+        "failures": {
             "errors": errors,
             "warnings": warnings,
-            "final_messages": final_messages,
-            "http_response_messages": _reply_messages(output, ("http_response_reply_messages",)),
-            "async_final_messages": _reply_messages(
-                output,
-                ("reply_control.async_final.reply_messages", "async_final_reply.reply_messages"),
-            ),
-        },
-        "nodes": nodes,
-        "delivery": delivery,
-        "debug": {
-            "snapshot_is_compacted": True,
-            "snapshot_label": "调试快照（可能截断）",
+            "recovery_attempts": _dict_list(state.get("recovery_attempts"))[:8],
         },
     }
 
 
-def trace_wall_duration_ms(traces: Iterable[dict[str, Any]]) -> int:
-    starts: list[datetime] = []
-    finishes: list[datetime] = []
-    for trace in traces:
-        if not isinstance(trace, dict):
-            continue
-        started = _parse_time(trace.get("started_at") or trace.get("created_at"))
-        finished = _parse_time(trace.get("finished_at"))
-        if started is None:
-            continue
-        starts.append(started)
-        if finished is None:
-            finished = started + timedelta(milliseconds=max(0, int(trace.get("duration_ms") or 0)))
-        finishes.append(finished)
-    if not starts or not finishes:
-        return 0
-    return max(0, int((max(finishes) - min(starts)).total_seconds() * 1000))
-
-
-def _node_view(trace: dict[str, Any], index: int) -> dict[str, Any]:
-    node_name = str(trace.get("node_name") or trace.get("node") or "unknown")
-    node_kind = _node_kind(node_name)
-    input_snapshot = trace.get("input_snapshot") if isinstance(trace.get("input_snapshot"), dict) else {}
-    output_snapshot = trace.get("output_snapshot") if isinstance(trace.get("output_snapshot"), dict) else {}
-    tool_calls = trace.get("tool_calls") if isinstance(trace.get("tool_calls"), list) else []
-    model_calls = _collect_model_calls(tool_calls, node_name)
-    regular_tools = [_tool_call_view(item) for item in tool_calls if isinstance(item, dict) and not _is_model_call(item)]
-    error = str(trace.get("error") or "")
-    warnings = _node_warnings(output_snapshot, model_calls, regular_tools)
-    status = _node_status(error, output_snapshot, warnings)
-    started_at = str(trace.get("started_at") or trace.get("created_at") or "")
-    finished_at = str(trace.get("finished_at") or "")
-    if not finished_at:
-        started = _parse_time(started_at)
-        if started is not None:
-            finished_at = (started + timedelta(milliseconds=max(0, int(trace.get("duration_ms") or 0)))).isoformat()
-
-    return {
-        "id": str(trace.get("id") or f"node-{index + 1}"),
-        "sequence": index + 1,
-        "node_name": node_name,
-        "node_kind": node_kind,
-        "display_name": _display_name(node_name, node_kind),
-        "status": status,
-        "duration_ms": int(trace.get("duration_ms") or 0),
-        "started_at": started_at,
-        "finished_at": finished_at,
-        "parallel_group": "",
-        "summary": _node_summary(node_kind, output_snapshot, model_calls, regular_tools, error),
-        "important_inputs": _important_fields(input_snapshot, _IMPORTANT_INPUT_FIELDS),
-        "important_outputs": _important_fields(output_snapshot, _IMPORTANT_OUTPUT_FIELDS),
-        "model_calls": model_calls,
-        "tool_calls": regular_tools,
-        "warnings": warnings,
-        "errors": [error] if error else [],
-    }
-
-
-def _node_kind(node_name: str) -> str:
-    normalized = node_name.lower()
-    for kind, tokens in _NODE_KIND_RULES:
-        if any(token in normalized for token in tokens):
-            return kind
-    return "other"
-
-
-def _display_name(node_name: str, node_kind: str) -> str:
-    base = _NODE_LABELS.get(node_kind, _NODE_LABELS["other"])
-    return f"{base} · {node_name}"
-
-
-def _node_summary(
-    node_kind: str,
-    output: dict[str, Any],
-    model_calls: list[dict[str, Any]],
-    tool_calls: list[dict[str, Any]],
-    error: str,
-) -> list[str]:
-    if error:
-        return [f"节点失败：{error}"]
-    lines: list[str] = []
-    messages = output.get("reply_messages") if isinstance(output.get("reply_messages"), list) else []
-    if messages:
-        types = [str(item.get("type") or "text") for item in messages if isinstance(item, dict)]
-        lines.append(f"生成 {len(messages)} 条客户消息：{', '.join(types) or 'text'}")
-    store_fact = output.get("store_resolution_fact") if isinstance(output.get("store_resolution_fact"), dict) else {}
-    if store_fact:
-        status = str(store_fact.get("status") or store_fact.get("delivery_mode") or "")
-        store_ids = store_fact.get("delivery_store_ids") if isinstance(store_fact.get("delivery_store_ids"), list) else []
-        lines.append(f"门店结果：{status or '已生成'}" + (f"，待发送 {len(store_ids)} 家" if store_ids else ""))
-    decision = output.get("decision") or output.get("planner_decision") or output.get("route")
-    if isinstance(decision, (str, int, float, bool)) and str(decision):
-        lines.append(f"输出决策：{decision}")
-    if model_calls:
-        lines.append(f"完成 {len(model_calls)} 次模型调用")
-    if tool_calls:
-        succeeded = sum(1 for item in tool_calls if item.get("status") == "success")
-        lines.append(f"工具调用 {len(tool_calls)} 次，成功 {succeeded} 次")
-    if not lines:
-        lines.append(_NODE_LABELS.get(node_kind, "节点") + "已完成")
-    return lines[:4]
-
-
-def _important_fields(snapshot: dict[str, Any], definitions: tuple[tuple[str, str], ...]) -> list[dict[str, Any]]:
-    values: list[dict[str, Any]] = []
-    for path, label in definitions:
-        value = _path_value(snapshot, path)
-        if value in (None, "", [], {}):
-            continue
-        if path == "conversation_history_count" and value is None:
-            history = snapshot.get("conversation_history")
-            value = len(history) if isinstance(history, list) else None
-        values.append({"key": path, "label": label, "value": _compact_display_value(value)})
-    if not any(item["key"] == "conversation_history_count" for item in values):
-        history = snapshot.get("conversation_history")
-        if isinstance(history, list):
-            values.append({"key": "conversation_history_count", "label": "历史消息数", "value": len(history)})
-    return values[:8]
-
-
-def _collect_model_calls(values: list[Any], node_name: str) -> list[dict[str, Any]]:
-    output: list[dict[str, Any]] = []
-    for index, value in enumerate(values):
-        _collect_model_call(value, output, node_name=node_name, call_id=f"{node_name}-{index + 1}")
-    return output
-
-
-def _collect_model_call(value: Any, output: list[dict[str, Any]], *, node_name: str, call_id: str) -> None:
-    if not isinstance(value, dict):
+def enrich_v3_run_observability(
+    output_snapshot: dict[str, Any],
+    *,
+    dispatch: dict[str, Any] | None = None,
+) -> None:
+    observability = _dict(output_snapshot.get("observability_v3"))
+    if not observability:
         return
-    if _is_model_call(value):
-        usage = value.get("usage") if isinstance(value.get("usage"), dict) else {}
-        model_input = value.get("input") if isinstance(value.get("input"), dict) else {}
-        messages = model_input.get("messages") if isinstance(model_input.get("messages"), list) else []
-        attempts = int(usage.get("attempts") or usage.get("request_attempt") or 1)
-        winner_model = str(usage.get("winner_model") or usage.get("model") or model_input.get("model") or "")
-        configured_model = str(usage.get("configured_model") or model_input.get("configured_model") or "")
+    observability["strategy_callback"] = _dict(
+        output_snapshot.get("strategy_data_callback")
+    )
+    if dispatch:
+        observability["delivery"] = {
+            "mode": "async_callback",
+            "status": _text(dispatch.get("status")),
+            "callback_expected": True,
+            "callback_reason": "最终回复由异步发送链路交付，平台逐条回执已更新到本记录。",
+            "dispatch_id": _text(dispatch.get("id")),
+            "expected_count": _integer(dispatch.get("expected_count")),
+            "succeeded_count": _integer(dispatch.get("succeeded_count")),
+            "failed_count": _integer(dispatch.get("failed_count")),
+            "platform_request_id": _text(dispatch.get("platform_request_id")),
+            "error_code": _text(dispatch.get("error_code")),
+            "error_message": _text(dispatch.get("error_message")),
+            "messages": _dict_list(dispatch.get("reply_messages")),
+            "items": [
+                {
+                    "message_index": _integer(item.get("message_index")),
+                    "message_type": _text(item.get("message_type")),
+                    "status": _text(item.get("status")),
+                    "platform_message_id": _text(item.get("platform_message_id")),
+                    "error_code": _text(item.get("error_code")),
+                    "error_message": _text(item.get("error_message")),
+                }
+                for item in _dict_list(dispatch.get("items"))
+            ],
+        }
+    output_snapshot["observability_v3"] = observability
+
+
+def _matched_sequences(
+    recall: dict[str, Any],
+    *,
+    sequence_match: dict[str, Any],
+    adopted: dict[str, Any],
+) -> list[dict[str, Any]]:
+    selected_ids = _string_list(sequence_match.get("sequence_ids"))
+    alternatives = set(_string_list(sequence_match.get("alternative_sequence_ids")))
+    adopted_sequence_id = _text(adopted.get("sequence_id"))
+    adopted_step_id = _text(adopted.get("step_id"))
+    candidates = {
+        _text(item.get("sequence_id")): item
+        for item in _dict_list(recall.get("sequence_candidates"))
+        if _text(item.get("sequence_id"))
+    }
+    output: list[dict[str, Any]] = []
+    for rank, sequence_id in enumerate(selected_ids, start=1):
+        item = candidates.get(sequence_id, {})
+        steps = [
+            {
+                "step_id": _text(step.get("step_id")),
+                "sort_order": _integer(step.get("sort_order")),
+                "action_code": _text(step.get("action_code")),
+                "action_name": _text(step.get("action_name")),
+                "adopted": (
+                    sequence_id == adopted_sequence_id
+                    and _text(step.get("step_id")) == adopted_step_id
+                ),
+            }
+            for step in _dict_list(item.get("steps"))
+        ]
         output.append(
             {
-                "id": call_id,
-                "node_name": node_name,
-                "name": str(value.get("name") or "model_call"),
-                "tier": str(usage.get("tier") or model_input.get("tier") or ""),
-                "model": winner_model,
-                "configured_model": configured_model,
-                "duration_ms": int(usage.get("overall_duration_ms") or usage.get("duration_ms") or value.get("duration_ms") or 0),
-                "total_tokens": int(usage.get("total_tokens") or 0),
-                "attempts": attempts,
-                "hedge_started": bool(usage.get("hedge_started")),
-                "fallback_used": bool(configured_model and winner_model and configured_model != winner_model),
-                "timeout_stage": str(usage.get("timeout_stage") or ""),
-                "error": str(value.get("error") or ""),
-                "prompt_messages": [
-                    {
-                        "role": str(item.get("role") or "unknown") if isinstance(item, dict) else "unknown",
-                        "chars": _content_chars(item.get("content") if isinstance(item, dict) else item),
-                        "preview": _content_preview(item.get("content") if isinstance(item, dict) else item),
-                    }
-                    for item in messages
-                ],
+                "rank": rank,
+                "sequence_id": sequence_id,
+                "sequence_name": _text(item.get("sequence_name")),
+                "checkpoint_code": _text(item.get("checkpoint_code")),
+                "checkpoint_name": _text(item.get("checkpoint_name")),
+                "alternative": sequence_id in alternatives,
+                "adopted": sequence_id == adopted_sequence_id,
+                "selection_reason": _text(item.get("selection_reason")),
+                "steps": steps,
             }
         )
-    nested = value.get("nested_calls") if isinstance(value.get("nested_calls"), list) else []
-    for index, item in enumerate(nested):
-        _collect_model_call(item, output, node_name=node_name, call_id=f"{call_id}-nested-{index + 1}")
-    for key in ("retry", "recovery"):
-        if isinstance(value.get(key), dict):
-            _collect_model_call(value[key], output, node_name=node_name, call_id=f"{call_id}-{key}")
-
-
-def _is_model_call(value: dict[str, Any]) -> bool:
-    name = str(value.get("name") or "").lower()
-    return (
-        isinstance(value.get("usage"), dict)
-        or "raw_json_output" in value
-        or any(token in name for token in ("model", "planner", "reply_synthesizer", "profile_analyzer", "vision", "gate"))
-    )
-
-
-def _tool_call_view(value: dict[str, Any]) -> dict[str, Any]:
-    name = str(value.get("name") or "tool")
-    error = str(value.get("error") or "")
-    tool_input = value.get("input") if isinstance(value.get("input"), dict) else {}
-    tool_output = value.get("output")
-    return {
-        "name": name,
-        "status": "failed" if error else "success",
-        "duration_ms": int(value.get("duration_ms") or 0),
-        "input_summary": _sanitize_tool_input(tool_input),
-        "output_summary": _tool_output_summary(tool_output),
-        "error": error,
-    }
-
-
-def _sanitize_tool_input(value: dict[str, Any]) -> dict[str, Any]:
-    blocked_tokens = ("token", "secret", "password", "authorization", "api_key", "apikey")
-    output: dict[str, Any] = {}
-    for key, item in list(value.items())[:12]:
-        if any(token in key.lower() for token in blocked_tokens):
-            output[key] = "[已隐藏]"
-        elif isinstance(item, str) and (item.startswith("http://") or item.startswith("https://")):
-            output[key] = item.split("?", 1)[0]
-        else:
-            output[key] = _compact_display_value(item)
     return output
 
 
-def _tool_output_summary(value: Any) -> Any:
-    if isinstance(value, list):
-        return {"item_count": len(value), "sample": [_compact_display_value(item) for item in value[:2]]}
-    if isinstance(value, dict):
-        preferred = {}
-        for key in ("status", "success", "count", "store_id", "store_ids", "delivery_store_ids", "error"):
-            if key in value:
-                preferred[key] = _compact_display_value(value[key])
-        return preferred or {"field_count": len(value), "fields": list(value.keys())[:12]}
-    return _compact_display_value(value)
-
-
-def _node_warnings(
-    output: dict[str, Any],
-    model_calls: list[dict[str, Any]],
-    tool_calls: list[dict[str, Any]],
-) -> list[str]:
-    warnings = [str(item) for item in _as_list(output.get("warnings")) if str(item)]
-    for call in model_calls:
-        if call.get("attempts", 1) > 1:
-            warnings.append(f"模型重试 {call['attempts']} 次")
-        if call.get("hedge_started"):
-            warnings.append("启动 hedge/fallback 竞速")
-        if call.get("timeout_stage"):
-            warnings.append(f"模型超时阶段：{call['timeout_stage']}")
-    for call in tool_calls:
-        if call.get("status") == "failed":
-            warnings.append(f"工具失败：{call.get('name')}")
-    return list(dict.fromkeys(warnings))[:12]
-
-
-def _node_status(error: str, output: dict[str, Any], warnings: list[str]) -> str:
-    if error:
-        return "failed"
-    status = str(output.get("status") or "").lower()
-    if status in {"skipped", "superseded", "filtered"}:
-        return "skipped"
-    if status in {"pending", "scheduled", "sending", "platform_accepted"}:
-        return "pending"
-    if warnings:
-        return "warning"
-    return "success"
-
-
-def _assign_parallel_groups(nodes: list[dict[str, Any]]) -> None:
-    intervals: list[tuple[datetime, datetime, int]] = []
-    for index, node in enumerate(nodes):
-        start = _parse_time(node.get("started_at"))
-        finish = _parse_time(node.get("finished_at"))
-        if start is not None and finish is not None:
-            intervals.append((start, finish, index))
-    group_number = 0
-    for position, (start, finish, index) in enumerate(intervals):
-        overlaps = [other_index for other_start, other_finish, other_index in intervals[position + 1 :] if other_start < finish and other_finish > start]
-        if not overlaps:
+def _script_candidates(
+    recall: dict[str, Any],
+    *,
+    adopted_script_ids: set[str],
+    delivered_content_ids: set[str],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for item in _dict_list(recall.get("candidates"))[:8]:
+        platform_script_id = _text(item.get("script_id") or item.get("id"))
+        script_code = _text(item.get("source_id") or item.get("script_code"))
+        if not script_code and not platform_script_id:
             continue
-        existing = str(nodes[index].get("parallel_group") or "")
-        if existing:
-            group = existing
-        else:
-            group_number += 1
-            group = f"parallel-{group_number}"
-            nodes[index]["parallel_group"] = group
-        for other_index in overlaps:
-            if not nodes[other_index].get("parallel_group"):
-                nodes[other_index]["parallel_group"] = group
-
-
-def _delivery_view(dispatches: list[dict[str, Any]]) -> dict[str, Any]:
-    if not dispatches:
-        return {"status": "not_recorded", "dispatches": [], "expected_count": 0, "succeeded_count": 0, "failed_count": 0}
-    statuses = [str(item.get("status") or "created") for item in dispatches]
-    if any(status == "partial_failed" for status in statuses):
-        status = "partial_failed"
-    elif any(status == "send_failed" for status in statuses):
-        status = "send_failed"
-    elif all(status == "send_succeeded" for status in statuses):
-        status = "send_succeeded"
-    elif any(status in {"sending", "platform_accepted", "submission_unknown", "submitting", "created"} for status in statuses):
-        status = "pending"
-    else:
-        status = statuses[-1]
-    return {
-        "status": status,
-        "expected_count": sum(int(item.get("expected_count") or 0) for item in dispatches),
-        "succeeded_count": sum(int(item.get("succeeded_count") or 0) for item in dispatches),
-        "failed_count": sum(int(item.get("failed_count") or 0) for item in dispatches),
-        "dispatches": [
-            {
-                "dispatch_id": str(item.get("id") or ""),
-                "source_channel": str(item.get("source_channel") or ""),
-                "source_kind": str(item.get("source_kind") or ""),
-                "status": str(item.get("status") or ""),
-                "expected_count": int(item.get("expected_count") or 0),
-                "succeeded_count": int(item.get("succeeded_count") or 0),
-                "failed_count": int(item.get("failed_count") or 0),
-                "platform_request_id": str(item.get("platform_request_id") or ""),
-                "system_msgid": str(item.get("system_msgid") or ""),
-                "error_code": str(item.get("error_code") or ""),
-                "error_message": str(item.get("error_message") or ""),
-                "submitted_at": str(item.get("submitted_at") or ""),
-                "confirmed_at": str(item.get("confirmed_at") or ""),
-                "last_callback_at": str(item.get("last_callback_at") or ""),
-                "items": [
+        script_aliases = {
+            value
+            for value in (
+                platform_script_id,
+                script_code,
+                _text(item.get("id")),
+                _text(item.get("script_code")),
+            )
+            if value
+        }
+        checkpoint_type = _dict(item.get("checkpoint_type"))
+        checkpoint_tag = _dict(item.get("checkpoint_tag"))
+        paragraph_refs = [
+            _text(paragraph.get("source_ref"))
+            for paragraph in _dict_list(item.get("paragraphs"))
+            if _text(paragraph.get("source_ref"))
+        ]
+        media = []
+        for paragraph in _dict_list(item.get("paragraphs")):
+            for message in _dict_list(paragraph.get("messages")):
+                message_type = _text(message.get("type"))
+                if message_type not in {"image", "video", "card", "miniprogram"}:
+                    continue
+                media.append(
                     {
-                        "message_index": int(child.get("message_index") or 0),
-                        "message_type": str(child.get("message_type") or ""),
-                        "status": str(child.get("status") or ""),
-                        "platform_message_id": str(child.get("platform_message_id") or ""),
-                        "error_code": str(child.get("error_code") or ""),
-                        "error_message": str(child.get("error_message") or ""),
-                        "sent_at": str(child.get("sent_at") or ""),
+                        "type": message_type,
+                        "url": _text(message.get("url")),
+                        "title": _text(message.get("title")),
+                        "remark": _text(message.get("remark")),
                     }
-                    for child in item.get("items", [])
-                    if isinstance(child, dict)
-                ],
+                )
+        adopted = bool(script_aliases & adopted_script_ids)
+        delivered = adopted and any(
+            any(
+                content_id == f"follow_script:{alias}"
+                or content_id.startswith(f"follow_script:{alias}:p")
+                for alias in script_aliases
+            )
+            for content_id in delivered_content_ids
+        )
+        output.append(
+            {
+                "script_id": platform_script_id,
+                "script_code": script_code,
+                "script_name": _text(item.get("script_name")),
+                "checkpoint_type_id": _integer(checkpoint_type.get("id")),
+                "checkpoint_type_name": _text(checkpoint_type.get("name")),
+                "checkpoint_tag_id": _integer(checkpoint_tag.get("id")),
+                "checkpoint_tag_name": _text(checkpoint_tag.get("name")),
+                "action_code": _text(item.get("action_code")),
+                "action_name": _text(item.get("action_name")),
+                "text_preview": _script_text_preview(item),
+                "paragraph_refs": paragraph_refs,
+                "media": media[:4],
+                "adopted": adopted,
+                "delivered": delivered,
             }
-            for item in dispatches
+        )
+    return output
+
+
+def _script_text_preview(item: dict[str, Any]) -> str:
+    direct = _text(item.get("reference_text") or item.get("body_text"))
+    if direct:
+        return direct[:240]
+    texts: list[str] = []
+    for paragraph in _dict_list(item.get("paragraphs")):
+        for message in _dict_list(paragraph.get("messages")):
+            if _text(message.get("type")) != "text":
+                continue
+            content = _text(message.get("content"))
+            if content:
+                texts.append(content)
+    return " ".join(texts)[:240]
+
+
+def _store_summary(state: dict[str, Any], *, store_query: dict[str, Any]) -> dict[str, Any]:
+    fact = _dict(state.get("store_resolution_fact"))
+    joined = _dict(state.get("evidence_join"))
+    normalized = _dict(joined.get("normalized_tool_facts"))
+    structured = _dict(normalized.get("structured_facts"))
+    candidate_stores = _dict_list(
+        fact.get("candidate_stores")
+        or fact.get("recommended_stores")
+        or structured.get("store_facts")
+    )
+    delivery_store_ids = _string_list(fact.get("delivery_store_ids"))
+    if delivery_store_ids:
+        by_id = {
+            _text(store.get("store_id") or store.get("id")): store
+            for store in candidate_stores
+            if _text(store.get("store_id") or store.get("id"))
+        }
+        delivered_stores = [
+            by_id[store_id]
+            for store_id in delivery_store_ids
+            if store_id in by_id
+        ]
+        if delivered_stores:
+            candidate_stores = delivered_stores
+    return {
+        "called": bool(store_query.get("required") or fact),
+        "purpose": _text(store_query.get("purpose")),
+        "destination": _text(
+            store_query.get("destination_hint")
+            or fact.get("raw_place")
+            or fact.get("destination_query")
+        ),
+        "status": _text(fact.get("status")),
+        "outcome": _text(fact.get("outcome")),
+        "candidate_search_complete": bool(fact.get("candidate_search_complete")),
+        "delivery_store_ids": delivery_store_ids,
+        "candidate_count": int(
+            fact.get("candidate_count") or len(candidate_stores)
+        ),
+        "stores": [
+            {
+                "store_id": _text(store.get("store_id") or store.get("id")),
+                "store_name": _text(store.get("store_name") or store.get("name")),
+                "address": _text(store.get("store_address") or store.get("address")),
+                "distance_km": store.get("distance_km"),
+            }
+            for store in candidate_stores[:5]
         ],
+        "error": _text(fact.get("error")),
     }
 
 
-def _overall_status(
-    *,
-    errors: list[Any],
-    final_messages: list[Any],
-    fallback_detected: bool,
-    delivery_status: str,
-    node_statuses: list[str],
-) -> str:
-    if delivery_status == "send_failed":
-        return "delivery_failed"
-    if delivery_status == "partial_failed":
-        return "partial_failed"
-    if errors and not final_messages:
-        return "failed"
-    if any(status == "failed" for status in node_statuses) and not final_messages:
-        return "failed"
-    if fallback_detected:
-        return "fallback"
-    if errors or any(status == "warning" for status in node_statuses):
-        return "warning"
-    if delivery_status == "pending":
-        return "delivery_pending"
-    if delivery_status == "send_succeeded":
-        return "delivered"
-    return "success"
-
-
-def _fallback_detected(output: dict[str, Any], final_messages: list[Any], nodes: list[dict[str, Any]]) -> bool:
-    if output.get("fallback_source"):
-        return True
-    for node in nodes:
-        if any(item.get("key") == "fallback_source" for item in node.get("important_outputs", [])):
-            return True
-    texts = [str(item.get("content") or "") for item in final_messages if isinstance(item, dict) and item.get("type") == "text"]
-    return bool(texts) and all(text.strip() == "您稍等一下" for text in texts)
-
-
-def _final_messages(output: dict[str, Any], raw_log: dict[str, Any]) -> list[Any]:
-    for record in (output, raw_log):
-        messages = _reply_messages(
-            record,
-            (
-                "reply_control.async_final.reply_messages",
-                "async_final_reply.reply_messages",
-                "http_response_reply_messages",
-                "http_response_body.reply_messages",
-                "reply_messages",
-            ),
+def _initial_delivery_summary(state: dict[str, Any]) -> dict[str, Any]:
+    async_final = _dict(state.get("async_final_reply"))
+    control = _dict(state.get("reply_control"))
+    control_async = _dict(control.get("async_final"))
+    sync_return = _dict(control.get("sync_return"))
+    callback_expected = bool(
+        async_final.get("scheduled")
+        or control_async.get("scheduled")
+        or async_final.get("dispatch_id")
+        or control_async.get("dispatch_id")
+    )
+    if callback_expected:
+        mode = "async_callback"
+        status = _text(
+            async_final.get("status")
+            or control_async.get("status")
+            or "generated"
         )
-        if messages:
-            return messages
-    return []
-
-
-def _reply_messages(record: dict[str, Any], paths: tuple[str, ...]) -> list[Any]:
-    for path in paths:
-        value = _path_value(record, path)
-        if isinstance(value, list):
-            return value
-    return []
-
-
-def _path_value(record: dict[str, Any], path: str) -> Any:
-    current: Any = record
-    for part in path.split("."):
-        if not isinstance(current, dict):
-            return None
-        current = current.get(part)
-    return current
-
-
-def _safe_load_error(value: Any) -> Any:
-    if not isinstance(value, str) or not value.strip():
-        return []
-    try:
-        import json
-
-        return json.loads(value)
-    except (TypeError, ValueError):
-        return [value]
-
-
-def _as_list(value: Any) -> list[Any]:
-    if value in (None, "", {}):
-        return []
-    return value if isinstance(value, list) else [value]
-
-
-def _parse_time(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _compact_display_value(value: Any) -> Any:
-    if isinstance(value, str):
-        return value if len(value) <= 260 else value[:257] + "..."
-    if isinstance(value, list):
-        return {"count": len(value), "sample": [_compact_display_value(item) for item in value[:3]]}
-    if isinstance(value, dict):
-        return {key: _compact_display_value(item) for key, item in list(value.items())[:10]}
-    return value
-
-
-def _content_chars(value: Any) -> int:
-    if isinstance(value, str):
-        return len(value)
-    try:
-        import json
-
-        return len(json.dumps(value, ensure_ascii=False))
-    except (TypeError, ValueError):
-        return len(str(value or ""))
-
-
-def _content_preview(value: Any) -> str:
-    if isinstance(value, str):
-        text = " ".join(value.split())
+        callback_reason = "最终回复由异步发送链路交付，等待或已收到平台回执。"
     else:
-        try:
-            import json
+        mode = "sync_return"
+        status = "direct_response_returned" if sync_return or state.get("reply_messages") else "empty"
+        callback_reason = "回复已随本次 AI 接口响应同步返回；异步最终回复回调不需要，避免重复发送。"
+    return {
+        "mode": mode,
+        "status": status,
+        "callback_expected": callback_expected,
+        "callback_reason": callback_reason,
+        "dispatch_id": _text(
+            async_final.get("dispatch_id") or control_async.get("dispatch_id")
+        ),
+        "expected_count": len(state.get("reply_messages") or []),
+        "succeeded_count": 0,
+        "failed_count": 0,
+        "messages": _dict_list(state.get("reply_messages")),
+        "items": [],
+    }
 
-            text = json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            text = str(value or "")
-    return text[:180] + ("..." if len(text) > 180 else "")
+
+def _timing_summary(trace: Any) -> list[dict[str, Any]]:
+    output = []
+    for item in _dict_list(trace):
+        node = _text(item.get("node"))
+        if not node:
+            continue
+        output.append(
+            {
+                "stage": _stage_label(node),
+                "node": node,
+                "duration_ms": _integer(item.get("duration_ms")),
+                "status": "error" if item.get("error") else "ok",
+            }
+        )
+    return output
+
+
+def _stage_label(node: str) -> str:
+    lower = node.lower()
+    if "semantic" in lower or "knowledge" in lower:
+        return "知识路由"
+    if "tool" in lower or "store" in lower:
+        return "门店与工具"
+    if "reply" in lower or "synth" in lower:
+        return "最终回复"
+    if "commit" in lower:
+        return "后台写入"
+    if "context" in lower or "preprocess" in lower:
+        return "数据准备"
+    return "链路处理"
+
+
+def _message_ref_map(state: dict[str, Any]) -> dict[str, str]:
+    output = {"current_message": _text(state.get("content"))}
+    shared = _dict(state.get("shared_context"))
+    for item in _dict_list(shared.get("conversation")):
+        ref = _text(item.get("message_ref"))
+        if ref:
+            output[ref] = _text(item.get("content"))
+    return output
+
+
+def _conversation_view(state: dict[str, Any]) -> list[dict[str, str]]:
+    shared = _dict(state.get("shared_context"))
+    output: list[dict[str, str]] = []
+    for item in _dict_list(shared.get("conversation"))[-100:]:
+        output.append(
+            {
+                "message_ref": _text(item.get("message_ref")),
+                "role": _text(item.get("role") or "unknown"),
+                "time": _text(
+                    item.get("time")
+                    or item.get("timestamp")
+                    or item.get("sent_at")
+                ),
+                "message_type": _text(
+                    item.get("message_type") or item.get("type") or "text"
+                ),
+                "content": _text(item.get("content"))[:1600],
+            }
+        )
+    return output
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    return [item for item in value or [] if isinstance(item, dict)]
+
+
+def _string_list(value: Any) -> list[str]:
+    return [_text(item) for item in value or [] if _text(item)]
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _integer(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0

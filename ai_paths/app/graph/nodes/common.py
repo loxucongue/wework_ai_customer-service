@@ -181,7 +181,7 @@ def model_call_metrics(model_call: Any, *, prompt_warning_threshold: int) -> dic
     usages: list[dict[str, Any]] = []
     if isinstance(model_call.get("usage"), dict):
         usages.append(model_call["usage"])
-    for value in (model_call.get("retry"), model_call.get("recovery")):
+    for value in (model_call.get("retry"), model_call.get("recovery"), model_call.get("final_repair")):
         if isinstance(value, dict) and isinstance(value.get("usage"), dict):
             usages.append(value["usage"])
     for value in model_call.get("nested_calls") or []:
@@ -213,38 +213,17 @@ def model_recovery_attempts(model_call: Any, *, node: str) -> list[dict[str, Any
     if not isinstance(model_call, dict):
         return []
     attempts: list[dict[str, Any]] = []
-    repair_attempts = model_call.get("repair_retries")
-    if isinstance(repair_attempts, list) and repair_attempts:
-        for index, value in enumerate(repair_attempts, start=1):
-            if not isinstance(value, dict):
-                continue
-            attempts.append(
-                {
-                    "node": node,
-                    "type": "repair" if index == 1 else f"repair_{index}",
-                    "reason": str(value.get("reason") or value.get("error") or "")[:240],
-                    "succeeded": not bool(value.get("error")),
-                }
-            )
-    else:
-        value = model_call.get("retry")
+    for name, value in (
+        ("repair", model_call.get("retry")),
+        ("compact_recovery", model_call.get("recovery")),
+        ("final_targeted_repair", model_call.get("final_repair")),
+    ):
         if not isinstance(value, dict):
-            value = None
-        if isinstance(value, dict):
-            attempts.append(
-                {
-                    "node": node,
-                    "type": "repair",
-                    "reason": str(value.get("reason") or value.get("error") or "")[:240],
-                    "succeeded": not bool(value.get("error")),
-                }
-            )
-    value = model_call.get("recovery")
-    if isinstance(value, dict):
+            continue
         attempts.append(
             {
                 "node": node,
-                "type": "compact_recovery",
+                "type": name,
                 "reason": str(value.get("reason") or value.get("error") or "")[:240],
                 "succeeded": not bool(value.get("error")),
             }

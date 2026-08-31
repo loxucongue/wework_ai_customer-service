@@ -59,6 +59,16 @@ def explicit_professional_assist_reason(state: dict[str, Any]) -> str:
 
 
 def health_risk_hold(state: dict[str, Any]) -> dict[str, Any]:
+    if state.get("evidence_join"):
+        assessment = state.get("reply_safety_assessment")
+        if isinstance(assessment, dict) and str(assessment.get("status") or "") == "health_risk":
+            return {
+                "risk_hold": "health_check_required",
+                "severity": "hard",
+                "source": "reply_model_current_message_evidence",
+                "evidence_refs": list(assessment.get("evidence_refs") or []),
+            }
+        return {}
     current = _current_and_merged_text(state)
     if _contains_any(current, RELEASE_TERMS):
         return {}

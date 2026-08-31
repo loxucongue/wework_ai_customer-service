@@ -11,6 +11,11 @@ from app.config import Settings
 from app.services.storage.repositories import AppRepository
 
 
+def _normalized_interface_version(value: str) -> str:
+    version = str(value or "v1").strip().lower()
+    return version if version in {"v1", "v2", "v3"} else "v1"
+
+
 def _store_event_facts(store: dict[str, Any], *, request_id: str = "") -> dict[str, Any]:
     parking = str(store.get("parking") or store.get("parking_name") or store.get("parking_address") or "").strip()
     return {
@@ -24,6 +29,37 @@ def _store_event_facts(store: dict[str, Any], *, request_id: str = "") -> dict[s
         "parking": parking,
         "map_url": str(store.get("map_url") or "").strip(),
         "request_id": str(request_id or "").strip(),
+    }
+
+
+def _store_search_event_facts(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep only reconstructable lookup facts; never persist a sales conclusion."""
+
+    raw = value if isinstance(value, dict) else {}
+    return {
+        key: raw.get(key)
+        for key in (
+            "raw_place",
+            "normalized_query",
+            "destination_fingerprint",
+            "location_evidence",
+            "resolved_admin_level",
+            "province",
+            "city",
+            "district",
+            "township",
+            "candidate_search_complete",
+            "distance_ranking_available",
+            "distance_ranking_complete",
+            "ranked_candidate_count",
+            "unranked_candidate_count",
+            "visible_candidate_count",
+            "recommended_store_id",
+            "delivery_store_ids",
+            "ranking_method",
+            "customer_claim_level",
+        )
+        if raw.get(key) not in (None, "", [], {})
     }
 
 
@@ -94,10 +130,17 @@ class CustomerMemoryStore:
         document_ids: list[str],
         request_id: str = "",
         image_urls: list[str] | None = None,
+        interface_version: str = "v1",
     ) -> dict[str, Any]:
         clean_ids = [str(item).strip() for item in document_ids if str(item).strip()]
-        if not clean_ids:
-            return {"status": "skipped", "reason": "empty_document_ids", "document_ids": []}
+        clean_urls = [str(item).strip() for item in image_urls or [] if str(item).strip()]
+        if not clean_ids and not clean_urls:
+            return {
+                "status": "skipped",
+                "reason": "empty_case_image_evidence",
+                "document_ids": [],
+                "image_urls": [],
+            }
         data = self.load(customer_id)
         portrait = data.setdefault("portrait", {})
         if not isinstance(portrait, dict):
@@ -108,7 +151,8 @@ class CustomerMemoryStore:
         for doc_id in [*existing, *clean_ids]:
             if doc_id not in merged:
                 merged.append(doc_id)
-        portrait["sent_case_document_ids"] = merged[-200:]
+        if clean_ids:
+            portrait["sent_case_document_ids"] = merged[-200:]
         now = self._now()
         data["customer_id"] = customer_id
         data["updated_at"] = now
@@ -121,8 +165,9 @@ class CustomerMemoryStore:
                     "event_time": now,
                     "facts": {
                         "document_ids": clean_ids,
-                        "image_urls": image_urls or [],
+                        "image_urls": clean_urls,
                         "request_id": request_id,
+                        "interface_version": _normalized_interface_version(interface_version),
                     },
                     "source": "reply_delivery",
                 }
@@ -135,7 +180,12 @@ class CustomerMemoryStore:
                 self.repository.save_memory(customer_id, data)
             except Exception:
                 pass
-        return {"status": "recorded", "document_ids": clean_ids, "total_sent_case_document_ids": len(portrait["sent_case_document_ids"])}
+        return {
+            "status": "recorded",
+            "document_ids": clean_ids,
+            "image_urls": clean_urls,
+            "total_sent_case_document_ids": len(portrait.get("sent_case_document_ids") or []),
+        }
 
     def record_activity_intro_image_sent(
         self,
@@ -144,6 +194,7 @@ class CustomerMemoryStore:
         image_url: str,
         request_id: str = "",
         send_mode: str = "",
+        interface_version: str = "v1",
     ) -> dict[str, Any]:
         clean_url = str(image_url or "").strip()
         if not clean_url:
@@ -165,6 +216,7 @@ class CustomerMemoryStore:
                             "image_url": clean_url,
                             "request_id": request_id,
                             "send_mode": send_mode,
+                            "interface_version": _normalized_interface_version(interface_version),
                         },
                         "source": "sop_delivery",
                     }
@@ -178,6 +230,220 @@ class CustomerMemoryStore:
             except Exception:
                 pass
         return {"status": "recorded", "image_url": clean_url}
+
+    def record_v2_reply_model_observation(
+        self,
+        customer_id: str,
+        *,
+        request_id: str,
+        primary_objective: str,
+        customer_friction_observation: str,
+        interface_version: str = "v2",
+    ) -> dict[str, Any]:
+        """Persist a short model self-observation as low-authority evidence.
+
+        The event is never merged into the customer profile and no code uses it
+        for routing. Keeping the original model wording makes the observation
+        auditable without creating a classifier or state machine.
+        """
+
+        objective = str(primary_objective or "").strip()[:500]
+        friction = str(customer_friction_observation or "").strip()[:500]
+        if not objective and not friction:
+            return {"status": "skipped", "reason": "empty_model_observation"}
+        version = str(interface_version or "v2").strip().lower()
+        if version not in {"v2", "v3"}:
+            version = "v2"
+        data = self.load(customer_id)
+        now = self._now()
+        event_type = f"{version}_reply_model_observation"
+        event_id = f"{event_type}_{request_id or uuid4()}"
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        if not any(
+            isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+            for item in events
+        ):
+            events.append(
+                {
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "event_time": now,
+                    "facts": {
+                        "primary_objective": objective,
+                        "customer_friction_observation": friction,
+                        "request_id": str(request_id or ""),
+                        "interface_version": version,
+                    },
+                    "source": f"{version}_reply_model",
+                    "confidence": 0.5,
+                }
+            )
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "event_id": event_id}
+
+    def record_follow_knowledge_usage(
+        self,
+        customer_id: str,
+        *,
+        request_id: str,
+        knowledge_use: dict[str, Any],
+        interface_version: str = "v3",
+    ) -> dict[str, Any]:
+        """Persist Reply-selected sequence/script IDs as low-authority provenance."""
+
+        raw = knowledge_use if isinstance(knowledge_use, dict) else {}
+        sequence_id = str(raw.get("sequence_id") or "").strip()[:120]
+        step_id = str(raw.get("step_id") or "").strip()[:120]
+        script_ids = list(
+            dict.fromkeys(
+                str(item).strip()[:120]
+                for item in raw.get("selected_script_ids") or []
+                if str(item).strip()
+            )
+        )[:8]
+        if not sequence_id and not script_ids:
+            return {"status": "skipped", "reason": "no_adopted_follow_knowledge"}
+        version = _normalized_interface_version(interface_version)
+        event_type = f"{version}_follow_knowledge_usage"
+        event_id = f"{event_type}_{request_id or uuid4()}"
+        data = self.load(customer_id)
+        now = self._now()
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        if not any(
+            isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+            for item in events
+        ):
+            events.append(
+                {
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "event_time": now,
+                    "facts": {
+                        "request_id": str(request_id or ""),
+                        "interface_version": version,
+                        "sequence_id": sequence_id,
+                        "sequence_name": str(raw.get("sequence_name") or "").strip()[:200],
+                        "step_id": step_id,
+                        "checkpoint_code": str(raw.get("checkpoint_code") or "").strip()[:80],
+                        "action_code": str(raw.get("action_code") or "").strip()[:80],
+                        "selected_script_ids": script_ids,
+                        "selection_reason": str(raw.get("reason") or "").strip()[:500],
+                        "selection_status": "reply_generated",
+                    },
+                    "source": f"{version}_reply_knowledge_use",
+                    "confidence": 0.5,
+                    "impact": "reference_selection_only_not_customer_fact",
+                }
+            )
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "event_id": event_id}
+
+    def record_follow_knowledge_match(
+        self,
+        customer_id: str,
+        *,
+        request_id: str,
+        semantic_route: dict[str, Any],
+        interface_version: str = "v3",
+    ) -> dict[str, Any]:
+        """Persist router-matched knowledge IDs without turning them into state."""
+
+        route = semantic_route if isinstance(semantic_route, dict) else {}
+        checkpoint = route.get("checkpoint") if isinstance(route.get("checkpoint"), dict) else {}
+        sequence = route.get("sequence_match") if isinstance(route.get("sequence_match"), dict) else {}
+        sequence_ids = [
+            str(item).strip()[:120]
+            for item in sequence.get("sequence_ids") or []
+            if str(item).strip()
+        ][:3]
+        step_ids = [
+            str(item).strip()[:120]
+            for item in sequence.get("relevant_step_ids") or []
+            if str(item).strip()
+        ][:4]
+        primary_code = str(checkpoint.get("primary_code") or "").strip()[:80]
+        if not primary_code and not sequence_ids:
+            return {"status": "skipped", "reason": "no_matched_follow_knowledge"}
+        version = _normalized_interface_version(interface_version)
+        event_type = f"{version}_follow_knowledge_match"
+        event_id = f"{event_type}_{request_id or uuid4()}"
+        data = self.load(customer_id)
+        now = self._now()
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        if not any(
+            isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+            for item in events
+        ):
+            events.append(
+                {
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "event_time": now,
+                    "facts": {
+                        "request_id": str(request_id or ""),
+                        "interface_version": version,
+                        "checkpoint_code": primary_code,
+                        "checkpoint_evidence_refs": [
+                            str(item).strip()[:120]
+                            for item in checkpoint.get("evidence_refs") or []
+                            if str(item).strip()
+                        ][:8],
+                        "sequence_ids": sequence_ids,
+                        "step_ids": step_ids,
+                        "selection_status": "semantic_router_matched",
+                    },
+                    "source": f"{version}_semantic_router_match",
+                    "confidence": 0.5,
+                    "impact": "reference_match_only_not_customer_fact_or_state",
+                }
+            )
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "event_id": event_id}
 
     def record_sop_pack_sent(
         self,
@@ -245,7 +511,7 @@ class CustomerMemoryStore:
         evidence_refs: list[str],
         reason: str = "",
     ) -> dict[str, Any]:
-        """Persist a model-confirmed stop-contact fact without storing message bodies."""
+        """Persist an explicit stop-contact fact within the scoped sales contact."""
         clean_customer_id = str(customer_id or "").strip()
         clean_request_id = str(request_id or "").strip()
         if not clean_customer_id:
@@ -296,6 +562,8 @@ class CustomerMemoryStore:
         store: dict[str, Any],
         event_type: str,
         request_id: str = "",
+        interface_version: str = "v1",
+        store_search_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         store_id = str(store.get("store_id") or store.get("id") or "").strip()
         store_name = str(store.get("store_name") or store.get("name") or "").strip()
@@ -305,6 +573,10 @@ class CustomerMemoryStore:
             event_type = "store_matched"
 
         facts = _store_event_facts(store, request_id=request_id)
+        search_facts = _store_search_event_facts(store_search_evidence)
+        if search_facts:
+            facts["store_search_evidence"] = search_facts
+        facts["interface_version"] = _normalized_interface_version(interface_version)
         data = self.load(customer_id)
         basic_info = data.setdefault("basic_info", {})
         if not isinstance(basic_info, dict):
@@ -349,6 +621,58 @@ class CustomerMemoryStore:
             "store_id": facts.get("store_id", ""),
             "store_name": facts.get("store_name", ""),
             "city": facts.get("city", ""),
+        }
+
+    def record_authoritative_payment_fact(
+        self,
+        customer_id: str,
+        *,
+        deposit_state: str,
+        source: str,
+        request_id: str = "",
+        amount: Any = None,
+        order_id: str = "",
+        order_no: str = "",
+        interface_version: str = "v1",
+    ) -> dict[str, Any]:
+        """Persist only payment facts proven by a structured runtime source."""
+        clean_state = str(deposit_state or "").strip()
+        clean_source = str(source or "").strip()
+        if clean_state not in {"paid_by_platform_transfer_event", "paid_by_screenshot"}:
+            return {"status": "skipped", "reason": "payment_state_not_authoritative"}
+        if clean_source not in {"platform.unknown_message_transfer", "vision.payment_proof"}:
+            return {"status": "skipped", "reason": "payment_source_not_authoritative"}
+
+        now = self._now()
+        payment_fact = {
+            "status": clean_state,
+            "source": clean_source,
+            "amount": amount,
+            "order_id": str(order_id or "").strip(),
+            "order_no": str(order_no or "").strip(),
+            "updated_at": now,
+            "interface_version": _normalized_interface_version(interface_version),
+        }
+        event_id = f"deposit_payment_confirmed_{request_id or uuid4()}"
+        saved = self.save_update(
+            customer_id,
+            profile_update={"basic_info": {"deposit_state": payment_fact}},
+            event_updates=[
+                {
+                    "event_id": event_id,
+                    "event_type": "deposit_payment_confirmed",
+                    "event_time": now,
+                    "facts": payment_fact,
+                    "source": "deterministic_runtime_fact",
+                }
+            ],
+        )
+        return {
+            "status": "recorded",
+            "event_id": event_id,
+            "deposit_state": clean_state,
+            "source": clean_source,
+            "saved_memory": saved,
         }
 
     def _path(self, customer_id: str) -> Path:

@@ -1,0 +1,1839 @@
+{
+  "version": 1,
+  "source": {
+    "workbook": "预约卡点回访方向_结构化清洗.xlsx",
+    "imported_record_count": 104,
+    "source_id_prefix": "YYHF-",
+    "runtime_policy": "raw replies are offline audit data only"
+  },
+  "runtime_sales_principles": [
+    {
+      "id": "understand_before_acting",
+      "reasoning": "以当前消息和完整带时间历史判断客户真正目标、已交付基础与现实边界，不按关键词匹配场景，也不主动植入客户未表达的顾虑。",
+      "source_ids": ["YYHF-0001", "YYHF-0008", "YYHF-0015", "YYHF-0036", "YYHF-0057", "YYHF-0092"]
+    },
+    {
+      "id": "evidence_and_delivery_first",
+      "reasoning": "真实证据优于形容词，直接交付优于未来预告；门店、案例、活动和流程证据只使用权威事实，能当轮交付就不先索要许可。",
+      "source_ids": ["YYHF-0001", "YYHF-0008", "YYHF-0015", "YYHF-0036", "YYHF-0057"]
+    },
+    {
+      "id": "one_objective_per_turn",
+      "reasoning": "每轮只选择一个主要目标。客户主动开口且不在明确暂停边界时，精准回答后应实际交付一个历史未重复的新价值、提出一个会改变下一步的必要问题或完成一个真实行动；未来承诺、许可式出口和有需要再联系不算推进。",
+      "source_ids": ["YYHF-0001", "YYHF-0036", "YYHF-0092"]
+    },
+    {
+      "id": "acknowledge_then_switch",
+      "reasoning": "先承认距离、价格、时间或效果顾虑的现实性；一个维度无法改善或已经说明清楚时，切换到更可能改变决定的证据，不循环辩解。",
+      "source_ids": ["YYHF-0001", "YYHF-0008", "YYHF-0015", "YYHF-0036", "YYHF-0092"]
+    },
+    {
+      "id": "confidence_with_fact_boundaries",
+      "reasoning": "表达要积极并给客户合理信心，同时只使用当前权威效果、价格和流程事实；不靠因人而异防御式降调，也不作绝对保证。",
+      "source_ids": ["YYHF-0008", "YYHF-0015", "YYHF-0036", "YYHF-0057"]
+    },
+    {
+      "id": "separate_offer_from_close",
+      "reasoning": "活动介绍用于建立价值认知，预约金是后续独立成交动作；首次询价不直接收款，基础成熟且客户进入执行流程时不增加无意义确认轮次。",
+      "source_ids": ["YYHF-0015", "YYHF-0036"]
+    },
+    {
+      "id": "protect_autonomy_without_abandoning",
+      "reasoning": "工作中、健康风险、投诉、明确拒绝或停止联系时暂停；普通犹豫和软拒绝不自动等于退出，可低压力交付一个未重复的真实价值。",
+      "source_ids": ["YYHF-0057", "YYHF-0092"]
+    },
+    {
+      "id": "sound_like_the_next_chat_turn",
+      "reasoning": "回复应像当前微信聊天的下一句，承接客户并直接完成本轮动作；低信息短确认不等于付款同意，也不等于对话结束。不照抄成品话术，不使用内部流程语言、未来承诺、许可式出口或客服菜单。",
+      "source_ids": ["YYHF-0001", "YYHF-0008", "YYHF-0015", "YYHF-0036", "YYHF-0057", "YYHF-0092"]
+    }
+  ],
+  "sales_principles": [
+    {
+      "id": "understand_decision_uncertainty",
+      "reasoning": "只依据客户当前消息和完整历史中已经表达的内容判断决策不确定性；不主动猜测或向客户植入未提出的顾虑，再决定回答、举证、换维度、暂停或成交。",
+      "source_ids": [
+        "YYHF-0001",
+        "YYHF-0002",
+        "YYHF-0003",
+        "YYHF-0004",
+        "YYHF-0005",
+        "YYHF-0006",
+        "YYHF-0007",
+        "YYHF-0008",
+        "YYHF-0009",
+        "YYHF-0010",
+        "YYHF-0011",
+        "YYHF-0012",
+        "YYHF-0013",
+        "YYHF-0014",
+        "YYHF-0015",
+        "YYHF-0016",
+        "YYHF-0017",
+        "YYHF-0018",
+        "YYHF-0019",
+        "YYHF-0020",
+        "YYHF-0021",
+        "YYHF-0022",
+        "YYHF-0023",
+        "YYHF-0024",
+        "YYHF-0025",
+        "YYHF-0026",
+        "YYHF-0027",
+        "YYHF-0028",
+        "YYHF-0029",
+        "YYHF-0030",
+        "YYHF-0031",
+        "YYHF-0032",
+        "YYHF-0033",
+        "YYHF-0034",
+        "YYHF-0035",
+        "YYHF-0036",
+        "YYHF-0037",
+        "YYHF-0038",
+        "YYHF-0039",
+        "YYHF-0040",
+        "YYHF-0041",
+        "YYHF-0042",
+        "YYHF-0043",
+        "YYHF-0044",
+        "YYHF-0045",
+        "YYHF-0046",
+        "YYHF-0047",
+        "YYHF-0048",
+        "YYHF-0049",
+        "YYHF-0050",
+        "YYHF-0051",
+        "YYHF-0052",
+        "YYHF-0053",
+        "YYHF-0054",
+        "YYHF-0055",
+        "YYHF-0056",
+        "YYHF-0057",
+        "YYHF-0058",
+        "YYHF-0059",
+        "YYHF-0060",
+        "YYHF-0061",
+        "YYHF-0062",
+        "YYHF-0063",
+        "YYHF-0064",
+        "YYHF-0065",
+        "YYHF-0066",
+        "YYHF-0067",
+        "YYHF-0068",
+        "YYHF-0069",
+        "YYHF-0070",
+        "YYHF-0071",
+        "YYHF-0072",
+        "YYHF-0073",
+        "YYHF-0074",
+        "YYHF-0075",
+        "YYHF-0076",
+        "YYHF-0077",
+        "YYHF-0078",
+        "YYHF-0079",
+        "YYHF-0080",
+        "YYHF-0081",
+        "YYHF-0082",
+        "YYHF-0083",
+        "YYHF-0084",
+        "YYHF-0085",
+        "YYHF-0086",
+        "YYHF-0087",
+        "YYHF-0088",
+        "YYHF-0089",
+        "YYHF-0090",
+        "YYHF-0091",
+        "YYHF-0092",
+        "YYHF-0093",
+        "YYHF-0094",
+        "YYHF-0095",
+        "YYHF-0096",
+        "YYHF-0097",
+        "YYHF-0098",
+        "YYHF-0099",
+        "YYHF-0100",
+        "YYHF-0101",
+        "YYHF-0102",
+        "YYHF-0103",
+        "YYHF-0104"
+      ]
+    },
+    {
+      "id": "evidence_over_assertion",
+      "reasoning": "优先使用当前客户真正需要且可核验的门店、案例、活动或流程证据，不靠更强的形容词替代事实。",
+      "source_ids": [
+        "YYHF-0006",
+        "YYHF-0007",
+        "YYHF-0008",
+        "YYHF-0009",
+        "YYHF-0010",
+        "YYHF-0011",
+        "YYHF-0012",
+        "YYHF-0013",
+        "YYHF-0014",
+        "YYHF-0015",
+        "YYHF-0016",
+        "YYHF-0017",
+        "YYHF-0034",
+        "YYHF-0035",
+        "YYHF-0036",
+        "YYHF-0037",
+        "YYHF-0038",
+        "YYHF-0039",
+        "YYHF-0040",
+        "YYHF-0041",
+        "YYHF-0042",
+        "YYHF-0043",
+        "YYHF-0044",
+        "YYHF-0045",
+        "YYHF-0046",
+        "YYHF-0047",
+        "YYHF-0048",
+        "YYHF-0049",
+        "YYHF-0050",
+        "YYHF-0072",
+        "YYHF-0073",
+        "YYHF-0074",
+        "YYHF-0075",
+        "YYHF-0076",
+        "YYHF-0077",
+        "YYHF-0078",
+        "YYHF-0079",
+        "YYHF-0080",
+        "YYHF-0081",
+        "YYHF-0082",
+        "YYHF-0083",
+        "YYHF-0084",
+        "YYHF-0085",
+        "YYHF-0086",
+        "YYHF-0087",
+        "YYHF-0088",
+        "YYHF-0089",
+        "YYHF-0001",
+        "YYHF-0002",
+        "YYHF-0003",
+        "YYHF-0004",
+        "YYHF-0005",
+        "YYHF-0028",
+        "YYHF-0029",
+        "YYHF-0030",
+        "YYHF-0031",
+        "YYHF-0032",
+        "YYHF-0033",
+        "YYHF-0066",
+        "YYHF-0067",
+        "YYHF-0068",
+        "YYHF-0069",
+        "YYHF-0070",
+        "YYHF-0071"
+      ]
+    },
+    {
+      "id": "acknowledge_before_reframe",
+      "reasoning": "先承认距离、价格、时间或效果顾虑的现实性，再帮助客户比较更重要的决策维度；不否定、不教育客户。",
+      "source_ids": [
+        "YYHF-0001",
+        "YYHF-0002",
+        "YYHF-0003",
+        "YYHF-0004",
+        "YYHF-0005",
+        "YYHF-0028",
+        "YYHF-0029",
+        "YYHF-0030",
+        "YYHF-0031",
+        "YYHF-0032",
+        "YYHF-0033",
+        "YYHF-0066",
+        "YYHF-0067",
+        "YYHF-0068",
+        "YYHF-0069",
+        "YYHF-0070",
+        "YYHF-0071",
+        "YYHF-0018",
+        "YYHF-0019",
+        "YYHF-0020",
+        "YYHF-0021",
+        "YYHF-0022",
+        "YYHF-0023",
+        "YYHF-0024",
+        "YYHF-0025",
+        "YYHF-0051",
+        "YYHF-0052",
+        "YYHF-0053",
+        "YYHF-0054",
+        "YYHF-0055",
+        "YYHF-0056",
+        "YYHF-0057",
+        "YYHF-0058",
+        "YYHF-0059",
+        "YYHF-0060",
+        "YYHF-0061",
+        "YYHF-0062",
+        "YYHF-0090",
+        "YYHF-0091",
+        "YYHF-0092",
+        "YYHF-0093",
+        "YYHF-0094",
+        "YYHF-0095",
+        "YYHF-0096",
+        "YYHF-0097",
+        "YYHF-0098",
+        "YYHF-0099",
+        "YYHF-0100",
+        "YYHF-0101",
+        "YYHF-0026",
+        "YYHF-0027",
+        "YYHF-0063",
+        "YYHF-0064",
+        "YYHF-0065",
+        "YYHF-0102",
+        "YYHF-0103",
+        "YYHF-0104"
+      ]
+    },
+    {
+      "id": "set_reasonable_expectations",
+      "reasoning": "客户主动询问效果或恢复时，直接使用当前权威效果口径、原相机对比和真实过程增强信心，不自行用不能保证、不能说太满或因人而异削弱已批准结论；客户没有提出的副作用、反弹或恢复顾虑不要主动展开。",
+      "source_ids": [
+        "YYHF-0006",
+        "YYHF-0007",
+        "YYHF-0008",
+        "YYHF-0009",
+        "YYHF-0010",
+        "YYHF-0011",
+        "YYHF-0012",
+        "YYHF-0013",
+        "YYHF-0014",
+        "YYHF-0015",
+        "YYHF-0016",
+        "YYHF-0017",
+        "YYHF-0034",
+        "YYHF-0035",
+        "YYHF-0036",
+        "YYHF-0037",
+        "YYHF-0038",
+        "YYHF-0039",
+        "YYHF-0040",
+        "YYHF-0041",
+        "YYHF-0042",
+        "YYHF-0043",
+        "YYHF-0044",
+        "YYHF-0045",
+        "YYHF-0046",
+        "YYHF-0047",
+        "YYHF-0048",
+        "YYHF-0049",
+        "YYHF-0050",
+        "YYHF-0072",
+        "YYHF-0073",
+        "YYHF-0074",
+        "YYHF-0075",
+        "YYHF-0076",
+        "YYHF-0077",
+        "YYHF-0078",
+        "YYHF-0079",
+        "YYHF-0080",
+        "YYHF-0081",
+        "YYHF-0082",
+        "YYHF-0083",
+        "YYHF-0084",
+        "YYHF-0085",
+        "YYHF-0086",
+        "YYHF-0087",
+        "YYHF-0088",
+        "YYHF-0089"
+      ]
+    },
+    {
+      "id": "explain_value_with_current_facts",
+      "reasoning": "价格异议只回答客户明确提出的总价、价值、隐形消费或退款问题，并只使用当前权威活动事实；不能把未提出的收费或退款风险主动说给客户。",
+      "source_ids": [
+        "YYHF-0018",
+        "YYHF-0019",
+        "YYHF-0020",
+        "YYHF-0021",
+        "YYHF-0022",
+        "YYHF-0023",
+        "YYHF-0024",
+        "YYHF-0025",
+        "YYHF-0051",
+        "YYHF-0052",
+        "YYHF-0053",
+        "YYHF-0054",
+        "YYHF-0055",
+        "YYHF-0056",
+        "YYHF-0057",
+        "YYHF-0058",
+        "YYHF-0059",
+        "YYHF-0060",
+        "YYHF-0061",
+        "YYHF-0062",
+        "YYHF-0090",
+        "YYHF-0091",
+        "YYHF-0092",
+        "YYHF-0093",
+        "YYHF-0094",
+        "YYHF-0095",
+        "YYHF-0096",
+        "YYHF-0097",
+        "YYHF-0098",
+        "YYHF-0099",
+        "YYHF-0100",
+        "YYHF-0101"
+      ]
+    },
+    {
+      "id": "switch_when_dimension_stalls",
+      "reasoning": "一个现实条件无法改善或同一顾虑已经说明清楚时，承接后切换到更可能改变决定的证据维度，不循环辩解。",
+      "source_ids": [
+        "YYHF-0001",
+        "YYHF-0002",
+        "YYHF-0003",
+        "YYHF-0004",
+        "YYHF-0005",
+        "YYHF-0028",
+        "YYHF-0029",
+        "YYHF-0030",
+        "YYHF-0031",
+        "YYHF-0032",
+        "YYHF-0033",
+        "YYHF-0066",
+        "YYHF-0067",
+        "YYHF-0068",
+        "YYHF-0069",
+        "YYHF-0070",
+        "YYHF-0071",
+        "YYHF-0026",
+        "YYHF-0027",
+        "YYHF-0063",
+        "YYHF-0064",
+        "YYHF-0065",
+        "YYHF-0102",
+        "YYHF-0103",
+        "YYHF-0104"
+      ]
+    },
+    {
+      "id": "one_low_friction_commitment",
+      "reasoning": "每轮只争取一个客户能够作出的具体选择、会改变判断的关键信息或实际行为；询问客户是否想继续了解、是否允许助手再说不算客户动作。能提供的相关证据当轮提供，没有值得决定的下一步时自然结束。",
+      "source_ids": [
+        "YYHF-0001",
+        "YYHF-0002",
+        "YYHF-0003",
+        "YYHF-0004",
+        "YYHF-0005",
+        "YYHF-0006",
+        "YYHF-0007",
+        "YYHF-0008",
+        "YYHF-0009",
+        "YYHF-0010",
+        "YYHF-0011",
+        "YYHF-0012",
+        "YYHF-0013",
+        "YYHF-0014",
+        "YYHF-0015",
+        "YYHF-0016",
+        "YYHF-0017",
+        "YYHF-0018",
+        "YYHF-0019",
+        "YYHF-0020",
+        "YYHF-0021",
+        "YYHF-0022",
+        "YYHF-0023",
+        "YYHF-0024",
+        "YYHF-0025",
+        "YYHF-0026",
+        "YYHF-0027",
+        "YYHF-0028",
+        "YYHF-0029",
+        "YYHF-0030",
+        "YYHF-0031",
+        "YYHF-0032",
+        "YYHF-0033",
+        "YYHF-0034",
+        "YYHF-0035",
+        "YYHF-0036",
+        "YYHF-0037",
+        "YYHF-0038",
+        "YYHF-0039",
+        "YYHF-0040",
+        "YYHF-0041",
+        "YYHF-0042",
+        "YYHF-0043",
+        "YYHF-0044",
+        "YYHF-0045",
+        "YYHF-0046",
+        "YYHF-0047",
+        "YYHF-0048",
+        "YYHF-0049",
+        "YYHF-0050",
+        "YYHF-0051",
+        "YYHF-0052",
+        "YYHF-0053",
+        "YYHF-0054",
+        "YYHF-0055",
+        "YYHF-0056",
+        "YYHF-0057",
+        "YYHF-0058",
+        "YYHF-0059",
+        "YYHF-0060",
+        "YYHF-0061",
+        "YYHF-0062",
+        "YYHF-0063",
+        "YYHF-0064",
+        "YYHF-0065",
+        "YYHF-0066",
+        "YYHF-0067",
+        "YYHF-0068",
+        "YYHF-0069",
+        "YYHF-0070",
+        "YYHF-0071",
+        "YYHF-0072",
+        "YYHF-0073",
+        "YYHF-0074",
+        "YYHF-0075",
+        "YYHF-0076",
+        "YYHF-0077",
+        "YYHF-0078",
+        "YYHF-0079",
+        "YYHF-0080",
+        "YYHF-0081",
+        "YYHF-0082",
+        "YYHF-0083",
+        "YYHF-0084",
+        "YYHF-0085",
+        "YYHF-0086",
+        "YYHF-0087",
+        "YYHF-0088",
+        "YYHF-0089",
+        "YYHF-0090",
+        "YYHF-0091",
+        "YYHF-0092",
+        "YYHF-0093",
+        "YYHF-0094",
+        "YYHF-0095",
+        "YYHF-0096",
+        "YYHF-0097",
+        "YYHF-0098",
+        "YYHF-0099",
+        "YYHF-0100",
+        "YYHF-0101",
+        "YYHF-0102",
+        "YYHF-0103",
+        "YYHF-0104"
+      ]
+    },
+    {
+      "id": "protect_customer_autonomy",
+      "reasoning": "软犹豫可低压力承接一次，明确拒绝、投诉、健康风险或现实中断应暂停；但客户随后提出的新行动请求优先于更早的暂缓，不能把暂停固化成客户标签。不用紧迫感和羞耻感逼迫决定。",
+      "source_ids": [
+        "YYHF-0001",
+        "YYHF-0002",
+        "YYHF-0003",
+        "YYHF-0004",
+        "YYHF-0005",
+        "YYHF-0006",
+        "YYHF-0007",
+        "YYHF-0008",
+        "YYHF-0009",
+        "YYHF-0010",
+        "YYHF-0011",
+        "YYHF-0012",
+        "YYHF-0013",
+        "YYHF-0014",
+        "YYHF-0015",
+        "YYHF-0016",
+        "YYHF-0017",
+        "YYHF-0018",
+        "YYHF-0019",
+        "YYHF-0020",
+        "YYHF-0021",
+        "YYHF-0022",
+        "YYHF-0023",
+        "YYHF-0024",
+        "YYHF-0025",
+        "YYHF-0026",
+        "YYHF-0027",
+        "YYHF-0028",
+        "YYHF-0029",
+        "YYHF-0030",
+        "YYHF-0031",
+        "YYHF-0032",
+        "YYHF-0033",
+        "YYHF-0034",
+        "YYHF-0035",
+        "YYHF-0036",
+        "YYHF-0037",
+        "YYHF-0038",
+        "YYHF-0039",
+        "YYHF-0040",
+        "YYHF-0041",
+        "YYHF-0042",
+        "YYHF-0043",
+        "YYHF-0044",
+        "YYHF-0045",
+        "YYHF-0046",
+        "YYHF-0047",
+        "YYHF-0048",
+        "YYHF-0049",
+        "YYHF-0050",
+        "YYHF-0051",
+        "YYHF-0052",
+        "YYHF-0053",
+        "YYHF-0054",
+        "YYHF-0055",
+        "YYHF-0056",
+        "YYHF-0057",
+        "YYHF-0058",
+        "YYHF-0059",
+        "YYHF-0060",
+        "YYHF-0061",
+        "YYHF-0062",
+        "YYHF-0063",
+        "YYHF-0064",
+        "YYHF-0065",
+        "YYHF-0066",
+        "YYHF-0067",
+        "YYHF-0068",
+        "YYHF-0069",
+        "YYHF-0070",
+        "YYHF-0071",
+        "YYHF-0072",
+        "YYHF-0073",
+        "YYHF-0074",
+        "YYHF-0075",
+        "YYHF-0076",
+        "YYHF-0077",
+        "YYHF-0078",
+        "YYHF-0079",
+        "YYHF-0080",
+        "YYHF-0081",
+        "YYHF-0082",
+        "YYHF-0083",
+        "YYHF-0084",
+        "YYHF-0085",
+        "YYHF-0086",
+        "YYHF-0087",
+        "YYHF-0088",
+        "YYHF-0089",
+        "YYHF-0090",
+        "YYHF-0091",
+        "YYHF-0092",
+        "YYHF-0093",
+        "YYHF-0094",
+        "YYHF-0095",
+        "YYHF-0096",
+        "YYHF-0097",
+        "YYHF-0098",
+        "YYHF-0099",
+        "YYHF-0100",
+        "YYHF-0101",
+        "YYHF-0102",
+        "YYHF-0103",
+        "YYHF-0104"
+      ]
+    },
+    {
+      "id": "separate_offer_from_deposit",
+      "reasoning": "活动价值和价格用于建立认知，预约金是后续独立行动；客户首次询价或首次了解活动时不能直接升级为付款。",
+      "source_ids": [
+        "YYHF-0018",
+        "YYHF-0019",
+        "YYHF-0020",
+        "YYHF-0021",
+        "YYHF-0022",
+        "YYHF-0023",
+        "YYHF-0024",
+        "YYHF-0025",
+        "YYHF-0051",
+        "YYHF-0052",
+        "YYHF-0053",
+        "YYHF-0054",
+        "YYHF-0055",
+        "YYHF-0056",
+        "YYHF-0057",
+        "YYHF-0058",
+        "YYHF-0059",
+        "YYHF-0060",
+        "YYHF-0061",
+        "YYHF-0062",
+        "YYHF-0090",
+        "YYHF-0091",
+        "YYHF-0092",
+        "YYHF-0093",
+        "YYHF-0094",
+        "YYHF-0095",
+        "YYHF-0096",
+        "YYHF-0097",
+        "YYHF-0098",
+        "YYHF-0099",
+        "YYHF-0100",
+        "YYHF-0101"
+      ]
+    },
+    {
+      "id": "sound_like_next_chat_turn",
+      "reasoning": "回复应像当前聊天的下一句，当轮直接讲清必要价值，并用一个与客户决定直接相关的低摩擦动作收尾；不复制成品话术，也不用元话术预告以后再解释。",
+      "source_ids": [
+        "YYHF-0001",
+        "YYHF-0002",
+        "YYHF-0003",
+        "YYHF-0004",
+        "YYHF-0005",
+        "YYHF-0006",
+        "YYHF-0007",
+        "YYHF-0008",
+        "YYHF-0009",
+        "YYHF-0010",
+        "YYHF-0011",
+        "YYHF-0012",
+        "YYHF-0013",
+        "YYHF-0014",
+        "YYHF-0015",
+        "YYHF-0016",
+        "YYHF-0017",
+        "YYHF-0018",
+        "YYHF-0019",
+        "YYHF-0020",
+        "YYHF-0021",
+        "YYHF-0022",
+        "YYHF-0023",
+        "YYHF-0024",
+        "YYHF-0025",
+        "YYHF-0026",
+        "YYHF-0027",
+        "YYHF-0028",
+        "YYHF-0029",
+        "YYHF-0030",
+        "YYHF-0031",
+        "YYHF-0032",
+        "YYHF-0033",
+        "YYHF-0034",
+        "YYHF-0035",
+        "YYHF-0036",
+        "YYHF-0037",
+        "YYHF-0038",
+        "YYHF-0039",
+        "YYHF-0040",
+        "YYHF-0041",
+        "YYHF-0042",
+        "YYHF-0043",
+        "YYHF-0044",
+        "YYHF-0045",
+        "YYHF-0046",
+        "YYHF-0047",
+        "YYHF-0048",
+        "YYHF-0049",
+        "YYHF-0050",
+        "YYHF-0051",
+        "YYHF-0052",
+        "YYHF-0053",
+        "YYHF-0054",
+        "YYHF-0055",
+        "YYHF-0056",
+        "YYHF-0057",
+        "YYHF-0058",
+        "YYHF-0059",
+        "YYHF-0060",
+        "YYHF-0061",
+        "YYHF-0062",
+        "YYHF-0063",
+        "YYHF-0064",
+        "YYHF-0065",
+        "YYHF-0066",
+        "YYHF-0067",
+        "YYHF-0068",
+        "YYHF-0069",
+        "YYHF-0070",
+        "YYHF-0071",
+        "YYHF-0072",
+        "YYHF-0073",
+        "YYHF-0074",
+        "YYHF-0075",
+        "YYHF-0076",
+        "YYHF-0077",
+        "YYHF-0078",
+        "YYHF-0079",
+        "YYHF-0080",
+        "YYHF-0081",
+        "YYHF-0082",
+        "YYHF-0083",
+        "YYHF-0084",
+        "YYHF-0085",
+        "YYHF-0086",
+        "YYHF-0087",
+        "YYHF-0088",
+        "YYHF-0089",
+        "YYHF-0090",
+        "YYHF-0091",
+        "YYHF-0092",
+        "YYHF-0093",
+        "YYHF-0094",
+        "YYHF-0095",
+        "YYHF-0096",
+        "YYHF-0097",
+        "YYHF-0098",
+        "YYHF-0099",
+        "YYHF-0100",
+        "YYHF-0101",
+        "YYHF-0102",
+        "YYHF-0103",
+        "YYHF-0104"
+      ]
+    }
+  ],
+  "evidence_strategies": [
+    {
+      "id": "strategy_travel_effort",
+      "name": "距离/出行成本卡点",
+      "customer_uncertainty": "客户明确表达距离远、想找更近门店、担心跑一趟不值得，且当前距离事实无法进一步改善。",
+      "useful_evidence": [
+        "真实可见门店或门店卡",
+        "效果案例",
+        "活动价值",
+        "检测流程",
+        "谨慎赠品承接"
+      ],
+      "reasoning_moves": [
+        "先承认出行成本是真实顾虑",
+        "不要继续围着距离争辩或重复问方不方便",
+        "切换到这一趟是否值得：效果、检测、活动、赠品或少跑空",
+        "本轮直接交付一个价值证据，不用问客户要不要了解"
+      ],
+      "anti_patterns": [
+        "否认客户觉得远",
+        "编造更近门店、公里、分钟或车程",
+        "反复问方不方便",
+        "用“要不要我继续介绍”收尾"
+      ],
+      "source_ids": [
+        "YYHF-0001",
+        "YYHF-0002",
+        "YYHF-0003",
+        "YYHF-0004",
+        "YYHF-0005",
+        "YYHF-0028",
+        "YYHF-0029",
+        "YYHF-0030",
+        "YYHF-0031",
+        "YYHF-0032",
+        "YYHF-0033",
+        "YYHF-0066",
+        "YYHF-0067",
+        "YYHF-0068",
+        "YYHF-0069",
+        "YYHF-0070",
+        "YYHF-0071"
+      ],
+      "expression_moves": [
+        "可以用“您考虑距离是正常的”开头",
+        "用“如果只是普通了解确实没必要跑，但这次活动/检测/效果参考能让这趟更有价值”完成换维度",
+        "结尾给一个低摩擦动作，例如先看活动图、案例或把名额了解清楚，而不是让客户再次确认远不远"
+      ],
+      "tone_reference": "像销售真人承认麻烦后帮客户算值不值，不否定客户，也不机械说“没有更近”。",
+      "fact_authority_note": "不得输出公里、分钟、车程、最近排序，除非工具事实明确提供；赠品只能按当前活动或召回素材谨慎表达。"
+    },
+    {
+      "id": "strategy_outcome_confidence",
+      "name": "效果信心/一次效果卡点",
+      "customer_uncertainty": "客户明确询问效果、一次能不能看到变化、做前做后是否真实，或对案例真实性有疑问。",
+      "useful_evidence": [
+        "真实案例图",
+        "原相机对比",
+        "到店检测机制",
+        "做前做后可见变化事实"
+      ],
+      "reasoning_moves": [
+        "先正面给信心，不要一上来防御式降调",
+        "用真实案例或检测机制证明，而不是只说我们效果好",
+        "把“一次效果”解释为多数能看到明显改善方向，但具体程度到店检测更准确",
+        "若工具有案例图，本轮直接发图"
+      ],
+      "anti_patterns": [
+        "只说因人而异导致客户没信心",
+        "承诺一次彻底干净",
+        "客户问效果却不发已有案例",
+        "主动扩展客户没问的副作用风险"
+      ],
+      "source_ids": [
+        "YYHF-0006",
+        "YYHF-0007",
+        "YYHF-0008",
+        "YYHF-0009",
+        "YYHF-0010",
+        "YYHF-0011",
+        "YYHF-0012",
+        "YYHF-0013",
+        "YYHF-0014",
+        "YYHF-0015",
+        "YYHF-0016",
+        "YYHF-0017",
+        "YYHF-0034",
+        "YYHF-0035",
+        "YYHF-0036",
+        "YYHF-0037",
+        "YYHF-0038",
+        "YYHF-0039",
+        "YYHF-0040",
+        "YYHF-0041",
+        "YYHF-0042",
+        "YYHF-0043",
+        "YYHF-0044",
+        "YYHF-0045",
+        "YYHF-0046",
+        "YYHF-0047",
+        "YYHF-0048",
+        "YYHF-0049",
+        "YYHF-0050",
+        "YYHF-0072",
+        "YYHF-0073",
+        "YYHF-0074",
+        "YYHF-0075",
+        "YYHF-0076",
+        "YYHF-0077",
+        "YYHF-0078",
+        "YYHF-0079",
+        "YYHF-0080",
+        "YYHF-0081",
+        "YYHF-0082",
+        "YYHF-0083",
+        "YYHF-0084",
+        "YYHF-0085",
+        "YYHF-0086",
+        "YYHF-0087",
+        "YYHF-0088",
+        "YYHF-0089"
+      ],
+      "expression_moves": [
+        "先说“可以看得到变化/很多顾客一次就能看到明显改善方向”",
+        "再补“具体到您要看斑点类型、深浅和时间”",
+        "最后交付案例图或引导到活动/到店检测，不让客户只听口头承诺"
+      ],
+      "tone_reference": "有信心但不绝对承诺，像真人销售用证据增强客户判断。",
+      "fact_authority_note": "不得承诺包干净、百分百、永不反弹；案例图必须来自真实工具或已审核素材。"
+    },
+    {
+      "id": "strategy_value_and_price",
+      "name": "价格/价值/隐形消费卡点",
+      "customer_uncertainty": "客户明确询问价格、觉得贵、担心隐形消费、担心到店变贵或想确认是否一个项目。",
+      "useful_evidence": [
+        "权威活动价格",
+        "包含项目范围",
+        "透明收费政策",
+        "活动图",
+        "谨慎赠品承接"
+      ],
+      "reasoning_moves": [
+        "先回答价格或费用边界，不绕开问题",
+        "把贵转成价值比较：包含什么、透明在哪里、为什么现在划算",
+        "活动介绍和预约金分开：首次询价只讲活动，不发卡",
+        "如果历史已经铺垫且客户当前要报名/付款，再及时成交"
+      ],
+      "anti_patterns": [
+        "首次问价格同轮发预约金卡",
+        "把活动介绍和发卡绑在一起",
+        "说不存在任何消费但又没有解释边界",
+        "照抄召回里的旧价格"
+      ],
+      "source_ids": [
+        "YYHF-0018",
+        "YYHF-0019",
+        "YYHF-0020",
+        "YYHF-0021",
+        "YYHF-0022",
+        "YYHF-0023",
+        "YYHF-0024",
+        "YYHF-0025",
+        "YYHF-0051",
+        "YYHF-0052",
+        "YYHF-0053",
+        "YYHF-0054",
+        "YYHF-0055",
+        "YYHF-0056",
+        "YYHF-0057",
+        "YYHF-0058",
+        "YYHF-0059",
+        "YYHF-0060",
+        "YYHF-0061",
+        "YYHF-0062",
+        "YYHF-0090",
+        "YYHF-0091",
+        "YYHF-0092",
+        "YYHF-0093",
+        "YYHF-0094",
+        "YYHF-0095",
+        "YYHF-0096",
+        "YYHF-0097",
+        "YYHF-0098",
+        "YYHF-0099",
+        "YYHF-0100",
+        "YYHF-0101"
+      ],
+      "expression_moves": [
+        "用“不是301，这次活动价是268”这类直接结论",
+        "补“包含淡斑、皮肤检测、基础清洁和补水”",
+        "担心隐形消费时说清明码标价和不强制加项",
+        "成熟时用“先10元锁名额，到店抵扣”完成动作"
+      ],
+      "tone_reference": "像真人销售把账算清楚，不公告式堆条款，也不一问价格就急着发预约金。",
+      "fact_authority_note": "价格、预约金、尾款、退款只能使用系统权威事实；召回中的旧价格全部不可引用。"
+    },
+    {
+      "id": "strategy_time_and_priority",
+      "name": "时间与行动成本",
+      "customer_uncertainty": "客户有兴趣但当前时间、优先级或安排成本阻碍行动。",
+      "useful_evidence": [
+        "service_duration_fact",
+        "registration_flexibility",
+        "current_activity_fact"
+      ],
+      "reasoning_moves": [
+        "承认现实安排",
+        "先核对完整历史已经交付的事实，不重复活动价格、案例或门店",
+        "从权威事实中选择一个尚未交付且能真实降低行动成本的证据",
+        "帮助客户记住旧活动或旧价格不算新价值",
+        "降低一次了解的行动成本",
+        "不逼具体时点",
+        "必要时自然暂停"
+      ],
+      "anti_patterns": [
+        "反复追问几点",
+        "虚构档期或空位",
+        "把忙碌解释为拒绝",
+        "制造不实紧迫感"
+      ],
+      "source_ids": [
+        "YYHF-0026",
+        "YYHF-0027",
+        "YYHF-0063",
+        "YYHF-0064",
+        "YYHF-0065",
+        "YYHF-0102",
+        "YYHF-0103",
+        "YYHF-0104"
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "asset_id": "yyhf_asset_001",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097490567_image1.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0001"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_002",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786098053993_image2.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0003"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_003",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097723276_image3.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0004"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_004",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097723226_image4.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0005"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_005",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097723974_image5.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0007"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_006",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097722998_image6.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0008"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_007",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097723063_image7.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0013"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_008",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786102971755_image8.jpg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0015"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_009",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097723398_image9.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0016",
+        "YYHF-0025"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_010",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097724942_image10.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0019"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_011",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097725740_image11.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0021",
+        "YYHF-0023"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_012",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097725912_image12.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0022"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_013",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097725961_image13.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于降低了解与到店决策成本，不得编造专家档期、空位或固定到店时间。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0026"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_014",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097727407_image14.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0028"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_015",
+      "type": "image_reference",
+      "url": "",
+      "source_reference": "斑点对比.jpg",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0030"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_016",
+      "type": "video_reference",
+      "url": "",
+      "source_reference": "6f0ede770347c97c028b96c468243f31.mp4",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0031"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_017",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097727002_image15.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0034"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_018",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097791143_image16.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0035"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_019",
+      "type": "image_reference",
+      "url": "",
+      "source_reference": "lQDPJv-7ouGt4c_NB37NCgCwy1X9q7KGYy0HoFNUkXlwAQ_2560_1918(3).jpg",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0036"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_020",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097729684_image17.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0037"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_021",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097731616_image18.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0038"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_022",
+      "type": "image_reference",
+      "url": "",
+      "source_reference": "女斑8.jpg",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0039"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_023",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097731194_image19.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0040"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_024",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097734331_image20.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0041"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_025",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097738560_image21.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0042"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_026",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097741074_image22.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0043"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_027",
+      "type": "video_reference",
+      "url": "",
+      "source_reference": "检测.mp4",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0044"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_028",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097746871_image23.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0045"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_029",
+      "type": "video_reference",
+      "url": "",
+      "source_reference": "现场操作视频.mp4",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0046"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_030",
+      "type": "image_reference",
+      "url": "",
+      "source_reference": "e5be0f41ea6c5eb63845922c99c4f224.jpg",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0047"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_031",
+      "type": "video_reference",
+      "url": "",
+      "source_reference": "video(7).mp4",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0048"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_032",
+      "type": "video_reference",
+      "url": "",
+      "source_reference": "净斑瞬间.mp4",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0050"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_033",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097770751_image24.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0051"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_034",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097771845_image25.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0054"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_035",
+      "type": "image_reference",
+      "url": "",
+      "source_reference": "女搬.jpg",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0056"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_036",
+      "type": "video_reference",
+      "url": "",
+      "source_reference": "video(3).mp4",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0057",
+        "YYHF-0063"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_037",
+      "type": "video_reference",
+      "url": "",
+      "source_reference": "video(1).mp4",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0060"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_038",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786102972129_image26.jpg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0061"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_039",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097774966_image27.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0066"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_040",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097778887_image28.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0067"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_041",
+      "type": "image_reference",
+      "url": "",
+      "source_reference": "客户坐车的路线图",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0068"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_042",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097781058_image29.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0069"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_043",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097781406_image30.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0070"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_044",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097788537_image31.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于证明真实客户会综合效果、服务与出行成本做决定，不得复述具体距离或虚构最近门店。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0071"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_045",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786102972048_image32.jpg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0072"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_046",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097799847_image33.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0073"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_047",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097801636_image34.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0074"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_048",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097802921_image35.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0075"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_049",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786102992838_image36.jpg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0076"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_050",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097805188_image37.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0077"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_051",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097806261_image38.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0078"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_052",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097808383_image39.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0079"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_053",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097810571_image40.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0080"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_054",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097811415_image41.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0081",
+        "YYHF-0099"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_055",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786103007208_image42.jpg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0082"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_056",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097815205_image43.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0083"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_057",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097820941_image44.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0084"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_058",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097860489_image45.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0085"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_059",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097843030_image46.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0086"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_060",
+      "type": "media_reference",
+      "url": "",
+      "source_reference": "效果图+反弹原理视频",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0087"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_061",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097845713_image47.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0088"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_062",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097848425_image48.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于提供真实案例或过程证据，帮助客户形成合理预期，不得承诺与图片完全一致。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0089"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_063",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097859946_image49.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0090"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_064",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097865676_image50.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0091"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_065",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097867554_image51.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0092"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_066",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097878972_image52.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0093"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_067",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097884894_image53.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0094"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_068",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097897807_image54.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0095",
+        "YYHF-0098"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_069",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097899998_image55.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0096"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_070",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097914441_image56.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0100"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_071",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786103008325_image57.jpg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于解释当前活动价值或费用透明度，具体价格与退款口径必须以权威业务事实为准。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0101"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_072",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097922284_image58.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于降低了解与到店决策成本，不得编造专家档期、空位或固定到店时间。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0102"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_073",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097933229_image59.png",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于降低了解与到店决策成本，不得编造专家档期、空位或固定到店时间。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0103"
+      ]
+    },
+    {
+      "asset_id": "yyhf_asset_074",
+      "type": "image",
+      "url": "https://test.by4dev.4ba.cn/uploads/images/1786097945169_image60.jpeg",
+      "source_reference": "",
+      "evidence_purpose": "待审核：用于降低了解与到店决策成本，不得编造专家档期、空位或固定到店时间。",
+      "review_status": "pending_review",
+      "source_ids": [
+        "YYHF-0104"
+      ]
+    }
+  ]
+}

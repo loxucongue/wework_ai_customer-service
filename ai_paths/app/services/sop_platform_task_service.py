@@ -2124,6 +2124,8 @@ class SopPlatformTaskService:
         )
         if consume_results and isinstance(consume_results[-1], dict):
             consume_results[-1]["rule_data"] = selected_rule_data
+        if isinstance(audit, dict):
+            audit["rule_data_response"] = selected_rule_data
         _require_platform_status(response, 30)
         self.repository.update_sop_event_status(
             f"platform_sop_task:{selected_task_id}",

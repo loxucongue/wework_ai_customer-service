@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,47 +8,42 @@ from langgraph.graph import END, StateGraph
 from app.graph.nodes.action_nodes import create_execute_actions_node
 from app.graph.nodes.appointment_utils import appointment_query_from_state
 from app.graph.nodes.layer_nodes import create_background_context_layer, create_input_normalization_layer
-from app.graph.nodes.planner_nodes import create_planner_brain_node
-from app.graph.nodes.profile_nodes import create_profile_event_extractor_node
-from app.graph.nodes.reply_context import reply_user_payload_for_model
-from app.graph.nodes.reply_input import reply_messages_for_model, should_use_model_reply
+from app.graph.nodes.parallel_reply_chain import (
+    create_commit_coordinator_node,
+    create_evidence_join_node,
+    create_parallel_evidence_node,
+    create_post_store_semantic_evidence_node,
+    create_prepare_commit_node,
+    create_shared_context_node,
+    parallel_reply_payload,
+)
+from app.graph.nodes.reply_input import should_use_model_reply
 from app.graph.nodes.reply_nodes import create_synthesize_reply_node
 from app.graph.nodes.reply_validation import (
     debug_message_contents as _debug_message_contents,
     validated_model_messages as _validated_model_messages,
 )
 from app.graph.nodes.store_context import extract_city as _extract_city
-from app.graph.runtime_common import compact_memory as _compact_memory
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
+from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_service import StoreService
+from app.services.sop_execution_service import SopExecutionService
 from app.services.trace_logger import TraceLogger
+from app.graph.nodes.common import json_dumps
+from app.prompts.reply_synthesizer import build_parallel_reply_messages
 
 
 @dataclass(frozen=True)
 class ReplyGraphs:
     full_graph: Any
-    planner_graph: Any
-    finalize_graph: Any
-    profile_event_extractor: Any | None = None
-
-
-def _schedule_background_profile_extraction(profile_event_extractor, state: AgentState) -> None:
-    async def runner() -> None:
-        try:
-            detached_state = dict(state)
-            detached_state["trace"] = list(state.get("trace") or [])
-            await profile_event_extractor(detached_state)
-        except Exception:
-            return
-
-    asyncio.create_task(runner())
+    commit_graph: Any
 
 
 def build_graph(
@@ -62,6 +56,8 @@ def build_graph(
     store_service: StoreService | None = None,
     outreach_send_client: OutreachSendClient | None = None,
     platform_agent_client: PlatformAgentClient | None = None,
+    sop_execution_service: SopExecutionService | None = None,
+    semantic_router_service: V3SemanticRouterService | None = None,
 ):
     return build_reply_graphs(
         coze_client,
@@ -73,6 +69,8 @@ def build_graph(
         store_service,
         outreach_send_client,
         platform_agent_client,
+        sop_execution_service,
+        semantic_router_service,
     ).full_graph
 
 
@@ -86,6 +84,8 @@ def build_reply_graphs(
     store_service: StoreService | None = None,
     outreach_send_client: OutreachSendClient | None = None,
     platform_agent_client: PlatformAgentClient | None = None,
+    sop_execution_service: SopExecutionService | None = None,
+    semantic_router_service: V3SemanticRouterService | None = None,
 ) -> ReplyGraphs:
     nodes = _build_nodes(
         coze_client=coze_client,
@@ -97,12 +97,12 @@ def build_reply_graphs(
         store_service=store_service,
         outreach_send_client=outreach_send_client,
         platform_agent_client=platform_agent_client,
+        sop_execution_service=sop_execution_service,
+        semantic_router_service=semantic_router_service,
     )
     return ReplyGraphs(
         full_graph=_compile_full_graph(nodes),
-        planner_graph=_compile_planner_graph(nodes),
-        finalize_graph=_compile_finalize_graph(nodes),
-        profile_event_extractor=nodes.get("profile_event_extractor"),
+        commit_graph=_compile_commit_graph(nodes),
     )
 
 
@@ -117,6 +117,8 @@ def _build_nodes(
     store_service: StoreService | None,
     outreach_send_client: OutreachSendClient | None,
     platform_agent_client: PlatformAgentClient | None,
+    sop_execution_service: SopExecutionService | None,
+    semantic_router_service: V3SemanticRouterService | None,
 ) -> dict[str, Any]:
     layer_1_input_normalization = create_input_normalization_layer(
         trace_logger=trace_logger,
@@ -129,12 +131,29 @@ def _build_nodes(
         customer_store_knowledge_service=customer_store_knowledge_service,
         coze_client=coze_client,
         conversation_fetcher=outreach_send_client.fetch_conversation if outreach_send_client else None,
+        follow_sequence_fetcher=(
+            semantic_router_service.load_sequence_index
+            if semantic_router_service is not None
+            else None
+        ),
+        follow_taxonomy_fetcher=(
+            semantic_router_service.load_checkpoint_taxonomy
+            if semantic_router_service is not None
+            else None
+        ),
     )
-    planner_brain = create_planner_brain_node(
+    shared_context = create_shared_context_node(
+        trace_logger=trace_logger,
+        sop_execution_service=sop_execution_service,
+    )
+    parallel_evidence = create_parallel_evidence_node(
         trace_logger=trace_logger,
         model_client=model_client,
+        sop_execution_service=sop_execution_service,
+        coze_client=coze_client,
+        semantic_router_service=semantic_router_service,
     )
-    execute_actions = create_execute_actions_node(
+    execute_readonly_actions = create_execute_actions_node(
         coze_client=coze_client,
         trace_logger=trace_logger,
         store_service=store_service,
@@ -145,64 +164,92 @@ def _build_nodes(
             state,
             _extract_city,
         ),
-    )
-
-    profile_event_extractor = create_profile_event_extractor_node(
-        trace_logger=trace_logger,
-        memory_store=memory_store,
         model_client=model_client,
-        compact_memory=_compact_memory,
-        conversation_fetcher=outreach_send_client.fetch_conversation if outreach_send_client else None,
+        execution_mode="readonly",
     )
+    post_store_semantic_evidence = create_post_store_semantic_evidence_node(
+        trace_logger=trace_logger,
+        semantic_router_service=semantic_router_service,
+    )
+    evidence_join = create_evidence_join_node(trace_logger=trace_logger)
 
     synthesize_reply = create_synthesize_reply_node(
         trace_logger=trace_logger,
         model_client=model_client,
         debug_message_contents=_debug_message_contents,
-        reply_messages_for_model=lambda state: reply_messages_for_model(state, reply_user_payload_for_model(state)),
+        reply_messages_for_model=lambda state: build_parallel_reply_messages(
+            parallel_reply_payload(state),
+            json_dumps=json_dumps,
+        ),
         should_use_model_reply=should_use_model_reply,
         validated_model_messages=_validated_model_messages,
-        schedule_background_task=lambda state: _schedule_background_profile_extraction(profile_event_extractor, state),
+        schedule_background_task=None,
+    )
+    prepare_commit = create_prepare_commit_node(trace_logger=trace_logger)
+    execute_commit_actions = create_execute_actions_node(
+        coze_client=coze_client,
+        trace_logger=trace_logger,
+        store_service=store_service,
+        platform_agent_client=platform_agent_client,
+        appointment_query_from_state=lambda content, store_lookup, state: appointment_query_from_state(
+            content,
+            store_lookup,
+            state,
+            _extract_city,
+        ),
+        execution_mode="commit",
+    )
+    commit_coordinator = create_commit_coordinator_node(
+        trace_logger=trace_logger,
+        sop_execution_service=sop_execution_service,
     )
     return {
         "layer_1_input_normalization": layer_1_input_normalization,
         "layer_2_background_context": layer_2_background_context,
-        "planner_brain": planner_brain,
-        "execute_actions": execute_actions,
+        "shared_context": shared_context,
+        "parallel_evidence": parallel_evidence,
+        "execute_readonly_actions": execute_readonly_actions,
+        "post_store_semantic_evidence": post_store_semantic_evidence,
+        "evidence_join": evidence_join,
         "synthesize_reply": synthesize_reply,
-        "profile_event_extractor": profile_event_extractor,
+        "prepare_commit": prepare_commit,
+        "execute_commit_actions": execute_commit_actions,
+        "commit_coordinator": commit_coordinator,
     }
 
 
 def _compile_full_graph(nodes: dict[str, Any]):
     graph = StateGraph(AgentState)
-    for name in ("layer_1_input_normalization", "layer_2_background_context", "planner_brain", "execute_actions", "synthesize_reply"):
+    node_order = (
+        "layer_1_input_normalization",
+        "layer_2_background_context",
+        "shared_context",
+        "parallel_evidence",
+        "execute_readonly_actions",
+        "post_store_semantic_evidence",
+        "evidence_join",
+        "synthesize_reply",
+    )
+    for name in node_order:
         graph.add_node(name, nodes[name])
     graph.set_entry_point("layer_1_input_normalization")
-    graph.add_edge("layer_1_input_normalization", "layer_2_background_context")
-    graph.add_edge("layer_2_background_context", "planner_brain")
-    graph.add_edge("planner_brain", "execute_actions")
-    graph.add_edge("execute_actions", "synthesize_reply")
-    graph.add_edge("synthesize_reply", END)
+    for left, right in zip(node_order, node_order[1:]):
+        graph.add_edge(left, right)
+    graph.add_edge(node_order[-1], END)
     return graph.compile()
 
 
-def _compile_planner_graph(nodes: dict[str, Any]):
+def _compile_commit_graph(nodes: dict[str, Any]):
     graph = StateGraph(AgentState)
-    for name in ("layer_1_input_normalization", "layer_2_background_context", "planner_brain"):
+    node_order = (
+        "prepare_commit",
+        "execute_commit_actions",
+        "commit_coordinator",
+    )
+    for name in node_order:
         graph.add_node(name, nodes[name])
-    graph.set_entry_point("layer_1_input_normalization")
-    graph.add_edge("layer_1_input_normalization", "layer_2_background_context")
-    graph.add_edge("layer_2_background_context", "planner_brain")
-    graph.add_edge("planner_brain", END)
-    return graph.compile()
-
-
-def _compile_finalize_graph(nodes: dict[str, Any]):
-    graph = StateGraph(AgentState)
-    for name in ("execute_actions", "synthesize_reply"):
-        graph.add_node(name, nodes[name])
-    graph.set_entry_point("execute_actions")
-    graph.add_edge("execute_actions", "synthesize_reply")
-    graph.add_edge("synthesize_reply", END)
+    graph.set_entry_point(node_order[0])
+    for left, right in zip(node_order, node_order[1:]):
+        graph.add_edge(left, right)
+    graph.add_edge(node_order[-1], END)
     return graph.compile()

@@ -11,7 +11,6 @@ from app.graph.nodes.common import (
     repair_mojibake_text,
 )
 from app.graph.nodes.conversation_history_fetch import ConversationFetcher, fetch_platform_conversation_history
-from app.graph.nodes.conversation_state import build_conversation_state
 from app.graph.nodes.image_info import build_vision_prompt, fallback_image_info, validated_image_info
 from app.graph.nodes.location_card import append_location_card_to_content
 from app.graph.state import AgentState
@@ -43,7 +42,6 @@ def create_input_normalization_layer(
                 normalized = "[图片]"
             normalized, encoding_repair = repair_mojibake_text(normalized)
             request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
-            request_context = _context_with_merged_structured_event_facts(request_context)
             normalized, location_card = append_location_card_to_content(normalized, request_context)
             errors = list(state.get("errors", []))
             if looks_bad_text(normalized):
@@ -56,11 +54,11 @@ def create_input_normalization_layer(
             if looks_suspected_short_mojibake(normalized):
                 input_quality_flags.append("suspected_short_mojibake")
             temp_state = dict(state)
-            temp_state["request_context"] = request_context
             temp_state["normalized_content"] = normalized
-            platform_transfer_info = _platform_unknown_transfer_image_info(normalized)
-            if platform_transfer_info is None and bool(request_context.get("merged_unknown_transfer_event")):
-                platform_transfer_info = _platform_unknown_transfer_image_info("【未知消息类型】")
+            platform_transfer_info = _platform_unknown_transfer_image_info(
+                normalized,
+                msgtype=str(request_context.get("msgtype") or ""),
+            )
             if platform_transfer_info is not None:
                 normalized = "客户发送了转账消息"
                 image_info, model_calls = platform_transfer_info, []
@@ -84,73 +82,14 @@ def create_input_normalization_layer(
     return input_normalization_layer
 
 
-def _context_with_merged_structured_event_facts(request_context: dict[str, Any]) -> dict[str, Any]:
-    """Restore structured facts from superseded platform inputs before model nodes run."""
-
-    context = dict(request_context or {})
-    events = [event for event in context.get("merged_input_events") or [] if isinstance(event, dict)]
-    if not events:
-        return context
-
-    latest_location = next(
-        (
-            event
-            for event in reversed(events)
-            if str(event.get("msgtype") or "").strip().lower() == "location"
-            and any(
-                str(event.get(key) or "").strip()
-                for key in ("location", "location_title", "location_address", "location_zoom")
-            )
-        ),
-        None,
-    )
-    if latest_location:
-        for key in ("location", "location_title", "location_address", "location_zoom"):
-            value = str(latest_location.get(key) or "").strip()
-            if value:
-                context[key] = value
-        context["msgtype"] = "location"
-        context["merged_location_card_event"] = {
-            key: latest_location.get(key)
-            for key in ("msgid", "msgtime", "location", "location_title", "location_address", "location_zoom")
-            if latest_location.get(key) not in ("", None)
-        }
-
-    if not context.get("merged_image_urls"):
-        image_urls = [
-            str(event.get("file_image") or "").strip()
-            for event in events
-            if str(event.get("file_image") or "").strip()
-        ]
-        if image_urls:
-            context["merged_image_urls"] = _dedupe_strings(image_urls)[-3:]
-
-    if any(_event_is_unknown_transfer(event) for event in events):
-        context["merged_unknown_transfer_event"] = True
-    return context
-
-
-def _event_is_unknown_transfer(event: dict[str, Any]) -> bool:
-    text = "".join(str(event.get("content") or "").split())
-    return text in UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS
-
-
-def _dedupe_strings(values: list[str]) -> list[str]:
-    output: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        normalized = str(value or "").strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        output.append(normalized)
-    return output
-
-
-def _platform_unknown_transfer_image_info(content: str) -> dict[str, Any] | None:
-    """Normalize the platform's fixed unknown-message placeholder as a transfer fact."""
+def _platform_unknown_transfer_image_info(
+    content: str,
+    *,
+    msgtype: str = "",
+) -> dict[str, Any] | None:
+    """Normalize the platform's structured unknown message as a transfer fact."""
     compact = "".join(str(content or "").split())
-    if compact not in UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS:
+    if str(msgtype or "").strip().lower() != "unknown" and compact not in UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS:
         return None
     return {
         "has_image": False,
@@ -332,6 +271,8 @@ def create_background_context_layer(
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None,
     coze_client: CozeClient | None = None,
     conversation_fetcher: ConversationFetcher | None = None,
+    follow_sequence_fetcher: Callable[[], Any] | None = None,
+    follow_taxonomy_fetcher: Callable[[], Any] | None = None,
 ) -> Callable[[AgentState], Any]:
     async def background_context_layer(state: AgentState) -> dict[str, Any]:
         request_context = request_context_from_state(state)
@@ -341,6 +282,29 @@ def create_background_context_layer(
             {"customer_id": state.get("customer_id"), "user_id": state.get("user_id"), "wechat": state.get("wechat")},
         ) as span:
             substeps: list[dict[str, Any]] = []
+            sequence_task = asyncio.create_task(
+                _timed_async_call(
+                    "follow_sequence_index",
+                    follow_sequence_fetcher,
+                    disabled_result={
+                        "status": "disabled",
+                        "reason": "follow_sequence_fetcher_unavailable",
+                        "total": 0,
+                        "items": [],
+                    },
+                )
+            )
+            taxonomy_task = asyncio.create_task(
+                _timed_async_call(
+                    "follow_checkpoint_taxonomy",
+                    follow_taxonomy_fetcher,
+                    disabled_result={
+                        "status": "disabled",
+                        "reason": "follow_taxonomy_fetcher_unavailable",
+                        "types": [],
+                    },
+                )
+            )
             memory_task = asyncio.to_thread(_timed_call, "memory_load", _load_memory, memory_store, state)
             identity_task = asyncio.to_thread(_timed_call, "get_customer_info", _load_customer_identity, customer_context_service, state, request_context)
             memory_result, identity_result = await asyncio.gather(
@@ -391,7 +355,7 @@ def create_background_context_layer(
                 {},
                 identity,
             )
-            customer_result_timed, conversation_result_timed, store_result_timed = await asyncio.gather(
+            customer_result_timed, conversation_result_timed, store_result_timed, sequence_result_timed, taxonomy_result_timed = await asyncio.gather(
                 _await_timed_background_task(
                     customer_task,
                     name="order_index",
@@ -410,7 +374,7 @@ def create_background_context_layer(
                         "conversation_turns": list(state.get("conversation_turns") or []),
                         "conversation_fetch": {
                             "status": "timeout",
-                            "limit": 20,
+                            "limit": 50,
                             "used_message_count": len(state.get("conversation_history") or []),
                             "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
                         },
@@ -425,6 +389,29 @@ def create_background_context_layer(
                         "stores": [],
                         "appointment_extra_stores": [],
                         "error": f"timeout_after_{BACKGROUND_STORE_CONTEXT_BUDGET_SECONDS:g}s",
+                    },
+                ),
+                _await_timed_background_task(
+                    sequence_task,
+                    name="follow_sequence_index",
+                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                    timeout_result={
+                        "status": "error",
+                        "reason": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                        "total": 0,
+                        "items": [],
+                        "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                    },
+                ),
+                _await_timed_background_task(
+                    taxonomy_task,
+                    name="follow_checkpoint_taxonomy",
+                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                    timeout_result={
+                        "status": "error",
+                        "reason": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                        "types": [],
+                        "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
                     },
                 ),
             )
@@ -442,6 +429,8 @@ def create_background_context_layer(
                     _without_result(customer_result_timed),
                     _without_result(store_result_timed),
                     _without_result(conversation_result_timed),
+                    _without_result(sequence_result_timed),
+                    _without_result(taxonomy_result_timed),
                 ]
             )
             customer_context = customer_result.get("customer_context", {})
@@ -509,6 +498,8 @@ def create_background_context_layer(
                 "conversation_history": conversation_history,
                 "conversation_turns": conversation_turns,
                 "conversation_fetch": conversation_result.get("conversation_fetch", {}),
+                "follow_sequence_index": sequence_result_timed.get("result") or {},
+                "follow_checkpoint_taxonomy": taxonomy_result_timed.get("result") or {},
                 "background_substeps": substeps,
                 "store_context_status": store_context_status,
                 "store_context_elapsed_ms": store_context_elapsed_ms,
@@ -521,7 +512,6 @@ def create_background_context_layer(
                 ),
                 "trace": state.get("trace", []),
             }
-            output["conversation_state"] = build_conversation_state({**state, **output})
             span["output_snapshot"] = _background_output_snapshot(output)
             return output
 
@@ -574,6 +564,40 @@ def _timed_call(name: str, func: Callable[..., Any], *args: Any, **kwargs: Any) 
             "name": name,
             "duration_ms": int((time.perf_counter() - started) * 1000),
             "result": result,
+            "cache_hit": _cache_hit_from_result(result),
+            "error": _error_from_result(result),
+        }
+    except Exception as exc:
+        return {
+            "name": name,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": {},
+            "cache_hit": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+async def _timed_async_call(
+    name: str,
+    func: Callable[[], Any] | None,
+    *,
+    disabled_result: dict[str, Any],
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    if func is None:
+        return {
+            "name": name,
+            "duration_ms": 0,
+            "result": dict(disabled_result),
+            "cache_hit": False,
+            "error": "",
+        }
+    try:
+        result = await func()
+        return {
+            "name": name,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": result if isinstance(result, dict) else {},
             "cache_hit": _cache_hit_from_result(result),
             "error": _error_from_result(result),
         }
@@ -660,8 +684,8 @@ async def _timed_conversation_fetch(
         summary = {
             "status": "failed",
             "error": f"{type(exc).__name__}: {exc}",
-            "used_message_count": len(fallback[-20:]),
-            "limit": 20,
+            "used_message_count": len(fallback[-50:]),
+            "limit": 50,
         }
         return {
             "name": "conversation_fetch",
@@ -696,6 +720,18 @@ def _error_from_result(result: Any) -> str:
 
 def _load_memory(memory_store: CustomerMemoryStore | None, state: AgentState) -> dict[str, Any]:
     if state.get("test_isolated"):
+        replay = _isolated_replay_snapshot(state.get("request_context"))
+        saved_memory = replay.get("saved_memory") if isinstance(replay.get("saved_memory"), dict) else {}
+        if saved_memory:
+            return {
+                "customer_profile": saved_memory.get("portrait", {}),
+                "customer_basic_info": saved_memory.get("basic_info", {}),
+                "history_events": saved_memory.get("history_events", []),
+                "lifecycle_stage": saved_memory.get("lifecycle_stage", ""),
+                "saved_memory": saved_memory,
+                "memory_isolated": True,
+                "replay_snapshot_used": True,
+            }
         return {
             "customer_profile": {},
             "customer_basic_info": {},
@@ -744,6 +780,14 @@ def _load_customer_identity(
     state: AgentState,
     request_context: dict[str, Any],
 ) -> dict[str, Any]:
+    replay = _isolated_replay_snapshot(request_context)
+    replay_identity = replay.get("identity") if isinstance(replay.get("identity"), dict) else {}
+    if replay_identity:
+        return {
+            **replay_identity,
+            "request_context": request_context,
+            "replay_snapshot_used": True,
+        }
     if not customer_context_service:
         return {"platform_customer_id": str(state.get("customer_id") or "unknown"), "request_context": request_context}
     return customer_context_service.load_identity(
@@ -759,6 +803,19 @@ def _load_customer_context_with_identity(
     request_context: dict[str, Any],
     identity: dict[str, Any],
 ) -> dict[str, Any]:
+    replay = _isolated_replay_snapshot(request_context)
+    replay_context = replay.get("customer_context") if isinstance(replay.get("customer_context"), dict) else {}
+    if replay_context:
+        return {
+            "customer_context": replay_context,
+            "appointment_cache": (
+                replay_context.get("appointment")
+                if isinstance(replay_context.get("appointment"), dict)
+                else {}
+            ),
+            "customer_context_error": None,
+            "replay_snapshot_used": True,
+        }
     context: dict[str, Any] = {}
     error = None
     if customer_context_service:
@@ -784,6 +841,14 @@ def _load_customer_stores(
     customer_context: dict[str, Any],
     identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    replay = _isolated_replay_snapshot(request_context)
+    replay_stores = (
+        replay.get("customer_store_knowledge")
+        if isinstance(replay.get("customer_store_knowledge"), dict)
+        else {}
+    )
+    if replay_stores:
+        return {**replay_stores, "replay_snapshot_used": True}
     if not customer_store_knowledge_service:
         return {"source": "service_unavailable", "stores": [], "appointment_extra_stores": []}
     try:
@@ -798,6 +863,8 @@ def _enrich_customer_stores(
     request_context: dict[str, Any],
     customer_context: dict[str, Any],
 ) -> dict[str, Any]:
+    if customer_store_knowledge.get("replay_snapshot_used"):
+        return customer_store_knowledge
     if not customer_store_knowledge_service or not hasattr(customer_store_knowledge_service, "with_appointment_extra_stores"):
         return customer_store_knowledge
     return customer_store_knowledge_service.with_appointment_extra_stores(
@@ -805,6 +872,16 @@ def _enrich_customer_stores(
         request_context=request_context,
         customer_context=customer_context,
     )
+
+
+def _isolated_replay_snapshot(request_context: Any) -> dict[str, Any]:
+    """Return caller-supplied facts only inside the existing write-free sim boundary."""
+
+    context = request_context if isinstance(request_context, dict) else {}
+    if not bool(context.get("test_isolated")):
+        return {}
+    value = context.get("isolated_replay_snapshot")
+    return value if isinstance(value, dict) else {}
 
 
 def _background_output_snapshot(output: dict[str, Any]) -> dict[str, Any]:

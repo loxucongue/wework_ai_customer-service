@@ -1,16 +1,36 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import html
 import re
 from typing import Any
 
 from app.graph.nodes.appointment_time_utils import summarize_available_slots, target_time_status
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.graph.state import AgentState
 from app.policies.business_rules import load_business_rules
 from app.services.customer_payment_state import resolved_payment_fact
 from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.store_resolution_v2 import legacy_delivery_mode
+
+
+MAX_STORE_DELIVERY_COUNT = 3
+
+
+def _is_v3_state(state: AgentState) -> bool:
+    context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    interface_version = str(
+        context.get("interface_version") or state.get("interface_version") or ""
+    ).strip().lower()
+    reply_chain_mode = str(
+        context.get("reply_chain_mode") or state.get("reply_chain_mode") or ""
+    ).strip().lower()
+    return bool(
+        interface_version == "v3"
+        or reply_chain_mode == "model_led_sales_brain_v3"
+        or context.get("v3_sidecar") is True
+        or state.get("v3_sidecar") is True
+    )
 
 
 def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:
@@ -23,16 +43,24 @@ def _store_resolution_status(
     resolved_level: str,
     visible_candidate_count: int,
     recommended_store_id: str = "",
+    allow_broad_scope_delivery: bool = False,
 ) -> str:
     if tool_status in {
         "need_location",
         "need_location_confirmation",
         "ambiguous_location",
+        "broad_origin_requires_location",
     }:
-        return tool_status
+        return "need_location" if tool_status == "broad_origin_requires_location" else tool_status
     if tool_status in {"geocode_query_conflict", "origin_geocode_failed"}:
         return "need_location_confirmation"
     if tool_status in {"missing_query", "missing_origin"}:
+        return "need_location"
+    if tool_status in {"distance_tool_unavailable", "distance_tool_error"}:
+        return "search_incomplete"
+    if resolved_level == "province":
+        if tool_status in {"no_match", "no_candidate_stores"} or visible_candidate_count == 0:
+            return "no_valid_candidate"
         return "need_location"
     if recommended_store_id:
         return "send_single"
@@ -42,9 +70,187 @@ def _store_resolution_status(
         return "send_single"
     if tool_status == "ok" and 2 <= visible_candidate_count <= 3:
         return "send_multiple"
+    if tool_status == "ok" and visible_candidate_count > 3 and allow_broad_scope_delivery:
+        return "send_multiple"
     if tool_status == "ok" and visible_candidate_count > 3:
         return "need_location"
-    return "no_valid_candidate"
+    return "search_incomplete"
+
+
+def _store_resolution_outcome(status: str) -> str:
+    if status in {"send_single", "send_multiple", "reuse_confirmed_store"}:
+        return "resolved"
+    if status in {"need_location", "need_location_confirmation", "ambiguous_location"}:
+        return "need_clarification"
+    if status == "no_valid_candidate":
+        return "no_valid_candidate"
+    return "search_incomplete"
+
+
+def _destination_fingerprint(
+    destination: dict[str, Any],
+    *,
+    province: str = "",
+    city: str = "",
+    district: str = "",
+    township: str = "",
+    query: str = "",
+) -> str:
+    admin = destination.get("administrative_context")
+    if not isinstance(admin, dict):
+        admin = {}
+    parts = [
+        str(province or admin.get("province") or "").strip(),
+        str(city or admin.get("city") or "").strip(),
+        str(district or admin.get("district") or "").strip(),
+        str(township or "").strip(),
+        str(query or destination.get("destination_query") or "").strip(),
+    ]
+    return "|".join(item for item in parts if item)
+
+
+def _normalized_destination_identity(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).casefold()
+
+
+def _same_destination_as_previous_delivery(
+    current: dict[str, Any],
+    previous: dict[str, Any],
+) -> bool:
+    current_fingerprint = _normalized_destination_identity(current.get("destination_fingerprint"))
+    previous_fingerprint = _normalized_destination_identity(previous.get("destination_fingerprint"))
+    if current_fingerprint and previous_fingerprint:
+        return current_fingerprint == previous_fingerprint
+
+    current_destination = (
+        current.get("destination_resolution")
+        if isinstance(current.get("destination_resolution"), dict)
+        else {}
+    )
+    previous_destination = (
+        previous.get("destination_resolution")
+        if isinstance(previous.get("destination_resolution"), dict)
+        else {}
+    )
+    current_values = {
+        _normalized_destination_identity(item)
+        for item in (
+            current.get("raw_place"),
+            current.get("normalized_query"),
+            current_destination.get("destination_query"),
+        )
+        if _normalized_destination_identity(item)
+    }
+    previous_values = {
+        _normalized_destination_identity(item)
+        for item in (
+            previous.get("raw_place"),
+            previous.get("normalized_query"),
+            previous_destination.get("destination_query"),
+        )
+        if _normalized_destination_identity(item)
+    }
+    return bool(current_values & previous_values)
+
+
+def _reuse_previous_store_delivery(
+    state: AgentState,
+    resolution: dict[str, Any],
+) -> dict[str, Any]:
+    """Suppress only an already delivered final result for the exact same destination."""
+
+    if str(resolution.get("status") or "") not in {"send_single", "send_multiple"}:
+        return resolution
+    if not bool(resolution.get("recommendation_final_for_destination")):
+        return resolution
+
+    current_store_ids = [
+        str(item or "").strip()
+        for item in resolution.get("delivery_store_ids") or []
+        if str(item or "").strip()
+    ]
+    if not current_store_ids:
+        return resolution
+
+    sent_summary = sent_message_summary_for_model(state)
+    previous_delivery = (
+        sent_summary.get("store_address_delivery")
+        if isinstance(sent_summary.get("store_address_delivery"), dict)
+        else {}
+    )
+    previous_store_ids = [
+        str(item or "").strip()
+        for item in previous_delivery.get("latest_batch_store_ids") or []
+        if str(item or "").strip()
+    ]
+    previous_search = (
+        previous_delivery.get("store_search_evidence")
+        if isinstance(previous_delivery.get("store_search_evidence"), dict)
+        else {}
+    )
+    if str(previous_delivery.get("batch_confidence") or "") != "high":
+        return resolution
+    if previous_search.get("candidate_search_complete") is not True:
+        return resolution
+    if set(previous_store_ids) != set(current_store_ids):
+        return resolution
+    if not _same_destination_as_previous_delivery(resolution, previous_search):
+        return resolution
+
+    return {
+        **resolution,
+        "status": "reuse_confirmed_store",
+        "outcome": "resolved",
+        "delivery_store_ids": [],
+        "already_delivered_store_ids": current_store_ids,
+        "delivery_mode": "none",
+        "reason": "same_destination_final_recommendation_already_delivered",
+    }
+
+
+def _coverage_status(
+    *,
+    status: str,
+    resolved_level: str,
+    exact_scope_has_store: Any,
+    same_city_has_store: Any,
+) -> str:
+    if same_city_has_store is True:
+        return "same_city_available"
+    if exact_scope_has_store is True:
+        return "exact_scope_available"
+    if status == "no_valid_candidate" and resolved_level == "province":
+        return "no_store_in_province"
+    if status in {"send_single", "send_multiple"}:
+        return "local_scope_missing_nearest_available"
+    if status == "no_valid_candidate":
+        return "no_visible_store_candidate"
+    if status == "search_incomplete":
+        return "unknown_incomplete_search"
+    return "location_pending"
+
+
+def _distance_tie_store_ids(stores: list[dict[str, Any]], *, threshold_km: float = 5.0) -> list[str]:
+    if len(stores) < 2:
+        return []
+    try:
+        first_distance = float(stores[0].get("distance_km"))
+    except (TypeError, ValueError):
+        return []
+    output: list[str] = []
+    for item in stores:
+        try:
+            distance = float(item.get("distance_km"))
+        except (TypeError, ValueError):
+            break
+        if distance - first_distance > threshold_km:
+            break
+        store_id = str(item.get("store_id") or item.get("id") or "").strip()
+        if store_id:
+            output.append(store_id)
+        if len(output) >= 3:
+            break
+    return output if len(output) >= 2 else []
 
 
 def _distance_city_fallback_should_send_multiple(
@@ -53,17 +259,34 @@ def _distance_city_fallback_should_send_multiple(
     scope_match_level: str,
     exact_scope_has_store: Any,
     candidate_store_ids: list[str],
+    origin_precision: str = "",
 ) -> bool:
-    return (
-        has_real_ranking
-        and exact_scope_has_store is False
+    # A concrete customer origin answers "which one is nearest" with the
+    # first distance-ranked store. Multi-store delivery remains useful only
+    # for a broad administrative scope where the customer has not supplied a
+    # precise point.
+    if str(origin_precision or "").strip() in {
+        "coordinates",
+        "exact_address",
+        "poi",
+        "village",
+        "township",
+    }:
+        return False
+    precision = str(origin_precision or "").strip()
+    broad_origin = precision in {"city", "district", "unknown"} or (
+        not precision
         and scope_match_level == "city_fallback"
-        and len(candidate_store_ids) >= 2
+        and exact_scope_has_store is False
     )
+    if not broad_origin:
+        return False
+    return has_real_ranking and len(candidate_store_ids) >= 2
 
 
 def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
     """Provide factual evidence to the final reply model without customer-facing wording."""
+    v3_mode = _is_v3_state(state)
     facts: list[str] = []
     missing_slots: list[str] = []
     risk_flags = list((state.get("guardrail_result") or {}).get("terms") or [])
@@ -120,6 +343,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "resolved_admin_level": str(value.get("resolved_admin_level") or ""),
                 "scope_match_level": str(value.get("scope_match_level") or ""),
                 "exact_scope_has_store": value.get("exact_scope_has_store"),
+                "same_city_has_store": value.get("same_city_has_store"),
                 "source": str(value.get("source") or ""),
                 "status": str(value.get("status") or ""),
                 "candidate_count": visible_candidate_count,
@@ -158,29 +382,41 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 resolved_level=resolved_level,
                 visible_candidate_count=visible_candidate_count,
                 recommended_store_id=recommended_store_id,
+                allow_broad_scope_delivery=bool(value.get("allow_broad_scope_delivery")),
             )
             candidate_store_ids = [
                 str(item.get("store_id") or item.get("id") or "")
-                for item in structured_facts["store_facts"]
+                for item in authorized_stores
                 if str(item.get("store_id") or item.get("id") or "")
             ]
             delivery_store_ids = (
                 [recommended_store_id]
                 if v2_status == "send_single" and recommended_store_id
-                else candidate_store_ids if v2_status == "send_multiple" else []
+                else candidate_store_ids[:MAX_STORE_DELIVERY_COUNT]
+                if v3_mode and v2_status == "send_multiple"
+                else candidate_store_ids
+                if v2_status == "send_multiple"
+                else []
             )
             lookup_missing = [str(item) for item in (value.get("missing") or []) if str(item)]
             candidate_search_complete = "store_scope_unavailable" not in lookup_missing
             if v2_status == "send_single" and not delivery_store_ids and candidate_store_ids:
                 delivery_store_ids = [candidate_store_ids[0]]
                 recommended_store_id = candidate_store_ids[0]
-            structured_facts["store_resolution_fact"] = _drop_empty(
+            requested_detail_kind, requested_detail_available = _requested_store_detail_status(
+                value.get("destination_resolution") or {},
+                structured_facts.get("store_facts") or [],
+                delivery_store_ids=delivery_store_ids,
+            )
+            store_resolution_fact = _drop_empty(
                 {
                     "status": v2_status,
+                    "outcome": _store_resolution_outcome(v2_status),
                     "raw_place": str(value.get("raw_query") or value.get("query") or ""),
                     "normalized_query": str(value.get("query") or ""),
                     "location_evidence": value.get("location_evidence") or {},
                     "normalization_evidence": value.get("normalization_evidence") or {},
+                    "destination_resolution": value.get("destination_resolution") or {},
                     "resolution_status": resolution_status,
                     "resolved_admin_level": resolved_level,
                     "province": structured_facts["store_lookup_status"].get("province"),
@@ -189,19 +425,50 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "township": structured_facts["store_lookup_status"].get("township"),
                     "scope_match_level": str(value.get("scope_match_level") or ""),
                     "exact_scope_has_store": value.get("exact_scope_has_store"),
+                    "same_city_has_store": value.get("same_city_has_store"),
                     "candidate_store_ids": candidate_store_ids,
                     "visible_candidate_ids": candidate_store_ids,
                     "visible_candidate_count": visible_candidate_count,
                     "candidate_search_complete": candidate_search_complete,
-                    "candidate_search_scope": "province" if v2_status == "no_valid_candidate" else "",
+                    "candidate_search_scope": resolved_level if v2_status == "no_valid_candidate" else "",
+                    "destination_fingerprint": _destination_fingerprint(
+                        value.get("destination_resolution") or {},
+                        province=str(structured_facts["store_lookup_status"].get("province") or ""),
+                        city=str(structured_facts["store_lookup_status"].get("city") or ""),
+                        district=str(structured_facts["store_lookup_status"].get("district") or ""),
+                        township=str(structured_facts["store_lookup_status"].get("township") or ""),
+                        query=str(value.get("query") or ""),
+                    ),
+                    "coverage_status": _coverage_status(
+                        status=v2_status,
+                        resolved_level=resolved_level,
+                        exact_scope_has_store=value.get("exact_scope_has_store"),
+                        same_city_has_store=value.get("same_city_has_store"),
+                    ),
+                    "clarification_required": v2_status
+                    in {"need_location", "need_location_confirmation", "ambiguous_location"},
+                    "clarification_would_change_result": v2_status
+                    in {"need_location", "need_location_confirmation", "ambiguous_location"},
+                    "recommendation_final_for_destination": bool(
+                        candidate_search_complete
+                        and v2_status in {"send_single", "send_multiple", "no_valid_candidate"}
+                    ),
                     "recommended_store_id": recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
+                    "requested_detail_kind": requested_detail_kind,
+                    "requested_detail_available": requested_detail_available,
+                    "allow_broad_scope_delivery": bool(value.get("allow_broad_scope_delivery")),
                     "ranking_method": "scope_match",
                     "customer_claim_level": "candidate_list",
                     "reason": f"{resolution_status}_scope_resolution",
                     "delivery_mode": legacy_delivery_mode(v2_status),
                 }
             )
+            store_resolution_fact["candidate_store_ids"] = candidate_store_ids
+            store_resolution_fact["visible_candidate_ids"] = candidate_store_ids
+            store_resolution_fact["delivery_store_ids"] = delivery_store_ids
+            store_resolution_fact = _reuse_previous_store_delivery(state, store_resolution_fact)
+            structured_facts["store_resolution_fact"] = store_resolution_fact
             missing_slots.extend(lookup_missing[:4])
             continue
 
@@ -214,6 +481,18 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             previous_resolution = (
                 dict(structured_facts["store_resolution_fact"])
                 if isinstance(structured_facts.get("store_resolution_fact"), dict)
+                else {}
+            )
+            previous_store_facts = [
+                dict(item)
+                for item in structured_facts.get("store_facts") or []
+                if isinstance(item, dict)
+            ]
+            destination_resolution = (
+                value.get("destination_resolution")
+                if isinstance(value.get("destination_resolution"), dict)
+                else previous_resolution.get("destination_resolution")
+                if isinstance(previous_resolution.get("destination_resolution"), dict)
                 else {}
             )
             candidate_stores = value.get("ranked_stores") if isinstance(value.get("ranked_stores"), list) else []
@@ -237,6 +516,15 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 and not str(item.get("distance_error") or "").strip()
             ]
             has_real_ranking = len(comparable_stores) >= 1
+            # Legacy successful distance results predate this field and ranked
+            # their supplied candidate set. Empty/error results must never be
+            # upgraded to a completed search merely because the field is absent.
+            ranking_complete = (
+                bool(value.get("ranking_complete"))
+                if "ranking_complete" in value
+                else bool(candidate_stores) and str(value.get("status") or "") == "ok"
+            )
+            has_authoritative_ranking = has_real_ranking and ranking_complete
             resolved_admin_level = str(
                 value.get("resolved_admin_level")
                 or previous_lookup.get("resolved_admin_level")
@@ -266,12 +554,17 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     if value.get("exact_scope_has_store") is not None
                     else previous_lookup.get("exact_scope_has_store")
                 ),
+                "same_city_has_store": (
+                    value.get("same_city_has_store")
+                    if value.get("same_city_has_store") is not None
+                    else previous_lookup.get("same_city_has_store")
+                ),
                 "source": "distance_calculate",
                 "candidate_count": int(value.get("candidate_store_count") or len(value.get("ranked_stores") or value.get("candidate_stores") or [])),
                 "comparable_candidate_count": len(comparable_stores),
             }
             authorized_candidate_stores = _authorized_customer_scope_store_items(candidate_stores, state)
-            structured_facts["store_facts"] = [
+            distance_store_facts = [
                 {
                     **_store_fact_from_lookup_item(item, state=state),
                     "distance_source": str(item.get("distance_source") or ""),
@@ -281,15 +574,75 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if isinstance(item, dict)
             ]
             authorized_comparable_stores = _authorized_customer_scope_store_items(comparable_stores, state)
-            if has_real_ranking and authorized_comparable_stores:
+            origin_precision = str(
+                value.get("origin_precision")
+                or destination_resolution.get("destination_precision")
+                or ""
+            ).strip()
+            exact_scope_has_store = (
+                value.get("exact_scope_has_store")
+                if value.get("exact_scope_has_store") is not None
+                else previous_resolution.get("exact_scope_has_store")
+            )
+            same_city_has_store = (
+                value.get("same_city_has_store")
+                if value.get("same_city_has_store") is not None
+                else previous_resolution.get("same_city_has_store")
+            )
+            exact_scope_candidate_ids = [
+                str(item)
+                for item in previous_resolution.get("candidate_store_ids") or []
+                if str(item)
+            ]
+            use_broad_exact_scope = bool(
+                exact_scope_has_store is True
+                and origin_precision in {"city", "district", "unknown", ""}
+                and exact_scope_candidate_ids
+            )
+            if use_broad_exact_scope:
+                exact_scope_ids = set(exact_scope_candidate_ids)
+                ranked_ids = [
+                    str(item.get("store_id") or item.get("id") or "")
+                    for item in authorized_comparable_stores
+                    if str(item.get("store_id") or item.get("id") or "") in exact_scope_ids
+                ]
+                exact_fact_by_id = {
+                    str(item.get("store_id") or item.get("id") or ""): item
+                    for item in previous_store_facts
+                    if str(item.get("store_id") or item.get("id") or "") in exact_scope_ids
+                }
+                ordered_exact_ids = list(dict.fromkeys(ranked_ids + exact_scope_candidate_ids))
+                structured_facts["store_facts"] = [
+                    exact_fact_by_id[store_id]
+                    for store_id in ordered_exact_ids
+                    if store_id in exact_fact_by_id
+                ][: MAX_STORE_DELIVERY_COUNT if v3_mode else 5]
+                authorized_comparable_stores = [
+                    item
+                    for item in authorized_comparable_stores
+                    if str(item.get("store_id") or item.get("id") or "") in exact_scope_ids
+                ]
+            else:
+                structured_facts["store_facts"] = distance_store_facts
+            if has_authoritative_ranking and authorized_comparable_stores:
                 top_store = _store_fact_from_lookup_item(authorized_comparable_stores[0], state=state)
+                ranking_method = str(value.get("ranking_method") or "haversine")
                 structured_facts["recommended_store"] = {
                     **top_store,
                     "distance_source": str(authorized_comparable_stores[0].get("distance_source") or ""),
                     "distance_error": "",
-                    "reason": "haversine_rank_1",
+                    "reason": (
+                        "driving_route_rank_1"
+                        if ranking_method in {"driving_route", "driving_route_shortlist"}
+                        else "haversine_rank_1"
+                    ),
                 }
-            visible_candidate_count = len(structured_facts["store_facts"])
+            ranked_candidate_ids = [
+                str(item.get("store_id") or item.get("id") or "")
+                for item in authorized_comparable_stores
+                if str(item.get("store_id") or item.get("id") or "")
+            ]
+            visible_candidate_count = len(ranked_candidate_ids)
             ranked_recommended_store_id = str(
                 structured_facts["recommended_store"].get("store_id") or ""
             )
@@ -297,41 +650,90 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 tool_status=str(value.get("status") or ""),
                 resolved_level=resolved_admin_level,
                 visible_candidate_count=visible_candidate_count,
-                recommended_store_id=ranked_recommended_store_id,
+                recommended_store_id=(
+                    ""
+                    if use_broad_exact_scope and visible_candidate_count > 1
+                    else ranked_recommended_store_id
+                ),
             )
-            candidate_store_ids = [
-                str(item.get("store_id") or item.get("id") or "")
-                for item in structured_facts["store_facts"]
-                if str(item.get("store_id") or item.get("id") or "")
-            ]
+            candidate_store_ids = list(dict.fromkeys(ranked_candidate_ids))
             scope_match_level = str(
                 value.get("scope_match_level")
                 or previous_resolution.get("scope_match_level")
                 or ""
             )
-            exact_scope_has_store = (
-                value.get("exact_scope_has_store")
-                if value.get("exact_scope_has_store") is not None
-                else previous_resolution.get("exact_scope_has_store")
-            )
             if _distance_city_fallback_should_send_multiple(
-                has_real_ranking=has_real_ranking,
+                has_real_ranking=has_authoritative_ranking,
                 scope_match_level=scope_match_level,
                 exact_scope_has_store=exact_scope_has_store,
                 candidate_store_ids=candidate_store_ids,
+                origin_precision=str(
+                    origin_precision
+                ),
             ):
+                v2_status = "send_multiple"
+            if not has_authoritative_ranking and exact_scope_has_store is not True:
+                v2_status = "search_incomplete"
+            tie_store_ids = (
+                _distance_tie_store_ids(authorized_comparable_stores)
+                if has_authoritative_ranking and not use_broad_exact_scope
+                else []
+            )
+            if tie_store_ids:
                 v2_status = "send_multiple"
             delivery_store_ids = (
                 [ranked_recommended_store_id]
                 if v2_status == "send_single" and ranked_recommended_store_id
-                else candidate_store_ids[:3] if v2_status == "send_multiple" else []
+                else tie_store_ids
+                if tie_store_ids
+                else candidate_store_ids
+                if v2_status == "send_multiple" and use_broad_exact_scope
+                else candidate_store_ids[:3]
+                if v2_status == "send_multiple"
+                else []
             )
-            structured_facts["store_resolution_fact"] = _drop_empty(
+            if v3_mode:
+                delivery_store_ids = delivery_store_ids[:MAX_STORE_DELIVERY_COUNT]
+            requested_detail_kind, requested_detail_available = _requested_store_detail_status(
+                destination_resolution,
+                structured_facts.get("store_facts") or [],
+                delivery_store_ids=delivery_store_ids,
+            )
+            ranking_method = str(value.get("ranking_method") or "haversine")
+            route_ranking_complete = bool(value.get("route_ranking_complete"))
+            ranking_claim_level = (
+                (
+                    "driving_nearest"
+                    if has_authoritative_ranking
+                    and route_ranking_complete
+                    and ranking_method == "driving_route"
+                    else "relative_near_only"
+                    if has_authoritative_ranking
+                    else "candidate_list"
+                )
+                if v3_mode
+                else str(
+                    value.get("ranking_claim_level")
+                    or ("relative_near" if has_authoritative_ranking else "candidate_list")
+                )
+            )
+            recommended_district = str(
+                structured_facts["recommended_store"].get("district") or ""
+            )
+            cross_district_recommendation = bool(
+                ranked_recommended_store_id
+                and district
+                and recommended_district
+                and district != recommended_district
+            )
+            store_resolution_fact = _drop_empty(
                 {
                     "status": v2_status,
+                    "outcome": _store_resolution_outcome(v2_status),
                     "raw_place": str(value.get("origin") or ""),
                     "normalized_query": str(value.get("origin") or ""),
                     "location_evidence": value.get("location_evidence") or previous_resolution.get("location_evidence") or {},
+                    "destination_resolution": destination_resolution,
                     "resolution_status": str(value.get("status") or ""),
                     "resolved_admin_level": resolved_admin_level,
                     "province": province,
@@ -340,24 +742,88 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "township": township,
                     "scope_match_level": scope_match_level,
                     "exact_scope_has_store": exact_scope_has_store,
+                    "same_city_has_store": same_city_has_store,
                     "candidate_store_ids": candidate_store_ids,
                     "visible_candidate_ids": candidate_store_ids,
                     "visible_candidate_count": visible_candidate_count,
                     "candidate_search_complete": bool(
                         previous_resolution.get("candidate_search_complete", True)
+                        and (ranking_complete or use_broad_exact_scope)
                     ),
                     "candidate_search_scope": (
                         "province"
                         if v2_status == "no_valid_candidate"
                         else str(previous_resolution.get("candidate_search_scope") or "")
                     ),
-                    "distance_ranking_available": has_real_ranking,
+                    "distance_ranking_available": has_authoritative_ranking,
+                    "distance_ranking_complete": ranking_complete,
+                    "ranked_candidate_count": int(value.get("ranked_candidate_count") or 0),
+                    "unranked_candidate_count": int(value.get("unranked_candidate_count") or 0),
+                    "origin_precision": str(value.get("origin_precision") or "unknown"),
+                    "destination_fingerprint": _destination_fingerprint(
+                        destination_resolution,
+                        province=province,
+                        city=city,
+                        district=district,
+                        township=township,
+                        query=str(value.get("origin") or ""),
+                    ),
+                    "coverage_status": _coverage_status(
+                        status=v2_status,
+                        resolved_level=resolved_admin_level,
+                        exact_scope_has_store=exact_scope_has_store,
+                        same_city_has_store=same_city_has_store,
+                    ),
+                    "clarification_required": v2_status
+                    in {"need_location", "need_location_confirmation", "ambiguous_location"},
+                    "clarification_would_change_result": v2_status
+                    in {"need_location", "need_location_confirmation", "ambiguous_location"},
+                    "recommendation_final_for_destination": bool(
+                        (ranking_complete or use_broad_exact_scope)
+                        and v2_status in {"send_single", "send_multiple", "no_valid_candidate"}
+                    ),
+                    "distance_tie_threshold_km": 5.0 if tie_store_ids else 0.0,
+                    "cross_district_recommendation": cross_district_recommendation,
                     "recommended_store_id": ranked_recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
-                    "ranking_method": "haversine" if has_real_ranking else "scope_match",
-                    "customer_claim_level": "relative_near" if has_real_ranking else "candidate_list",
+                    "requested_detail_kind": requested_detail_kind,
+                    "requested_detail_available": requested_detail_available,
+                    "ranking_method": (
+                        ranking_method
+                        if has_authoritative_ranking
+                        else "haversine_partial"
+                        if has_real_ranking
+                        else "scope_match"
+                    ),
+                    "route_status": str(value.get("route_status") or ""),
+                    "route_candidate_count": int(value.get("route_candidate_count") or 0),
+                    "route_success_count": int(value.get("route_success_count") or 0),
+                    "route_ranking_complete": route_ranking_complete,
+                    "route_shortlist_size": int(value.get("route_shortlist_size") or 0),
+                    "customer_claim_level": (
+                        ranking_claim_level if has_authoritative_ranking else "candidate_list"
+                    ),
+                    **(
+                        {
+                            "customer_claim_guidance": (
+                                "可称驾车路线比较后最近"
+                                if ranking_claim_level == "driving_nearest"
+                                else "只能称相对近或优先推荐，不能称全部门店中最近"
+                                if ranking_claim_level == "relative_near_only"
+                                else "只能称候选门店，不能使用距离排序结论"
+                            )
+                        }
+                        if v3_mode
+                        else {}
+                    ),
                     "reason": (
-                        "confirmed_location_and_valid_coordinates"
+                        "confirmed_location_and_driving_route"
+                        if has_authoritative_ranking
+                        and str(value.get("ranking_method") or "")
+                        in {"driving_route", "driving_route_shortlist"}
+                        else "confirmed_location_and_valid_coordinates"
+                        if has_authoritative_ranking
+                        else "candidate_coordinate_coverage_incomplete"
                         if has_real_ranking
                         else "candidate_coordinates_unavailable"
                         if candidate_stores
@@ -366,6 +832,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "delivery_mode": legacy_delivery_mode(v2_status),
                 }
             )
+            store_resolution_fact["candidate_store_ids"] = candidate_store_ids
+            store_resolution_fact["visible_candidate_ids"] = candidate_store_ids
+            store_resolution_fact["delivery_store_ids"] = delivery_store_ids
+            store_resolution_fact = _reuse_previous_store_delivery(state, store_resolution_fact)
+            structured_facts["store_resolution_fact"] = store_resolution_fact
             facts.append(
                 "distance_calculate: "
                 f"origin={value.get('origin') or ''}; status={value.get('status') or ''}; candidates={len(candidate_stores)}; "
@@ -608,6 +1079,14 @@ def _store_fact_from_lookup_item(item: dict[str, Any], *, state: AgentState | di
         "parking_address": parking_address,
         "parking_url": str(item.get("parking_url") or "").strip(),
         "map_url": str(item.get("map_url") or "").strip(),
+        "floor": str(item.get("floor") or item.get("floor_no") or "").strip(),
+        "room": str(item.get("room") or item.get("room_no") or item.get("room_number") or "").strip(),
+        "arrival_guidance": str(
+            item.get("arrival_guidance") or item.get("arrival_guide") or item.get("navigation_note") or ""
+        ).strip(),
+        "reception": str(
+            item.get("reception") or item.get("receptionist") or item.get("contact_person") or ""
+        ).strip(),
         "location": str(item.get("location") or "").strip(),
         "geocode_formatted_address": str(item.get("geocode_formatted_address") or "").strip(),
         "store_fact_integrity": str(item.get("store_fact_integrity") or "valid").strip(),
@@ -615,6 +1094,41 @@ def _store_fact_from_lookup_item(item: dict[str, Any], *, state: AgentState | di
         "store_fact_integrity_warnings": list(item.get("store_fact_integrity_warnings") or []),
         "scope_authorized": scope_authorized,
     }
+
+
+def _requested_store_detail_status(
+    destination_resolution: dict[str, Any],
+    store_facts: list[Any],
+    *,
+    delivery_store_ids: list[str],
+) -> tuple[str, bool | None]:
+    detail_kind = str(destination_resolution.get("detail_kind") or "none").strip()
+    if detail_kind == "none":
+        return "", None
+    allowed_ids = {str(item).strip() for item in delivery_store_ids if str(item).strip()}
+    selected = [
+        item
+        for item in store_facts
+        if isinstance(item, dict)
+        and (
+            not allowed_ids
+            or str(item.get("store_id") or item.get("id") or "").strip() in allowed_ids
+        )
+    ]
+    fields_by_kind = {
+        "address": ("store_address", "address"),
+        "arrival_guidance": ("floor", "room", "arrival_guidance", "reception"),
+        "navigation": ("map_url", "arrival_guidance"),
+        "parking": ("parking", "parking_name", "parking_address", "parking_url"),
+        "hours": ("business_hours",),
+    }
+    fields = fields_by_kind.get(detail_kind, ())
+    available = any(
+        str(store.get(field) or "").strip()
+        for store in selected
+        for field in fields
+    )
+    return detail_kind, available
 
 
 def _authorized_customer_scope_store_items(items: list[Any], state: AgentState) -> list[dict[str, Any]]:

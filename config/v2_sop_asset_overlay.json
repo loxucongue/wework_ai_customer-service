@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "id": "s10_new_customer_opening",
+      "parallel_candidate_enabled": false,
+      "proactive_candidate_enabled": false,
+      "asset_role": "opening_context"
+    },
+    {
+      "id": "s10_need_and_case",
+      "parallel_candidate_enabled": true,
+      "proactive_candidate_enabled": true,
+      "asset_role": "effect_evidence",
+      "customer_uncertainty": "客户明确对效果、真实性或是否值得了解存在疑问时，需要真实案例帮助形成判断。",
+      "useful_evidence": [
+        "真实顾客效果案例",
+        "做前做后原相机对比"
+      ],
+      "reasoning_moves": [
+        "用真实案例直接回应客户已经表达的效果或真实性疑问",
+        "案例和必要说明交付后，如果当前疑问已经解决，可以自然收住；不要为了延续对话强行再制造一个诊断问题",
+        "若判断仍需推进，直接在本轮交付下一项相关价值或提出客户可执行的低摩擦动作，不要用如果您愿意、我再接着讲等条件式预告"
+      ],
+      "anti_patterns": [
+        "客户未主动提及部位时追问脸上还是手上、全脸还是局部",
+        "案例已经回答当前疑问后再引入收费、反弹、副作用或其他新顾虑",
+        "用没有决策价值的二选一问题强行收尾",
+        "以如果您愿意、要不要我继续讲等助手动作代替真实销售推进"
+      ],
+      "render_strategy": "adaptable_evidence_first"
+    },
+    {
+      "id": "s10_activity_intro",
+      "parallel_candidate_enabled": true,
+      "proactive_candidate_enabled": true,
+      "asset_role": "activity_offer",
+      "customer_uncertainty": "客户还没有形成对本次活动价值、费用和包含内容的完整认知；或者当前问题已经用真实事实回答，活动尚未介绍，可以用活动事实作为一个不重复的相邻决策价值。",
+      "useful_evidence": [
+        "当前268元周年庆线上淡斑活动及包含范围",
+        "当前活动名额规则",
+        "已审核的活动宣传图"
+      ],
+      "reasoning_moves": [
+        "客户第一次询问活动或价格时，直接完整交付活动事实和活动宣传图，不夹带预约金卡",
+        "当前地址、效果或卡点已经用真实事实回答且客户没有继续质疑时，如果活动尚未介绍，可把活动作为本轮唯一一个相邻新价值交给Reply选择",
+        "采用活动资产时直接交付价值，不先询问客户要不要了解；是否采用以及本轮是否暂停仍由Reply依据完整历史决定",
+        "活动介绍与预约金成交是两个独立动作，首次交付活动时不得同时推送预约金卡"
+      ],
+      "anti_patterns": [
+        "建立门店后固定机械发送活动，不看完整上下文",
+        "客户正在工作、当前有健康风险、投诉退款、强拒绝或要求停止联系时仍提名活动",
+        "用位置能不能接受、要不要了解活动等许可式问题浪费一轮",
+        "第一次介绍活动时同时要求客户支付预约金"
+      ],
+      "render_strategy": "adaptable"
+    },
+    {
+      "id": "s10_store_prompt",
+      "parallel_candidate_enabled": false,
+      "proactive_candidate_enabled": true,
+      "asset_role": "location_capture",
+      "selection_constraints": {
+        "forbidden_when_authoritative_facts_present": [
+          "location_card"
+        ]
+      }
+    },
+    {
+      "id": "s10_objection_resolution",
+      "parallel_candidate_enabled": true,
+      "proactive_candidate_enabled": true,
+      "asset_role": "objection_support"
+    },
+    {
+      "id": "s10_deposit_close",
+      "parallel_candidate_enabled": false,
+      "proactive_candidate_enabled": true,
+      "asset_role": "deposit_close",
+      "requires_prior_asset_roles": [
+        "activity_offer"
+      ]
+    }
+  ]
+}

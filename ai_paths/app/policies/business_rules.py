@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -55,8 +56,14 @@ def reply_business_rules_for_model(*, stage: str = "", sub_rule_id: str = "") ->
     """Return the current-stage rules and shared facts needed by Reply."""
     rules = load_business_rules()
     offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
+    current_stage_rules = _relevant_stage_rules(rules, stage=stage, sub_rule_id=sub_rule_id)
     return {
         "version": rules.get("version"),
+        "rule_taxonomy": _rule_taxonomy(rules),
+        "rule_layers": _rule_layers_for_model(
+            rules,
+            current_rules=current_stage_rules.get("rules") if isinstance(current_stage_rules, dict) else [],
+        ),
         "identity_facts": _selected_dict_fields(
             rules.get("identity"),
             ("public_role", "style", "goal"),
@@ -70,9 +77,153 @@ def reply_business_rules_for_model(*, stage: str = "", sub_rule_id: str = "") ->
         "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
         "transaction_policy": rules.get("transaction_policy") or {},
         "conversion_psychology": _conversion_psychology(rules),
-        "current_stage_rules": _relevant_stage_rules(rules, stage=stage, sub_rule_id=sub_rule_id),
+        "current_stage_rules": current_stage_rules,
         "tool_policy": _tool_policy(rules),
         "hard_forbidden": rules.get("forbidden") or [],
+    }
+
+
+def parallel_reply_business_rules_for_model() -> dict[str, Any]:
+    """Return only facts not already stated by the V3 Reply constitution."""
+
+    rules = load_business_rules()
+    offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
+    transaction = rules.get("transaction_policy") if isinstance(rules.get("transaction_policy"), dict) else {}
+    return {
+        "FACT TOPIC CATALOG": v3_fact_topic_catalog_for_model(),
+        "MUST FOLLOW": {
+            "hard_forbidden": rules.get("forbidden") or [],
+        },
+        "AUTHORITATIVE FACTS": {
+            "offer": _selected_dict_fields(
+                offer,
+                (
+                    "public_names",
+                    "new_customer_price",
+                    "original_price_visibility",
+                    "prepay_amount",
+                    "tail_amount",
+                    "refund_rule",
+                    "arrival_time_rule",
+                    "registration_skin_test",
+                    "service_duration",
+                    "daily_life_impact",
+                    "body_scope",
+                    "offer_structure",
+                    "includes",
+                    "supported_online_scope",
+                    "unsupported_online_projects",
+                    "body_area_price_rule",
+                    "scope_answer_policy",
+                    "transport_cost_rule",
+                    "quota",
+                    "registration_gift",
+                    "authorized_scale_and_safety_evidence",
+                    "payment_message_type",
+                ),
+            ),
+            "health_risk_policy": rules.get("health_risk_policy") or {},
+            "store_address_disclosure_policy": _selected_dict_fields(
+                rules.get("store_address_disclosure_policy"),
+                (
+                    "public_store_address",
+                    "arrival_guidance",
+                    "reservation_fact",
+                    "current_flow_boundary",
+                    "trust_priority",
+                    "detail_followup_boundary",
+                ),
+            ),
+            "customer_charge_policy": rules.get("customer_charge_policy") or {},
+            "customer_visible_evidence_policy": _selected_dict_fields(
+                rules.get("customer_visible_evidence_policy"),
+                (
+                    "technology",
+                    "effect_confidence",
+                    "effect_result_fact",
+                    "effect_result_boundary",
+                    "before_after_record",
+                    "case_boundary",
+                    "social_proof",
+                    "maintenance",
+                    "outdoor_work",
+                    "operation_feeling",
+                ),
+            ),
+            "transaction_policy": _selected_dict_fields(
+                transaction,
+                (
+                    "activity_and_deposit_are_separate_actions",
+                    "deposit_evidence_requirements",
+                    "payment_channel_policy",
+                    "platform_unknown_message_payment_policy",
+                    "post_paid_flow_description",
+                ),
+            ),
+        },
+    }
+
+
+def v3_fact_topic_catalog_for_model() -> list[dict[str, Any]]:
+    """Return the configured fact-topic directory used by V3 retrieval."""
+
+    rules = load_business_rules()
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in rules.get("v3_fact_topics") or []:
+        if not isinstance(raw, dict):
+            continue
+        topic_id = str(raw.get("id") or "").strip()
+        if not topic_id or topic_id in seen:
+            continue
+        seen.add(topic_id)
+        topic = {
+            "id": topic_id,
+            "name": str(raw.get("name") or topic_id).strip(),
+            "description": str(raw.get("description") or "").strip(),
+        }
+        checkpoint_codes = [
+            str(item or "").strip().lower()
+            for item in raw.get("knowledge_checkpoint_codes") or []
+            if str(item or "").strip()
+        ]
+        if checkpoint_codes:
+            topic["knowledge_checkpoint_codes"] = list(dict.fromkeys(checkpoint_codes))
+        output.append(topic)
+    return output
+
+
+def _model_led_sales_principles(rules: dict[str, Any]) -> dict[str, Any]:
+    configured = rules.get("model_led_sales_principles")
+    return deepcopy(configured) if isinstance(configured, dict) else {}
+
+
+def _parallel_reply_sales_principles(rules: dict[str, Any]) -> dict[str, Any]:
+    """Return the reviewed high-density principles used by the V3 Reply model."""
+
+    configured = rules.get("model_led_sales_principles")
+    if not isinstance(configured, dict):
+        return {}
+    runtime = configured.get("runtime_prompt")
+    if not isinstance(runtime, dict):
+        return _model_led_sales_principles(rules)
+    return {
+        "mission": str(configured.get("mission") or ""),
+        "decision_dimensions": [
+            str(item)
+            for item in configured.get("decision_dimensions") or []
+            if str(item or "").strip()
+        ],
+        "principles": [
+            str(item)
+            for item in runtime.get("principles") or []
+            if str(item or "").strip()
+        ],
+        "anti_patterns": [
+            str(item)
+            for item in runtime.get("anti_patterns") or []
+            if str(item or "").strip()
+        ],
     }
 
 
@@ -118,8 +269,11 @@ def sop_platform_business_facts_for_model() -> dict[str, Any]:
 
 def _planner_runtime_rules(rules: dict[str, Any]) -> dict[str, Any]:
     offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
+    scene_catalog = _scene_catalog(rules)
     return {
         "version": rules.get("version"),
+        "rule_taxonomy": _rule_taxonomy(rules),
+        "rule_layers": _rule_layers_for_model(rules, current_rules=scene_catalog),
         "identity_facts": _selected_dict_fields(rules.get("identity"), ("public_role", "style", "goal")),
         "brand_trust_facts": _selected_dict_fields(
             rules.get("brand_trust_policy"),
@@ -130,9 +284,78 @@ def _planner_runtime_rules(rules: dict[str, Any]) -> dict[str, Any]:
         "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
         "transaction_policy": rules.get("transaction_policy") or {},
         "conversion_psychology": _conversion_psychology(rules),
-        "scene_catalog": _scene_catalog(rules),
+        "scene_catalog": scene_catalog,
         "tool_policy": _tool_policy(rules),
         "hard_forbidden": rules.get("forbidden") or [],
+    }
+
+
+def _rule_taxonomy(rules: dict[str, Any]) -> dict[str, Any]:
+    taxonomy = rules.get("rule_taxonomy")
+    if isinstance(taxonomy, dict):
+        return taxonomy
+    return {
+        "levels": {
+            "hard_law": "Absolute safety, factual, structural, and compliance boundaries. Code may hard-check these.",
+            "business_fact": "Authoritative business facts. The model must not contradict them, but decides when they matter.",
+            "sales_principle": "General reasoning principle owned by the model and evaluated semantically.",
+            "content_asset": "Approved facts and media that Gate may nominate and Reply may adapt or ignore.",
+            "deprecated": "Superseded historical rule kept only for migration audit and never rendered into prompts.",
+        },
+        "validation_modes": {
+            "hard_law": "hard_check",
+            "business_fact": "fact_consistency",
+            "sales_principle": "semantic_review",
+            "content_asset": "asset_integrity",
+            "deprecated": "audit_only",
+        },
+    }
+
+
+def _rule_layers_for_model(rules: dict[str, Any], *, current_rules: list[dict[str, Any]]) -> dict[str, Any]:
+    current_rules = current_rules or []
+    hard_rules = [
+        item
+        for item in current_rules
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "hard_law"
+    ]
+    business_rules = [
+        item
+        for item in current_rules
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "business_fact"
+    ]
+    principle_rules = [
+        item
+        for item in current_rules
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "sales_principle"
+    ]
+    content_asset_rules = [
+        item
+        for item in current_rules
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "content_asset"
+    ]
+    return {
+        "MUST FOLLOW": {
+            "description": "Hard boundaries. Never violate; code may also enforce them.",
+            "hard_forbidden": rules.get("forbidden") or [],
+            "hard_rule_ids": [item.get("id") for item in hard_rules if item.get("id")],
+        },
+        "AUTHORITATIVE FACTS": {
+            "description": "Business facts are true constraints, but the model decides whether the current reply should mention them.",
+            "business_fact_rule_ids": [item.get("id") for item in business_rules if item.get("id")],
+            "offer": _offer_facts(rules.get("offer") if isinstance(rules.get("offer"), dict) else {}),
+            "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
+            "transaction_policy": rules.get("transaction_policy") or {},
+        },
+        "SALES PRINCIPLES": {
+            "description": "Model-owned reasoning guidance. These rules never become Python hard failures.",
+            "sales_principle_rule_ids": [item.get("id") for item in principle_rules if item.get("id")],
+            "model_led_sales_principles": _model_led_sales_principles(rules),
+        },
+        "CONTENT ASSETS": {
+            "description": "Gate-nominated facts and media only; Reply decides whether and how to use them.",
+            "content_asset_rule_ids": [item.get("id") for item in content_asset_rules if item.get("id")],
+        },
     }
 
 
@@ -146,17 +369,26 @@ def _offer_facts(offer: dict[str, Any]) -> dict[str, Any]:
         "tail_amount": offer.get("tail_amount"),
         "refund_rule": offer.get("refund_rule"),
         "arrival_time_rule": offer.get("arrival_time_rule"),
+        "reservation_completion_rule": offer.get("reservation_completion_rule"),
         "registration_skin_test": offer.get("registration_skin_test"),
+        "service_duration": offer.get("service_duration"),
+        "daily_life_impact": offer.get("daily_life_impact"),
+        "registered_visit_option": offer.get("registered_visit_option"),
+        "action_cost_fact_policy": offer.get("action_cost_fact_policy"),
         "body_scope": offer.get("body_scope"),
+        "offer_structure": offer.get("offer_structure"),
         "includes": offer.get("includes") or [],
         "supported_online_scope": offer.get("supported_online_scope") or [],
         "unsupported_online_projects": offer.get("unsupported_online_projects") or [],
+        "body_area_price_rule": offer.get("body_area_price_rule"),
+        "transport_cost_rule": offer.get("transport_cost_rule"),
         "scope_answer_policy": offer.get("scope_answer_policy"),
         "quota": offer.get("quota"),
         "registration_gift": offer.get("registration_gift") or {},
         "scarcity_reasons": offer.get("scarcity_reasons") or [],
         "approved_closing_reasons": offer.get("approved_closing_reasons") or [],
         "closing_reason_policy": offer.get("closing_reason_policy"),
+        "authorized_scale_and_safety_evidence": offer.get("authorized_scale_and_safety_evidence"),
         "payment_message_type": offer.get("payment_message_type"),
     }
 
@@ -171,6 +403,18 @@ def _conversion_psychology(rules: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _rule_metadata(rule: dict[str, Any]) -> dict[str, Any]:
+    """Read explicit ownership metadata; never infer sales semantics in Python."""
+
+    return {
+        "rule_level": str(rule.get("rule_level") or "deprecated"),
+        "owner": str(rule.get("owner") or "none"),
+        "validation_mode": str(rule.get("validation_mode") or "audit_only"),
+        "source": str(rule.get("source") or ""),
+        "regression_ids": [str(item) for item in rule.get("regression_ids") or [] if str(item).strip()],
+    }
+
+
 def _scene_catalog(rules: dict[str, Any]) -> list[dict[str, Any]]:
     transaction = rules.get("transaction_policy") if isinstance(rules.get("transaction_policy"), dict) else {}
     stages = rules.get("stages") if isinstance(rules.get("stages"), list) else []
@@ -182,6 +426,7 @@ def _scene_catalog(rules: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(rule, dict):
                 continue
             tools = [str(item) for item in rule.get("tools") or [] if str(item or "").strip()]
+            metadata = _rule_metadata(rule)
             output.append(
                 {
                     "stage": stage.get("id"),
@@ -197,6 +442,7 @@ def _scene_catalog(rules: dict[str, Any]) -> list[dict[str, Any]]:
                         tools,
                         transaction_policy=transaction,
                     ),
+                    **metadata,
                 }
             )
     return output
@@ -229,9 +475,9 @@ def _fact_boundary_for_rule(
     if "kb_search(case_studies)" in tools:
         return "案例与效果图必须来自真实 case_studies 工具事实；旧 SOP 完成状态不能替代近期真实发图证据。"
     if "distance_calculate" in tools:
-        return "门店存在性和详情来自 customer_store_lookup；距离工具只按合法经纬度执行 Haversine 排序。最终只按 store_resolution_fact.status 和 delivery_store_ids 发卡，不得自行增减；客户可见不输出公里、分钟、车程或路线。"
+        return "门店存在性和详情来自 customer_store_lookup；当前仅能按合法经纬度执行完整 Haversine 排序。最终只按 store_resolution_fact.status 和 delivery_store_ids 发卡；同一目的地的最终推荐不得再次承诺重查，客户可见不输出公里、分钟、车程或路线。"
     if "customer_store_lookup" in tools:
-        return "具体门店、地址、停车和营业时间必须来自 customer_store_lookup。省或城市信息不足时补问；POI 推断出的上级行政区必须先确认；完整省市区、详细地址或定位卡才可直接匹配。"
+        return "具体门店、地址、停车和营业时间必须来自 customer_store_lookup。只有补充位置会改变结果时才反问；唯一且行政区一致的 POI 可同轮匹配。已确认省内无店时不得继续追问省内区市。"
     if "appointment_record_query" in tools:
         return "既有预约、改约和取消必须以 appointment_record_query 的真实结果为准。"
     if "professional_assist" in tools:
@@ -280,20 +526,27 @@ def _relevant_stage_rules(rules: dict[str, Any], *, stage: str, sub_rule_id: str
             "name": item.get("name"),
             "goal": item.get("goal"),
             "rules": [
-                {
-                    "id": rule.get("id"),
-                    "scenes": rule.get("scenes") or [],
-                    "decision": rule.get("decision"),
-                    "tools": rule.get("tools") or [],
-                    "reply_focus": rule.get("reply_focus"),
-                    "fact_boundary": _fact_boundary_for_rule(
-                        str(rule.get("id") or ""),
-                        [str(tool) for tool in rule.get("tools") or [] if str(tool or "").strip()],
-                        transaction_policy=transaction,
-                    ),
-                }
+                _stage_rule_for_model(rule, transaction_policy=transaction)
                 for rule in selected_rules
                 if isinstance(rule, dict)
             ],
         }
     return {}
+
+
+def _stage_rule_for_model(rule: dict[str, Any], *, transaction_policy: dict[str, Any]) -> dict[str, Any]:
+    tools = [str(tool) for tool in rule.get("tools") or [] if str(tool or "").strip()]
+    rule_id = str(rule.get("id") or "")
+    return {
+        "id": rule.get("id"),
+        "scenes": rule.get("scenes") or [],
+        "decision": rule.get("decision"),
+        "tools": tools,
+        "reply_focus": rule.get("reply_focus"),
+        "fact_boundary": _fact_boundary_for_rule(
+            rule_id,
+            tools,
+            transaction_policy=transaction_policy,
+        ),
+        **_rule_metadata(rule),
+    }

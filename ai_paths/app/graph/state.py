@@ -61,6 +61,7 @@ class AgentState(TypedDict, total=False):
     customer_context_error: str | None
     customer_store_knowledge: dict[str, Any]
     sent_message_summary: dict[str, Any]
+    store_scope_summary: dict[str, Any]
     sop_gate: dict[str, Any]
     sop_gate_decision: dict[str, Any]
     sop_gate_candidate_messages: list[dict[str, Any]]
@@ -71,6 +72,8 @@ class AgentState(TypedDict, total=False):
     conversation_state: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]
+    follow_sequence_index: dict[str, Any]
+    follow_checkpoint_taxonomy: dict[str, Any]
     store_context_status: str
     store_context_elapsed_ms: int
     store_context_skipped_steps: list[str]
@@ -82,6 +85,39 @@ class AgentState(TypedDict, total=False):
     recovery_attempts: list[dict[str, Any]]
     recovery_reason: str
     fallback_source: str
+
+    # V3 parallel reply evidence and commit state. These fields are turn-local
+    # evidence; they must not become durable customer psychology labels.
+    shared_context: dict[str, Any]
+    content_gate_result: dict[str, Any]
+    sales_recall: dict[str, Any]
+    semantic_route: dict[str, Any]
+    knowledge_evidence: dict[str, Any]
+    store_pre_route: dict[str, Any]
+    tool_plan: dict[str, Any]
+    parallel_branch_metrics: dict[str, Any]
+    evidence_join: dict[str, Any]
+    used_fact_refs: list[str]
+    selected_content_ids: list[str]
+    reply_content_decisions: list[dict[str, str]]
+    content_selection_metrics: dict[str, Any]
+    reply_observation_metrics: dict[str, Any]
+    reply_action: str
+    reply_action_reason: str
+    reply_sales_assessment: dict[str, Any]
+    reply_sales_judgment: dict[str, Any]
+    reply_knowledge_use: dict[str, Any]
+    reply_payment_assessment: dict[str, Any]
+    reply_payment_channel: str
+    reply_payment_channel_explicit: bool
+    reply_payment_channel_availability: dict[str, Any]
+    reply_deposit_evidence: dict[str, Any]
+    reply_safety_assessment: dict[str, Any]
+    reply_party_size_assessment: dict[str, Any]
+    commit_actions: list[dict[str, Any]]
+    commit_tool_results: dict[str, Any]
+    commit_fact_envelope: dict[str, Any]
+    commit_result: dict[str, Any]
 
     planner_decision: str
     planner_stage: str

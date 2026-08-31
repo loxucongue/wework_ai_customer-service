@@ -14,6 +14,10 @@ from app.services.storage.serialization import (
     utc_now_iso,
 )
 from app.services.trace_logger import compact
+from app.services.run_observability import (
+    build_v3_run_observability,
+    enrich_v3_run_observability,
+)
 
 
 class RunRepositoryMixin:
@@ -29,8 +33,9 @@ class RunRepositoryMixin:
         """Persist the request before model execution so it is visible live."""
 
         started_at = utc_now_iso()
-        version = str(interface_version or "").strip().lower()
-        version = version if version in {"v1", "v2", "v3"} else "v1"
+        version = str(interface_version or "v1").strip().lower()
+        if version not in {"v1", "v2", "v3"}:
+            version = "v1"
         output_snapshot = {
             "runtime_status": "running",
             "runtime_phase": "request_received",
@@ -79,7 +84,7 @@ class RunRepositoryMixin:
             output_snapshot["runtime_updated_at"] = utc_now_iso()
             conn.execute(
                 "UPDATE runs SET output_snapshot=? WHERE request_id=?",
-                (dumps(compact(output_snapshot)), request_id),
+                (dumps(_compact_run_output(output_snapshot)), request_id),
             )
 
     def save_run(self, *, conversation_id: str, final_state: dict[str, Any], token_usage: dict[str, Any]) -> None:
@@ -106,8 +111,24 @@ class RunRepositoryMixin:
             "appointment_time": final_state.get("appointment_time"),
             "request_context": final_state.get("request_context", {}),
         }
+        request_context = (
+            final_state.get("request_context")
+            if isinstance(final_state.get("request_context"), dict)
+            else {}
+        )
+        interface_version = str(
+            request_context.get("interface_version")
+            or request_context.get("api_version")
+            or "v1"
+        ).strip().lower()
+        if interface_version not in {"v1", "v2", "v3"}:
+            interface_version = "v1"
         output_snapshot = {
             "reply_messages": final_state.get("reply_messages", []),
+            "interface_version": interface_version,
+            "reply_chain_mode": str(request_context.get("reply_chain_mode") or ""),
+            "v3_sidecar": bool(request_context.get("v3_sidecar")),
+            "strategy_data_callback": final_state.get("strategy_data_callback", {}),
             "planner_route": planner_public_route(final_state),
             "planner_source": final_state.get("planner_source", ""),
             "conversion_stage": final_state.get("conversion_stage", ""),
@@ -130,6 +151,7 @@ class RunRepositoryMixin:
             "handoff": final_state.get("handoff", {}),
             "profile_update": final_state.get("profile_update", {}),
             "event_updates": final_state.get("event_updates", []),
+            "observability_v3": build_v3_run_observability(final_state),
         }
         with self.store.connect() as conn:
             existing = conn.execute(
@@ -152,8 +174,10 @@ class RunRepositoryMixin:
                 "runtime_started_at": started_at or finished_at,
                 "runtime_updated_at": finished_at,
                 "runtime_finished_at": finished_at,
-                "interface_version": str(existing_output.get("interface_version") or "v1"),
                 **output_snapshot,
+                "interface_version": str(
+                    existing_output.get("interface_version") or interface_version
+                ),
             }
             conn.execute(
                 """
@@ -167,7 +191,7 @@ class RunRepositoryMixin:
                     conversation_id,
                     str(final_state.get("customer_id") or ""),
                     dumps(compact(input_snapshot)),
-                    dumps(compact(output_snapshot)),
+                    dumps(_compact_run_output(output_snapshot)),
                     dumps(planner_task_views(final_state)),
                     dumps(tags_from_state(final_state)),
                     duration_ms,
@@ -208,7 +232,7 @@ class RunRepositoryMixin:
             output_snapshot["http_response_reply_messages"] = _reply_messages_from_http_response(response_body)
             conn.execute(
                 "UPDATE runs SET output_snapshot=? WHERE request_id=?",
-                (dumps(compact(output_snapshot)), request_id),
+                (dumps(_compact_run_output(output_snapshot)), request_id),
             )
 
     def list_runs(
@@ -245,17 +269,70 @@ class RunRepositoryMixin:
                 """,
                 params,
             ).fetchall()
-        return [decode_run(dict(row)) for row in rows]
+        return [_run_list_view(decode_run(dict(row))) for row in rows]
 
-    def get_run(self, request_id: str) -> dict[str, Any]:
+    def get_run(self, request_id: str, *, include_debug: bool = True) -> dict[str, Any]:
+        dispatch_id = ""
         with self.store.connect() as conn:
             run = conn.execute("SELECT * FROM runs WHERE request_id=?", (request_id,)).fetchone()
-            traces = conn.execute(
-                "SELECT * FROM node_traces WHERE request_id=? ORDER BY created_at ASC",
+            traces = (
+                conn.execute(
+                    "SELECT * FROM node_traces WHERE request_id=? ORDER BY created_at ASC",
+                    (request_id,),
+                ).fetchall()
+                if include_debug
+                else []
+            )
+            decoded_run = decode_run(dict(run)) if run else {}
+            output_snapshot = (
+                decoded_run.get("output_snapshot")
+                if isinstance(decoded_run.get("output_snapshot"), dict)
+                else {}
+            )
+            callback = (
+                output_snapshot.get("strategy_data_callback")
+                if isinstance(output_snapshot.get("strategy_data_callback"), dict)
+                else {}
+            )
+            outbox_id = str(callback.get("outbox_id") or "").strip()
+            if outbox_id:
+                callback_row = conn.execute(
+                    """
+                    SELECT status, retry_count, error, payload_json, response_json,
+                           created_at, updated_at, sent_at
+                    FROM strategy_data_outbox WHERE id=?
+                    """,
+                    (outbox_id,),
+                ).fetchone()
+                if callback_row:
+                    request_payload = loads_dict(callback_row["payload_json"])
+                    response = loads_dict(callback_row["response_json"])
+                    output_snapshot["strategy_data_callback"] = {
+                        **callback,
+                        "status": str(callback_row["status"] or ""),
+                        "retry_count": int(callback_row["retry_count"] or 0),
+                        "error": str(callback_row["error"] or ""),
+                        "created_at": str(callback_row["created_at"] or ""),
+                        "updated_at": str(callback_row["updated_at"] or ""),
+                        "sent_at": str(callback_row["sent_at"] or ""),
+                        "request_payload": request_payload,
+                        "response": response,
+                        "response_code": response.get("code"),
+                        "response_message": str(response.get("message") or ""),
+                    }
+            dispatch_row = conn.execute(
+                """
+                SELECT id FROM message_dispatches
+                WHERE source_request_id=?
+                ORDER BY created_at DESC LIMIT 1
+                """,
                 (request_id,),
-            ).fetchall()
+            ).fetchone()
+            dispatch_id = str(dispatch_row["id"] or "") if dispatch_row else ""
+        dispatch = self.get_message_dispatch(dispatch_id) if dispatch_id else {}
+        enrich_v3_run_observability(output_snapshot, dispatch=dispatch)
         return {
-            "run": decode_run(dict(run)) if run else {},
+            "run": decoded_run,
             "node_traces": [decode_trace(dict(row)) for row in traces],
         }
 
@@ -276,6 +353,34 @@ class RunRepositoryMixin:
             "node_traces": int(traces.rowcount or 0),
             "runs": int(runs.rowcount or 0),
         }
+
+
+def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Keep stable business observability outside generic trace truncation."""
+
+    stored = compact(output_snapshot)
+    if not isinstance(stored, dict):
+        stored = {}
+    observability = output_snapshot.get("observability_v3")
+    if isinstance(observability, dict) and observability:
+        # The projection is already bounded and scrubbed by its builder. Do not
+        # run it through generic trace compaction, which truncates lists to 8
+        # entries and would hide the complete visible conversation.
+        stored["observability_v3"] = observability
+    return stored
+
+
+def _run_list_view(run: dict[str, Any]) -> dict[str, Any]:
+    """Keep list responses small; full business detail is loaded per run."""
+
+    output = run.get("output_snapshot")
+    if not isinstance(output, dict) or "observability_v3" not in output:
+        return run
+    run = dict(run)
+    output = dict(output)
+    output.pop("observability_v3", None)
+    run["output_snapshot"] = output
+    return run
 
 
 def _reply_messages_from_http_response(response_body: dict[str, Any]) -> list[Any]:

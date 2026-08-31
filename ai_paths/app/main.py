@@ -9,7 +9,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, status
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.chat_runtime import ChatRuntime
@@ -30,9 +30,12 @@ from app.services.conversation_mode_relay import (
 )
 from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
+from app.services.deepseek_semantic_client import DeepSeekSemanticClient
+from app.services.follow_knowledge_client import FollowKnowledgeClient
 from app.services.memory_store import CustomerMemoryStore
 from app.services.message_delivery import MessageDeliveryService
-from app.services.run_observability import build_run_observability
+from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
+from app.services.run_observability_legacy import build_run_observability
 from app.services.model_client import ModelClient
 from app.services.outreach_service import OutreachService, classify_conversation_refresh_error
 from app.services.outreach_send_client import OutreachSendClient
@@ -46,11 +49,16 @@ from app.services.sop_execution_service import SopExecutionService
 from app.services.sop_objection_material_service import SopObjectionMaterialService
 from app.services.sop_platform_client import SopPlatformClient
 from app.services.sop_platform_task_service import SopPlatformTaskService
+from app.services.service_rule_data_client import ServiceRuleDataClient
+from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.storage import AppRepository, build_store
 from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.trace_logger import TraceLogger
+from app.services.v3_evaluation_service import V3EvaluationService
+from app.services.v3_semantic_router_service import V3SemanticRouterService
+from app.services.v3_sop_execution_service import SopExecutionService as V3SopExecutionService
 from app.services.voice_transcription import DoubaoAsrClient, transcribe_voice_request
 from app.services.workflow_compat import (
     normalize_workflow_request,
@@ -59,11 +67,21 @@ from app.services.workflow_compat import (
 )
 
 settings = get_settings()
+v3_evaluation_service = V3EvaluationService(settings.v3_evaluation_dir)
 trace_logger = TraceLogger(settings)
 storage_store = build_store(settings)
 repository = AppRepository(storage_store)
 message_delivery_service = MessageDeliveryService(settings, repository)
 conversation_mode_relay_service = ConversationModeRelayService(settings)
+service_rule_data_client = ServiceRuleDataClient(settings)
+service_rule_data_service = ServiceRuleDataService(
+    repository=repository,
+    client=service_rule_data_client,
+    poll_seconds=settings.service_rule_data_poll_seconds,
+    batch_size=settings.service_rule_data_batch_size,
+    max_attempts=settings.service_rule_data_max_attempts,
+    retry_base_seconds=settings.service_rule_data_retry_base_seconds,
+)
 coze_client = CozeClient(settings)
 voice_transcription_client = DoubaoAsrClient(settings)
 model_client = ModelClient(settings)
@@ -81,6 +99,27 @@ store_service = StoreService(platform_agent_client)
 sop_reply_pack_service = SopReplyPackService(settings)
 precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
 sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
+model_led_objection_playbook_service = ModelLedObjectionPlaybookService(
+    settings.v2_model_led_objection_playbook_path
+)
+follow_knowledge_client = FollowKnowledgeClient(settings)
+deepseek_semantic_fallback_client = ModelClient(
+    settings.model_copy(
+        update={
+            "model_fast": "gpt-5.4-mini",
+            "model_fast_fallbacks": "gpt-5.4",
+            "model_emergency_fallbacks": "",
+            "model_hedge_max_parallel": 1,
+        }
+    )
+)
+deepseek_semantic_client = DeepSeekSemanticClient(settings, deepseek_semantic_fallback_client)
+v3_semantic_router_service = V3SemanticRouterService(
+    semantic_client=deepseek_semantic_client,
+    knowledge_client=follow_knowledge_client,
+    script_threshold=settings.deepseek_semantic_script_threshold,
+    max_scripts=settings.deepseek_semantic_max_scripts,
+)
 outreach_service = OutreachService(
     repository=repository,
     model_client=model_client,
@@ -106,6 +145,20 @@ sop_execution_service = SopExecutionService(
     model_semantic_routing_enabled=settings.reply_model_semantic_routing_enabled,
     event_schema_only_normalizer_enabled=settings.sop_event_schema_only_normalizer_enabled,
     governance_shadow_mode=settings.reply_governance_shadow_mode,
+)
+v3_sop_execution_service = V3SopExecutionService(
+    repository=repository,
+    sop_reply_pack_service=sop_reply_pack_service,
+    model_client=model_client,
+    memory_store=memory_store,
+    customer_context_service=customer_context_service,
+    event_model_retry_attempts=settings.sop_event_model_retry_attempts,
+    event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
+    event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
+    event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
+    chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
+    event_model_max_concurrency=settings.sop_event_model_max_concurrency,
+    model_led_objection_playbook_service=model_led_objection_playbook_service,
 )
 sop_event_service = SopEventService(
     repository=repository,
@@ -150,19 +203,21 @@ reply_graphs = build_reply_graphs(
     store_service,
     outreach_send_client,
     platform_agent_client,
+    v3_sop_execution_service,
+    v3_semantic_router_service,
 )
 compiled_graph = reply_graphs.full_graph
 chat_runtime = ChatRuntime(
     full_graph=reply_graphs.full_graph,
-    planner_graph=reply_graphs.planner_graph,
-    finalize_graph=reply_graphs.finalize_graph,
+    commit_graph=reply_graphs.commit_graph,
     trace_logger=trace_logger,
     repository=repository,
     outreach_send_client=outreach_send_client,
+    outreach_system_client=outreach_system_client,
     memory_store=memory_store,
     platform_reply_coordinator=platform_reply_coordinator,
-    sop_execution_service=sop_execution_service,
-    profile_event_extractor=reply_graphs.profile_event_extractor,
+    sop_execution_service=v3_sop_execution_service,
+    service_rule_data_service=service_rule_data_service,
     settings=settings,
 )
 app = FastAPI(title=settings.app_name)
@@ -172,6 +227,7 @@ storage_retention_worker: asyncio.Task[None] | None = None
 store_snapshot_refresh_worker: asyncio.Task[None] | None = None
 outreach_plan_monitor_worker: asyncio.Task[None] | None = None
 outreach_task_executor_worker: asyncio.Task[None] | None = None
+strategy_data_callback_worker: asyncio.Task[None] | None = None
 first_day_retention_last_date = ""
 FIRST_DAY_SETTINGS_ENV_KEYS = {
     "OUTREACH_FIRST_DAY_SILENCE_ENABLED",
@@ -182,6 +238,10 @@ FIRST_DAY_SETTINGS_ENV_KEYS = {
 
 async def _run_sop_platform_pull_worker() -> None:
     await sop_platform_task_service.run()
+
+
+async def _run_strategy_data_callback_worker() -> None:
+    await service_rule_data_service.run()
 
 
 async def _run_storage_retention_worker() -> None:
@@ -274,8 +334,14 @@ async def _run_outreach_task_executor_worker() -> None:
 @app.on_event("startup")
 async def startup() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
-    global outreach_plan_monitor_worker, outreach_task_executor_worker
+    global outreach_plan_monitor_worker, outreach_task_executor_worker, strategy_data_callback_worker
     storage_store.initialize()
+    if (
+        settings.service_role == "model_led_sales_brain_v3"
+        and service_rule_data_service.available
+        and (strategy_data_callback_worker is None or strategy_data_callback_worker.done())
+    ):
+        strategy_data_callback_worker = asyncio.create_task(_run_strategy_data_callback_worker())
     if not settings.background_workers_enabled:
         logger.info("Background workers are disabled by AI_PATHS_BACKGROUND_WORKERS_ENABLED=false")
         return
@@ -305,7 +371,7 @@ async def startup() -> None:
 @app.on_event("shutdown")
 async def shutdown() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
-    global outreach_plan_monitor_worker, outreach_task_executor_worker
+    global outreach_plan_monitor_worker, outreach_task_executor_worker, strategy_data_callback_worker
     if sop_platform_pull_worker is not None:
         sop_platform_pull_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -331,14 +397,24 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await outreach_task_executor_worker
         outreach_task_executor_worker = None
+    if strategy_data_callback_worker is not None:
+        service_rule_data_service.stop()
+        strategy_data_callback_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await strategy_data_callback_worker
+        strategy_data_callback_worker = None
     await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()
+    await follow_knowledge_client.aclose()
+    await deepseek_semantic_client.aclose()
+    await deepseek_semantic_fallback_client.aclose()
     await voice_transcription_client.aclose()
     await outreach_send_client.aclose()
     await outreach_system_client.aclose()
     await conversation_mode_relay_service.aclose()
     await sop_platform_client.aclose()
+    await service_rule_data_client.aclose()
     platform_agent_client.close()
     storage_store.close()
 
@@ -442,7 +518,16 @@ async def _sync_outreach_workers_after_first_day_settings_update() -> None:
 async def health() -> dict[str, Any]:
     return {
         "status": "ok",
+        "service_role": settings.service_role,
+        "background_workers_enabled": settings.background_workers_enabled,
+        "release": {
+            "release_id": settings.release_id,
+            "git_commit": settings.build_git_commit,
+            "dirty": settings.build_dirty,
+            "config_revision": settings.build_config_revision,
+        },
         "platform_sop_worker": sop_platform_task_service.runtime_status(),
+        "strategy_data_callback": service_rule_data_service.status(),
     }
 
 
@@ -480,6 +565,36 @@ async def require_external_api_key(authorization: str | None = Header(default=No
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing external API token",
+        )
+
+
+async def require_v3_workflow_api_key(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_ai_paths_v3_trusted_proxy: str | None = Header(default=None),
+) -> None:
+    """Accept configured API tokens or the IP-restricted local V3 proxy."""
+    client_host = str(request.client.host if request.client else "").strip()
+    trusted_proxy_hosts = {"127.0.0.1", "::1", "120.26.43.96", "121.199.0.182"}
+    if x_ai_paths_v3_trusted_proxy == "1" and client_host in trusted_proxy_hosts:
+        return
+    accepted_tokens = {
+        token
+        for token in (settings.ai_paths_api_key, settings.ai_external_api_key)
+        if token
+    }
+    if not accepted_tokens:
+        if not settings.allow_missing_external_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Workflow API token is not configured",
+            )
+        return
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or token not in accepted_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing workflow API token",
         )
 
 
@@ -813,7 +928,7 @@ async def sop_events(
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(_: ChatRequest, __: None = Depends(require_api_key)) -> None:
+async def chat(_: ChatRequest, __: None = None) -> None:
     raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
 
@@ -821,7 +936,7 @@ async def chat(_: ChatRequest, __: None = Depends(require_api_key)) -> None:
 async def reply(
     _: ChatRequest,
     __: BackgroundTasks,
-    ___: None = Depends(require_external_api_key),
+    ___: None = None,
 ) -> None:
     raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
@@ -829,7 +944,7 @@ async def reply(
 @app.post("/chat/workflow-compatible")
 async def chat_workflow_compatible(
     _: dict[str, Any] = Body(...),
-    __: None = Depends(require_api_key),
+    __: None = None,
 ) -> JSONResponse:
     raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
@@ -838,9 +953,39 @@ async def chat_workflow_compatible(
 async def reply_workflow_compatible(
     _: dict[str, Any] = Body(...),
     __: BackgroundTasks = None,
-    ___: None = Depends(require_external_api_key),
+    ___: None = None,
 ) -> JSONResponse:
     raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
+
+
+@app.post("/reply/workflow-compatible-v2")
+async def reply_workflow_compatible_v2(
+    _: dict[str, Any] = Body(...),
+) -> JSONResponse:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V2 is retired; use V3.")
+
+
+@app.post("/chat/workflow-compatible-v2")
+async def chat_workflow_compatible_v2(
+    _: dict[str, Any] = Body(...),
+) -> JSONResponse:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V2 is retired; use V3.")
+
+
+@app.post("/reply/workflow-compatible-v3")
+async def reply_workflow_compatible_v3(
+    payload: dict[str, Any] = Body(...),
+    background_tasks: BackgroundTasks = None,
+    _: None = Depends(require_v3_workflow_api_key),
+) -> JSONResponse:
+    if settings.service_role != "model_led_sales_brain_v3":
+        raise HTTPException(status_code=404, detail="Reply chain V3 is not enabled on this service")
+    return await workflow_compatible_reply(
+        payload,
+        platform_async=True,
+        background_tasks=background_tasks,
+        interface_version="v3",
+    )
 
 
 async def workflow_compatible_reply(
@@ -855,6 +1000,12 @@ async def workflow_compatible_reply(
     except ValueError as exc:
         return JSONResponse(status_code=400, content=workflow_error_response(str(exc)))
     _attach_request_interface_version(request, interface_version)
+    if str(interface_version).strip().lower() == "v3":
+        takeover_response = await chat_runtime.run_v3_takeover_guard(request)
+        if takeover_response is not None:
+            response_body = workflow_response_from_chat(takeover_response)
+            _record_http_response_body(takeover_response.request_id, response_body)
+            return JSONResponse(content=response_body)
     request = (
         await platform_voice_batch_coordinator.prepare(request, voice_transcription_client)
         if platform_async
@@ -876,6 +1027,9 @@ def _attach_request_interface_version(request: ChatRequest, interface_version: s
     context = dict(request.request_context or {})
     context["interface_version"] = version
     context["api_version"] = version
+    if version == "v3":
+        context["reply_chain_mode"] = "model_led_sales_brain_v3"
+        context["v3_sidecar"] = True
     request.request_context = context
 
 

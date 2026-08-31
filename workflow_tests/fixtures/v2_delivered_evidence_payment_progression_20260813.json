@@ -1,0 +1,263 @@
+{
+  "version": "2026-08-13",
+  "purpose": "V2 已交付证据去重、成熟付款推进与单一付款渠道低成本回放。",
+  "defaults": {
+    "initial": {
+      "customer": {"name": "仿真客户"},
+      "stores": [
+        {
+          "store_id": "152",
+          "store_name": "上海浦东店",
+          "province": "上海市",
+          "city": "上海市",
+          "district": "浦东新区",
+          "store_address": "上海市浦东新区浦东南路1036号隆宇大厦",
+          "location": "121.510000,31.230000"
+        }
+      ]
+    },
+    "expected": {"must_reply": true}
+  },
+  "scenarios": [
+    {
+      "id": "v2_replay_e789_delivered_address_not_reoffered",
+      "category": "V2已交付证据",
+      "critical": true,
+      "semantic_goal": "价格对比应澄清当前268活动事实并交付新价值，不得编造199来源，也不得再次承诺发送已发过的上海浦东店地址。",
+      "initial": {
+        "conversation": [
+          "用户: 能不能一次好",
+          "小贝: 可以的，我们是做斑点改善的，绝大多数顾客一次就有很好的改善效果。",
+          "小贝: 完成线上活动登记后，可以到门店免费做皮肤检测，门店会结合您的具体情况讲解。",
+          "小贝: [图片消息]",
+          "用户: 上海浦东店在哪里？",
+          "小贝: 上海浦东店在上海市浦东新区浦东南路1036号隆宇大厦，我把门店位置一并发您。",
+          "小贝: 门店位置：上海浦东店 上海市浦东新区浦东南路1036号隆宇大厦",
+          "用户: 你们价格多少",
+          "小贝: 当前周年庆淡斑活动是268元，包含淡斑、皮肤检测、基础清洁和肌肤补水，前30名线上登记享受这个价格。",
+          "小贝: [活动宣传图]",
+          "用户: 地址在哪？",
+          "小贝: 上海浦东店在上海市浦东新区浦东南路1036号隆宇大厦，我把门店位置发您。",
+          "小贝: 门店位置：上海浦东店 上海市浦东新区浦东南路1036号隆宇大厦",
+          "用户: 象我这样要什么流程",
+          "小贝: 先完成线上活动登记，到店后会结合皮肤和斑点情况做检测，确认适合、您也满意后再操作。"
+        ],
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro", "s10_objection_resolution"],
+        "history_events": [
+          {
+            "event_id": "sim_store_delivery_e789",
+            "event_type": "store_address_sent",
+            "created_at": "2026-08-13T02:01:09+00:00",
+            "facts": {"store_id": "152", "request_id": "sim_store_batch_e789"}
+          }
+        ]
+      },
+      "timeline": [{"kind": "customer_message", "content": "我看其他是199啊"}],
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["store_address", "payment_collection"],
+        "payment_channel": "none",
+        "forbidden_phrases": [
+          "我可以直接给您发上海浦东店地址",
+          "要不要我发地址",
+          "需不需要我发地址",
+          "199一般是别的门店",
+          "199是别的项目",
+          "199做单项引流",
+          "199是引流价",
+          "199和268内容不一样"
+        ]
+      }
+    },
+    {
+      "id": "v2_replay_bcf0_mature_process_closes_with_card",
+      "category": "V2成熟付款",
+      "critical": true,
+      "semantic_goal": "地址、效果和活动均已铺垫后，客户询问自己的参与流程，应直接说明10元预约金并发送唯一一张预约金卡。",
+      "initial": {
+        "conversation": [
+          "用户: 能不能一次好",
+          "小贝: 绝大多数顾客一次就有很好的改善效果，我给您发了同类案例参考。",
+          "小贝: [图片消息]",
+          "用户: 你们价格多少",
+          "小贝: 当前周年庆淡斑活动是268元，包含淡斑、皮肤检测、基础清洁和肌肤补水，前30名线上登记享受这个价格。",
+          "小贝: [活动宣传图]",
+          "用户: 地址在哪？",
+          "小贝: 上海浦东店在上海市浦东新区浦东南路1036号隆宇大厦，我把门店位置发您。",
+          "小贝: 门店位置：上海浦东店 上海市浦东新区浦东南路1036号隆宇大厦"
+        ],
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro", "s10_objection_resolution"],
+        "history_events": [
+          {
+            "event_id": "sim_store_delivery_bcf0",
+            "event_type": "store_address_sent",
+            "created_at": "2026-08-13T02:01:09+00:00",
+            "facts": {"store_id": "152", "request_id": "sim_store_batch_bcf0"}
+          }
+        ]
+      },
+      "timeline": [{"kind": "customer_message", "content": "象我这样要什么流程"}],
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "payment_collection"],
+        "payment_amount": 10,
+        "payment_channel": "payment_card"
+      }
+    },
+    {
+      "id": "v2_explicit_address_resend_is_allowed",
+      "category": "V2已交付证据",
+      "critical": false,
+      "semantic_goal": "客户明确表示没收到并要求重发地址时，可以再次交付真实上海浦东店卡。",
+      "initial": {
+        "conversation": [
+          "用户: 上海浦东店在哪里",
+          "小贝: 上海浦东店在上海市浦东新区浦东南路1036号隆宇大厦。",
+          "小贝: 门店位置：上海浦东店 上海市浦东新区浦东南路1036号隆宇大厦"
+        ],
+        "history_events": [
+          {
+            "event_id": "sim_store_delivery_resend",
+            "event_type": "store_address_sent",
+            "created_at": "2026-08-13T01:01:09+00:00",
+            "facts": {"store_id": "152", "request_id": "sim_store_batch_resend"}
+          }
+        ]
+      },
+      "timeline": [{"kind": "customer_message", "content": "刚才地址卡没收到，麻烦重发一下上海浦东店"}],
+      "expected": {
+        "must_reply": true,
+        "required_types": ["store_address"],
+        "required_store_ids": ["152"],
+        "payment_channel": "none"
+      }
+    },
+    {
+      "id": "v2_first_price_only_activity_no_card",
+      "category": "V2成熟付款",
+      "critical": false,
+      "semantic_goal": "首次询价只介绍268活动和活动宣传图，不发送预约金卡。",
+      "initial": {"conversation": ["用户: 上海浦东有店吗", "小贝: 有的，上海浦东店可以为您服务。"]},
+      "timeline": [{"kind": "customer_message", "content": "多少钱"}],
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "image"],
+        "forbidden_types": ["payment_collection"],
+        "payment_channel": "none"
+      }
+    },
+    {
+      "id": "v2_mature_how_to_join_defaults_to_card",
+      "category": "V2成熟付款",
+      "critical": false,
+      "semantic_goal": "更早活动和真实效果已交付后，客户明确问怎么参加，默认发送一张预约金卡。",
+      "initial": {
+        "conversation": [
+          "用户: 效果怎么样",
+          "小贝: 我给您看过同类斑点的真实案例，做前做后会留原相机对比。",
+          "小贝: 当前周年庆淡斑活动价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。"
+        ],
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "那我怎么参加"}],
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "payment_collection"],
+        "payment_amount": 10,
+        "payment_channel": "payment_card"
+      }
+    },
+    {
+      "id": "v2_explicit_transfer_uses_only_transfer",
+      "category": "V2付款渠道",
+      "critical": false,
+      "semantic_goal": "成熟成交时客户明确选择转账，只说明转账方式，不发小程序卡或红包方案。",
+      "initial": {
+        "conversation": [
+          "小贝: 我给您看过真实案例参考。",
+          "小贝: 当前周年庆淡斑活动价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。"
+        ],
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "我不用小程序，直接转账可以吗"}],
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"],
+        "payment_channel": "transfer",
+        "forbidden_phrases": ["发红包"]
+      }
+    },
+    {
+      "id": "v2_explicit_red_packet_uses_only_red_packet",
+      "category": "V2付款渠道",
+      "critical": false,
+      "semantic_goal": "成熟成交时客户明确选择微信红包，只说明10元预约金红包，不发小程序卡或转账方案。",
+      "initial": {
+        "conversation": [
+          "小贝: 我给您看过真实案例参考。",
+          "小贝: 当前周年庆淡斑活动价268元，包含淡斑、皮肤检测、基础清洁和肌肤补水。"
+        ],
+        "completed_sops": ["s10_need_and_case", "s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "我可以直接发10元红包吗"}],
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"],
+        "payment_channel": "red_packet",
+        "forbidden_phrases": ["直接转账"]
+      }
+    },
+    {
+      "id": "v2_working_now_does_not_push_payment",
+      "category": "V2付款暂停",
+      "critical": false,
+      "semantic_goal": "客户明确正在工作时简短承接，不推进预约金或付款渠道。",
+      "initial": {
+        "conversation": ["小贝: 当前周年庆淡斑活动价268元。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "我正在上班，晚点再说"}],
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"],
+        "payment_channel": "none",
+        "forbidden_phrases": ["转账", "发红包", "10元预约金"]
+      }
+    },
+    {
+      "id": "v2_health_risk_does_not_push_payment",
+      "category": "V2付款暂停",
+      "critical": false,
+      "semantic_goal": "当前过敏风险优先处理，不能推进付款渠道。",
+      "initial": {
+        "conversation": ["小贝: 当前周年庆淡斑活动价268元。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "我脸上现在正在过敏，还能做吗"}],
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"],
+        "payment_channel": "none",
+        "forbidden_phrases": ["转账", "发红包", "10元预约金"]
+      }
+    },
+    {
+      "id": "v2_strong_refusal_does_not_push_payment",
+      "category": "V2付款暂停",
+      "critical": false,
+      "semantic_goal": "客户明确拒绝时停止成交，不推进任何付款渠道。",
+      "initial": {
+        "conversation": ["小贝: 当前周年庆淡斑活动价268元。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "不要了，别再联系我"}],
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"],
+        "payment_channel": "none",
+        "forbidden_phrases": ["转账", "发红包", "10元预约金"]
+      }
+    }
+  ],
+  "templates": []
+}

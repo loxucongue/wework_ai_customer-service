@@ -89,6 +89,25 @@ def planner_scene(state: AgentState) -> str:
 
 
 def planner_public_route(state: AgentState) -> dict[str, Any]:
+    if state.get("evidence_join"):
+        return {
+            "scene": "parallel_reply",
+            "intent": "",
+            "subflow": "reply",
+            "reason": "",
+            "conversion_stage": "",
+            "customer_type": "",
+            "main_blocker": "",
+            "next_step": "",
+            "confidence": 0.0,
+            "need_human": False,
+            "policy_id": "",
+            "policy_family_id": "",
+            "exact_policy_id": "",
+            "policy_match_level": "",
+            "sop_stage": "",
+            "sop_step": "",
+        }
     handoff = planner_handoff(state)
     decision = str(state.get("planner_decision") or "").strip()
     stage = str(state.get("planner_stage") or "").strip()

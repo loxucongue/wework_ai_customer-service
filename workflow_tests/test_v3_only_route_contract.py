@@ -28,6 +28,8 @@ def test_retired_reply_info_endpoints_are_gone(endpoint) -> None:
         (main.reply, (ChatRequest(content="test", customer_id="test", corp_id="test"), BackgroundTasks(), None)),
         (main.chat_workflow_compatible, ({}, None)),
         (main.reply_workflow_compatible, ({}, BackgroundTasks(), None)),
+        (main.reply_workflow_compatible_v2, ({},)),
+        (main.chat_workflow_compatible_v2, ({},)),
     ],
 )
 def test_retired_reply_post_endpoints_are_gone(endpoint, args) -> None:

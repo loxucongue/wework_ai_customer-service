@@ -19,16 +19,23 @@ from app.graph.nodes.reply_validation import (
 
 
 def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, str]]:
-    checks = (
-        _validate_case_image_required_for_effect_turn,
-        _validate_effect_reply_confidence_order,
-        _validate_generic_store_question_does_not_use_context_store,
-        _validate_appointment_time_option_count,
-        _validate_repeat_similarity,
-        _validate_two_text_rhythm,
-        _validate_precision_reply_active_mainline_closure,
-        _validate_nearby_store_claim_has_fact,
-    )
+    if state.get("evidence_join"):
+        # V2 Reply owns wording, rhythm and semantic interpretation. Post-model
+        # quality checks must not grade that decision, even as warnings. Actual
+        # cards, media, amounts and writes are validated in deterministic
+        # structure/provenance checks instead.
+        checks = ()
+    else:
+        checks = (
+            _validate_case_image_required_for_effect_turn,
+            _validate_effect_reply_confidence_order,
+            _validate_generic_store_question_does_not_use_context_store,
+            _validate_appointment_time_option_count,
+            _validate_repeat_similarity,
+            _validate_two_text_rhythm,
+            _validate_precision_reply_active_mainline_closure,
+            _validate_nearby_store_claim_has_fact,
+        )
     warnings: list[dict[str, str]] = []
     for check in checks:
         try:
@@ -42,6 +49,33 @@ def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str,
                 }
             )
     return warnings
+
+
+def collect_reply_observation_metrics(
+    messages: list[dict[str, Any]], state: dict[str, Any]
+) -> dict[str, Any]:
+    """Record reconstructable measurements without grading or changing Reply."""
+
+    current_text = _combined_text(messages)
+    previous_text = _last_assistant_text(state)
+    similarity = None
+    if (
+        current_text
+        and previous_text
+        and all(
+            str(item.get("type") or "") == "text"
+            for item in messages
+            if isinstance(item, dict)
+        )
+    ):
+        similarity = round(SequenceMatcher(None, previous_text, current_text).ratio(), 4)
+    return {
+        "schema_version": "reply_observation_metrics_v1",
+        "previous_assistant_text_similarity": similarity,
+        "current_text_length": len(current_text),
+        "previous_text_length": len(previous_text),
+        "measurement_only": True,
+    }
 
 
 def _validate_case_image_required_for_effect_turn(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -104,6 +138,8 @@ def _validate_appointment_time_option_count(messages: list[dict[str, Any]], stat
 
 
 def _validate_repeat_similarity(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if any(str(item.get("type") or "") != "text" for item in messages if isinstance(item, dict)):
+        return
     current_text = _combined_text(messages)
     if not current_text or _is_price_confirmation_turn(str(state.get("normalized_content") or state.get("content") or "")):
         return

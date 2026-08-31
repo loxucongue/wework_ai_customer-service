@@ -17,4 +17,6 @@ def append_activity_intro_image(
     state: AgentState,
     warnings: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
+    # Media selection belongs to SOP configuration or the model output. This
+    # compatibility hook must not infer a business action from stage keywords.
     return messages

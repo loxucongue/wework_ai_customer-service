@@ -13,7 +13,7 @@ from app.config import Settings
 from app.services import model_response, model_selection
 
 
-ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision"]
+ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision", "store_destination"]
 T = TypeVar("T")
 
 
@@ -42,6 +42,47 @@ class ModelClient:
     def available(self) -> bool:
         return bool(self._api_key())
 
+    @property
+    def secondary_available(self) -> bool:
+        settings = self._secondary_settings()
+        if settings is None:
+            return False
+        return bool(model_selection.api_key(settings, model=settings.model_fast))
+
+    async def chat_json_secondary(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float = 0.0,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Run one JSON attempt through an independently configured provider."""
+
+        settings = self._secondary_settings()
+        if settings is None:
+            raise RuntimeError("Secondary model provider is not configured")
+        client = ModelClient(settings)
+        try:
+            result = await client.chat_json(
+                messages,
+                tier="fast",
+                temperature=temperature,
+                deadline_monotonic=deadline_monotonic,
+                max_parallel_candidates=1,
+            )
+            usage = dict(client.last_usage or {})
+            usage.update(
+                {
+                    "secondary_provider": settings.model_provider,
+                    "secondary_model": settings.model_fast,
+                    "transport_recovery": True,
+                }
+            )
+            self.last_usage = usage
+            return result
+        finally:
+            await client.aclose()
+
     async def chat_text(
         self,
         messages: list[dict[str, Any]],
@@ -64,6 +105,7 @@ class ModelClient:
             }
             self._apply_max_tokens(payload, json_mode=False)
             self._apply_relay_reasoning(payload, json_mode=False)
+            self._apply_provider_extensions(payload)
             return payload
 
         async def consume(raw: dict[str, Any]) -> str:
@@ -90,14 +132,10 @@ class ModelClient:
         temperature: float = 0.0,
         deadline_monotonic: float | None = None,
         max_parallel_candidates: int | None = None,
-        model_names_override: list[str] | None = None,
-        api_key_override: str = "",
-        base_url_override: str = "",
-        request_body_overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if not self.available and not str(api_key_override or "").strip():
+        if not self.available:
             raise RuntimeError("No model API key configured")
-        models = self._dedupe_model_names(model_names_override or self._model_names(tier))
+        models = self._model_names(tier)
         request_started_at = time.monotonic()
         deadline = self._resolve_deadline(tier, deadline_monotonic)
 
@@ -113,8 +151,7 @@ class ModelClient:
             self._apply_relay_reasoning(payload, json_mode=True)
             if self.settings.model_provider.lower() == "aliyun":
                 payload["enable_thinking"] = False
-            if request_body_overrides:
-                payload.update(request_body_overrides)
+            self._apply_provider_extensions(payload)
             return payload
 
         async def consume(raw: dict[str, Any]) -> dict[str, Any]:
@@ -131,8 +168,6 @@ class ModelClient:
                     failure_label="All JSON model candidates failed",
                     deadline_monotonic=deadline,
                     max_parallel_candidates=max_parallel_candidates,
-                    api_key_override=api_key_override,
-                    base_url_override=base_url_override,
                 ),
                 deadline_monotonic=deadline,
                 deadline_seconds=deadline_seconds,
@@ -155,8 +190,6 @@ class ModelClient:
                         failure_label="All JSON no-response-format model candidates failed",
                         deadline_monotonic=deadline,
                         max_parallel_candidates=max_parallel_candidates,
-                        api_key_override=api_key_override,
-                        base_url_override=base_url_override,
                     ),
                     deadline_monotonic=deadline,
                     deadline_seconds=max(0.0, deadline - request_started_at),
@@ -182,6 +215,7 @@ class ModelClient:
         temperature: float = 0.0,
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
+        """Run one explicitly selected model for SOP decision contracts."""
         if not self._api_key(model):
             raise RuntimeError("No model API key configured")
         request_started_at = time.monotonic()
@@ -197,6 +231,7 @@ class ModelClient:
             if include_response_format and self.settings.model_response_format_enabled:
                 payload["response_format"] = {"type": "json_object"}
             self._apply_relay_reasoning(payload, json_mode=True)
+            self._apply_provider_extensions(payload, candidate)
             return payload
 
         async def consume(raw: dict[str, Any]) -> dict[str, Any]:
@@ -366,8 +401,6 @@ class ModelClient:
         failure_label: str,
         deadline_monotonic: float | None = None,
         max_parallel_candidates: int | None = None,
-        api_key_override: str = "",
-        base_url_override: str = "",
     ) -> T:
         if not models:
             raise RuntimeError(f"{failure_label}: no model candidates")
@@ -380,7 +413,7 @@ class ModelClient:
             if max_parallel_candidates is None
             else max_parallel_candidates
         )
-        max_parallel = max(1, min(2, int(configured_parallel or 1)))
+        max_parallel = max(1, min(3, int(configured_parallel or 1)))
         hedge_delay = self._hedge_delay_for_tier(tier)
         configured_total_timeout = self._total_timeout_for_tier(tier)
         started_at = time.perf_counter()
@@ -453,24 +486,7 @@ class ModelClient:
 
         async def run_one(index: int, model: str) -> tuple[T, dict[str, Any]]:
             payload = build_payload(model)
-            if api_key_override or base_url_override:
-                raw = await self._post_chat(
-                    payload,
-                    tier=tier,
-                    fallback_index=index,
-                    errors=list(errors),
-                    api_key_override=api_key_override,
-                    base_url_override=base_url_override,
-                )
-            else:
-                # Keep compatibility with local test clients that override the
-                # historical _post_chat signature.
-                raw = await self._post_chat(
-                    payload,
-                    tier=tier,
-                    fallback_index=index,
-                    errors=list(errors),
-                )
+            raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=list(errors))
             usage = dict(self.last_usage or {})
             return await consume(raw), usage
 
@@ -560,22 +576,13 @@ class ModelClient:
         tier: ModelTier,
         fallback_index: int,
         errors: list[str],
-        api_key_override: str = "",
-        base_url_override: str = "",
     ) -> dict[str, Any]:
         model = str(payload.get("model") or "")
-        if self._uses_anthropic_messages_api(model) and not base_url_override:
-            return await self._post_anthropic_messages(
-                payload,
-                tier=tier,
-                fallback_index=fallback_index,
-                errors=errors,
-                api_key_override=api_key_override,
-            )
-        base_url = str(base_url_override or self._base_url(model)).strip()
-        url = f"{base_url.rstrip('/')}/chat/completions"
+        if self._uses_anthropic_messages_api(model):
+            return await self._post_anthropic_messages(payload, tier=tier, fallback_index=fallback_index, errors=errors)
+        url = f"{self._base_url(model).rstrip('/')}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {api_key_override or self._api_key(model)}",
+            "Authorization": f"Bearer {self._api_key(model)}",
             "Content-Type": "application/json; charset=utf-8",
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -607,12 +614,11 @@ class ModelClient:
         tier: ModelTier,
         fallback_index: int,
         errors: list[str],
-        api_key_override: str = "",
     ) -> dict[str, Any]:
         model = str(payload.get("model") or "")
         url = self._anthropic_messages_url(model)
         headers = {
-            "Authorization": f"Bearer {api_key_override or self._api_key(model)}",
+            "Authorization": f"Bearer {self._api_key(model)}",
             "anthropic-version": self.settings.anthropic_version,
             "Content-Type": "application/json; charset=utf-8",
         }
@@ -724,7 +730,21 @@ class ModelClient:
         if max_tokens > 0:
             payload["max_tokens"] = max_tokens
 
+    def _apply_provider_extensions(self, payload: dict[str, Any]) -> None:
+        model = str(payload.get("model") or "").strip().lower()
+        base_url = str(self._base_url(model) or "").strip().lower()
+        if model.startswith("deepseek-") and "api.deepseek.com" in base_url:
+            payload["thinking"] = {"type": "disabled"}
+
     def _total_timeout_for_tier(self, tier: ModelTier) -> float:
+        if tier == "store_destination":
+            return max(
+                1.0,
+                float(
+                    self.settings.model_store_destination_total_timeout_seconds
+                    or self.settings.model_timeout_seconds
+                ),
+            )
         if tier == "planner":
             return max(1.0, float(self.settings.model_planner_total_timeout_seconds or self.settings.model_timeout_seconds))
         if tier in {"reply", "strong"}:
@@ -734,8 +754,12 @@ class ModelClient:
         return max(1.0, float(self.settings.model_timeout_seconds))
 
     def _hedge_delay_for_tier(self, tier: ModelTier) -> float:
+        if tier == "store_destination":
+            return max(0.0, float(self.settings.model_store_destination_hedge_delay_seconds or 0.0))
         if tier == "planner":
             return max(0.0, float(self.settings.model_planner_hedge_delay_seconds or 0.0))
+        if tier in {"reply", "strong"}:
+            return max(0.0, float(self.settings.model_reply_hedge_delay_seconds or 0.0))
         return max(0.0, float(self.settings.model_hedge_delay_seconds or 0.0))
 
     @staticmethod
@@ -777,10 +801,15 @@ class ModelClient:
             or self._client_timeout != timeout
             or self._client_loop_id != loop_id
         ):
-            connect_timeout = min(5.0, float(timeout))
+            # The relay occasionally needs more than five seconds to establish
+            # concurrent TLS connections. Keep this inside the existing node
+            # timeout while avoiding false provider failures during the real
+            # Gate/Tool-Planner parallel fan-out.
+            connect_timeout = min(10.0, float(timeout))
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout, connect=connect_timeout),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+                trust_env=bool(self.settings.model_http_trust_env),
             )
             self._client_timeout = timeout
             self._client_loop_id = loop_id
@@ -793,8 +822,26 @@ class ModelClient:
     def _api_key(self, model: str | None = None) -> str:
         return model_selection.api_key(self.settings, model=model)
 
+    def _secondary_settings(self) -> Settings | None:
+        provider = str(self.settings.model_secondary_provider or "").strip().lower()
+        model = str(self.settings.model_secondary or "").strip()
+        if not provider or not model:
+            return None
+        timeout = max(1.0, float(self.settings.model_secondary_timeout_seconds or 20.0))
+        return self.settings.model_copy(
+            update={
+                "model_provider": provider,
+                "model_fast": model,
+                "model_fast_fallbacks": "",
+                "model_emergency_fallbacks": "",
+                "model_hedge_max_parallel": 1,
+                "model_request_retry_attempts": 1,
+                "model_timeout_seconds": timeout,
+            }
+        )
+
     def _base_url(self, model: str | None = None) -> str:
-        return model_selection.base_url(self.settings, model=model)
+        return model_selection.base_url(self.settings)
 
     def _anthropic_base_url(self, model: str | None = None) -> str:
         return self.settings.anthropic_base_url or self._base_url(model)
@@ -804,18 +851,6 @@ class ModelClient:
 
     def _model_names(self, tier: ModelTier) -> list[str]:
         return model_selection.model_names(self.settings, tier)
-
-    @staticmethod
-    def _dedupe_model_names(models: list[str]) -> list[str]:
-        output: list[str] = []
-        seen: set[str] = set()
-        for value in models:
-            name = str(value or "").strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            output.append(name)
-        return output
 
     @staticmethod
     def _split_models(value: str) -> list[str]:
@@ -847,7 +882,7 @@ class ModelClient:
             return True
         if "model http 502" not in message:
             return False
-        gateway_markers = ("bad gateway", "cloudflare", "linkai.shop", "linkai.pics")
+        gateway_markers = ("bad gateway", "cloudflare", "linkai.shop")
         return any(marker in message for marker in gateway_markers)
 
     @staticmethod
@@ -893,12 +928,11 @@ class ModelClient:
 
     @staticmethod
     def _ensure_json_user_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Keep the lowercase marker after relay system-to-input conversion.
+        """Keep the relay's lowercase marker after system-to-input conversion.
 
-        Some OpenAI-compatible relays convert Chat Completions messages to a
-        Responses-style payload and validate only the converted user/input text
-        before accepting response_format=json_object.  The system marker remains
-        the model contract; this duplicate marker only preserves protocol syntax.
+        Some OpenAI-compatible relays validate only converted user input when
+        response_format=json_object is used.  The system marker remains the
+        model contract; this duplicate marker only preserves protocol syntax.
         """
 
         marker_text = ModelClient._JSON_MODE_MARKER

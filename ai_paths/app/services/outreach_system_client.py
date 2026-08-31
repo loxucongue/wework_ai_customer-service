@@ -59,17 +59,24 @@ class OutreachSystemClient:
         external_userid: str,
         user_id: str,
         wechat: str,
+        ai_profile_id: str = "",
+        plan_id: str = "",
     ) -> dict[str, Any]:
+        params = {
+            "corp_id": corp_id,
+            "customer_id": customer_id,
+            "external_userid": external_userid,
+            "user_id": user_id,
+            "wechat": wechat,
+        }
+        if ai_profile_id:
+            params["ai_profile_id"] = ai_profile_id
+        if plan_id:
+            params["plan_id"] = plan_id
         return await self._request(
             "GET",
             "/api/v1/platform-agent/ai-outreach/conversation/status",
-            params={
-                "corp_id": corp_id,
-                "customer_id": customer_id,
-                "external_userid": external_userid,
-                "user_id": user_id,
-                "wechat": wechat,
-            },
+            params=params,
         )
 
     async def send(

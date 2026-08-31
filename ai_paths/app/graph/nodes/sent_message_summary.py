@@ -43,7 +43,11 @@ def sent_message_summary_for_model(
 
     for item in state.get("conversation_history") or []:
         text = _conversation_text(item)
-        if "activity_intro_image" in text or "anniversary-268.jpg" in text:
+        if (
+            "activity_intro_image" in text
+            or "anniversary-268.jpg" in text
+            or "d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png" in text
+        ):
             activity_intro_image_sent = True
         if "store_address" in text or "门店位置卡" in text:
             for match in re.finditer(r"(?:store_id|门店ID)\s*[=:：]\s*(\d+)", text, flags=re.IGNORECASE):
@@ -60,6 +64,11 @@ def sent_message_summary_for_model(
         "store_address_sent_by_store_id": list(dict.fromkeys(store_ids)),
         "store_address_delivery": store_address_delivery,
         "store_anchor_fact": store_anchor_fact,
+        "recent_store_search_evidence": (
+            store_address_delivery.get("store_search_evidence")
+            if isinstance(store_address_delivery.get("store_search_evidence"), dict)
+            else {}
+        ),
     }
     return {key: value for key, value in output.items() if value not in (False, 0, [], {}, None, "")}
 
@@ -152,6 +161,12 @@ def _store_address_delivery(raw_events: Any) -> dict[str, Any]:
 
     store_ids = list(dict.fromkeys(item[3] for item in sorted(latest_batch, key=lambda item: item[0])))
     latest_at = latest[2]
+    latest_facts = latest[1].get("facts") if isinstance(latest[1].get("facts"), dict) else {}
+    search_evidence = (
+        latest_facts.get("store_search_evidence")
+        if isinstance(latest_facts.get("store_search_evidence"), dict)
+        else {}
+    )
     return _drop_empty(
         {
             "total_events": len(deliveries),
@@ -161,6 +176,7 @@ def _store_address_delivery(raw_events: Any) -> dict[str, Any]:
             "last_sent_at": latest_at.isoformat() if latest_at is not None else "",
             "request_id": latest_request_id,
             "batch_confidence": batch_confidence,
+            "store_search_evidence": search_evidence,
             "source": "history_events",
             "decision_policy": "evidence_only_model_decides_store_binding",
         }
@@ -187,14 +203,24 @@ def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
     facts = latest.get("facts") if isinstance(latest.get("facts"), dict) else {}
     document_ids = [str(item) for item in facts.get("document_ids") or [] if str(item or "").strip()]
     image_urls = [str(item) for item in facts.get("image_urls") or [] if str(item or "").strip()]
+    all_image_urls = list(
+        dict.fromkeys(
+            str(url).strip()
+            for _, event, _ in events
+            for url in (
+                (event.get("facts") if isinstance(event.get("facts"), dict) else {}).get("image_urls")
+                or []
+            )
+            if str(url).strip()
+        )
+    )
     timestamped_count = sum(1 for _, _, event_at in events if event_at is not None)
     return {
         "total_events": len(events),
         "last_sent_at": latest_at.isoformat() if latest_at is not None else "",
         "last_document_count": len(document_ids),
         "last_image_count": len(image_urls),
-        "last_document_ids": document_ids,
-        "last_image_urls": image_urls,
+        "sent_image_urls": all_image_urls,
         "time_confidence": "high" if timestamped_count == len(events) else "partial",
         "source": "history_events",
         "decision_policy": "evidence_only_model_decides_case_image_send",

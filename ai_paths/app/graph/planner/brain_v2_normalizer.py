@@ -12,17 +12,6 @@ from app.graph.nodes.current_turn_context import (
     current_store_anchor_from_state,
     is_context_reference_message,
 )
-from app.graph.nodes.conversation_state import (
-    conversation_state_for_guard,
-    known_customer_field_names,
-    payment_card_cooldown_active,
-)
-from app.graph.nodes.reply_delivery_manifest import (
-    EFFECT_TRUST_FACTS,
-    EFFECT_TRUST_SCENE_IDS,
-    authorize_sop_delivery_manifest,
-    merge_manifest_into_reply_contract,
-)
 from app.graph.nodes.location_card import location_card_from_state
 from app.graph.nodes.sent_message_summary import (
     latest_single_store_card_anchor_id,
@@ -66,12 +55,10 @@ from app.services.payment_collection import (
 )
 from app.services.customer_payment_state import normalize_prepay_facts
 from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
-from app.services.reply_governance import governance_enabled
 
 
 _STORE_SNAPSHOT_NAME_CACHE: list[str] | None = None
 _STORE_SNAPSHOT_REGION_TOKEN_CACHE: set[str] | None = None
-_STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE: set[str] | None = None
 ALLOWED_PAYMENT_STATES = (
     "unknown",
     "link_sent",
@@ -148,7 +135,6 @@ ALLOWED_SALES_PROGRESSION_ACTIONS = (
 ALLOWED_SALES_PROGRESSION_TARGETS = (
     "none",
     "need_and_case",
-    "effect_proof",
     "trust",
     "store",
     "activity",
@@ -242,23 +228,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     sales_progression = _normalize_sales_progression(
         model_payload.get("sales_progression") if isinstance(model_payload, dict) else {},
     )
-    sop_delivery_decision = (
-        model_payload.get("sop_delivery_decision") if isinstance(model_payload, dict) else {}
-    )
-    current_turn_resolution = _normalize_current_turn_resolution(
-        model_payload.get("current_turn_resolution") if isinstance(model_payload, dict) else {},
-        state=state,
-    )
-    reply_contract = _normalize_reply_contract(
-        model_payload.get("reply_contract") if isinstance(model_payload, dict) else {},
-        state=state,
-        sales_progression=sales_progression,
-    )
-    if governance_enabled(state, "semantic_contract_enabled"):
-        reply_contract = _merge_current_question_contract(
-            reply_contract,
-            current_turn_resolution=current_turn_resolution,
-        )
     closing_move = _normalize_closing_move(
         model_payload.get("closing_move") if isinstance(model_payload, dict) else {},
     )
@@ -344,101 +313,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools=required_tools,
         state=state,
     )
-    effect_scene_id = "" if explicit_risk_reason or is_hard_health_risk_hold(risk_hold) else _selected_effect_trust_scene_id(
-        precision_qa_decision=precision_qa_decision,
+    decision, planner_reply_messages, required_tools = _enforce_declared_store_detail_lookup(
+        decision=decision,
+        sub_rule_id=sub_rule_id,
+        messages=planner_reply_messages,
+        required_tools=required_tools,
         state=state,
     )
-    if effect_scene_id and not governance_enabled(state, "semantic_contract_enabled"):
-        precision_qa_decision = {
-            **precision_qa_decision,
-            "question_id": effect_scene_id,
-            "confidence": str(precision_qa_decision.get("confidence") or "high"),
-        }
-        decision = "need_tools"
-        conversion_stage = "objection_resolution"
-        customer_type = "effect"
-        main_blocker = "effect"
-        next_step = "solve_blocker"
-        payment_state = "unknown"
-        payment_action = "none"
-        payment_decision = _with_payment_decision_action(
-            payment_decision,
-            "none",
-            source="effect_trust_contract",
-            confidence="high",
-            basis="当前轮先解决效果定义与效果信任，不报价、不催预约金",
-        )
-        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
-        sales_progression = {
-            **sales_progression,
-            "status": "continue",
-            "target_stage": "effect_proof",
-            "action": "deliver_value",
-            "goal": "正面回答效果疑虑并交付真实同类效果证据",
-            "required_message_types": ["text", "image"],
-            "reason": "效果卡点解决前不切换到活动报价或预约金推进",
-        }
-        current_turn_resolution = {
-            **current_turn_resolution,
-            "required": True,
-            "resolution_goal": "正面说明斑点改善效果，建立一次改善信心并用真实案例证明",
-            "required_facts": list(
-                dict.fromkeys(
-                    [
-                        *current_turn_resolution.get("required_facts", []),
-                        "绝大多数顾客一次就有很好的改善效果",
-                        "完成线上活动登记后可到门店免费做皮肤检测",
-                    ]
-                )
-            ),
-        }
-        reply_contract = _effect_trust_reply_contract(reply_contract, scene_id=effect_scene_id)
-        closing_move = {
-            **closing_move,
-            "action": "send_case",
-            "mainline_stage": "effect_proof",
-            "reason": "当前轮只完成效果信任交付",
-            "must_not_repeat": list(
-                dict.fromkeys([*closing_move.get("must_not_repeat", []), "activity_price", "deposit_rules"])
-            ),
-        }
-        required_tools = _effect_trust_case_search_tools(required_tools, state)
-        reply_constraints.append(
-            "当前为效果定义与效果信任场景：固定输出两条短文本后交付真实效果图；本轮禁止报价、活动规则和预约金卡。"
-        )
-    elif effect_scene_id:
-        precision_qa_decision = {
-            **precision_qa_decision,
-            "question_id": effect_scene_id,
-            "confidence": str(precision_qa_decision.get("confidence") or "high"),
-        }
-        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
-        reply_contract = _effect_trust_semantic_reply_contract(
-            reply_contract,
-            scene_id=effect_scene_id,
-            require_image=not _effect_image_may_reference_recent_delivery_for_planner(state),
-        )
-        normalizer_policy_violations.extend(
-            _effect_trust_model_contract_violations(
-                decision=decision,
-                payment_decision=payment_decision,
-                sales_progression=sales_progression,
-                required_tools=required_tools,
-                state=state,
-            )
-        )
-        reply_constraints.append(
-            "当前效果信任场景由 Planner 决定表达和节奏；代码只验证不报价、不发卡、真实案例素材和语义事实证据。"
-        )
-    if not effect_scene_id:
-        decision, planner_reply_messages, required_tools = _enforce_declared_store_detail_lookup(
-            decision=decision,
-            sub_rule_id=sub_rule_id,
-            messages=planner_reply_messages,
-            required_tools=required_tools,
-            store_binding_decision=store_binding_decision,
-            state=state,
-        )
     order_decision, required_tools = _reconcile_existing_order_for_payment(
         state=state,
         payment_decision=payment_decision,
@@ -518,6 +399,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         )
         reply_constraints.append("历史健康风险只作为背景证据；当前消息没有再次提出健康/投诉/人工诉求时，不调用 professional_assist。")
         reply_strategy["current_turn_context_guard"] = "advisory_health_history_removed_professional_assist_tool"
+    required_tools = _order_store_lookup_before_dependent_distance(required_tools)
+    executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
     if executable_tools and decision == "direct_reply":
         decision = "need_tools"
     if decision == "need_tools":
@@ -547,24 +430,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     has_paid_deposit_context = _has_paid_deposit_context(state, payment_state=payment_state)
     if has_paid_deposit_context and payment_state == "unknown":
         payment_state = "customer_claimed_paid"
-        if governance_enabled(state, "model_payment_sequencing_enabled"):
-            if str(payment_decision.get("action") or "") in {"send_now", "resend"}:
-                normalizer_policy_violations.append(
-                    {
-                        "task_type": "reply_fact_consistency",
-                        "subtype": "payment_collection",
-                        "missing": "planner_payment_action_conflicts_with_paid_fact",
-                        "note": "Authoritative payment facts show paid; repair the Planner decision instead of letting code rewrite it.",
-                    }
-                )
-        else:
-            payment_decision = _with_payment_decision_action(
-                payment_decision,
-                "after_paid_next_step",
-                source="structured_paid_context",
-                confidence="high",
-                basis="结构化证据或 planner payment_state 表示客户已付",
-            )
+        payment_decision = _with_payment_decision_action(
+            payment_decision,
+            "after_paid_next_step",
+            source="structured_paid_context",
+            confidence="high",
+            basis="结构化证据或 planner payment_state 表示客户已付",
+        )
         state_for_payment = {**state, "payment_decision": payment_decision}
     precision_question_id = str(precision_qa_decision.get("question_id") or "").strip()
     if precision_question_id == "unsupported_online_projects":
@@ -598,67 +470,49 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     if payment_action in {"none", "manual_transfer", "offer_resend", "explain_existing", "confirm_next_step"}:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
-        if conversion_stage == "deposit_push" and not governance_enabled(state, "model_payment_sequencing_enabled"):
+        if conversion_stage == "deposit_push":
             conversion_stage = "time_confirm"
             removed_payment = True
-        if next_step == "send_deposit" and not governance_enabled(state, "model_payment_sequencing_enabled"):
+        if next_step == "send_deposit":
             next_step = "confirm_time"
             removed_payment = True
         if removed_payment:
             reply_constraints.append("payment_action 表示本轮不直接发送预约金入口；不要输出 payment_collection。")
             reply_strategy.setdefault("payment_action_guard", "payment_card_removed_by_payment_action")
-    if payment_card_cooldown_active(conversation_state_for_guard(state)):
+    payment_summary = sent_message_summary_for_model(state)
+    visible_payment = (
+        payment_summary.get("payment_collection")
+        if isinstance(payment_summary.get("payment_collection"), dict)
+        else {}
+    )
+    adjacent_payment_card = bool(
+        visible_payment.get("recent_history_count")
+        and int(visible_payment.get("customer_turns_since_last_card") or 0) <= 1
+    )
+    if adjacent_payment_card:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
-        if governance_enabled(state, "model_payment_sequencing_enabled"):
-            if str(payment_decision.get("action") or "") in {"send_now", "resend"} or removed_payment:
-                normalizer_policy_violations.append(
-                    {
-                        "task_type": "reply_schema_consistency",
-                        "subtype": "payment_collection",
-                        "missing": "adjacent_payment_collection_not_allowed",
-                        "note": (
-                            "The previous assistant turn already sent a payment card. Keep the sales intent in the model, "
-                            "but repair this turn to explain the existing card or offer a text transfer option without payment_collection."
-                        ),
-                    }
-                )
-        elif str(payment_decision.get("action") or "") in {"send_now", "resend"}:
+        if str(payment_decision.get("action") or "") in {"send_now", "resend"}:
             payment_decision = _with_payment_decision_action(
                 payment_decision,
                 "explain",
                 source="adjacent_payment_card_cooldown",
                 confidence="high",
-                basis="上一轮回复批次已发送预约金卡，本轮不得连续发送；可解释已有卡或用文字提供转账选择",
+                basis="上一轮回复批次已发送预约金卡，本轮不得连续发送；可解释已有卡或提供文字转账选择",
             )
             payment_action = "explain_existing"
-        if not governance_enabled(state, "model_payment_sequencing_enabled"):
-            required_types = [
-                item
-                for item in sales_progression.get("required_message_types") or []
-                if item != "payment_collection"
-            ]
-            sales_progression["required_message_types"] = required_types or ["text"]
-            reply_contract["required_deliveries"] = [
-                item
-                for item in reply_contract.get("required_deliveries") or []
-                if str(item.get("message_type") if isinstance(item, dict) else item) != "payment_collection"
-            ]
-        reply_contract["forbidden_claims"] = list(
-            dict.fromkeys([*reply_contract.get("forbidden_claims", []), "send_adjacent_payment_collection"])
-        )
         reply_constraints.append(
-            "上一轮回复批次已发送预约金卡，本轮禁止再次输出 payment_collection；可以用文字解释已有卡，或让客户选择转账。"
+            "上一轮回复批次已发送预约金卡，本轮禁止再次输出 payment_collection；可以解释已有卡或提供文字转账选择。"
         )
         if removed_payment:
             reply_strategy.setdefault("payment_card_cooldown", "adjacent_payment_collection_removed")
     if has_paid_deposit_context:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
-        if conversion_stage == "deposit_push" and not governance_enabled(state, "model_payment_sequencing_enabled"):
+        if conversion_stage == "deposit_push":
             conversion_stage = "time_confirm"
             removed_payment = True
-        if next_step == "send_deposit" and not governance_enabled(state, "model_payment_sequencing_enabled"):
+        if next_step == "send_deposit":
             next_step = "confirm_time"
             removed_payment = True
         if removed_payment:
@@ -670,7 +524,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "order_decision": order_decision,
         "planner_tool_calls": required_tools,
     }
-    if not governance_enabled(state, "model_payment_sequencing_enabled") and _payment_send_requires_activity_intro(
+    if _payment_send_requires_activity_intro(
         conversion_stage=conversion_stage,
         next_step=next_step,
         payment_action=payment_action,
@@ -720,45 +574,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         payment_action=payment_action,
         payment_decision=payment_decision,
         messages=planner_reply_messages,
-    )
-    if governance_enabled(state, "model_payment_sequencing_enabled"):
-        sales_progression, reply_contract, payment_contract_violations = (
-            _enforce_payment_authorization_contract(
-                payment_decision=payment_decision,
-                sales_progression=sales_progression,
-                reply_contract=reply_contract,
-            )
-        )
-        normalizer_policy_violations.extend(payment_contract_violations)
-    manifest_input = state.get("sop_delivery_manifest")
-    if explicit_risk_reason or is_hard_health_risk_hold(risk_hold):
-        manifest_input = {
-            **(manifest_input if isinstance(manifest_input, dict) else {}),
-            "active": False,
-            "messages": [],
-            "reason": "safety_gate_owns_current_turn",
-        }
-    authorized_sop_delivery_manifest = authorize_sop_delivery_manifest(
-        manifest_input,
-        payment_decision=payment_decision,
-        precision_scene_id=effect_scene_id,
-        delivery_decision=sop_delivery_decision,
-    )
-    if governance_enabled(state, "model_semantic_routing_enabled"):
-        normalizer_policy_violations.extend(
-            _sales_progression_contract_violations(sales_progression)
-        )
-        normalizer_policy_violations.extend(
-            _sop_delivery_decision_consistency_violations(
-                manifest=manifest_input,
-                delivery_decision=authorized_sop_delivery_manifest.get("delivery_decision"),
-                sales_progression=sales_progression,
-                reply_contract=reply_contract,
-            )
-        )
-    reply_contract = merge_manifest_into_reply_contract(
-        reply_contract,
-        authorized_sop_delivery_manifest,
     )
     handoff = _normalize_handoff(handoff_raw)
     tool_policy_violations = [
@@ -854,10 +669,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "order_decision": order_decision,
         "appointment_decision": appointment_decision,
         "sales_progression": sales_progression,
-        "sop_delivery_decision": authorized_sop_delivery_manifest.get("delivery_decision", {}),
-        "current_turn_resolution": current_turn_resolution,
-        "reply_contract": reply_contract,
-        "authorized_sop_delivery_manifest": authorized_sop_delivery_manifest,
         "closing_move": closing_move,
         "precision_qa_decision": precision_qa_decision,
         "planner_reply_messages": planner_reply_messages,
@@ -871,460 +682,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "handoff": handoff,
         "memory_update_hint": memory_update_hint,
     }
-
-
-def _normalize_current_turn_resolution(value: Any, *, state: AgentState) -> dict[str, Any]:
-    raw = value if isinstance(value, dict) else {}
-    current_message = str(state.get("normalized_content") or state.get("content") or "").strip()
-    raw_questions = raw.get("explicit_questions") if isinstance(raw.get("explicit_questions"), list) else []
-    if not raw_questions:
-        gate = state.get("sop_gate_decision") if isinstance(state.get("sop_gate_decision"), dict) else {}
-        scene = gate.get("scene_decision") if isinstance(gate.get("scene_decision"), dict) else {}
-        raw_questions = scene.get("explicit_questions") if isinstance(scene.get("explicit_questions"), list) else []
-    explicit_questions: list[dict[str, str]] = []
-    for index, item in enumerate(raw_questions, start=1):
-        if not isinstance(item, dict):
-            continue
-        question = str(item.get("question") or "").strip()
-        goal = str(item.get("resolution_goal") or item.get("answer_goal") or "").strip()
-        if not question or not goal:
-            continue
-        explicit_questions.append(
-            {
-                "question_id": str(item.get("question_id") or f"question_{index}").strip()[:80],
-                "question": question[:300],
-                "resolution_goal": goal[:300],
-            }
-        )
-    if not explicit_questions:
-        question = str(raw.get("customer_question") or current_message).strip()
-        goal = str(raw.get("resolution_goal") or "直接解决客户当前消息").strip()
-        if question:
-            explicit_questions.append(
-                {
-                    "question_id": "question_1",
-                    "question": question[:300],
-                    "resolution_goal": goal[:300],
-                }
-            )
-    return {
-        "required": bool(raw.get("required", True)),
-        "customer_question": str(raw.get("customer_question") or current_message)[:500],
-        "resolution_goal": str(raw.get("resolution_goal") or "直接解决客户当前消息")[:500],
-        "required_facts": _clean_str_list(raw.get("required_facts") or []),
-        "explicit_questions": explicit_questions,
-    }
-
-
-def _merge_current_question_contract(
-    contract: dict[str, Any],
-    *,
-    current_turn_resolution: dict[str, Any],
-) -> dict[str, Any]:
-    merged = dict(contract)
-    fact_ids = [str(item) for item in merged.get("required_fact_ids") or [] if str(item).strip()]
-    definitions = dict(merged.get("fact_definitions") or {})
-    for index, item in enumerate(current_turn_resolution.get("explicit_questions") or [], start=1):
-        if not isinstance(item, dict):
-            continue
-        question_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(item.get("question_id") or f"question_{index}"))
-        fact_id = f"turn_{question_id.strip('_') or f'question_{index}'}"
-        if fact_id not in fact_ids:
-            fact_ids.append(fact_id)
-        definitions[fact_id] = (
-            f"直接回答客户问题：{str(item.get('question') or '').strip()}；"
-            f"交付目标：{str(item.get('resolution_goal') or '').strip()}"
-        )[:600]
-    merged["required_fact_ids"] = fact_ids
-    merged["fact_definitions"] = definitions
-    return merged
-
-
-def _sop_delivery_decision_consistency_violations(
-    *,
-    manifest: Any,
-    delivery_decision: Any,
-    sales_progression: Any,
-    reply_contract: Any,
-) -> list[dict[str, str]]:
-    """Reject self-contradictory Planner fields without choosing a business action."""
-
-    raw_manifest = manifest if isinstance(manifest, dict) else {}
-    if not raw_manifest.get("active"):
-        return []
-    pack_id = str(raw_manifest.get("sop_pack_id") or "").strip()
-    if not pack_id:
-        return []
-    decision = delivery_decision if isinstance(delivery_decision, dict) else {}
-    if str(decision.get("action") or "").strip() == "deliver_now":
-        return []
-    progression = sales_progression if isinstance(sales_progression, dict) else {}
-    contract = reply_contract if isinstance(reply_contract, dict) else {}
-    progression_sources = {
-        str(item or "").strip()
-        for item in progression.get("source_pack_ids") or []
-        if str(item or "").strip()
-    }
-    contract_sources = {
-        str(item.get("source_pack_id") or "").strip()
-        for item in contract.get("required_deliveries") or []
-        if isinstance(item, dict) and str(item.get("source_pack_id") or "").strip()
-    }
-    if pack_id not in progression_sources and pack_id not in contract_sources:
-        return []
-    return [
-        {
-            "task_type": "sop_delivery_contract",
-            "subtype": "planner_field_consistency",
-            "missing": "selected_source_pack_conflicts_with_deferred_delivery",
-            "note": (
-                f"本轮 sales_progression 或 reply_contract 已引用来源包 {pack_id}，但 sop_delivery_decision 不是 deliver_now。"
-                "请保持业务决定由 Planner 完整输出：要么本轮交付该包并设为 deliver_now；要么 defer 并从本轮"
-                "sales_progression 和 required_deliveries 中删除该来源包。"
-            ),
-        }
-    ]
-
-
-def _sales_progression_contract_violations(sales_progression: Any) -> list[dict[str, str]]:
-    """Validate Planner field consistency without selecting a sales action."""
-
-    progression = sales_progression if isinstance(sales_progression, dict) else {}
-    if (
-        str(progression.get("status") or "").strip() != "continue"
-        or str(progression.get("target_stage") or "").strip() in {"", "none"}
-        or str(progression.get("action") or "").strip() not in {"", "none"}
-    ):
-        return []
-    return [
-        {
-            "task_type": "sales_progression_contract",
-            "subtype": "planner_field_consistency",
-            "missing": "continued_progression_requires_concrete_action",
-            "note": (
-                "sales_progression.status=continue 且已经选择 target_stage，但 action 仍为 none。"
-                "请为该目标阶段选择具体动作；Reply 节点无权替 Planner 决定动作。"
-            ),
-        }
-    ]
-
-
-def _enforce_payment_authorization_contract(
-    *,
-    payment_decision: Any,
-    sales_progression: Any,
-    reply_contract: Any,
-) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
-    """Remove impossible card requirements while preserving the model's payment decision."""
-
-    payment = payment_decision if isinstance(payment_decision, dict) else {}
-    progression = dict(sales_progression) if isinstance(sales_progression, dict) else {}
-    contract = dict(reply_contract) if isinstance(reply_contract, dict) else {}
-    if str(payment.get("action") or "").strip() in {"send_now", "resend"}:
-        return progression, contract, []
-    required_types = [str(item or "").strip() for item in progression.get("required_message_types") or []]
-    required_deliveries = contract.get("required_deliveries") or []
-    has_required_card = "payment_collection" in required_types or any(
-        (
-            str(item.get("message_type") or item.get("type") or "").strip()
-            if isinstance(item, dict)
-            else str(item or "").strip()
-        )
-        == "payment_collection"
-        for item in required_deliveries
-    )
-    if not has_required_card:
-        return progression, contract, []
-    progression["required_message_types"] = [
-        item for item in required_types if item != "payment_collection"
-    ]
-    contract["required_deliveries"] = [
-        item
-        for item in required_deliveries
-        if (
-            str(item.get("message_type") or item.get("type") or "").strip()
-            if isinstance(item, dict)
-            else str(item or "").strip()
-        )
-        != "payment_collection"
-    ]
-    return progression, contract, [
-        {
-            "task_type": "payment_contract",
-            "subtype": "planner_field_consistency",
-            "missing": "payment_required_delivery_without_authorization",
-            "note": (
-                "payment_decision does not authorize send_now/resend, but the same plan requires a payment_collection. "
-                "Keep the payment decision model-owned and repair the required message types to match it."
-            ),
-        }
-    ]
-
-
-def _normalize_reply_contract(
-    value: Any,
-    *,
-    state: AgentState,
-    sales_progression: dict[str, Any],
-) -> dict[str, Any]:
-    raw = value if isinstance(value, dict) else {}
-    known_fields = known_customer_field_names(state.get("conversation_state"))
-    required_deliveries = []
-    for item in raw.get("required_deliveries") or []:
-        if isinstance(item, dict):
-            message_type = str(item.get("message_type") or item.get("type") or "").strip()
-            if message_type:
-                required_deliveries.append(
-                    {
-                        "message_type": message_type,
-                        "asset_id": str(item.get("asset_id") or "").strip(),
-                        "source_pack_id": str(item.get("source_pack_id") or "").strip(),
-                    }
-                )
-        elif str(item or "").strip():
-            required_deliveries.append({"message_type": str(item).strip()})
-    for message_type in sales_progression.get("required_message_types") or []:
-        if not any(item.get("message_type") == message_type for item in required_deliveries):
-            required_deliveries.append({"message_type": message_type})
-    return {
-        "locked_facts": _clean_str_list(raw.get("locked_facts") or []),
-        "forbidden_claims": _clean_str_list(raw.get("forbidden_claims") or []),
-        # This field is factual, not a Planner business decision. Never accept
-        # model-added values that are absent from the conversation snapshot.
-        "known_fields_not_to_request": list(dict.fromkeys(known_fields)),
-        "required_deliveries": required_deliveries,
-        "required_fact_ids": list(
-            dict.fromkeys(str(item) for item in raw.get("required_fact_ids") or [] if str(item).strip())
-        ),
-        "fact_definitions": {
-            str(key): str(value)
-            for key, value in (
-                raw.get("fact_definitions") if isinstance(raw.get("fact_definitions"), dict) else {}
-            ).items()
-            if str(key).strip() and str(value).strip()
-        },
-        "locked_progression_action": str(sales_progression.get("action") or ""),
-        "locked_progression_stage": str(sales_progression.get("target_stage") or ""),
-    }
-
-
-def _selected_effect_trust_scene_id(
-    *,
-    precision_qa_decision: dict[str, Any],
-    state: AgentState,
-) -> str:
-    planner_scene = str(precision_qa_decision.get("question_id") or "").strip()
-    if planner_scene in EFFECT_TRUST_SCENE_IDS:
-        return planner_scene
-    gate = state.get("sop_gate_decision") if isinstance(state.get("sop_gate_decision"), dict) else {}
-    gate_scene = str(gate.get("selected_scene_id") or gate.get("priority_question_id") or "").strip()
-    return gate_scene if gate_scene in EFFECT_TRUST_SCENE_IDS else ""
-
-
-def _effect_trust_reply_contract(value: dict[str, Any], *, scene_id: str) -> dict[str, Any]:
-    contract = dict(value)
-    contract["locked_facts"] = list(
-        dict.fromkeys(
-            [
-                *contract.get("locked_facts", []),
-                "我们是做斑点改善的",
-                "绝大多数顾客一次就有很好的改善效果",
-                "完成线上活动登记后可到门店免费做皮肤检测",
-            ]
-        )
-    )
-    contract["forbidden_claims"] = list(
-        dict.fromkeys(
-            [
-                *contract.get("forbidden_claims", []),
-                "effect_round_price_or_activity_rules",
-                "effect_round_payment_collection",
-                "一次通常不能去干净",
-                "一般需要多次",
-                "只能轻微淡化",
-                "不一定有效",
-                "all_customers_complete_removal_or_permanent_cure",
-            ]
-        )
-    )
-    contract["required_deliveries"] = [
-        {
-            "message_type": "text",
-            "delivery_role": "positive_effect_answer",
-            "source_order": 1,
-            "required": True,
-        },
-        {
-            "message_type": "text",
-            "delivery_role": "registered_free_detection",
-            "source_order": 2,
-            "required": True,
-        },
-        {
-            "message_type": "image",
-            "delivery_role": "real_case_image",
-            "source_order": 3,
-            "required": True,
-            "allow_recent_reference_when_no_new_case": True,
-        },
-    ]
-    contract["effect_trust_scene_id"] = scene_id
-    contract["locked_progression_action"] = "deliver_value"
-    contract["locked_progression_stage"] = "effect_proof"
-    return contract
-
-
-def _effect_trust_semantic_reply_contract(
-    value: dict[str, Any],
-    *,
-    scene_id: str,
-    require_image: bool,
-) -> dict[str, Any]:
-    contract = dict(value)
-    contract["effect_trust_scene_id"] = scene_id
-    contract["required_fact_ids"] = list(
-        dict.fromkeys(
-            [
-                *[str(item) for item in contract.get("required_fact_ids") or [] if str(item).strip()],
-                *EFFECT_TRUST_FACTS.keys(),
-            ]
-        )
-    )
-    contract["fact_definitions"] = {
-        **(contract.get("fact_definitions") if isinstance(contract.get("fact_definitions"), dict) else {}),
-        **EFFECT_TRUST_FACTS,
-    }
-    contract["required_deliveries"] = [
-        {
-            "message_type": "text",
-            "delivery_role": "positive_effect_answer",
-            "source_order": 1,
-            "required": True,
-        },
-        {
-            "message_type": "text",
-            "delivery_role": "registered_free_detection",
-            "source_order": 2,
-            "required": True,
-        },
-        *(
-            [
-                {
-                    "message_type": "image",
-                    "delivery_role": "real_case_image",
-                    "source_order": 3,
-                    "required": True,
-                }
-            ]
-            if require_image
-            else []
-        ),
-    ]
-    contract["forbidden_claims"] = list(
-        dict.fromkeys(
-            [
-                *contract.get("forbidden_claims", []),
-                "effect_round_price_or_activity_rules",
-                "effect_round_payment_collection",
-                "absolute_effect_guarantee",
-            ]
-        )
-    )
-    return contract
-
-
-def _effect_trust_model_contract_violations(
-    *,
-    decision: str,
-    payment_decision: dict[str, Any],
-    sales_progression: dict[str, Any],
-    required_tools: list[dict[str, Any]],
-    state: AgentState,
-) -> list[dict[str, str]]:
-    violations: list[dict[str, str]] = []
-    if str(payment_decision.get("action") or "") not in {"", "none", "explain"}:
-        violations.append(
-            {
-                "task_type": "semantic_contract",
-                "subtype": "effect_trust",
-                "missing": "effect_trust_payment_decision_must_be_none",
-                "note": "效果信任问题解决前不得报价或发送预约金卡，请由 Planner 重新选择本轮动作。",
-            }
-        )
-    if (
-        str(sales_progression.get("target_stage") or "") != "effect_proof"
-        or str(sales_progression.get("action") or "") != "deliver_value"
-    ):
-        violations.append(
-            {
-                "task_type": "semantic_contract",
-                "subtype": "effect_trust",
-                "missing": "effect_trust_progression_must_deliver_proof",
-                "note": "保持当前效果证明场景，先解决客户效果疑虑，不切换到活动或预约金。",
-            }
-        )
-    if not _effect_image_may_reference_recent_delivery_for_planner(state):
-        has_case_search = any(
-            isinstance(tool, dict)
-            and str(tool.get("name") or "") == "kb_search"
-            and str(tool.get("kb_name") or tool.get("purpose") or "") == "case_studies"
-            for tool in required_tools
-        )
-        if not has_case_search:
-            violations.append(
-                {
-                    "task_type": "semantic_contract",
-                    "subtype": "effect_trust",
-                    "missing": "effect_trust_case_search_required",
-                    "note": "没有紧邻真实效果图证据，请调用 kb_search(case_studies) 并同轮发送真实图片。",
-                }
-            )
-    if decision == "no_reply":
-        violations.append(
-            {
-                "task_type": "semantic_contract",
-                "subtype": "effect_trust",
-                "missing": "effect_trust_customer_reply_required",
-                "note": "效果疑虑必须正面回复。",
-            }
-        )
-    return violations
-
-
-def _effect_image_may_reference_recent_delivery_for_planner(state: AgentState) -> bool:
-    summary = sent_message_summary_for_model(state)
-    delivery = summary.get("case_image_delivery") if isinstance(summary.get("case_image_delivery"), dict) else {}
-    return bool(delivery.get("last_sent_at") and delivery.get("total_events"))
-
-
-def _effect_trust_case_search_tools(
-    required_tools: list[dict[str, Any]],
-    state: AgentState,
-) -> list[dict[str, Any]]:
-    current_query = str(state.get("normalized_content") or state.get("content") or "").strip()
-    summary = sent_message_summary_for_model(state)
-    delivery = summary.get("case_image_delivery") if isinstance(summary.get("case_image_delivery"), dict) else {}
-    excluded_ids = [str(item) for item in delivery.get("last_document_ids") or [] if str(item or "").strip()]
-    existing = next(
-        (
-            dict(item)
-            for item in required_tools
-            if isinstance(item, dict)
-            and str(item.get("name") or "").strip() == "kb_search"
-            and str(item.get("kb_name") or item.get("purpose") or "").strip() == "case_studies"
-        ),
-        {},
-    )
-    return [
-        {
-            **existing,
-            "name": "kb_search",
-            "kb_name": "case_studies",
-            "purpose": "case_studies",
-            "query": str(existing.get("query") or current_query or "斑点改善真实效果案例")[:600],
-            "excluded_document_ids": excluded_ids,
-        }
-    ]
 
 
 def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailable") -> dict[str, Any]:
@@ -1524,6 +881,46 @@ def _store_address_id(content: Any) -> str:
 
 def _has_store_address_message(messages: list[dict[str, Any]]) -> bool:
     return any(str(item.get("type") or "") == "store_address" for item in messages if isinstance(item, dict))
+
+
+def _order_store_lookup_before_dependent_distance(required_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    lookup_tools: list[dict[str, Any]] = []
+    dependent_distance_tools: list[dict[str, Any]] = []
+    for tool in required_tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "")
+        if name == "customer_store_lookup":
+            lookup_tools.append(tool)
+        elif name == "distance_calculate" and str(tool.get("candidate_source") or "") == "customer_store_lookup":
+            dependent_distance_tools.append(tool)
+    if not lookup_tools or not dependent_distance_tools:
+        return required_tools
+    ordered: list[dict[str, Any]] = []
+    inserted_lookup = False
+    for tool in required_tools:
+        if not isinstance(tool, dict):
+            ordered.append(tool)
+            continue
+        name = str(tool.get("name") or "")
+        if name == "customer_store_lookup":
+            if inserted_lookup and tool in ordered:
+                continue
+            ordered.append(tool)
+            inserted_lookup = True
+            continue
+        if name == "distance_calculate" and str(tool.get("candidate_source") or "") == "customer_store_lookup":
+            if not inserted_lookup:
+                for lookup in lookup_tools:
+                    if lookup not in ordered:
+                        ordered.append(lookup)
+                inserted_lookup = True
+            ordered.append(tool)
+            continue
+        if tool in lookup_tools and inserted_lookup:
+            continue
+        ordered.append(tool)
+    return ordered
 
 
 def _store_lookup_query_comes_from_current_message(query: str, state: AgentState) -> bool:
@@ -1851,10 +1248,10 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                         "subtype": "customer_store_lookup",
                         "missing": "store_lookup_conflicts_with_accepted_binding",
                         "note": (
-                            "store_binding_decision selects a factual store candidate, but customer_store_lookup.query does "
-                            "not identify that store. Keep the accepted store without a new lookup, or query the exact "
-                            "current-scope candidate while status is exploring. Do not replace it with an older location or "
-                            "treat an unrelated short reply as a new location."
+                            "store_binding_decision accepts a real store, but customer_store_lookup.query does not identify "
+                            "that store. Keep the accepted store without a new lookup, or change store_binding_decision to "
+                            "exploring/ambiguous and use location evidence from the current customer message. Do not treat an "
+                            "unrelated short reply as a new location."
                         ),
                     }
                 )
@@ -1863,19 +1260,6 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
             origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or "").strip()
             if not _location_query_has_scope_region(origin, state):
                 violations.append(_ambiguous_location_tool_violation("distance_calculate"))
-            elif _distance_origin_is_broad_region_only(origin, state):
-                violations.append(
-                    {
-                        "task_type": "tool_argument",
-                        "subtype": "distance_calculate",
-                        "missing": "distance_origin_too_broad_for_ranking",
-                        "note": (
-                            "distance_calculate needs a district, landmark, address, or customer location. A bare city/province "
-                            "cannot support a nearest-store ranking. Use customer_store_lookup for the city list or ask for one "
-                            "more precise location; do not claim a store is nearer from a city-only origin."
-                        ),
-                    }
-                )
             continue
         if name == "available_time":
             missing_args: list[str] = []
@@ -2043,12 +1427,9 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
 
 def _store_lookup_conflicts_with_accepted_binding(query: str, state: AgentState) -> bool:
     binding = state.get("store_binding_decision") if isinstance(state.get("store_binding_decision"), dict) else {}
-    status = str(binding.get("status") or "").strip()
-    if status not in {"accepted_explicit", "accepted_implicit", "exploring"}:
+    if str(binding.get("status") or "").strip() not in {"accepted_explicit", "accepted_implicit"}:
         return False
     bound_store_id = str(binding.get("store_id") or "").strip()
-    if status == "exploring" and not _store_scope_record_for_id(state, bound_store_id):
-        return False
     bound_store_name = str(binding.get("store_name") or "").strip()
     if not bound_store_name and bound_store_id:
         bound_store_name = _store_name_for_id(bound_store_id, state)
@@ -2058,9 +1439,6 @@ def _store_lookup_conflicts_with_accepted_binding(query: str, state: AgentState)
 
 
 def _store_name_for_id(store_id: str, state: AgentState) -> str:
-    scoped_store = _store_scope_record_for_id(state, store_id)
-    if scoped_store:
-        return str(scoped_store.get("store_name") or scoped_store.get("name") or "").strip()
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
     for store in stores:
@@ -2084,13 +1462,9 @@ def _complete_explicit_kb_search_arguments(
     completed: list[dict[str, Any]] = []
     for item in required_tools:
         tool = dict(item)
-        kb_selector = {
-            str(tool.get("kb_name") or "").strip(),
-            str(tool.get("purpose") or "").strip(),
-            str(tool.get("query") or "").strip(),
-        }
-        if str(tool.get("name") or "").strip() == "kb_search" and kb_selector.intersection(
-            {"case_studies", "effect_case_reference"}
+        if (
+            str(tool.get("name") or "").strip() == "kb_search"
+            and str(tool.get("purpose") or "").strip() == "case_studies"
         ):
             if not str(tool.get("kb_name") or "").strip():
                 tool["kb_name"] = "case_studies"
@@ -2301,11 +1675,6 @@ def _normalize_appointment_decision(value: Any) -> dict[str, Any]:
 
 def _normalize_sales_progression(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
-    required_message_types = [
-        item
-        for item in _clean_str_list(raw.get("required_message_types") or [])
-        if item in {"text", "image", "video", "store_address", "payment_collection", "human_handoff_notice"}
-    ]
     return {
         "status": _normalize_enum(
             str(raw.get("status") or ""),
@@ -2324,10 +1693,6 @@ def _normalize_sales_progression(value: Any) -> dict[str, Any]:
         ),
         "goal": str(raw.get("goal") or "").strip()[:240],
         "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
-        "required_message_types": required_message_types,
-        "source_pack_ids": _clean_str_list(raw.get("source_pack_ids") or [])[:8],
-        "asset_ids": _clean_str_list(raw.get("asset_ids") or [])[:12],
-        "reason": str(raw.get("reason") or "").strip()[:240],
     }
 
 
@@ -2493,10 +1858,7 @@ def _store_binding_order_consistency_violations(
                     "missing": "accepted_implicit_requires_eligible_store_anchor_fact",
                     "note": (
                         "accepted_implicit requires the latest authoritative store-card batch to contain exactly one "
-                        "matching store. Unverified legacy events and multi-store batches must be exploring/ambiguous. "
-                        "When the current customer turn prefers a city/store and store_scope_summary contains a matching "
-                        "real candidate, keep that candidate store_id as exploring and look up that exact store; do not "
-                        "replace it with an older location from conversation history."
+                        "matching store. Unverified legacy events and multi-store batches must be exploring/ambiguous."
                     ),
                 }
             ]
@@ -3223,7 +2585,6 @@ def _enforce_declared_store_detail_lookup(
     sub_rule_id: str,
     messages: list[dict[str, Any]],
     required_tools: list[dict[str, Any]],
-    store_binding_decision: dict[str, Any],
     state: AgentState,
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     """Require factual detail lookup after Planner has declared a store-detail scene."""
@@ -3239,18 +2600,8 @@ def _enforce_declared_store_detail_lookup(
         for item in messages
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
-    if not _current_turn_requires_declared_store_lookup(state, reply_text):
-        return decision, messages, required_tools
-    binding_status = str(store_binding_decision.get("status") or "none").strip()
-    binding_store_id = str(store_binding_decision.get("store_id") or "").strip()
-    scoped_binding_store = (
-        _store_scope_record_for_id(state, binding_store_id)
-        if binding_status in {"accepted_explicit", "accepted_implicit", "exploring"}
-        else {}
-    )
     query = (
-        str(scoped_binding_store.get("store_name") or scoped_binding_store.get("name") or "").strip()
-        or str(_store_from_current_message(state).get("store_name") or "").strip()
+        str(_store_from_current_message(state).get("store_name") or "").strip()
         or str(_request_store_from_state(state).get("store_name") or "").strip()
         or _generic_store_contextual_anchor_name(state)
         or _recent_store_name_from_context(state)
@@ -3270,46 +2621,6 @@ def _enforce_declared_store_detail_lookup(
         }
     )
     return "need_tools", [], _dedupe_tools(tools)
-
-
-def _store_scope_record_for_id(state: AgentState, store_id: str) -> dict[str, Any]:
-    """Resolve a model-selected candidate only from the current factual store scope."""
-
-    target = str(store_id or "").strip()
-    if not target:
-        return {}
-    summary = state.get("store_scope_summary") if isinstance(state.get("store_scope_summary"), dict) else {}
-    regions = summary.get("relevant_regions") if isinstance(summary.get("relevant_regions"), list) else []
-    for region in regions:
-        if not isinstance(region, dict):
-            continue
-        for key in ("requested_district_stores", "stores"):
-            stores = region.get(key) if isinstance(region.get(key), list) else []
-            for store in stores:
-                if not isinstance(store, dict):
-                    continue
-                candidate_id = str(store.get("store_id") or store.get("id") or "").strip()
-                if candidate_id == target:
-                    return store
-    return {}
-
-
-def _current_turn_requires_declared_store_lookup(state: AgentState, reply_text: str) -> bool:
-    """Only upgrade a declared S2 direct reply when this turn needs fresh store facts."""
-
-    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
-    if location_card_from_state(state):
-        return True
-    if _current_message_requests_store_detail(current_text):
-        return True
-    if _current_message_has_explicit_location_for_lookup(current_text, state):
-        return True
-    if _current_message_mentions_basic_location(state, current_text):
-        return True
-    current_store = _store_from_current_message(state)
-    if current_store and not current_store.get("ambiguous"):
-        return True
-    return _direct_text_requires_store_detail_tool(reply_text)
 
 
 def _store_name_from_reply_messages(messages: list[dict[str, Any]], state: AgentState) -> str:
@@ -3332,51 +2643,20 @@ def _enforce_location_card_store_lookup(
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     """A structured location card is factual input, not an authoritative store match."""
     card = location_card_from_state(state)
-    if not card or _fact_envelope_store_ids(state):
+    if not card or _has_tool(required_tools, "customer_store_lookup") or _fact_envelope_store_ids(state):
         return decision, messages, required_tools
-    query = _location_card_lookup_query(card)
+    query = str(card.get("address") or card.get("title") or card.get("coordinates") or "").strip()
     if not query:
         return decision, messages, required_tools
-    if _has_tool(required_tools, "customer_store_lookup"):
-        normalized_tools: list[dict[str, Any]] = []
-        for tool in required_tools:
-            if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
-                normalized_tools.append(tool)
-                continue
-            normalized = dict(tool)
-            normalized["query"] = query
-            normalized["purpose"] = str(normalized.get("purpose") or "nearby_candidates").strip() or "nearby_candidates"
-            normalized["location_source"] = "platform_location_card"
-            normalized_tools.append(normalized)
-        return "need_tools", [], _dedupe_tools(normalized_tools)
     tools = [tool for tool in required_tools if str(tool.get("name") or "") != "no_tool"]
     tools.append(
         {
             "name": "customer_store_lookup",
             "purpose": "nearby_candidates",
             "query": query,
-            "location_source": "platform_location_card",
         }
     )
     return "need_tools", [], _dedupe_tools(tools)
-
-
-def _location_card_lookup_query(card: dict[str, Any]) -> str:
-    """Build a stable lookup query from all platform location-card fields."""
-
-    title = str(card.get("title") or card.get("location_title") or "").strip()
-    address = str(card.get("address") or card.get("location_address") or "").strip()
-    coordinates = str(card.get("coordinates") or card.get("location") or "").strip()
-    parts: list[str] = []
-    for value in (address, title, coordinates):
-        text = re.sub(r"\s+", " ", str(value or "")).strip()
-        if not text:
-            continue
-        compact = re.sub(r"\s+", "", text)
-        if any(compact and compact in re.sub(r"\s+", "", existing) for existing in parts):
-            continue
-        parts.append(text)
-    return " ".join(parts).strip()
 
 
 def _enforce_sop_gate_active_task(
@@ -3414,38 +2694,11 @@ def _current_message_has_explicit_location_for_lookup(text: str, state: AgentSta
     compact = _compact_text(text)
     if not compact:
         return False
-    if _looks_like_distance_feedback_without_location(compact, state):
-        return False
     if _looks_like_specific_region(compact):
         return True
     if _current_message_has_bare_location_for_store_lookup(compact, state):
         return True
     return bool(_matching_current_message_region_tokens(compact, state))
-
-
-def _looks_like_distance_feedback_without_location(compact: str, state: AgentState) -> bool:
-    """Avoid treating short distance feedback such as '不顺路' as a road address."""
-
-    if not compact:
-        return False
-    feedback_terms = (
-        "不顺路",
-        "顺路",
-        "太远",
-        "有点远",
-        "不方便",
-        "远了",
-        "远呢",
-        "不近",
-    )
-    if not any(term in compact for term in feedback_terms):
-        return False
-    if _matching_current_message_region_tokens(compact, state):
-        return False
-    location_markers = ("省", "市", "区", "县", "镇", "乡", "村", "街道", "地铁", "机场", "车站")
-    if any(marker in compact for marker in location_markers):
-        return False
-    return len(compact) <= 8
 
 
 def _strip_store_question_words(text: str) -> str:
@@ -3797,26 +3050,7 @@ def _current_message_requests_store_detail(text: str) -> bool:
     compact = _compact_text(text)
     if not compact:
         return False
-    if any(
-        term in compact
-        for term in (
-            "发个位置",
-            "发位置",
-            "位置发我",
-            "发个地址",
-            "发地址",
-            "地址发我",
-            "发导航",
-            "发定位",
-            "定位发我",
-            "几号楼",
-            "楼号",
-            "房间号",
-            "门牌号",
-            "怎么上楼",
-            "怎么进店",
-        )
-    ):
+    if any(term in compact for term in ("发个位置", "发位置", "位置发我", "发个地址", "发地址", "地址发我", "发导航", "发定位", "定位发我")):
         return True
     return bool(re.search(r"发.{0,8}(地址|位置|定位|导航)", compact)) or bool(
         re.search(r"(地址|位置|定位|导航).{0,8}(发|给)", compact)
@@ -4173,36 +3407,6 @@ def _snapshot_region_tokens() -> set[str]:
     return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
 
 
-def _distance_origin_is_broad_region_only(value: str, state: AgentState) -> bool:
-    text = _compact_text(value)
-    if not text or _query_matches_scope_store_name(value, state):
-        return False
-    broad_tokens = set(_snapshot_broad_region_tokens())
-    for mapping in (
-        state,
-        state.get("request_context") if isinstance(state.get("request_context"), dict) else {},
-        state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {},
-        state.get("current_known_store") if isinstance(state.get("current_known_store"), dict) else {},
-    ):
-        if not isinstance(mapping, dict):
-            continue
-        for key in ("province", "city", "current_city"):
-            broad_tokens.update(_region_token_variants(mapping.get(key)))
-    return text in {_compact_text(token) for token in broad_tokens if token}
-
-
-def _snapshot_broad_region_tokens() -> set[str]:
-    global _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
-    if _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE is not None:
-        return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
-    tokens: set[str] = set()
-    for store in _snapshot_store_values_for_guard():
-        for key in ("province", "city"):
-            tokens.update(_region_token_variants(store.get(key)))
-    _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE = {token for token in tokens if len(_compact_text(token)) >= 2}
-    return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
-
-
 def _snapshot_store_values_for_guard() -> list[dict[str, Any]]:
     path = Path("data/store_snapshot.json")
     try:
@@ -4353,7 +3557,7 @@ def _payment_consistency_violations(
             }
         ]
     payment_context = payment_collection_context(state={**state, "payment_decision": payment_decision}, messages=messages)
-    if not governance_enabled(state, "model_payment_sequencing_enabled") and _payment_send_requires_activity_intro(
+    if _payment_send_requires_activity_intro(
         conversion_stage=conversion_stage,
         next_step=next_step,
         payment_action=payment_action,
@@ -4546,10 +3750,6 @@ def _append_required_payment_collection(
 ) -> list[dict[str, Any]]:
     if decision != "direct_reply":
         return messages
-    if governance_enabled(state, "model_payment_sequencing_enabled"):
-        return _remove_payment_collection_messages(messages) if payment_card_cooldown_active(
-            conversation_state_for_guard(state)
-        ) else messages
     decision_action = str(payment_decision.get("action") or "")
     if is_hard_health_risk_hold(health_risk_hold(state)):
         return _remove_payment_collection_messages(messages)

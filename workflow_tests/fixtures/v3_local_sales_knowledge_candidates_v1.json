@@ -1,0 +1,195 @@
+{
+  "schema_version": "v3_local_sales_knowledge_candidates_v1",
+  "runtime_allowed": false,
+  "callback_allowed": false,
+  "review_status": "pending_business_review",
+  "cases": [
+    {
+      "candidate_key": "current_busy",
+      "evaluation_case_ids": [],
+      "name": "当前正在忙",
+      "checkpoint_code": "time_conflict",
+      "sequence": {
+        "id": "candidate_seq_current_busy",
+        "sequence_name": "当前沟通边界",
+        "checkpoint_code": "time_conflict",
+        "checkpoint_name": "时间冲突",
+        "selection_reason": "客户当前无法继续沟通，本轮只承接边界",
+        "steps": [
+          {"id": "candidate_step_current_busy", "sort_order": 1, "action_code": "care", "action_name": "关怀回访", "objective": "简短承接并暂停本轮"}
+        ]
+      },
+      "scripts": [
+        {
+          "id": "candidate_script_current_busy",
+          "script_code": "candidate_script_current_busy",
+          "script_name": "当前正在忙-承接边界",
+          "checkpoint_code": "time_conflict",
+          "checkpoint_name": "时间冲突",
+          "action_code": "care",
+          "action_name": "关怀回访",
+          "authority_scope": "simulation_candidate_pending_review",
+          "paragraphs": [{"paragraph_no": 1, "messages": [{"type": "text", "content": "您先忙，等您方便了咱们再接着聊。"}]}]
+        }
+      ],
+      "objective": "承接沟通边界并暂停本轮",
+      "forbidden": ["活动", "名额", "登记", "付款", "继续追问"]
+    },
+    {
+      "candidate_key": "arrival_time_uncertain",
+      "evaluation_case_ids": ["golden_v3_023"],
+      "name": "到店时间不确定",
+      "checkpoint_code": "time_conflict",
+      "sequence": {
+        "id": "candidate_seq_arrival_time_uncertain",
+        "sequence_name": "时间未定低摩擦承接",
+        "checkpoint_code": "time_conflict",
+        "checkpoint_name": "时间冲突",
+        "selection_reason": "接受客户暂时不能确定到店时间，不继续逼具体时刻",
+        "steps": [
+          {"id": "candidate_step_arrival_time_uncertain", "sort_order": 1, "action_code": "low_barrier", "action_name": "低门槛邀请", "objective": "说明无需现在定时刻，方便时提前联系"}
+        ]
+      },
+      "scripts": [
+        {
+          "id": "candidate_script_arrival_time_uncertain",
+          "script_code": "candidate_script_arrival_time_uncertain",
+          "script_name": "到店时间未定-降低行动成本",
+          "checkpoint_code": "time_conflict",
+          "checkpoint_name": "时间冲突",
+          "action_code": "low_barrier",
+          "action_name": "低门槛邀请",
+          "authority_scope": "simulation_candidate_pending_review",
+          "paragraphs": [{"paragraph_no": 1, "messages": [{"type": "text", "content": "没事，时间不用现在定死。您后面哪天方便，过去前跟我说一声就行。"}]}]
+        }
+      ],
+      "objective": "接受时间未定并保留低摩擦联系",
+      "forbidden": ["已登记", "已留名额", "已预约", "追问具体时间"]
+    },
+    {
+      "candidate_key": "soft_hesitation_unknown",
+      "evaluation_case_ids": ["golden_v3_047"],
+      "name": "软犹豫但原因未知",
+      "checkpoint_code": "hesitation",
+      "sequence": {
+        "id": "candidate_seq_soft_hesitation_unknown",
+        "sequence_name": "未知顾虑最小确认",
+        "checkpoint_code": "hesitation",
+        "checkpoint_name": "犹豫拖延",
+        "selection_reason": "客户保留考虑空间但未说明原因，只确认一个真正影响决定的点",
+        "steps": [
+          {"id": "candidate_step_soft_hesitation_unknown", "sort_order": 1, "action_code": "empathy", "action_name": "共情引导", "objective": "用一个开放式低摩擦问题识别卡点"}
+        ]
+      },
+      "scripts": [
+        {
+          "id": "candidate_script_soft_hesitation_unknown",
+          "script_code": "candidate_script_soft_hesitation_unknown",
+          "script_name": "软犹豫-只问真实卡点",
+          "checkpoint_code": "hesitation",
+          "checkpoint_name": "犹豫拖延",
+          "action_code": "empathy",
+          "action_name": "共情引导",
+          "authority_scope": "simulation_candidate_pending_review",
+          "paragraphs": [{"paragraph_no": 1, "messages": [{"type": "text", "content": "可以考虑，我就怕是哪一点没跟您说透。您现在最拿不准的是哪一点？我只把那一点讲清楚。"}]}]
+        }
+      ],
+      "objective": "识别一个真实顾虑，不重复销售信息",
+      "forbidden": ["重复报价", "重复名额", "付款", "猜测客户顾虑"]
+    },
+    {
+      "candidate_key": "soft_hesitation_known",
+      "evaluation_case_ids": ["golden_v3_019"],
+      "name": "软犹豫且阻力已知",
+      "checkpoint_code": "hesitation",
+      "sequence": {
+        "id": "candidate_seq_soft_hesitation_known",
+        "sequence_name": "已知阻力换价值",
+        "checkpoint_code": "hesitation",
+        "checkpoint_name": "犹豫拖延",
+        "selection_reason": "历史已经暴露顾虑，不再重复追问，换一个尚未交付的价值维度",
+        "steps": [
+          {"id": "candidate_step_soft_hesitation_known", "sort_order": 1, "action_code": "value_add", "action_name": "价值补充", "objective": "从效果、活动价值或行动成本中选择一个未重复角度"}
+        ]
+      },
+      "scripts": [
+        {
+          "id": "candidate_script_soft_hesitation_known",
+          "script_code": "candidate_script_soft_hesitation_known",
+          "script_name": "已知顾虑-换维度承接",
+          "checkpoint_code": "hesitation",
+          "checkpoint_name": "犹豫拖延",
+          "action_code": "value_add",
+          "action_name": "价值补充",
+          "authority_scope": "simulation_candidate_pending_review",
+          "paragraphs": [{"paragraph_no": 1, "messages": [{"type": "text", "content": "行，您有空再安排。您前面也看过真实效果，别因为今天定不了时间就把改善这件事一直搁着；真准备来时提前跟我说一声，我把到店流程给您接上。"}]}]
+        }
+      ],
+      "objective": "承接当前暂缓，用已经交付的真实效果保留改善动机，不制造紧迫感",
+      "forbidden": ["重复同一解释", "虚构稀缺或恢复原价", "直接登记", "直接付款"]
+    },
+    {
+      "candidate_key": "distance_no_better_store",
+      "evaluation_case_ids": ["golden_v3_018"],
+      "name": "门店距离无法改善",
+      "checkpoint_code": "distance",
+      "sequence": {
+        "id": "candidate_seq_distance_no_better_store",
+        "sequence_name": "距离现实不变时换价值",
+        "checkpoint_code": "distance",
+        "checkpoint_name": "距离/便利",
+        "selection_reason": "没有更近真实门店时停止循环地址，改用效果、活动价值或其他常去城市",
+        "steps": [
+          {"id": "candidate_step_distance_case", "sort_order": 1, "action_code": "case", "action_name": "效果案例", "objective": "用真实案例说明为什么值得跑一趟"},
+          {"id": "candidate_step_distance_value", "sort_order": 2, "action_code": "value_add", "action_name": "价值补充", "objective": "补活动价值或询问其他常去城市"}
+        ]
+      },
+      "scripts": [
+        {
+          "id": "candidate_script_distance_no_better_store",
+          "script_code": "candidate_script_distance_no_better_store",
+          "script_name": "距离无法改善-换价值",
+          "checkpoint_code": "distance",
+          "checkpoint_name": "距离/便利",
+          "action_code": "value_add",
+          "action_name": "价值补充",
+          "authority_scope": "simulation_candidate_pending_review",
+          "paragraphs": [{"paragraph_no": 1, "messages": [{"type": "text", "content": "这个路程我不跟您硬说近，确实要专门安排一下。门店这块已经是当前能去的选择，我更想先让您看看效果和值不值得跑这一趟。"}]}]
+        }
+      ],
+      "objective": "承认真实距离，换到能改变决定的价值",
+      "forbidden": ["继续找不存在的近店", "重复追问地址", "虚构本地客户"]
+    },
+    {
+      "candidate_key": "complaint_or_fulfillment_dispute",
+      "evaluation_case_ids": ["golden_v3_049"],
+      "name": "投诉或履约争议",
+      "checkpoint_code": "",
+      "sequence": {
+        "id": "candidate_seq_complaint_or_fulfillment_dispute",
+        "sequence_name": "投诉事实与信任承接",
+        "checkpoint_code": "all",
+        "checkpoint_name": "投诉或履约争议",
+        "selection_reason": "先修复事实和信任，只记录待核实事项",
+        "steps": [
+          {"id": "candidate_step_complaint_record", "sort_order": 1, "action_code": "resolve", "action_name": "解决疑虑", "objective": "说明政策、区分已确认和待核实事实，并转记录/人工"}
+        ]
+      },
+      "scripts": [
+        {
+          "id": "candidate_script_complaint_or_fulfillment_dispute",
+          "script_code": "candidate_script_complaint_or_fulfillment_dispute",
+          "script_name": "投诉争议-事实承接",
+          "checkpoint_code": "",
+          "checkpoint_name": "投诉或履约争议",
+          "action_code": "resolve",
+          "action_name": "解决疑虑",
+          "authority_scope": "simulation_candidate_pending_review",
+          "paragraphs": [{"paragraph_no": 1, "messages": [{"type": "text", "content": "您专门跑过去，之前说过的事情又没有兑现，换谁都会不舒服。已确认的政策我给您说清，具体承诺我先如实记录核实，这轮不再催您做项目。"}]}]
+        }
+      ],
+      "objective": "承接信任受损并转记录/人工",
+      "forbidden": ["继续营销", "贬低人员", "虚构责任结论"]
+    }
+  ]
+}

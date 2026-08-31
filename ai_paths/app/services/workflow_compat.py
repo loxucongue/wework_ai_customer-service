@@ -28,6 +28,8 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
         "location_address": _string(content_object.get("location_address")) if content_object else "",
         "location_zoom": _string(content_object.get("location_zoom")) if content_object else "",
         "messages_count": _string(parameters.get("messages_count") or parameters.get("raw_message_count")),
+        "ai_profile_id": _string(parameters.get("ai_profile_id")),
+        "plan_id": _string(parameters.get("plan_id")),
     }
     request_context.update({key: value for key, value in content_meta.items() if value})
     raw_summary = _raw_workflow_payload_summary(payload, parameters, content_object)
@@ -73,18 +75,25 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
 
 
 def workflow_response_from_chat(response: ChatResponse) -> dict[str, Any]:
+    data = {
+        "versions": "1",
+        "reply_messages": [_workflow_reply_message(message.model_dump()) for message in response.reply_messages],
+        "trace_id": response.request_id,
+        "step": response.subflow or response.intent or response.scene,
+        "has_knowledge": "true" if _has_knowledge(response.meta) else "",
+        "error": "",
+    }
+    knowledge = response.meta.get("follow_knowledge_callback") if isinstance(response.meta, dict) else {}
+    if isinstance(knowledge, dict):
+        for key in ("followSequence", "followScript"):
+            value = knowledge.get(key)
+            if isinstance(value, dict) and value:
+                data[key] = value
     return {
         "code": 0,
         "msg": "success",
         "execute_id": response.request_id,
-        "data": {
-            "versions": "1",
-            "reply_messages": [_workflow_reply_message(message.model_dump()) for message in response.reply_messages],
-            "trace_id": response.request_id,
-            "step": response.subflow or response.intent or response.scene,
-            "has_knowledge": "true" if _has_knowledge(response.meta) else "",
-            "error": "",
-        },
+        "data": data,
         "detail": {"logid": response.request_id},
     }
 
@@ -144,6 +153,8 @@ def _raw_workflow_payload_summary(
             "corp_id": _string(parameters.get("corp_id")),
             "wechat": _string(parameters.get("wechat")),
             "messages_count": parameters.get("messages_count") or parameters.get("raw_message_count") or "",
+            "ai_profile_id": _string(parameters.get("ai_profile_id")),
+            "plan_id": _string(parameters.get("plan_id")),
         },
     }
     return _drop_empty(summary)

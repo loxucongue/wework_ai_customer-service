@@ -7,26 +7,30 @@ from contextlib import suppress
 from typing import Any
 from uuid import uuid4
 
-from app.chat_request_context import build_request_context, conversation_id_from_request, conversation_title
+from app.chat_request_context import (
+    build_request_context,
+    conversation_id_from_request,
+    conversation_title,
+    is_isolated_v2_test_request,
+    is_platform_recalled_message,
+)
 from app.chat_runtime_helpers import failed_state_from_exception, safe_repository_call
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
 from app.config import Settings
-from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
-from app.graph.nodes.conversation_history_fetch import (
-    conversation_fetch_params,
-    newer_conversation_activity_after_trigger,
-)
-from app.graph.nodes.reply_delivery_manifest import build_sop_delivery_manifest
+from app.graph.nodes.activity_intro_image import activity_intro_image_url
 from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
+from app.services.customer_payment_state import payment_fact_from_image
 from app.services.customer_scope import customer_scope_from_state
+from app.services.follow_knowledge_metadata import adopted_follow_knowledge_metadata
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
+from app.services.outreach_system_client import OutreachSystemClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
-from app.services.reply_governance import reply_governance_flags
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService, is_platform_auto_opening_message
+from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.storage import AppRepository
 from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
@@ -39,29 +43,123 @@ class ChatRuntime:
         full_graph: Any,
         trace_logger: TraceLogger,
         repository: AppRepository,
-        planner_graph: Any | None = None,
-        finalize_graph: Any | None = None,
+        commit_graph: Any | None = None,
         outreach_send_client: OutreachSendClient | None = None,
+        outreach_system_client: OutreachSystemClient | None = None,
         memory_store: CustomerMemoryStore | None = None,
         platform_reply_coordinator: PlatformReplyCoordinator | None = None,
         sop_execution_service: SopExecutionService | None = None,
-        profile_event_extractor: Any | None = None,
+        service_rule_data_service: ServiceRuleDataService | None = None,
         settings: Settings | None = None,
     ) -> None:
         self._full_graph = full_graph
-        self._planner_graph = planner_graph or full_graph
-        self._finalize_graph = finalize_graph
+        self._commit_graph = commit_graph
         self._trace_logger = trace_logger
         self._repository = repository
         self._outreach_send_client = outreach_send_client
+        self._outreach_system_client = outreach_system_client
         self._memory_store = memory_store
         self._platform_reply_coordinator = platform_reply_coordinator
         self._sop_execution_service = sop_execution_service
-        self._profile_event_extractor = profile_event_extractor
+        self._service_rule_data_service = service_rule_data_service
         self._settings = settings
         self._platform_request_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
         self._platform_request_results: dict[str, tuple[float, ChatResponse]] = {}
         self._platform_request_tasks_lock = asyncio.Lock()
+
+    async def run_v3_takeover_guard(self, request: ChatRequest) -> ChatResponse | None:
+        """Stop V3 before model/tool work when the platform is in human mode."""
+
+        request_context = build_request_context(request)
+        if str(request_context.get("interface_version") or "").lower() != "v3":
+            return None
+        if is_isolated_v2_test_request(request, request_context):
+            return None
+        if not self._outreach_system_client or not self._outreach_system_client.available:
+            request_context["takeover_guard"] = {
+                "checked": False,
+                "decision": "continue_ai",
+                "reason": "outreach_system_not_configured",
+            }
+            request.request_context = request_context
+            return None
+
+        try:
+            status = await self._outreach_system_client.conversation_status(
+                corp_id=str(request.corp_id or ""),
+                customer_id=str(request.customer_id or request.external_userid or ""),
+                external_userid=str(request.external_userid or request.customer_id or ""),
+                user_id=str(request.user_id or ""),
+                wechat=str(request.wechat or ""),
+                ai_profile_id=str(request_context.get("ai_profile_id") or ""),
+                plan_id=str(request_context.get("plan_id") or ""),
+            )
+        except Exception as exc:
+            request_context["takeover_guard"] = {
+                "checked": False,
+                "decision": "continue_ai",
+                "reason": "status_query_failed",
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+            }
+            request.request_context = request_context
+            return None
+
+        data = status.get("data") if isinstance(status.get("data"), dict) else {}
+        takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
+        human_mode = bool(takeover.get("is_human")) or str(takeover.get("mode") or "").lower() == "human"
+        request_context["takeover_guard"] = {
+            "checked": True,
+            "decision": "return_empty" if human_mode else "continue_ai",
+            "mode": str(takeover.get("mode") or ""),
+            "handoff_status": str(takeover.get("handoff_status") or ""),
+            "reason_code": str(takeover.get("reason_code") or ""),
+            "reason": str(takeover.get("reason") or ""),
+        }
+        request.request_context = request_context
+        if not human_mode:
+            return None
+
+        request_id = str(uuid4())
+        request_context["test_isolated"] = False
+        request_context["memory_persist_allowed"] = True
+        conversation_id = self._prepare_conversation(request, request_id, request_context)
+        self._start_run_tracking(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            request_context=request_context,
+        )
+        state = self._initial_state(request, request_id, request_context)
+        state["reply_messages"] = []
+        state["reply_source"] = "human_takeover_guard"
+        state["takeover_guard"] = dict(request_context["takeover_guard"])
+        state.setdefault("trace", []).append(
+            {
+                "node": "human_takeover_guard",
+                "decision": "no_reply",
+                "reason": "platform_human_takeover_active",
+                "takeover": dict(request_context["takeover_guard"]),
+            }
+        )
+        _set_sync_return(state, "empty", [])
+        if self._service_rule_data_service:
+            try:
+                state["strategy_data_callback"] = self._service_rule_data_service.enqueue_customer_open(
+                    state,
+                    allow_empty_reply=True,
+                )
+            except Exception as exc:
+                state["strategy_data_callback"] = {
+                    "status": "error",
+                    "reason": f"{type(exc).__name__}: {exc}"[:500],
+                }
+        return self._persist_and_build_response(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            final_state=state,
+            allow_empty_reply=True,
+        )
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
         request_id = str(uuid4())
@@ -146,7 +244,8 @@ class ChatRuntime:
     ) -> ChatResponse:
         request_id = str(uuid4())
         request_context = build_request_context(request)
-        request_context["memory_persist_allowed"] = True
+        request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
+        request_context["memory_persist_allowed"] = not request_context["test_isolated"]
         conversation_id = self._prepare_conversation(request, request_id, request_context)
         self._start_run_tracking(
             request=request,
@@ -193,6 +292,32 @@ class ChatRuntime:
         if decision and self._platform_reply_coordinator:
             initial_state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
 
+        # A recalled customer message is a platform protocol event, not a
+        # customer utterance. It must not consume model capacity or produce a
+        # customer-visible reply.
+        if is_platform_recalled_message(effective_request.content):
+            initial_state["reply_messages"] = []
+            initial_state["reply_source"] = "platform_recalled_message"
+            initial_state.setdefault("trace", []).append(
+                {
+                    "node": "platform_protocol_filter",
+                    "decision": "no_reply",
+                    "reason": "customer_message_recalled",
+                }
+            )
+            _set_sync_return(initial_state, "empty", [])
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=initial_state,
+                allow_empty_reply=True,
+            )
+
+        # WeCom sends this fixed sentence when a friend is added. It is a
+        # platform protocol event, not a customer question.
         if is_platform_auto_opening_message(effective_request.content):
             initial_state["reply_messages"] = []
             initial_state["reply_source"] = "ignored_platform_auto_message"
@@ -214,161 +339,137 @@ class ChatRuntime:
                 allow_empty_reply=True,
             )
 
-        self._update_run_progress(request_id, "sop_gate")
-        sop_gate = await self._evaluate_sop_gate(effective_request, request_id, effective_context)
-        initial_state["sop_gate"] = sop_gate
-        initial_state["sop_gate_decision"] = {
-            "route": str(sop_gate.get("route") or sop_gate.get("mode") or ""),
-            "coverage": str(sop_gate.get("coverage") or ""),
-            "reason": str(sop_gate.get("reason") or ""),
-            "scene_decision": dict(sop_gate.get("scene_decision") or {})
-            if isinstance(sop_gate.get("scene_decision"), dict)
-            else {},
-            "task": dict(sop_gate.get("active_task") or {})
-            if isinstance(sop_gate.get("active_task"), dict)
-            else {},
-            "priority_question_id": str(sop_gate.get("priority_question_id") or ""),
-            "selected_scene_id": str(
-                sop_gate.get("selected_scene_id") or sop_gate.get("priority_question_id") or ""
-            ),
-            "resume_stage": str(sop_gate.get("resume_stage") or ""),
-            "sop_pack_id": str(sop_gate.get("sop_pack_id") or ""),
-            "sop_message_types": [
-                str(message.get("type") or "")
-                for message in (sop_gate.get("reply_messages") or [])
-                if isinstance(message, dict) and str(message.get("type") or "")
-            ],
-            "sop_image_count": sum(
-                1
-                for message in (sop_gate.get("reply_messages") or [])
-                if isinstance(message, dict) and str(message.get("type") or "") == "image"
-            ),
-            "source": "chat_sop_gate_model",
-            "safety_decision": dict(sop_gate.get("safety_decision") or {})
-            if isinstance(sop_gate.get("safety_decision"), dict)
-            else {},
-            "scene_decision": dict(sop_gate.get("scene_decision") or {})
-            if isinstance(sop_gate.get("scene_decision"), dict)
-            else {},
-        }
-        initial_state["sop_progress_evidence"] = dict(sop_gate.get("sop_progress_evidence") or {})
-        initial_state["sop_gate_candidate_messages"] = [
-            dict(message)
-            for message in (sop_gate.get("reply_messages") or [])
-            if isinstance(message, dict)
-        ]
-        initial_state["sop_delivery_manifest"] = build_sop_delivery_manifest(sop_gate)
-        _append_sop_gate_trace(initial_state, sop_gate)
-        if _sop_gate_terminal_no_reply(sop_gate):
-            terminal_state = dict(initial_state)
-            terminal_state["reply_messages"] = []
-            terminal_state["sync_reply_messages"] = []
-            terminal_state["reply_source"] = str(sop_gate.get("mode") or "sop_gate_no_reply")
-            terminal_state["planner_decision"] = "no_reply"
-            terminal_state["planner_stage"] = "SOP_GATE"
-            terminal_state["planner_sub_rule_id"] = str(sop_gate.get("reason") or "")
-            terminal_state["async_final_reply"] = {
-                "scheduled": False,
-                "status": "not_required",
-                "reason": str(sop_gate.get("reason") or ""),
-            }
-            _set_sync_return(terminal_state, "empty", [])
-            if self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-            return self._persist_and_build_response(
-                request=request,
-                request_id=request_id,
-                conversation_id=conversation_id,
-                final_state=terminal_state,
-                allow_empty_reply=True,
-            )
-
-        if _sop_gate_direct_reply(sop_gate):
-            direct_state = self._sop_reply_state(initial_state, sop_gate)
-            direct_state = await self._apply_platform_freshness_guard(
-                request=effective_request,
-                state=direct_state,
-                control_record=control_record,
-            )
-            response = self._persist_and_build_response(
-                request=request,
-                request_id=request_id,
-                conversation_id=conversation_id,
-                final_state=direct_state,
-                allow_empty_reply=False,
-            )
-            if self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-            return response
-
         try:
-            planner_state = await self._run_planner_graph_with_preemption(initial_state, control_record)
+            final_state = await self._run_graph_with_preemption(
+                self._full_graph,
+                initial_state,
+                control_record,
+                phase="full",
+            )
         except Exception as exc:
-            if self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-            planner_state = self._handle_graph_exception(initial_state, exc)
-        _preserve_reply_control(planner_state, initial_state)
+            final_state = self._handle_graph_exception(initial_state, exc)
+        _preserve_reply_control(final_state, initial_state)
         if (
             control_record
             and self._platform_reply_coordinator
             and await self._platform_reply_coordinator.is_superseded(control_record)
         ):
-            planner_state = self._superseded_state(initial_state, control_record)
-            return self._persist_and_build_response(
-                request=request,
-                request_id=request_id,
-                conversation_id=conversation_id,
-                final_state=planner_state,
-                allow_empty_reply=True,
-            )
-
-        sync_messages = _planner_sync_reply_messages(planner_state)
-        planner_state["reply_messages"] = sync_messages
-        planner_state["sync_reply_messages"] = sync_messages
-        planner_state["reply_source"] = _platform_reply_source(planner_state)
-        should_finalize = _should_run_async_finalize(planner_state)
-        _set_sync_return(planner_state, _sync_return_type(planner_state), sync_messages)
-        if should_finalize:
-            final_state = await self._run_finalize_sync(
-                request=request,
-                conversation_id=conversation_id,
-                planner_state=planner_state,
-                control_record=control_record,
-            )
+            final_state = self._superseded_state(initial_state, control_record)
+            await self._platform_reply_coordinator.complete(control_record)
             return self._persist_and_build_response(
                 request=request,
                 request_id=request_id,
                 conversation_id=conversation_id,
                 final_state=final_state,
-                allow_empty_reply=False,
+                allow_empty_reply=True,
             )
-        planner_state["async_final_reply"] = {
-            "scheduled": False,
-            "status": "not_required",
-        }
-        _set_async_final_control(planner_state, planner_state["async_final_reply"])
-        planner_state = await self._apply_platform_freshness_guard(
-            request=request,
-            state=planner_state,
-            control_record=control_record,
-        )
+
+        final_state = await self._commit_after_reply_validation(final_state)
+
+        final_state["sync_reply_messages"] = list(final_state.get("reply_messages") or [])
+        final_state.setdefault("async_final_reply", {"scheduled": False, "status": "not_required"})
+        _set_sync_return(final_state, _sync_return_type(final_state), final_state["sync_reply_messages"])
         response = self._persist_and_build_response(
             request=request,
             request_id=request_id,
             conversation_id=conversation_id,
-            final_state=planner_state,
+            final_state=final_state,
             allow_empty_reply=False,
         )
         if self._platform_reply_coordinator:
             await self._platform_reply_coordinator.complete(control_record)
-        if sync_messages:
-            self._schedule_background_profile_update(
-                conversation_id=conversation_id,
-                state=planner_state,
-                background_tasks=background_tasks,
-                reason="planner_sync_reply",
-            )
         return response
+
+    async def _commit_after_reply_validation(self, state: AgentState) -> AgentState:
+        if self._commit_graph is None or not state.get("reply_messages"):
+            return state
+        if bool(state.get("test_isolated")):
+            isolated_state: AgentState = dict(state)
+            isolated_state["trace"] = list(state.get("trace") or [])
+            isolated_state["errors"] = list(state.get("errors") or [])
+            isolated_state["commit_result"] = {
+                "status": "skipped",
+                "reason": "test_isolated",
+            }
+            isolated_state["trace"].append(
+                {
+                    "node": "commit_coordinator",
+                    "status": "skipped",
+                    "reason": "test_isolated",
+                }
+            )
+            return isolated_state
+        commit_state: AgentState = dict(state)
+        commit_state["trace"] = list(state.get("trace") or [])
+        commit_state["errors"] = list(state.get("errors") or [])
+        try:
+            return await self._invoke_graph_with_budget(self._commit_graph, commit_state, phase="commit")
+        except Exception as exc:
+            commit_state.setdefault("errors", []).append(
+                {
+                    "node": "commit_coordinator",
+                    "message": "deferred_commit_failed_after_valid_reply",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            commit_state["commit_result"] = {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            return commit_state
+
+    def finalize_async_message_delivery(self, dispatch: dict[str, Any]) -> None:
+        """Persist facts only after the platform confirms an asynchronous send."""
+
+        if str(dispatch.get("status") or "") != "send_succeeded":
+            return
+        context = dispatch.get("source_context") if isinstance(dispatch.get("source_context"), dict) else {}
+        reply_messages = dispatch.get("reply_messages") if isinstance(dispatch.get("reply_messages"), list) else []
+        conversation_id = str(dispatch.get("conversation_id") or "").strip()
+        assistant_request_id = str(
+            context.get("assistant_request_id") or dispatch.get("source_request_id") or ""
+        ).strip()
+        if conversation_id and assistant_request_id and reply_messages:
+            safe_repository_call(
+                self._repository.add_assistant_message,
+                conversation_id=conversation_id,
+                request_id=assistant_request_id,
+                reply_messages=reply_messages,
+            )
+        if not bool(context.get("memory_persist_allowed")) or not self._memory_store:
+            return
+        sales_contact_key = str(context.get("sales_contact_key") or "").strip()
+        if not sales_contact_key:
+            return
+        case_record = context.get("case_image_record") if isinstance(context.get("case_image_record"), dict) else {}
+        if case_record.get("document_ids"):
+            self._memory_store.record_case_images_sent(
+                sales_contact_key,
+                document_ids=case_record.get("document_ids") or [],
+                image_urls=case_record.get("image_urls") or [],
+                request_id=str(dispatch.get("source_request_id") or ""),
+            )
+        activity_record = (
+            context.get("activity_intro_record")
+            if isinstance(context.get("activity_intro_record"), dict)
+            else {}
+        )
+        if activity_record.get("image_url"):
+            self._memory_store.record_activity_intro_image_sent(
+                sales_contact_key,
+                image_url=str(activity_record.get("image_url") or ""),
+                request_id=str(dispatch.get("source_request_id") or ""),
+                send_mode=str(activity_record.get("send_mode") or "async"),
+            )
+        store_record = context.get("store_fact_record") if isinstance(context.get("store_fact_record"), dict) else {}
+        for item in store_record.get("records") or []:
+            if isinstance(item, dict) and isinstance(item.get("store"), dict):
+                self._memory_store.record_store_fact(
+                    sales_contact_key,
+                    store=item["store"],
+                    event_type=str(item.get("event_type") or "store_address_sent"),
+                    request_id=str(dispatch.get("source_request_id") or ""),
+                )
 
     async def _evaluate_sop_gate(
         self,
@@ -402,15 +503,18 @@ class ChatRuntime:
         _set_sync_return(state, "sop_reply", messages)
         return state
 
-    async def _run_planner_graph_with_preemption(
+    async def _run_graph_with_preemption(
         self,
+        graph: Any,
         initial_state: AgentState,
         control_record: PlatformReplyRecord | None,
+        *,
+        phase: str,
     ) -> AgentState:
         if not control_record:
-            return await self._invoke_graph_with_budget(self._planner_graph, initial_state, phase="planner")
+            return await self._invoke_graph_with_budget(graph, initial_state, phase=phase)
         graph_task = asyncio.create_task(
-            self._invoke_graph_with_budget(self._planner_graph, initial_state, phase="planner")
+            self._invoke_graph_with_budget(graph, initial_state, phase=phase)
         )
         cancel_task = asyncio.create_task(control_record.cancel_event.wait())
         done, pending = await asyncio.wait({graph_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -434,631 +538,6 @@ class ChatRuntime:
             state["reply_control"] = self._platform_reply_coordinator.control_for_superseded(control_record)
         _set_sync_return(state, "empty", [])
         return state
-
-    async def _run_finalize_sync(
-        self,
-        *,
-        request: ChatRequest,
-        conversation_id: str,
-        planner_state: AgentState,
-        control_record: PlatformReplyRecord | None = None,
-    ) -> AgentState:
-        if not self._finalize_graph:
-            planner_state["async_final_reply"] = {"scheduled": False, "status": "skipped", "reason": "finalize_graph_missing"}
-            _set_async_final_control(planner_state, planner_state["async_final_reply"])
-            if self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-            return planner_state
-
-        final_state: AgentState = dict(planner_state)
-        final_state["trace"] = list(planner_state.get("trace") or [])
-        final_state["errors"] = list(planner_state.get("errors") or [])
-        try:
-            if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
-                state = self._superseded_state(planner_state, control_record) if control_record else final_state
-                if self._platform_reply_coordinator:
-                    await self._platform_reply_coordinator.complete(control_record)
-                return state
-            final_state = await self._invoke_graph_with_budget(self._finalize_graph, final_state, phase="reply")
-            _preserve_reply_control(final_state, planner_state)
-            messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-            if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
-                state = self._superseded_state(planner_state, control_record) if control_record else final_state
-                if self._platform_reply_coordinator:
-                    await self._platform_reply_coordinator.complete(control_record)
-                return state
-            final_state = await self._apply_platform_freshness_guard(
-                request=request,
-                state=final_state,
-                control_record=control_record,
-            )
-            if _final_state_superseded(final_state):
-                return final_state
-            messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-            if not messages and not bool(final_state.get("reply_blocked")):
-                messages = _deterministic_final_fallback_messages(final_state)
-                final_state["reply_messages"] = messages
-                final_state["reply_source"] = "deterministic_sync_empty_reply_fallback"
-                final_state.setdefault("warnings", []).append(
-                    {"node": "sync_final_reply", "message": "empty_final_reply_recovered_before_return"}
-                )
-            result = {
-                "scheduled": False,
-                "status": "blocked" if final_state.get("reply_blocked") else "completed_sync",
-                "reason": "reply_contract_blocked" if final_state.get("reply_blocked") else "platform_sync_final_reply",
-                "reply_messages": messages,
-            }
-            final_state["async_final_reply"] = result
-            _set_sync_return(final_state, "final_reply", messages)
-            _set_async_final_control(final_state, result)
-            _append_sync_final_trace(final_state, result)
-            return final_state
-        except Exception as exc:
-            final_state.setdefault("errors", []).append(
-                {"node": "sync_final_reply", "message": "sync_final_reply_failed", "detail": f"{type(exc).__name__}: {exc}"}
-            )
-            recovered = self._handle_graph_exception(final_state, exc)
-            _preserve_reply_control(recovered, final_state)
-            result = {
-                "scheduled": False,
-                "status": "error_recovered_sync",
-                "error": f"{type(exc).__name__}: {exc}",
-                "reply_messages": recovered.get("reply_messages", []),
-            }
-            recovered["async_final_reply"] = result
-            _set_sync_return(recovered, "final_reply", recovered.get("reply_messages", []))
-            _set_async_final_control(recovered, result)
-            _append_sync_final_trace(recovered, result)
-            return recovered
-        finally:
-            if self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-
-    async def _apply_platform_freshness_guard(
-        self,
-        *,
-        request: ChatRequest,
-        state: AgentState,
-        control_record: PlatformReplyRecord | None,
-    ) -> AgentState:
-        """Drop a completed reply when the platform conversation already moved on."""
-
-        if not control_record or not self._outreach_send_client:
-            return state
-        if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
-            return self._superseded_state(state, control_record)
-
-        params = conversation_fetch_params(
-            state,
-            request_context=state.get("request_context") if isinstance(state.get("request_context"), dict) else {},
-            limit=50,
-        )
-        started_at = time.perf_counter()
-        try:
-            result = await self._outreach_send_client.fetch_conversation(**params)
-        except Exception as exc:
-            result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-        messages = result.get("messages") if isinstance(result, dict) and isinstance(result.get("messages"), list) else []
-        comparison = newer_conversation_activity_after_trigger(
-            messages,
-            trigger_message_id=control_record.message_id,
-            trigger_events=control_record.merged_input_events,
-        )
-        fetch_status = str(result.get("status") or "failed") if isinstance(result, dict) else "failed"
-        freshness = {
-            "status": "checked" if fetch_status == "ok" and comparison.get("status") != "unavailable" else "unavailable",
-            "fetch_status": fetch_status,
-            "trigger_message_id": control_record.message_id,
-            "newer_customer_message": bool(comparison.get("newer_customer_message")),
-            "newer_assistant_message": bool(comparison.get("newer_assistant_message")),
-            "newer_message_refs": list(comparison.get("newer_customer_message_refs") or []),
-            "newer_assistant_message_refs": list(comparison.get("newer_assistant_message_refs") or []),
-            "reason": str(comparison.get("reason") or result.get("reason") or result.get("error") or "")[:500],
-            "duration_ms": int((time.perf_counter() - started_at) * 1000),
-        }
-        state["reply_freshness_check"] = freshness
-        _append_platform_freshness_trace(state, freshness)
-        if fetch_status == "ok" and (
-            comparison.get("newer_customer_message") or comparison.get("newer_assistant_message")
-        ):
-            stale_state = self._superseded_state(state, control_record)
-            stale_state["trace"] = list(state.get("trace") or [])
-            stale_state["errors"] = list(state.get("errors") or [])
-            stale_state["warnings"] = list(state.get("warnings") or [])
-            stale_state["reply_freshness_check"] = {
-                **freshness,
-                "status": "superseded",
-                "reason": (
-                    "newer_customer_message_detected_after_trigger"
-                    if comparison.get("newer_customer_message")
-                    else "newer_assistant_message_detected_after_trigger"
-                ),
-            }
-            stale_state["reply_source"] = "platform_superseded"
-            return stale_state
-        if freshness["status"] == "unavailable":
-            state.setdefault("warnings", []).append(
-                {
-                    "node": "platform_reply_freshness",
-                    "message": "freshness_check_unavailable",
-                    "detail": freshness,
-                }
-            )
-        return state
-
-    async def _run_sop_ai_reply_sync(
-        self,
-        *,
-        request: ChatRequest,
-        conversation_id: str,
-        initial_state: AgentState,
-        sop_state: AgentState,
-        control_record: PlatformReplyRecord | None = None,
-    ) -> AgentState:
-        async_state: AgentState = dict(initial_state)
-        async_state["trace"] = list(initial_state.get("trace") or [])
-        async_state["errors"] = list(initial_state.get("errors") or [])
-        async_context = dict(async_state.get("request_context") if isinstance(async_state.get("request_context"), dict) else {})
-        async_context["skip_sop_gate"] = True
-        async_context["async_origin"] = "sop_gate_ai_reply"
-        async_context["sync_final_mode"] = True
-        async_state["request_context"] = async_context
-        sop_messages = sop_state.get("reply_messages") if isinstance(sop_state.get("reply_messages"), list) else []
-        try:
-            if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
-                state = self._superseded_state(initial_state, control_record) if control_record else async_state
-                if self._platform_reply_coordinator:
-                    await self._platform_reply_coordinator.complete(control_record)
-                return state
-            final_state = await self._invoke_graph_with_budget(self._full_graph, async_state, phase="full")
-            _preserve_reply_control(final_state, initial_state)
-            ai_messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-            if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
-                state = self._superseded_state(initial_state, control_record) if control_record else final_state
-                if self._platform_reply_coordinator:
-                    await self._platform_reply_coordinator.complete(control_record)
-                return state
-            ai_reply_usable = _ai_reply_usable_before_sop(final_state, ai_messages)
-            authorized_sop_messages = _payment_authorized_reply_messages(
-                sop_messages,
-                payment_decision=final_state.get("payment_decision"),
-            )
-            if ai_reply_usable:
-                messages = _merge_ai_then_sop_reply_messages(
-                    ai_messages,
-                    authorized_sop_messages,
-                    payment_decision=final_state.get("payment_decision"),
-                )
-                _confirm_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    sop_state,
-                    request_id=str(final_state.get("request_id") or initial_state.get("request_id") or ""),
-                    reply_messages=authorized_sop_messages,
-                )
-                result_reason = "ai_reply_then_sop_returned_with_response"
-            elif authorized_sop_messages:
-                messages = list(authorized_sop_messages)
-                final_state["reply_source"] = "sop_gate_sync_sop_fallback_after_ai_unavailable"
-                _confirm_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    sop_state,
-                    request_id=str(final_state.get("request_id") or initial_state.get("request_id") or ""),
-                    reply_messages=authorized_sop_messages,
-                )
-                final_state.setdefault("warnings", []).append(
-                    {"node": "sop_gate_sync_ai_reply", "message": "sop_sent_after_ai_reply_unavailable"}
-                )
-                result_reason = "sop_returned_after_ai_reply_unavailable"
-            else:
-                messages = _deterministic_final_fallback_messages(final_state)
-                final_state["reply_source"] = "deterministic_sop_sync_empty_ai_reply_fallback"
-                _fail_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    sop_state,
-                    error="ai_reply_unavailable_before_sop_send",
-                )
-                final_state.setdefault("warnings", []).append(
-                    {"node": "sop_gate_sync_ai_reply", "message": "sop_withheld_because_ai_reply_unavailable"}
-                )
-                result_reason = "sop_withheld_after_empty_ai_reply"
-            final_state["reply_messages"] = messages
-            result = {
-                "scheduled": False,
-                "status": "completed_sync",
-                "reason": result_reason,
-                "reply_messages": messages,
-            }
-            final_state["async_final_reply"] = result
-            _set_sync_return(final_state, "sop_reply_with_ai", messages)
-            _set_async_final_control(final_state, result)
-            _append_sync_final_trace(final_state, result)
-            return final_state
-        except Exception as exc:
-            async_state.setdefault("errors", []).append(
-                {"node": "sop_gate_sync_ai_reply", "message": "sop_gate_sync_ai_failed", "detail": f"{type(exc).__name__}: {exc}"}
-            )
-            fallback_messages = _deterministic_final_fallback_messages(async_state)
-            async_state["reply_source"] = "deterministic_sop_sync_exception_fallback"
-            _fail_deferred_chat_sop_task(
-                self._sop_execution_service,
-                sop_state,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            result_reason = "sop_withheld_after_ai_exception"
-            async_state["reply_messages"] = fallback_messages
-            result = {
-                "scheduled": False,
-                "status": "error_recovered_sync",
-                "reason": result_reason,
-                "error": f"{type(exc).__name__}: {exc}",
-                "reply_messages": fallback_messages,
-            }
-            async_state["async_final_reply"] = result
-            _set_sync_return(async_state, "sop_reply_with_ai", fallback_messages)
-            _set_async_final_control(async_state, result)
-            _append_sync_final_trace(async_state, result)
-            return async_state
-        finally:
-            if self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-
-    def _schedule_async_finalize_and_send(
-        self,
-        *,
-        request: ChatRequest,
-        conversation_id: str,
-        planner_state: AgentState,
-        control_record: PlatformReplyRecord | None = None,
-        background_tasks: Any | None = None,
-    ) -> None:
-        if not self._finalize_graph:
-            planner_state["async_final_reply"] = {"scheduled": False, "status": "skipped", "reason": "finalize_graph_missing"}
-            self._save_state(conversation_id, planner_state)
-            return
-
-        async def runner() -> None:
-            final_state = dict(planner_state)
-            final_state["trace"] = list(planner_state.get("trace") or [])
-            final_state["errors"] = list(planner_state.get("errors") or [])
-            try:
-                if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
-                    skipped = _async_superseded_result()
-                    final_state["async_final_reply"] = skipped
-                    _set_async_final_control(final_state, skipped)
-                    _append_async_send_trace(final_state, skipped)
-                    self._save_state(conversation_id, final_state)
-                    return
-                final_state = await self._invoke_graph_with_budget(self._finalize_graph, final_state, phase="reply")
-                _preserve_reply_control(final_state, planner_state)
-                messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-                if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
-                    skipped = {**_async_superseded_result(), "reply_messages": messages}
-                    final_state["async_final_reply"] = skipped
-                    _set_async_final_control(final_state, skipped)
-                    _append_async_send_trace(final_state, skipped)
-                    self._save_state(conversation_id, final_state)
-                    return
-                if not messages:
-                    messages = _deterministic_final_fallback_messages(final_state)
-                    final_state["reply_messages"] = messages
-                    final_state["reply_source"] = "deterministic_async_empty_reply_fallback"
-                    final_state.setdefault("warnings", []).append(
-                        {"node": "async_final_reply", "message": "empty_final_reply_recovered_before_send"}
-                    )
-                send_result = await self._send_async_reply(request, final_state, messages)
-                send_result["reply_messages"] = messages
-                final_state["async_final_reply"] = send_result
-                _set_async_final_control(final_state, send_result)
-                _append_async_send_trace(final_state, send_result)
-                if send_result.get("status") == "sent" and not bool(final_state.get("test_isolated")):
-                    safe_repository_call(
-                        self._repository.add_assistant_message,
-                        conversation_id=conversation_id,
-                        request_id=f"{final_state.get('request_id')}:async",
-                        reply_messages=messages,
-                    )
-                    if _memory_persistence_allowed(final_state):
-                        _record_sent_case_images(
-                            self._memory_store,
-                            final_state,
-                            customer_id=str(final_state.get("sales_contact_key") or ""),
-                            reply_messages=messages,
-                        )
-                        _record_activity_intro_image(
-                            self._memory_store,
-                            final_state,
-                            customer_id=str(final_state.get("sales_contact_key") or ""),
-                            reply_messages=messages,
-                            send_mode="async",
-                        )
-                        _record_visible_store_facts(
-                            self._memory_store,
-                            final_state,
-                            customer_id=str(final_state.get("sales_contact_key") or ""),
-                            reply_messages=messages,
-                        )
-                self._save_state(conversation_id, final_state)
-            except Exception as exc:
-                error = {"scheduled": True, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
-                final_state.setdefault("errors", []).append({"node": "async_final_reply", "message": "async_final_reply_failed", "detail": error["error"]})
-                await self._recover_async_exception_and_send(
-                    request=request,
-                    conversation_id=conversation_id,
-                    state=final_state,
-                    original_error=error,
-                )
-                self._save_state(conversation_id, final_state)
-            finally:
-                if self._platform_reply_coordinator:
-                    await self._platform_reply_coordinator.complete(control_record)
-
-        if background_tasks is not None:
-            background_tasks.add_task(runner)
-        else:
-            asyncio.create_task(runner())
-
-    def _schedule_async_full_ai_and_send(
-        self,
-        *,
-        request: ChatRequest,
-        conversation_id: str,
-        initial_state: AgentState,
-        control_record: PlatformReplyRecord | None = None,
-        background_tasks: Any | None = None,
-    ) -> None:
-        async def runner() -> None:
-            async_state: AgentState = dict(initial_state)
-            async_state["trace"] = list(initial_state.get("trace") or [])
-            async_state["errors"] = list(initial_state.get("errors") or [])
-            async_context = dict(async_state.get("request_context") if isinstance(async_state.get("request_context"), dict) else {})
-            async_context["skip_sop_gate"] = True
-            async_context["async_origin"] = "sop_gate_ai_reply"
-            async_state["request_context"] = async_context
-            try:
-                if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
-                    skipped = _async_superseded_result()
-                    async_state["async_final_reply"] = skipped
-                    _set_async_final_control(async_state, skipped)
-                    _append_async_send_trace(async_state, skipped)
-                    self._save_state(conversation_id, async_state)
-                    return
-                final_state = await self._invoke_graph_with_budget(self._full_graph, async_state, phase="full")
-                _preserve_reply_control(final_state, initial_state)
-                messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-                if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
-                    skipped = {**_async_superseded_result(), "reply_messages": messages}
-                    final_state["async_final_reply"] = skipped
-                    _set_async_final_control(final_state, skipped)
-                    _append_async_send_trace(final_state, skipped)
-                    self._save_state(conversation_id, final_state)
-                    return
-                if not messages:
-                    messages = _deterministic_final_fallback_messages(final_state)
-                    final_state["reply_messages"] = messages
-                    final_state["reply_source"] = "deterministic_async_empty_reply_fallback"
-                    final_state.setdefault("warnings", []).append(
-                        {"node": "sop_gate_async_ai_reply", "message": "empty_full_ai_reply_recovered_before_send"}
-                    )
-                send_result = await self._send_async_reply(request, final_state, messages)
-                send_result["reply_messages"] = messages
-                final_state["async_final_reply"] = send_result
-                _set_async_final_control(final_state, send_result)
-                _append_async_send_trace(final_state, send_result)
-                if send_result.get("status") == "sent" and not bool(final_state.get("test_isolated")):
-                    safe_repository_call(
-                        self._repository.add_assistant_message,
-                        conversation_id=conversation_id,
-                        request_id=f"{final_state.get('request_id')}:sop_async",
-                        reply_messages=messages,
-                    )
-                    if _memory_persistence_allowed(final_state):
-                        _record_sent_case_images(
-                            self._memory_store,
-                            final_state,
-                            customer_id=str(final_state.get("sales_contact_key") or ""),
-                            reply_messages=messages,
-                        )
-                        _record_activity_intro_image(
-                            self._memory_store,
-                            final_state,
-                            customer_id=str(final_state.get("sales_contact_key") or ""),
-                            reply_messages=messages,
-                            send_mode="async",
-                        )
-                        _record_visible_store_facts(
-                            self._memory_store,
-                            final_state,
-                            customer_id=str(final_state.get("sales_contact_key") or ""),
-                            reply_messages=messages,
-                        )
-                self._save_state(conversation_id, final_state)
-            except Exception as exc:
-                error = {"scheduled": True, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
-                async_state.setdefault("errors", []).append({"node": "sop_gate_async_ai_reply", "message": "sop_gate_async_ai_failed", "detail": error["error"]})
-                await self._recover_async_exception_and_send(
-                    request=request,
-                    conversation_id=conversation_id,
-                    state=async_state,
-                    original_error=error,
-                )
-                self._save_state(conversation_id, async_state)
-            finally:
-                if self._platform_reply_coordinator:
-                    await self._platform_reply_coordinator.complete(control_record)
-
-        if background_tasks is not None:
-            background_tasks.add_task(runner)
-        else:
-            asyncio.create_task(runner())
-
-    async def _send_async_reply(self, request: ChatRequest, final_state: AgentState, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        if not self._outreach_send_client:
-            return {"scheduled": True, "status": "skipped", "reason": "outreach_send_client_missing"}
-        request_context = final_state.get("request_context") if isinstance(final_state.get("request_context"), dict) else {}
-        conversation_id = conversation_id_from_request(request, request_context)
-        source_context = {
-            "assistant_request_id": f"{final_state.get('request_id')}:async",
-            "sales_contact_key": str(final_state.get("sales_contact_key") or ""),
-            "memory_persist_allowed": _memory_persistence_allowed(final_state),
-            "case_image_record": _case_image_send_record(final_state, messages),
-            "activity_intro_record": _activity_intro_image_record_plan(final_state, messages, send_mode="async"),
-            "store_fact_record": _store_fact_record_plan(final_state, messages),
-        }
-        result = await self._outreach_send_client.send_reply_messages(
-            request_id=str(final_state.get("request_id") or ""),
-            request_context=request_context,
-            fallback_customer_id=request.customer_id,
-            fallback_corp_id=request.corp_id,
-            fallback_user_id=request.user_id,
-            fallback_wechat=request.wechat,
-            fallback_external_userid=request.external_userid,
-            reply_messages=messages,
-            source_channel="ai_async_reply",
-            source_kind="ai_async_reply",
-            source_request_id=str(final_state.get("request_id") or ""),
-            source_task_id=str(final_state.get("request_id") or ""),
-            conversation_id=conversation_id,
-            source_context=source_context,
-            delivery_idempotency_key=f"ai_async_reply:{final_state.get('request_id')}",
-        )
-        result["scheduled"] = True
-        return result
-
-    def finalize_async_message_delivery(self, dispatch: dict[str, Any]) -> None:
-        if str(dispatch.get("status") or "") != "send_succeeded":
-            return
-        context = dispatch.get("source_context") if isinstance(dispatch.get("source_context"), dict) else {}
-        reply_messages = dispatch.get("reply_messages") if isinstance(dispatch.get("reply_messages"), list) else []
-        conversation_id = str(dispatch.get("conversation_id") or "").strip()
-        assistant_request_id = str(context.get("assistant_request_id") or dispatch.get("source_request_id") or "").strip()
-        if conversation_id and assistant_request_id and reply_messages:
-            safe_repository_call(
-                self._repository.add_assistant_message,
-                conversation_id=conversation_id,
-                request_id=assistant_request_id,
-                reply_messages=reply_messages,
-            )
-        if not bool(context.get("memory_persist_allowed")) or not self._memory_store:
-            return
-        sales_contact_key = str(context.get("sales_contact_key") or "").strip()
-        if not sales_contact_key:
-            return
-        case_record = context.get("case_image_record") if isinstance(context.get("case_image_record"), dict) else {}
-        if case_record.get("document_ids"):
-            self._memory_store.record_case_images_sent(
-                sales_contact_key,
-                document_ids=case_record.get("document_ids") or [],
-                image_urls=case_record.get("image_urls") or [],
-                request_id=str(dispatch.get("source_request_id") or ""),
-            )
-        activity_record = context.get("activity_intro_record") if isinstance(context.get("activity_intro_record"), dict) else {}
-        if activity_record.get("image_url"):
-            self._memory_store.record_activity_intro_image_sent(
-                sales_contact_key,
-                image_url=str(activity_record.get("image_url") or ""),
-                request_id=str(dispatch.get("source_request_id") or ""),
-                send_mode=str(activity_record.get("send_mode") or "async"),
-            )
-        store_record = context.get("store_fact_record") if isinstance(context.get("store_fact_record"), dict) else {}
-        for item in store_record.get("records") or []:
-            if isinstance(item, dict) and isinstance(item.get("store"), dict):
-                self._memory_store.record_store_fact(
-                    sales_contact_key,
-                    store=item["store"],
-                    event_type=str(item.get("event_type") or "store_address_sent"),
-                    request_id=str(dispatch.get("source_request_id") or ""),
-                )
-
-    async def _recover_async_exception_and_send(
-        self,
-        *,
-        request: ChatRequest,
-        conversation_id: str,
-        state: AgentState,
-        original_error: dict[str, Any],
-    ) -> None:
-        messages = _deterministic_final_fallback_messages(state)
-        state["reply_messages"] = messages
-        state["reply_source"] = "deterministic_async_exception_fallback"
-        try:
-            send_result = await self._send_async_reply(request, state, messages)
-            send_result["reply_messages"] = messages
-            send_result["recovered_from"] = original_error.get("error", "")
-        except Exception as send_exc:
-            send_result = {
-                **original_error,
-                "scheduled": True,
-                "status": "error",
-                "send_error": f"{type(send_exc).__name__}: {send_exc}",
-                "reply_messages": messages,
-            }
-        state["async_final_reply"] = send_result
-        _set_async_final_control(state, send_result)
-        _append_async_send_trace(state, send_result)
-        if send_result.get("status") == "sent" and not bool(state.get("test_isolated")):
-            safe_repository_call(
-                self._repository.add_assistant_message,
-                conversation_id=conversation_id,
-                request_id=f"{state.get('request_id')}:async_fallback",
-                reply_messages=messages,
-            )
-
-    def _schedule_background_profile_update(
-        self,
-        *,
-        conversation_id: str,
-        state: AgentState,
-        background_tasks: Any | None = None,
-        reason: str,
-    ) -> None:
-        if not self._profile_event_extractor:
-            return
-        if bool(state.get("test_isolated")) or not _memory_persistence_allowed(state):
-            return
-
-        async def runner() -> None:
-            profile_state: AgentState = dict(state)
-            profile_state["trace"] = list(state.get("trace") or [])
-            profile_state.setdefault("background_profile_update", {})["scheduled_reason"] = reason
-            try:
-                output = await self._profile_event_extractor(profile_state)
-                if isinstance(output, dict):
-                    profile_state.update(
-                        {
-                            "profile_update": output.get("profile_update", {}),
-                            "event_updates": output.get("event_updates", []),
-                            "saved_memory": output.get("saved_memory", {}),
-                            "memory_error": output.get("memory_error"),
-                            "background_profile_update": {
-                                "scheduled_reason": reason,
-                                "status": "completed",
-                                "profile_update": output.get("profile_update", {}),
-                                "event_updates": output.get("event_updates", []),
-                                "saved_memory": output.get("saved_memory", {}),
-                                "memory_error": output.get("memory_error"),
-                            },
-                        }
-                    )
-                self._save_state(conversation_id, profile_state)
-            except Exception as exc:
-                profile_state["background_profile_update"] = {
-                    "scheduled_reason": reason,
-                    "status": "error",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-                profile_state.setdefault("errors", []).append(
-                    {
-                        "node": "background_profile_update",
-                        "message": "background_profile_update_failed",
-                        "detail": profile_state["background_profile_update"]["error"],
-                    }
-                )
-                self._save_state(conversation_id, profile_state)
-
-        if background_tasks is not None:
-            background_tasks.add_task(runner)
-        else:
-            asyncio.create_task(runner())
 
     def _prepare_conversation(self, request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> str:
         conversation_id = conversation_id_from_request(request, request_context)
@@ -1166,7 +645,6 @@ class ChatRuntime:
             "test_isolated": test_isolated,
             "memory_persist_allowed": bool(request_context.get("memory_persist_allowed")),
             "runtime_budget": build_runtime_budget(self._settings),
-            "reply_governance": reply_governance_flags(self._settings),
             "trace": [],
             "errors": [],
         }
@@ -1201,53 +679,6 @@ class ChatRuntime:
             _set_sync_return(final_state, "empty", [])
             allow_empty_reply = True
         raw_reply_messages = final_state.get("reply_messages") or []
-        gate = final_state.get("sop_gate") if isinstance(final_state.get("sop_gate"), dict) else {}
-        gate_task = gate.get("task") if isinstance(gate.get("task"), dict) else {}
-        if str(gate_task.get("status") or "") == "pending":
-            reply_source = str(final_state.get("reply_source") or "")
-            authorized_manifest = (
-                final_state.get("authorized_sop_delivery_manifest")
-                if isinstance(final_state.get("authorized_sop_delivery_manifest"), dict)
-                else {}
-            )
-            manifest_fallback_sent = (
-                reply_source == "deterministic_authorized_sop_manifest_fallback"
-                and raw_reply_messages
-                and authorized_manifest.get("active")
-            )
-            if (
-                bool(final_state.get("reply_blocked"))
-                or (final_state.get("errors") and not manifest_fallback_sent)
-                or (reply_source.startswith("deterministic_") and not manifest_fallback_sent)
-            ):
-                _fail_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    final_state,
-                    error=str(final_state.get("recovery_reason") or reply_source or "unified_reply_chain_failed"),
-                )
-            elif manifest_fallback_sent or (raw_reply_messages and authorized_manifest.get("active")):
-                _confirm_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    final_state,
-                    request_id=request_id,
-                    reply_messages=[item for item in raw_reply_messages if isinstance(item, dict)],
-                )
-            else:
-                delivery_decision = (
-                    authorized_manifest.get("delivery_decision")
-                    if isinstance(authorized_manifest.get("delivery_decision"), dict)
-                    else {}
-                )
-                _fail_deferred_chat_sop_task(
-                    self._sop_execution_service,
-                    final_state,
-                    error=(
-                        "planner_"
-                        + str(delivery_decision.get("action") or authorized_manifest.get("reason") or "sop_not_delivered")
-                    ),
-                )
-        if bool(final_state.get("reply_blocked")):
-            allow_empty_reply = True
         if not raw_reply_messages and not allow_empty_reply:
             final_state.setdefault("errors", []).append(
                 {
@@ -1258,34 +689,96 @@ class ChatRuntime:
             raw_reply_messages = _deterministic_final_fallback_messages(final_state)
             final_state["reply_messages"] = raw_reply_messages
             final_state["reply_source"] = "deterministic_empty_reply_fallback"
+            _set_sync_return(final_state, "final_reply", raw_reply_messages)
+        follow_knowledge_callback = adopted_follow_knowledge_metadata(final_state)
+        if follow_knowledge_callback:
+            final_state["follow_knowledge_callback"] = follow_knowledge_callback
+        else:
+            final_state.pop("follow_knowledge_callback", None)
         reply_messages = [ReplyMessage(**message) for message in raw_reply_messages]
+        reply_message_dicts = [message.model_dump() for message in reply_messages]
         if reply_messages and not bool(final_state.get("test_isolated")):
             safe_repository_call(
                 self._repository.add_assistant_message,
                 conversation_id=conversation_id,
                 request_id=request_id,
-                reply_messages=[message.model_dump() for message in reply_messages],
+                reply_messages=reply_message_dicts,
             )
             if _memory_persistence_allowed(final_state):
+                _record_authoritative_payment_fact(
+                    self._memory_store,
+                    final_state,
+                    customer_id=str(final_state.get("sales_contact_key") or ""),
+                )
                 _record_sent_case_images(
                     self._memory_store,
                     final_state,
                     customer_id=str(final_state.get("sales_contact_key") or ""),
-                    reply_messages=[message.model_dump() for message in reply_messages],
+                    reply_messages=reply_message_dicts,
                 )
                 _record_activity_intro_image(
                     self._memory_store,
                     final_state,
                     customer_id=str(final_state.get("sales_contact_key") or ""),
-                    reply_messages=[message.model_dump() for message in reply_messages],
+                    reply_messages=reply_message_dicts,
                     send_mode="sync",
                 )
                 _record_visible_store_facts(
                     self._memory_store,
                     final_state,
                     customer_id=str(final_state.get("sales_contact_key") or ""),
-                    reply_messages=[message.model_dump() for message in reply_messages],
+                    reply_messages=reply_message_dicts,
                 )
+                try:
+                    _record_v2_reply_model_observation(
+                        self._memory_store,
+                        final_state,
+                        customer_id=str(final_state.get("sales_contact_key") or ""),
+                    )
+                except Exception as exc:
+                    final_state.setdefault("warnings", []).append(
+                        {
+                            "node": "v2_reply_model_observation",
+                            "message": "observation_persistence_failed",
+                            "detail": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                try:
+                    _record_follow_knowledge_match(
+                        self._memory_store,
+                        final_state,
+                        customer_id=str(final_state.get("sales_contact_key") or ""),
+                    )
+                    _record_follow_knowledge_usage(
+                        self._memory_store,
+                        final_state,
+                        customer_id=str(final_state.get("sales_contact_key") or ""),
+                    )
+                except Exception as exc:
+                    final_state.setdefault("warnings", []).append(
+                        {
+                            "node": "follow_knowledge_usage",
+                            "message": "knowledge_usage_persistence_failed",
+                            "detail": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+            if self._service_rule_data_service:
+                try:
+                    final_state["strategy_data_callback"] = (
+                        self._service_rule_data_service.enqueue_customer_open(final_state)
+                    )
+                except Exception as exc:
+                    final_state["strategy_data_callback"] = {
+                        "status": "error",
+                        "reason": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                    final_state.setdefault("warnings", []).append(
+                        {
+                            "node": "strategy_data_callback",
+                            "message": "strategy_data_callback_enqueue_failed",
+                            "detail": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
         elif reply_messages:
             final_state["case_image_send_record"] = {
                 "status": "skipped",
@@ -1337,13 +830,23 @@ class ChatRuntime:
                 "policy_match_level": final_state.get("policy_match_level", ""),
                 "policy_version": final_state.get("policy_version", ""),
                 "reply_source": final_state.get("reply_source", ""),
+                "reply_action": final_state.get("reply_action", "none"),
+                "reply_action_reason": final_state.get("reply_action_reason", ""),
+                "reply_sales_judgment": final_state.get("reply_sales_judgment", {}),
+                "reply_knowledge_use": final_state.get("reply_knowledge_use", {}),
+                "reply_deposit_evidence": final_state.get("reply_deposit_evidence", {}),
+                "selected_content_ids": final_state.get("selected_content_ids", []),
+                "reply_content_decisions": final_state.get("reply_content_decisions", []),
+                "content_selection_metrics": final_state.get("content_selection_metrics", {}),
+                "parallel_branch_metrics": final_state.get("parallel_branch_metrics", {}),
                 "fallback_source": final_state.get("fallback_source", ""),
                 "postprocess_changed": bool(final_state.get("postprocess_changed")),
                 "postprocess_reasons": final_state.get("postprocess_reasons", []),
                 "async_final_reply": final_state.get("async_final_reply", {}),
                 "reply_control": final_state.get("reply_control", {}),
                 "sop_gate": final_state.get("sop_gate", {}),
-                "reply_governance": final_state.get("reply_governance", {}),
+                "strategy_data_callback": final_state.get("strategy_data_callback", {}),
+                "follow_knowledge_callback": final_state.get("follow_knowledge_callback", {}),
                 "conversation_id": conversation_id,
             },
         )
@@ -1387,33 +890,6 @@ def _run_tracking_input_snapshot(request: ChatRequest, request_context: dict[str
     }
 
 
-def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
-    messages = state.get("planner_reply_messages") if isinstance(state.get("planner_reply_messages"), list) else []
-    decision = str(state.get("planner_decision") or "")
-    if decision == "need_tools":
-        return []
-    if decision == "direct_reply":
-        violations = state.get("tool_policy_violations") if isinstance(state.get("tool_policy_violations"), list) else []
-        if violations:
-            _append_platform_sync_trace(
-                state,
-                {
-                    "message": "planner_direct_reply_rejected",
-                    "detail": {
-                        "reason": "tool_policy_violations",
-                        "violations": violations[:5],
-                    },
-                },
-            )
-            return []
-        warnings: list[Any] = []
-        output = append_activity_intro_image([item for item in messages if isinstance(item, dict)], state, warnings)
-        if warnings:
-            _append_platform_sync_trace(state, warnings[0] if isinstance(warnings[0], dict) else {})
-        return output
-    return []
-
-
 def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
     state["fallback_source"] = str(state.get("fallback_source") or "deterministic_runtime_fallback")
     state["fallback_failure_node"] = str(
@@ -1425,6 +901,132 @@ def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, 
     state["fallback_violation"] = str(state.get("recovery_reason") or "")[:500]
     state["fallback_remaining_budget"] = runtime_budget_snapshot(state, tier="reply")
     return [{"type": "text", "order": 1, "content": {"text": "您稍等一下"}}]
+
+
+def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups:
+        for message in group:
+            if not isinstance(message, dict):
+                continue
+            identity = _message_identity(message)
+            if identity and identity in seen:
+                continue
+            if identity:
+                seen.add(identity)
+            copied = dict(message)
+            copied["order"] = len(merged) + 1
+            merged.append(copied)
+    return merged
+
+
+def _merge_ai_then_sop_reply_messages(
+    ai_messages: list[dict[str, Any]],
+    sop_messages: list[dict[str, Any]],
+    *,
+    payment_decision: Any = None,
+) -> list[dict[str, Any]]:
+    """Compatibility merger with the main payment-card safety contract."""
+    ai_messages = _payment_authorized_reply_messages(ai_messages, payment_decision=payment_decision)
+    sop_messages = _payment_authorized_reply_messages(sop_messages, payment_decision=payment_decision)
+    if not any(_message_type(message) == "text" and _message_text(message) for message in ai_messages):
+        return _merge_reply_message_groups(ai_messages, sop_messages)
+
+    sop_structural = [
+        message
+        for message in sop_messages
+        if isinstance(message, dict)
+        and _message_type(message) in {"image", "video", "store_address", "payment_collection", "human_handoff_notice"}
+    ]
+    if not sop_structural:
+        return _merge_reply_message_groups(ai_messages, sop_messages)
+
+    ai_text_count = sum(1 for message in ai_messages if _message_type(message) == "text" and _message_text(message))
+    bridge_sop_text = _first_text_message(sop_messages) if ai_text_count <= 1 else None
+    trailing_ai_text: dict[str, Any] | None = None
+    ai_prefix = list(ai_messages)
+    if ai_text_count > 1 and ai_prefix and _message_type(ai_prefix[-1]) == "text" and _message_text(ai_prefix[-1]):
+        trailing_ai_text = ai_prefix.pop()
+
+    ai_has_payment = any(_message_type(message) == "payment_collection" for message in ai_messages)
+    payment_kept = False
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    candidates = [
+        *ai_prefix,
+        *([bridge_sop_text] if bridge_sop_text else []),
+        *sop_structural[:3],
+        *([trailing_ai_text] if trailing_ai_text else []),
+    ]
+    for message in candidates:
+        if not isinstance(message, dict):
+            continue
+        if _message_type(message) == "payment_collection":
+            is_ai_message = message in ai_messages
+            if payment_kept or (ai_has_payment and not is_ai_message):
+                continue
+            payment_kept = True
+        identity = _message_identity(message)
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        copied = dict(message)
+        copied["order"] = len(merged) + 1
+        merged.append(copied)
+    return merged
+
+
+def _payment_authorized_reply_messages(
+    messages: list[dict[str, Any]],
+    *,
+    payment_decision: Any,
+) -> list[dict[str, Any]]:
+    if payment_decision is None:
+        return list(messages)
+    decision = payment_decision if isinstance(payment_decision, dict) else {}
+    if str(decision.get("action") or "").strip() in {"send_now", "resend"}:
+        return list(messages)
+    return [
+        message
+        for message in messages
+        if isinstance(message, dict) and _message_type(message) != "payment_collection"
+    ]
+
+
+def _message_type(message: dict[str, Any]) -> str:
+    return str(message.get("type") or "").strip().lower()
+
+
+def _first_text_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for message in messages:
+        if isinstance(message, dict) and _message_type(message) == "text" and _message_text(message):
+            return message
+    return None
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, dict):
+        return str(content.get("text") or "").strip()
+    return str(content or "").strip()
+
+
+def _message_identity(message: dict[str, Any]) -> tuple[str, str]:
+    msg_type = _message_type(message)
+    content = message.get("content")
+    if isinstance(content, dict):
+        value = str(
+            content.get("url")
+            or content.get("store_id")
+            or content.get("amount")
+            or content.get("text")
+            or ""
+        ).strip()
+    else:
+        value = str(content or "").strip()
+    return (msg_type, value)
 
 
 def _final_state_superseded(state: AgentState) -> bool:
@@ -1460,69 +1062,20 @@ def _has_structured_professional_assist(state: AgentState) -> bool:
     return isinstance(professional_assist, dict) and professional_assist.get("status") == "requested"
 
 
-def _platform_reply_source(state: AgentState) -> str:
-    decision = str(state.get("planner_decision") or "").strip()
-    if not state.get("reply_messages"):
-        return "planner_no_reply" if decision == "no_reply" else "planner_empty_reply"
-    if decision == "no_reply":
-        return "planner_no_reply"
-    if decision == "need_tools":
-        return "planner_transition_reply"
-    return "planner_direct_reply"
-
-
 def _sop_gate_terminal_no_reply(sop_gate: dict[str, Any]) -> bool:
     return (
-        str(sop_gate.get("mode") or "")
-        in {"ignored_platform_auto_message", "safety_stop_no_reply", "safety_stop_contact"}
+        str(sop_gate.get("mode") or "") == "ignored_platform_auto_message"
         and not sop_gate.get("send_sop")
         and not sop_gate.get("need_ai_reply")
     )
 
 
-def _sop_gate_direct_reply(sop_gate: dict[str, Any]) -> bool:
-    return (
-        str(sop_gate.get("mode") or "") == "platform_auto_opening_sop"
-        and str(sop_gate.get("delivery_mode") or "") == "configured_passthrough"
-        and bool(sop_gate.get("send_sop"))
-        and not bool(sop_gate.get("need_ai_reply"))
-        and isinstance(sop_gate.get("reply_messages"), list)
-        and bool(sop_gate.get("reply_messages"))
-    )
-
-
 def _sync_return_type(state: AgentState) -> str:
-    source = str(state.get("reply_source") or "")
-    if source == "planner_transition_reply":
-        return "transition_reply"
-    if source == "planner_direct_reply":
-        return "direct_reply"
+    control = state.get("reply_control") if isinstance(state.get("reply_control"), dict) else {}
+    sync_return = control.get("sync_return") if isinstance(control.get("sync_return"), dict) else {}
+    if sync_return.get("type") == "final_reply":
+        return "final_reply"
     return "empty" if not state.get("reply_messages") else "direct_reply"
-
-
-def _append_platform_sync_trace(state: AgentState, warning: dict[str, Any]) -> None:
-    started = time.perf_counter()
-    entry = {
-        "node": "platform_sync_reply",
-        "started_at": utc_now_iso(),
-        "input_snapshot": compact(
-            {
-                "planner_decision": state.get("planner_decision", ""),
-                "planner_sub_rule_id": state.get("planner_sub_rule_id", ""),
-            }
-        ),
-        "tool_calls": [],
-        "error": "",
-        "output_snapshot": compact(
-            {
-                "message": warning.get("message", ""),
-                "detail": warning.get("detail", {}),
-            }
-        ),
-    }
-    entry["finished_at"] = utc_now_iso()
-    entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
-    state.setdefault("trace", []).append(entry)
 
 
 def _append_sop_gate_trace(state: AgentState, result: dict[str, Any]) -> None:
@@ -1574,55 +1127,71 @@ def _set_sync_return(state: AgentState, return_type: str, reply_messages: list[d
     state["reply_control"] = control
 
 
-def _set_async_final_control(state: AgentState, result: dict[str, Any]) -> None:
-    control = state.get("reply_control") if isinstance(state.get("reply_control"), dict) else {}
-    control["async_final"] = {
-        "scheduled": bool(result.get("scheduled")),
-        "status": str(result.get("status") or ""),
-        "reason": result.get("reason", ""),
-        "error": result.get("error", ""),
-        "reply_messages": result.get("reply_messages", []),
-        "send_payload": result.get("send_payload", {}),
-        "send_response": result.get("response", {}),
-        "payload_message_count": result.get("payload_message_count", 0),
-        "dispatch_id": result.get("dispatch_id", ""),
-        "delivery_status": result.get("delivery_status", ""),
-    }
-    state["reply_control"] = control
-
-
 def _memory_persistence_allowed(state: AgentState) -> bool:
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     return bool(request_context.get("memory_persist_allowed")) and bool(str(state.get("sales_contact_key") or "").strip())
 
 
-def _async_superseded_result() -> dict[str, Any]:
-    return {
-        "scheduled": True,
-        "status": "superseded",
-        "reason": "newer_customer_message_preempted_async_final_reply",
-        "reply_messages": [],
+def _record_authoritative_payment_fact(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+) -> None:
+    """Record current structured payment evidence without interpreting customer text."""
+    image_info = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
+    fact = payment_fact_from_image(image_info)
+    record: dict[str, Any] = {
+        "status": "skipped",
+        "deposit_state": str(fact.get("deposit_state") or ""),
+        "source": str(fact.get("source") or ""),
     }
+    if not memory_store:
+        record["reason"] = "memory_store_unavailable"
+    elif not customer_id:
+        record["reason"] = "missing_sales_contact_key"
+    elif not fact.get("deposit_state"):
+        record["reason"] = "no_current_authoritative_payment_fact"
+    else:
+        try:
+            saved = memory_store.record_authoritative_payment_fact(
+                customer_id,
+                deposit_state=str(fact.get("deposit_state") or ""),
+                source=str(fact.get("source") or ""),
+                request_id=str(state.get("request_id") or ""),
+                amount=fact.get("amount"),
+                order_id=str(fact.get("order_id") or ""),
+                order_no=str(fact.get("order_no") or ""),
+                interface_version=_interface_version_from_state(state),
+            )
+            record.update(saved)
+        except Exception as exc:
+            record["status"] = "error"
+            record["error"] = f"{type(exc).__name__}: {exc}"
+    state["authoritative_payment_memory_record"] = record
+    state.setdefault("trace", []).append(
+        {
+            "node": "authoritative_payment_memory_record",
+            "started_at": utc_now_iso(),
+            "finished_at": utc_now_iso(),
+            "duration_ms": 0,
+            "input_snapshot": {
+                "deposit_state": record.get("deposit_state"),
+                "source": record.get("source"),
+            },
+            "output_snapshot": {
+                "status": record.get("status"),
+                "reason": record.get("reason"),
+                "event_id": record.get("event_id"),
+                "error": record.get("error"),
+            },
+        }
+    )
 
 
 def _consume_task_result(task: asyncio.Task[Any]) -> None:
     with suppress(asyncio.CancelledError, Exception):
         task.result()
-
-
-def _should_run_async_finalize(state: AgentState) -> bool:
-    planner_decision = str(state.get("planner_decision") or "").strip()
-    if planner_decision == "direct_reply":
-        # Planner owns the decision; Reply owns all ordinary customer-visible text.
-        # Keeping one finalization path prevents planner drafts from bypassing schema
-        # and factual consistency checks.
-        return True
-    if planner_decision == "need_tools":
-        # A malformed plan can request tools without producing an executable call.
-        # Finalize it through Reply with the recorded violation instead of returning
-        # an empty response when Planner repair exhausts its budget.
-        return True
-    return False
 
 
 def _platform_request_identity(request: ChatRequest, request_context: dict[str, Any]) -> str:
@@ -1639,213 +1208,6 @@ def _platform_request_identity(request: ChatRequest, request_context: dict[str, 
     return f"{corp_id}:wechat:{wechat}:external:{external_userid}:msgid:{msgid}"
 
 
-def _append_async_send_trace(state: AgentState, result: dict[str, Any]) -> None:
-    started = time.perf_counter()
-    entry = {
-        "node": "async_final_reply_send",
-        "started_at": utc_now_iso(),
-        "input_snapshot": compact(
-            {
-                "reply_messages": len(state.get("reply_messages") or []),
-                "request_id": state.get("request_id", ""),
-            }
-        ),
-        "tool_calls": [{"name": "ai_outreach_send", "output": compact(result)}],
-        "error": result.get("error"),
-        "output_snapshot": compact(result),
-    }
-    entry["finished_at"] = utc_now_iso()
-    entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
-    state.setdefault("trace", []).append(entry)
-
-
-def _append_sync_final_trace(state: AgentState, result: dict[str, Any]) -> None:
-    started = time.perf_counter()
-    entry = {
-        "node": "sync_final_reply_return",
-        "started_at": utc_now_iso(),
-        "input_snapshot": compact(
-            {
-                "reply_messages": len(state.get("reply_messages") or []),
-                "request_id": state.get("request_id", ""),
-            }
-        ),
-        "tool_calls": [],
-        "error": result.get("error"),
-        "output_snapshot": compact(result),
-    }
-    entry["finished_at"] = utc_now_iso()
-    entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
-    state.setdefault("trace", []).append(entry)
-
-
-def _append_platform_freshness_trace(state: AgentState, result: dict[str, Any]) -> None:
-    entry = {
-        "node": "platform_reply_freshness",
-        "started_at": utc_now_iso(),
-        "input_snapshot": compact(
-            {
-                "request_id": state.get("request_id", ""),
-                "trigger_message_id": result.get("trigger_message_id", ""),
-            }
-        ),
-        "tool_calls": [{"name": "ai_outreach_conversation", "output": compact(result)}],
-        "error": result.get("reason") if result.get("status") == "unavailable" else None,
-        "output_snapshot": compact(result),
-    }
-    entry["finished_at"] = utc_now_iso()
-    entry["duration_ms"] = int(result.get("duration_ms") or 0)
-    state.setdefault("trace", []).append(entry)
-
-
-def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-    for group in groups:
-        for message in group:
-            if not isinstance(message, dict):
-                continue
-            copied = dict(message)
-            copied["order"] = len(messages) + 1
-            messages.append(copied)
-    return messages
-
-
-def _merge_ai_then_sop_reply_messages(
-    ai_messages: list[dict[str, Any]],
-    sop_messages: list[dict[str, Any]],
-    *,
-    payment_decision: Any = None,
-) -> list[dict[str, Any]]:
-    ai_messages = _payment_authorized_reply_messages(ai_messages, payment_decision=payment_decision)
-    sop_messages = _payment_authorized_reply_messages(sop_messages, payment_decision=payment_decision)
-    if not any(_message_type(message) == "text" and _message_text(message) for message in ai_messages):
-        return _merge_reply_message_groups(ai_messages, sop_messages)
-
-    sop_structural = [
-        message
-        for message in sop_messages
-        if isinstance(message, dict) and _message_type(message) in {"image", "video", "store_address", "payment_collection", "human_handoff_notice"}
-    ]
-    if not sop_structural:
-        return _merge_reply_message_groups(ai_messages, sop_messages)
-
-    ai_text_count = sum(1 for message in ai_messages if _message_type(message) == "text" and _message_text(message))
-    bridge_sop_text = _first_text_message(sop_messages) if ai_text_count <= 1 else None
-    trailing_ai_text: dict[str, Any] | None = None
-    ai_prefix = list(ai_messages)
-    if ai_text_count > 1 and ai_prefix and _message_type(ai_prefix[-1]) == "text" and _message_text(ai_prefix[-1]):
-        trailing_ai_text = ai_prefix.pop()
-
-    # The final customer-visible turn has one transaction decision. Prefer the
-    # AI card, which was produced from the latest context, over a static SOP
-    # card and never expose conflicting amounts in the same turn.
-    ai_has_payment = any(_message_type(message) == "payment_collection" for message in ai_messages)
-    payment_kept = False
-    merged: list[dict[str, Any]] = []
-    seen = set()
-    for message in [*ai_prefix, *([bridge_sop_text] if bridge_sop_text else []), *sop_structural[:3], *([trailing_ai_text] if trailing_ai_text else [])]:
-        if not isinstance(message, dict):
-            continue
-        if _message_type(message) == "payment_collection":
-            is_ai_message = message in ai_messages
-            if payment_kept or (ai_has_payment and not is_ai_message):
-                continue
-            payment_kept = True
-        identity = _message_identity(message)
-        if identity and identity in seen:
-            continue
-        if identity:
-            seen.add(identity)
-        copied = dict(message)
-        copied["order"] = len(merged) + 1
-        merged.append(copied)
-    return merged
-
-
-def _payment_authorized_reply_messages(
-    messages: list[dict[str, Any]],
-    *,
-    payment_decision: Any,
-) -> list[dict[str, Any]]:
-    # Keep the helper's legacy behavior for isolated callers that do not pass a
-    # planner decision. Runtime callers always pass the structured authority.
-    if payment_decision is None:
-        return list(messages)
-    decision = payment_decision if isinstance(payment_decision, dict) else {}
-    if str(decision.get("action") or "").strip() in {"send_now", "resend"}:
-        return list(messages)
-    return [
-        message
-        for message in messages
-        if isinstance(message, dict) and _message_type(message) != "payment_collection"
-    ]
-
-
-def _message_type(message: dict[str, Any]) -> str:
-    return str(message.get("type") or "").strip().lower()
-
-
-def _first_text_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for message in messages:
-        if isinstance(message, dict) and _message_type(message) == "text" and _message_text(message):
-            return message
-    return None
-
-
-def _message_text(message: dict[str, Any]) -> str:
-    content = message.get("content")
-    if isinstance(content, dict):
-        return str(content.get("text") or "").strip()
-    return str(content or "").strip()
-
-
-def _message_identity(message: dict[str, Any]) -> tuple[str, str]:
-    msg_type = _message_type(message)
-    content = message.get("content")
-    if isinstance(content, dict):
-        value = str(content.get("url") or content.get("store_id") or content.get("amount") or content.get("text") or "").strip()
-    else:
-        value = str(content or "").strip()
-    return (msg_type, value)
-
-
-def _ai_reply_usable_before_sop(state: AgentState, messages: list[dict[str, Any]]) -> bool:
-    if not messages:
-        return False
-    source = str(state.get("reply_source") or "").strip().lower()
-    return not (source.startswith("deterministic_") or "fallback" in source)
-
-
-def _confirm_deferred_chat_sop_task(
-    service: Any,
-    sop_state: AgentState,
-    *,
-    request_id: str,
-    reply_messages: list[dict[str, Any]],
-) -> None:
-    if service is None or not hasattr(service, "confirm_chat_gate_task_sent"):
-        return
-    gate = sop_state.get("sop_gate") if isinstance(sop_state.get("sop_gate"), dict) else {}
-    task = gate.get("task") if isinstance(gate.get("task"), dict) else {}
-    if str(task.get("status") or "") != "pending":
-        return
-    gate["task"] = service.confirm_chat_gate_task_sent(
-        task,
-        request_id=request_id,
-        reply_messages=reply_messages,
-    )
-
-
-def _fail_deferred_chat_sop_task(service: Any, sop_state: AgentState, *, error: str) -> None:
-    if service is None or not hasattr(service, "fail_chat_gate_task"):
-        return
-    gate = sop_state.get("sop_gate") if isinstance(sop_state.get("sop_gate"), dict) else {}
-    task = gate.get("task") if isinstance(gate.get("task"), dict) else {}
-    if str(task.get("status") or "") != "pending":
-        return
-    gate["task"] = service.fail_chat_gate_task(task, error=error)
-
-
 def _record_sent_case_images(
     memory_store: CustomerMemoryStore | None,
     state: AgentState,
@@ -1860,7 +1222,7 @@ def _record_sent_case_images(
         state["case_image_send_record"] = record
         _append_case_image_trace(state, record)
         return
-    if not record.get("document_ids"):
+    if not record.get("document_ids") and not record.get("image_urls"):
         record["status"] = "skipped"
         record["reason"] = record.get("reason") or "no_case_images_matched"
         state["case_image_send_record"] = record
@@ -1872,6 +1234,7 @@ def _record_sent_case_images(
             document_ids=record["document_ids"],
             image_urls=record["image_urls"],
             request_id=str(state.get("request_id") or ""),
+            interface_version=_interface_version_from_state(state),
         )
         record.update(saved)
     except Exception as exc:
@@ -1883,6 +1246,7 @@ def _record_sent_case_images(
 
 def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, Any]]) -> dict[str, Any]:
     case_by_url = _case_documents_by_image_url(state)
+    effect_asset_urls = _selected_effect_asset_image_urls(state)
     image_urls = [_message_image_url(message) for message in reply_messages if isinstance(message, dict)]
     image_urls = [url for url in image_urls if url]
     matched_ids: list[str] = []
@@ -1894,6 +1258,8 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
             if doc_id not in matched_ids:
                 matched_ids.append(doc_id)
             matched_urls.append(image_url)
+        elif _normalize_url(image_url) in effect_asset_urls:
+            matched_urls.append(image_url)
         else:
             unmatched_urls.append(image_url)
     return {
@@ -1902,7 +1268,44 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
         "image_urls": matched_urls,
         "unmatched_image_urls": unmatched_urls,
         "candidate_document_ids": sorted(set(case_by_url.values())),
+        "selected_effect_asset_ids": sorted(
+            {
+                asset_id
+                for asset_id in effect_asset_urls.values()
+                if str(asset_id or "").strip()
+            }
+        ),
     }
+
+
+def _selected_effect_asset_image_urls(state: AgentState) -> dict[str, str]:
+    selected_ids = {
+        str(item).strip()
+        for item in state.get("selected_content_ids") or state.get("reply_selected_content_ids") or []
+        if str(item or "").strip()
+    }
+    if not selected_ids:
+        return {}
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    output: dict[str, str] = {}
+    for candidate in joined.get("content_candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
+        if content_id not in selected_ids:
+            continue
+        if str(candidate.get("asset_role") or "").strip() != "effect_evidence":
+            continue
+        messages = candidate.get("messages")
+        if not isinstance(messages, list):
+            messages = candidate.get("reply_messages") if isinstance(candidate.get("reply_messages"), list) else []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            image_url = _message_image_url(message)
+            if image_url:
+                output[_normalize_url(image_url)] = content_id
+    return output
 
 
 def _case_documents_by_image_url(state: AgentState) -> dict[str, str]:
@@ -1983,6 +1386,7 @@ def _record_activity_intro_image(
             image_url=str(record["image_url"]),
             request_id=str(state.get("request_id") or ""),
             send_mode=send_mode,
+            interface_version=_interface_version_from_state(state),
         )
         record.update(saved)
     except Exception as exc:
@@ -1990,6 +1394,81 @@ def _record_activity_intro_image(
         record["error"] = f"{type(exc).__name__}: {exc}"
     state["activity_intro_image_send_record"] = record
     _append_activity_intro_image_trace(state, record)
+
+
+def _record_v2_reply_model_observation(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+) -> None:
+    """Append Reply's own short observation after a successful visible reply."""
+
+    if not memory_store or not state.get("evidence_join") or not customer_id:
+        return
+    judgment = (
+        state.get("reply_sales_judgment")
+        if isinstance(state.get("reply_sales_judgment"), dict)
+        else {}
+    )
+    memory_store.record_v2_reply_model_observation(
+        customer_id,
+        request_id=str(state.get("request_id") or ""),
+        primary_objective=str(judgment.get("primary_objective") or ""),
+        customer_friction_observation=str(
+            judgment.get("customer_friction_observation") or ""
+        ),
+        interface_version=str(
+            (state.get("request_context") if isinstance(state.get("request_context"), dict) else {}).get(
+                "interface_version"
+            )
+            or "v2"
+        ),
+    )
+
+
+def _record_follow_knowledge_usage(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+) -> None:
+    """Append validated Reply knowledge provenance after a visible response."""
+
+    if not memory_store or not customer_id:
+        return
+    knowledge_use = (
+        state.get("reply_knowledge_use")
+        if isinstance(state.get("reply_knowledge_use"), dict)
+        else {}
+    )
+    if not knowledge_use:
+        return
+    memory_store.record_follow_knowledge_usage(
+        customer_id,
+        request_id=str(state.get("request_id") or ""),
+        knowledge_use=knowledge_use,
+        interface_version=_interface_version_from_state(state),
+    )
+
+
+def _record_follow_knowledge_match(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+) -> None:
+    if not memory_store or not customer_id:
+        return
+    semantic_route = state.get("semantic_route") if isinstance(state.get("semantic_route"), dict) else {}
+    if not semantic_route:
+        return
+    memory_store.record_follow_knowledge_match(
+        customer_id,
+        request_id=str(state.get("request_id") or ""),
+        semantic_route=semantic_route,
+        interface_version=_interface_version_from_state(state),
+    )
 
 
 def _activity_intro_image_record_plan(
@@ -2066,6 +1545,12 @@ def _record_visible_store_facts(
                 store=item.get("store") if isinstance(item.get("store"), dict) else {},
                 event_type=str(item.get("event_type") or ""),
                 request_id=str(state.get("request_id") or ""),
+                interface_version=_interface_version_from_state(state),
+                store_search_evidence=(
+                    item.get("store_search_evidence")
+                    if isinstance(item.get("store_search_evidence"), dict)
+                    else None
+                ),
             )
             saved_records.append(saved)
         record["status"] = "recorded" if any(item.get("status") == "recorded" for item in saved_records) else "skipped"
@@ -2079,12 +1564,19 @@ def _record_visible_store_facts(
 
 def _store_fact_record_plan(state: AgentState, reply_messages: list[dict[str, Any]]) -> dict[str, Any]:
     store_address_ids = _store_address_message_ids(reply_messages)
+    store_search_evidence = _store_search_evidence_from_state(state)
     records: list[dict[str, Any]] = []
     missing_store_ids: list[str] = []
     for store_id in store_address_ids:
         store = _store_by_id(state, store_id)
         if store and store_fact_is_valid(store):
-            records.append({"event_type": "store_address_sent", "store": store})
+            records.append(
+                {
+                    "event_type": "store_address_sent",
+                    "store": store,
+                    "store_search_evidence": store_search_evidence,
+                }
+            )
         else:
             missing_store_ids.append(store_id)
     if records:
@@ -2105,6 +1597,40 @@ def _store_fact_record_plan(state: AgentState, reply_messages: list[dict[str, An
         "records": [],
         "store_address_message_ids": store_address_ids,
         "missing_store_ids": missing_store_ids,
+    }
+
+
+def _store_search_evidence_from_state(state: AgentState) -> dict[str, Any]:
+    structured = _structured_facts_from_state(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    return {
+        key: resolution.get(key)
+        for key in (
+            "raw_place",
+            "normalized_query",
+            "destination_fingerprint",
+            "location_evidence",
+            "resolved_admin_level",
+            "province",
+            "city",
+            "district",
+            "township",
+            "candidate_search_complete",
+            "distance_ranking_available",
+            "distance_ranking_complete",
+            "ranked_candidate_count",
+            "unranked_candidate_count",
+            "visible_candidate_count",
+            "recommended_store_id",
+            "delivery_store_ids",
+            "ranking_method",
+            "customer_claim_level",
+        )
+        if resolution.get(key) not in (None, "", [], {})
     }
 
 
@@ -2235,3 +1761,9 @@ def _customer_store_knowledge_meta(value: Any) -> dict[str, Any]:
         "source": value.get("source", ""),
         "error": value.get("error", ""),
     }
+
+
+def _interface_version_from_state(state: AgentState) -> str:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    version = str(request_context.get("interface_version") or "v1").strip().lower()
+    return version if version in {"v1", "v2", "v3"} else "v1"

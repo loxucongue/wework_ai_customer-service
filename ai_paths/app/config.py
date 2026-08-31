@@ -13,6 +13,15 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "AI Paths"
+    service_role: str = Field(default="primary", alias="AI_PATHS_SERVICE_ROLE")
+    release_id: str = Field(default="development", alias="AI_PATHS_RELEASE_ID")
+    build_git_commit: str = Field(default="unknown", alias="AI_PATHS_BUILD_GIT_COMMIT")
+    build_dirty: bool = Field(default=False, alias="AI_PATHS_BUILD_DIRTY")
+    build_config_revision: str = Field(default="unknown", alias="AI_PATHS_BUILD_CONFIG_REVISION")
+    v3_evaluation_dir: Path = Field(
+        default=Path(".tmp_runtime/v3_evaluations"),
+        alias="V3_EVALUATION_DIR",
+    )
     ai_paths_api_key: str = Field(default="", repr=False)
     ai_external_api_key: str = Field(default="", repr=False)
     allow_missing_external_api_key: bool = False
@@ -37,6 +46,7 @@ class Settings(BaseSettings):
     anthropic_version: str = "2023-06-01"
     model_max_tokens: int = 4096
     model_response_format_enabled: bool = True
+    model_http_trust_env: bool = True
     model_relay_reasoning_control_enabled: bool = True
     model_reasoning_enabled: bool = False
     model_reasoning_effort: str = "low"
@@ -48,15 +58,22 @@ class Settings(BaseSettings):
     model_strong: str = "gpt-5.4"
     model_reply: str = "gpt-5.4"
     model_vision: str = "qwen-vl-plus"
+    model_store_destination: str = "claude-haiku-4-5-20251001"
     model_fast_fallbacks: str = "gpt-5.4"
     model_planner_fallbacks: str = "gpt-5.4-mini"
     model_balanced_fallbacks: str = "gpt-5.4"
     model_strong_fallbacks: str = "gpt-5.4-mini"
     model_reply_fallbacks: str = "gpt-5.4-mini"
     model_vision_fallbacks: str = ""
+    model_store_destination_fallbacks: str = "gpt-5.4,gpt-5.4-mini"
+    model_emergency_fallbacks: str = "gpt-5.4,gpt-5.4-mini"
+    model_secondary_provider: str = ""
+    model_secondary: str = ""
+    model_secondary_timeout_seconds: float = 20.0
     model_timeout_seconds: int = 45
     model_hedge_delay_seconds: float = 3.0
     model_planner_hedge_delay_seconds: float = 10.0
+    model_reply_hedge_delay_seconds: float = 10.0
     model_hedge_max_parallel: int = 2
     model_planner_total_timeout_seconds: float = 35.0
     model_reply_total_timeout_seconds: float = 45.0
@@ -70,6 +87,8 @@ class Settings(BaseSettings):
     model_reply_reserve_seconds: float = 30.0
     model_min_retry_remaining_seconds: float = 8.0
     model_vision_total_timeout_seconds: float = 15.0
+    model_store_destination_total_timeout_seconds: float = 25.0
+    model_store_destination_hedge_delay_seconds: float = 3.0
     model_request_retry_attempts: int = 2
     model_request_retry_delay_seconds: float = 0.5
     sop_event_model_retry_attempts: int = Field(default=3, alias="SOP_EVENT_MODEL_RETRY_ATTEMPTS")
@@ -213,10 +232,38 @@ class Settings(BaseSettings):
     store_snapshot_refresh_wechat: str = ""
     platform_filter_words_path: Path = Path("config/platform_filter_words.json")
     sop_reply_packs_path: Path = Field(default=Path("config/sop_reply_packs.json"), alias="SOP_REPLY_PACKS_PATH")
+    sop_reply_packs_overlay_path: Path | None = Field(default=None, alias="SOP_REPLY_PACKS_OVERLAY_PATH")
     precision_qa_playbook_path: Path = Field(
         default=Path("config/precision_qa_playbook.json"),
         alias="PRECISION_QA_PLAYBOOK_PATH",
     )
+    v2_model_led_objection_playbook_path: Path = Field(
+        default=Path("config/v2_model_led_objection_playbook.json"),
+        alias="V2_MODEL_LED_OBJECTION_PLAYBOOK_PATH",
+    )
+    v2_sales_recall_enabled: bool = Field(default=True, alias="V2_SALES_RECALL_ENABLED")
+    v2_sales_recall_workflow_id: str = Field(default="7672999254608347179", alias="V2_SALES_RECALL_WORKFLOW_ID")
+    v2_sales_recall_wait_seconds: float = Field(default=2.5, alias="V2_SALES_RECALL_WAIT_SECONDS")
+    v2_sales_recall_max_candidates: int = Field(default=3, alias="V2_SALES_RECALL_MAX_CANDIDATES")
+    follow_knowledge_enabled: bool = Field(default=True, alias="FOLLOW_KNOWLEDGE_ENABLED")
+    follow_knowledge_base_url: str = Field(default="https://test.api.customer.4ba.cn", alias="FOLLOW_KNOWLEDGE_BASE_URL")
+    follow_knowledge_token: str = Field(default="", alias="FOLLOW_KNOWLEDGE_TOKEN", repr=False)
+    follow_knowledge_timeout_seconds: float = Field(default=4.0, alias="FOLLOW_KNOWLEDGE_TIMEOUT_SECONDS")
+    follow_knowledge_cache_ttl_seconds: float = Field(default=60.0, alias="FOLLOW_KNOWLEDGE_CACHE_TTL_SECONDS")
+    service_rule_data_enabled: bool = Field(default=False, alias="SERVICE_RULE_DATA_ENABLED")
+    service_rule_data_base_url: str = Field(default="https://test.api.customer.4ba.cn", alias="SERVICE_RULE_DATA_BASE_URL")
+    service_rule_data_token: str = Field(default="", alias="SERVICE_RULE_DATA_TOKEN", repr=False)
+    service_rule_data_timeout_seconds: float = Field(default=6.0, alias="SERVICE_RULE_DATA_TIMEOUT_SECONDS")
+    service_rule_data_poll_seconds: float = Field(default=2.0, alias="SERVICE_RULE_DATA_POLL_SECONDS")
+    service_rule_data_batch_size: int = Field(default=10, alias="SERVICE_RULE_DATA_BATCH_SIZE")
+    service_rule_data_max_attempts: int = Field(default=6, alias="SERVICE_RULE_DATA_MAX_ATTEMPTS")
+    service_rule_data_retry_base_seconds: float = Field(default=10.0, alias="SERVICE_RULE_DATA_RETRY_BASE_SECONDS")
+    deepseek_api_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_API_BASE_URL")
+    deepseek_semantic_model: str = Field(default="deepseek-v4-flash", alias="DEEPSEEK_SEMANTIC_MODEL")
+    deepseek_semantic_timeout_seconds: float = Field(default=10.0, alias="DEEPSEEK_SEMANTIC_TIMEOUT_SECONDS")
+    deepseek_semantic_max_tokens: int = Field(default=800, alias="DEEPSEEK_SEMANTIC_MAX_TOKENS")
+    deepseek_semantic_script_threshold: int = Field(default=12, alias="DEEPSEEK_SEMANTIC_SCRIPT_THRESHOLD")
+    deepseek_semantic_max_scripts: int = Field(default=6, alias="DEEPSEEK_SEMANTIC_MAX_SCRIPTS")
     sop_objection_materials_path: Path = Field(
         default=Path("config/sop_objection_materials.json"),
         alias="SOP_OBJECTION_MATERIALS_PATH",

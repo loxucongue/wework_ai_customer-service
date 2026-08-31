@@ -100,12 +100,17 @@ def _relevant_city_summary(
     area_hints = [
         hint
         for hint in hints
-        if not _region_matches_hint(province, hint)
-        and not _region_matches_hint(city, hint)
-        and len(_normalize_region(hint)) <= 8
+        if _is_explicit_district_hint(hint)
+        or (
+            not _region_matches_hint(province, hint)
+            and not _region_matches_hint(city, hint)
+            and len(_normalize_region(hint)) <= 8
+        )
     ]
     exact_area_stores = [
-        store for store in city_stores if any(_region_matches_hint(str(store.get("district") or ""), hint) for hint in area_hints)
+        store
+        for store in city_stores
+        if any(_district_matches_hint(str(store.get("district") or ""), hint) for hint in area_hints)
     ]
     districts: Counter[str] = Counter(
         _region_value(store.get("district"), fallback="未识别区域") for store in city_stores
@@ -156,6 +161,25 @@ def _region_matches_hint(region: str, hint: str) -> bool:
     left = _normalize_region(region)
     right = _normalize_region(hint)
     return bool(left and right and (left in right or right in left))
+
+
+def _district_matches_hint(district: str, hint: str) -> bool:
+    """Match district facts without collapsing an explicit city into a same-name district."""
+
+    compact_hint = str(hint or "").strip().replace(" ", "")
+    if not compact_hint or _is_explicit_city_or_province_hint(compact_hint):
+        return False
+    return _region_matches_hint(district, compact_hint)
+
+
+def _is_explicit_district_hint(value: Any) -> bool:
+    text = str(value or "").strip().replace(" ", "")
+    return text.endswith(("区", "县", "旗", "自治县", "自治旗", "林区", "特区"))
+
+
+def _is_explicit_city_or_province_hint(value: Any) -> bool:
+    text = str(value or "").strip().replace(" ", "")
+    return text.endswith(("省", "市", "自治区", "特别行政区", "自治州", "地区", "盟"))
 
 
 def _normalize_region(value: Any) -> str:
