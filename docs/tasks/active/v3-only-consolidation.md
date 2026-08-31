@@ -30,6 +30,7 @@
 
 - `docs/contracts/RUNTIME_BOUNDARIES.md`
 - `docs/contracts/third-party-sop-v3.md`
+- `docs/architecture/V3_CONSOLIDATION_PLAN.md`
 - AGENTS 中销售接触边界和客户回复阻断规则
 
 ## 已确认事实与证据
@@ -38,6 +39,8 @@
 - V3 当前是 sidecar；shared API/worker 仍承载第三方 SOP 等能力。
 - 生产旧公开回复入口已 410；旧 refactor/backend services 已 disabled。
 - 23 个 worktree 中多个 dirty，尚不可安全删除。
+- main/V3 分叉后分别修改 185/204 个文件，81 个文件双边修改，直接 merge 有 50 个冲突。
+- 迁移采用按功能所有权的分批重做方案；未提交改动全部隔离，不自动合入。
 
 ## 已完成
 
@@ -50,12 +53,15 @@
 - [x] 删除服务器 V2 运行目录并 mask 服务；主/V3 release 各保留 3 个
 - [x] 部署 main `0ef5f545`，内部与公网旧路由均验证为 410
 - [x] 将前端 symlink 从后端历史 release 迁到独立 frontend release 根
+- [x] 完成 V3/main 差异、直接冲突和功能所有权设计
+- [x] 建立七批迁移、测试门禁、回滚与业务审核清单
 
 ## 待办
 
 - [ ] 保全所有 dirty worktree，形成逐项去留清单
+- [ ] 等 MySQL cutover 独立完成并验证稳定，不与代码合并同窗执行
 - [ ] 从最新 origin/main 建立干净整合工作区
-- [ ] 按模块所有权合并 V3 与 main，人工处理入口/配置/storage/deploy
+- [ ] 按 `V3_CONSOLIDATION_PLAN.md` 的 M1–M7 分批迁移
 - [ ] 删除产品 V1/V2 route/service，重命名仍被 V3 使用的历史内部模块
 - [ ] 重组测试，删除已跟踪报告与敏感样本
 - [ ] 将剩余 legacy 文档和测试目录按新结构迁移；对敏感样本做 Git 历史泄露评估
@@ -85,3 +91,4 @@
 
 - V3/main 具体文件所有权和最终统一部署形态。
 - 历史 `v2_*` 无行为重命名映射。
+- 用户对 R1 明确停止联系策略、R2 60 秒静默唤醒的审核结论。

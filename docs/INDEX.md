@@ -6,11 +6,12 @@
 
 1. 仓库宪法：[`AGENTS.md`](../AGENTS.md)
 2. 系统结构：[`architecture/SYSTEM.md`](architecture/SYSTEM.md)
-3. 运行边界：[`contracts/RUNTIME_BOUNDARIES.md`](contracts/RUNTIME_BOUNDARIES.md)
-4. 第三方 SOP：[`contracts/third-party-sop-v3.md`](contracts/third-party-sop-v3.md)
-5. 线上状态：[`current/PRODUCTION_STATE.md`](current/PRODUCTION_STATE.md)
-6. 已知问题：[`current/KNOWN_ISSUES.md`](current/KNOWN_ISSUES.md)
-7. 当前任务：[`tasks/active/v3-only-consolidation.md`](tasks/active/v3-only-consolidation.md)
+3. V3 迁移方案：[`architecture/V3_CONSOLIDATION_PLAN.md`](architecture/V3_CONSOLIDATION_PLAN.md)
+4. 运行边界：[`contracts/RUNTIME_BOUNDARIES.md`](contracts/RUNTIME_BOUNDARIES.md)
+5. 第三方 SOP：[`contracts/third-party-sop-v3.md`](contracts/third-party-sop-v3.md)
+6. 线上状态：[`current/PRODUCTION_STATE.md`](current/PRODUCTION_STATE.md)
+7. 已知问题：[`current/KNOWN_ISSUES.md`](current/KNOWN_ISSUES.md)
+8. 当前任务：[`tasks/active/v3-only-consolidation.md`](tasks/active/v3-only-consolidation.md)
 
 ## 目录职责
 
