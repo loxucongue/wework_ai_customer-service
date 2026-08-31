@@ -447,19 +447,13 @@ async def health() -> dict[str, Any]:
 
 
 @app.get("/chat")
-async def chat_info() -> dict[str, str]:
-    return {
-        "status": "ok",
-        "message": "Use POST /chat with content, customer_id, corp_id, conversation_history, and optional file_image.",
-    }
+async def chat_info() -> None:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
 
 @app.get("/reply")
-async def reply_info() -> dict[str, str]:
-    return {
-        "status": "ok",
-        "message": "Use POST /reply for system integrations, or POST /reply/workflow-compatible for Coze-style payloads.",
-    }
+async def reply_info() -> None:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
 
 async def require_api_key(authorization: str | None = Header(default=None)) -> None:
@@ -819,40 +813,34 @@ async def sop_events(
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, _: None = Depends(require_api_key)) -> ChatResponse:
-    request = await transcribe_voice_request(request, voice_transcription_client)
-    response = await run_chat(request)
-    _record_http_response_body(response.request_id, response.model_dump())
-    return response
+async def chat(_: ChatRequest, __: None = Depends(require_api_key)) -> None:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
 
 @app.post("/reply", response_model=ChatResponse)
 async def reply(
-    request: ChatRequest,
-    background_tasks: BackgroundTasks,
-    _: None = Depends(require_external_api_key),
-) -> ChatResponse:
-    request = await platform_voice_batch_coordinator.prepare(request, voice_transcription_client)
-    response = await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
-    _record_http_response_body(response.request_id, response.model_dump())
-    return response
+    _: ChatRequest,
+    __: BackgroundTasks,
+    ___: None = Depends(require_external_api_key),
+) -> None:
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
 
 @app.post("/chat/workflow-compatible")
 async def chat_workflow_compatible(
-    payload: dict[str, Any] = Body(...),
-    _: None = Depends(require_api_key),
+    _: dict[str, Any] = Body(...),
+    __: None = Depends(require_api_key),
 ) -> JSONResponse:
-    return await workflow_compatible_reply(payload, interface_version="v1")
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
 
 @app.post("/reply/workflow-compatible")
 async def reply_workflow_compatible(
-    payload: dict[str, Any] = Body(...),
-    background_tasks: BackgroundTasks = None,
-    _: None = Depends(require_external_api_key),
+    _: dict[str, Any] = Body(...),
+    __: BackgroundTasks = None,
+    ___: None = Depends(require_external_api_key),
 ) -> JSONResponse:
-    return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks, interface_version="v1")
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
 
 async def workflow_compatible_reply(

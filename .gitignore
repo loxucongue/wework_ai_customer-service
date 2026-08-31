@@ -17,11 +17,7 @@ venv/
 *.p12
 *.pfx
 *.log
-*.md
-!docs/architecture_review_20260717.md
-!docs/codex_project_handoff_20260720.md
-!docs/sop_proactive_wakeup_ab_design_20260720.md
-!docs/offline_full_chain_simulation.md
+# Markdown is repository knowledge. Never ignore it globally.
 *.tgz
 *.tar
 *.tar.gz
@@ -36,3 +32,7 @@ docs/planner*.json
 docs/full-flow-debug-*.json
 projects/public/uploads/
 workflow_tests/reports/
+artifacts/
+docs/tasks/active/*.local.md
+.codex-task-cache/
+/tmp/
