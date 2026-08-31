@@ -1590,6 +1590,21 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(platform.consume_calls, [("1", 20), ("1", 30)])
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("第一组原文")])
 
+    async def test_any_unopened_customer_sends_earliest_group_without_model(self) -> None:
+        model = _Model([])
+        service, _repo, platform, system = _service(model=model)
+        system.conversation_payload["data"]["messages"] = []
+        first = _batch_task("1", text="first", trigger_event="scheduled_followup")
+        second = _batch_task("2", text="second", trigger_event="scheduled_followup")
+
+        result = await service.process_customer_batch(_customer_batch(first, second))
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(model.calls, [])
+        self.assertEqual(platform.consume_calls, [("1", 20), ("1", 30)])
+        self.assertTrue(any(call["scene_code"] == "sop_sent" for call in platform.rule_data_calls))
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("first")])
+
     async def test_same_day_unopened_maps_exact_reservation_marker_to_payment_card(self) -> None:
         service, _repo, platform, system = _service(model=_Model([]))
         system.conversation_payload["data"]["messages"] = [

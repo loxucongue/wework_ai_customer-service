@@ -788,26 +788,28 @@ class SopPlatformTaskService:
             relation=relation,
             timeline=timeline,
         )
+        customer_unopened = not _customer_has_opened(timeline)
         same_day_unopened = _is_same_day_unopened(tasks, timeline=timeline)
         context.update(
             {
                 **base_audit_context,
+                "customer_unopened_direct": customer_unopened,
                 "same_day_unopened": same_day_unopened,
             }
         )
-        if same_day_unopened:
+        if customer_unopened:
             decision = {
                 "evaluations": [
                     {
                         "task_id": _task_id(tasks[0]),
                         "decision": "send",
-                        "reason": "same_day_unopened_earliest_direct",
+                        "reason": "customer_unopened_earliest_direct",
                         "evidence_refs": [f"task:{_task_id(tasks[0])}"],
                     }
                 ],
                 "selected_task_id": _task_id(tasks[0]),
                 "transition_text": "",
-                "decision_source": "same_day_unopened_direct",
+                "decision_source": "customer_unopened_direct",
             }
         else:
             decision = await self._decide_customer_batch(tasks, context=context)
@@ -1255,19 +1257,19 @@ class SopPlatformTaskService:
                 "deferred_replay": True,
             }
         )
-        if _is_same_day_unopened(active_tasks, timeline=timeline):
+        if not _customer_has_opened(timeline):
             decision = {
                 "evaluations": [
                     {
                         "task_id": _task_id(active_tasks[0]),
                         "decision": "send",
-                        "reason": "same_day_unopened_earliest_direct",
+                        "reason": "customer_unopened_earliest_direct",
                         "evidence_refs": [f"task:{_task_id(active_tasks[0])}"],
                     }
                 ],
                 "selected_task_id": _task_id(active_tasks[0]),
                 "transition_text": "",
-                "decision_source": "same_day_unopened_direct",
+                "decision_source": "customer_unopened_direct",
             }
         else:
             decision = await self._decide_customer_batch(active_tasks, context=context)
@@ -2253,10 +2255,23 @@ class SopPlatformTaskService:
         platform_error = ""
         if refresh_platform:
             try:
-                online_page, store_visit_page = await asyncio.gather(
+                online_result, store_visit_result = await asyncio.gather(
                     self.platform_client.pending(limit=safe_limit),
                     self.platform_client.store_visit_pending(limit=safe_limit),
+                    return_exceptions=True,
                 )
+                errors: list[str] = []
+                if isinstance(online_result, BaseException):
+                    errors.append(f"online_service: {type(online_result).__name__}: {online_result}")
+                    online_page = {"items": [], "total": 0}
+                else:
+                    online_page = online_result
+                if isinstance(store_visit_result, BaseException):
+                    errors.append(f"store_visit: {type(store_visit_result).__name__}: {store_visit_result}")
+                    store_visit_page = {"items": [], "total": 0}
+                else:
+                    store_visit_page = store_visit_result
+                platform_error = " | ".join(errors)
                 online_items = online_page.get("items") if isinstance(online_page.get("items"), list) else []
                 store_visit_items = (
                     store_visit_page.get("items") if isinstance(store_visit_page.get("items"), list) else []
@@ -5093,6 +5108,15 @@ def _compact_management_status(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _customer_has_opened(timeline: list[dict[str, Any]]) -> bool:
+    return any(
+        item.get("role") == "customer"
+        and bool(str(item.get("content") or "").strip())
+        and not is_platform_auto_opening_message(str(item.get("content") or "").strip())
+        for item in timeline
+    )
+
+
 def _is_same_day_unopened(tasks: list[dict[str, Any]], *, timeline: list[dict[str, Any]]) -> bool:
     add_task = next(
         (
@@ -5434,6 +5458,11 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
         "customer_opened": context.get("customer_opened") if isinstance(context.get("customer_opened"), bool) else None,
         "same_day_unopened": (
             context.get("same_day_unopened") if isinstance(context.get("same_day_unopened"), bool) else None
+        ),
+        "customer_unopened_direct": (
+            context.get("customer_unopened_direct")
+            if isinstance(context.get("customer_unopened_direct"), bool)
+            else None
         ),
         "conversation_count": int(
             context.get("conversation_count") or timeline_structure.get("message_count") or 0
