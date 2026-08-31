@@ -5,7 +5,7 @@
 - base_branch: main
 - base_sha: 7af3065e
 - production_verified_at: 2026-08-31 Asia/Shanghai
-- production_releases: shared/worker=7af3065e; v3=7c0cfc04
+- production_releases: shared/worker=0ef5f545; v3=7c0cfc04; frontend=dce86d4b
 
 ## 目标
 
@@ -48,6 +48,8 @@
 - [x] 后端旧 V1 路由在代码层固定返回 410，删除两个生产 Next 旧代理
 - [x] 删除旧 handoff/V2/SOP 冲突文档、已跟踪测试报告和真实客户会话样本
 - [x] 删除服务器 V2 运行目录并 mask 服务；主/V3 release 各保留 3 个
+- [x] 部署 main `0ef5f545`，内部与公网旧路由均验证为 410
+- [x] 将前端 symlink 从后端历史 release 迁到独立 frontend release 根
 
 ## 待办
 
@@ -66,7 +68,7 @@
 - public old reply routes: HTTP 410
 - V3 health: HTTP 200
 - shared API/worker/frontend: active
-- deterministic backend tests: 102 passed
+- deterministic backend tests: 102 passed（SOP + 初版路由合同）；增强后的 V3-only 路由合同单独 7 passed
 - Python compile: passed
 - frontend type/lint: blocked by missing local `node_modules` and Windows-incompatible aggregate script；不是有效代码失败结论
 - keep-codex-fast report: report-only scan exceeded 5 minutes and was stopped；未修改本机 Codex 状态
@@ -75,8 +77,9 @@
 
 - 当前仅做入口 containment；未宣称完成代码线合并。
 - Nginx rollback: `/etc/nginx/conf.d/ai-paths.conf.pre-v3-only-20260831`
-- shared release: `ai-paths-server-20260831-sop-unopened-ruledata-7af3065e`
+- shared release: `ai-paths-server-20260831-v3-only-contract-0ef5f545`
 - V3 release: `ai-paths-v3-server-20260826-reply-evidence-7c0cfc04`
+- shared rollback release: `ai-paths-server-20260831-sop-unopened-ruledata-7af3065e`
 
 ## 待沉淀的长期结论
 
