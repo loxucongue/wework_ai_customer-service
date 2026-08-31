@@ -2101,26 +2101,19 @@ class SopPlatformTaskService:
                 outcome="superseded_by_later_sendable_group",
                 sent=False,
             )
-            consume_results[:] = [
-                item
-                for item in consume_results
-                if not isinstance(item, dict) or str(item.get("task_id") or "") != task_id
-            ]
-            consume_results.append(
-                {
-                    "task_id": task_id,
-                    "status": 70,
-                    "remark": "superseded_by_later_sendable_group",
-                    "response": response,
-                    "rule_data": rule_data,
-                }
-            )
+            if consume_results and isinstance(consume_results[-1], dict):
+                consume_results[-1]["rule_data"] = rule_data
             task = skipped_task
             if task:
                 self._mark_local_task(task, status="completed_without_send", send_payload=audit or {})
             self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
             terminal_ids.append(task_id)
-        response = await self.platform_client.consume(task_id=selected_task_id, status=30)
+        response = await self._consume_with_audit(
+            task_id=selected_task_id,
+            status=30,
+            phase="complete_after_delivery",
+            audit=audit if isinstance(audit, dict) else {},
+        )
         _require_platform_status(response, 30)
         selected_task = self._platform_task_from_local(selected_task_id)
         selected_rule_data = await self._report_terminal_rule_data(
@@ -2129,20 +2122,8 @@ class SopPlatformTaskService:
             sent=True,
             decision=(audit or {}).get("decision") if isinstance((audit or {}).get("decision"), dict) else None,
         )
-        consume_results[:] = [
-            item
-            for item in consume_results
-            if not isinstance(item, dict) or str(item.get("task_id") or "") != selected_task_id
-        ]
-        consume_results.append(
-            {
-                "task_id": selected_task_id,
-                "status": 30,
-                "remark": "",
-                "response": response,
-                "rule_data": selected_rule_data,
-            }
-        )
+        if consume_results and isinstance(consume_results[-1], dict):
+            consume_results[-1]["rule_data"] = selected_rule_data
         _require_platform_status(response, 30)
         self.repository.update_sop_event_status(
             f"platform_sop_task:{selected_task_id}",
@@ -2171,15 +2152,8 @@ class SopPlatformTaskService:
                 outcome="content_resolved_from_store_visit_queue",
                 sent=False,
             )
-            consume_results.append(
-                {
-                    "task_id": task_id,
-                    "status": 70,
-                    "remark": "content_resolved_from_store_visit_queue",
-                    "response": response,
-                    "rule_data": rule_data,
-                }
-            )
+            if consume_results and isinstance(consume_results[-1], dict):
+                consume_results[-1]["rule_data"] = rule_data
             self.repository.update_sop_event_status(
                 f"platform_sop_task:{task_id}",
                 status="platform_completed",
