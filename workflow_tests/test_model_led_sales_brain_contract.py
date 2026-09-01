@@ -6,10 +6,10 @@ import json
 from app.graph.nodes.parallel_reply_chain import (
     _content_gate_shared_context,
     _tool_planner_shared_context,
-    _v2_activity_offer_delivered,
+    _activity_offer_delivered,
     create_parallel_evidence_node,
 )
-from app.graph.nodes.v2_derived_observations import build_v2_derived_observations
+from app.graph.nodes.derived_observations import build_derived_observations
 from app.graph.nodes.reply_quality import collect_reply_observation_metrics
 from app.graph.nodes.reply_nodes import (
     _parallel_generic_reply_repair_messages,
@@ -23,12 +23,12 @@ from app.graph.nodes.reply_validation import (
     _validate_parallel_selected_content_delivery,
     _validate_store_address_message_facts,
     _validate_store_resolution_delivery_mode,
-    _validate_store_resolution_v2_contract,
+    _validate_store_resolution_contract,
 )
-from app.graph.nodes.v2_reply_admission import (
+from app.graph.nodes.reply_admission import (
     _validate_structured_delivery_conversation_shape,
     validate_model_led_reply_admission,
-    validate_v2_reply_admission,
+    validate_model_led_reply_admission,
 )
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.prompts.reply_synthesizer import (
@@ -324,7 +324,7 @@ def test_parallel_reply_receives_model_led_sales_principles_without_scene_catalo
 
 
 def test_derived_observations_are_raw_rebuildable_values_without_predicates() -> None:
-    result = build_v2_derived_observations(
+    result = build_derived_observations(
         conversation=[
             {
                 "message_ref": "chat_1",
@@ -359,6 +359,7 @@ def test_derived_observations_are_raw_rebuildable_values_without_predicates() ->
             "content": "我考虑一下",
             "sent_at": "2026-08-13T10:01:00+08:00",
         },
+        interface_version="v2",
     )
 
     serialized = str(result).lower()
@@ -369,7 +370,7 @@ def test_derived_observations_are_raw_rebuildable_values_without_predicates() ->
     assert "objection_resolved" not in serialized
 
 
-def test_derived_observations_keep_v2_and_v3_model_observations_separate() -> None:
+def test_derived_observations_keep_prior_and_v3_model_observations_separate() -> None:
     history_events = [
         {
             "event_type": "v2_reply_model_observation",
@@ -391,20 +392,20 @@ def test_derived_observations_keep_v2_and_v3_model_observations_separate() -> No
         },
     ]
 
-    v2_result = build_v2_derived_observations(
+    prior_result = build_derived_observations(
         conversation=[],
         history_events=history_events,
         current_message={"content": "继续", "sent_at": "2026-08-13T10:02:00+08:00"},
         interface_version="v2",
     )
-    v3_result = build_v2_derived_observations(
+    v3_result = build_derived_observations(
         conversation=[],
         history_events=history_events,
         current_message={"content": "继续", "sent_at": "2026-08-13T10:02:00+08:00"},
         interface_version="v3",
     )
 
-    assert v2_result["prior_model_observations"][0]["primary_objective"] == "V2 目标"
+    assert prior_result["prior_model_observations"][0]["primary_objective"] == "V2 目标"
     assert v3_result["prior_model_observations"][0]["primary_objective"] == "V3 目标"
     assert v3_result["prior_model_observations"][0]["authority"] == "v3_prior_model_observation_not_customer_fact"
 
@@ -467,7 +468,7 @@ def test_parallel_content_gate_uses_the_retrieval_prompt_not_the_legacy_scene_pr
     assert "不回复客户" in messages[0]["content"]
 
 
-def test_v2_admission_has_no_visible_text_or_semantic_regex_logic() -> None:
+def test_admission_has_no_visible_text_or_semantic_regex_logic() -> None:
     source = inspect.getsource(validate_model_led_reply_admission)
 
     assert "re.search" not in source
@@ -501,7 +502,7 @@ def test_structured_only_reply_retries_the_complete_reply_task() -> None:
     ]
     repaired = _reply_retry_messages(
         original,
-        ValueError("v2_reply_admission_violations::structured_delivery_requires_text_message"),
+        ValueError("reply_admission_violations::structured_delivery_requires_text_message"),
         previous_payload={
             "reply_messages": [
                 {"type": "store_address", "content": {"store_id": "160"}}
@@ -528,7 +529,7 @@ def test_model_led_admission_reachable_validators_do_not_interpret_visible_prose
         _validate_parallel_payment_boundaries,
         _validate_parallel_media_facts,
         _validate_parallel_selected_content_delivery,
-        _validate_store_resolution_v2_contract,
+        _validate_store_resolution_contract,
         _validate_store_resolution_delivery_mode,
         _validate_store_address_message_facts,
     )
@@ -560,7 +561,7 @@ def test_parallel_reply_repair_cannot_reach_legacy_scenario_hints() -> None:
     assert repaired[0]["content"].startswith("你是最终 Reply 的通用校验修复器")
 
 
-def test_v2_admission_rejects_adopted_asset_when_structured_media_is_missing() -> None:
+def test_admission_rejects_adopted_asset_when_structured_media_is_missing() -> None:
     state = {
         "evidence_join": {
             "schema_version": "parallel_reply_input_v2",
@@ -580,7 +581,7 @@ def test_v2_admission_rejects_adopted_asset_when_structured_media_is_missing() -
     }
 
     try:
-        validate_v2_reply_admission(
+        validate_model_led_reply_admission(
             [{"type": "text", "content": "活动介绍"}],
             state,
         )
@@ -590,7 +591,7 @@ def test_v2_admission_rejects_adopted_asset_when_structured_media_is_missing() -
         raise AssertionError("adopted content asset must deliver its structured media")
 
 
-def test_v2_admission_does_not_require_duplicate_content_asset_fact_refs() -> None:
+def test_admission_does_not_require_duplicate_content_asset_fact_refs() -> None:
     state = {
         "evidence_join": {
             "content_candidates": [
@@ -605,11 +606,11 @@ def test_v2_admission_does_not_require_duplicate_content_asset_fact_refs() -> No
         "reply_used_fact_refs": [],
     }
 
-    validate_v2_reply_admission([{"type": "text", "content": "结合上下文改写后的回复"}], state)
+    validate_model_led_reply_admission([{"type": "text", "content": "结合上下文改写后的回复"}], state)
 
 
-def test_v2_payment_material_requires_structured_activity_delivery() -> None:
-    assert not _v2_activity_offer_delivered(
+def test_payment_material_requires_structured_activity_delivery() -> None:
+    assert not _activity_offer_delivered(
         sop_progress={},
         sent_messages={},
         history_events=[
@@ -619,7 +620,7 @@ def test_v2_payment_material_requires_structured_activity_delivery() -> None:
             }
         ],
     )
-    assert _v2_activity_offer_delivered(
+    assert _activity_offer_delivered(
         sop_progress={"completed_pack_ids": ["s10_activity_intro"]},
         sent_messages={},
         history_events=[],
@@ -1159,7 +1160,7 @@ def test_reply_context_only_renders_final_delivery_stores() -> None:
     assert "荆州万达二店" not in context
 
 
-def test_v2_repeat_similarity_is_measurement_only() -> None:
+def test_repeat_similarity_is_measurement_only() -> None:
     metrics = collect_reply_observation_metrics(
         [{"type": "text", "content": "活动价是268元，我给您说清楚。"}],
         {

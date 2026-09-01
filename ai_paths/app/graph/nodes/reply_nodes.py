@@ -22,7 +22,7 @@ from app.graph.nodes.reply_validation import (
 )
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.graph.nodes.parallel_reply_chain import parallel_reply_payload
-from app.graph.nodes.v2_reply_admission import validate_model_led_reply_admission
+from app.graph.nodes.reply_admission import validate_model_led_reply_admission
 from app.prompts.reply_synthesizer import (
     alias_reply_reference_fields,
     build_parallel_reply_messages,
@@ -2095,7 +2095,7 @@ def _parallel_generic_reply_repair_messages(
 
     raw_error = str(exc)
     markers = (
-        "v2_reply_admission_violations::",
+        "reply_admission_violations::",
         "parallel_reply_hard_violations::",
     )
     marker = next((item for item in markers if item in raw_error), "")
@@ -2186,7 +2186,7 @@ def _legacy_parallel_generic_reply_repair_messages(
 
     raw_error = str(exc)
     markers = (
-        "v2_reply_admission_violations::",
+        "reply_admission_violations::",
         "parallel_reply_hard_violations::",
     )
     marker = next((item for item in markers if item in raw_error), "")

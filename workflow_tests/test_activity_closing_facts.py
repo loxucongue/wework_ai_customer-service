@@ -6,7 +6,6 @@ from app.policies.business_rules import (
     planner_business_rules_prompt_section,
     reply_business_rules_for_model,
 )
-from app.policies.s10_offer import ACTIVE_S10_OFFER_CONTEXT, s10_offer_prompt_section
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT
 
 
@@ -61,14 +60,3 @@ def test_activity_sop_copy_does_not_proactively_quote_original_price() -> None:
     assert set(texts) == target_ids
     assert all("1980" not in text for text in texts.values())
     assert "名额满活动结束并恢复原价；线下客户到店按原价。" in texts["s10_activity_intro"]
-
-
-def test_legacy_unapproved_gift_is_removed_from_runtime_offer() -> None:
-    context_text = json.dumps(ACTIVE_S10_OFFER_CONTEXT, ensure_ascii=False)
-    prompt = s10_offer_prompt_section()
-
-    assert ACTIVE_S10_OFFER_CONTEXT["registration_gift"]["stated_value"] == 180
-    assert "价值180元" in ACTIVE_S10_OFFER_CONTEXT["hard_close_benefit"]
-    assert "280元小气泡" not in context_text
-    assert "280元小气泡" not in prompt
-    assert "价值 180 元的美白管理" in prompt

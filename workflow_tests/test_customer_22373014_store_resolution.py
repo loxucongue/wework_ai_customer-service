@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.graph.nodes.action_nodes import _customer_store_lookup, _geocode_explicit_region_conflict
-from app.services.store_resolution_v2 import build_location_evidence
+from app.services.store_resolution import build_location_evidence
 
 
 class _GeocodeClient:

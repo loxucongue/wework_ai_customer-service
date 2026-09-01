@@ -11,7 +11,7 @@ _ASSET_TYPES = {"image", "video", "image_reference", "video_reference", "media_r
 
 
 class ModelLedObjectionPlaybookService:
-    """Load V2-only distilled sales guidance without exposing source replies."""
+    """Load distilled sales guidance without exposing source replies."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -28,7 +28,7 @@ class ModelLedObjectionPlaybookService:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"invalid V2 objection playbook: {exc}") from exc
+            raise ValueError(f"invalid objection playbook: {exc}") from exc
         return self._normalize(payload)
 
     def sales_principles(self) -> list[dict[str, Any]]:
@@ -88,7 +88,7 @@ class ModelLedObjectionPlaybookService:
                 "purpose": item["customer_uncertainty"],
                 "asset_role": "evidence_strategy",
                 "requires_prior_asset_roles": [],
-                "category": "v2_distilled_guidance",
+                "category": "distilled_guidance",
             }
             for item in self.load()["evidence_strategies"]
         ] + [
@@ -99,7 +99,7 @@ class ModelLedObjectionPlaybookService:
                 "purpose": item["evidence_purpose"],
                 "asset_role": "reviewed_evidence",
                 "requires_prior_asset_roles": [],
-                "category": "v2_reviewed_media",
+                "category": "reviewed_media",
             }
             for item in self.load()["assets"]
             if item["review_status"] == "approved" and item["url"]

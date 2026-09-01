@@ -3,32 +3,11 @@ from __future__ import annotations
 import unittest
 
 from app.graph.nodes.reply_context import reply_user_payload_for_model
-from app.graph.planner.brain_v2 import _planner_payload_for_model
 from app.services.sop_event_decision import normalize_event_decision
 from app.services.outreach_service import outreach_customer_fact_snapshot
 
 
 class ContextSlimmingTests(unittest.TestCase):
-    def test_planner_and_reply_use_fifty_messages_without_soft_profile(self) -> None:
-        history = [f"用户: 消息{i}" for i in range(60)]
-        state = {
-            "content": "当前问题",
-            "normalized_content": "当前问题",
-            "conversation_history": history,
-            "customer_profile": {"main_concern": "旧画像顾虑", "decision_stage": "旧阶段"},
-            "customer_basic_info": {"city": "成都", "province": "四川省"},
-            "history_events": [],
-            "request_context": {},
-        }
-
-        planner = _planner_payload_for_model(state)
-        reply = reply_user_payload_for_model(state)
-
-        self.assertEqual(planner["conversation_history"], history[-50:])
-        self.assertNotIn("customer_profile", planner)
-        self.assertEqual(reply["conversation_history"], history[-50:])
-        self.assertNotIn("profile", reply.get("customer_background_facts", {}))
-        self.assertEqual(reply["customer_background_facts"]["basic_location"]["city"], "成都")
 
     def test_outreach_snapshot_keeps_durable_facts_without_soft_portrait(self) -> None:
         snapshot = outreach_customer_fact_snapshot(

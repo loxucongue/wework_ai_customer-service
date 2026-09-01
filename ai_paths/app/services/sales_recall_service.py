@@ -23,8 +23,8 @@ _ABSOLUTE_EFFECT_PATTERN = re.compile(r"(?:包干净|一次(?:就)?(?:彻底|完
 _GIFT_PATTERN = re.compile(r"(?:赠送|送你|送您|礼品|护理|小气泡|美白|补水)")
 
 
-class V2SalesRecallService:
-    """Recall top-sales reference material for V2 Reply without making it authoritative."""
+class SalesRecallService:
+    """Recall top-sales reference material without making it authoritative."""
 
     def __init__(self, coze_client: CozeClient | None) -> None:
         self.coze_client = coze_client
@@ -34,9 +34,9 @@ class V2SalesRecallService:
         settings = getattr(self.coze_client, "settings", None) if self.coze_client is not None else None
         if self.coze_client is None or settings is None:
             return _status("disabled", "coze_client_unavailable", started)
-        if not bool(getattr(settings, "v2_sales_recall_enabled", True)):
+        if not bool(getattr(settings, "sales_recall_enabled", True)):
             return _status("disabled", "settings_disabled", started)
-        workflow_id = str(getattr(settings, "v2_sales_recall_workflow_id", "") or "").strip()
+        workflow_id = str(getattr(settings, "sales_recall_workflow_id", "") or "").strip()
         if not workflow_id:
             return _status("disabled", "workflow_id_missing", started)
         if _is_opening_only(shared_context):
@@ -53,9 +53,9 @@ class V2SalesRecallService:
         if code not in (None, 0):
             return _status("error", f"coze_workflow_code_{code}: {raw.get('msg') or ''}", started)
 
-        candidates = parse_v2_sales_recall_response(
+        candidates = parse_sales_recall_response(
             raw,
-            max_candidates=max(0, int(getattr(settings, "v2_sales_recall_max_candidates", 3) or 3)),
+            max_candidates=max(0, int(getattr(settings, "sales_recall_max_candidates", 3) or 3)),
         )
         return {
             "schema_version": "v2_sales_recall_v1",
@@ -68,7 +68,7 @@ class V2SalesRecallService:
         }
 
 
-def parse_v2_sales_recall_response(raw: dict[str, Any], *, max_candidates: int = 3) -> list[dict[str, Any]]:
+def parse_sales_recall_response(raw: dict[str, Any], *, max_candidates: int = 3) -> list[dict[str, Any]]:
     payload = _parse_data(raw)
     output = payload.get("output")
     if not isinstance(output, list):

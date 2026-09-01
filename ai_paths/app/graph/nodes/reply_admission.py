@@ -9,7 +9,7 @@ from app.graph.nodes.reply_validation import (
     _validate_parallel_selected_content_delivery,
     _validate_store_address_message_facts,
     _validate_store_resolution_delivery_mode,
-    _validate_store_resolution_v2_contract,
+    _validate_store_resolution_contract,
 )
 
 
@@ -29,7 +29,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         lambda: _validate_parallel_payment_boundaries(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_parallel_selected_content_delivery(messages, state),
-        lambda: _validate_store_resolution_v2_contract(messages, state),
+        lambda: _validate_store_resolution_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(
             messages,
@@ -45,13 +45,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
             if detail and detail not in violations:
                 violations.append(detail)
     if violations:
-        raise ValueError("v2_reply_admission_violations::" + ";;".join(violations))
-
-
-def validate_v2_reply_admission(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    """Backward-compatible entry point for the V2 model-led chain."""
-
-    validate_model_led_reply_admission(messages, state)
+        raise ValueError("reply_admission_violations::" + ";;".join(violations))
 
 
 def _validate_structured_delivery_conversation_shape(

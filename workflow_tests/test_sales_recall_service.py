@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from app.services.v2_sales_recall_service import (
-    V2SalesRecallService,
-    parse_v2_sales_recall_response,
+from app.services.sales_recall_service import (
+    SalesRecallService,
+    parse_sales_recall_response,
 )
 
 
-def test_v2_sales_recall_parser_sanitizes_non_authoritative_facts() -> None:
+def test_sales_recall_parser_sanitizes_non_authoritative_facts() -> None:
     raw = {
         "code": 0,
         "data": json.dumps(
@@ -33,7 +33,7 @@ def test_v2_sales_recall_parser_sanitizes_non_authoritative_facts() -> None:
         ),
     }
 
-    candidates = parse_v2_sales_recall_response(raw, max_candidates=3)
+    candidates = parse_sales_recall_response(raw, max_candidates=3)
 
     assert len(candidates) == 1
     candidate = candidates[0]
@@ -51,11 +51,11 @@ def test_v2_sales_recall_parser_sanitizes_non_authoritative_facts() -> None:
     assert "gift_or_bonus_may_be_used_cautiously" in candidate["allowed_materials"]
 
 
-def test_v2_sales_recall_skips_opening_greeting_without_calling_coze() -> None:
+def test_sales_recall_skips_opening_greeting_without_calling_coze() -> None:
     class _Settings:
-        v2_sales_recall_enabled = True
-        v2_sales_recall_workflow_id = "7672999254608347179"
-        v2_sales_recall_max_candidates = 3
+        sales_recall_enabled = True
+        sales_recall_workflow_id = "7672999254608347179"
+        sales_recall_max_candidates = 3
 
     class _FailingCoze:
         settings = _Settings()
@@ -63,7 +63,7 @@ def test_v2_sales_recall_skips_opening_greeting_without_calling_coze() -> None:
         async def run_workflow(self, *_args, **_kwargs):  # pragma: no cover - must not be called
             raise AssertionError("coze should not be called for pure opening")
 
-    service = V2SalesRecallService(_FailingCoze())
+    service = SalesRecallService(_FailingCoze())
     result = asyncio.run(
         service.recall(
             {
@@ -83,11 +83,11 @@ def test_v2_sales_recall_skips_opening_greeting_without_calling_coze() -> None:
     assert result["reason"] == "auto_opening_or_empty_customer_message"
 
 
-def test_v2_sales_recall_marks_coze_error_code_without_blocking_reply() -> None:
+def test_sales_recall_marks_coze_error_code_without_blocking_reply() -> None:
     class _Settings:
-        v2_sales_recall_enabled = True
-        v2_sales_recall_workflow_id = "7672999254608347179"
-        v2_sales_recall_max_candidates = 3
+        sales_recall_enabled = True
+        sales_recall_workflow_id = "7672999254608347179"
+        sales_recall_max_candidates = 3
 
     class _ErrorCoze:
         settings = _Settings()
@@ -96,7 +96,7 @@ def test_v2_sales_recall_marks_coze_error_code_without_blocking_reply() -> None:
             return {"code": 4000, "msg": "missing required parameters"}
 
     result = asyncio.run(
-        V2SalesRecallService(_ErrorCoze()).recall(
+        SalesRecallService(_ErrorCoze()).recall(
             {
                 "current_message": {"content": "太远了，我先考虑一下"},
                 "conversation": [{"role": "customer", "content": "太远了，我先考虑一下"}],

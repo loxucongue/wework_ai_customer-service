@@ -220,7 +220,6 @@ export function FirstDayOutreachLogViewer() {
           </div>
           <nav className="mt-3 flex gap-2 text-sm">
             <Link href="/logs" className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 px-2.5 py-1.5 hover:bg-zinc-50"><ArrowLeft className="h-4 w-4" />运行日志</Link>
-            <Link href="/outreach" className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 px-2.5 py-1.5 hover:bg-zinc-50"><Send className="h-4 w-4" />历史主动唤醒</Link>
           </nav>
         </header>
 

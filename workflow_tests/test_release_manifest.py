@@ -21,8 +21,8 @@ def test_release_manifest_records_commit_and_config_revision(monkeypatch, tmp_pa
     for relative in (
         "ai_paths/app/policies/business_rules.json",
         "config/sop_reply_packs.json",
-        "config/v2_sop_asset_overlay.json",
-        "config/v2_model_led_objection_playbook.json",
+        "config/sop_asset_overlay.json",
+        "config/model_led_objection_playbook.json",
     ):
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -28,7 +28,7 @@ from app.services.store_fact_integrity import (
     filter_valid_store_facts,
     store_fact_is_valid,
 )
-from app.services.store_resolution_v2 import (
+from app.services.store_resolution import (
     build_location_evidence,
     resolution_status_for_location,
 )

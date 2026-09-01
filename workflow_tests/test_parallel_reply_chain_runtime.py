@@ -3701,7 +3701,7 @@ def test_tool_planner_prompt_composes_recent_parent_city_with_current_district()
 
 def test_sales_recall_wait_is_measured_from_parallel_start(monkeypatch) -> None:
     class _Settings:
-        v2_sales_recall_wait_seconds = 0.02
+        sales_recall_wait_seconds = 0.02
 
     class _Client:
         settings = _Settings()

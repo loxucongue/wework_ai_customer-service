@@ -278,7 +278,7 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_case_image_priority(messages, state)
     _validate_effect_absolute_safety_claims(messages, state)
     _validate_province_only_store_delivery(messages, state)
-    _validate_store_resolution_v2_contract(messages, state)
+    _validate_store_resolution_contract(messages, state)
     _validate_incomplete_store_scope_reply(messages, state)
     _validate_store_resolution_delivery_mode(messages, state)
     _validate_store_address_message_facts(messages, state)
@@ -335,7 +335,7 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
         lambda: _validate_parallel_payment_boundaries(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_parallel_selected_content_delivery(messages, state),
-        lambda: _validate_store_resolution_v2_contract(messages, state),
+        lambda: _validate_store_resolution_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),
     )
@@ -1258,7 +1258,7 @@ def _validate_store_resolution_delivery_mode(messages: list[dict[str, Any]], sta
         raise ValueError("store_cards_not_allowed_when_location_clarification_required")
 
 
-def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+def _validate_store_resolution_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     structured = _structured_facts(state)
     resolution = (
         structured.get("store_resolution_fact")

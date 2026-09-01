@@ -620,7 +620,7 @@ class ChatRuntime:
             conversation_id=conversation_id,
             customer_id=str(request.customer_id or ""),
             input_snapshot=_run_tracking_input_snapshot(request, request_context),
-            interface_version=str(request_context.get("interface_version") or "v1"),
+            interface_version=str(request_context.get("interface_version") or "v3"),
         )
 
     def _update_run_progress(self, request_id: str, phase: str) -> None:
@@ -767,7 +767,7 @@ class ChatRuntime:
                     reply_messages=reply_message_dicts,
                 )
                 try:
-                    _record_v2_reply_model_observation(
+                    _record_reply_model_observation(
                         self._memory_store,
                         final_state,
                         customer_id=str(final_state.get("sales_contact_key") or ""),
@@ -775,7 +775,7 @@ class ChatRuntime:
                 except Exception as exc:
                     final_state.setdefault("warnings", []).append(
                         {
-                            "node": "v2_reply_model_observation",
+                            "node": "reply_model_observation",
                             "message": "observation_persistence_failed",
                             "detail": f"{type(exc).__name__}: {exc}",
                         }
@@ -1450,7 +1450,7 @@ def _record_activity_intro_image(
     _append_activity_intro_image_trace(state, record)
 
 
-def _record_v2_reply_model_observation(
+def _record_reply_model_observation(
     memory_store: CustomerMemoryStore | None,
     state: AgentState,
     *,
@@ -1465,7 +1465,7 @@ def _record_v2_reply_model_observation(
         if isinstance(state.get("reply_sales_judgment"), dict)
         else {}
     )
-    memory_store.record_v2_reply_model_observation(
+    memory_store.record_reply_model_observation(
         customer_id,
         request_id=str(state.get("request_id") or ""),
         primary_objective=str(judgment.get("primary_objective") or ""),
@@ -1476,7 +1476,7 @@ def _record_v2_reply_model_observation(
             (state.get("request_context") if isinstance(state.get("request_context"), dict) else {}).get(
                 "interface_version"
             )
-            or "v2"
+            or "v3"
         ),
     )
 
@@ -1819,5 +1819,5 @@ def _customer_store_knowledge_meta(value: Any) -> dict[str, Any]:
 
 def _interface_version_from_state(state: AgentState) -> str:
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
-    version = str(request_context.get("interface_version") or "v1").strip().lower()
+    version = str(request_context.get("interface_version") or "v3").strip().lower()
     return version if version in {"v1", "v2", "v3"} else "v1"

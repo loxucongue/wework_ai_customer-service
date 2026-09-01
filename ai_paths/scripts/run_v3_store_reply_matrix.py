@@ -402,7 +402,7 @@ async def _main() -> int:
             chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
             event_model_max_concurrency=max(1, int(args.concurrency)),
             model_led_objection_playbook_service=ModelLedObjectionPlaybookService(
-                settings.v2_model_led_objection_playbook_path
+                settings.model_led_objection_playbook_path
             ),
         )
     graphs = build_reply_graphs(

@@ -16,7 +16,6 @@ import {
   Menu,
   MessageSquareText,
   PanelLeft,
-  Send,
   Settings2,
   Sparkles,
 } from "lucide-react";
@@ -33,7 +32,7 @@ const groups = [
   {
     label: "客服与配置",
     items: [
-      { href: "/chat", label: "AI 对话调试", icon: Bot },
+      { href: "/v3-debug", label: "AI 对话调试", icon: Bot },
       { href: "/sop", label: "主线 SOP", icon: MessageSquareText },
       { href: "/sop/precision", label: "预约卡点话术", icon: BookOpenText },
       { href: "/sop-materials", label: "SOP 异议素材", icon: Images },
@@ -42,7 +41,6 @@ const groups = [
   {
     label: "触达与日志",
     items: [
-      { href: "/outreach", label: "主动唤醒", icon: Send },
       { href: "/logs", label: "AI 运行日志", icon: FileClock },
       { href: "/logs/sop", label: "SOP 触达日志", icon: History },
       { href: "/logs/sop-platform", label: "第三方 SOP 日志", icon: Archive },

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.run_observability_legacy import build_run_observability, trace_wall_duration_ms
+from app.services.run_observability_summary import build_run_observability, trace_wall_duration_ms
 
 
 def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:

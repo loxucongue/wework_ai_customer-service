@@ -247,14 +247,14 @@ class Settings(BaseSettings):
         alias="SALES_STRATEGY_CATALOG_PATH",
     )
     sales_strategy_catalog_enabled: bool = Field(default=False, alias="SALES_STRATEGY_CATALOG_ENABLED")
-    v2_model_led_objection_playbook_path: Path = Field(
-        default=Path("config/v2_model_led_objection_playbook.json"),
+    model_led_objection_playbook_path: Path = Field(
+        default=Path("config/model_led_objection_playbook.json"),
         alias="V2_MODEL_LED_OBJECTION_PLAYBOOK_PATH",
     )
-    v2_sales_recall_enabled: bool = Field(default=True, alias="V2_SALES_RECALL_ENABLED")
-    v2_sales_recall_workflow_id: str = Field(default="7672999254608347179", alias="V2_SALES_RECALL_WORKFLOW_ID")
-    v2_sales_recall_wait_seconds: float = Field(default=2.5, alias="V2_SALES_RECALL_WAIT_SECONDS")
-    v2_sales_recall_max_candidates: int = Field(default=3, alias="V2_SALES_RECALL_MAX_CANDIDATES")
+    sales_recall_enabled: bool = Field(default=True, alias="V2_SALES_RECALL_ENABLED")
+    sales_recall_workflow_id: str = Field(default="7672999254608347179", alias="V2_SALES_RECALL_WORKFLOW_ID")
+    sales_recall_wait_seconds: float = Field(default=2.5, alias="V2_SALES_RECALL_WAIT_SECONDS")
+    sales_recall_max_candidates: int = Field(default=3, alias="V2_SALES_RECALL_MAX_CANDIDATES")
     follow_knowledge_enabled: bool = Field(default=True, alias="FOLLOW_KNOWLEDGE_ENABLED")
     follow_knowledge_base_url: str = Field(default="https://test.api.customer.4ba.cn", alias="FOLLOW_KNOWLEDGE_BASE_URL")
     follow_knowledge_token: str = Field(default="", alias="FOLLOW_KNOWLEDGE_TOKEN", repr=False)
@@ -323,13 +323,10 @@ class Settings(BaseSettings):
         gt=0,
         le=120,
     )
-    outreach_auto_send_enabled: bool = Field(default=False, alias="OUTREACH_AUTO_SEND_ENABLED")
     outreach_auto_send_poll_seconds: float = Field(default=5.0, alias="OUTREACH_AUTO_SEND_POLL_SECONDS")
     outreach_auto_send_batch_size: int = Field(default=20, alias="OUTREACH_AUTO_SEND_BATCH_SIZE")
     outreach_before_send_retry_seconds: int = Field(default=60, alias="OUTREACH_BEFORE_SEND_RETRY_SECONDS")
-    outreach_plan_monitor_enabled: bool = Field(default=False, alias="OUTREACH_PLAN_MONITOR_ENABLED")
     outreach_plan_monitor_poll_seconds: float = Field(default=60.0, alias="OUTREACH_PLAN_MONITOR_POLL_SECONDS")
-    outreach_plan_monitor_silent_minutes: int = Field(default=10, alias="OUTREACH_PLAN_MONITOR_SILENT_MINUTES")
     outreach_plan_monitor_batch_size: int = Field(default=5, alias="OUTREACH_PLAN_MONITOR_BATCH_SIZE")
     outreach_plan_monitor_auto_activate: bool = Field(
         default=True,

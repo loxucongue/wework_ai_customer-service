@@ -231,14 +231,14 @@ class CustomerMemoryStore:
                 pass
         return {"status": "recorded", "image_url": clean_url}
 
-    def record_v2_reply_model_observation(
+    def record_reply_model_observation(
         self,
         customer_id: str,
         *,
         request_id: str,
         primary_objective: str,
         customer_friction_observation: str,
-        interface_version: str = "v2",
+        interface_version: str = "v3",
     ) -> dict[str, Any]:
         """Persist a short model self-observation as low-authority evidence.
 
@@ -251,7 +251,7 @@ class CustomerMemoryStore:
         friction = str(customer_friction_observation or "").strip()[:500]
         if not objective and not friction:
             return {"status": "skipped", "reason": "empty_model_observation"}
-        version = str(interface_version or "v2").strip().lower()
+        version = str(interface_version or "v3").strip().lower()
         if version not in {"v2", "v3"}:
             version = "v2"
         data = self.load(customer_id)

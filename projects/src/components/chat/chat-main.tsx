@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Activity, BookOpenText, Bot, Send, Sparkles, UserRoundX } from "lucide-react";
+import { Activity, BookOpenText, Bot, Sparkles, UserRoundX } from "lucide-react";
 import Link from "next/link";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatInput } from "./chat-input";
@@ -383,7 +383,7 @@ export function ChatMain() {
           requestBody.file_image = imageUrl;
         }
 
-        const response = await fetch("/api/chat", {
+        const response = await fetch("/api/v3-debug", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestBody),
@@ -568,15 +568,6 @@ export function ChatMain() {
               >
                 <BookOpenText className="h-3.5 w-3.5" />
                 回复配置
-              </button>
-            </Link>
-            <Link href="/outreach">
-              <button
-                type="button"
-                className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-              >
-                <Send className="h-3.5 w-3.5" />
-                主动唤醒
               </button>
             </Link>
             <button

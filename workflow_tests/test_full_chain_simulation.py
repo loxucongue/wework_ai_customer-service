@@ -57,7 +57,7 @@ class FullChainSimulationTests(unittest.TestCase):
             )
 
     def test_isolation_rejects_business_connector_credentials(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT / ".tmp_runtime") as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "simulation" / "run"
             run_dir.mkdir(parents=True)
             settings = Settings(
@@ -87,7 +87,7 @@ class FullChainSimulationTests(unittest.TestCase):
                 )
 
     def test_isolation_rejects_production_url_and_real_adapter(self) -> None:
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT / ".tmp_runtime") as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "simulation" / "run"
             run_dir.mkdir(parents=True)
             common = {

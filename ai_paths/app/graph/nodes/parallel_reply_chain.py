@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from app.graph.nodes.common import json_dumps, model_usage_snapshot
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
-from app.graph.nodes.v2_derived_observations import build_v2_derived_observations
+from app.graph.nodes.derived_observations import build_derived_observations
 from app.graph.state import AgentState
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.schemas import ChatRequest
@@ -23,7 +23,7 @@ from app.services.payment_collection import payment_collection_content
 from app.services.sop_execution_service import SopExecutionService
 from app.services.sales_strategy_service import SalesStrategyService
 from app.services.trace_logger import TraceLogger
-from app.services.v2_sales_recall_service import V2SalesRecallService
+from app.services.sales_recall_service import SalesRecallService
 from app.services.v3_semantic_router_service import (
     V3SemanticRouterService,
     script_content_candidates,
@@ -750,7 +750,7 @@ def _content_gate_shared_context(state: AgentState) -> dict[str, Any]:
 
 
 async def _run_sales_recall(state: AgentState, coze_client: CozeClient | None) -> dict[str, Any]:
-    return await V2SalesRecallService(coze_client).recall(copy.deepcopy(state.get("shared_context") or {}))
+    return await SalesRecallService(coze_client).recall(copy.deepcopy(state.get("shared_context") or {}))
 
 
 async def _finish_sales_recall(
@@ -760,7 +760,7 @@ async def _finish_sales_recall(
     started: float,
 ) -> Any:
     settings = getattr(coze_client, "settings", None) if coze_client is not None else None
-    wait_seconds = float(getattr(settings, "v2_sales_recall_wait_seconds", 2.5) or 0)
+    wait_seconds = float(getattr(settings, "sales_recall_wait_seconds", 2.5) or 0)
     if task.done():
         return await task
     remaining_wait = wait_seconds - max(0.0, time.perf_counter() - started)
@@ -1599,11 +1599,11 @@ def _shared_context(
             "timezone": "Asia/Shanghai",
         },
         "current_message": current_message,
-        "derived_observations": build_v2_derived_observations(
+        "derived_observations": build_derived_observations(
             conversation=conversation,
             history_events=list(state.get("history_events") or []),
             current_message=current_message,
-            interface_version=str(request_context.get("interface_version") or "v2"),
+            interface_version=str(request_context.get("interface_version") or "v3"),
         ),
         "conversation": conversation,
         "customer_scope": copy.deepcopy(state.get("customer_scope") or {}),
@@ -2233,7 +2233,7 @@ def _payment_collection_delivery_available(state: AgentState) -> bool:
         if isinstance(authoritative.get("sop_progress"), dict)
         else {}
     )
-    if not _v2_activity_offer_delivered(
+    if not _activity_offer_delivered(
         sop_progress=sop_progress,
         sent_messages=(
             authoritative.get("sent_messages")
@@ -2292,7 +2292,7 @@ def _v3_payment_collection_delivery_available(state: AgentState) -> bool:
     return not is_paid_deposit_state(resolved.get("deposit_state"))
 
 
-def _v2_activity_offer_delivered(
+def _activity_offer_delivered(
     *,
     sop_progress: dict[str, Any],
     sent_messages: dict[str, Any],

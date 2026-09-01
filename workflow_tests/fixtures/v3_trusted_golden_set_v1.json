@@ -790,7 +790,7 @@
       "category": "成熟付款与预约金",
       "source_kind": "fixture",
       "source_refs": [
-        "fixture:v2_delivered_evidence_payment_progression_20260813.json#v2_mature_how_to_join_defaults_to_card"
+        "fixture:delivered_evidence_payment_progression_20260813.json#v2_mature_how_to_join_defaults_to_card"
       ],
       "source_learning": {
         "reusable_logic": "",
@@ -1973,7 +1973,7 @@
       "category": "效果异议",
       "source_kind": "fixture",
       "source_refs": [
-        "fixture:v2_concern_provenance_cases_20260812.json#trust_doubt_does_not_invent_fee_concern",
+        "fixture:concern_provenance_cases_20260812.json#trust_doubt_does_not_invent_fee_concern",
         "YYHF-0035"
       ],
       "source_learning": {
@@ -2108,7 +2108,7 @@
       "category": "效果异议",
       "source_kind": "fixture",
       "source_refs": [
-        "fixture:v2_concern_provenance_cases_20260812.json#past_bad_result_advances_without_new_diagnosis",
+        "fixture:concern_provenance_cases_20260812.json#past_bad_result_advances_without_new_diagnosis",
         "YYHF-0045"
       ],
       "source_learning": {
@@ -3230,7 +3230,7 @@
       "category": "价格异议",
       "source_kind": "fixture",
       "source_refs": [
-        "fixture:v2_concern_provenance_cases_20260812.json#explicit_hidden_fee_question_still_answered",
+        "fixture:concern_provenance_cases_20260812.json#explicit_hidden_fee_question_still_answered",
         "YYHF-0053"
       ],
       "source_learning": {
@@ -6357,7 +6357,7 @@
       "category": "精准问答",
       "source_kind": "fixture",
       "source_refs": [
-        "fixture:v2_concern_provenance_cases_20260812.json#explicit_hand_face_scope_still_answered"
+        "fixture:concern_provenance_cases_20260812.json#explicit_hand_face_scope_still_answered"
       ],
       "source_learning": {
         "reusable_logic": "",
@@ -6996,7 +6996,7 @@
       "category": "活动介绍与首次询价",
       "source_kind": "fixture",
       "source_refs": [
-        "fixture:v2_delivered_evidence_payment_progression_20260813.json#v2_first_price_only_activity_no_card"
+        "fixture:delivered_evidence_payment_progression_20260813.json#v2_first_price_only_activity_no_card"
       ],
       "source_learning": {
         "reusable_logic": "",
@@ -7590,7 +7590,7 @@
       "category": "成熟付款与预约金",
       "source_kind": "fixture",
       "source_refs": [
-        "fixture:v2_delivered_evidence_payment_progression_20260813.json#v2_explicit_transfer_uses_only_transfer"
+        "fixture:delivered_evidence_payment_progression_20260813.json#v2_explicit_transfer_uses_only_transfer"
       ],
       "source_learning": {
         "reusable_logic": "",
@@ -9113,7 +9113,7 @@
       "category": "精准问答",
       "source_kind": "fixture",
       "source_refs": [
-        "fixture:v2_concern_provenance_cases_20260812.json#explicit_rebound_question_still_answered"
+        "fixture:concern_provenance_cases_20260812.json#explicit_rebound_question_still_answered"
       ],
       "source_learning": {
         "reusable_logic": "",

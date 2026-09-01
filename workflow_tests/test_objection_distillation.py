@@ -17,8 +17,8 @@ from app.schemas import ChatRequest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLAYBOOK_PATH = ROOT / "config" / "v2_model_led_objection_playbook.json"
-CONCERN_PROVENANCE_FIXTURE = ROOT / "workflow_tests" / "fixtures" / "v2_concern_provenance_cases_20260812.json"
+PLAYBOOK_PATH = ROOT / "config" / "model_led_objection_playbook.json"
+CONCERN_PROVENANCE_FIXTURE = ROOT / "workflow_tests" / "fixtures" / "concern_provenance_cases_20260812.json"
 
 
 class _EmptyPackService:
@@ -50,7 +50,7 @@ def test_runtime_catalog_never_exposes_raw_replies_or_pending_media() -> None:
     assert "安排同款专家老师" not in serialized
 
 
-def test_v2_content_catalog_contains_guidance_but_no_unreviewed_media() -> None:
+def test_content_catalog_contains_guidance_but_no_unreviewed_media() -> None:
     service = SopExecutionService(
         repository=object(),
         sop_reply_pack_service=_EmptyPackService(),
@@ -143,7 +143,7 @@ def test_tool_planner_input_excludes_sales_and_content_guidance() -> None:
     assert set(shared["rules"]) == {"MUST FOLLOW", "AUTHORITATIVE FACTS", "TOOL FACT BOUNDARIES"}
 
 
-def test_v2_prompts_do_not_restore_scene_matching_or_raw_reference_replies() -> None:
+def test_prompts_do_not_restore_scene_matching_or_raw_reference_replies() -> None:
     active_prompts = PARALLEL_CONTENT_GATE_SYSTEM_PROMPT + PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "selected_scene_id" not in active_prompts
@@ -157,13 +157,13 @@ def test_v2_prompts_do_not_restore_scene_matching_or_raw_reference_replies() -> 
     assert "客户说 X" not in active_prompts
 
 
-def test_v2_prompts_forbid_inventing_customer_concerns_and_valueless_questions() -> None:
+def test_prompts_forbid_inventing_customer_concerns_and_valueless_questions() -> None:
     assert "植入新顾虑或虚构后台动作" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "直接交付，不先问客户要不要看" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "缺失信息会改变事实、证据或动作时才问一个问题" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
-def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:
+def test_distilled_guidance_requires_explicit_customer_concern() -> None:
     config = json.loads(PLAYBOOK_PATH.read_text(encoding="utf-8"))
     principles = {item["id"]: item["reasoning"] for item in config["sales_principles"]}
     strategies = {item["id"]: item for item in config["evidence_strategies"]}
@@ -190,7 +190,7 @@ def test_v2_distilled_guidance_requires_explicit_customer_concern() -> None:
     assert "不循环辩解" in runtime_principles["acknowledge_then_switch"]
 
 
-def test_v2_concern_provenance_fixture_covers_both_suppression_and_explicit_questions() -> None:
+def test_concern_provenance_fixture_covers_both_suppression_and_explicit_questions() -> None:
     fixture = json.loads(CONCERN_PROVENANCE_FIXTURE.read_text(encoding="utf-8"))
     scenarios = {item["id"]: item for item in fixture["scenarios"]}
 
@@ -202,7 +202,7 @@ def test_v2_concern_provenance_fixture_covers_both_suppression_and_explicit_ques
     assert "explicit_hand_face_scope_still_answered" in scenarios
 
 
-def test_v2_does_not_apply_legacy_precision_mainline_warning() -> None:
+def test_does_not_apply_legacy_precision_mainline_warning() -> None:
     messages = [{"type": "text", "content": "做完后注意基础防晒和补水就可以。"}]
     state = {
         "evidence_join": {"schema_version": "reply_chain_evidence_join_v1"},

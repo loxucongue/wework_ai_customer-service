@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.graph.nodes.reply_context import reply_user_payload_for_model
-from app.graph.planner.brain_v2 import planner_v2_messages_for_model
-from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.policies.sales_flow import (
     appointment_blocker_reference_for_reply,
     configure_precision_qa_playbook_path,
@@ -32,24 +30,14 @@ def test_gate_only_receives_deduplicated_applicable_scenes() -> None:
     assert any("暂时不交预约金" in item["applicable_scene"] for item in index)
 
 
-def test_planner_only_receives_selected_scene_and_reply_receives_candidates() -> None:
+def test_reply_receives_candidates_for_the_selected_scene() -> None:
     scene = next(
         item
         for item in precision_qa_index_for_gate()
         if appointment_blocker_reference_for_reply(item["scene_id"]).get("candidates")
     )
-    messages = planner_v2_messages_for_model({
-        "normalized_content": "这个门店太远了",
-        "conversation_history": [],
-        "sop_gate_decision": {"selected_scene_id": scene["scene_id"], "route": "ai_only"},
-    })
-    serialized = "\n".join(str(item.get("content") or "") for item in messages)
-    assert scene["scene_id"] in serialized
-    assert "YYHF-0001" not in serialized
-    assert "reference_messages" not in serialized
-
     payload = reply_user_payload_for_model({
-        "normalized_content": "这个门店太远了",
+        "normalized_content": "???????",
         "conversation_history": [],
         "sop_gate_decision": {"selected_scene_id": scene["scene_id"]},
     })
@@ -63,6 +51,8 @@ def test_planner_only_receives_selected_scene_and_reply_receives_candidates() ->
     )
 
 
+
+
 def test_missing_media_is_never_sendable_reference() -> None:
     for scene in precision_qa_index_for_gate():
         reference = appointment_blocker_reference_for_reply(scene["scene_id"])
@@ -71,31 +61,8 @@ def test_missing_media_is_never_sendable_reference() -> None:
             assert all(item.get("content") for item in candidate.get("unavailable_media", []))
 
 
-def test_hard_precision_rules_remain_accepted() -> None:
-    plan = build_planner_plan_v2(
-        {"normalized_content": "是不是做一次就可以了"},
-        {
-            "decision": "direct_reply",
-            "precision_qa_decision": {"question_id": "one_session_effect", "confidence": "high"},
-            "reply_messages": [{"type": "text", "order": 1, "content": "我先给您说清楚。"}],
-            "tool_calls": [],
-        },
-    )
-    assert plan["precision_qa_decision"]["question_id"] == "one_session_effect"
 
 
-def test_unknown_precision_question_id_is_not_accepted_as_fact() -> None:
-    plan = build_planner_plan_v2(
-        {"normalized_content": "普通问题"},
-        {
-            "decision": "direct_reply",
-            "precision_qa_decision": {"question_id": "not_configured", "confidence": "high"},
-            "reply_messages": [{"type": "text", "order": 1, "content": "我给您说明一下。"}],
-            "tool_calls": [],
-        },
-    )
-    assert plan["precision_qa_decision"]["question_id"] == ""
-    assert plan["precision_qa_decision"]["confidence"] == "low"
 
 
 def test_sop_page_exposes_appointment_blocker_workbench() -> None:

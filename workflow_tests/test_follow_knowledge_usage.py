@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.config import Settings
 from app.graph.nodes.reply_nodes import _reply_metadata_from_model_call
-from app.graph.nodes.v2_derived_observations import build_v2_derived_observations
+from app.graph.nodes.derived_observations import build_derived_observations
 from app.services.memory_store import CustomerMemoryStore
 
 
@@ -217,7 +217,7 @@ def test_usage_is_persisted_idempotently_and_returned_as_low_authority_observati
         for item in memory["history_events"]
         if item.get("event_type") == "v3_follow_knowledge_usage"
     ]
-    observations = build_v2_derived_observations(
+    observations = build_derived_observations(
         conversation=[],
         history_events=memory["history_events"],
         current_message={},

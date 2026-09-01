@@ -11,8 +11,8 @@ from typing import Iterable
 CONFIG_PATHS = (
     "ai_paths/app/policies/business_rules.json",
     "config/sop_reply_packs.json",
-    "config/v2_sop_asset_overlay.json",
-    "config/v2_model_led_objection_playbook.json",
+    "config/sop_asset_overlay.json",
+    "config/model_led_objection_playbook.json",
 )
 
 

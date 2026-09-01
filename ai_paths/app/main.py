@@ -5,63 +5,28 @@ import logging
 import os
 import re
 import secrets
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from app.chat_runtime import ChatRuntime
 from app.config import get_settings
-from app.graph.graph_builder import build_reply_graphs
+from app.runtime_services import build_runtime_services
 from app.schemas import (
     ChatRequest,
     ChatResponse,
     ConversationModeChangedEvent,
     MessageDeliveryCallback,
 )
-from app.services.coze_client import CozeClient
-from app.services.ai_sales_policy_service import AiSalesPolicyService
 from app.services.conversation_mode_relay import (
-    ConversationModeRelayService,
     ConversationModeWritebackRejected,
     ConversationModeWritebackTimeout,
     ConversationModeWritebackUnavailable,
 )
-from app.services.customer_context import CustomerContextService
-from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
-from app.services.deepseek_semantic_client import DeepSeekSemanticClient
-from app.services.follow_knowledge_client import FollowKnowledgeClient
-from app.services.memory_store import CustomerMemoryStore
-from app.services.message_delivery import MessageDeliveryService
-from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
-from app.services.run_observability_legacy import build_run_observability
-from app.services.model_client import ModelClient
-from app.services.outreach_service import OutreachService, classify_conversation_refresh_error
-from app.services.outreach_send_client import OutreachSendClient
-from app.services.outreach_system_client import OutreachSystemClient
-from app.services.platform_reply_coordinator import PlatformReplyCoordinator
-from app.services.platform_voice_batch import PlatformVoiceBatchCoordinator
-from app.services.platform_agent_client import PlatformAgentClient
-from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
-from app.services.sop_event_service import SopEventService
-from app.services.sop_execution_service import SopExecutionService
-from app.services.sales_strategy_service import SalesStrategyService
-from app.services.sop_objection_material_service import SopObjectionMaterialService
-from app.services.sop_platform_client import SopPlatformClient
-from app.services.sop_platform_task_service import SopPlatformTaskService
-from app.services.service_rule_data_client import ServiceRuleDataClient
-from app.services.service_rule_data_service import ServiceRuleDataService
-from app.services.storage import AppRepository, build_store
-from app.services.store_service import StoreService
-from app.services.store_snapshot_service import StoreSnapshotService
-from app.services.sop_reply_pack_service import SopReplyPackService
-from app.services.trace_logger import TraceLogger
-from app.services.v3_evaluation_service import V3EvaluationService
-from app.services.v3_semantic_router_service import V3SemanticRouterService
-from app.services.v3_sop_execution_service import SopExecutionService as V3SopExecutionService
-from app.services.voice_transcription import DoubaoAsrClient, transcribe_voice_request
+from app.services.run_observability_summary import build_run_observability
+from app.services.voice_transcription import transcribe_voice_request
 from app.services.workflow_compat import (
     normalize_workflow_request,
     workflow_error_response,
@@ -69,167 +34,57 @@ from app.services.workflow_compat import (
 )
 
 settings = get_settings()
-v3_evaluation_service = V3EvaluationService(settings.v3_evaluation_dir)
-trace_logger = TraceLogger(settings)
-storage_store = build_store(settings)
-repository = AppRepository(storage_store)
-message_delivery_service = MessageDeliveryService(settings, repository)
-conversation_mode_relay_service = ConversationModeRelayService(settings)
-service_rule_data_client = ServiceRuleDataClient(settings)
-service_rule_data_service = ServiceRuleDataService(
-    repository=repository,
-    client=service_rule_data_client,
-    poll_seconds=settings.service_rule_data_poll_seconds,
-    batch_size=settings.service_rule_data_batch_size,
-    max_attempts=settings.service_rule_data_max_attempts,
-    retry_base_seconds=settings.service_rule_data_retry_base_seconds,
-)
-coze_client = CozeClient(settings)
-voice_transcription_client = DoubaoAsrClient(settings)
-model_client = ModelClient(settings)
-ai_sales_policy_service = AiSalesPolicyService(settings)
-sales_strategy_service = SalesStrategyService(settings)
-memory_store = CustomerMemoryStore(settings, repository)
-platform_agent_client = PlatformAgentClient(settings)
-outreach_send_client = OutreachSendClient(settings, delivery_service=message_delivery_service)
-outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
-sop_platform_client = SopPlatformClient(settings)
-platform_reply_coordinator = PlatformReplyCoordinator(settings)
-platform_voice_batch_coordinator = PlatformVoiceBatchCoordinator(settings)
-customer_context_service = CustomerContextService(platform_agent_client)
-store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
-customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_client, store_snapshot_service)
-store_service = StoreService(platform_agent_client)
-sop_reply_pack_service = SopReplyPackService(settings)
-precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
-sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
-model_led_objection_playbook_service = ModelLedObjectionPlaybookService(
-    settings.v2_model_led_objection_playbook_path
-)
-follow_knowledge_client = FollowKnowledgeClient(settings)
-deepseek_semantic_fallback_client = ModelClient(
-    settings.model_copy(
-        update={
-            "model_fast": "gpt-5.4-mini",
-            "model_fast_fallbacks": "gpt-5.4",
-            "model_emergency_fallbacks": "",
-            "model_hedge_max_parallel": 1,
-        }
-    )
-)
-deepseek_semantic_client = DeepSeekSemanticClient(settings, deepseek_semantic_fallback_client)
-v3_semantic_router_service = V3SemanticRouterService(
-    semantic_client=deepseek_semantic_client,
-    knowledge_client=follow_knowledge_client,
-    script_threshold=settings.deepseek_semantic_script_threshold,
-    max_scripts=settings.deepseek_semantic_max_scripts,
-)
-outreach_service = OutreachService(
-    repository=repository,
-    model_client=model_client,
-    system_client=outreach_system_client,
-    customer_context_service=customer_context_service,
-    precision_qa_playbook_service=precision_qa_playbook_service,
-    sop_reply_pack_service=sop_reply_pack_service,
-    coze_client=coze_client,
-    before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
-    sales_strategy_service=sales_strategy_service,
-)
-sop_execution_service = SopExecutionService(
-    repository=repository,
-    sop_reply_pack_service=sop_reply_pack_service,
-    model_client=model_client,
-    memory_store=memory_store,
-    customer_context_service=customer_context_service,
-    event_model_retry_attempts=settings.sop_event_model_retry_attempts,
-    event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
-    event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
-    event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
-    chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
-    event_model_max_concurrency=settings.sop_event_model_max_concurrency,
-    model_semantic_routing_enabled=settings.reply_model_semantic_routing_enabled,
-    event_schema_only_normalizer_enabled=settings.sop_event_schema_only_normalizer_enabled,
-    governance_shadow_mode=settings.reply_governance_shadow_mode,
-)
-v3_sop_execution_service = V3SopExecutionService(
-    repository=repository,
-    sop_reply_pack_service=sop_reply_pack_service,
-    model_client=model_client,
-    memory_store=memory_store,
-    customer_context_service=customer_context_service,
-    event_model_retry_attempts=settings.sop_event_model_retry_attempts,
-    event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
-    event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
-    event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
-    chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
-    event_model_max_concurrency=settings.sop_event_model_max_concurrency,
-    model_led_objection_playbook_service=model_led_objection_playbook_service,
-)
-sop_event_service = SopEventService(
-    repository=repository,
-    sop_reply_pack_service=sop_reply_pack_service,
-    outreach_send_client=outreach_send_client,
-    sop_execution_service=sop_execution_service,
-    memory_store=memory_store,
-    customer_context_service=customer_context_service,
-    personalized_outreach_service=outreach_service,
-    daily_touch_soft_limit=settings.sop_event_daily_touch_soft_limit,
-    default_identity={
-        "corp_id": settings.platform_agent_default_corp_id,
-        "user_id": settings.platform_agent_default_user_id,
-        "wechat": settings.platform_agent_default_wechat,
-    },
-    persistent_retry_attempts=settings.sop_event_persistent_retry_attempts,
-    persistent_retry_base_delay_seconds=settings.sop_event_persistent_retry_base_delay_seconds,
-    persistent_retry_max_delay_seconds=settings.sop_event_persistent_retry_max_delay_seconds,
-    retry_batch_size=settings.sop_event_retry_batch_size,
-    quiet_backlog_fusion_enabled=settings.sop_quiet_backlog_fusion_enabled,
-    quiet_backlog_fusion_time=settings.sop_quiet_backlog_fusion_time,
-    quiet_backlog_fusion_batch_size=settings.sop_quiet_backlog_fusion_batch_size,
-    quiet_backlog_fusion_model=settings.sop_quiet_backlog_fusion_model,
-    quiet_backlog_fusion_timeout_seconds=settings.sop_quiet_backlog_fusion_timeout_seconds,
-)
-sop_platform_task_service = SopPlatformTaskService(
-    settings=settings,
-    repository=repository,
-    platform_client=sop_platform_client,
-    system_client=outreach_system_client,
-    model_client=model_client,
-    customer_context_service=customer_context_service,
-    objection_material_service=sop_objection_material_service,
-)
-reply_graphs = build_reply_graphs(
-    coze_client,
-    trace_logger,
-    model_client,
-    memory_store,
-    customer_context_service,
-    customer_store_knowledge_service,
-    store_service,
-    outreach_send_client,
-    platform_agent_client,
-    v3_sop_execution_service,
-    v3_semantic_router_service,
-    sales_strategy_service,
-)
+services = build_runtime_services(settings)
+v3_evaluation_service = services.v3_evaluation_service
+trace_logger = services.trace_logger
+storage_store = services.storage_store
+repository = services.repository
+message_delivery_service = services.message_delivery_service
+conversation_mode_relay_service = services.conversation_mode_relay_service
+service_rule_data_service = services.service_rule_data_service
+coze_client = services.coze_client
+voice_transcription_client = services.voice_transcription_client
+model_client = services.model_client
+ai_sales_policy_service = services.ai_sales_policy_service
+sales_strategy_service = services.sales_strategy_service
+memory_store = services.memory_store
+platform_agent_client = services.platform_agent_client
+outreach_send_client = services.outreach_send_client
+outreach_system_client = services.outreach_system_client
+sop_platform_client = services.sop_platform_client
+platform_reply_coordinator = services.platform_reply_coordinator
+platform_voice_batch_coordinator = services.platform_voice_batch_coordinator
+customer_context_service = services.customer_context_service
+store_snapshot_service = services.store_snapshot_service
+customer_store_knowledge_service = services.customer_store_knowledge_service
+store_service = services.store_service
+sop_reply_pack_service = services.sop_reply_pack_service
+precision_qa_playbook_service = services.precision_qa_playbook_service
+sop_objection_material_service = services.sop_objection_material_service
+model_led_objection_playbook_service = services.model_led_objection_playbook_service
+follow_knowledge_client = services.follow_knowledge_client
+deepseek_semantic_client = services.deepseek_semantic_client
+v3_semantic_router_service = services.v3_semantic_router_service
+outreach_service = services.outreach_service
+sop_execution_service = services.sop_execution_service
+v3_sop_execution_service = services.v3_sop_execution_service
+sop_event_service = services.sop_event_service
+sop_platform_task_service = services.sop_platform_task_service
+reply_graphs = services.reply_graphs
+chat_runtime = services.chat_runtime
 compiled_graph = reply_graphs.full_graph
-chat_runtime = ChatRuntime(
-    full_graph=reply_graphs.full_graph,
-    commit_graph=reply_graphs.commit_graph,
-    trace_logger=trace_logger,
-    repository=repository,
-    outreach_send_client=outreach_send_client,
-    outreach_system_client=outreach_system_client,
-    memory_store=memory_store,
-    platform_reply_coordinator=platform_reply_coordinator,
-    sop_execution_service=v3_sop_execution_service,
-    service_rule_data_service=service_rule_data_service,
-    ai_sales_policy_service=ai_sales_policy_service,
-    sales_strategy_service=sales_strategy_service,
-    outreach_service=outreach_service,
-    settings=settings,
-)
-app = FastAPI(title=settings.app_name)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await startup()
+    try:
+        yield
+    finally:
+        await shutdown()
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 logger = logging.getLogger(__name__)
 sop_platform_pull_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
@@ -308,12 +163,6 @@ async def _run_outreach_plan_monitor_worker() -> None:
                     silent_minutes=settings.outreach_first_day_silence_minutes,
                     auto_activate=settings.outreach_plan_monitor_auto_activate,
                 )
-            if settings.outreach_plan_monitor_enabled:
-                await outreach_service.evaluate_silent_customers(
-                    limit=settings.outreach_plan_monitor_batch_size,
-                    silent_minutes=settings.outreach_plan_monitor_silent_minutes,
-                    auto_activate=settings.outreach_plan_monitor_auto_activate,
-                )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -328,11 +177,6 @@ async def _run_outreach_task_executor_worker() -> None:
                 await outreach_service.execute_due_first_day_tasks(
                     limit=settings.outreach_auto_send_batch_size,
                 )
-            if settings.outreach_auto_send_enabled:
-                await outreach_service.execute_due_tasks(
-                    limit=settings.outreach_auto_send_batch_size,
-                    auto_approved_only=True,
-                )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -340,7 +184,6 @@ async def _run_outreach_task_executor_worker() -> None:
         await asyncio.sleep(max(1.0, float(settings.outreach_auto_send_poll_seconds)))
 
 
-@app.on_event("startup")
 async def startup() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
     global outreach_plan_monitor_worker, outreach_task_executor_worker, strategy_data_callback_worker
@@ -366,18 +209,15 @@ async def startup() -> None:
         store_snapshot_refresh_worker = asyncio.create_task(_run_store_snapshot_refresh_worker())
     if (
         settings.outreach_first_day_silence_enabled
-        or settings.outreach_plan_monitor_enabled
         or settings.sop_quiet_backlog_fusion_enabled
     ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
         outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
     if (
         settings.outreach_first_day_silence_enabled
-        or settings.outreach_auto_send_enabled
     ) and (outreach_task_executor_worker is None or outreach_task_executor_worker.done()):
         outreach_task_executor_worker = asyncio.create_task(_run_outreach_task_executor_worker())
 
 
-@app.on_event("shutdown")
 async def shutdown() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
     global outreach_plan_monitor_worker, outreach_task_executor_worker, strategy_data_callback_worker
@@ -513,12 +353,10 @@ async def _sync_outreach_workers_after_first_day_settings_update() -> None:
         return
     if (
         settings.outreach_first_day_silence_enabled
-        or settings.outreach_plan_monitor_enabled
     ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
         outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
     if (
         settings.outreach_first_day_silence_enabled
-        or settings.outreach_auto_send_enabled
     ) and (outreach_task_executor_worker is None or outreach_task_executor_worker.done()):
         outreach_task_executor_worker = asyncio.create_task(_run_outreach_task_executor_worker())
 
@@ -538,16 +376,6 @@ async def health() -> dict[str, Any]:
         "platform_sop_worker": sop_platform_task_service.runtime_status(),
         "strategy_data_callback": service_rule_data_service.status(),
     }
-
-
-@app.get("/chat")
-async def chat_info() -> None:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
-
-
-@app.get("/reply")
-async def reply_info() -> None:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
 
 
 async def require_api_key(authorization: str | None = Header(default=None)) -> None:
@@ -658,10 +486,6 @@ async def _finalize_message_delivery(dispatch: dict[str, Any]) -> None:
     message_delivery_service.mark_finalized(str(dispatch.get("id") or ""))
 
 
-def _reject_legacy_outreach_mutation() -> None:
-    raise HTTPException(status_code=410, detail="旧 Outreach 已转为历史只读")
-
-
 @app.post(
     "/callbacks/v1/message-delivery",
     dependencies=[Depends(require_message_delivery_callback_token)],
@@ -754,11 +578,6 @@ async def admin_update_sop_reply_packs(payload: dict[str, Any] = Body(...)) -> d
         return sop_reply_pack_service.save(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/admin/sop-reply-packs/event-first-add-templates", dependencies=[Depends(require_api_key)])
-async def admin_append_event_first_add_templates() -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail="主动事件话术已迁移到第三方 SOP 平台")
 
 
 @app.get("/admin/precision-qa-playbook", dependencies=[Depends(require_api_key)])
@@ -952,51 +771,6 @@ async def sop_events(
     return JSONResponse(content={"code": 0, "msg": "ok", "data": result})
 
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(_: ChatRequest, __: None = None) -> None:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
-
-
-@app.post("/reply", response_model=ChatResponse)
-async def reply(
-    _: ChatRequest,
-    __: BackgroundTasks,
-    ___: None = None,
-) -> None:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
-
-
-@app.post("/chat/workflow-compatible")
-async def chat_workflow_compatible(
-    _: dict[str, Any] = Body(...),
-    __: None = None,
-) -> JSONResponse:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
-
-
-@app.post("/reply/workflow-compatible")
-async def reply_workflow_compatible(
-    _: dict[str, Any] = Body(...),
-    __: BackgroundTasks = None,
-    ___: None = None,
-) -> JSONResponse:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V1 is retired; use V3.")
-
-
-@app.post("/reply/workflow-compatible-v2")
-async def reply_workflow_compatible_v2(
-    _: dict[str, Any] = Body(...),
-) -> JSONResponse:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V2 is retired; use V3.")
-
-
-@app.post("/chat/workflow-compatible-v2")
-async def chat_workflow_compatible_v2(
-    _: dict[str, Any] = Body(...),
-) -> JSONResponse:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reply API V2 is retired; use V3.")
-
-
 @app.post("/reply/workflow-compatible-v3")
 async def reply_workflow_compatible_v3(
     payload: dict[str, Any] = Body(...),
@@ -1018,7 +792,7 @@ async def workflow_compatible_reply(
     *,
     platform_async: bool = False,
     background_tasks: BackgroundTasks | None = None,
-    interface_version: str = "v1",
+    interface_version: str = "v3",
 ) -> JSONResponse:
     try:
         request = normalize_workflow_request(payload)
@@ -1048,7 +822,7 @@ async def workflow_compatible_reply(
 
 def _attach_request_interface_version(request: ChatRequest, interface_version: str) -> None:
     candidate = str(interface_version).strip().lower()
-    version = candidate if candidate in {"v1", "v2", "v3"} else "v1"
+    version = candidate if candidate in {"v1", "v2", "v3"} else "v3"
     context = dict(request.request_context or {})
     context["interface_version"] = version
     context["api_version"] = version
@@ -1197,258 +971,6 @@ async def admin_runs(
             has_error=has_error,
         )
     }
-
-
-@app.get("/admin/outreach/candidates", dependencies=[Depends(require_api_key)])
-async def admin_outreach_candidates(
-    limit: int = 50,
-    silent_minutes_min: int = 60,
-    outreach_status: str = "",
-    lifecycle_stage: str = "",
-    no_plan_only: bool = False,
-    keyword: str = "",
-) -> dict[str, Any]:
-    return {
-        "items": outreach_service.list_candidates(
-            limit=limit,
-            silent_minutes_min=silent_minutes_min,
-            outreach_status=outreach_status,
-            lifecycle_stage=lifecycle_stage,
-            no_plan_only=no_plan_only,
-            keyword=keyword,
-        )
-    }
-
-
-@app.get("/admin/outreach/dashboard", dependencies=[Depends(require_api_key)])
-async def admin_outreach_dashboard() -> dict[str, Any]:
-    return {
-        **outreach_service.dashboard_stats(),
-        "worker": {
-            "enabled": False,
-            "mode": "retired_read_only",
-            "poll_seconds": settings.outreach_auto_send_poll_seconds,
-            "batch_size": settings.outreach_auto_send_batch_size,
-            "before_send_retry_seconds": settings.outreach_before_send_retry_seconds,
-        },
-        "plan_monitor": {
-            "enabled": settings.outreach_plan_monitor_enabled or settings.outreach_first_day_silence_enabled,
-            "day2_plus_enabled": settings.outreach_plan_monitor_enabled,
-            "first_day_enabled": settings.outreach_first_day_silence_enabled,
-            "poll_seconds": settings.outreach_plan_monitor_poll_seconds,
-            "silent_minutes": settings.outreach_plan_monitor_silent_minutes,
-            "first_day_silent_minutes": settings.outreach_first_day_silence_minutes,
-            "batch_size": settings.outreach_plan_monitor_batch_size,
-            "auto_activate": settings.outreach_plan_monitor_auto_activate,
-            **outreach_service.monitor_status(),
-        },
-        "platform_sop_worker": {
-            "enabled": settings.sop_platform_pull_enabled,
-            "shadow_mode": settings.sop_platform_shadow_mode,
-            "poll_seconds": settings.sop_platform_poll_seconds,
-            "batch_size": settings.sop_platform_batch_size,
-            "task_concurrency": settings.sop_platform_task_concurrency,
-            "queue_size": settings.sop_platform_queue_size,
-            "recovery_concurrency": settings.sop_platform_recovery_concurrency,
-            "model_timeout_seconds": settings.sop_platform_model_timeout_seconds,
-            "max_task_age_seconds": settings.sop_platform_max_task_age_seconds,
-            **sop_platform_task_service.runtime_status(),
-        },
-    }
-
-
-@app.get("/admin/outreach/customers/{customer_id}/detail", dependencies=[Depends(require_api_key)])
-async def admin_outreach_customer_detail(
-    customer_id: str,
-    corp_id: str = "",
-    wechat: str = "",
-    external_userid: str = "",
-) -> dict[str, Any]:
-    detail = outreach_service.customer_detail(
-        customer_id=customer_id,
-        corp_id=corp_id,
-        wechat=wechat,
-        external_userid=external_userid,
-    )
-    if not detail:
-        raise HTTPException(status_code=400, detail="完整的客服账号边界是读取客户详情的前提")
-    return detail
-
-
-@app.get("/admin/outreach/sops", dependencies=[Depends(require_api_key)])
-async def admin_outreach_sop_plans(limit: int = 100) -> dict[str, Any]:
-    return {"items": outreach_service.list_sop_plans(limit=limit)}
-
-
-@app.post("/admin/outreach/sops", dependencies=[Depends(require_api_key)])
-async def admin_outreach_create_sop_plan(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    try:
-        return outreach_service.create_sop_plan(payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.put("/admin/outreach/sops/{sop_plan_id}", dependencies=[Depends(require_api_key)])
-async def admin_outreach_update_sop_plan(sop_plan_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    try:
-        return outreach_service.update_sop_plan(sop_plan_id, payload)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="SOP plan not found") from exc
-
-
-@app.delete("/admin/outreach/sops/{sop_plan_id}", dependencies=[Depends(require_api_key)])
-async def admin_outreach_delete_sop_plan(sop_plan_id: str) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    if not outreach_service.delete_sop_plan(sop_plan_id):
-        raise HTTPException(status_code=404, detail="SOP plan not found")
-    return {"ok": True, "id": sop_plan_id}
-
-
-@app.post("/admin/outreach/sops/{sop_plan_id}/run", dependencies=[Depends(require_api_key)])
-async def admin_outreach_run_sop_plan(
-    sop_plan_id: str,
-    payload: dict[str, Any] | None = Body(default=None),
-) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    payload = payload or {}
-    try:
-        return await outreach_service.run_sop_plan(
-            sop_plan_id,
-            limit=int(payload.get("limit") or 20),
-            activate=bool(payload.get("activate")),
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="SOP plan not found") from exc
-
-
-@app.post("/admin/outreach/customers/{customer_id}/refresh-conversation", dependencies=[Depends(require_api_key)])
-async def admin_outreach_refresh_conversation(
-    customer_id: str,
-    payload: dict[str, Any] | None = Body(default=None),
-) -> dict[str, Any]:
-    payload = payload or {}
-    try:
-        limit = max(1, min(int(payload.get("limit") or 50), 50))
-    except (TypeError, ValueError):
-        limit = 50
-    try:
-        return await outreach_service.refresh_customer_conversation(
-            customer_id=customer_id,
-            corp_id=str(payload.get("corp_id") or ""),
-            user_id=str(payload.get("user_id") or ""),
-            wechat=str(payload.get("wechat") or ""),
-            external_userid=str(payload.get("external_userid") or ""),
-            limit=limit,
-        )
-    except Exception as exc:
-        detail = f"{type(exc).__name__}: {exc}"
-        error_code, _warning = classify_conversation_refresh_error(exc)
-        cached = outreach_service.cached_customer_conversation(
-            customer_id,
-            corp_id=str(payload.get("corp_id") or ""),
-            wechat=str(payload.get("wechat") or ""),
-            external_userid=str(payload.get("external_userid") or ""),
-            limit=limit,
-            error=detail,
-        )
-        if cached:
-            return cached
-        return JSONResponse(
-            status_code=502,
-            content={
-                "ok": False,
-                "error": error_code,
-                "detail": detail,
-            },
-        )
-
-
-@app.post("/admin/outreach/plans/generate", dependencies=[Depends(require_api_key)])
-async def admin_outreach_generate_plan(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    customer_id = str(payload.get("customer_id") or "").strip()
-    if not customer_id:
-        raise HTTPException(status_code=400, detail="customer_id is required")
-    try:
-        return await outreach_service.generate_plan(
-            customer_id=customer_id,
-            corp_id=str(payload.get("corp_id") or ""),
-            user_id=str(payload.get("user_id") or ""),
-            wechat=str(payload.get("wechat") or ""),
-            external_userid=str(payload.get("external_userid") or ""),
-            current_stage=str(payload.get("current_stage") or ""),
-            business_goal=str(payload.get("business_goal") or ""),
-        )
-    except Exception as exc:
-        return JSONResponse(
-            status_code=502,
-            content={
-                "ok": False,
-                "error": "outreach_plan_generation_failed",
-                "detail": f"{type(exc).__name__}: {exc}",
-            },
-        )
-
-
-@app.get("/admin/outreach/plans/{plan_id}", dependencies=[Depends(require_api_key)])
-async def admin_outreach_plan(plan_id: str) -> dict[str, Any]:
-    detail = outreach_service.get_plan(plan_id)
-    if not detail:
-        raise HTTPException(status_code=404, detail="plan not found")
-    return detail
-
-
-@app.post("/admin/outreach/plans/{plan_id}/activate", dependencies=[Depends(require_api_key)])
-async def admin_outreach_activate_plan(plan_id: str) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    return outreach_service.activate_plan(plan_id)
-
-
-@app.post("/admin/outreach/plans/{plan_id}/pause", dependencies=[Depends(require_api_key)])
-async def admin_outreach_pause_plan(plan_id: str) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    return outreach_service.pause_plan(plan_id)
-
-
-@app.post("/admin/outreach/plans/{plan_id}/resume", dependencies=[Depends(require_api_key)])
-async def admin_outreach_resume_plan(plan_id: str) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    return outreach_service.resume_plan(plan_id)
-
-
-@app.post("/admin/outreach/plans/{plan_id}/cancel", dependencies=[Depends(require_api_key)])
-async def admin_outreach_cancel_plan(plan_id: str) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    return outreach_service.cancel_plan(plan_id)
-
-
-@app.post("/admin/outreach/tasks/{task_id}/preview", dependencies=[Depends(require_api_key)])
-async def admin_outreach_preview_task(task_id: str) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    return await outreach_service.preview_task(task_id)
-
-
-@app.post("/admin/outreach/tasks/{task_id}/execute", dependencies=[Depends(require_api_key)])
-async def admin_outreach_execute_task(task_id: str) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    return await outreach_service.execute_task(task_id)
-
-
-@app.post("/admin/outreach/run-due", dependencies=[Depends(require_api_key)])
-async def admin_outreach_run_due(limit: int = 20) -> dict[str, Any]:
-    _reject_legacy_outreach_mutation()
-    return await outreach_service.execute_due_tasks(limit=limit)
-
-
-@app.get("/admin/outreach/events", dependencies=[Depends(require_api_key)])
-async def admin_outreach_events(
-    limit: int = 100,
-    customer_id: str = "",
-    plan_id: str = "",
-) -> dict[str, Any]:
-    return {"items": outreach_service.list_events(limit=limit, customer_id=customer_id, plan_id=plan_id)}
 
 
 @app.get("/admin/outreach/first-day-settings", dependencies=[Depends(require_api_key)])

@@ -11,7 +11,7 @@ from app.graph.state import AgentState
 from app.policies.business_rules import load_business_rules
 from app.services.customer_payment_state import resolved_payment_fact
 from app.services.store_fact_integrity import store_fact_is_valid
-from app.services.store_resolution_v2 import legacy_delivery_mode
+from app.services.store_resolution import legacy_delivery_mode
 
 
 MAX_STORE_DELIVERY_COUNT = 3
@@ -377,7 +377,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             recommended_store_id = str(
                 structured_facts["recommended_store"].get("store_id") or ""
             )
-            v2_status = _store_resolution_status(
+            resolution_status = _store_resolution_status(
                 tool_status=resolution_status,
                 resolved_level=resolved_level,
                 visible_candidate_count=visible_candidate_count,
@@ -391,16 +391,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             ]
             delivery_store_ids = (
                 [recommended_store_id]
-                if v2_status == "send_single" and recommended_store_id
+                if resolution_status == "send_single" and recommended_store_id
                 else candidate_store_ids[:MAX_STORE_DELIVERY_COUNT]
-                if v3_mode and v2_status == "send_multiple"
+                if v3_mode and resolution_status == "send_multiple"
                 else candidate_store_ids
-                if v2_status == "send_multiple"
+                if resolution_status == "send_multiple"
                 else []
             )
             lookup_missing = [str(item) for item in (value.get("missing") or []) if str(item)]
             candidate_search_complete = "store_scope_unavailable" not in lookup_missing
-            if v2_status == "send_single" and not delivery_store_ids and candidate_store_ids:
+            if resolution_status == "send_single" and not delivery_store_ids and candidate_store_ids:
                 delivery_store_ids = [candidate_store_ids[0]]
                 recommended_store_id = candidate_store_ids[0]
             requested_detail_kind, requested_detail_available = _requested_store_detail_status(
@@ -410,8 +410,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             )
             store_resolution_fact = _drop_empty(
                 {
-                    "status": v2_status,
-                    "outcome": _store_resolution_outcome(v2_status),
+                    "status": resolution_status,
+                    "outcome": _store_resolution_outcome(resolution_status),
                     "raw_place": str(value.get("raw_query") or value.get("query") or ""),
                     "normalized_query": str(value.get("query") or ""),
                     "location_evidence": value.get("location_evidence") or {},
@@ -430,7 +430,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "visible_candidate_ids": candidate_store_ids,
                     "visible_candidate_count": visible_candidate_count,
                     "candidate_search_complete": candidate_search_complete,
-                    "candidate_search_scope": resolved_level if v2_status == "no_valid_candidate" else "",
+                    "candidate_search_scope": resolved_level if resolution_status == "no_valid_candidate" else "",
                     "destination_fingerprint": _destination_fingerprint(
                         value.get("destination_resolution") or {},
                         province=str(structured_facts["store_lookup_status"].get("province") or ""),
@@ -440,18 +440,18 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                         query=str(value.get("query") or ""),
                     ),
                     "coverage_status": _coverage_status(
-                        status=v2_status,
+                        status=resolution_status,
                         resolved_level=resolved_level,
                         exact_scope_has_store=value.get("exact_scope_has_store"),
                         same_city_has_store=value.get("same_city_has_store"),
                     ),
-                    "clarification_required": v2_status
+                    "clarification_required": resolution_status
                     in {"need_location", "need_location_confirmation", "ambiguous_location"},
-                    "clarification_would_change_result": v2_status
+                    "clarification_would_change_result": resolution_status
                     in {"need_location", "need_location_confirmation", "ambiguous_location"},
                     "recommendation_final_for_destination": bool(
                         candidate_search_complete
-                        and v2_status in {"send_single", "send_multiple", "no_valid_candidate"}
+                        and resolution_status in {"send_single", "send_multiple", "no_valid_candidate"}
                     ),
                     "recommended_store_id": recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
@@ -461,7 +461,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "ranking_method": "scope_match",
                     "customer_claim_level": "candidate_list",
                     "reason": f"{resolution_status}_scope_resolution",
-                    "delivery_mode": legacy_delivery_mode(v2_status),
+                    "delivery_mode": legacy_delivery_mode(resolution_status),
                 }
             )
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
@@ -646,7 +646,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             ranked_recommended_store_id = str(
                 structured_facts["recommended_store"].get("store_id") or ""
             )
-            v2_status = _store_resolution_status(
+            resolution_status = _store_resolution_status(
                 tool_status=str(value.get("status") or ""),
                 resolved_level=resolved_admin_level,
                 visible_candidate_count=visible_candidate_count,
@@ -671,25 +671,25 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     origin_precision
                 ),
             ):
-                v2_status = "send_multiple"
+                resolution_status = "send_multiple"
             if not has_authoritative_ranking and exact_scope_has_store is not True:
-                v2_status = "search_incomplete"
+                resolution_status = "search_incomplete"
             tie_store_ids = (
                 _distance_tie_store_ids(authorized_comparable_stores)
                 if has_authoritative_ranking and not use_broad_exact_scope
                 else []
             )
             if tie_store_ids:
-                v2_status = "send_multiple"
+                resolution_status = "send_multiple"
             delivery_store_ids = (
                 [ranked_recommended_store_id]
-                if v2_status == "send_single" and ranked_recommended_store_id
+                if resolution_status == "send_single" and ranked_recommended_store_id
                 else tie_store_ids
                 if tie_store_ids
                 else candidate_store_ids
-                if v2_status == "send_multiple" and use_broad_exact_scope
+                if resolution_status == "send_multiple" and use_broad_exact_scope
                 else candidate_store_ids[:3]
-                if v2_status == "send_multiple"
+                if resolution_status == "send_multiple"
                 else []
             )
             if v3_mode:
@@ -728,8 +728,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             )
             store_resolution_fact = _drop_empty(
                 {
-                    "status": v2_status,
-                    "outcome": _store_resolution_outcome(v2_status),
+                    "status": resolution_status,
+                    "outcome": _store_resolution_outcome(resolution_status),
                     "raw_place": str(value.get("origin") or ""),
                     "normalized_query": str(value.get("origin") or ""),
                     "location_evidence": value.get("location_evidence") or previous_resolution.get("location_evidence") or {},
@@ -752,7 +752,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     ),
                     "candidate_search_scope": (
                         "province"
-                        if v2_status == "no_valid_candidate"
+                        if resolution_status == "no_valid_candidate"
                         else str(previous_resolution.get("candidate_search_scope") or "")
                     ),
                     "distance_ranking_available": has_authoritative_ranking,
@@ -769,18 +769,18 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                         query=str(value.get("origin") or ""),
                     ),
                     "coverage_status": _coverage_status(
-                        status=v2_status,
+                        status=resolution_status,
                         resolved_level=resolved_admin_level,
                         exact_scope_has_store=exact_scope_has_store,
                         same_city_has_store=same_city_has_store,
                     ),
-                    "clarification_required": v2_status
+                    "clarification_required": resolution_status
                     in {"need_location", "need_location_confirmation", "ambiguous_location"},
-                    "clarification_would_change_result": v2_status
+                    "clarification_would_change_result": resolution_status
                     in {"need_location", "need_location_confirmation", "ambiguous_location"},
                     "recommendation_final_for_destination": bool(
                         (ranking_complete or use_broad_exact_scope)
-                        and v2_status in {"send_single", "send_multiple", "no_valid_candidate"}
+                        and resolution_status in {"send_single", "send_multiple", "no_valid_candidate"}
                     ),
                     "distance_tie_threshold_km": 5.0 if tie_store_ids else 0.0,
                     "cross_district_recommendation": cross_district_recommendation,
@@ -829,7 +829,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                         if candidate_stores
                         else "no_authorized_candidate_stores"
                     ),
-                    "delivery_mode": legacy_delivery_mode(v2_status),
+                    "delivery_mode": legacy_delivery_mode(resolution_status),
                 }
             )
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids

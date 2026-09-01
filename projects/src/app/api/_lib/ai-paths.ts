@@ -216,12 +216,8 @@ export function requireExternalApiKey(request: NextRequest) {
   return jsonResponse({ error: "unauthorized" }, 401);
 }
 
-export async function callAiPathsBackend(body: ChatRequestBody) {
-  return callAiPathsBackendPath(body, "/chat", process.env.AI_PATHS_API_KEY || "");
-}
-
-export async function callAiPathsReplyBackend(body: ChatRequestBody) {
-  return callAiPathsBackendPath(body, "/reply", process.env.AI_EXTERNAL_API_KEY || "");
+export async function callAiPathsV3Backend(body: ChatRequestBody) {
+  return callAiPathsV3BackendPath(body, process.env.AI_PATHS_API_KEY || process.env.AI_EXTERNAL_API_KEY || "");
 }
 
 export async function proxyAiPathsSopEventRaw(bodyText: string) {
@@ -250,7 +246,7 @@ export async function proxyAiPathsSopEventRaw(bodyText: string) {
   }
 }
 
-async function callAiPathsBackendPath(body: ChatRequestBody, path: "/chat" | "/reply", token: string) {
+async function callAiPathsV3BackendPath(body: ChatRequestBody, token: string) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const payload = {
     content: body.content || "",
@@ -277,7 +273,7 @@ async function callAiPathsBackendPath(body: ChatRequestBody, path: "/chat" | "/r
     headers.Authorization = `Bearer ${token}`;
   }
 
-  return fetch(`${apiBase.replace(/\/$/, "")}${path}`, {
+  return fetch(`${apiBase.replace(/\/$/, "")}/reply/workflow-compatible-v3`, {
     method: "POST",
     headers,
     body: Buffer.from(JSON.stringify(payload), "utf8"),
@@ -534,92 +530,9 @@ export async function proxyAiPathsAdmin(path: string, init: RequestInit = {}) {
   }
 }
 
-export async function proxyAiPathsChatRaw(body: ChatRequestBody) {
-  try {
-    const response = await callAiPathsBackend(body);
-    const text = await response.text();
-    if (!response.ok) {
-      return jsonResponse(
-        {
-          error: `AI Paths API returned ${response.status}`,
-          detail: text,
-        },
-        response.status
-      );
-    }
-    return new Response(text, {
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-    });
-  } catch (error) {
-    console.error("AI Paths call failed:", error);
-    return jsonResponse({ error: "Failed to call AI Paths API" }, 500);
-  }
-}
-
-export async function proxyAiPathsChatWorkflowCompatible(body: ChatRequestBody) {
-  try {
-    const response = await callAiPathsReplyBackend(body);
-    const text = await response.text();
-    if (!response.ok) {
-      return jsonResponse(
-        {
-          code: response.status,
-          msg: `AI Paths API returned ${response.status}`,
-          execute_id: "",
-          data: {
-            versions: "1",
-            reply_messages: [],
-            trace_id: "",
-            step: "",
-            has_knowledge: "",
-            error: text,
-          },
-        },
-        response.status
-      );
-    }
-
-    const result = JSON.parse(text) as AiPathsResponse;
-    return jsonResponse({
-      code: 0,
-      msg: "success",
-      execute_id: result.request_id || "",
-      data: {
-        versions: "1",
-        reply_messages: normalizeWorkflowReplyMessages(result.reply_messages || []),
-        trace_id: result.request_id || "",
-        step: result.subflow || result.intent || result.scene || "",
-        has_knowledge: hasKnowledge(result.meta) ? "true" : "",
-        error: "",
-      },
-      detail: {
-        logid: result.request_id || "",
-      },
-    });
-  } catch (error) {
-    console.error("AI Paths workflow-compatible call failed:", error);
-    return jsonResponse(
-      {
-        code: 500,
-        msg: "Failed to call AI Paths API",
-        execute_id: "",
-        data: {
-          versions: "1",
-          reply_messages: [],
-          trace_id: "",
-          step: "",
-          has_knowledge: "",
-          error: "Failed to call AI Paths API",
-        },
-      },
-      500
-    );
-  }
-}
-
 export async function proxyAiPathsChatForFrontend(body: ChatRequestBody) {
   try {
-    const response = await callAiPathsBackend(body);
+    const response = await callAiPathsV3Backend(body);
     const text = await response.text();
     if (!response.ok) {
       return jsonResponse(
@@ -631,8 +544,14 @@ export async function proxyAiPathsChatForFrontend(body: ChatRequestBody) {
       );
     }
 
-    const result = JSON.parse(text) as AiPathsResponse;
-    const output = (result.reply_messages || [])
+    const result = JSON.parse(text) as {
+      code?: number;
+      msg?: string;
+      execute_id?: string;
+      data?: { reply_messages?: AiPathsReplyMessage[]; trace_id?: string; step?: string };
+      detail?: Record<string, unknown>;
+    };
+    const output = (result.data?.reply_messages || [])
       .filter((item) => replyMessagePayload(item) !== "")
       .map((item, index) => ({
         type: item.type || "text",
@@ -642,12 +561,12 @@ export async function proxyAiPathsChatForFrontend(body: ChatRequestBody) {
 
     return jsonResponse({
       output,
-      scene: result.scene || "",
-      intent: result.intent || "",
-      subflow: result.subflow || "",
-      request_id: result.request_id || "",
-      trace_url: result.trace_url || "",
-      meta: result.meta || {},
+      scene: "",
+      intent: "",
+      subflow: result.data?.step || "",
+      request_id: result.execute_id || result.data?.trace_id || "",
+      trace_url: "",
+      meta: result.detail || {},
     });
   } catch (error) {
     console.error("AI Paths call failed:", error);
@@ -685,49 +604,6 @@ function workflowDirectionLabel(direction: string) {
     return "小贝";
   }
   return "对话";
-}
-
-function normalizeWorkflowReplyMessages(messages: AiPathsReplyMessage[]) {
-  return messages
-    .filter((item) =>
-      replyMessagePayload(item, item.type === "human_handoff" || item.type === "human_handoff_notice" ? "handoff_reason" : "text") !== ""
-    )
-    .map((item, index) => {
-      const type = item.type || "text";
-      if (type === "human_handoff" || type === "human_handoff_notice") {
-        const reason = replyMessageContent(item, "handoff_reason");
-        return {
-          type: "human_handoff_notice",
-          order: item.order || index + 1,
-          content: { handoff_reason: reason },
-        };
-      }
-      if (type === "payment_collection") {
-        return {
-          type,
-          order: item.order || index + 1,
-          content: paymentCollectionContent(item.content),
-        };
-      }
-      if (type === "store_address") {
-        return {
-          type,
-          order: item.order || index + 1,
-          content: storeAddressContent(item.content),
-        };
-      }
-      const content = replyMessageContent(item, type === "image" || type === "video" ? "url" : "text");
-      return {
-        type,
-        order: item.order || index + 1,
-        content: type === "image" || type === "video" ? { url: content } : { text: content },
-      };
-    });
-}
-
-function hasKnowledge(meta: Record<string, unknown> | undefined) {
-  const keys = meta?.tool_result_keys;
-  return Array.isArray(keys) && keys.length > 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

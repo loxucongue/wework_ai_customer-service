@@ -8,12 +8,12 @@ ASSISTANT_ROLES = {"assistant", "staff", "ai"}
 CUSTOMER_ROLES = {"customer", "user"}
 
 
-def build_v2_derived_observations(
+def build_derived_observations(
     *,
     conversation: list[dict[str, Any]],
     history_events: list[dict[str, Any]],
     current_message: dict[str, Any],
-    interface_version: str = "v2",
+    interface_version: str = "v3",
 ) -> dict[str, Any]:
     """Build source-referenced observations without creating business predicates.
 

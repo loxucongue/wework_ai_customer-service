@@ -1497,83 +1497,6 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(fact["completed"])
         self.assertEqual(fact["message_indexes"], [])
 
-    def test_silence_monitor_prefilter_uses_latest_staff_reply(self) -> None:
-        base = {
-            "sales_contact_started_at": "2000-01-01T00:00:00+08:00",
-            "last_customer_message_at": "2026-07-29T09:00:00+08:00",
-            "awaiting_customer_reply": True,
-        }
-
-        self.assertEqual(
-            OutreachService._rough_silence_candidate_reason(
-                {**base, "reply_wait_minutes": 5},
-                silent_minutes=10,
-            ),
-            "reply_wait_below_threshold",
-        )
-        self.assertEqual(
-            OutreachService._rough_silence_candidate_reason(
-                {**base, "reply_wait_minutes": 10},
-                silent_minutes=10,
-            ),
-            "",
-        )
-        self.assertEqual(
-            OutreachService._rough_silence_candidate_reason(
-                {**base, "awaiting_customer_reply": False, "reply_wait_minutes": 30},
-                silent_minutes=10,
-            ),
-            "not_waiting_for_customer_reply",
-        )
-        self.assertEqual(
-            OutreachService._rough_silence_candidate_reason(
-                {
-                    **base,
-                    "sales_contact_started_at": datetime.now(timezone.utc).isoformat(),
-                    "reply_wait_minutes": 30,
-                },
-                silent_minutes=10,
-            ),
-            "not_proven_day2_plus",
-        )
-
-    async def test_silence_monitor_creates_and_activates_one_plan(self) -> None:
-        now = datetime.now(timezone.utc)
-        customer_at = (now - timedelta(minutes=30)).isoformat()
-        staff_at = (now - timedelta(minutes=11)).isoformat()
-        repository = _Repository()
-        repository.candidates = [
-            _monitor_candidate(
-                customer_at=customer_at,
-                staff_at=staff_at,
-            )
-        ]
-        model = _ModelClient()
-        service = _MonitorOutreachService(
-            repository=repository,
-            model_client=model,
-            refreshed_messages=[
-                {"direction": "customer", "content": "我考虑下", "created_at": customer_at},
-                {"direction": "staff", "content": "您慢慢考虑", "created_at": staff_at},
-            ],
-        )
-
-        result = await service.evaluate_silent_customers(
-            limit=5,
-            silent_minutes=10,
-            auto_activate=True,
-        )
-
-        self.assertEqual(result["evaluated_count"], 1)
-        self.assertEqual(result["created_count"], 1)
-        self.assertEqual(result["error_count"], 0)
-        self.assertEqual(repository.updated_statuses, [("plan-created", "active")])
-        self.assertEqual(
-            repository.created_plan["source_snapshot"]["trigger_context"]["source"],
-            "silence_monitor",
-        )
-        self.assertEqual(len(model.calls), 2)
-
     async def test_first_day_opened_silence_monitor_creates_two_step_auto_plan(self) -> None:
         now = datetime.now(timezone.utc)
         first_added_at = (now - timedelta(hours=1)).isoformat()
@@ -2249,76 +2172,6 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["results"][0]["reason"], "customer_never_spoke")
         self.assertEqual(model.calls, [])
 
-    async def test_silence_monitor_model_rejection_is_idempotent_for_same_conversation(self) -> None:
-        now = datetime.now(timezone.utc)
-        customer_at = (now - timedelta(minutes=40)).isoformat()
-        staff_at = (now - timedelta(minutes=20)).isoformat()
-        repository = _Repository()
-        repository.candidates = [
-            _monitor_candidate(
-                customer_at=customer_at,
-                staff_at=staff_at,
-            )
-        ]
-        model = _ModelClient(
-            response={
-                "should_create_plan": False,
-                "stall_reason": "当前不适合主动触达",
-                "customer_psychology": "需要空间",
-            }
-        )
-        service = _MonitorOutreachService(
-            repository=repository,
-            model_client=model,
-            refreshed_messages=[
-                {"direction": "customer", "content": "先不用", "created_at": customer_at},
-                {"direction": "staff", "content": "好的", "created_at": staff_at},
-            ],
-        )
-
-        first = await service.evaluate_silent_customers(limit=5, silent_minutes=10)
-        calls_after_first_scan = len(model.calls)
-        second = await service.evaluate_silent_customers(limit=5, silent_minutes=10)
-
-        self.assertEqual(first["rejected_count"], 1)
-        self.assertEqual(second["evaluated_count"], 0)
-        self.assertEqual(
-            second["results"][0]["reason"],
-            "conversation_fingerprint_already_evaluated",
-        )
-        self.assertEqual(calls_after_first_scan, 2)
-        self.assertEqual(len(model.calls), calls_after_first_scan)
-
-    async def test_silence_monitor_does_not_start_a_new_cycle_without_customer_reply(self) -> None:
-        now = datetime.now(timezone.utc)
-        customer_at = (now - timedelta(days=2)).isoformat()
-        staff_at = (now - timedelta(hours=1)).isoformat()
-        repository = _Repository()
-        repository.completed_plan = {
-            "id": "plan-completed",
-            "status": "completed",
-            "completed_at": (now - timedelta(minutes=30)).isoformat(),
-        }
-        repository.candidates = [_monitor_candidate(customer_at=customer_at, staff_at=staff_at)]
-        model = _ModelClient()
-        service = _MonitorOutreachService(
-            repository=repository,
-            model_client=model,
-            refreshed_messages=[
-                {"direction": "customer", "content": "我考虑下", "created_at": customer_at},
-                {"direction": "staff", "content": "给您补一个参考", "created_at": staff_at},
-            ],
-        )
-
-        result = await service.evaluate_silent_customers(limit=5, silent_minutes=10)
-
-        self.assertEqual(result["created_count"], 0)
-        self.assertEqual(
-            result["results"][0]["reason"],
-            "outreach_cycle_completed_without_new_customer_reply",
-        )
-        self.assertEqual(model.calls, [])
-
     async def test_deleted_customer_skips_plan_generation_before_model_call(self) -> None:
         repository = _Repository()
         model = _ModelClient()
@@ -2339,33 +2192,6 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reason"], "customer_deleted")
         self.assertEqual(model.calls, [])
         self.assertEqual(repository.created_plan, {})
-        self.assertIn(
-            "plan_skipped_customer_deleted",
-            [event["event_type"] for event in repository.events],
-        )
-
-    async def test_silence_monitor_skips_deleted_customer_before_model_call(self) -> None:
-        now = datetime.now(timezone.utc)
-        customer_at = (now - timedelta(minutes=30)).isoformat()
-        staff_at = (now - timedelta(minutes=11)).isoformat()
-        repository = _Repository()
-        repository.candidates = [_monitor_candidate(customer_at=customer_at, staff_at=staff_at)]
-        model = _ModelClient()
-        service = _MonitorOutreachService(
-            repository=repository,
-            model_client=model,
-            refreshed_messages=[
-                {"direction": "customer", "content": "我再看看", "created_at": customer_at},
-                {"direction": "staff", "content": "好的", "created_at": staff_at},
-            ],
-            deleted=True,
-        )
-
-        result = await service.evaluate_silent_customers(limit=5, silent_minutes=10)
-
-        self.assertEqual(result["created_count"], 0)
-        self.assertEqual(result["results"][0]["reason"], "customer_deleted")
-        self.assertEqual(model.calls, [])
         self.assertIn(
             "plan_skipped_customer_deleted",
             [event["event_type"] for event in repository.events],

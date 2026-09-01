@@ -3,7 +3,7 @@
 - status: current-code
 - owner: project
 - last_verified: 2026-09-01 Asia/Shanghai
-- source_of_truth: `main@499af018` 及本次策略迁移候选
+- source_of_truth: 当前 `main` 代码树；精确版本以 `git rev-parse HEAD` 为准
 
 ## 代码结构
 
@@ -24,10 +24,28 @@ V3 reply                 control API
                 SOP、outreach、恢复与 outbox
 ```
 
-- 客户回复产品接口只保留 V3；旧 V1/V2 回复入口固定返回 410。
+- 客户回复产品接口只保留 V3；应用内不再注册旧 V1/V2 路由，公网由 Nginx 对退役地址固定返回 410。
 - control、reply、workers 可以是独立进程，但必须来自同一个 `main` SHA。
 - 第三方协议路径中出现 `v1` 不代表产品 V1，不能按名称删除。
-- 仍被 V3 使用的历史内部模块名不代表存在另一套产品运行时；重命名属于后续无行为整理，不应阻塞业务开发。
+- 历史接口/schema 版本号只用于读取旧审计或兼容第三方协议，不构成第二套产品运行时。
+
+## 仓库结构
+
+```text
+ai_paths/app/main.py              FastAPI 生命周期、路由、worker 编排
+ai_paths/app/runtime_services.py  服务依赖装配，禁止在路由文件重复创建客户端
+ai_paths/app/graph/               唯一 V3 回复图
+ai_paths/app/services/            平台、SOP、存储、发送与策略服务
+ai_paths/app/policies/            版本化运行策略
+ai_paths/scripts/                 运维、迁移、隔离评测脚本
+projects/                         管理前端
+workflow_tests/                   当前确定性合同测试与隔离评测夹具
+config/                           部署时读取的业务配置
+deploy/                           受版本控制的服务和 Nginx 模板
+docs/                             当前架构、合同、运行手册和现场状态
+```
+
+日志、测试结果、构建包、数据库、门店快照和上传文件都属于运行数据，必须写入 Git 忽略目录，不能作为代码事实来源。
 
 ## V3 回复链
 

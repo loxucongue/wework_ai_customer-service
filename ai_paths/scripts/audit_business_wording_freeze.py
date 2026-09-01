@@ -15,7 +15,6 @@ PROTECTED_BUSINESS_ASSET_PATHS: tuple[str, ...] = (
     "ai_paths/app/prompts/global_contract.py",
     "ai_paths/app/prompts/reply_synthesizer.py",
     "ai_paths/app/prompts/sop_chat_gate.py",
-    "ai_paths/app/graph/planner/brain_v2_prompts.py",
     "ai_paths/app/services/payment_collection.py",
     "ai_paths/app/services/sop_reply_pack_service.py",
     "ai_paths/app/services/precision_qa_playbook_service.py",

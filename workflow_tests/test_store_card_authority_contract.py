@@ -4,7 +4,7 @@ import pytest
 
 from app.graph.nodes.reply_nodes import _prepare_structural_messages
 from app.graph.nodes.reply_validation import validate_reply_consistency
-from app.services.store_resolution_v2 import customer_location_hint_texts
+from app.services.store_resolution import customer_location_hint_texts
 
 
 def _store_state() -> dict:

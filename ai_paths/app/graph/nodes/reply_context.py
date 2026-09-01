@@ -22,7 +22,7 @@ from app.policies.compliance_terms import (
     UNSUPPORTED_SERVICE_COMMITMENT_CONTEXT_TERMS,
 )
 from app.services.risk_hold import current_health_risk_hold_for_model
-from app.services.store_resolution_v2 import customer_location_hint_texts
+from app.services.store_resolution import customer_location_hint_texts
 
 
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:

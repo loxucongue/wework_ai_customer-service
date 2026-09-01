@@ -10,7 +10,6 @@ import pytest
 from app.config import Settings
 from app.graph.nodes.reply_context import reply_user_payload_for_model
 from app.graph.nodes.reply_nodes import _filter_unsupported_media, _normalized_policy_decision
-from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.services.outreach_service import OutreachService, _scheduled_at_for_strategy_step, _selected_strategy_steps
 from app.services.sales_strategy_service import SalesStrategyService
 
@@ -114,54 +113,6 @@ def test_last_known_good_is_used_after_provider_breaks(tmp_path: Path) -> None:
     assert degraded["checksum"] == first["checksum"]
     assert degraded["runtime_health"]["status"] == "degraded"
     assert degraded["runtime_health"]["using_last_known_good"] is True
-
-
-def test_planner_cardpoint_contract_and_policy_consistency() -> None:
-    state = {"ai_sales_policy": _policy(), "sales_strategy_catalog": _catalog_summary()}
-    payload = {
-        "decision": "direct_reply",
-        "primary_task": {"type": "resolve_blocker", "goal": "化解价格疑虑"},
-        "realtime_intent": {"type": "blocker_expression", "confidence": "high", "basis": ["觉得贵"]},
-        "emotion_decision": {"label": "hesitant", "pressure": "low", "flow_action": "lower_pressure"},
-        "closing_decision": {"action": "pause", "sequence_key": "price_hesitation", "customer_state": "soft_reject"},
-        "cardpoint_decision": {
-            "category_key": "price_objection",
-            "scenario_query": "客户认为价格高，想再考虑",
-            "tactic_tags": ["价值补充"],
-            "state": "active",
-            "confidence": "high",
-            "basis": ["价格高"],
-        },
-        "sales_progression": {"status": "continue", "target_stage": "deposit", "action": "send_payment_card"},
-    }
-
-    plan = build_planner_plan_v2(state, payload)
-
-    assert plan["cardpoint_decision"]["category_key"] == "price_objection"
-    assert plan["cardpoint_decision"]["tactic_tags"] == ["价值补充"]
-    assert plan["closing_decision"]["action"] in {"pause", "fallback"}
-    assert plan["sales_progression"]["status"] == "pause"
-    assert plan["sales_progression"]["action"] == "none"
-
-
-def test_explicit_exit_forces_terminal_hard_stop() -> None:
-    state = {"ai_sales_policy": _policy(), "sales_strategy_catalog": _catalog_summary()}
-    plan = build_planner_plan_v2(
-        state,
-        {
-            "decision": "direct_reply",
-            "primary_task": {"type": "transaction_progression"},
-            "realtime_intent": {"type": "explicit_exit", "confidence": "high", "basis": ["不要再联系"]},
-            "emotion_decision": {"label": "impatient", "flow_action": "pause_marketing_turn"},
-            "closing_decision": {"action": "advance", "sequence_key": "gentle_invite", "customer_state": "engaged"},
-            "sales_progression": {"status": "continue", "target_stage": "deposit", "action": "send_payment_card"},
-        },
-    )
-
-    assert plan["primary_task"]["type"] == "hard_stop"
-    assert plan["closing_decision"]["action"] == "complete"
-    assert plan["closing_decision"]["customer_state"] == "hard_stop"
-    assert plan["sales_progression"]["status"] == "terminal"
 
 
 def test_reply_receives_only_sanitized_candidate_contract() -> None:

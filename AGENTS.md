@@ -6,7 +6,7 @@
 
 - 客户回复链只允许产品接口 V3。V1/V2 回复路由必须关闭，新代码不得恢复。
 - `ai-paths.service` 当前仍承载共享控制面，`ai-paths-workers.service` 承载 SOP 等后台任务；它们不是“产品 V1/V2”，不得仅因端口或历史名称而停用。
-- URL 中的第三方协议版本、持久化 schema 版本，以及 `brain_v2`、`store_resolution_v2` 等内部模块名，不等于产品 V2。删除前必须沿 import、路由、进程和线上调用链证明其已无用途。
+- URL 中的第三方协议版本和持久化 schema 版本不等于产品 V2。历史 schema 只允许只读兼容，不得借兼容名恢复旧运行链。
 - 消息送达回调与 SOP 消费/策略数据回传是不同协议，分别审计，不能互相推断。
 - 第三方 SOP 当前合同见 `docs/contracts/third-party-sop-v3.md`。
 
@@ -58,7 +58,8 @@
 
 ## 7. 文件与磁盘治理
 
-- 规范目录见 `docs/INDEX.md`；业务知识放 `resources/knowledge/`，不混入工程文档。
+- 规范目录见 `docs/architecture/SYSTEM.md`；业务配置进入 `config/` 或版本化 `ai_paths/app/policies/`，不混入工程文档。
+- `main.py` 只负责生命周期、路由和 worker 编排；依赖装配集中在 `runtime_services.py`，禁止在路由模块重复创建平台客户端。
 - 运行产物统一写入 ignored 的 `artifacts/`，建议 7 天 TTL。
 - 本地部署包保留最近 3 个或 14 天；合并后的临时 worktree 立即移除。
 - 删除 material 数据前先生成清单并确认不被服务器或未提交工作引用；优先可恢复归档。
