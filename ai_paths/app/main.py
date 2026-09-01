@@ -20,9 +20,13 @@ from app.workers.supervisor import WorkerSupervisor
 settings = get_settings()
 services = build_runtime_services(settings)
 runtime_role = settings.runtime_role
-worker_supervisor = WorkerSupervisor(settings, services)
+worker_supervisor = (
+    WorkerSupervisor(settings, services.worker_view())
+    if runtime_role is RuntimeRole.WORKER
+    else None
+)
 
-app = FastAPI(title=settings.app_name, lifespan=create_lifespan(worker_supervisor))
+app = FastAPI(title=settings.app_name, lifespan=create_lifespan(services, worker_supervisor))
 
 
 @app.get("/health")
@@ -48,10 +52,11 @@ async def health() -> dict[str, Any]:
 
 
 if runtime_role is RuntimeRole.REPLY:
-    app.include_router(create_reply_router(settings, services))
+    app.include_router(create_reply_router(settings, services.reply_view()))
 elif runtime_role is RuntimeRole.CONTROL:
-    app.include_router(create_callbacks_router(settings, services))
-    app.include_router(create_sop_admin_router(settings, services))
-    app.include_router(create_customer_admin_router(settings, services))
-    app.include_router(create_operations_admin_router(settings, services))
-    app.include_router(create_outreach_admin_router(settings, services, worker_supervisor))
+    control_services = services.control_view()
+    app.include_router(create_callbacks_router(settings, control_services))
+    app.include_router(create_sop_admin_router(settings, control_services))
+    app.include_router(create_customer_admin_router(settings, control_services))
+    app.include_router(create_operations_admin_router(settings, control_services))
+    app.include_router(create_outreach_admin_router(settings, control_services))

@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends
 from fastapi.responses import JSONResponse
 
 from app.config import Settings
-from app.runtime_services import RuntimeServices
+from app.runtime_services import ReplyServices
 from app.schemas import ChatRequest
 from app.services.workflow_compat import (
     normalize_workflow_request,
@@ -29,7 +29,7 @@ def attach_request_interface_version(request: ChatRequest, interface_version: st
     request.request_context = context
 
 
-def create_reply_router(settings: Settings, services: RuntimeServices) -> APIRouter:
+def create_reply_router(settings: Settings, services: ReplyServices) -> APIRouter:
     router = APIRouter()
     require_workflow_api_key = workflow_api_key_dependency(settings)
     chat_runtime = services.chat_runtime

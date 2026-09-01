@@ -5,16 +5,21 @@ from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 
+from app.runtime_services import RuntimeServices
 from app.workers.supervisor import WorkerSupervisor
 
 
-def create_lifespan(supervisor: WorkerSupervisor):
+def create_lifespan(services: RuntimeServices, supervisor: WorkerSupervisor | None):
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        await supervisor.start()
+        services.storage_store.initialize()
+        if supervisor is not None:
+            await supervisor.start()
         try:
             yield
         finally:
-            await supervisor.stop()
+            if supervisor is not None:
+                await supervisor.stop()
+            await services.aclose()
 
     return lifespan

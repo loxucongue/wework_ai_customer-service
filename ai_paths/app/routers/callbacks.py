@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.config import Settings
-from app.runtime_services import RuntimeServices
+from app.runtime_services import ControlServices
 from app.schemas import MessageDeliveryCallback
 
 from .security import delivery_callback_dependency
@@ -15,7 +15,7 @@ from .security import delivery_callback_dependency
 logger = logging.getLogger(__name__)
 
 
-def create_callbacks_router(settings: Settings, services: RuntimeServices) -> APIRouter:
+def create_callbacks_router(settings: Settings, services: ControlServices) -> APIRouter:
     router = APIRouter()
     require_callback_token = delivery_callback_dependency(settings)
 

@@ -45,6 +45,7 @@ from app.runtime_roles import RuntimeRole
 
 @dataclass(frozen=True)
 class RuntimeServices:
+    role: RuntimeRole
     storage_store: Any
     repository: AppRepository
     v3_evaluation_service: V3EvaluationService
@@ -84,6 +85,55 @@ class RuntimeServices:
     reply_graphs: Any
     chat_runtime: ChatRuntime
 
+    def reply_view(self) -> "ReplyServices":
+        if self.role is not RuntimeRole.REPLY or self.chat_runtime is None:
+            raise RuntimeError("reply runtime was not composed")
+        return ReplyServices(
+            repository=self.repository,
+            chat_runtime=self.chat_runtime,
+            platform_voice_batch_coordinator=self.platform_voice_batch_coordinator,
+            voice_transcription_client=self.voice_transcription_client,
+        )
+
+    def control_view(self) -> "ControlServices":
+        if self.role is not RuntimeRole.CONTROL:
+            raise RuntimeError("control runtime was not composed")
+        required = {
+            "sop_delivery_compatibility_service": self.sop_delivery_compatibility_service,
+            "sop_platform_task_service": self.sop_platform_task_service,
+            "sop_objection_material_service": self.sop_objection_material_service,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise RuntimeError("control runtime missing services: " + ", ".join(missing))
+        return ControlServices(
+            repository=self.repository,
+            async_reply_delivery_finalizer=self.async_reply_delivery_finalizer,
+            message_delivery_service=self.message_delivery_service,
+            outreach_service=self.outreach_service,
+            sop_delivery_compatibility_service=self.sop_delivery_compatibility_service,
+            sop_platform_task_service=self.sop_platform_task_service,
+            memory_store=self.memory_store,
+            ai_sales_policy_service=self.ai_sales_policy_service,
+            precision_qa_playbook_service=self.precision_qa_playbook_service,
+            sales_strategy_service=self.sales_strategy_service,
+            store_snapshot_service=self.store_snapshot_service,
+            trace_logger=self.trace_logger,
+            sop_reply_pack_service=self.sop_reply_pack_service,
+            sop_objection_material_service=self.sop_objection_material_service,
+        )
+
+    def worker_view(self) -> "WorkerServices":
+        if self.role is not RuntimeRole.WORKER or self.sop_platform_task_service is None:
+            raise RuntimeError("worker runtime missing SOP platform task service")
+        return WorkerServices(
+            repository=self.repository,
+            outreach_service=self.outreach_service,
+            service_rule_data_service=self.service_rule_data_service,
+            sop_platform_task_service=self.sop_platform_task_service,
+            store_snapshot_service=self.store_snapshot_service,
+        )
+
     async def aclose(self) -> None:
         seen: set[int] = set()
         for client in (
@@ -108,6 +158,41 @@ class RuntimeServices:
         if self.platform_agent_client is not None:
             self.platform_agent_client.close()
         self.storage_store.close()
+
+
+@dataclass(frozen=True)
+class ReplyServices:
+    repository: AppRepository
+    chat_runtime: ChatRuntime
+    platform_voice_batch_coordinator: PlatformVoiceBatchCoordinator
+    voice_transcription_client: DoubaoAsrClient
+
+
+@dataclass(frozen=True)
+class ControlServices:
+    repository: AppRepository
+    async_reply_delivery_finalizer: AsyncReplyDeliveryFinalizer
+    message_delivery_service: MessageDeliveryService
+    outreach_service: OutreachService
+    sop_delivery_compatibility_service: SopDeliveryCompatibilityService
+    sop_platform_task_service: SopPlatformTaskService
+    memory_store: CustomerMemoryStore
+    ai_sales_policy_service: AiSalesPolicyService
+    precision_qa_playbook_service: PrecisionQaPlaybookService
+    sales_strategy_service: SalesStrategyService
+    store_snapshot_service: StoreSnapshotService
+    trace_logger: TraceLogger
+    sop_reply_pack_service: SopReplyPackService
+    sop_objection_material_service: SopObjectionMaterialService
+
+
+@dataclass(frozen=True)
+class WorkerServices:
+    repository: AppRepository
+    outreach_service: OutreachService
+    service_rule_data_service: ServiceRuleDataService
+    sop_platform_task_service: SopPlatformTaskService
+    store_snapshot_service: StoreSnapshotService
 
 
 def build_runtime_services(settings: Settings) -> RuntimeServices:

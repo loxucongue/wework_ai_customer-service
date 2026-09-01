@@ -114,6 +114,31 @@ def test_reply_role_builds_no_background_worker_contract(tmp_path) -> None:
 
 
 @pytest.mark.parametrize(
+    ("role", "workers", "view_name", "forbidden_view_names"),
+    [
+        ("reply", False, "reply_view", ("control_view", "worker_view")),
+        ("control", False, "control_view", ("reply_view", "worker_view")),
+        ("worker", True, "worker_view", ("reply_view", "control_view")),
+    ],
+)
+def test_runtime_exposes_only_the_composed_role_view(
+    tmp_path: Path,
+    role: str,
+    workers: bool,
+    view_name: str,
+    forbidden_view_names: tuple[str, ...],
+) -> None:
+    services = runtime_services.build_runtime_services(_settings(tmp_path, role, workers=workers))
+    try:
+        assert getattr(services, view_name)() is not None
+        for forbidden_view_name in forbidden_view_names:
+            with pytest.raises(RuntimeError):
+                getattr(services, forbidden_view_name)()
+    finally:
+        asyncio.run(services.aclose())
+
+
+@pytest.mark.parametrize(
     ("role", "workers", "required_path", "forbidden_prefixes"),
     [
         ("reply", False, "/reply/workflow-compatible-v3", ("/admin/", "/callbacks/")),

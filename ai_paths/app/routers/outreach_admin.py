@@ -9,8 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.config import Settings
-from app.runtime_services import RuntimeServices
-from app.workers.supervisor import WorkerSupervisor
+from app.runtime_services import ControlServices
 
 from .security import api_key_dependency
 
@@ -96,8 +95,7 @@ def _settings_response(settings: Settings) -> dict[str, Any]:
 
 def create_outreach_admin_router(
     settings: Settings,
-    services: RuntimeServices,
-    supervisor: WorkerSupervisor,
+    services: ControlServices,
 ) -> APIRouter:
     router = APIRouter()
     require_api_key = api_key_dependency(settings)
@@ -131,7 +129,6 @@ def create_outreach_admin_router(
         object.__setattr__(settings, "outreach_first_day_silence_minutes", silence_minutes)
         object.__setattr__(settings, "outreach_first_day_wechat_allowlist", allowlist_raw)
         services.outreach_service.first_day_wechat_allowlist = allowlist_raw
-        await supervisor.sync_outreach_workers()
         return _settings_response(settings)
 
     @router.get("/admin/outreach/first-day-runs", dependencies=[Depends(require_api_key)])

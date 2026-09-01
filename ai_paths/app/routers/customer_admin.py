@@ -5,12 +5,12 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.config import Settings
-from app.runtime_services import RuntimeServices
+from app.runtime_services import ControlServices
 
 from .security import api_key_dependency
 
 
-def create_customer_admin_router(settings: Settings, services: RuntimeServices) -> APIRouter:
+def create_customer_admin_router(settings: Settings, services: ControlServices) -> APIRouter:
     router = APIRouter()
     require_api_key = api_key_dependency(settings)
     repository = services.repository

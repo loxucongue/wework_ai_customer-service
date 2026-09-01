@@ -5,13 +5,13 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.config import Settings
-from app.runtime_services import RuntimeServices
+from app.runtime_services import ControlServices
 from app.services.run_observability_summary import build_run_observability
 
 from .security import api_key_dependency
 
 
-def create_operations_admin_router(settings: Settings, services: RuntimeServices) -> APIRouter:
+def create_operations_admin_router(settings: Settings, services: ControlServices) -> APIRouter:
     router = APIRouter()
     require_api_key = api_key_dependency(settings)
     repository = services.repository

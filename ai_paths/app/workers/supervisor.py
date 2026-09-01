@@ -7,23 +7,20 @@ from datetime import datetime, timedelta, timezone
 
 from app.config import Settings
 from app.runtime_roles import RuntimeRole
-from app.runtime_services import RuntimeServices
+from app.runtime_services import WorkerServices
 
 
 logger = logging.getLogger(__name__)
 
 
 class WorkerSupervisor:
-    def __init__(self, settings: Settings, services: RuntimeServices) -> None:
+    def __init__(self, settings: Settings, services: WorkerServices) -> None:
         self.settings = settings
         self.services = services
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._first_day_retention_last_date = ""
 
     async def start(self) -> None:
-        self.services.storage_store.initialize()
-        if self.settings.runtime_role is not RuntimeRole.WORKER:
-            return
         if self.services.service_rule_data_service.available:
             self._start("strategy_data_callback", self.services.service_rule_data_service.run())
         if not self.settings.background_workers_enabled:
@@ -46,7 +43,6 @@ class WorkerSupervisor:
         for task in tasks:
             with suppress(asyncio.CancelledError):
                 await task
-        await self.services.aclose()
 
     async def sync_outreach_workers(self) -> None:
         if (
