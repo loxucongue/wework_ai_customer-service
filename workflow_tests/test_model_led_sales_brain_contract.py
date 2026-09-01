@@ -8,8 +8,8 @@ from app.graph.nodes.reply_contract import (
     _tool_planner_shared_context,
     _activity_offer_delivered,
 )
-from app.graph.nodes.sales_decision import (
-    create_parallel_evidence_node,
+from app.graph.nodes.semantic_evidence import (
+    create_semantic_evidence_node,
 )
 from app.graph.nodes.derived_observations import build_derived_observations
 from app.graph.nodes.reply_quality import collect_reply_observation_metrics
@@ -428,7 +428,7 @@ def test_tool_planner_cannot_receive_sales_observations() -> None:
 
 
 def test_v3_active_evidence_node_does_not_call_legacy_gate_planner_or_sales_recall() -> None:
-    source = inspect.getsource(create_parallel_evidence_node)
+    source = inspect.getsource(create_semantic_evidence_node)
 
     assert "semantic_router_service.route" in source
     assert "_run_content_gate(" not in source

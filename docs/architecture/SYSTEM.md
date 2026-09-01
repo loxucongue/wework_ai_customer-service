@@ -37,7 +37,7 @@ V3 reply                 control API
 ai_paths/app/main.py              FastAPI 生命周期、路由、worker 编排
 ai_paths/app/runtime_services.py  服务依赖装配，禁止在路由文件重复创建客户端
 ai_paths/app/runtime_roles.py     运行角色标准化与旧环境值只读兼容
-ai_paths/app/runtime_routes.py    按角色收口实际暴露的 FastAPI 路由
+ai_paths/app/routers/             按角色收口实际暴露的 FastAPI 路由
 ai_paths/app/graph/               唯一 V3 回复图
 ai_paths/app/services/            平台、SOP、存储、发送与策略服务
 ai_paths/app/policies/            版本化运行策略
@@ -54,15 +54,17 @@ docs/                             当前架构、合同、运行手册和现场�
 ## V3 回复链
 
 ```text
-shared context
-  → semantic router / evidence
-  → read-only tools
-  → evidence join
-  → Reply
-  → commit / send audit
+input / background context
+  → authoritative context
+  → semantic evidence
+  → read-only facts
+  → semantic evidence after facts
+  → material selection
+  → Reply decision
+  → transaction commit / send audit
 ```
 
-Reply 是当前唯一销售语义决策节点。模型负责意图、心理、卡点、节奏和表达；代码负责权威事实、工具、schema、幂等、交易边界、安全和发送结果。
+Semantic Router 只提供分类、检索查询和只读工具需求，不决定客户可见销售动作。Reply 是唯一销售语义与客户可见动作决策节点；代码负责权威事实、工具、schema、幂等、交易边界、安全和发送结果。
 
 ## 第三方 SOP
 

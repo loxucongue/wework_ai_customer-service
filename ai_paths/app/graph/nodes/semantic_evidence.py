@@ -24,7 +24,7 @@ from app.graph.nodes.reply_contract import (
 )
 
 
-def create_post_store_semantic_evidence_node(
+def create_post_fact_semantic_evidence_node(
     *,
     trace_logger: TraceLogger,
     semantic_router_service: V3SemanticRouterService | None = None,
@@ -166,7 +166,7 @@ def create_post_store_semantic_evidence_node(
     return post_store_semantic_evidence
 
 
-def create_parallel_evidence_node(
+def create_semantic_evidence_node(
     *,
     trace_logger: TraceLogger,
     model_client: ModelClient | None,

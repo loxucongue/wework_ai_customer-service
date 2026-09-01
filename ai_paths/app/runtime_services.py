@@ -7,6 +7,7 @@ from app.chat_runtime import ChatRuntime
 from app.config import Settings
 from app.graph.graph_builder import build_reply_graphs
 from app.services.ai_sales_policy_service import AiSalesPolicyService
+from app.services.async_reply_delivery import AsyncReplyDeliveryFinalizer
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
@@ -49,6 +50,7 @@ class RuntimeServices:
     v3_evaluation_service: V3EvaluationService
     trace_logger: TraceLogger
     message_delivery_service: MessageDeliveryService
+    async_reply_delivery_finalizer: AsyncReplyDeliveryFinalizer
     service_rule_data_service: ServiceRuleDataService
     service_rule_data_client: ServiceRuleDataClient
     coze_client: CozeClient
@@ -132,6 +134,7 @@ def build_runtime_services(settings: Settings) -> RuntimeServices:
     ai_sales_policy_service = AiSalesPolicyService(settings)
     sales_strategy_service = SalesStrategyService(settings)
     memory_store = CustomerMemoryStore(settings, repository)
+    async_reply_delivery_finalizer = AsyncReplyDeliveryFinalizer(repository, memory_store)
     platform_agent_client = PlatformAgentClient(settings)
     outreach_send_client = OutreachSendClient(settings, delivery_service=message_delivery_service)
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)

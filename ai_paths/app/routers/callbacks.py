@@ -22,7 +22,7 @@ def create_callbacks_router(settings: Settings, services: RuntimeServices) -> AP
     async def finalize_delivery(dispatch: dict[str, Any]) -> None:
         source_kind = str(dispatch.get("source_kind") or "").strip()
         if source_kind == "ai_async_reply":
-            services.chat_runtime.finalize_async_message_delivery(dispatch)
+            services.async_reply_delivery_finalizer.finalize(dispatch)
         elif source_kind == "sop_event":
             services.sop_delivery_compatibility_service.finalize_message_delivery(dispatch)
         elif source_kind == "outreach_task":

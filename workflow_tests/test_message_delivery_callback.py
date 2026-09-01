@@ -6,12 +6,70 @@ from types import SimpleNamespace
 import pytest
 
 from app.schemas import MessageDeliveryCallback
+from app.services.async_reply_delivery import AsyncReplyDeliveryFinalizer
 from app.services.message_delivery import MessageDeliveryService
 from app.services.outreach_service import OutreachService
 from app.services.sop.delivery_compatibility import SopDeliveryCompatibilityService
 from app.services.sop_platform_task_service import SopPlatformTaskService
 from app.services.storage import AppRepository
 from app.services.storage.sqlite_store import SQLiteStore
+
+
+class _DeliveryRepository:
+    def __init__(self) -> None:
+        self.assistant_messages: list[dict] = []
+
+    def add_assistant_message(self, **payload: object) -> None:
+        self.assistant_messages.append(dict(payload))
+
+
+class _DeliveryMemory:
+    def __init__(self) -> None:
+        self.case_images: list[dict] = []
+        self.activity_images: list[dict] = []
+        self.store_facts: list[dict] = []
+
+    def record_case_images_sent(self, key: str, **payload: object) -> None:
+        self.case_images.append({"key": key, **payload})
+
+    def record_activity_intro_image_sent(self, key: str, **payload: object) -> None:
+        self.activity_images.append({"key": key, **payload})
+
+    def record_store_fact(self, key: str, **payload: object) -> None:
+        self.store_facts.append({"key": key, **payload})
+
+
+def test_async_reply_delivery_finalizer_is_independent_from_reply_runtime() -> None:
+    repository = _DeliveryRepository()
+    memory = _DeliveryMemory()
+    finalizer = AsyncReplyDeliveryFinalizer(repository, memory)  # type: ignore[arg-type]
+
+    finalizer.finalize(
+        {
+            "status": "send_succeeded",
+            "source_request_id": "request-1",
+            "conversation_id": "conversation-1",
+            "reply_messages": [{"type": "text", "content": "已发送"}],
+            "source_context": {
+                "assistant_request_id": "assistant-1",
+                "memory_persist_allowed": True,
+                "sales_contact_key": "corp:wechat:external",
+                "case_image_record": {
+                    "document_ids": ["case-1"],
+                    "image_urls": ["https://example.com/case.jpg"],
+                },
+                "activity_intro_record": {"image_url": "https://example.com/activity.jpg"},
+                "store_fact_record": {
+                    "records": [{"store": {"store_id": "store-1"}, "event_type": "store_card_sent"}]
+                },
+            },
+        }
+    )
+
+    assert repository.assistant_messages[0]["request_id"] == "assistant-1"
+    assert memory.case_images[0]["key"] == "corp:wechat:external"
+    assert memory.activity_images[0]["send_mode"] == "async"
+    assert memory.store_facts[0]["store"]["store_id"] == "store-1"
 
 
 def _service(tmp_path, *, callback_required: bool = True) -> tuple[MessageDeliveryService, AppRepository]:

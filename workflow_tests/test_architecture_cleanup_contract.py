@@ -40,7 +40,7 @@ def test_v3_graph_has_explicit_fact_decision_material_reply_and_commit_modules()
     assert not (nodes / "parallel_reply_chain.py").exists()
     for filename in (
         "authoritative_context.py",
-        "sales_decision.py",
+        "semantic_evidence.py",
         "material_selection.py",
         "reply_generation.py",
         "fact_actions.py",
@@ -52,11 +52,11 @@ def test_v3_graph_has_explicit_fact_decision_material_reply_and_commit_modules()
     builder = _source("ai_paths/app/graph/graph_builder.py")
     full_order = (
         '"authoritative_context"',
-        '"sales_decision"',
+        '"semantic_evidence"',
         '"readonly_facts"',
-        '"sales_decision_after_tools"',
+        '"semantic_evidence_after_facts"',
         '"material_selection"',
-        '"reply_generation"',
+        '"reply_decision"',
     )
     assert all(builder.index(left) < builder.index(right) for left, right in zip(full_order, full_order[1:]))
 

@@ -28,9 +28,9 @@ from app.graph.nodes.material_selection import (
     create_evidence_join_node,
     parallel_reply_payload,
 )
-from app.graph.nodes.sales_decision import (
-    create_parallel_evidence_node,
-    create_post_store_semantic_evidence_node,
+from app.graph.nodes.semantic_evidence import (
+    create_post_fact_semantic_evidence_node,
+    create_semantic_evidence_node,
 )
 from app.graph.nodes.authoritative_context import (
     create_shared_context_node,
@@ -5110,7 +5110,7 @@ def test_v3_semantic_router_replaces_gate_and_general_tool_planner() -> None:
                 },
             }
 
-    node = create_parallel_evidence_node(
+    node = create_semantic_evidence_node(
         trace_logger=_TraceLogger(),
         model_client=None,
         sop_execution_service=None,
@@ -5137,7 +5137,7 @@ def test_semantic_router_failure_keeps_assets_and_reply_path_available() -> None
             del force_store_required
             raise TimeoutError("semantic router timed out")
 
-    node = create_parallel_evidence_node(
+    node = create_semantic_evidence_node(
         trace_logger=_TraceLogger(),
         model_client=None,
         sop_execution_service=None,
@@ -5197,7 +5197,7 @@ def test_post_store_router_replaces_deferred_knowledge_before_join() -> None:
                 },
             }
 
-    node = create_post_store_semantic_evidence_node(
+    node = create_post_fact_semantic_evidence_node(
         trace_logger=_TraceLogger(),
         semantic_router_service=_SemanticRouter(),
     )
@@ -5241,7 +5241,7 @@ def test_post_store_router_is_noop_for_non_store_turn() -> None:
         async def route_after_store(self, **kwargs):
             raise AssertionError(f"unexpected post-store route: {kwargs}")
 
-    node = create_post_store_semantic_evidence_node(
+    node = create_post_fact_semantic_evidence_node(
         trace_logger=_TraceLogger(),
         semantic_router_service=_SemanticRouter(),
     )

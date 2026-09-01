@@ -17,9 +17,9 @@ from app.graph.nodes.material_selection import (
     create_evidence_join_node,
     parallel_reply_payload,
 )
-from app.graph.nodes.sales_decision import (
-    create_parallel_evidence_node,
-    create_post_store_semantic_evidence_node,
+from app.graph.nodes.semantic_evidence import (
+    create_post_fact_semantic_evidence_node,
+    create_semantic_evidence_node,
 )
 from app.graph.nodes.authoritative_context import (
     create_shared_context_node,
@@ -157,7 +157,7 @@ def _build_nodes(
         trace_logger=trace_logger,
         sop_execution_service=sop_execution_service,
     )
-    parallel_evidence = create_parallel_evidence_node(
+    semantic_evidence = create_semantic_evidence_node(
         trace_logger=trace_logger,
         model_client=model_client,
         sop_execution_service=sop_execution_service,
@@ -178,7 +178,7 @@ def _build_nodes(
         ),
         model_client=model_client,
     )
-    post_store_semantic_evidence = create_post_store_semantic_evidence_node(
+    post_fact_semantic_evidence = create_post_fact_semantic_evidence_node(
         trace_logger=trace_logger,
         semantic_router_service=semantic_router_service,
         sales_strategy_service=sales_strategy_service,
@@ -218,11 +218,11 @@ def _build_nodes(
         "layer_1_input_normalization": layer_1_input_normalization,
         "layer_2_background_context": layer_2_background_context,
         "authoritative_context": shared_context,
-        "sales_decision": parallel_evidence,
+        "semantic_evidence": semantic_evidence,
         "readonly_facts": execute_readonly_actions,
-        "sales_decision_after_tools": post_store_semantic_evidence,
+        "semantic_evidence_after_facts": post_fact_semantic_evidence,
         "material_selection": evidence_join,
-        "reply_generation": synthesize_reply,
+        "reply_decision": synthesize_reply,
         "prepare_transaction": prepare_commit,
         "transaction_actions": execute_commit_actions,
         "commit_result": commit_coordinator,
@@ -235,11 +235,11 @@ def _compile_full_graph(nodes: dict[str, Any]):
         "layer_1_input_normalization",
         "layer_2_background_context",
         "authoritative_context",
-        "sales_decision",
+        "semantic_evidence",
         "readonly_facts",
-        "sales_decision_after_tools",
+        "semantic_evidence_after_facts",
         "material_selection",
-        "reply_generation",
+        "reply_decision",
     )
     for name in node_order:
         graph.add_node(name, nodes[name])
