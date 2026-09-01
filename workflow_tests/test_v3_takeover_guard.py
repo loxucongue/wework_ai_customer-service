@@ -58,6 +58,13 @@ class _StatusClient:
         }
 
 
+class _FailingStatusClient:
+    available = True
+
+    async def conversation_status(self, **_kwargs: Any) -> dict[str, Any]:
+        raise TimeoutError("status endpoint timed out")
+
+
 class _CallbackService:
     def __init__(self, result: dict[str, Any]) -> None:
         self.result = result
@@ -131,6 +138,41 @@ def test_ai_takeover_continues_existing_chain() -> None:
     assert request.request_context["takeover_guard"]["decision"] == "continue_ai"
     assert callback.calls == []
     assert repository.saved_states == []
+
+
+def test_takeover_status_failure_returns_empty_before_graph() -> None:
+    callback = _CallbackService({"status": "pending"})
+    runtime, repository = _runtime(_FailingStatusClient(), callback)  # type: ignore[arg-type]
+    request = _request()
+
+    response = asyncio.run(runtime.run_v3_takeover_guard(request))
+
+    assert response is not None
+    assert response.reply_messages == []
+    assert response.meta["reply_source"] == "takeover_status_fail_closed"
+    assert request.request_context["takeover_guard"]["decision"] == "return_empty"
+    assert request.request_context["takeover_guard"]["reason"] == "status_query_failed"
+    assert callback.calls == []
+    assert repository.saved_states[0]["takeover_guard"]["decision"] == "return_empty"
+
+
+def test_missing_takeover_status_client_returns_empty_before_graph() -> None:
+    callback = _CallbackService({"status": "pending"})
+    repository = _Repository()
+    runtime = ChatRuntime(
+        full_graph=_Graph(),
+        trace_logger=_TraceLogger(),
+        repository=repository,  # type: ignore[arg-type]
+        service_rule_data_service=callback,  # type: ignore[arg-type]
+        settings=Settings(_env_file=None),
+    )
+
+    response = asyncio.run(runtime.run_v3_takeover_guard(_request()))
+
+    assert response is not None
+    assert response.reply_messages == []
+    assert response.meta["reply_source"] == "takeover_status_fail_closed"
+    assert repository.saved_states[0]["takeover_guard"]["reason"] == "outreach_system_not_configured"
 
 
 def test_conversation_status_client_uses_read_only_status_endpoint() -> None:

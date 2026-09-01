@@ -76,8 +76,8 @@ def main() -> int:
     parser.add_argument("payload", help="UTF-8 JSON request payload with real platform ids")
     parser.add_argument(
         "--url",
-        default="http://127.0.0.1:8000/reply/workflow-compatible",
-        help="chat or reply endpoint",
+        default="http://127.0.0.1:8013/reply/workflow-compatible-v3",
+        help="V3 reply endpoint (the probe performs a real read-only platform lookup)",
     )
     parser.add_argument("--timeout", type=float, default=60.0)
     args = parser.parse_args()

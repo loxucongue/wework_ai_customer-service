@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.runtime_services import build_runtime_services
+from app.runtime_roles import RuntimeRole
+from app.runtime_routes import apply_runtime_route_policy
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -35,6 +37,7 @@ from app.services.workflow_compat import (
 
 settings = get_settings()
 services = build_runtime_services(settings)
+runtime_role = settings.runtime_role
 v3_evaluation_service = services.v3_evaluation_service
 trace_logger = services.trace_logger
 storage_store = services.storage_store
@@ -72,7 +75,7 @@ sop_event_service = services.sop_event_service
 sop_platform_task_service = services.sop_platform_task_service
 reply_graphs = services.reply_graphs
 chat_runtime = services.chat_runtime
-compiled_graph = reply_graphs.full_graph
+compiled_graph = reply_graphs.full_graph if reply_graphs is not None else None
 
 
 @asynccontextmanager
@@ -188,10 +191,10 @@ async def startup() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
     global outreach_plan_monitor_worker, outreach_task_executor_worker, strategy_data_callback_worker
     storage_store.initialize()
-    if (
-        settings.service_role == "model_led_sales_brain_v3"
-        and service_rule_data_service.available
-        and (strategy_data_callback_worker is None or strategy_data_callback_worker.done())
+    if runtime_role is not RuntimeRole.WORKER:
+        return
+    if service_rule_data_service.available and (
+        strategy_data_callback_worker is None or strategy_data_callback_worker.done()
     ):
         strategy_data_callback_worker = asyncio.create_task(_run_strategy_data_callback_worker())
     if not settings.background_workers_enabled:
@@ -252,20 +255,7 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await strategy_data_callback_worker
         strategy_data_callback_worker = None
-    await platform_voice_batch_coordinator.aclose()
-    await model_client.aclose()
-    await coze_client.aclose()
-    await follow_knowledge_client.aclose()
-    await deepseek_semantic_client.aclose()
-    await deepseek_semantic_fallback_client.aclose()
-    await voice_transcription_client.aclose()
-    await outreach_send_client.aclose()
-    await outreach_system_client.aclose()
-    await conversation_mode_relay_service.aclose()
-    await sop_platform_client.aclose()
-    await service_rule_data_client.aclose()
-    platform_agent_client.close()
-    storage_store.close()
+    await services.aclose()
 
 
 def _first_day_settings_env_path() -> Path:
@@ -349,7 +339,7 @@ def _first_day_settings_response() -> dict[str, Any]:
 
 async def _sync_outreach_workers_after_first_day_settings_update() -> None:
     global outreach_plan_monitor_worker, outreach_task_executor_worker
-    if not settings.background_workers_enabled:
+    if runtime_role is not RuntimeRole.WORKER or not settings.background_workers_enabled:
         return
     if (
         settings.outreach_first_day_silence_enabled
@@ -365,7 +355,8 @@ async def _sync_outreach_workers_after_first_day_settings_update() -> None:
 async def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "service_role": settings.service_role,
+        "service_role": runtime_role.value,
+        "configured_service_role": settings.service_role,
         "background_workers_enabled": settings.background_workers_enabled,
         "release": {
             "release_id": settings.release_id,
@@ -373,7 +364,11 @@ async def health() -> dict[str, Any]:
             "dirty": settings.build_dirty,
             "config_revision": settings.build_config_revision,
         },
-        "platform_sop_worker": sop_platform_task_service.runtime_status(),
+        "platform_sop_worker": (
+            sop_platform_task_service.runtime_status()
+            if sop_platform_task_service is not None
+            else {"enabled": False, "reason": "not_available_in_reply_role"}
+        ),
         "strategy_data_callback": service_rule_data_service.status(),
     }
 
@@ -777,7 +772,7 @@ async def reply_workflow_compatible_v3(
     background_tasks: BackgroundTasks = None,
     _: None = Depends(require_v3_workflow_api_key),
 ) -> JSONResponse:
-    if settings.service_role != "model_led_sales_brain_v3":
+    if runtime_role is not RuntimeRole.REPLY:
         raise HTTPException(status_code=404, detail="Reply chain V3 is not enabled on this service")
     return await workflow_compatible_reply(
         payload,
@@ -1049,3 +1044,6 @@ async def admin_first_day_outreach_run(workflow_run_id: str) -> dict[str, Any]:
     if not detail:
         raise HTTPException(status_code=404, detail="first-day outreach run not found")
     return detail
+
+
+apply_runtime_route_policy(app, runtime_role)

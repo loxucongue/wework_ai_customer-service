@@ -40,6 +40,7 @@ from app.services.v3_evaluation_service import V3EvaluationService
 from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.v3_sop_execution_service import SopExecutionService as V3SopExecutionService
 from app.services.voice_transcription import DoubaoAsrClient
+from app.runtime_roles import RuntimeRole
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class RuntimeServices:
     message_delivery_service: MessageDeliveryService
     conversation_mode_relay_service: Any
     service_rule_data_service: ServiceRuleDataService
+    service_rule_data_client: ServiceRuleDataClient
     coze_client: CozeClient
     voice_transcription_client: DoubaoAsrClient
     model_client: ModelClient
@@ -73,6 +75,7 @@ class RuntimeServices:
     model_led_objection_playbook_service: ModelLedObjectionPlaybookService
     follow_knowledge_client: FollowKnowledgeClient
     deepseek_semantic_client: DeepSeekSemanticClient
+    deepseek_semantic_fallback_client: ModelClient
     v3_semantic_router_service: V3SemanticRouterService
     outreach_service: OutreachService
     sop_execution_service: SopExecutionService
@@ -82,21 +85,51 @@ class RuntimeServices:
     reply_graphs: Any
     chat_runtime: ChatRuntime
 
+    async def aclose(self) -> None:
+        seen: set[int] = set()
+        for client in (
+            self.platform_voice_batch_coordinator,
+            self.model_client,
+            self.coze_client,
+            self.follow_knowledge_client,
+            self.deepseek_semantic_client,
+            self.deepseek_semantic_fallback_client,
+            self.voice_transcription_client,
+            self.outreach_send_client,
+            self.outreach_system_client,
+            self.conversation_mode_relay_service,
+            self.sop_platform_client,
+            self.service_rule_data_client,
+        ):
+            if client is None or id(client) in seen:
+                continue
+            seen.add(id(client))
+            close = getattr(client, "aclose", None)
+            if close is not None:
+                await close()
+        if self.platform_agent_client is not None:
+            self.platform_agent_client.close()
+        self.storage_store.close()
+
 
 def build_runtime_services(settings: Settings) -> RuntimeServices:
     # Imports kept local to make the runtime dependency graph explicit without
     # forcing route modules to know how infrastructure clients are assembled.
     from app.services.conversation_mode_relay import ConversationModeRelayService
 
+    role = settings.runtime_role
     storage_store = build_store(settings)
     repository = AppRepository(storage_store)
     v3_evaluation_service = V3EvaluationService(settings.v3_evaluation_dir)
     trace_logger = TraceLogger(settings)
     message_delivery_service = MessageDeliveryService(settings, repository)
-    conversation_mode_relay_service = ConversationModeRelayService(settings)
+    conversation_mode_relay_service = (
+        ConversationModeRelayService(settings) if role is RuntimeRole.CONTROL else None
+    )
+    service_rule_data_client = ServiceRuleDataClient(settings)
     service_rule_data_service = ServiceRuleDataService(
         repository=repository,
-        client=ServiceRuleDataClient(settings),
+        client=service_rule_data_client,
         poll_seconds=settings.service_rule_data_poll_seconds,
         batch_size=settings.service_rule_data_batch_size,
         max_attempts=settings.service_rule_data_max_attempts,
@@ -111,7 +144,7 @@ def build_runtime_services(settings: Settings) -> RuntimeServices:
     platform_agent_client = PlatformAgentClient(settings)
     outreach_send_client = OutreachSendClient(settings, delivery_service=message_delivery_service)
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
-    sop_platform_client = SopPlatformClient(settings)
+    sop_platform_client = SopPlatformClient(settings) if role is not RuntimeRole.REPLY else None
     platform_reply_coordinator = PlatformReplyCoordinator(settings)
     platform_voice_batch_coordinator = PlatformVoiceBatchCoordinator(settings)
     customer_context_service = CustomerContextService(platform_agent_client)
@@ -120,28 +153,37 @@ def build_runtime_services(settings: Settings) -> RuntimeServices:
     store_service = StoreService(platform_agent_client)
     sop_reply_pack_service = SopReplyPackService(settings)
     precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
-    sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
+    sop_objection_material_service = (
+        SopObjectionMaterialService(settings.sop_objection_materials_path)
+        if role is not RuntimeRole.REPLY
+        else None
+    )
     model_led_objection_playbook_service = ModelLedObjectionPlaybookService(
         settings.model_led_objection_playbook_path
     )
-    follow_knowledge_client = FollowKnowledgeClient(settings)
-    deepseek_semantic_fallback_client = ModelClient(
-        settings.model_copy(
-            update={
-                "model_fast": "gpt-5.4-mini",
-                "model_fast_fallbacks": "gpt-5.4",
-                "model_emergency_fallbacks": "",
-                "model_hedge_max_parallel": 1,
-            }
+    follow_knowledge_client = None
+    deepseek_semantic_fallback_client = None
+    deepseek_semantic_client = None
+    v3_semantic_router_service = None
+    if role is RuntimeRole.REPLY:
+        follow_knowledge_client = FollowKnowledgeClient(settings)
+        deepseek_semantic_fallback_client = ModelClient(
+            settings.model_copy(
+                update={
+                    "model_fast": "gpt-5.4-mini",
+                    "model_fast_fallbacks": "gpt-5.4",
+                    "model_emergency_fallbacks": "",
+                    "model_hedge_max_parallel": 1,
+                }
+            )
         )
-    )
-    deepseek_semantic_client = DeepSeekSemanticClient(settings, deepseek_semantic_fallback_client)
-    v3_semantic_router_service = V3SemanticRouterService(
-        semantic_client=deepseek_semantic_client,
-        knowledge_client=follow_knowledge_client,
-        script_threshold=settings.deepseek_semantic_script_threshold,
-        max_scripts=settings.deepseek_semantic_max_scripts,
-    )
+        deepseek_semantic_client = DeepSeekSemanticClient(settings, deepseek_semantic_fallback_client)
+        v3_semantic_router_service = V3SemanticRouterService(
+            semantic_client=deepseek_semantic_client,
+            knowledge_client=follow_knowledge_client,
+            script_threshold=settings.deepseek_semantic_script_threshold,
+            max_scripts=settings.deepseek_semantic_max_scripts,
+        )
     outreach_service = OutreachService(
         repository=repository,
         model_client=model_client,
@@ -153,99 +195,109 @@ def build_runtime_services(settings: Settings) -> RuntimeServices:
         before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
         sales_strategy_service=sales_strategy_service,
     )
-    sop_execution_service = SopExecutionService(
-        repository=repository,
-        sop_reply_pack_service=sop_reply_pack_service,
-        model_client=model_client,
-        memory_store=memory_store,
-        customer_context_service=customer_context_service,
-        event_model_retry_attempts=settings.sop_event_model_retry_attempts,
-        event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
-        event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
-        event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
-        chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
-        event_model_max_concurrency=settings.sop_event_model_max_concurrency,
-        model_semantic_routing_enabled=settings.reply_model_semantic_routing_enabled,
-        event_schema_only_normalizer_enabled=settings.sop_event_schema_only_normalizer_enabled,
-        governance_shadow_mode=settings.reply_governance_shadow_mode,
-    )
-    v3_sop_execution_service = V3SopExecutionService(
-        repository=repository,
-        sop_reply_pack_service=sop_reply_pack_service,
-        model_client=model_client,
-        memory_store=memory_store,
-        customer_context_service=customer_context_service,
-        event_model_retry_attempts=settings.sop_event_model_retry_attempts,
-        event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
-        event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
-        event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
-        chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
-        event_model_max_concurrency=settings.sop_event_model_max_concurrency,
-        model_led_objection_playbook_service=model_led_objection_playbook_service,
-    )
-    sop_event_service = SopEventService(
-        repository=repository,
-        sop_reply_pack_service=sop_reply_pack_service,
-        outreach_send_client=outreach_send_client,
-        sop_execution_service=sop_execution_service,
-        memory_store=memory_store,
-        customer_context_service=customer_context_service,
-        personalized_outreach_service=outreach_service,
-        daily_touch_soft_limit=settings.sop_event_daily_touch_soft_limit,
-        default_identity={
-            "corp_id": settings.platform_agent_default_corp_id,
-            "user_id": settings.platform_agent_default_user_id,
-            "wechat": settings.platform_agent_default_wechat,
-        },
-        persistent_retry_attempts=settings.sop_event_persistent_retry_attempts,
-        persistent_retry_base_delay_seconds=settings.sop_event_persistent_retry_base_delay_seconds,
-        persistent_retry_max_delay_seconds=settings.sop_event_persistent_retry_max_delay_seconds,
-        retry_batch_size=settings.sop_event_retry_batch_size,
-        quiet_backlog_fusion_enabled=settings.sop_quiet_backlog_fusion_enabled,
-        quiet_backlog_fusion_time=settings.sop_quiet_backlog_fusion_time,
-        quiet_backlog_fusion_batch_size=settings.sop_quiet_backlog_fusion_batch_size,
-        quiet_backlog_fusion_model=settings.sop_quiet_backlog_fusion_model,
-        quiet_backlog_fusion_timeout_seconds=settings.sop_quiet_backlog_fusion_timeout_seconds,
-    )
-    sop_platform_task_service = SopPlatformTaskService(
-        settings=settings,
-        repository=repository,
-        platform_client=sop_platform_client,
-        system_client=outreach_system_client,
-        model_client=model_client,
-        customer_context_service=customer_context_service,
-        objection_material_service=sop_objection_material_service,
-    )
-    reply_graphs = build_reply_graphs(
-        coze_client,
-        trace_logger,
-        model_client,
-        memory_store,
-        customer_context_service,
-        customer_store_knowledge_service,
-        store_service,
-        outreach_send_client,
-        platform_agent_client,
-        v3_sop_execution_service,
-        v3_semantic_router_service,
-        sales_strategy_service,
-    )
-    chat_runtime = ChatRuntime(
-        full_graph=reply_graphs.full_graph,
-        commit_graph=reply_graphs.commit_graph,
-        trace_logger=trace_logger,
-        repository=repository,
-        outreach_send_client=outreach_send_client,
-        outreach_system_client=outreach_system_client,
-        memory_store=memory_store,
-        platform_reply_coordinator=platform_reply_coordinator,
-        sop_execution_service=v3_sop_execution_service,
-        service_rule_data_service=service_rule_data_service,
-        ai_sales_policy_service=ai_sales_policy_service,
-        sales_strategy_service=sales_strategy_service,
-        outreach_service=outreach_service,
-        settings=settings,
-    )
+    sop_execution_service = None
+    if role is not RuntimeRole.REPLY:
+        sop_execution_service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=sop_reply_pack_service,
+            model_client=model_client,
+            memory_store=memory_store,
+            customer_context_service=customer_context_service,
+            event_model_retry_attempts=settings.sop_event_model_retry_attempts,
+            event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
+            event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
+            event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
+            chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
+            event_model_max_concurrency=settings.sop_event_model_max_concurrency,
+            model_semantic_routing_enabled=settings.reply_model_semantic_routing_enabled,
+            event_schema_only_normalizer_enabled=settings.sop_event_schema_only_normalizer_enabled,
+            governance_shadow_mode=settings.reply_governance_shadow_mode,
+        )
+    v3_sop_execution_service = None
+    if role is RuntimeRole.REPLY:
+        v3_sop_execution_service = V3SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=sop_reply_pack_service,
+            model_client=model_client,
+            memory_store=memory_store,
+            customer_context_service=customer_context_service,
+            event_model_retry_attempts=settings.sop_event_model_retry_attempts,
+            event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
+            event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
+            event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
+            chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
+            event_model_max_concurrency=settings.sop_event_model_max_concurrency,
+            model_led_objection_playbook_service=model_led_objection_playbook_service,
+        )
+    sop_event_service = None
+    sop_platform_task_service = None
+    if role is not RuntimeRole.REPLY:
+        sop_event_service = SopEventService(
+            repository=repository,
+            sop_reply_pack_service=sop_reply_pack_service,
+            outreach_send_client=outreach_send_client,
+            sop_execution_service=sop_execution_service,
+            memory_store=memory_store,
+            customer_context_service=customer_context_service,
+            personalized_outreach_service=outreach_service,
+            daily_touch_soft_limit=settings.sop_event_daily_touch_soft_limit,
+            default_identity={
+                "corp_id": settings.platform_agent_default_corp_id,
+                "user_id": settings.platform_agent_default_user_id,
+                "wechat": settings.platform_agent_default_wechat,
+            },
+            persistent_retry_attempts=settings.sop_event_persistent_retry_attempts,
+            persistent_retry_base_delay_seconds=settings.sop_event_persistent_retry_base_delay_seconds,
+            persistent_retry_max_delay_seconds=settings.sop_event_persistent_retry_max_delay_seconds,
+            retry_batch_size=settings.sop_event_retry_batch_size,
+            quiet_backlog_fusion_enabled=settings.sop_quiet_backlog_fusion_enabled,
+            quiet_backlog_fusion_time=settings.sop_quiet_backlog_fusion_time,
+            quiet_backlog_fusion_batch_size=settings.sop_quiet_backlog_fusion_batch_size,
+            quiet_backlog_fusion_model=settings.sop_quiet_backlog_fusion_model,
+            quiet_backlog_fusion_timeout_seconds=settings.sop_quiet_backlog_fusion_timeout_seconds,
+        )
+        sop_platform_task_service = SopPlatformTaskService(
+            settings=settings,
+            repository=repository,
+            platform_client=sop_platform_client,
+            system_client=outreach_system_client,
+            model_client=model_client,
+            customer_context_service=customer_context_service,
+            objection_material_service=sop_objection_material_service,
+        )
+    reply_graphs = None
+    chat_runtime = None
+    if role is RuntimeRole.REPLY:
+        reply_graphs = build_reply_graphs(
+            coze_client,
+            trace_logger,
+            model_client,
+            memory_store,
+            customer_context_service,
+            customer_store_knowledge_service,
+            store_service,
+            outreach_send_client,
+            platform_agent_client,
+            v3_sop_execution_service,
+            v3_semantic_router_service,
+            sales_strategy_service,
+        )
+        chat_runtime = ChatRuntime(
+            full_graph=reply_graphs.full_graph,
+            commit_graph=reply_graphs.commit_graph,
+            trace_logger=trace_logger,
+            repository=repository,
+            outreach_send_client=outreach_send_client,
+            outreach_system_client=outreach_system_client,
+            memory_store=memory_store,
+            platform_reply_coordinator=platform_reply_coordinator,
+            sop_execution_service=v3_sop_execution_service,
+            service_rule_data_service=service_rule_data_service,
+            ai_sales_policy_service=ai_sales_policy_service,
+            sales_strategy_service=sales_strategy_service,
+            outreach_service=outreach_service,
+            settings=settings,
+        )
     return RuntimeServices(
         **{
             name: value

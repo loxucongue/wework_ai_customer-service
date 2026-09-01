@@ -1,8 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.runtime_roles import RuntimeRole, normalize_runtime_role
 
 
 class Settings(BaseSettings):
@@ -13,7 +15,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "AI Paths"
-    service_role: str = Field(default="primary", alias="AI_PATHS_SERVICE_ROLE")
+    service_role: str = Field(default="control", alias="AI_PATHS_SERVICE_ROLE")
     release_id: str = Field(default="development", alias="AI_PATHS_RELEASE_ID")
     build_git_commit: str = Field(default="unknown", alias="AI_PATHS_BUILD_GIT_COMMIT")
     build_dirty: bool = Field(default=False, alias="AI_PATHS_BUILD_DIRTY")
@@ -289,7 +291,7 @@ class Settings(BaseSettings):
         default=False,
         alias="OUTREACH_SYSTEM_SEND_CONVERSATION_ID_ENABLED",
     )
-    background_workers_enabled: bool = Field(default=True, alias="AI_PATHS_BACKGROUND_WORKERS_ENABLED")
+    background_workers_enabled: bool = Field(default=False, alias="AI_PATHS_BACKGROUND_WORKERS_ENABLED")
     message_delivery_callback_required: bool = Field(
         default=False,
         alias="MESSAGE_DELIVERY_CALLBACK_REQUIRED",
@@ -384,6 +386,28 @@ class Settings(BaseSettings):
 
     log_dir: Path = Path("logs/runs")
     trace_log_dir: Path | None = Field(default=None, alias="AI_PATHS_TRACE_LOG_DIR")
+
+    @property
+    def runtime_role(self) -> RuntimeRole:
+        return normalize_runtime_role(self.service_role)
+
+    @model_validator(mode="after")
+    def validate_runtime_contract(self) -> "Settings":
+        role = self.runtime_role
+        if role is RuntimeRole.REPLY and self.background_workers_enabled:
+            raise ValueError("reply role requires AI_PATHS_BACKGROUND_WORKERS_ENABLED=false")
+        if role is RuntimeRole.CONTROL and self.background_workers_enabled:
+            raise ValueError("control role requires AI_PATHS_BACKGROUND_WORKERS_ENABLED=false")
+        if role is RuntimeRole.WORKER and not self.background_workers_enabled:
+            raise ValueError("worker role requires AI_PATHS_BACKGROUND_WORKERS_ENABLED=true")
+        if self.message_delivery_callback_required and not str(self.message_delivery_callback_token or "").strip():
+            raise ValueError("MESSAGE_DELIVERY_CALLBACK_REQUIRED=true requires MESSAGE_DELIVERY_CALLBACK_TOKEN")
+        if self.sop_platform_pull_enabled:
+            if role is not RuntimeRole.WORKER:
+                raise ValueError("SOP_PLATFORM_PULL_ENABLED=true is only valid for the worker role")
+            if not str(self.sop_platform_token or "").strip():
+                raise ValueError("SOP_PLATFORM_PULL_ENABLED=true requires SOP_PLATFORM_TOKEN")
+        return self
 
 
 @lru_cache(maxsize=1)

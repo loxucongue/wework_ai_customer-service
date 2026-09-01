@@ -85,13 +85,11 @@ class ChatRuntime:
         if is_isolated_v2_test_request(request, request_context):
             return None
         if not self._outreach_system_client or not self._outreach_system_client.available:
-            request_context["takeover_guard"] = {
-                "checked": False,
-                "decision": "continue_ai",
-                "reason": "outreach_system_not_configured",
-            }
-            request.request_context = request_context
-            return None
+            return self._build_takeover_block_response(
+                request,
+                request_context,
+                reason="outreach_system_not_configured",
+            )
 
         try:
             status = await self._outreach_system_client.conversation_status(
@@ -104,14 +102,12 @@ class ChatRuntime:
                 plan_id=str(request_context.get("plan_id") or ""),
             )
         except Exception as exc:
-            request_context["takeover_guard"] = {
-                "checked": False,
-                "decision": "continue_ai",
-                "reason": "status_query_failed",
-                "error": f"{type(exc).__name__}: {exc}"[:500],
-            }
-            request.request_context = request_context
-            return None
+            return self._build_takeover_block_response(
+                request,
+                request_context,
+                reason="status_query_failed",
+                error=f"{type(exc).__name__}: {exc}"[:500],
+            )
 
         data = status.get("data") if isinstance(status.get("data"), dict) else {}
         takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
@@ -162,6 +158,54 @@ class ChatRuntime:
                     "status": "error",
                     "reason": f"{type(exc).__name__}: {exc}"[:500],
                 }
+        return self._persist_and_build_response(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            final_state=state,
+            allow_empty_reply=True,
+        )
+
+    def _build_takeover_block_response(
+        self,
+        request: ChatRequest,
+        request_context: dict[str, Any],
+        *,
+        reason: str,
+        error: str = "",
+    ) -> ChatResponse:
+        guard = {
+            "checked": False,
+            "decision": "return_empty",
+            "reason": reason,
+        }
+        if error:
+            guard["error"] = error
+        request_context["takeover_guard"] = guard
+        request.request_context = request_context
+        request_id = str(uuid4())
+        request_context["test_isolated"] = False
+        request_context["memory_persist_allowed"] = True
+        conversation_id = self._prepare_conversation(request, request_id, request_context)
+        self._start_run_tracking(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            request_context=request_context,
+        )
+        state = self._initial_state(request, request_id, request_context)
+        state["reply_messages"] = []
+        state["reply_source"] = "takeover_status_fail_closed"
+        state["takeover_guard"] = dict(guard)
+        state.setdefault("trace", []).append(
+            {
+                "node": "human_takeover_guard",
+                "decision": "no_reply",
+                "reason": reason,
+                "takeover": dict(guard),
+            }
+        )
+        _set_sync_return(state, "empty", [])
         return self._persist_and_build_response(
             request=request,
             request_id=request_id,
