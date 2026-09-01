@@ -21,6 +21,8 @@
 - [消息送达回调](platform_message_delivery_callback_integration.md)
 - [MySQL 切换手册](aics_mysql_cutover_runbook.md)
 - [任务工作流](runbooks/TASK_WORKFLOW.md)
+- [质量门禁与测试治理](quality/QUALITY_GATES.md)
+- [生产发布前检查清单](runbooks/PRE_RELEASE_CHECKLIST.md)
 
 ## 目录规则
 

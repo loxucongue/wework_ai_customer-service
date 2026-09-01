@@ -1,11 +1,13 @@
-# 生产状态
+# 生产状态（历史观察，当前待现场核验）
 
-- status: observed
+- status: stale-observation-requires-live-verification
 - owner: operations
 - last_verified: 2026-08-31 Asia/Shanghai
 - source_of_truth: 服务器 `47.252.81.104` 现场核验
 
-## Release
+以下内容仅是 2026-08-31 的现场观察快照，不代表当前生产状态，也不代表本次质量门禁分支已部署。当前 `main`、生产 release 与 shadow 功能是三个不同维度：仓库代码只能说明候选实现；生产版本必须现场读取；shadow 表示代码存在但发送行为未启用。
+
+## Release（待现场核验）
 
 | 角色 | 服务 | 当前 release / commit |
 |---|---|---|
@@ -16,7 +18,7 @@
 
 这不是目标状态：生产由 main 与 V3 两个不同 SHA 拼接运行。任何发布前必须重新现场核验，不得照抄本页。
 
-## 已执行的 V1/V2 containment
+## 已观察到的 V1/V2 containment（待现场核验）
 
 - 旧公开回复入口已由 Nginx 返回 410，包括两个 Next 前端旧代理入口。
 - `ai-paths-refactor.service` 与 `ai-paths-backend.service` 已停止并禁用。
@@ -24,7 +26,7 @@
 - V3 health 正常；共享 API、worker、frontend 保持 active。
 - Nginx 修改前配置备份：`/etc/nginx/conf.d/ai-paths.conf.pre-v3-only-20260831`。
 
-## 数据与容量
+## 数据与容量（待现场核验）
 
 - 现场观察根 `.env` 仍使用 SQLite；MySQL cutover 状态在任何修改前必须重新确认。
 - 主服务与 V3 历史 release 已各收敛为 3 个（当前 + 两个最近回滚版本）。

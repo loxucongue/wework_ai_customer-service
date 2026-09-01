@@ -1,0 +1,3 @@
+-r ai_paths/requirements.txt
+pytest>=8.4,<9
+
