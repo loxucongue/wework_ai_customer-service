@@ -12,7 +12,7 @@
 6. [当前生产状态](current/PRODUCTION_STATE.md)
 7. [已知问题](current/KNOWN_ISSUES.md)
 
-当前治理任务见 `tasks/active/`。任务完成并删除活动文件后，新开发按“一项任务一个新窗口、从最新 `origin/main` 建立临时 `codex/*` 分支、验证后立即合回并删除”的方式执行。
+当前没有活动中的仓库治理任务。新开发按“一项任务一个新窗口、从最新 `origin/main` 建立临时 `codex/*` 分支、验证后立即合回并删除”的方式执行。
 
 ## 专项文档
 
