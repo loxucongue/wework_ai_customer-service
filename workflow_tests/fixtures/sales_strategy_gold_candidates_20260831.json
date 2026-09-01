@@ -1,0 +1,6814 @@
+{
+  "schema_version": "sales_strategy_gold_candidates_v1",
+  "version": "2026-08-31.1",
+  "gold_status": "pending_human_review",
+  "notice": "Labels are generated from the approved taxonomy and source scenarios. Human review is required before release acceptance metrics may call this a gold set.",
+  "coverage": {
+    "cases": 400,
+    "category_counts": {
+      "visit_blocked": 20,
+      "distance_objection": 20,
+      "time_objection": 20,
+      "price_objection": 40,
+      "effect_objection": 20,
+      "trust_objection": 20,
+      "health_constraint": 20,
+      "repair_objection": 20,
+      "deposit_objection": 20,
+      "decision_hesitation": 20,
+      "family_decision": 20,
+      "need_mismatch": 20,
+      "wrong_project_intent": 20
+    },
+    "intent_counts": {
+      "blocker_expression": 280,
+      "fact_inquiry": 20,
+      "transaction_progress": 20,
+      "information_submission": 20,
+      "defer": 20,
+      "explicit_exit": 20,
+      "normal_exchange": 20
+    },
+    "emotion_counts": {
+      "hesitant": 98,
+      "neutral": 98,
+      "defensive": 77,
+      "curious": 58,
+      "enthusiastic": 18,
+      "cold": 17,
+      "impatient": 17,
+      "angry": 17
+    },
+    "multi_signal_count": 133
+  },
+  "cases": [
+    {
+      "id": "cardpoint_visit_blocked_01",
+      "current_message": "我主要担心不会乘坐交通工具，打车，公交，地铁，不愿意预约到店，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_0e6d5a2bc216",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_02",
+      "current_message": "如果不识字，不敢出门，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_6c025fb11432",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_03",
+      "current_message": "我不是完全不想做，就是下暴雨，没法到店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_856e90ba24c4",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是门店临时闭店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_b7f65a44b67b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_05",
+      "current_message": "先别催付款，我想问清楚店太远了，不愿意过来。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_b5ca5a0dc33d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_06",
+      "current_message": "我主要担心天气太热了，想等凉快点再说，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_6cbdc0a10a81",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_07",
+      "current_message": "如果以为门店不真实，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_5f06dd3c2129",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_08",
+      "current_message": "我不是完全不想做，就是直接跑到楼下了，找不到门店位置。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_673919d70408",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是乘坐电梯，卡里面了出不来。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_ba7462ead2f5",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_10",
+      "current_message": "先别催付款，我想问清楚来我们门店需要刷卡，没办法上去门店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_0278d560d94f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_11",
+      "current_message": "我主要担心台风天，不愿意出门，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_8407115418d3",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_12",
+      "current_message": "如果不愿意自己到店，要报销车费，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_90a7dd2b03ff",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_13",
+      "current_message": "我不是完全不想做，就是交通事故，没办法过来。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_2338309a9d34",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 不会乘坐交通工具，打车，公交，地铁，不愿意预约到店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_a623f162d650",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_15",
+      "current_message": "先别催付款，我想问清楚2. 店太远了，不愿意过来。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_146997e5c7bd",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_16",
+      "current_message": "我主要担心3. 天气太热了，想等凉快点再说，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_7a0a9fb24f4d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_17",
+      "current_message": "如果4. 不愿意自己到店，要报销车费，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_10b0004b6c8d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_18",
+      "current_message": "我不是完全不想做，就是1. 下暴雨，没法到店\n2. 台风天，不愿意出门。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_8734e79de5ff",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 不会乘坐交通工具，打车，公交，地铁，不愿意预约到店\n2. 店太远了，不愿意过来\n3. 天气太热了，想等凉快点再说\n4. 不愿意自己到店，要报销车费。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_9a11eba4ea0e",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_visit_blocked_20",
+      "current_message": "先别催付款，我想问清楚不会乘坐交通工具，打车，公交，地铁，不愿意预约到店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "visit_blocked",
+        "scenario_key": "scenario_0e6d5a2bc216",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_01",
+      "current_message": "我主要担心门店最近地址距离客户较远，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_e3275f96b4c9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_02",
+      "current_message": "如果客户年纪大，不方便。也不会使用任何交通，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_5129eea945c0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_03",
+      "current_message": "我不是完全不想做，就是客户对远的定义有认知差。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_8a94d671794f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 门店最近地址距离客户较远\n2. 客户对远的定义有认知差。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_b85fca91de45",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_05",
+      "current_message": "先别催付款，我想问清楚门店最近地址距离客户较远。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_e3275f96b4c9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_06",
+      "current_message": "我主要担心客户年纪大，不方便。也不会使用任何交通，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_5129eea945c0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_07",
+      "current_message": "如果客户对远的定义有认知差，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_8a94d671794f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_08",
+      "current_message": "我不是完全不想做，就是1. 门店最近地址距离客户较远\n2. 客户对远的定义有认知差。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_b85fca91de45",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是门店最近地址距离客户较远。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_e3275f96b4c9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_10",
+      "current_message": "先别催付款，我想问清楚客户年纪大，不方便。也不会使用任何交通。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_5129eea945c0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_11",
+      "current_message": "我主要担心客户对远的定义有认知差，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_8a94d671794f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_12",
+      "current_message": "如果1. 门店最近地址距离客户较远\n2. 客户对远的定义有认知差，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_b85fca91de45",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_13",
+      "current_message": "我不是完全不想做，就是门店最近地址距离客户较远。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_e3275f96b4c9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是客户年纪大，不方便。也不会使用任何交通。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_5129eea945c0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_15",
+      "current_message": "先别催付款，我想问清楚客户对远的定义有认知差。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_8a94d671794f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_16",
+      "current_message": "我主要担心1. 门店最近地址距离客户较远\n2. 客户对远的定义有认知差，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_b85fca91de45",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_17",
+      "current_message": "如果门店最近地址距离客户较远，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_e3275f96b4c9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_18",
+      "current_message": "我不是完全不想做，就是客户年纪大，不方便。也不会使用任何交通。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_5129eea945c0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是客户对远的定义有认知差。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_8a94d671794f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_distance_objection_20",
+      "current_message": "先别催付款，我想问清楚1. 门店最近地址距离客户较远\n2. 客户对远的定义有认知差。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "distance_objection",
+        "scenario_key": "scenario_b85fca91de45",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_01",
+      "current_message": "我主要担心要上班，出差，来不及了，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_cb4afa025751",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_02",
+      "current_message": "如果旅游在外地，短期没空到店，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_1dee7ee643aa",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_03",
+      "current_message": "我不是完全不想做，就是需要照顾家人，没空出来做项目。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_2e6297c9d9d9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是通勤时间长，不愿意过来门店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_3de845479d00",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_05",
+      "current_message": "先别催付款，我想问清楚有约了，暂时没空过来。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_ada97767738b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_06",
+      "current_message": "我主要担心要先去做其他项目，时间不够，没法来我们店，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_d56bd742844c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_07",
+      "current_message": "如果没放假，短期过不来，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_7369bc470f03",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_08",
+      "current_message": "我不是完全不想做，就是1. 要上班，出差，来不及了\n2. 需要照顾家人，没空出来做项目\n3. 通勤时间长，不愿意过来门店\n4. 没放假，短期过不来。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_a2c0e4c62926",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 需要照顾家人，没空出来做项目\n2. 通勤时间长，不愿意过来门店。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_cb9b27753eb8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_10",
+      "current_message": "先别催付款，我想问清楚要上班，出差，来不及了。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_cb4afa025751",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_11",
+      "current_message": "我主要担心旅游在外地，短期没空到店，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_1dee7ee643aa",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_12",
+      "current_message": "如果需要照顾家人，没空出来做项目，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_2e6297c9d9d9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_13",
+      "current_message": "我不是完全不想做，就是通勤时间长，不愿意过来门店。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_3de845479d00",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是有约了，暂时没空过来。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_ada97767738b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_15",
+      "current_message": "先别催付款，我想问清楚要先去做其他项目，时间不够，没法来我们店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_d56bd742844c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_16",
+      "current_message": "我主要担心没放假，短期过不来，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_7369bc470f03",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_17",
+      "current_message": "如果1. 要上班，出差，来不及了\n2. 需要照顾家人，没空出来做项目\n3. 通勤时间长，不愿意过来门店\n4. 没放假，短期过不来，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_a2c0e4c62926",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_18",
+      "current_message": "我不是完全不想做，就是1. 需要照顾家人，没空出来做项目\n2. 通勤时间长，不愿意过来门店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_cb9b27753eb8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是要上班，出差，来不及了。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_cb4afa025751",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_time_objection_20",
+      "current_message": "先别催付款，我想问清楚旅游在外地，短期没空到店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "time_objection",
+        "scenario_key": "scenario_1dee7ee643aa",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_01",
+      "current_message": "我主要担心客户担心隐形消费，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_29c8205354fb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_02",
+      "current_message": "如果客户担心这个价格是骗人的，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_9c3f6bf65646",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_03",
+      "current_message": "我不是完全不想做，就是别的同行更便宜/客户传达不同价格。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_d36a712386ee",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是与其他部位一通操作。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_bda9fe423a36",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_05",
+      "current_message": "先别催付款，我想问清楚1. 客户担心隐形消费\n2. 客户担心这个价格是骗人的\n3. 别的同行更便宜/客户传达不同价格\n4. 与其他部位一通操作（捆绑消费疑虑）。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_e0a686764298",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_06",
+      "current_message": "我主要担心1. 客户担心这个价格是骗人的\n2. 别的同行更便宜/客户传达不同价格，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_05f73032041d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_07",
+      "current_message": "如果与其他部位一通操作（捆绑消费疑虑），还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_f7ead9c3f5d4",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_08",
+      "current_message": "我不是完全不想做，就是客户担心隐形消费。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_29c8205354fb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是客户担心这个价格是骗人的。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_9c3f6bf65646",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_10",
+      "current_message": "先别催付款，我想问清楚别的同行更便宜/客户传达不同价格。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_d36a712386ee",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_11",
+      "current_message": "我主要担心与其他部位一通操作，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_bda9fe423a36",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_12",
+      "current_message": "如果1. 客户担心隐形消费\n2. 客户担心这个价格是骗人的\n3. 别的同行更便宜/客户传达不同价格\n4. 与其他部位一通操作（捆绑消费疑虑），还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_e0a686764298",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_13",
+      "current_message": "我不是完全不想做，就是1. 客户担心这个价格是骗人的\n2. 别的同行更便宜/客户传达不同价格。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_05f73032041d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是与其他部位一通操作（捆绑消费疑虑）。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_f7ead9c3f5d4",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_15",
+      "current_message": "先别催付款，我想问清楚客户担心隐形消费。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_29c8205354fb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_16",
+      "current_message": "我主要担心客户担心这个价格是骗人的，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_9c3f6bf65646",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_17",
+      "current_message": "如果别的同行更便宜/客户传达不同价格，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_d36a712386ee",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_18",
+      "current_message": "我不是完全不想做，就是与其他部位一通操作。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_bda9fe423a36",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 客户担心隐形消费\n2. 客户担心这个价格是骗人的\n3. 别的同行更便宜/客户传达不同价格\n4. 与其他部位一通操作（捆绑消费疑虑）。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_e0a686764298",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_price_objection_20",
+      "current_message": "先别催付款，我想问清楚1. 客户担心这个价格是骗人的\n2. 别的同行更便宜/客户传达不同价格。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "scenario_05f73032041d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_01",
+      "current_message": "我主要担心在别的同行操作过，反馈无效果，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_0bb0ad5e5e19",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_02",
+      "current_message": "如果从来没做过该项目，担心在我们这里操作后无效果，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_16f1a8eaae00",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_03",
+      "current_message": "我不是完全不想做，就是之前操作过后且有效果，后面又复发。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_b6930fd9fad7",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 在别的同行操作过，反馈无效果\n2. 从来没做过，担心无效果。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_89151b78d87f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_05",
+      "current_message": "先别催付款，我想问清楚从来没做过，担心无效果。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_e4433b27dc3c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_06",
+      "current_message": "我主要担心在别的同行操作过，反馈无效果，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_0bb0ad5e5e19",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_07",
+      "current_message": "如果从来没做过该项目，担心在我们这里操作后无效果，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_16f1a8eaae00",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_08",
+      "current_message": "我不是完全不想做，就是之前操作过后且有效果，后面又复发。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_b6930fd9fad7",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 在别的同行操作过，反馈无效果\n2. 从来没做过，担心无效果。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_89151b78d87f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_10",
+      "current_message": "先别催付款，我想问清楚从来没做过，担心无效果。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_e4433b27dc3c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_11",
+      "current_message": "我主要担心在别的同行操作过，反馈无效果，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_0bb0ad5e5e19",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_12",
+      "current_message": "如果从来没做过该项目，担心在我们这里操作后无效果，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_16f1a8eaae00",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_13",
+      "current_message": "我不是完全不想做，就是之前操作过后且有效果，后面又复发。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_b6930fd9fad7",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 在别的同行操作过，反馈无效果\n2. 从来没做过，担心无效果。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_89151b78d87f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_15",
+      "current_message": "先别催付款，我想问清楚从来没做过，担心无效果。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_e4433b27dc3c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_16",
+      "current_message": "我主要担心在别的同行操作过，反馈无效果，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_0bb0ad5e5e19",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_17",
+      "current_message": "如果从来没做过该项目，担心在我们这里操作后无效果，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_16f1a8eaae00",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_18",
+      "current_message": "我不是完全不想做，就是之前操作过后且有效果，后面又复发。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_b6930fd9fad7",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 在别的同行操作过，反馈无效果\n2. 从来没做过，担心无效果。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_89151b78d87f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_effect_objection_20",
+      "current_message": "先别催付款，我想问清楚从来没做过，担心无效果。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "effect_objection",
+        "scenario_key": "scenario_e4433b27dc3c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_01",
+      "current_message": "我主要担心网上看过大量美业负面新闻、身边朋友踩坑：低价引流到店后疯狂升单、不消费态度变差，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_b5c86c879295",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_02",
+      "current_message": "如果被秒杀 / 低价体验吸引过来，固有认知：低价 = 圈套，害怕到店加价，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_1684e5aed453",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_03",
+      "current_message": "我不是完全不想做，就是自己之前祛斑踩坑，做完反黑、色沉，留下心理阴影。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_5cf623e41e64",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是刷短视频看到很多祛斑失败案例，内心恐惧。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_15e9b93ffb02",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_05",
+      "current_message": "先别催付款，我想问清楚分不清斑型，不知道自己的斑到底能不能改善，怕白花钱。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_31c4c596331c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_06",
+      "current_message": "我主要担心分不清是直营门店还是合作加盟店、工作室，担心是小作坊，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_b3d5e8e9bfc6",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_07",
+      "current_message": "如果担心仪器、产品不正规，怕用劣质产品损伤皮肤，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_2d601ba00224",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_08",
+      "current_message": "我不是完全不想做，就是问细节问题，销售回避、答非所问，只会讲活动，不解答皮肤专业问题。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_36b39c3edf33",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 自己之前祛斑踩坑，反黑色沉，心理阴影\n2. 分不清斑型，怕白花钱。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_e5ca86f2cb38",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_10",
+      "current_message": "先别催付款，我想问清楚分不清斑型，怕白花钱。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_c925299bc9fd",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_11",
+      "current_message": "我主要担心分不清直营/加盟/工作室，担心小作坊，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_9e821b64361e",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_12",
+      "current_message": "如果问细节销售回避/只讲活动不解答专业问题，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_44c9965d699f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_13",
+      "current_message": "我不是完全不想做，就是网上看过大量美业负面新闻、身边朋友踩坑：低价引流到店后疯狂升单、不消费态度变差。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_b5c86c879295",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是被秒杀 / 低价体验吸引过来，固有认知：低价 = 圈套，害怕到店加价。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_1684e5aed453",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_15",
+      "current_message": "先别催付款，我想问清楚自己之前祛斑踩坑，做完反黑、色沉，留下心理阴影。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_5cf623e41e64",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_16",
+      "current_message": "我主要担心刷短视频看到很多祛斑失败案例，内心恐惧，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_15e9b93ffb02",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_17",
+      "current_message": "如果分不清斑型，不知道自己的斑到底能不能改善，怕白花钱，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_31c4c596331c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_18",
+      "current_message": "我不是完全不想做，就是分不清是直营门店还是合作加盟店、工作室，担心是小作坊。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_b3d5e8e9bfc6",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是担心仪器、产品不正规，怕用劣质产品损伤皮肤。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_2d601ba00224",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_trust_objection_20",
+      "current_message": "先别催付款，我想问清楚问细节问题，销售回避、答非所问，只会讲活动，不解答皮肤专业问题。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "trust_objection",
+        "scenario_key": "scenario_36b39c3edf33",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_01",
+      "current_message": "我主要担心生病了，短时间没法过来，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_5f046e8295d8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_02",
+      "current_message": "如果家人生病了，需要照顾，没办法到店，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_4e80a0e1a65a",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_03",
+      "current_message": "我不是完全不想做，就是哺乳期，担心做不了。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_efc7e0299816",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是高血压，没降下来，不敢来门店做。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_406220258fde",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_05",
+      "current_message": "先别催付款，我想问清楚癌症，想做项目又怕不接待她。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_e79b5dce2576",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_06",
+      "current_message": "我主要担心坐轮椅，担心我们不给做，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_c5874e259d5b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_07",
+      "current_message": "如果才做过项目，还没有恢复，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_ab84043660ab",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_08",
+      "current_message": "我不是完全不想做，就是担心我们的操作方式会过敏。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_f3b64d17f2a2",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是疤痕体质，仪器方式不敢做。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_1855890845b3",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_10",
+      "current_message": "先别催付款，我想问清楚聋哑人，有一定沟通障碍。担心我们不接待她。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_16ac1d4361cc",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_11",
+      "current_message": "我主要担心1. 坐轮椅，担心不给做\n2. 聋哑人，沟通障碍，担心不接待，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_ec44e30ee53a",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_12",
+      "current_message": "如果1. 坐轮椅，担心不给做\n2. 才做过项目，还没恢复\n3. 聋哑人，沟通障碍，担心不接待，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_a687dfdbe0c0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_13",
+      "current_message": "我不是完全不想做，就是才做过项目，还没恢复。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_3acc6f0ac161",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 担心操作方式会过敏\n2. 疤痕体质，仪器方式不敢做\n3. 聋哑人，沟通障碍，担心不接待。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_0b3b1297844b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_15",
+      "current_message": "先别催付款，我想问清楚生病了，短时间没法过来。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_5f046e8295d8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_16",
+      "current_message": "我主要担心家人生病了，需要照顾，没办法到店，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_4e80a0e1a65a",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_17",
+      "current_message": "如果哺乳期，担心做不了，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_efc7e0299816",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_18",
+      "current_message": "我不是完全不想做，就是高血压，没降下来，不敢来门店做。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_406220258fde",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是癌症，想做项目又怕不接待她。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_e79b5dce2576",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_health_constraint_20",
+      "current_message": "先别催付款，我想问清楚坐轮椅，担心我们不给做。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "health_constraint",
+        "scenario_key": "scenario_c5874e259d5b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_01",
+      "current_message": "我主要担心做好后会不会反弹，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_22129d5f8a2b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_02",
+      "current_message": "如果操作后是否可以正常工作，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_138c0fd681d4",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_03",
+      "current_message": "我不是完全不想做，就是操作后需要怎么维护。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_25864daddd37",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是操作后可以化妆吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_682d35a560b8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_05",
+      "current_message": "先别催付款，我想问清楚操作后可以晒太阳吗。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_52e6f988910f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_06",
+      "current_message": "我主要担心1. 操作后是否可以正常工作\n2. 操作后需要怎么维护\n3. 操作后可以化妆吗\n4. 操作后可以晒太阳吗，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_9cd0bb2acd0d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_07",
+      "current_message": "如果1. 操作后需要怎么维护\n2. 操作后可以化妆吗\n3. 操作后可以晒太阳吗，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_efa5ad8cf3c5",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_08",
+      "current_message": "我不是完全不想做，就是做好后会不会反弹。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_22129d5f8a2b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是操作后是否可以正常工作。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_138c0fd681d4",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_10",
+      "current_message": "先别催付款，我想问清楚操作后需要怎么维护。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_25864daddd37",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_11",
+      "current_message": "我主要担心操作后可以化妆吗，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_682d35a560b8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_12",
+      "current_message": "如果操作后可以晒太阳吗，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_52e6f988910f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_13",
+      "current_message": "我不是完全不想做，就是1. 操作后是否可以正常工作\n2. 操作后需要怎么维护\n3. 操作后可以化妆吗\n4. 操作后可以晒太阳吗。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_9cd0bb2acd0d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 操作后需要怎么维护\n2. 操作后可以化妆吗\n3. 操作后可以晒太阳吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_efa5ad8cf3c5",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_15",
+      "current_message": "先别催付款，我想问清楚做好后会不会反弹。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_22129d5f8a2b",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_16",
+      "current_message": "我主要担心操作后是否可以正常工作，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_138c0fd681d4",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_17",
+      "current_message": "如果操作后需要怎么维护，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_25864daddd37",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_18",
+      "current_message": "我不是完全不想做，就是操作后可以化妆吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_682d35a560b8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是操作后可以晒太阳吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_52e6f988910f",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_repair_objection_20",
+      "current_message": "先别催付款，我想问清楚1. 操作后是否可以正常工作\n2. 操作后需要怎么维护\n3. 操作后可以化妆吗\n4. 操作后可以晒太阳吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "repair_objection",
+        "scenario_key": "scenario_9cd0bb2acd0d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_01",
+      "current_message": "我主要担心为什么要交定金，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_02",
+      "current_message": "如果我不交定金，我到时候直接过去，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_03",
+      "current_message": "我不是完全不想做，就是为什么要交定金。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是我不交定金，我到时候直接过去。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_05",
+      "current_message": "先别催付款，我想问清楚为什么要交定金。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_06",
+      "current_message": "我主要担心我不交定金，我到时候直接过去，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_07",
+      "current_message": "如果为什么要交定金，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_08",
+      "current_message": "我不是完全不想做，就是我不交定金，我到时候直接过去。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是为什么要交定金。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_10",
+      "current_message": "先别催付款，我想问清楚我不交定金，我到时候直接过去。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_11",
+      "current_message": "我主要担心为什么要交定金，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_12",
+      "current_message": "如果我不交定金，我到时候直接过去，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_13",
+      "current_message": "我不是完全不想做，就是为什么要交定金。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是我不交定金，我到时候直接过去。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_15",
+      "current_message": "先别催付款，我想问清楚为什么要交定金。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_16",
+      "current_message": "我主要担心我不交定金，我到时候直接过去，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_17",
+      "current_message": "如果为什么要交定金，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_18",
+      "current_message": "我不是完全不想做，就是我不交定金，我到时候直接过去。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是为什么要交定金。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_60d016b0cdcb",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_deposit_objection_20",
+      "current_message": "先别催付款，我想问清楚我不交定金，我到时候直接过去。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "deposit_objection",
+        "scenario_key": "scenario_6a2cba9dc044",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_01",
+      "current_message": "我主要担心我还没想好，先看看再说，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_ea8ca0b13126",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_02",
+      "current_message": "如果不着急，有空再去，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_77d433d9923e",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_03",
+      "current_message": "我不是完全不想做，就是感觉会有什么套路。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_16fb2b4a3356",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是做的效果不好怎么办。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_82b870a6eae6",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_05",
+      "current_message": "先别催付款，我想问清楚做完会反复吗。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_442e97aef9b9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_06",
+      "current_message": "我主要担心嘴上咨询淡斑，实际只想问价格，反复比价，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_be9db7a95b03",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_07",
+      "current_message": "如果只是想了解一下，意向度不高，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_e30b1f5e3961",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_08",
+      "current_message": "我不是完全不想做，就是我还没想好，先看看再说。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_ea8ca0b13126",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是不着急，有空再去。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_77d433d9923e",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_10",
+      "current_message": "先别催付款，我想问清楚感觉会有什么套路。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_16fb2b4a3356",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_11",
+      "current_message": "我主要担心做的效果不好怎么办，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_82b870a6eae6",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_12",
+      "current_message": "如果做完会反复吗，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_442e97aef9b9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_13",
+      "current_message": "我不是完全不想做，就是嘴上咨询淡斑，实际只想问价格，反复比价。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_be9db7a95b03",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是只是想了解一下，意向度不高。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_e30b1f5e3961",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_15",
+      "current_message": "先别催付款，我想问清楚我还没想好，先看看再说。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_ea8ca0b13126",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_16",
+      "current_message": "我主要担心不着急，有空再去，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_77d433d9923e",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_17",
+      "current_message": "如果感觉会有什么套路，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_16fb2b4a3356",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_18",
+      "current_message": "我不是完全不想做，就是做的效果不好怎么办。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_82b870a6eae6",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是做完会反复吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_442e97aef9b9",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_decision_hesitation_20",
+      "current_message": "先别催付款，我想问清楚嘴上咨询淡斑，实际只想问价格，反复比价。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "decision_hesitation",
+        "scenario_key": "scenario_be9db7a95b03",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_01",
+      "current_message": "我主要担心老公或老婆做过了、没有效果，不同意对方再次预约过来，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_185911ff2756",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_02",
+      "current_message": "如果钱都在老婆手里，没钱没办法，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_150a07bff5c7",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_03",
+      "current_message": "我不是完全不想做，就是老公没时间，得等老公一起才预约到店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_efcde5d692ae",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是年龄太小了，父母不同意。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_ca2e713b84d1",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_05",
+      "current_message": "先别催付款，我想问清楚年纪太大，得子女陪同后才可以。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_3a5b783002ef",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_06",
+      "current_message": "我主要担心老公或老婆认为是骗人的，不让来，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_cb5a04974a80",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_07",
+      "current_message": "如果孩子是机关单位的，不让来，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_9e27fb1c652a",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_08",
+      "current_message": "我不是完全不想做，就是父母不给钱，没钱去门店。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_26983ddd6bfc",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是老公/老婆做过没效果，不同意再预约。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_4c4b3ba8d230",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_10",
+      "current_message": "先别催付款，我想问清楚1. 老公/老婆做过没效果，不同意再预约\n2. 钱都在老婆手里，没钱没办法\n3. 年龄太小，父母不同意\n4. 老公/老婆认为是骗人的，不让来\n5. 孩子是机关单位的，不让来。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_2be4f9e73848",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_11",
+      "current_message": "我主要担心1. 钱都在老婆手里，没钱没办法\n2. 年纪太大，得子女陪同后才可以\n3. 父母不给钱，没钱去门店，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_c04106ff77fc",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_12",
+      "current_message": "如果老公没时间，得等老公一起才预约，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_a44cf1480f3a",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_13",
+      "current_message": "我不是完全不想做，就是1. 老公没时间，得等老公一起才预约\n2. 年纪太大，得子女陪同后才可以。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_3182c62beb32",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是老公或老婆做过了、没有效果，不同意对方再次预约过来。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_185911ff2756",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_15",
+      "current_message": "先别催付款，我想问清楚钱都在老婆手里，没钱没办法。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_150a07bff5c7",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_16",
+      "current_message": "我主要担心老公没时间，得等老公一起才预约到店，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_efcde5d692ae",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_17",
+      "current_message": "如果年龄太小了，父母不同意，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_ca2e713b84d1",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_18",
+      "current_message": "我不是完全不想做，就是年纪太大，得子女陪同后才可以。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_3a5b783002ef",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是老公或老婆认为是骗人的，不让来。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_cb5a04974a80",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_family_decision_20",
+      "current_message": "先别催付款，我想问清楚孩子是机关单位的，不让来。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "family_decision",
+        "scenario_key": "scenario_9e27fb1c652a",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_01",
+      "current_message": "我主要担心客户以为可以一次性根除斑（黄褐斑、激素斑），实际只能淡化控制，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_83081653591c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_02",
+      "current_message": "如果客户希望完全去掉老年斑 / 真皮斑不留印，做不到100%消掉，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_e35c78ac3ce5",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_03",
+      "current_message": "我不是完全不想做，就是网上看夸张短视频，期待做完立刻干净，反复追问是否一次做干净？。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_d3d58a3f2069",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是客户城市有门店，但距离客户＞30公里，到店困难，客户不愿意跑。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_b884fcbf24b0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_05",
+      "current_message": "先别催付款，我想问清楚帮朋友问，实际自己并无高意向，回复冷淡。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_8b0ecd3f3bcd",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_06",
+      "current_message": "我主要担心客户心理预算很低，觉得斑是小问题，想一次性解决，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_8c0c267b0586",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_07",
+      "current_message": "如果孕期、哺乳期、刚做完其他医美项目，禁忌期不能操作，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_a8110f38a4b2",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_08",
+      "current_message": "我不是完全不想做，就是1. 以为可以一次性根除（黄褐斑/激素斑）\n2. 希望完全去掉老年斑/真皮斑不留印\n3. 期待做完立刻干净，追问一次做干净\n4. 客户城市有门店但距离>30公里\n5. 帮朋友问，自己无高意向\n6. 心理预算很低，觉得斑是小问题。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_8be688de88c8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 以为可以一次性根除（黄褐斑/激素斑）\n2. 希望完全去掉老年斑/真皮斑不留印\n3. 期待做完立刻干净，追问一次做干净\n4. 心理预算很低，觉得斑是小问题。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_fbd8160849ab",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_10",
+      "current_message": "先别催付款，我想问清楚期待做完立刻干净，追问一次做干净。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_c464de0c1397",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_11",
+      "current_message": "我主要担心帮朋友问，自己无高意向，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_09591e8f1e4d",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_12",
+      "current_message": "如果客户以为可以一次性根除斑（黄褐斑、激素斑），实际只能淡化控制，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_83081653591c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_13",
+      "current_message": "我不是完全不想做，就是客户希望完全去掉老年斑 / 真皮斑不留印，做不到100%消掉。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_e35c78ac3ce5",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是网上看夸张短视频，期待做完立刻干净，反复追问是否一次做干净？。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_d3d58a3f2069",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_15",
+      "current_message": "先别催付款，我想问清楚客户城市有门店，但距离客户＞30公里，到店困难，客户不愿意跑。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_b884fcbf24b0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_16",
+      "current_message": "我主要担心帮朋友问，实际自己并无高意向，回复冷淡，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_8b0ecd3f3bcd",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_17",
+      "current_message": "如果客户心理预算很低，觉得斑是小问题，想一次性解决，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_8c0c267b0586",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_18",
+      "current_message": "我不是完全不想做，就是孕期、哺乳期、刚做完其他医美项目，禁忌期不能操作。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_a8110f38a4b2",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是1. 以为可以一次性根除（黄褐斑/激素斑）\n2. 希望完全去掉老年斑/真皮斑不留印\n3. 期待做完立刻干净，追问一次做干净\n4. 客户城市有门店但距离>30公里\n5. 帮朋友问，自己无高意向\n6. 心理预算很低，觉得斑是小问题。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_8be688de88c8",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_need_mismatch_20",
+      "current_message": "先别催付款，我想问清楚1. 以为可以一次性根除（黄褐斑/激素斑）\n2. 希望完全去掉老年斑/真皮斑不留印\n3. 期待做完立刻干净，追问一次做干净\n4. 心理预算很低，觉得斑是小问题。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "need_mismatch",
+        "scenario_key": "scenario_fbd8160849ab",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_01",
+      "current_message": "我主要担心除皱可以吗，这个怎么处理？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_3729e0d59b49",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_02",
+      "current_message": "如果收毛孔多少钱，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_1b72bba98a32",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_03",
+      "current_message": "我不是完全不想做，就是没有斑，想做脂肪粒。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_1a8b324416aa",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_04",
+      "current_message": "之前介绍我听懂了，但我的问题还是可以去疣吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_c439f534c726",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_05",
+      "current_message": "先别催付款，我想问清楚眼袋怎么做。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_f862a3fde1f0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_06",
+      "current_message": "我主要担心能不能去痣，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_56fbc6a78f06",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_07",
+      "current_message": "如果你家有水光针吗，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_c21040d5f162",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_08",
+      "current_message": "我不是完全不想做，就是来咨询洗纹身、去疤痕增生。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_21f9e441e909",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_09",
+      "current_message": "之前介绍我听懂了，但我的问题还是客户想要祛痘坑。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_8bccb5ededf5",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_10",
+      "current_message": "先别催付款，我想问清楚1. 除皱可以吗\n2. 收毛孔多少钱\n3. 眼袋怎么做\n4. 能不能去痣\n5. 你家有水光针吗\n6. 客户想要祛痘坑。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_1f8d09e9fb04",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_11",
+      "current_message": "我主要担心1. 除皱可以吗\n2. 收毛孔多少钱\n3. 没有斑，想做脂肪粒\n4. 可以去疣吗\n5. 眼袋怎么做\n6. 能不能去痣\n7. 你家有水光针吗\n8. 来咨询洗纹身、去疤痕增生\n9. 客户想要祛痘坑，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_9e4e6642449c",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_12",
+      "current_message": "如果除皱可以吗，还有别的办法吗？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_3729e0d59b49",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_13",
+      "current_message": "我不是完全不想做，就是收毛孔多少钱。",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_1b72bba98a32",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_14",
+      "current_message": "之前介绍我听懂了，但我的问题还是没有斑，想做脂肪粒。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_1a8b324416aa",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_15",
+      "current_message": "先别催付款，我想问清楚可以去疣吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_c439f534c726",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_16",
+      "current_message": "我主要担心眼袋怎么做，这个怎么处理？",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_f862a3fde1f0",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_17",
+      "current_message": "如果能不能去痣，还有别的办法吗？",
+      "history": [
+        "客服：我先了解一下您现在最在意的问题。"
+      ],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_56fbc6a78f06",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_18",
+      "current_message": "我不是完全不想做，就是你家有水光针吗。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_c21040d5f162",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_19",
+      "current_message": "之前介绍我听懂了，但我的问题还是来咨询洗纹身、去疤痕增生。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_21f9e441e909",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "cardpoint_wrong_project_intent_20",
+      "current_message": "先别催付款，我想问清楚客户想要祛痘坑。",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "wrong_project_intent",
+        "scenario_key": "scenario_8bccb5ededf5",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "cardpoint",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_01",
+      "current_message": "太好了，这个具体怎么做",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_02",
+      "current_message": "我挺好奇，总共多少钱",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_03",
+      "current_message": "请问，大概要多久",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_04",
+      "current_message": "我有点犹豫，包含哪些内容",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_05",
+      "current_message": "嗯，这个具体怎么做",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_06",
+      "current_message": "我比较担心被套路，总共多少钱",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_07",
+      "current_message": "别一直催了，大概要多久",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_08",
+      "current_message": "我现在很生气，包含哪些内容",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_09",
+      "current_message": "太好了，这个具体怎么做",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_10",
+      "current_message": "我挺好奇，总共多少钱",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_11",
+      "current_message": "请问，大概要多久",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_12",
+      "current_message": "我有点犹豫，包含哪些内容",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_13",
+      "current_message": "嗯，这个具体怎么做",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_14",
+      "current_message": "我比较担心被套路，总共多少钱",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_15",
+      "current_message": "别一直催了，大概要多久",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_16",
+      "current_message": "我现在很生气，包含哪些内容",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_17",
+      "current_message": "太好了，这个具体怎么做",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_18",
+      "current_message": "我挺好奇，总共多少钱",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_19",
+      "current_message": "请问，大概要多久",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_fact_inquiry_20",
+      "current_message": "我有点犹豫，包含哪些内容",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "fact_inquiry",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_01",
+      "current_message": "嗯，我主要还是担心价格",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_02",
+      "current_message": "我比较担心被套路，我怕效果不适合我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_03",
+      "current_message": "别一直催了，过去不太方便",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_04",
+      "current_message": "我现在很生气，家里人还不同意",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_05",
+      "current_message": "太好了，我主要还是担心价格",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_06",
+      "current_message": "我挺好奇，我怕效果不适合我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_07",
+      "current_message": "请问，过去不太方便",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_08",
+      "current_message": "我有点犹豫，家里人还不同意",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_09",
+      "current_message": "嗯，我主要还是担心价格",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_10",
+      "current_message": "我比较担心被套路，我怕效果不适合我",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_11",
+      "current_message": "别一直催了，过去不太方便",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_12",
+      "current_message": "我现在很生气，家里人还不同意",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_13",
+      "current_message": "太好了，我主要还是担心价格",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_14",
+      "current_message": "我挺好奇，我怕效果不适合我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_15",
+      "current_message": "请问，过去不太方便",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_16",
+      "current_message": "我有点犹豫，家里人还不同意",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_17",
+      "current_message": "嗯，我主要还是担心价格",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_18",
+      "current_message": "我比较担心被套路，我怕效果不适合我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_19",
+      "current_message": "别一直催了，过去不太方便",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_blocker_expression_20",
+      "current_message": "我现在很生气，家里人还不同意",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "price_objection",
+        "scenario_key": "",
+        "realtime_intent": "blocker_expression",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_01",
+      "current_message": "太好了，可以，下一步怎么预约",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_02",
+      "current_message": "我挺好奇，就按这个来，怎么付款",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_03",
+      "current_message": "请问，我选好了，帮我继续办理",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_04",
+      "current_message": "我有点犹豫，把报名步骤发我",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_05",
+      "current_message": "嗯，可以，下一步怎么预约",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_06",
+      "current_message": "我比较担心被套路，就按这个来，怎么付款",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_07",
+      "current_message": "别一直催了，我选好了，帮我继续办理",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_08",
+      "current_message": "我现在很生气，把报名步骤发我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_09",
+      "current_message": "太好了，可以，下一步怎么预约",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_10",
+      "current_message": "我挺好奇，就按这个来，怎么付款",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_11",
+      "current_message": "请问，我选好了，帮我继续办理",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_12",
+      "current_message": "我有点犹豫，把报名步骤发我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_13",
+      "current_message": "嗯，可以，下一步怎么预约",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_14",
+      "current_message": "我比较担心被套路，就按这个来，怎么付款",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_15",
+      "current_message": "别一直催了，我选好了，帮我继续办理",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_16",
+      "current_message": "我现在很生气，把报名步骤发我",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_17",
+      "current_message": "太好了，可以，下一步怎么预约",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_18",
+      "current_message": "我挺好奇，就按这个来，怎么付款",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_19",
+      "current_message": "请问，我选好了，帮我继续办理",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_transaction_progress_20",
+      "current_message": "我有点犹豫，把报名步骤发我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "transaction_progress",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_01",
+      "current_message": "嗯，我姓李，电话尾号1234",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_02",
+      "current_message": "我比较担心被套路，我在城东，周六有空",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_03",
+      "current_message": "别一直催了，两个人一起过去",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_04",
+      "current_message": "我现在很生气，我选刚才那家门店",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_05",
+      "current_message": "太好了，我姓李，电话尾号1234",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_06",
+      "current_message": "我挺好奇，我在城东，周六有空",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_07",
+      "current_message": "请问，两个人一起过去",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_08",
+      "current_message": "我有点犹豫，我选刚才那家门店",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_09",
+      "current_message": "嗯，我姓李，电话尾号1234",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_10",
+      "current_message": "我比较担心被套路，我在城东，周六有空",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_11",
+      "current_message": "别一直催了，两个人一起过去",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_12",
+      "current_message": "我现在很生气，我选刚才那家门店",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_13",
+      "current_message": "太好了，我姓李，电话尾号1234",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_14",
+      "current_message": "我挺好奇，我在城东，周六有空",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_15",
+      "current_message": "请问，两个人一起过去",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_16",
+      "current_message": "我有点犹豫，我选刚才那家门店",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_17",
+      "current_message": "嗯，我姓李，电话尾号1234",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_18",
+      "current_message": "我比较担心被套路，我在城东，周六有空",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_19",
+      "current_message": "别一直催了，两个人一起过去",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_information_submission_20",
+      "current_message": "我现在很生气，我选刚才那家门店",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "information_submission",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_01",
+      "current_message": "太好了，这两天忙，晚点再说",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_02",
+      "current_message": "我挺好奇，我先考虑一下",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_03",
+      "current_message": "请问，过几天有空再看",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_04",
+      "current_message": "我有点犹豫，目前先不安排",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_05",
+      "current_message": "嗯，这两天忙，晚点再说",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_06",
+      "current_message": "我比较担心被套路，我先考虑一下",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_07",
+      "current_message": "别一直催了，过几天有空再看",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_08",
+      "current_message": "我现在很生气，目前先不安排",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_09",
+      "current_message": "太好了，这两天忙，晚点再说",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_10",
+      "current_message": "我挺好奇，我先考虑一下",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_11",
+      "current_message": "请问，过几天有空再看",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_12",
+      "current_message": "我有点犹豫，目前先不安排",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_13",
+      "current_message": "嗯，这两天忙，晚点再说",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_14",
+      "current_message": "我比较担心被套路，我先考虑一下",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_15",
+      "current_message": "别一直催了，过几天有空再看",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_16",
+      "current_message": "我现在很生气，目前先不安排",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_17",
+      "current_message": "太好了，这两天忙，晚点再说",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_18",
+      "current_message": "我挺好奇，我先考虑一下",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_19",
+      "current_message": "请问，过几天有空再看",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_defer_20",
+      "current_message": "我有点犹豫，目前先不安排",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "defer",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_01",
+      "current_message": "嗯，不要再联系我",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_02",
+      "current_message": "我比较担心被套路，我不需要了，停止发消息",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_03",
+      "current_message": "别一直催了，取消后续跟进",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_04",
+      "current_message": "我现在很生气，别再营销了",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_05",
+      "current_message": "太好了，不要再联系我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_06",
+      "current_message": "我挺好奇，我不需要了，停止发消息",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_07",
+      "current_message": "请问，取消后续跟进",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_08",
+      "current_message": "我有点犹豫，别再营销了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_09",
+      "current_message": "嗯，不要再联系我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_10",
+      "current_message": "我比较担心被套路，我不需要了，停止发消息",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_11",
+      "current_message": "别一直催了，取消后续跟进",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_12",
+      "current_message": "我现在很生气，别再营销了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_13",
+      "current_message": "太好了，不要再联系我",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_14",
+      "current_message": "我挺好奇，我不需要了，停止发消息",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_15",
+      "current_message": "请问，取消后续跟进",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_16",
+      "current_message": "我有点犹豫，别再营销了",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_17",
+      "current_message": "嗯，不要再联系我",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_18",
+      "current_message": "我比较担心被套路，我不需要了，停止发消息",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_19",
+      "current_message": "别一直催了，取消后续跟进",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_explicit_exit_20",
+      "current_message": "我现在很生气，别再营销了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "explicit_exit",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_01",
+      "current_message": "太好了，好的，谢谢",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_02",
+      "current_message": "我挺好奇，嗯，知道了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_03",
+      "current_message": "请问，收到",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_04",
+      "current_message": "我有点犹豫，辛苦了",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_05",
+      "current_message": "嗯，好的，谢谢",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_06",
+      "current_message": "我比较担心被套路，嗯，知道了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "multi_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_07",
+      "current_message": "别一直催了，收到",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_08",
+      "current_message": "我现在很生气，辛苦了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_09",
+      "current_message": "太好了，好的，谢谢",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_10",
+      "current_message": "我挺好奇，嗯，知道了",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_11",
+      "current_message": "请问，收到",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_12",
+      "current_message": "我有点犹豫，辛苦了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_13",
+      "current_message": "嗯，好的，谢谢",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "cold"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_14",
+      "current_message": "我比较担心被套路，嗯，知道了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "defensive"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_15",
+      "current_message": "别一直催了，收到",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "impatient"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_16",
+      "current_message": "我现在很生气，辛苦了",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "angry"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_17",
+      "current_message": "太好了，好的，谢谢",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "enthusiastic"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_18",
+      "current_message": "我挺好奇，嗯，知道了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "curious"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_19",
+      "current_message": "请问，收到",
+      "history": [
+        "客服：上次我们聊到活动、门店和预约步骤。"
+      ],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "neutral"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    },
+    {
+      "id": "intent_normal_exchange_20",
+      "current_message": "我有点犹豫，辛苦了",
+      "history": [],
+      "expected": {
+        "cardpoint_category": "",
+        "scenario_key": "",
+        "realtime_intent": "normal_exchange",
+        "emotion": "hesitant"
+      },
+      "dimensions": [
+        "intent",
+        "emotion",
+        "single_signal"
+      ],
+      "review_status": "pending_human_gold"
+    }
+  ]
+}

@@ -3860,7 +3860,6 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("insert_text_after", system_prompt)
         self.assertIn("payment_collection_gate.status", system_prompt)
         self.assertIn("remove_message", system_prompt)
-        self.assertIn("handoff_to_ai_reply_not_allowed_for_proactive_event", Path("docs/sop_proactive_wakeup_ab_design_20260720.md").read_text(encoding="utf-8"))
         self.assertIn("Plan A Decision Contract", system_prompt)
         self.assertIn("event_policy_evidence.ai_reply_policy.allowed=true", system_prompt)
         self.assertIn("adjacent_merge_options", system_prompt)

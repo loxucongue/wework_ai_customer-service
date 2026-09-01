@@ -237,6 +237,16 @@ class Settings(BaseSettings):
         default=Path("config/precision_qa_playbook.json"),
         alias="PRECISION_QA_PLAYBOOK_PATH",
     )
+    ai_sales_policy_path: Path = Field(
+        default=Path("app/policies/ai_sales_policy_v1.json"),
+        alias="AI_SALES_POLICY_PATH",
+    )
+    ai_sales_policy_enabled: bool = Field(default=False, alias="AI_SALES_POLICY_ENABLED")
+    sales_strategy_catalog_path: Path = Field(
+        default=Path("app/policies/sales_strategy_catalog_v1.json"),
+        alias="SALES_STRATEGY_CATALOG_PATH",
+    )
+    sales_strategy_catalog_enabled: bool = Field(default=False, alias="SALES_STRATEGY_CATALOG_ENABLED")
     v2_model_led_objection_playbook_path: Path = Field(
         default=Path("config/v2_model_led_objection_playbook.json"),
         alias="V2_MODEL_LED_OBJECTION_PLAYBOOK_PATH",

@@ -21,6 +21,7 @@ from app.services.model_client import ModelClient
 from app.services.payment_collection import unanswered_payment_collection
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_reply_pack_service import SopReplyPackService
+from app.services.sales_strategy_service import SalesStrategyService
 from app.services.outreach_first_day_prompts import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
@@ -559,6 +560,70 @@ def _is_within_first_day(contact_started_at: str, *, now: datetime | None = None
 def _add_minutes(value: str, minutes: int) -> str:
     start = _parse_iso(value) or datetime.now(timezone.utc)
     return (start + timedelta(minutes=max(0, int(minutes)))).isoformat()
+
+
+def _scheduled_at_for_strategy_step(
+    value: str,
+    step: dict[str, Any],
+    *,
+    appointment_at: str = "",
+) -> str:
+    start = _parse_iso(value) or datetime.now(timezone.utc)
+    trigger = _string(step.get("trigger_base"))
+    if trigger in {"same_day_18_00", "same_day_20_00"}:
+        hour = 18 if trigger == "same_day_18_00" else 20
+        scheduled = start.astimezone(OUTREACH_BEIJING_TIMEZONE).replace(
+            hour=hour,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        if scheduled <= start.astimezone(OUTREACH_BEIJING_TIMEZONE):
+            scheduled += timedelta(days=1)
+        return scheduled.astimezone(timezone.utc).isoformat()
+    if trigger == "appointment_previous_day_20_00":
+        appointment = _parse_iso(appointment_at)
+        if appointment is None:
+            return ""
+        scheduled = appointment.astimezone(OUTREACH_BEIJING_TIMEZONE).replace(
+            hour=20,
+            minute=0,
+            second=0,
+            microsecond=0,
+        ) - timedelta(days=1)
+        return scheduled.astimezone(timezone.utc).isoformat()
+    return _add_minutes(value, _int(step.get("delay_minutes"), 0))
+
+
+def _selected_strategy_steps(
+    response: dict[str, Any],
+    strategy: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not strategy:
+        return []
+    selected_keys = set(_list_strings(response.get("selected_step_keys")))
+    if not selected_keys:
+        return []
+    return [
+        item
+        for item in strategy.get("steps") or []
+        if isinstance(item, dict) and _string(item.get("step_key")) in selected_keys
+    ][:3]
+
+
+def _selected_strategy(
+    response: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    selected_key = _string(response.get("selected_strategy_key"))
+    return next(
+        (
+            item
+            for item in candidates
+            if _string(item.get("strategy_key")) == selected_key
+        ),
+        None,
+    )
 
 
 def _shift_outreach_quiet_hours(value: datetime) -> datetime:
@@ -2743,6 +2808,7 @@ class OutreachService:
         coze_client: CozeClient | None = None,
         before_send_retry_seconds: int = 60,
         first_day_wechat_allowlist: str | None = None,
+        sales_strategy_service: SalesStrategyService | None = None,
     ) -> None:
         self.repository = repository
         self.model_client = model_client
@@ -2751,6 +2817,7 @@ class OutreachService:
         self.precision_qa_playbook_service = precision_qa_playbook_service
         self.sop_reply_pack_service = sop_reply_pack_service
         self.coze_client = coze_client
+        self.sales_strategy_service = sales_strategy_service
         self.before_send_retry_seconds = max(1, int(before_send_retry_seconds))
         self.first_day_wechat_allowlist = (
             first_day_wechat_allowlist
@@ -3147,6 +3214,134 @@ class OutreachService:
             "latest_customer_message_at": self._latest_message_time(messages, sender="customer"),
             "latest_staff_message_at": self._latest_message_time(messages, sender="staff"),
         }
+
+    async def generate_configured_strategy_shadow_plan(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        user_id: str = "",
+        query: str,
+        memory: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Let the model select configured follow-up steps, persisted as no-send shadow tasks."""
+
+        if self.sales_strategy_service is None:
+            return {"created": False, "error": "sales_strategy_service_unavailable"}
+        catalog = self.sales_strategy_service.runtime_summary()
+        if str(catalog.get("runtime_mode") or "off") == "off":
+            return {"created": False, "error": "sales_strategy_catalog_disabled"}
+        scope = build_customer_scope(
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
+        if not scope.persistence_allowed:
+            return {"created": False, "error": "invalid_customer_scope"}
+        candidates = self.sales_strategy_service.retrieve_strategy_pool(
+            query=query,
+            limit=8,
+        )
+        if not candidates:
+            return {"created": False, "error": "no_strategy_candidates"}
+        response = await self.model_client.chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "你只从候选中选择一条跟进策略及同一策略内1至3个步骤，不写客户话术。"
+                        "不得虚构key、步骤、延迟或事实。只返回JSON："
+                        '{"selected_strategy_key":"","selected_step_keys":[],"reason":""}'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": dumps({"query": query, "memory": memory or {}, "strategy_candidates": candidates}),
+                },
+            ],
+            tier="strong",
+            temperature=0.0,
+        )
+        selected = _selected_strategy(response, candidates)
+        selected_steps = _selected_strategy_steps(response, selected)
+        if selected is None:
+            return {"created": False, "error": "invalid_strategy_selection", "ai_result": response}
+        if not selected_steps:
+            return {"created": False, "error": "invalid_strategy_step_selection", "ai_result": response}
+        now = utc_now_iso()
+        memory_value = memory or {}
+        appointment_at = _string(memory_value.get("appointment_time") or memory_value.get("visit_time"))
+        last_customer_at = _string(memory_value.get("last_customer_message_at")) or now
+        contact_added_at = _string(memory_value.get("customer_added_at") or memory_value.get("added_at")) or now
+        previous_scheduled_at = now
+        tasks: list[dict[str, Any]] = []
+        for index, step in enumerate(selected_steps, start=1):
+            trigger_base = _string(step.get("trigger_base"))
+            schedule_base = (
+                last_customer_at
+                if trigger_base == "customer_reply"
+                else contact_added_at
+                if trigger_base == "contact_added"
+                else previous_scheduled_at
+                if trigger_base == "previous_step"
+                else now
+            )
+            scheduled_at = _scheduled_at_for_strategy_step(
+                schedule_base,
+                step,
+                appointment_at=appointment_at,
+            )
+            if not scheduled_at:
+                continue
+            tasks.append(
+                {
+                    "step_index": index,
+                    "scheduled_at": scheduled_at,
+                    "intent": _string(step.get("step_key")),
+                    "message_goal": _string(step.get("node_goal")),
+                    "content_sources": _list_strings(step.get("tactic_tags")),
+                    "reply_messages": [],
+                    "before_send_check": True,
+                    "should_send_payment_collection": False,
+                }
+            )
+            previous_scheduled_at = scheduled_at
+        if not tasks:
+            return {
+                "created": False,
+                "error": "strategy_steps_missing_required_schedule_fact",
+                "ai_result": response,
+            }
+        source_snapshot = {
+            "plan_type": "followup_strategy",
+            "runtime_mode": "shadow",
+            "sales_contact_key": scope.sales_contact_key,
+            "query": query,
+            "memory": memory_value,
+            "sales_strategy_catalog": catalog,
+            "strategy_candidates": candidates,
+            "selected_strategy": selected,
+            "selected_step_keys": [step.get("step_key") for step in selected_steps],
+            "ai_result": response,
+        }
+        created = self.repository.create_outreach_plan(
+            customer_id=customer_id,
+            corp_id=corp_id,
+            user_id=user_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_stage="",
+            stall_reason=query[:500],
+            customer_psychology="",
+            plan_goal=_string(selected.get("name")),
+            source_snapshot=source_snapshot,
+            tasks=tasks,
+            sop_plan_id=f"followup_strategy:{scope.sales_contact_key}:{selected.get('strategy_key')}:{hashlib.sha256(query.encode('utf-8')).hexdigest()[:16]}",
+        )
+        return {"created": True, **created}
 
     async def generate_plan(
         self,
@@ -5611,6 +5806,135 @@ class OutreachService:
             request_context=request_context,
         )
 
+    def record_closing_sequence_shadow(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Persist delayed closing nodes for audit only; never authorize a send."""
+
+        if bool(state.get("test_isolated")) or not bool(state.get("memory_persist_allowed")):
+            return {"created": False, "reason": "persistence_disabled"}
+        scope = build_customer_scope(
+            corp_id=state.get("corp_id"),
+            wechat=state.get("wechat"),
+            external_userid=state.get("external_userid"),
+            customer_id=state.get("customer_id"),
+        )
+        if not scope.persistence_allowed:
+            return {"created": False, "reason": "invalid_customer_scope"}
+        policy = state.get("ai_sales_policy") if isinstance(state.get("ai_sales_policy"), dict) else {}
+        closing = policy.get("closing") if isinstance(policy.get("closing"), dict) else {}
+        decision = state.get("closing_decision") if isinstance(state.get("closing_decision"), dict) else {}
+        identity = {
+            "corp_id": _string(state.get("corp_id")),
+            "wechat": _string(state.get("wechat")),
+            "external_userid": _string(state.get("external_userid")),
+            "customer_id": _string(state.get("customer_id")),
+        }
+        schedulable = (
+            str(policy.get("runtime_mode") or "off") != "off"
+            and str(closing.get("silent_tasks_mode") or "off") == "shadow"
+            and decision.get("action") in {"enter", "advance", "fallback"}
+            and decision.get("customer_state") not in {"hard_stop", "new_blocker"}
+        )
+        if not schedulable:
+            cancelled = self.repository.cancel_open_closing_sequence_plans(
+                **identity,
+                reason="customer_reply_requires_fresh_planner_decision",
+            )
+            return {"created": False, "cancelled": cancelled, "reason": "closing_not_schedulable"}
+        sequence_key = _string(decision.get("sequence_key"))
+        sequence = next(
+            (
+                item
+                for item in closing.get("sequences") or []
+                if isinstance(item, dict)
+                and item.get("enabled")
+                and _string(item.get("sequence_key")) == sequence_key
+            ),
+            None,
+        )
+        if not sequence:
+            cancelled = self.repository.cancel_open_closing_sequence_plans(
+                **identity,
+                reason="customer_reply_requires_fresh_planner_decision",
+            )
+            return {"created": False, "cancelled": cancelled, "reason": "sequence_not_found"}
+        nodes = [item for item in sequence.get("nodes") or [] if isinstance(item, dict)]
+        current_node_key = _string(decision.get("node_key"))
+        current_index = next(
+            (index for index, item in enumerate(nodes) if _string(item.get("node_key")) == current_node_key),
+            -1,
+        )
+        delayed_nodes = [
+            item
+            for index, item in enumerate(nodes)
+            if index > current_index
+            and item.get("timing") == "silent_after"
+            and _int(item.get("delay_minutes"), 0) > 0
+        ]
+        if not delayed_nodes:
+            cancelled = self.repository.cancel_open_closing_sequence_plans(
+                **identity,
+                reason="customer_reply_requires_fresh_planner_decision",
+            )
+            return {"created": False, "cancelled": cancelled, "reason": "no_delayed_nodes"}
+        request_id = _string(state.get("request_id"))
+        sop_plan_id = f"closing_sequence:{scope.sales_contact_key}:{sequence_key}:{request_id}"
+        existing = self.repository.find_open_outreach_plan_by_sop_plan_id(
+            sop_plan_id,
+            **identity,
+        )
+        if existing:
+            return {"created": False, "cancelled": 0, "reason": "idempotent_existing", "plan": existing}
+        cancelled = self.repository.cancel_open_closing_sequence_plans(
+            **identity,
+            reason="customer_reply_requires_fresh_planner_decision",
+        )
+        now = utc_now_iso()
+        tasks = [
+            {
+                "step_index": index,
+                "scheduled_at": _add_minutes(now, _int(node.get("delay_minutes"), 0)),
+                "intent": _string(node.get("node_key")),
+                "message_goal": _string(node.get("goal")),
+                "content_sources": [
+                    str(item).strip()
+                    for item in node.get("material_sources") or []
+                    if str(item).strip()
+                ],
+                "reply_messages": [],
+                "before_send_check": True,
+                "should_send_payment_collection": False,
+            }
+            for index, node in enumerate(delayed_nodes, start=1)
+        ]
+        source_snapshot = {
+            "plan_type": "closing_sequence",
+            "runtime_mode": "shadow",
+            "request_id": request_id,
+            "sales_contact_key": scope.sales_contact_key,
+            "policy_version": policy.get("policy_version"),
+            "policy_checksum": policy.get("checksum"),
+            "sequence_key": sequence_key,
+            "current_node_key": current_node_key,
+            "closing_decision": decision,
+            "cardpoint_decision": state.get("cardpoint_decision") or {},
+            "authoritative_facts": state.get("fact_envelope") or {},
+        }
+        created = self.repository.create_outreach_plan(
+            customer_id=identity["customer_id"],
+            corp_id=identity["corp_id"],
+            user_id=_string(state.get("user_id")),
+            wechat=identity["wechat"],
+            external_userid=identity["external_userid"],
+            customer_stage=_string(state.get("conversion_stage")),
+            stall_reason=_string((state.get("cardpoint_decision") or {}).get("scenario_query")),
+            customer_psychology=_string((state.get("emotion_decision") or {}).get("label")),
+            plan_goal=_string(sequence.get("positioning") or sequence.get("name")),
+            source_snapshot=source_snapshot,
+            tasks=tasks,
+            sop_plan_id=sop_plan_id,
+        )
+        return {"created": True, "cancelled": cancelled, **created}
+
     def monitor_status(self) -> dict[str, Any]:
         return dict(self._monitor_status)
 
@@ -5711,14 +6035,18 @@ class OutreachService:
         task = self.repository.get_outreach_task(task_id)
         if not task:
             return {"ok": False, "error": "task_not_found"}
-        reply_messages = task.get("reply_messages") or []
-        if not reply_messages:
-            return {"ok": False, "status": "blocked", "error": "preview_required", "retryable": True}
-        if not self.repository.claim_outreach_task(task_id):
-            return {"ok": True, "status": "skipped", "reason": "task_already_claimed"}
         plan_detail = self.repository.get_outreach_plan(str(task["plan_id"]))
         plan = plan_detail.get("plan") or {}
         source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+        strategy_shadow = (
+            source_snapshot.get("plan_type") in {"followup_strategy", "closing_sequence"}
+            and source_snapshot.get("runtime_mode") == "shadow"
+        )
+        reply_messages = task.get("reply_messages") or []
+        if not reply_messages and not strategy_shadow:
+            return {"ok": False, "status": "blocked", "error": "preview_required", "retryable": True}
+        if not self.repository.claim_outreach_task(task_id):
+            return {"ok": True, "status": "skipped", "reason": "task_already_claimed"}
         trigger_context = (
             source_snapshot.get("trigger_context")
             if isinstance(source_snapshot.get("trigger_context"), dict)
@@ -6176,6 +6504,35 @@ class OutreachService:
                     terminal=not has_remaining,
                 )
                 return {"ok": True, "status": "skipped", "reason": reason}
+            if strategy_shadow:
+                self.repository.update_outreach_task(
+                    task_id,
+                    status="shadowed",
+                    reply_messages=reply_messages,
+                )
+                self.repository.add_outreach_event(
+                    plan_id=str(task["plan_id"]),
+                    task_id=task_id,
+                    customer_id=str(task["customer_id"]),
+                    event_type="task_shadowed",
+                    event_summary="Strategy task evaluated in shadow mode; no customer message sent",
+                    payload={
+                        "reply_messages": reply_messages,
+                        "source_snapshot": source_snapshot,
+                    },
+                )
+                remaining_loader = getattr(self.repository, "outreach_plan_has_remaining_tasks", None)
+                has_remaining = bool(remaining_loader(str(task["plan_id"]))) if callable(remaining_loader) else False
+                self.repository.update_outreach_plan_status(
+                    str(task["plan_id"]),
+                    "waiting" if has_remaining else "completed",
+                )
+                return {
+                    "ok": True,
+                    "status": "shadowed",
+                    "reply_messages": reply_messages,
+                    "sent": False,
+                }
             task = self.repository.update_outreach_task(
                 task_id,
                 status="sending",

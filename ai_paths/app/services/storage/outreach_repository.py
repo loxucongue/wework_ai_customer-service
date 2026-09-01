@@ -146,6 +146,64 @@ class OutreachRepositoryMixin:
         "final_plan_json": "final_plan",
     }
 
+    def find_open_outreach_plan_by_sop_plan_id(
+        self,
+        sop_plan_id: str,
+        *,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        customer_id: str,
+    ) -> dict[str, Any]:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM outreach_plans
+                WHERE sop_plan_id=? AND corp_id=? AND wechat=? AND external_userid=? AND customer_id=?
+                  AND status IN ('draft','active','waiting','paused')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (sop_plan_id, corp_id, wechat, external_userid, customer_id),
+            ).fetchone()
+        return self._decode_outreach_plan(dict(row)) if row else {}
+
+    def cancel_open_closing_sequence_plans(
+        self,
+        *,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        customer_id: str,
+        reason: str,
+    ) -> int:
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM outreach_plans
+                WHERE sop_plan_id LIKE 'closing_sequence:%'
+                  AND corp_id=? AND wechat=? AND external_userid=? AND customer_id=?
+                  AND status IN ('draft','active','waiting','paused')
+                """,
+                (corp_id, wechat, external_userid, customer_id),
+            ).fetchall()
+            plan_ids = [str(row["id"]) for row in rows]
+            for plan_id in plan_ids:
+                conn.execute(
+                    "UPDATE outreach_plans SET status='cancelled', updated_at=? WHERE id=?",
+                    (now, plan_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE outreach_tasks
+                    SET status='cancelled', error_message=?, updated_at=?
+                    WHERE plan_id=? AND status IN ('pending','checking','check_failed')
+                    """,
+                    (reason[:500], now, plan_id),
+                )
+        return len(plan_ids)
+
     def create_first_day_outreach_run(
         self,
         *,

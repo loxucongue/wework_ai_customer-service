@@ -21,6 +21,7 @@ from app.services.model_client import ModelClient
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.payment_collection import payment_collection_content
 from app.services.sop_execution_service import SopExecutionService
+from app.services.sales_strategy_service import SalesStrategyService
 from app.services.trace_logger import TraceLogger
 from app.services.v2_sales_recall_service import V2SalesRecallService
 from app.services.v3_semantic_router_service import (
@@ -149,6 +150,10 @@ def create_shared_context_node(
                 sent_summary=shared.get("authoritative_facts", {}).get("sent_messages", {}),
                 sop_progress=shared.get("authoritative_facts", {}).get("sop_progress", {}),
             )
+            for key in ("ai_sales_policy", "sales_strategy_catalog"):
+                value = state.get(key)
+                if isinstance(value, dict) and str(value.get("runtime_mode") or "off") != "off":
+                    shared[key] = copy.deepcopy(value)
             facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
             output = {
                 "shared_context": shared,
@@ -174,6 +179,7 @@ def create_parallel_evidence_node(
     sop_execution_service: SopExecutionService | None,
     coze_client: CozeClient | None = None,
     semantic_router_service: V3SemanticRouterService | None = None,
+    sales_strategy_service: SalesStrategyService | None = None,
 ) -> Callable[[AgentState], Any]:
     async def parallel_evidence(state: AgentState) -> dict[str, Any]:
         started = time.perf_counter()
@@ -213,6 +219,11 @@ def create_parallel_evidence_node(
             semantic_route = copy.deepcopy(semantic_output.get("semantic_route") or {})
             sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
             tool_plan = copy.deepcopy(semantic_output.get("tool_plan") or {})
+            strategy_result = _sales_strategy_retrieval(
+                state,
+                semantic_route=semantic_route,
+                service=sales_strategy_service,
+            )
             tool_plan["tool_calls"] = _merge_tool_calls(
                 _dict_list(tool_plan.get("tool_calls")),
                 protocol_required,
@@ -221,7 +232,17 @@ def create_parallel_evidence_node(
                 tool_plan["decision"] = "use_tools"
             assets = _dict_list((state.get("shared_context") or {}).get("available_assets"))
             recalled_candidates = script_content_candidates(sales_recall)
-            content_candidates = _dedupe_content_candidates([*assets, *recalled_candidates])
+            strategy_candidates = _sales_strategy_content_candidates(
+                strategy_result.get("candidates") or []
+            )
+            strategy_mode = str((strategy_result.get("catalog") or {}).get("runtime_mode") or "off")
+            content_candidates = _dedupe_content_candidates(
+                [
+                    *assets,
+                    *recalled_candidates,
+                    *(strategy_candidates if strategy_mode == "active" else []),
+                ]
+            )
             gate_result = {
                 "schema_version": "v3_asset_catalog_result_v1",
                 "status": "completed",
@@ -241,6 +262,15 @@ def create_parallel_evidence_node(
                 "content_gate_result": gate_result,
                 "tool_plan": tool_plan,
                 "sales_recall": sales_recall,
+                "cardpoint_candidates": copy.deepcopy(strategy_result.get("candidates") or []),
+                "followup_strategy_candidates": [],
+                "sales_strategy_retrieval_audit": {
+                    "runtime_mode": strategy_mode,
+                    "candidate_count": len(strategy_result.get("candidates") or []),
+                    "filtered": copy.deepcopy(strategy_result.get("filtered") or []),
+                    "catalog": copy.deepcopy(strategy_result.get("catalog") or {}),
+                    "reply_effect": strategy_mode == "active",
+                },
                 "semantic_route": semantic_route,
                 "store_pre_route": (
                     copy.deepcopy(semantic_route)
@@ -271,6 +301,8 @@ def create_parallel_evidence_node(
                 "tool_plan_decision": tool_plan.get("decision"),
                 "sales_recall_status": sales_recall.get("status"),
                 "sales_recall_candidates": sales_recall.get("candidate_count"),
+                "sales_strategy_candidate_count": len(strategy_result.get("candidates") or []),
+                "sales_strategy_runtime_mode": strategy_mode,
                 "follow_sequence_candidates": sales_recall.get("selected_sequence_count"),
                 "follow_knowledge_selector_status": (
                     (sales_recall.get("selector") or {}).get("status")
@@ -289,6 +321,7 @@ def create_post_store_semantic_evidence_node(
     *,
     trace_logger: TraceLogger,
     semantic_router_service: V3SemanticRouterService | None = None,
+    sales_strategy_service: SalesStrategyService | None = None,
 ) -> Callable[[AgentState], Any]:
     async def post_store_semantic_evidence(state: AgentState) -> dict[str, Any]:
         pre_route = (
@@ -359,11 +392,25 @@ def create_post_store_semantic_evidence_node(
 
             semantic_route = copy.deepcopy(semantic_output.get("semantic_route") or {})
             sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
+            strategy_result = _sales_strategy_retrieval(
+                state,
+                semantic_route=semantic_route,
+                service=sales_strategy_service,
+            )
+            strategy_mode = str((strategy_result.get("catalog") or {}).get("runtime_mode") or "off")
             existing_gate = copy.deepcopy(state.get("content_gate_result") or {})
             existing_candidates = _dict_list(existing_gate.get("content_candidates"))
             recalled_candidates = script_content_candidates(sales_recall)
             content_candidates = _dedupe_content_candidates(
-                [*existing_candidates, *recalled_candidates]
+                [
+                    *existing_candidates,
+                    *recalled_candidates,
+                    *(
+                        _sales_strategy_content_candidates(strategy_result.get("candidates") or [])
+                        if strategy_mode == "active"
+                        else []
+                    ),
+                ]
             )
             gate_result = {
                 **existing_gate,
@@ -402,6 +449,15 @@ def create_post_store_semantic_evidence_node(
             return {
                 "content_gate_result": gate_result,
                 "sales_recall": sales_recall,
+                "cardpoint_candidates": copy.deepcopy(strategy_result.get("candidates") or []),
+                "followup_strategy_candidates": [],
+                "sales_strategy_retrieval_audit": {
+                    "runtime_mode": strategy_mode,
+                    "candidate_count": len(strategy_result.get("candidates") or []),
+                    "filtered": copy.deepcopy(strategy_result.get("filtered") or []),
+                    "catalog": copy.deepcopy(strategy_result.get("catalog") or {}),
+                    "reply_effect": strategy_mode == "active",
+                },
                 "semantic_route": semantic_route,
                 "knowledge_evidence": sales_recall,
                 "parallel_branch_metrics": metrics,
@@ -1345,6 +1401,8 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
             structured_delivery_options=structured_delivery_options,
         ),
         "evidence": reply_evidence,
+        "ai_sales_policy": copy.deepcopy(shared.get("ai_sales_policy") or {}),
+        "sales_strategy_catalog": copy.deepcopy(shared.get("sales_strategy_catalog") or {}),
         "valid_message_refs": valid_message_refs,
         "valid_customer_message_refs": valid_customer_message_refs,
         "structured_delivered_assets": structured_delivered_assets,
@@ -1903,6 +1961,110 @@ def _dedupe_content_candidates(items: list[dict[str, Any]]) -> list[dict[str, An
         output.append(item)
         seen.add(content_id)
     return output
+
+
+def _sales_strategy_retrieval(
+    state: AgentState,
+    *,
+    semantic_route: dict[str, Any],
+    service: SalesStrategyService | None,
+) -> dict[str, Any]:
+    if service is None:
+        return {"candidates": [], "filtered": [], "catalog": {"runtime_mode": "off"}}
+    catalog = state.get("sales_strategy_catalog")
+    if not isinstance(catalog, dict) or str(catalog.get("runtime_mode") or "off") == "off":
+        return {"candidates": [], "filtered": [], "catalog": {"runtime_mode": "off"}}
+    current_intent = semantic_route.get("current_intent") if isinstance(semantic_route.get("current_intent"), dict) else {}
+    friction = semantic_route.get("current_friction") if isinstance(semantic_route.get("current_friction"), dict) else {}
+    query = " ".join(
+        value
+        for value in (
+            str(current_intent.get("summary") or "").strip(),
+            str(friction.get("checkpoint_type_name") or "").strip(),
+            str(friction.get("checkpoint_tag_name") or "").strip(),
+            str(friction.get("summary") or "").strip(),
+        )
+        if value
+    )
+    if not query:
+        return {"candidates": [], "filtered": [], "catalog": copy.deepcopy(catalog)}
+    try:
+        return service.retrieve_content_pool(
+            query=query,
+            fact_context={
+                "authoritative_facts": (state.get("shared_context") or {}).get("authoritative_facts") or {},
+                "fact_envelope": state.get("fact_envelope") or {},
+            },
+            recent_asset_ids=_nested_asset_ids(state.get("sent_message_summary") or {}),
+            limit=5,
+        )
+    except ValueError as exc:
+        return {
+            "candidates": [],
+            "filtered": [],
+            "catalog": {"runtime_mode": "off"},
+            "error": str(exc),
+        }
+
+
+def _nested_asset_ids(value: Any) -> set[str]:
+    result: set[str] = set()
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in {"asset_id", "content_id"} and str(nested or "").strip():
+                result.add(str(nested).strip())
+            else:
+                result.update(_nested_asset_ids(nested))
+    elif isinstance(value, list):
+        for nested in value:
+            result.update(_nested_asset_ids(nested))
+    return result
+
+
+def _sales_strategy_content_candidates(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for raw in values[:5]:
+        if not isinstance(raw, dict):
+            continue
+        source_id = str(raw.get("content_id") or "").strip()
+        if not source_id:
+            continue
+        messages = [
+            {"type": message_type, "content": str(url).strip()}
+            for message_type, field in (("image", "image_urls"), ("video", "video_urls"))
+            for url in raw.get(field) or []
+            if _is_http_url(str(url).strip())
+        ]
+        content_id = f"sales_strategy:{source_id}"
+        result.append(
+            {
+                "content_id": content_id,
+                "source_content_id": source_id,
+                "content_type": "sales_strategy_reference",
+                "name": str(raw.get("scenario_name") or source_id).strip(),
+                "purpose": str(raw.get("solution_idea") or raw.get("tactic_tag") or "卡点解题参考").strip(),
+                "asset_role": "sales_reference",
+                "delivery_status": "available",
+                "render_strategy": "adaptable",
+                "fact_refs": [f"content_asset:{content_id}"],
+                "evidence_refs": [],
+                "requires_prior_asset_roles": [],
+                "approved_points": [],
+                "reference_text": str(raw.get("reference_text") or "").strip(),
+                "authority": "reference_only_not_business_fact",
+                "usage_policy": "reference_only_rephrase_do_not_copy",
+                "messages": messages,
+                "media": messages,
+                "required_structured_media": messages,
+                "selection_constraints": {
+                    "authority_scope": "approved_sales_expression",
+                    "hard_fact_authority": False,
+                    "complete_reference_group": True,
+                    "authoritative_facts_override": True,
+                },
+            }
+        )
+    return result
 
 
 def _structured_delivery_options(joined: dict[str, Any], *, state: AgentState) -> dict[str, Any]:

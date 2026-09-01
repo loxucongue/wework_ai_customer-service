@@ -257,6 +257,12 @@ def create_synthesize_reply_node(
                 "reply_action_reason": reply_metadata.get("action_reason", ""),
                 "reply_sales_judgment": reply_metadata.get("sales_judgment", {}),
                 "reply_knowledge_use": reply_metadata.get("knowledge_use", {}),
+                "primary_task": reply_metadata.get("primary_task", {}),
+                "secondary_tasks": reply_metadata.get("secondary_tasks", []),
+                "realtime_intent": reply_metadata.get("realtime_intent", {}),
+                "emotion_decision": reply_metadata.get("emotion_decision", {}),
+                "closing_decision": reply_metadata.get("closing_decision", {}),
+                "cardpoint_decision": reply_metadata.get("cardpoint_decision", {}),
                 "reply_payment_assessment": reply_metadata.get("payment_assessment", {}),
                 "reply_payment_channel": reply_metadata.get("payment_channel", "none"),
                 "reply_deposit_evidence": reply_metadata.get("deposit_evidence", {}),
@@ -892,6 +898,7 @@ def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
             "safety_assessment",
             "party_size_assessment",
             "commit_actions",
+            "policy_decision",
         ):
             if field not in payload and field in sales_judgment:
                 payload[field] = sales_judgment.pop(field)
@@ -1029,7 +1036,7 @@ def _prepare_structural_messages(
                 }
             )
         return _renumber(prepared)
-    prepared = _filter_unsupported_images(messages, state, warnings)
+    prepared = _filter_unsupported_media(messages, state, warnings)
     prepared = append_activity_intro_image(prepared, state, warnings)
     prepared, duplicate_payment_removed = _dedupe_payment_collection_messages(prepared)
     if duplicate_payment_removed:
@@ -1240,6 +1247,7 @@ def _reply_metadata_from_model_call(
             state=state,
             selected_content_ids=selected_content_ids,
         ),
+        **_normalized_policy_decision(payload.get("policy_decision"), state=state),
         "payment_assessment": _normalized_payment_assessment(payload.get("payment_assessment")),
         "payment_channel": _normalized_payment_channel(payload.get("payment_assessment")),
         "deposit_evidence": _normalized_deposit_evidence(
@@ -1565,6 +1573,193 @@ def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
         "posture": posture,
         "reason": str(raw.get("reason") or "")[:500],
     }
+
+
+def _normalized_policy_decision(
+    value: Any,
+    *,
+    state: AgentState | None,
+) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    runtime_state = state or {}
+    policy = runtime_state.get("ai_sales_policy") if isinstance(runtime_state.get("ai_sales_policy"), dict) else {}
+    if str(policy.get("runtime_mode") or "off") == "off":
+        return {
+            "primary_task": {},
+            "secondary_tasks": [],
+            "realtime_intent": {},
+            "emotion_decision": {},
+            "closing_decision": {},
+            "cardpoint_decision": {},
+        }
+
+    routing = policy.get("routing") if isinstance(policy.get("routing"), dict) else {}
+    allowed_tasks = {
+        str(item.get("key") or "").strip()
+        for collection in (routing.get("fixed_priority") or [], routing.get("business_tasks") or [])
+        for item in collection
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
+    }
+
+    def task(candidate: Any) -> dict[str, Any]:
+        item = candidate if isinstance(candidate, dict) else {}
+        task_type = str(item.get("type") or "").strip()
+        if task_type not in allowed_tasks:
+            return {}
+        return {
+            "type": task_type,
+            "goal": str(item.get("goal") or "").strip()[:500],
+            "basis": _policy_string_list(item.get("basis"), limit=6),
+        }
+
+    primary_task = task(raw.get("primary_task"))
+    secondary_tasks = [
+        normalized
+        for item in (raw.get("secondary_tasks") if isinstance(raw.get("secondary_tasks"), list) else [])
+        if (normalized := task(item))
+        and normalized.get("type") != primary_task.get("type")
+    ][:3]
+
+    intent_policy = policy.get("intent") if isinstance(policy.get("intent"), dict) else {}
+    allowed_intents = {
+        str(item.get("key") or "").strip()
+        for item in intent_policy.get("realtime_intents") or []
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
+    }
+    intent_raw = raw.get("realtime_intent") if isinstance(raw.get("realtime_intent"), dict) else {}
+    intent_type = str(intent_raw.get("type") or "").strip()
+    realtime_intent = (
+        {
+            "type": intent_type,
+            "confidence": _policy_enum(intent_raw.get("confidence"), {"high", "medium", "low"}, "low"),
+            "basis": _policy_string_list(intent_raw.get("basis"), limit=6),
+        }
+        if intent_type in allowed_intents
+        else {}
+    )
+
+    emotion_policy = policy.get("emotion") if isinstance(policy.get("emotion"), dict) else {}
+    emotions = {
+        str(item.get("key") or "").strip(): item
+        for item in emotion_policy.get("labels") or []
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
+    }
+    emotion_raw = raw.get("emotion_decision") if isinstance(raw.get("emotion_decision"), dict) else {}
+    emotion_label = str(emotion_raw.get("label") or "").strip()
+    emotion_definition = emotions.get(emotion_label) or {}
+    emotion_decision = (
+        {
+            "label": emotion_label,
+            "pressure": _policy_enum(emotion_raw.get("pressure"), {"normal", "low", "none"}, "normal"),
+            "flow_action": str(emotion_definition.get("flow_action") or "keep"),
+            "basis": _policy_string_list(emotion_raw.get("basis"), limit=6),
+        }
+        if emotion_definition
+        else {}
+    )
+
+    closing_policy = policy.get("closing") if isinstance(policy.get("closing"), dict) else {}
+    sequences = {
+        str(item.get("sequence_key") or "").strip(): item
+        for item in closing_policy.get("sequences") or []
+        if isinstance(item, dict)
+        and item.get("enabled")
+        and str(item.get("sequence_key") or "").strip()
+    }
+    closing_raw = raw.get("closing_decision") if isinstance(raw.get("closing_decision"), dict) else {}
+    action = _policy_enum(
+        closing_raw.get("action"),
+        {"none", "enter", "advance", "pause", "fallback", "complete"},
+        "none",
+    )
+    sequence_key = str(closing_raw.get("sequence_key") or "none").strip() or "none"
+    sequence = sequences.get(sequence_key)
+    if action == "none":
+        sequence_key = "none"
+        sequence = None
+    elif sequence is None and action not in {"complete", "pause"}:
+        action = "none"
+        sequence_key = "none"
+    node_key = str(closing_raw.get("node_key") or "").strip()
+    allowed_nodes = {
+        str(item.get("node_key") or "").strip()
+        for item in (sequence or {}).get("nodes") or []
+        if isinstance(item, dict) and str(item.get("node_key") or "").strip()
+    }
+    if node_key not in allowed_nodes:
+        node_key = ""
+    closing_decision = {
+        "action": action,
+        "sequence_key": sequence_key,
+        "node_key": node_key,
+        "trigger": _policy_enum(
+            closing_raw.get("trigger"),
+            {"explicit_transaction", "blocker_resolved", "positive_progress", "silent_due", "none"},
+            "none",
+        ),
+        "customer_state": _policy_enum(
+            closing_raw.get("customer_state"),
+            {"engaged", "hesitant", "soft_reject", "hard_stop", "new_blocker", "none"},
+            "none",
+        ),
+        "pressure": _policy_enum(closing_raw.get("pressure"), {"normal", "low", "none"}, "none"),
+        "basis": _policy_string_list(closing_raw.get("basis"), limit=6),
+    }
+
+    catalog = runtime_state.get("sales_strategy_catalog") if isinstance(runtime_state.get("sales_strategy_catalog"), dict) else {}
+    category_keys = {
+        str(item.get("category_key") or "").strip()
+        for item in catalog.get("categories") or []
+        if isinstance(item, dict) and str(item.get("category_key") or "").strip()
+    }
+    tactic_tags = {str(item).strip() for item in catalog.get("tactic_tags") or [] if str(item).strip()}
+    card_raw = raw.get("cardpoint_decision") if isinstance(raw.get("cardpoint_decision"), dict) else {}
+    category_key = str(card_raw.get("category_key") or "").strip()
+    card_state = _policy_enum(card_raw.get("state"), {"active", "resolved", "repeated", "none"}, "none")
+    cardpoint_decision = (
+        {
+            "category_key": category_key,
+            "scenario_query": str(card_raw.get("scenario_query") or "").strip()[:300],
+            "tactic_tags": [item for item in _policy_string_list(card_raw.get("tactic_tags"), limit=4) if item in tactic_tags],
+            "state": card_state,
+            "confidence": _policy_enum(card_raw.get("confidence"), {"high", "medium", "low"}, "low"),
+            "basis": _policy_string_list(card_raw.get("basis"), limit=6),
+        }
+        if category_key in category_keys and card_state != "none"
+        else {}
+    )
+
+    if realtime_intent.get("type") == "explicit_exit":
+        primary_task = task({"type": "hard_stop", "goal": "停止自动营销", "basis": realtime_intent.get("basis") or []})
+        secondary_tasks = []
+        closing_decision.update(
+            {
+                "action": "complete",
+                "node_key": "",
+                "trigger": "none",
+                "customer_state": "hard_stop",
+                "pressure": "none",
+            }
+        )
+    return {
+        "primary_task": primary_task,
+        "secondary_tasks": secondary_tasks,
+        "realtime_intent": realtime_intent,
+        "emotion_decision": emotion_decision,
+        "closing_decision": closing_decision,
+        "cardpoint_decision": cardpoint_decision,
+    }
+
+
+def _policy_string_list(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip()[:500] for item in value if str(item or "").strip()][:limit]
+
+
+def _policy_enum(value: Any, allowed: set[str], default: str) -> str:
+    normalized = str(value or "").strip()
+    return normalized if normalized in allowed else default
 
 
 def _normalized_deposit_evidence(value: Any, *, strict: bool = True) -> dict[str, Any]:
@@ -3255,22 +3450,25 @@ def _reply_repair_hint(error: str) -> str:
     return ""
 
 
-def _filter_unsupported_images(
+def _filter_unsupported_media(
     messages: list[dict[str, Any]],
     state: AgentState,
     warnings: list[Any],
 ) -> list[dict[str, Any]]:
-    allowed_urls = _case_image_urls(state)
+    allowed_images = _case_image_urls(state)
+    allowed_videos = _strategy_media_urls(state, "video_urls", "video_url")
     filtered: list[dict[str, Any]] = []
     removed_urls: list[str] = []
     for item in messages:
         if not isinstance(item, dict):
             continue
-        if str(item.get("type") or "") != "image":
+        message_type = str(item.get("type") or "")
+        if message_type not in {"image", "video"}:
             filtered.append(item)
             continue
         url = _message_url(item.get("content"))
-        if url and url in allowed_urls:
+        allowed_urls = allowed_images if message_type == "image" else allowed_videos
+        if url and _normalize_image_url(url) in allowed_urls:
             filtered.append(item)
         else:
             removed_urls.append(url or "")
@@ -3285,6 +3483,15 @@ def _filter_unsupported_images(
     return _renumber(filtered)
 
 
+def _filter_unsupported_images(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+    warnings: list[Any],
+) -> list[dict[str, Any]]:
+    """Backward-compatible name; the safety filter now covers image and video media."""
+    return _filter_unsupported_media(messages, state, warnings)
+
+
 def _case_image_urls(state: AgentState) -> set[str]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
@@ -3292,7 +3499,7 @@ def _case_image_urls(state: AgentState) -> set[str]:
     for item in structured.get("case_facts") or []:
         if not isinstance(item, dict):
             continue
-        url = str(item.get("image_url") or "").strip()
+        url = _normalize_image_url(str(item.get("image_url") or "").strip())
         if url:
             urls.add(url)
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
@@ -3304,11 +3511,28 @@ def _case_image_urls(state: AgentState) -> set[str]:
                 continue
             url = _message_url(message.get("content"))
             if url:
-                urls.add(url)
-    activity_url = activity_intro_image_url(state)
+                urls.add(_normalize_image_url(url))
+    activity_url = _normalize_image_url(activity_intro_image_url(state))
     if activity_url:
         urls.add(activity_url)
+    urls.update(_strategy_media_urls(state, "image_urls", "image_url"))
     return urls
+
+
+def _strategy_media_urls(state: AgentState, plural_key: str, singular_key: str) -> set[str]:
+    urls: set[str] = set()
+    for item in state.get("cardpoint_candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        values = item.get(plural_key) if isinstance(item.get(plural_key), list) else []
+        if not values and item.get(singular_key):
+            values = [item.get(singular_key)]
+        urls.update(_normalize_image_url(str(value)) for value in values if str(value or "").strip())
+    return urls
+
+
+def _normalize_image_url(value: str) -> str:
+    return str(value or "").strip().replace("&amp;", "&")
 
 
 def _message_url(content: Any) -> str:

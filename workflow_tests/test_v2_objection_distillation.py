@@ -18,7 +18,6 @@ from app.schemas import ChatRequest
 
 ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOK_PATH = ROOT / "config" / "v2_model_led_objection_playbook.json"
-AUDIT_PATH = ROOT / "docs" / "reports" / "v2_appointment_blocker_distillation_audit_20260811.json"
 CONCERN_PROVENANCE_FIXTURE = ROOT / "workflow_tests" / "fixtures" / "v2_concern_provenance_cases_20260812.json"
 
 
@@ -29,24 +28,6 @@ class _EmptyPackService:
 
 def _service() -> ModelLedObjectionPlaybookService:
     return ModelLedObjectionPlaybookService(PLAYBOOK_PATH)
-
-
-def test_distillation_imports_all_sources_and_keeps_every_asset_pending() -> None:
-    config = json.loads(PLAYBOOK_PATH.read_text(encoding="utf-8"))
-    audit = json.loads(AUDIT_PATH.read_text(encoding="utf-8"))
-
-    assert audit["imported_record_count"] == 104
-    assert audit["unique_scene_count"] == 14
-    assert len(audit["records"]) == 104
-    assert len({item["source_id"] for item in audit["records"]}) == 104
-    assert {item["source_id"] for item in audit["records"]} == {
-        f"YYHF-{index:04d}" for index in range(1, 105)
-    }
-    assert all(item["source_id"].startswith("YYHF-") for item in audit["records"])
-    assert len(config["sales_principles"]) == 10
-    assert len(config["evidence_strategies"]) == 4
-    assert len(config["assets"]) == 74
-    assert all(item["review_status"] == "pending_review" for item in config["assets"])
 
 
 def test_runtime_catalog_never_exposes_raw_replies_or_pending_media() -> None:

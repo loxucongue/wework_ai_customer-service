@@ -1,31 +1,32 @@
 # 文档索引
 
-本页是工程知识的唯一入口。不要以旧 handoff、聊天记录或文件名日期判断当前行为。
+本页是工程知识的唯一入口。新任务不从旧聊天、旧 handoff、分支名称或文件日期推断当前行为。
 
-## 新窗口阅读路由
+## 新任务必读
 
-1. 仓库宪法：[`AGENTS.md`](../AGENTS.md)
-2. 系统结构：[`architecture/SYSTEM.md`](architecture/SYSTEM.md)
-3. V3 迁移方案：[`architecture/V3_CONSOLIDATION_PLAN.md`](architecture/V3_CONSOLIDATION_PLAN.md)
-4. 运行边界：[`contracts/RUNTIME_BOUNDARIES.md`](contracts/RUNTIME_BOUNDARIES.md)
-5. 第三方 SOP：[`contracts/third-party-sop-v3.md`](contracts/third-party-sop-v3.md)
-6. 线上状态：[`current/PRODUCTION_STATE.md`](current/PRODUCTION_STATE.md)
-7. 已知问题：[`current/KNOWN_ISSUES.md`](current/KNOWN_ISSUES.md)
-8. 当前任务：[`tasks/active/v3-only-consolidation.md`](tasks/active/v3-only-consolidation.md)
+1. [项目宪法](../AGENTS.md)
+2. [系统结构](architecture/SYSTEM.md)
+3. [运行边界](contracts/RUNTIME_BOUNDARIES.md)
+4. [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
+5. [AI 销售策略运行合同](AI_SALES_STRATEGY_RUNTIME_AND_TEST_CONTRACT.md)
+6. [当前生产状态](current/PRODUCTION_STATE.md)
+7. [已知问题](current/KNOWN_ISSUES.md)
+8. [当前活动任务](tasks/active/ai-sales-strategy-migration.md)
 
-## 目录职责
+## 专项文档
 
-- `architecture/`：稳定的组件关系和数据流。
-- `contracts/`：不得被实现随意破坏的接口与业务边界。
-- `adr/`：不可逆或影响范围大的架构决策及原因。
-- `runbooks/`：可执行的开发、测试、部署、回滚和事故流程。
-- `current/`：带验证时间的动态状态，不是永久事实。
-- `tasks/active/`：当前任务的最小交接；完成后删除并沉淀长期结论。
-- `testing/`：测试策略和场景说明，不存运行报告。
+- [AI 策略数据源与发布](AI_SALES_POLICY_INTEGRATION.md)
+- [会话模式回调](platform_conversation_mode_relay_integration.md)
+- [消息送达回调](platform_message_delivery_callback_integration.md)
+- [MySQL 切换手册](aics_mysql_cutover_runbook.md)
+- [任务工作流](runbooks/TASK_WORKFLOW.md)
 
-## 文档规则
+## 目录规则
 
-- 当前事实只能有一个 canonical 文档；旧日期快照不得与当前合同并存。
-- 每份合同/current 文档标注 `status`、`owner`、`last_verified`、`source_of_truth`。
-- 测试报告、截图、日志、调试 JSON 和模型输出写入 ignored 的 `artifacts/`。
-- 业务知识素材迁移到 `resources/knowledge/` 后由检索链管理。
+- `architecture/`：稳定组件关系，不记录临时进度。
+- `contracts/`：不得被实现随意破坏的协议和业务边界。
+- `current/`：现场核验后的动态事实；过期时必须明确标记。
+- `tasks/active/`：只保留一个当前任务，完成后删除并把长期结论沉淀到合同。
+- `runbooks/`：可执行的测试、部署、回滚和事故流程。
+- 运行报告、截图、调试 JSON、构建产物和模型输出不得提交到 `docs/`。
+- 历史设计、已退役 V1/V2 测试与重复知识文件不留在当前树；需要追溯时使用 Git 历史。

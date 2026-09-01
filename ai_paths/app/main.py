@@ -22,6 +22,7 @@ from app.schemas import (
     MessageDeliveryCallback,
 )
 from app.services.coze_client import CozeClient
+from app.services.ai_sales_policy_service import AiSalesPolicyService
 from app.services.conversation_mode_relay import (
     ConversationModeRelayService,
     ConversationModeWritebackRejected,
@@ -46,6 +47,7 @@ from app.services.platform_agent_client import PlatformAgentClient
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import SopExecutionService
+from app.services.sales_strategy_service import SalesStrategyService
 from app.services.sop_objection_material_service import SopObjectionMaterialService
 from app.services.sop_platform_client import SopPlatformClient
 from app.services.sop_platform_task_service import SopPlatformTaskService
@@ -85,6 +87,8 @@ service_rule_data_service = ServiceRuleDataService(
 coze_client = CozeClient(settings)
 voice_transcription_client = DoubaoAsrClient(settings)
 model_client = ModelClient(settings)
+ai_sales_policy_service = AiSalesPolicyService(settings)
+sales_strategy_service = SalesStrategyService(settings)
 memory_store = CustomerMemoryStore(settings, repository)
 platform_agent_client = PlatformAgentClient(settings)
 outreach_send_client = OutreachSendClient(settings, delivery_service=message_delivery_service)
@@ -129,6 +133,7 @@ outreach_service = OutreachService(
     sop_reply_pack_service=sop_reply_pack_service,
     coze_client=coze_client,
     before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
+    sales_strategy_service=sales_strategy_service,
 )
 sop_execution_service = SopExecutionService(
     repository=repository,
@@ -205,6 +210,7 @@ reply_graphs = build_reply_graphs(
     platform_agent_client,
     v3_sop_execution_service,
     v3_semantic_router_service,
+    sales_strategy_service,
 )
 compiled_graph = reply_graphs.full_graph
 chat_runtime = ChatRuntime(
@@ -218,6 +224,9 @@ chat_runtime = ChatRuntime(
     platform_reply_coordinator=platform_reply_coordinator,
     sop_execution_service=v3_sop_execution_service,
     service_rule_data_service=service_rule_data_service,
+    ai_sales_policy_service=ai_sales_policy_service,
+    sales_strategy_service=sales_strategy_service,
+    outreach_service=outreach_service,
     settings=settings,
 )
 app = FastAPI(title=settings.app_name)
@@ -763,6 +772,22 @@ async def admin_update_precision_qa_playbook(payload: dict[str, Any] = Body(...)
         return precision_qa_playbook_service.save(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/admin/ai-sales-policy", dependencies=[Depends(require_api_key)])
+async def admin_ai_sales_policy() -> dict[str, Any]:
+    try:
+        return ai_sales_policy_service.runtime_snapshot()
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/admin/ai-sales-strategy-catalog", dependencies=[Depends(require_api_key)])
+async def admin_ai_sales_strategy_catalog() -> dict[str, Any]:
+    try:
+        return sales_strategy_service.admin_view()
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/admin/operations-dashboard", dependencies=[Depends(require_api_key)])

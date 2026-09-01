@@ -2,32 +2,23 @@
 
 - status: active
 - owner: project
-- last_verified: 2026-08-31 Asia/Shanghai
-- source_of_truth: Git graph、worktree 状态、生产服务核验
+- last_verified: 2026-09-01 Asia/Shanghai
+- source_of_truth: 当前迁移工作区、测试结果；生产事项仍需现场核验
 
-## P0：生产代码线分裂
+## P0：生产版本尚未随本次迁移核验
 
-`origin/main@7af3065e` 有最新 SOP/MySQL/回调，但没有 V3 核心；`codex/v3-model-led-sales-brain@7c0cfc04` 有 V3 回复链但缺 main 后续修复。两者从 `be65e329` 分叉，不能互相覆盖或整分支粗暴合并。
+仓库 `main` 已统一 V3、SOP、回调、存储和 worker 代码线，但本次 AI 策略迁移尚未部署。正式发布前必须重新确认生产 release、数据库后端、worker/outbox 单消费者和回滚点。
 
-## P0：未提交工作尚未保全
+## P1：AI 策略效果尚未完成人工验收
 
-多个旧 worktree 含未提交文件，尤其 V3 worktree、旧 main、E 盘 detached 根目录、SOP candidate。清理 worktree 前必须生成 manifest，并将有效改动保全到明确提交或可恢复补丁；当前禁止删除这些 worktree。
+- 400 条评测数据是自动生成的候选，不是人工金标。
+- 策略目录和延时任务保持 shadow；不能据旧开发窗口的少量模型结果宣称准确率或转化提升。
+- 真实启用前仍需单节点模型效果测试和全链路在线测试。
 
-## P1：部署配置漂移
+## P1：本机仓库尚未完成单工作区收口
 
-仓库 `deploy/ai-paths.conf` 落后于生产有效 Nginx 配置。生产配置已收口旧路由，但 canonical 部署清单尚未回写完整，不能用旧仓库文件覆盖服务器。
+旧 worktree 中既有干净历史版本，也有未提交内容。删除前必须逐个生成状态清单；dirty worktree 必须先保存补丁或 bundle。最终目标是只保留一个位于 `E:/ai_code/vscode_codex/coze_cli_project` 的 `main` 工作区。
 
-## P1：策略数据消费者归属错误
+## P2：内部历史命名
 
-`service-rule-data` outbox 当前由 V3 reply sidecar 启动，现场曾观察到 `sent=1903`、`dead=15`。统一运行角色时必须把它连同必要环境变量迁到 workers，并确认只有一个消费者；否则清理 sidecar 装配会悄悄停止策略数据回传。
-
-## P1：旧命名与产品版本混杂
-
-V3 在线链仍 import 若干 `v2_*` 内部模块。需要先无行为重命名和回归，再删除真正的 V2 service；不能字符串批量删除。
-
-## P1：数据与产物
-
-- 已跟踪的 `long_text_*.txt` 含真实客户会话标识，需从当前树移除并评估 Git 历史泄露。
-- 多个 worktree 有大量历史部署包、报告和缓存；确认未被线上/未提交工作引用后再归档清理。
-- 第三方 SOP 历史文档仍有旧 `10/20/30` 口径，必须由 V3 合同替代。
-- 前端 `validate` 聚合脚本在 Windows 使用不兼容的并行命令格式；当前工作区依赖安装也未生成 `node_modules`，因此本轮只能记录校验阻塞，不能把大量缺模块报错当作代码回归。
+当前 V3 仍可能引用少量 `v2_*` 内部模块名。它们不是公开 V2 产品入口；只有在无行为回归充分时才重命名，禁止按字符串批量删除。

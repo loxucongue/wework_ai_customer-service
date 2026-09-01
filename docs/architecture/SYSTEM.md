@@ -1,41 +1,50 @@
 # 系统结构
 
-- status: current
+- status: current-code
 - owner: project
-- last_verified: 2026-08-31 Asia/Shanghai
-- source_of_truth: 生产 systemd、Nginx 配置、实际 release 与代码 import
+- last_verified: 2026-09-01 Asia/Shanghai
+- source_of_truth: `main@499af018` 及本次策略迁移候选
 
-## 当前生产拓扑
+## 代码结构
+
+同一个 `main` 提交构建三个运行角色：
 
 ```text
-外部平台 / 管理浏览器
-          |
-        Nginx
-   +------+------+-------------------+
-   |             |                   |
-V3 reply      管理/回调/API         页面
-:8013          :8000               :5000
-                   |
-            shared storage/queue
-                   |
-              workers :8014
-         SOP / outreach / recovery
+外部平台 / 管理端
+        |
+      Nginx
+  +-----+------------------+
+  |                        |
+V3 reply                 control API
+客户回复                 管理、回调、SOP 控制面
+  |                        |
+  +----------共享存储-------+
+                           |
+                         workers
+                SOP、outreach、恢复与 outbox
 ```
 
-当前 V3 是回复 sidecar，不是完整单体。共享主服务仍承载管理 API、平台回调、SOP 控制面等；后台 worker 独立运行。因此“只保留 V3”指客户回复产品接口只留 V3，不等于关闭所有历史命名的进程。
+- 客户回复产品接口只保留 V3；旧 V1/V2 回复入口固定返回 410。
+- control、reply、workers 可以是独立进程，但必须来自同一个 `main` SHA。
+- 第三方协议路径中出现 `v1` 不代表产品 V1，不能按名称删除。
+- 仍被 V3 使用的历史内部模块名不代表存在另一套产品运行时；重命名属于后续无行为整理，不应阻塞业务开发。
 
-当前还有一个非直观依赖：`service-rule-data` outbox 消费器由 V3 进程启动，即使该进程设置了 `AI_PATHS_BACKGROUND_WORKERS_ENABLED=false`。统一架构时必须把它显式迁移到 workers，并保证单一消费者，不能把它随 sidecar 装配一起删掉。
+## V3 回复链
 
-## 目标拓扑
+```text
+shared context
+  → semantic router / evidence
+  → read-only tools
+  → evidence join
+  → Reply
+  → commit / send audit
+```
 
-- 一个 `main` commit 同时构建 API、worker、frontend。
-- 客户回复只暴露 V3 接口。
-- API 与 worker 可拆进程，但必须同 SHA、同合同、同发布清单。
-- V1/V2 回复代码在 V3 合并完成并有合同测试后移除。
-- 历史 schema 只读兼容和第三方协议版本可保留，禁止产生新的产品 V1/V2 数据。
+Reply 是当前唯一销售语义决策节点。模型负责意图、心理、卡点、节奏和表达；代码负责权威事实、工具、schema、幂等、交易边界、安全和发送结果。
 
-## 所有权
+## 发布要求
 
-- V3 代码线：reply、semantic router、knowledge、V3 prompt/evaluation。
-- 当前 main：第三方 SOP、outreach、MySQL、回调恢复、管理日志。
-- 必须人工整合：应用入口、配置、storage schema、Nginx/systemd、前端代理。
+- `main` 是唯一长期开发和发布分支。
+- 生产 release 必须映射到已验证的 `main` commit。
+- 策略目录、延时逼单和多步骤跟进必须通过独立开关启用；代码合并不得自动改变发送行为。
+- 生产拓扑和数据库状态是动态事实，发布前必须重新读取服务器，不得以本页代替现场核验。

@@ -22,6 +22,8 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 9. 复述或确认客户理解时，先逐项核对关键前提。只要价格、项目结构、付款状态、门店、权益或执行方式中有一项需要纠正，就直接说明哪一项不对；不能先说“对、流程对、您理解得对”，再在后文悄悄换掉客户原来的关键概念。
 10. 先确定 sales_judgment 和采用的证据，再写 1–3 条微信消息。逐句检查：我方已经或将会做的外部动作，必须对应本轮工具事实、结构消息或合法 commit_action。最后只输出严格 JSON。
 
+当输入提供已启用的 `ai_sales_policy` 时，在不增加第二套销售判断的前提下，把同一次判断同时写入可选顶层 `policy_decision`：主任务、实时意图、情绪与逼单序列状态。所有 key 只能来自输入目录；信息不足就留空或 none。逼单序列只描述跨轮状态，不能授权门店、订单、预约或付款动作。未提供已启用策略时省略该字段。
+
 # 二、销售判断
 抓住客户开口后的 5–10 轮窗口，但不要把“死缠烂打”写成不真实承诺。可逆犹豫不等于拒绝：阻力已知时，换一个尚未重复的效果、活动价值、真实案例或行动成本角度；阻力未知时，问一个开放且低摩擦的问题。没有当前行动信号时，不把犹豫直接升级成登记、留名额或付款。
 
@@ -77,6 +79,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 - safety_assessment：仅在当前健康风险、投诉退款或明确停止时输出，status 为 health_risk、complaint_refund 或 explicit_reject，并引用客户原话。
 - party_size_assessment：仅在客户明确说出付款人数或超过 4 位时输出。
 - commit_actions：仅在权威已付且输入给出完整写入事实时输出；只允许 add_customer_mobile 和 create_work_order，参数及 evidence_refs 必须来自输入。
+- policy_decision：仅当输入提供已启用策略时输出。格式为 {"primary_task":{"type":"","goal":"","basis":[]},"secondary_tasks":[],"realtime_intent":{"type":"","confidence":"high|medium|low","basis":[]},"emotion_decision":{"label":"","pressure":"normal|low|none","flow_action":"keep|lower_pressure|pause_marketing_turn|handoff_by_system_rule","basis":[]},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","sequence_key":"","node_key":"","trigger":"explicit_transaction|blocker_resolved|positive_progress|silent_due|none","customer_state":"engaged|hesitant|soft_reject|hard_stop|new_blocker|none","pressure":"normal|low|none","basis":[]},"cardpoint_decision":{"category_key":"","scenario_query":"","tactic_tags":[],"state":"active|resolved|repeated|none","confidence":"high|medium|low","basis":[]}}。
 
 不要添加合同外字段。所有 ref、ID、URL 和结构内容必须来自输入；没有匹配知识也要自行回答，不得空回复。
 """
@@ -120,6 +123,25 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         ),
         _section("本轮真实执行能力", _render_execution_capabilities()),
     ]
+    policy = payload.get("ai_sales_policy") if isinstance(payload.get("ai_sales_policy"), dict) else {}
+    catalog = payload.get("sales_strategy_catalog") if isinstance(payload.get("sales_strategy_catalog"), dict) else {}
+    if str(policy.get("runtime_mode") or "off") != "off":
+        sections.append(
+            _section(
+                "已发布 AI 销售策略（只提供可选 key 与节奏，不覆盖事实边界）",
+                json_dumps(
+                    {
+                        "policy_version": policy.get("policy_version"),
+                        "routing": policy.get("routing") or {},
+                        "intent": policy.get("intent") or {},
+                        "emotion": policy.get("emotion") or {},
+                        "closing": policy.get("closing") or {},
+                        "cardpoint_categories": catalog.get("categories") or [],
+                        "tactic_tags": catalog.get("tactic_tags") or [],
+                    }
+                ),
+            )
+        )
     protocol_events = (
         shared.get("current_message", {}).get("protocol_events")
         if isinstance(shared.get("current_message"), dict)

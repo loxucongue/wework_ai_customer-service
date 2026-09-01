@@ -34,6 +34,7 @@ from app.services.model_client import ModelClient
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_service import StoreService
+from app.services.sales_strategy_service import SalesStrategyService
 from app.services.sop_execution_service import SopExecutionService
 from app.services.trace_logger import TraceLogger
 from app.graph.nodes.common import json_dumps
@@ -58,6 +59,7 @@ def build_graph(
     platform_agent_client: PlatformAgentClient | None = None,
     sop_execution_service: SopExecutionService | None = None,
     semantic_router_service: V3SemanticRouterService | None = None,
+    sales_strategy_service: SalesStrategyService | None = None,
 ):
     return build_reply_graphs(
         coze_client,
@@ -71,6 +73,7 @@ def build_graph(
         platform_agent_client,
         sop_execution_service,
         semantic_router_service,
+        sales_strategy_service,
     ).full_graph
 
 
@@ -86,6 +89,7 @@ def build_reply_graphs(
     platform_agent_client: PlatformAgentClient | None = None,
     sop_execution_service: SopExecutionService | None = None,
     semantic_router_service: V3SemanticRouterService | None = None,
+    sales_strategy_service: SalesStrategyService | None = None,
 ) -> ReplyGraphs:
     nodes = _build_nodes(
         coze_client=coze_client,
@@ -99,6 +103,7 @@ def build_reply_graphs(
         platform_agent_client=platform_agent_client,
         sop_execution_service=sop_execution_service,
         semantic_router_service=semantic_router_service,
+        sales_strategy_service=sales_strategy_service,
     )
     return ReplyGraphs(
         full_graph=_compile_full_graph(nodes),
@@ -119,6 +124,7 @@ def _build_nodes(
     platform_agent_client: PlatformAgentClient | None,
     sop_execution_service: SopExecutionService | None,
     semantic_router_service: V3SemanticRouterService | None,
+    sales_strategy_service: SalesStrategyService | None,
 ) -> dict[str, Any]:
     layer_1_input_normalization = create_input_normalization_layer(
         trace_logger=trace_logger,
@@ -152,6 +158,7 @@ def _build_nodes(
         sop_execution_service=sop_execution_service,
         coze_client=coze_client,
         semantic_router_service=semantic_router_service,
+        sales_strategy_service=sales_strategy_service,
     )
     execute_readonly_actions = create_execute_actions_node(
         coze_client=coze_client,
@@ -170,6 +177,7 @@ def _build_nodes(
     post_store_semantic_evidence = create_post_store_semantic_evidence_node(
         trace_logger=trace_logger,
         semantic_router_service=semantic_router_service,
+        sales_strategy_service=sales_strategy_service,
     )
     evidence_join = create_evidence_join_node(trace_logger=trace_logger)
 

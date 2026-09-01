@@ -436,6 +436,8 @@ def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:
         "appointment_decision": plan.get("appointment_decision", {}),
         "sales_progression": plan.get("sales_progression", {}),
         "closing_move": plan.get("closing_move", {}),
+        "closing_decision": plan.get("closing_decision", {}),
+        "cardpoint_decision": plan.get("cardpoint_decision", {}),
         "reply_messages": len(plan.get("planner_reply_messages", [])),
         "tool_calls": len(plan.get("planner_tool_calls", [])),
         "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
@@ -488,6 +490,8 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
             selected_scene_id,
             include_answer_details_in_index=False,
         ),
+        "ai_sales_policy": _ai_sales_policy_for_model(state),
+        "sales_strategy_catalog": _sales_strategy_catalog_for_model(state),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)
@@ -520,6 +524,8 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
             base.get("precision_qa_playbook"),
             base.get("sop_gate_decision"),
         ),
+        "ai_sales_policy": base.get("ai_sales_policy"),
+        "sales_strategy_catalog": base.get("sales_strategy_catalog"),
         "available_tools": base.get("available_tools"),
         "timeout_recovery": {
             "previous_error": str(previous_error or "")[:240],
@@ -1027,6 +1033,131 @@ def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:
             "reply_messages": plan.get("planner_reply_messages", []),
             "tool_calls": plan.get("planner_tool_calls", []),
             "handoff": plan.get("handoff", {}),
+        }
+    )
+
+
+def _ai_sales_policy_for_model(state: AgentState) -> dict[str, Any]:
+    raw = state.get("ai_sales_policy")
+    if not isinstance(raw, dict):
+        return {}
+    closing = raw.get("closing") if isinstance(raw.get("closing"), dict) else {}
+    routing = raw.get("routing") if isinstance(raw.get("routing"), dict) else {}
+    intent = raw.get("intent") if isinstance(raw.get("intent"), dict) else {}
+    emotion = raw.get("emotion") if isinstance(raw.get("emotion"), dict) else {}
+    return _drop_empty(
+        {
+            "schema_version": raw.get("schema_version"),
+            "policy_version": raw.get("policy_version"),
+            "checksum": raw.get("checksum"),
+            "status": raw.get("status"),
+            "runtime_mode": raw.get("runtime_mode"),
+            "closing": _drop_empty(
+                {
+                    "enabled": closing.get("enabled"),
+                    "silent_tasks_mode": closing.get("silent_tasks_mode"),
+                    "rules": closing.get("rules"),
+                    "triggers": [
+                        _drop_empty({"key": item.get("key"), "meaning": item.get("description")})
+                        for item in closing.get("triggers") or []
+                        if isinstance(item, dict)
+                    ],
+                    "sequences": [
+                        _drop_empty(
+                            {
+                                "sequence_key": sequence.get("sequence_key"),
+                                "enabled": sequence.get("enabled"),
+                                "applies_when": sequence.get("applies_when"),
+                                "nodes": [
+                                    _drop_empty(
+                                        {
+                                            "node_key": node.get("node_key"),
+                                            "timing": node.get("timing"),
+                                            "delay_minutes": node.get("delay_minutes"),
+                                            "goal": node.get("goal"),
+                                            "required_facts": node.get("required_facts"),
+                                            "pressure": node.get("pressure"),
+                                        }
+                                    )
+                                    for node in sequence.get("nodes") or []
+                                    if isinstance(node, dict)
+                                ],
+                            }
+                        )
+                        for sequence in closing.get("sequences") or []
+                        if isinstance(sequence, dict)
+                    ],
+                    "fallbacks": [
+                        _drop_empty(
+                            {
+                                "customer_state": item.get("customer_state"),
+                                "action": item.get("action"),
+                                "meaning": item.get("description"),
+                            }
+                        )
+                        for item in closing.get("fallbacks") or []
+                        if isinstance(item, dict)
+                    ],
+                }
+            ),
+            "routing": _drop_empty(
+                {
+                    "mode": routing.get("mode"),
+                    "fixed_priority": [
+                        _drop_empty({"key": item.get("key"), "action": item.get("action")})
+                        for item in routing.get("fixed_priority") or []
+                        if isinstance(item, dict)
+                    ],
+                    "business_tasks": [
+                        _drop_empty({"key": item.get("key"), "goal": item.get("goal")})
+                        for item in routing.get("business_tasks") or []
+                        if isinstance(item, dict)
+                    ],
+                }
+            ),
+            "intent": {
+                "realtime_intents": [
+                    _drop_empty({"key": item.get("key"), "meaning": item.get("definition")})
+                    for item in intent.get("realtime_intents") or []
+                    if isinstance(item, dict)
+                ]
+            },
+            "emotion": _drop_empty(
+                {
+                    "weak_evidence": emotion.get("weak_evidence"),
+                    "labels": [
+                        _drop_empty(
+                            {
+                                "key": item.get("key"),
+                                "reply_effect": item.get("reply_effect"),
+                                "flow_action": item.get("flow_action"),
+                            }
+                        )
+                        for item in emotion.get("labels") or []
+                        if isinstance(item, dict)
+                    ],
+                }
+            ),
+        }
+    )
+
+
+def _sales_strategy_catalog_for_model(state: AgentState) -> dict[str, Any]:
+    raw = state.get("sales_strategy_catalog")
+    if not isinstance(raw, dict) or str(raw.get("runtime_mode") or "off") == "off":
+        return {}
+    return _drop_empty(
+        {
+            "schema_version": raw.get("schema_version"),
+            "catalog_version": raw.get("catalog_version"),
+            "checksum": raw.get("checksum"),
+            "runtime_mode": raw.get("runtime_mode"),
+            "categories": [
+                _drop_empty({"category_key": item.get("category_key"), "name": item.get("name")})
+                for item in raw.get("categories") or []
+                if isinstance(item, dict)
+            ],
+            "tactic_tags": raw.get("tactic_tags") or [],
         }
     )
 

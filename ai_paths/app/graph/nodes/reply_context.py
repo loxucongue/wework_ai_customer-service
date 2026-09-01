@@ -73,6 +73,14 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "conversation_state": state.get("conversation_state", {}),
         "current_turn_resolution": state.get("current_turn_resolution", {}),
         "sales_progression": state.get("sales_progression", {}),
+        "ai_sales_policy": _ai_sales_policy_for_reply(state),
+        "primary_task": state.get("primary_task", {}),
+        "secondary_tasks": state.get("secondary_tasks", []),
+        "realtime_intent": state.get("realtime_intent", {}),
+        "emotion_decision": state.get("emotion_decision", {}),
+        "closing_decision": state.get("closing_decision", {}),
+        "cardpoint_decision": state.get("cardpoint_decision", {}),
+        "cardpoint_candidates": _sales_strategy_candidates_for_reply(state.get("cardpoint_candidates")),
         "reply_contract": state.get("reply_contract", {}),
         "sop_gate_decision": state.get("sop_gate_decision", {}),
         "sop_gate_candidate_messages": state.get("sop_gate_candidate_messages", []),
@@ -144,6 +152,14 @@ def reply_recovery_payload_for_model(state: AgentState) -> dict[str, Any]:
         "order_decision",
         "appointment_decision",
         "sales_progression",
+        "ai_sales_policy",
+        "primary_task",
+        "secondary_tasks",
+        "realtime_intent",
+        "emotion_decision",
+        "closing_decision",
+        "cardpoint_decision",
+        "cardpoint_candidates",
         "closing_move",
         "precision_qa_decision",
         "planner_direct_reply_draft",
@@ -384,6 +400,113 @@ def _store_candidate_for_reply(state: AgentState) -> dict[str, Any]:
 
 def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
+
+
+def _ai_sales_policy_for_reply(state: AgentState) -> dict[str, Any]:
+    raw = state.get("ai_sales_policy")
+    if not isinstance(raw, dict):
+        return {}
+    routing = raw.get("routing") if isinstance(raw.get("routing"), dict) else {}
+    intent = raw.get("intent") if isinstance(raw.get("intent"), dict) else {}
+    emotion = raw.get("emotion") if isinstance(raw.get("emotion"), dict) else {}
+    closing = raw.get("closing") if isinstance(raw.get("closing"), dict) else {}
+    primary_key = str((state.get("primary_task") or {}).get("type") or "").strip()
+    intent_key = str((state.get("realtime_intent") or {}).get("type") or "").strip()
+    emotion_key = str((state.get("emotion_decision") or {}).get("label") or "").strip()
+    closing_decision = state.get("closing_decision") if isinstance(state.get("closing_decision"), dict) else {}
+    sequence_key = str(closing_decision.get("sequence_key") or "").strip()
+    node_key = str(closing_decision.get("node_key") or "").strip()
+    selected_task = next(
+        (item for item in routing.get("business_tasks") or [] if isinstance(item, dict) and item.get("key") == primary_key),
+        {},
+    )
+    selected_intent = next(
+        (item for item in intent.get("realtime_intents") or [] if isinstance(item, dict) and item.get("key") == intent_key),
+        {},
+    )
+    selected_emotion = next(
+        (item for item in emotion.get("labels") or [] if isinstance(item, dict) and item.get("key") == emotion_key),
+        {},
+    )
+    selected_sequence = next(
+        (
+            item
+            for item in closing.get("sequences") or []
+            if isinstance(item, dict) and item.get("sequence_key") == sequence_key
+        ),
+        {},
+    )
+    selected_node = next(
+        (
+            item
+            for item in selected_sequence.get("nodes") or []
+            if isinstance(item, dict) and item.get("node_key") == node_key
+        ),
+        {},
+    )
+    return _drop_empty(
+        {
+            "schema_version": raw.get("schema_version"),
+            "policy_version": raw.get("policy_version"),
+            "checksum": raw.get("checksum"),
+            "runtime_mode": raw.get("runtime_mode"),
+            "silent_tasks_mode": closing.get("silent_tasks_mode"),
+            "selected_task": _drop_empty({"key": selected_task.get("key"), "goal": selected_task.get("goal")}),
+            "selected_intent": _drop_empty(
+                {
+                    "key": selected_intent.get("key"),
+                    "meaning": selected_intent.get("definition"),
+                    "usage": selected_intent.get("usage"),
+                }
+            ),
+            "selected_emotion": _drop_empty(
+                {
+                    "key": selected_emotion.get("key"),
+                    "reply_effect": selected_emotion.get("reply_effect"),
+                    "flow_action": selected_emotion.get("flow_action"),
+                }
+            ),
+            "selected_closing_node": _drop_empty(
+                {
+                    "sequence_key": selected_sequence.get("sequence_key"),
+                    "applies_when": selected_sequence.get("applies_when"),
+                    "node_key": selected_node.get("node_key"),
+                    "timing": selected_node.get("timing"),
+                    "goal": selected_node.get("goal"),
+                    "required_facts": selected_node.get("required_facts"),
+                    "pressure": selected_node.get("pressure"),
+                    "ai_guidance": selected_node.get("ai_guidance"),
+                }
+            ),
+        }
+    )
+
+
+def _sales_strategy_candidates_for_reply(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        result.append(
+            _drop_empty(
+                {
+                    "content_id": item.get("content_id"),
+                    "scenario_name": item.get("scenario_name"),
+                    "tactic_tag": item.get("tactic_tag"),
+                    "solution_idea": item.get("solution_idea"),
+                    "reference_text": item.get("reference_text"),
+                    "image_url": item.get("image_url"),
+                    "video_url": item.get("video_url"),
+                    "image_urls": item.get("image_urls"),
+                    "video_urls": item.get("video_urls"),
+                    "content_types": item.get("content_types"),
+                    "usage": "reference_only_rephrase_do_not_copy",
+                }
+            )
+        )
+    return result
 
 
 def _sop_progress_for_reply(

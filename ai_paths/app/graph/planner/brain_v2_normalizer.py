@@ -162,6 +162,31 @@ ALLOWED_CLOSING_MOVE_ACTIONS = (
 )
 ALLOWED_PRECISION_QA_CONFIDENCE = ("high", "medium", "low")
 ALLOWED_PRECISION_QA_DEPTH = ("brief", "standard", "deep")
+ALLOWED_POLICY_CONFIDENCE = ("high", "medium", "low")
+ALLOWED_CLOSING_ACTIONS = ("none", "enter", "advance", "pause", "fallback", "complete")
+ALLOWED_CLOSING_TRIGGERS = (
+    "none",
+    "explicit_transaction",
+    "blocker_resolved",
+    "positive_progress",
+    "silent_due",
+)
+ALLOWED_CLOSING_CUSTOMER_STATES = (
+    "none",
+    "engaged",
+    "hesitant",
+    "soft_reject",
+    "hard_stop",
+    "new_blocker",
+)
+ALLOWED_POLICY_PRESSURES = ("normal", "low", "none")
+ALLOWED_EMOTION_FLOW_ACTIONS = (
+    "keep",
+    "lower_pressure",
+    "pause_marketing_turn",
+    "handoff_by_system_rule",
+)
+ALLOWED_CARDPOINT_STATES = ("active", "resolved", "repeated", "none")
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -274,8 +299,40 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         payment_decision=payment_decision,
     )
 
-    primary_task: dict[str, Any] = {}
-    secondary_tasks: list[dict[str, Any]] = []
+    primary_task = _normalize_policy_task(
+        model_payload.get("primary_task") if isinstance(model_payload, dict) else {},
+        state=state,
+    )
+    secondary_tasks = _normalize_secondary_policy_tasks(
+        model_payload.get("secondary_tasks") if isinstance(model_payload, dict) else [],
+        state=state,
+        primary_type=str(primary_task.get("type") or ""),
+    )
+    realtime_intent = _normalize_realtime_intent(
+        model_payload.get("realtime_intent") if isinstance(model_payload, dict) else {},
+        state=state,
+    )
+    emotion_decision = _normalize_emotion_decision(
+        model_payload.get("emotion_decision") if isinstance(model_payload, dict) else {},
+        state=state,
+    )
+    closing_decision = _normalize_closing_decision(
+        model_payload.get("closing_decision") if isinstance(model_payload, dict) else {},
+        state=state,
+    )
+    cardpoint_decision = _normalize_cardpoint_decision(
+        model_payload.get("cardpoint_decision") if isinstance(model_payload, dict) else {},
+        state=state,
+    )
+    primary_task, closing_decision, sales_progression, policy_constraints = _reconcile_policy_consistency(
+        primary_task=primary_task,
+        realtime_intent=realtime_intent,
+        emotion_decision=emotion_decision,
+        closing_decision=closing_decision,
+        sales_progression=sales_progression,
+        state=state,
+    )
+    reply_constraints.extend(policy_constraints)
     normalizer_policy_violations: list[dict[str, str]] = []
     if decision == "no_reply":
         # Platform auto-message suppression is resolved before Planner runs.
@@ -676,6 +733,10 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "reply_constraints": reply_constraints,
         "primary_task": primary_task,
         "secondary_tasks": secondary_tasks,
+        "realtime_intent": realtime_intent,
+        "emotion_decision": emotion_decision,
+        "closing_decision": closing_decision,
+        "cardpoint_decision": cardpoint_decision,
         "required_tools": required_tools,
         "tool_policy_violations": tool_policy_violations,
         "reply_strategy": reply_strategy,
@@ -1714,6 +1775,270 @@ def _normalize_closing_move(value: Any) -> dict[str, Any]:
         "must_not_repeat": _clean_str_list(
             raw.get("must_not_repeat") if isinstance(raw.get("must_not_repeat"), list) else []
         )[:6],
+    }
+
+
+def _normalize_policy_task(value: Any, *, state: AgentState) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    allowed = _configured_keys(state, "routing", "fixed_priority") | _configured_keys(
+        state, "routing", "business_tasks"
+    )
+    task_type = str(raw.get("type") or raw.get("key") or "").strip()
+    if task_type not in allowed:
+        return {}
+    return {
+        "type": task_type,
+        "goal": str(raw.get("goal") or "").strip()[:240],
+        "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+    }
+
+
+def _normalize_secondary_policy_tasks(
+    value: Any,
+    *,
+    state: AgentState,
+    primary_type: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen = {primary_type} if primary_type else set()
+    for item in value[:8]:
+        normalized = _normalize_policy_task(item, state=state)
+        task_type = str(normalized.get("type") or "")
+        if not task_type or task_type in seen:
+            continue
+        seen.add(task_type)
+        result.append(normalized)
+    return result
+
+
+def _normalize_realtime_intent(value: Any, *, state: AgentState) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    intent_type = str(raw.get("type") or raw.get("key") or "").strip()
+    if intent_type not in _configured_keys(state, "intent", "realtime_intents"):
+        return {}
+    return {
+        "type": intent_type,
+        "confidence": _normalize_enum(str(raw.get("confidence") or ""), ALLOWED_POLICY_CONFIDENCE, "low"),
+        "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+    }
+
+
+def _normalize_emotion_decision(value: Any, *, state: AgentState) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    label = str(raw.get("label") or raw.get("key") or "").strip()
+    if label not in _configured_keys(state, "emotion", "labels"):
+        return {}
+    return {
+        "label": label,
+        "pressure": _normalize_enum(str(raw.get("pressure") or ""), ALLOWED_POLICY_PRESSURES, "normal"),
+        "flow_action": _normalize_enum(
+            str(raw.get("flow_action") or ""), ALLOWED_EMOTION_FLOW_ACTIONS, "keep"
+        ),
+        "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+    }
+
+
+def _normalize_closing_decision(value: Any, *, state: AgentState) -> dict[str, Any]:
+    policy = state.get("ai_sales_policy") if isinstance(state.get("ai_sales_policy"), dict) else {}
+    closing = policy.get("closing") if isinstance(policy.get("closing"), dict) else {}
+    if str(policy.get("runtime_mode") or "off") == "off" or not bool(closing.get("enabled")):
+        return _empty_closing_decision()
+    raw = value if isinstance(value, dict) else {}
+    action = _normalize_enum(str(raw.get("action") or ""), ALLOWED_CLOSING_ACTIONS, "none")
+    sequence_key = str(raw.get("sequence_key") or "none").strip() or "none"
+    sequences = closing.get("sequences") if isinstance(closing.get("sequences"), list) else []
+    sequence = next(
+        (
+            item
+            for item in sequences
+            if isinstance(item, dict)
+            and bool(item.get("enabled"))
+            and str(item.get("sequence_key") or "") == sequence_key
+        ),
+        None,
+    )
+    if action == "none":
+        sequence_key = "none"
+        sequence = None
+    elif sequence is None:
+        return _empty_closing_decision()
+    node_key = str(raw.get("node_key") or "").strip()
+    if node_key and sequence is not None:
+        allowed_nodes = {
+            str(item.get("node_key") or "")
+            for item in sequence.get("nodes") or []
+            if isinstance(item, dict)
+        }
+        if node_key not in allowed_nodes:
+            node_key = ""
+    return {
+        "action": action,
+        "sequence_key": sequence_key,
+        "node_key": node_key,
+        "trigger": _normalize_enum(str(raw.get("trigger") or ""), ALLOWED_CLOSING_TRIGGERS, "none"),
+        "customer_state": _normalize_enum(
+            str(raw.get("customer_state") or ""), ALLOWED_CLOSING_CUSTOMER_STATES, "none"
+        ),
+        "pressure": _normalize_enum(str(raw.get("pressure") or ""), ALLOWED_POLICY_PRESSURES, "normal"),
+        "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+    }
+
+
+def _empty_closing_decision() -> dict[str, Any]:
+    return {
+        "action": "none",
+        "sequence_key": "none",
+        "node_key": "",
+        "trigger": "none",
+        "customer_state": "none",
+        "pressure": "none",
+        "basis": [],
+    }
+
+
+def _normalize_cardpoint_decision(value: Any, *, state: AgentState) -> dict[str, Any]:
+    catalog = state.get("sales_strategy_catalog") if isinstance(state.get("sales_strategy_catalog"), dict) else {}
+    if str(catalog.get("runtime_mode") or "off") == "off":
+        return _empty_cardpoint_decision()
+    allowed_categories = {
+        str(item.get("category_key") or "").strip()
+        for item in catalog.get("categories") or []
+        if isinstance(item, dict) and str(item.get("category_key") or "").strip()
+    }
+    raw = value if isinstance(value, dict) else {}
+    category_key = str(raw.get("category_key") or "").strip()
+    state_value = _normalize_enum(str(raw.get("state") or ""), ALLOWED_CARDPOINT_STATES, "none")
+    if state_value == "none" or category_key not in allowed_categories:
+        return _empty_cardpoint_decision()
+    allowed_tags = {
+        str(item).strip()
+        for item in catalog.get("tactic_tags") or []
+        if str(item).strip()
+    }
+    tactic_tags = [
+        item
+        for item in _clean_str_list(raw.get("tactic_tags") if isinstance(raw.get("tactic_tags"), list) else [])
+        if item in allowed_tags
+    ][:4]
+    return {
+        "category_key": category_key,
+        "scenario_query": str(raw.get("scenario_query") or "").strip()[:300],
+        "tactic_tags": tactic_tags,
+        "state": state_value,
+        "confidence": _normalize_enum(str(raw.get("confidence") or ""), ALLOWED_POLICY_CONFIDENCE, "low"),
+        "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+    }
+
+
+def _empty_cardpoint_decision() -> dict[str, Any]:
+    return {
+        "category_key": "",
+        "scenario_query": "",
+        "tactic_tags": [],
+        "state": "none",
+        "confidence": "low",
+        "basis": [],
+    }
+
+
+def _reconcile_policy_consistency(
+    *,
+    primary_task: dict[str, Any],
+    realtime_intent: dict[str, Any],
+    emotion_decision: dict[str, Any],
+    closing_decision: dict[str, Any],
+    sales_progression: dict[str, Any],
+    state: AgentState,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
+    intent = str(realtime_intent.get("type") or "")
+    flow_action = str(emotion_decision.get("flow_action") or "")
+    customer_state = str(closing_decision.get("customer_state") or "")
+    constraints: list[str] = []
+    configured_tasks = _configured_keys(state, "routing", "fixed_priority") | _configured_keys(
+        state, "routing", "business_tasks"
+    )
+    if intent == "explicit_exit":
+        if "hard_stop" in configured_tasks:
+            primary_task = {
+                "type": "hard_stop",
+                "goal": "结束自动营销并尊重客户退出",
+                "basis": realtime_intent.get("basis") or [],
+            }
+        closing_decision = {
+            "action": "complete",
+            "sequence_key": closing_decision.get("sequence_key")
+            if closing_decision.get("sequence_key") != "none"
+            else "none",
+            "node_key": "",
+            "trigger": "none",
+            "customer_state": "hard_stop",
+            "pressure": "none",
+            "basis": realtime_intent.get("basis") or [],
+        }
+        sales_progression = {
+            "status": "terminal",
+            "target_stage": "close",
+            "action": "close",
+            "goal": "停止营销",
+            "basis": realtime_intent.get("basis") or [],
+        }
+        constraints.append("客户已明确退出：不得继续营销、邀约、收集成交信息或邀请后续联系。")
+    elif flow_action == "pause_marketing_turn":
+        if "answer_current_question" in configured_tasks:
+            primary_task = {
+                "type": "answer_current_question",
+                "goal": "只回答客户当前问题，不追加营销推进",
+                "basis": emotion_decision.get("basis") or [],
+            }
+        if closing_decision.get("action") not in {"pause", "none"}:
+            closing_decision = {
+                **_empty_closing_decision(),
+                "action": "pause",
+                "customer_state": customer_state or "hesitant",
+            }
+        sales_progression = {
+            "status": "pause",
+            "target_stage": "none",
+            "action": "none",
+            "goal": "本轮仅回答当前问题",
+            "basis": emotion_decision.get("basis") or [],
+        }
+        constraints.append("本轮暂停营销推进：只回答当前问题，不追加销售动作。")
+    elif intent in {"defer", "soft_reject"} or customer_state == "soft_reject":
+        if closing_decision.get("action") not in {"pause", "fallback"}:
+            closing_decision = {
+                **closing_decision,
+                "action": "pause",
+                "pressure": "low",
+                "customer_state": "soft_reject",
+            }
+        if sales_progression.get("status") == "continue":
+            sales_progression = {**sales_progression, "status": "pause", "action": "none", "pressure": "low"}
+        constraints.append("客户暂缓或软拒绝：降低压力，只允许暂停或一次换角度回退。")
+    elif intent == "normal_exchange" and str(primary_task.get("type") or "") == "normal_conversation":
+        closing_decision = _empty_closing_decision()
+        if sales_progression.get("status") == "continue":
+            sales_progression = {
+                "status": "pause",
+                "target_stage": "none",
+                "action": "none",
+                "goal": "正常承接",
+                "basis": realtime_intent.get("basis") or [],
+            }
+        constraints.append("普通交流且无新请求：不得机械重开旧销售问题。")
+    return primary_task, closing_decision, sales_progression, constraints
+
+
+def _configured_keys(state: AgentState, section: str, collection: str) -> set[str]:
+    policy = state.get("ai_sales_policy") if isinstance(state.get("ai_sales_policy"), dict) else {}
+    section_value = policy.get(section) if isinstance(policy.get(section), dict) else {}
+    values = section_value.get(collection) if isinstance(section_value.get(collection), list) else []
+    return {
+        str(item.get("key") or "").strip()
+        for item in values
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
     }
 
 

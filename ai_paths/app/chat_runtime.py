@@ -26,9 +26,12 @@ from app.services.customer_scope import customer_scope_from_state
 from app.services.follow_knowledge_metadata import adopted_follow_knowledge_metadata
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
+from app.services.outreach_service import OutreachService
 from app.services.outreach_system_client import OutreachSystemClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
+from app.services.ai_sales_policy_service import AiSalesPolicyService
+from app.services.sales_strategy_service import SalesStrategyService
 from app.services.sop_execution_service import SopExecutionService, is_platform_auto_opening_message
 from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.storage import AppRepository
@@ -50,6 +53,9 @@ class ChatRuntime:
         platform_reply_coordinator: PlatformReplyCoordinator | None = None,
         sop_execution_service: SopExecutionService | None = None,
         service_rule_data_service: ServiceRuleDataService | None = None,
+        ai_sales_policy_service: AiSalesPolicyService | None = None,
+        sales_strategy_service: SalesStrategyService | None = None,
+        outreach_service: OutreachService | None = None,
         settings: Settings | None = None,
     ) -> None:
         self._full_graph = full_graph
@@ -62,6 +68,9 @@ class ChatRuntime:
         self._platform_reply_coordinator = platform_reply_coordinator
         self._sop_execution_service = sop_execution_service
         self._service_rule_data_service = service_rule_data_service
+        self._ai_sales_policy_service = ai_sales_policy_service
+        self._sales_strategy_service = sales_strategy_service
+        self._outreach_service = outreach_service
         self._settings = settings
         self._platform_request_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
         self._platform_request_results: dict[str, tuple[float, ChatResponse]] = {}
@@ -652,6 +661,34 @@ class ChatRuntime:
         state["sales_contact_key"] = scope.sales_contact_key
         state["global_customer_key"] = scope.global_customer_key
         state["customer_scope"] = scope.as_dict()
+        if self._ai_sales_policy_service is not None:
+            try:
+                state["ai_sales_policy"] = self._ai_sales_policy_service.runtime_snapshot()
+            except ValueError as exc:
+                state["ai_sales_policy"] = {
+                    "runtime_mode": "off",
+                    "runtime_health": {"status": "unavailable", "last_error": str(exc)},
+                }
+                state["warnings"] = [
+                    {
+                        "stage": "ai_sales_policy",
+                        "warning": "AI sales policy unavailable; policy extension disabled for this turn.",
+                    }
+                ]
+        if self._sales_strategy_service is not None:
+            try:
+                state["sales_strategy_catalog"] = self._sales_strategy_service.runtime_summary()
+            except ValueError as exc:
+                state["sales_strategy_catalog"] = {
+                    "runtime_mode": "off",
+                    "runtime_health": {"status": "unavailable", "last_error": str(exc)},
+                }
+                state.setdefault("warnings", []).append(
+                    {
+                        "stage": "sales_strategy_catalog",
+                        "warning": "Sales strategy catalog unavailable; candidate retrieval disabled for this turn.",
+                    }
+                )
         return state
 
     def _handle_graph_exception(self, initial_state: AgentState, exc: Exception) -> AgentState:
@@ -787,6 +824,23 @@ class ChatRuntime:
                     [message for message in reply_messages if message.type == "image"]
                 ),
             }
+        if self._outreach_service is not None:
+            try:
+                final_state["closing_sequence_shadow"] = self._outreach_service.record_closing_sequence_shadow(
+                    final_state
+                )
+            except Exception as exc:
+                final_state["closing_sequence_shadow"] = {
+                    "created": False,
+                    "reason": "shadow_audit_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                final_state.setdefault("warnings", []).append(
+                    {
+                        "stage": "closing_sequence_shadow",
+                        "warning": "Closing sequence shadow audit failed; no delayed customer message was sent.",
+                    }
+                )
         log_path = self._trace_logger.write_run(final_state)
         safe_repository_call(
             self._repository.save_run,
