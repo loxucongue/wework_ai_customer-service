@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -8,6 +13,9 @@ from pydantic import ValidationError
 from app import runtime_services
 from app.config import Settings
 from app.runtime_roles import RuntimeRole, normalize_runtime_role
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _settings(tmp_path, role: str, *, workers: bool) -> Settings:
@@ -103,3 +111,52 @@ def test_reply_role_builds_no_background_worker_contract(tmp_path) -> None:
     settings = _settings(tmp_path, "reply", workers=False)
     assert settings.runtime_role is RuntimeRole.REPLY
     assert settings.background_workers_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("role", "workers", "required_path", "forbidden_prefixes"),
+    [
+        ("reply", False, "/reply/workflow-compatible-v3", ("/admin/", "/callbacks/")),
+        ("control", False, "/callbacks/v1/message-delivery", ("/reply/",)),
+        ("worker", True, "/health", ("/reply/", "/admin/", "/callbacks/")),
+    ],
+)
+def test_runtime_role_mounts_only_owned_routes(
+    tmp_path: Path,
+    role: str,
+    workers: bool,
+    required_path: str,
+    forbidden_prefixes: tuple[str, ...],
+) -> None:
+    probe = """
+import json
+from app.main import app
+print(json.dumps(sorted(route.path for route in app.routes)))
+"""
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(ROOT / "ai_paths"),
+            "AI_PATHS_SERVICE_ROLE": role,
+            "AI_PATHS_BACKGROUND_WORKERS_ENABLED": "true" if workers else "false",
+            "SOP_PLATFORM_PULL_ENABLED": "false",
+            "STORE_SNAPSHOT_REFRESH_ENABLED": "false",
+            "OUTREACH_FIRST_DAY_SILENCE_ENABLED": "false",
+            "AICS_STORAGE_BACKEND": "sqlite",
+            "AICS_DB_PATH": str(tmp_path / f"{role}.sqlite3"),
+            "V3_EVALUATION_DIR": str(tmp_path / f"{role}-evaluations"),
+        }
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    paths = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert required_path in paths
+    assert all(not path.startswith(forbidden_prefixes) for path in paths)

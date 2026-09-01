@@ -4,7 +4,6 @@ from pathlib import Path
 
 from app import main
 from app.runtime_roles import RuntimeRole
-from app.runtime_routes import route_visible_for_role
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,9 +25,6 @@ def test_retired_reply_routes_are_absent_from_application() -> None:
     ):
         assert path not in paths
     assert ("/reply/workflow-compatible-v3" in paths) is (main.runtime_role is RuntimeRole.REPLY)
-    assert route_visible_for_role("/reply/workflow-compatible-v3", RuntimeRole.REPLY)
-    assert not route_visible_for_role("/reply/workflow-compatible-v3", RuntimeRole.CONTROL)
-    assert not route_visible_for_role("/reply/workflow-compatible-v3", RuntimeRole.WORKER)
 
 
 def test_deploy_config_never_proxies_retired_reply_routes() -> None:

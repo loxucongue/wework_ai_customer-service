@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app import main
 from app.schemas import ChatRequest
+from app.routers.reply import attach_request_interface_version
 from app.services.storage.serialization import interface_version_from_run
 from app.services.workflow_compat import normalize_workflow_request
 
@@ -52,12 +52,12 @@ def test_workflow_location_payload_preserves_raw_location_fields() -> None:
 def test_workflow_interface_version_is_attached_to_request_context() -> None:
     request = ChatRequest(customer_id="c1", corp_id="corp")
 
-    main._attach_request_interface_version(request, "v2")
+    attach_request_interface_version(request, "v2")
 
     assert request.request_context["interface_version"] == "v2"
     assert request.request_context["api_version"] == "v2"
 
-    main._attach_request_interface_version(request, "v3")
+    attach_request_interface_version(request, "v3")
 
     assert request.request_context["interface_version"] == "v3"
     assert request.request_context["api_version"] == "v3"
