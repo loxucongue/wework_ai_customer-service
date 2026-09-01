@@ -35,11 +35,13 @@ V3 reply                 control API
 
 ```text
 ai_paths/app/main.py              FastAPI 生命周期、路由、worker 编排
-ai_paths/app/runtime_services.py  服务依赖装配，禁止在路由文件重复创建客户端
+ai_paths/app/runtime_services.py  服务依赖装配及 Reply/Control/Worker 最小依赖视图
 ai_paths/app/runtime_roles.py     运行角色标准化与旧环境值只读兼容
 ai_paths/app/routers/             按角色收口实际暴露的 FastAPI 路由
 ai_paths/app/graph/               唯一 V3 回复图
-ai_paths/app/services/            平台、SOP、存储、发送与策略服务
+ai_paths/app/services/outreach/   跟进计划、首日流程、消息生成、任务执行
+ai_paths/app/services/sop/        SOP 公共执行与送达兼容能力
+ai_paths/app/services/            其余平台、存储、发送与策略服务
 ai_paths/app/policies/            版本化运行策略
 ai_paths/scripts/                 运维、迁移、隔离评测脚本
 projects/                         管理前端
@@ -66,6 +68,15 @@ input / background context
 
 Semantic Router 只提供分类、检索查询和只读工具需求，不决定客户可见销售动作。Reply 是唯一销售语义与客户可见动作决策节点；代码负责权威事实、工具、schema、幂等、交易边界、安全和发送结果。
 
+## Outreach
+
+```text
+计划：客户关系与上下文 → 模型决策 → 任务物化 → 持久化
+执行：任务认领 → 发送资格检查 → 消息生成 → 平台提交 → 送达终态
+```
+
+`OutreachService` 是唯一公开门面。计划与执行入口只负责编排阶段；首日触达、普通跟进、逼单和四大区策略继续使用原有开关，代码治理不自动启用发送。
+
 ## 第三方 SOP
 
 Worker 中只保留第三方 SOP 两段式链路：`pending` 提供触发时间节点，
@@ -73,6 +84,8 @@ Worker 中只保留第三方 SOP 两段式链路：`pending` 提供触发时间�
 策略数据回传和送达确认。旧 `/sop/events` 接收器、旧事件模型重试、夜间次日融合
 及延迟重放已删除；历史 `sop_events` 和 `sop_send_tasks` 只用于审计、客户数据清理
 以及已有 `source_kind=sop_event` 派发的终态兼容。
+
+单任务处理固定为：本地任务状态 → 既有终态/重复处理 → 发送前事实准备 → 判断与发送。无内容触发节点不得单独消费；任一侧读取失败都等待恢复。
 
 ## 发布要求
 

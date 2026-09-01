@@ -8,17 +8,17 @@
 2. [系统结构](architecture/SYSTEM.md)
 3. [运行边界](contracts/RUNTIME_BOUNDARIES.md)
 4. [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
-5. [AI 销售策略运行合同](AI_SALES_STRATEGY_RUNTIME_AND_TEST_CONTRACT.md)
+5. [AI 销售策略运行合同](contracts/ai-sales-strategy-runtime.md)
 6. [当前生产状态](current/PRODUCTION_STATE.md)
 7. [已知问题](current/KNOWN_ISSUES.md)
 
-当前没有未完成的仓库迁移任务。新开发应按“一项任务一个新窗口、从最新 `origin/main` 建立临时 `codex/*` 分支、验证后立即合回并删除”的方式执行。
+当前治理任务见 `tasks/active/`。任务完成并删除活动文件后，新开发按“一项任务一个新窗口、从最新 `origin/main` 建立临时 `codex/*` 分支、验证后立即合回并删除”的方式执行。
 
 ## 专项文档
 
-- [AI 策略数据源与发布](AI_SALES_POLICY_INTEGRATION.md)
-- [消息送达回调](platform_message_delivery_callback_integration.md)
-- [MySQL 切换手册](aics_mysql_cutover_runbook.md)
+- [AI 策略数据源与发布](contracts/ai-sales-policy.md)
+- [消息送达回调](contracts/message-delivery-callback.md)
+- [MySQL 切换手册](runbooks/mysql-cutover.md)
 - [任务工作流](runbooks/TASK_WORKFLOW.md)
 - [质量门禁与测试治理](quality/QUALITY_GATES.md)
 - [生产发布前检查清单](runbooks/PRE_RELEASE_CHECKLIST.md)
