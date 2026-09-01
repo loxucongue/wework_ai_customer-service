@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 from app.config import Settings
-from app.graph.nodes.action_nodes import create_execute_actions_node
+from app.graph.nodes.transaction_actions import create_transaction_actions_node
 from app.graph.nodes.layer_nodes import _platform_unknown_transfer_image_info
 from app.graph.nodes.image_validation import validated_image_info
 from app.graph.nodes.reply_validation import validate_reply_consistency
@@ -275,7 +275,7 @@ def test_current_appointment_created_blocks_payment_card_in_same_turn() -> None:
 def test_create_work_order_then_exposes_order_fact() -> None:
     platform = _PlatformClient()
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -296,18 +296,18 @@ def test_create_work_order_then_exposes_order_fact() -> None:
         }
         output = asyncio.run(node(state))
 
-    assert output["tool_results"]["create_work_order"]["status"] == "created"
-    assert output["tool_results"]["create_work_order"]["order_id"] == "order-101"
+    assert output["commit_tool_results"]["create_work_order"]["status"] == "created"
+    assert output["commit_tool_results"]["create_work_order"]["order_id"] == "order-101"
     assert platform.created_work[0]["prepay"] == 20
     assert platform.checked_customer[0]["kind"] == 1
-    order_facts = output["fact_envelope"]["structured_facts"]["order_facts"]
+    order_facts = output["commit_fact_envelope"]["structured_facts"]["order_facts"]
     assert order_facts[0]["status"] == "created"
 
 
 def test_create_work_order_accepts_shared_current_known_store_fact() -> None:
     platform = _PlatformClient()
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -334,14 +334,14 @@ def test_create_work_order_accepts_shared_current_known_store_fact() -> None:
         }
         output = asyncio.run(node(state))
 
-    assert output["tool_results"]["create_work_order"]["status"] == "created"
-    assert output["tool_results"]["create_work_order"]["store_id"] == "12"
+    assert output["commit_tool_results"]["create_work_order"]["status"] == "created"
+    assert output["commit_tool_results"]["create_work_order"]["store_id"] == "12"
 
 
 def test_create_work_order_accepts_latest_single_store_card_anchor() -> None:
     platform = _PlatformClient()
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -367,7 +367,7 @@ def test_create_work_order_accepts_latest_single_store_card_anchor() -> None:
             }],
         }))
 
-    result = output["tool_results"]["create_work_order"]
+    result = output["commit_tool_results"]["create_work_order"]
     assert result["status"] == "created"
     assert result["store_id"] == "386"
     assert result["store_confirmation_source"] == "single_store_card_anchor"
@@ -431,7 +431,7 @@ def test_create_work_order_allows_missing_optional_platform_fields() -> None:
         "orders": [],
     }
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -448,7 +448,7 @@ def test_create_work_order_allows_missing_optional_platform_fields() -> None:
             }],
         }))
 
-    result = output["tool_results"]["create_work_order"]
+    result = output["commit_tool_results"]["create_work_order"]
     assert result["status"] == "created"
     assert result["creation_mode"] == "partial"
     assert set(result["missing_optional_fields"]) == {
@@ -459,7 +459,7 @@ def test_create_work_order_allows_missing_optional_platform_fields() -> None:
     }
     assert platform.checked_customer == []
     assert platform.created_work[0]["user_id"] is None
-    order_fact = output["fact_envelope"]["structured_facts"]["order_facts"][0]
+    order_fact = output["commit_fact_envelope"]["structured_facts"]["order_facts"][0]
     assert order_fact["missing_optional_fields"] == result["missing_optional_fields"]
 
 
@@ -473,7 +473,7 @@ def test_create_work_order_rejects_multi_store_card_batch_anchor() -> None:
         ]
     }
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -505,7 +505,7 @@ def test_create_work_order_rejects_multi_store_card_batch_anchor() -> None:
             }],
         }))
 
-    result = output["tool_results"]["create_work_order"]
+    result = output["commit_tool_results"]["create_work_order"]
     assert result["status"] == "rejected"
     assert result["error"] == "single_store_card_anchor_not_authoritative"
     assert platform.created_work == []
@@ -518,7 +518,7 @@ def test_create_work_order_rejects_multi_store_card_batch_anchor() -> None:
 def test_no_tool_does_not_execute_platform_transaction_placeholders() -> None:
     platform = _PlatformClient()
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -530,9 +530,9 @@ def test_no_tool_does_not_execute_platform_transaction_placeholders() -> None:
             "planner_tool_calls": [{"name": "no_tool"}],
         }))
 
-    assert "create_work_order" not in output["tool_results"]
-    assert "add_customer_mobile" not in output["tool_results"]
-    assert "create_order_plan" not in output["tool_results"]
+    assert "create_work_order" not in output["commit_tool_results"]
+    assert "add_customer_mobile" not in output["commit_tool_results"]
+    assert "create_order_plan" not in output["commit_tool_results"]
 
 
 def test_create_work_order_accepts_nested_platform_order_id() -> None:
@@ -542,7 +542,7 @@ def test_create_work_order_accepts_nested_platform_order_id() -> None:
         "data": {"order": {"id": "order-nested-101"}},
     }
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -560,8 +560,8 @@ def test_create_work_order_accepts_nested_platform_order_id() -> None:
             }],
         }))
 
-    assert output["tool_results"]["create_work_order"]["status"] == "created"
-    assert output["tool_results"]["create_work_order"]["order_id"] == "order-nested-101"
+    assert output["commit_tool_results"]["create_work_order"]["status"] == "created"
+    assert output["commit_tool_results"]["create_work_order"]["order_id"] == "order-nested-101"
 
 
 def test_existing_work_order_is_reused_without_duplicate_create() -> None:
@@ -569,7 +569,7 @@ def test_existing_work_order_is_reused_without_duplicate_create() -> None:
         orders=[{"id": "order-existing", "status": 1, "store_id": "386", "category_id": "10", "prepay_required": 10, "prepay_paid": 0}]
     )
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -591,8 +591,8 @@ def test_existing_work_order_is_reused_without_duplicate_create() -> None:
             }
         ))
 
-    assert output["tool_results"]["create_work_order"]["status"] == "reused"
-    assert output["tool_results"]["create_work_order"]["order_id"] == "order-existing"
+    assert output["commit_tool_results"]["create_work_order"]["status"] == "reused"
+    assert output["commit_tool_results"]["create_work_order"]["order_id"] == "order-existing"
     assert platform.created_work == []
 
 
@@ -601,7 +601,7 @@ def test_existing_zero_category_order_is_reused_for_confirmed_category() -> None
         orders=[{"id": "order-existing", "status": 1, "store_id": "386", "category_id": 0, "prepay_required": 10, "prepay_paid": 0}]
     )
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -619,7 +619,7 @@ def test_existing_zero_category_order_is_reused_for_confirmed_category() -> None
             }],
         }))
 
-    assert output["tool_results"]["create_work_order"]["status"] == "reused"
+    assert output["commit_tool_results"]["create_work_order"]["status"] == "reused"
     assert platform.created_work == []
 
 
@@ -639,7 +639,7 @@ def test_paid_unbound_work_order_is_bound_instead_of_duplicate_create() -> None:
         check_result={"result": 0},
     )
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -657,7 +657,7 @@ def test_paid_unbound_work_order_is_bound_instead_of_duplicate_create() -> None:
             }],
         }))
 
-    result = output["tool_results"]["create_work_order"]
+    result = output["commit_tool_results"]["create_work_order"]
     assert result["status"] == "reused"
     assert result["source"] == "platform_agent.order.modify"
     assert result["order_binding_repaired"] is True
@@ -676,7 +676,7 @@ def test_paid_unbound_work_order_is_bound_instead_of_duplicate_create() -> None:
 def test_check_customer_result_zero_prevents_duplicate_work_order() -> None:
     platform = _PlatformClient(check_result={"result": 0})
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -694,8 +694,8 @@ def test_check_customer_result_zero_prevents_duplicate_work_order() -> None:
             }],
         }))
 
-    assert output["tool_results"]["create_work_order"]["status"] == "rejected"
-    assert output["tool_results"]["create_work_order"]["check_customer"] == {"result": 0}
+    assert output["commit_tool_results"]["create_work_order"]["status"] == "rejected"
+    assert output["commit_tool_results"]["create_work_order"]["check_customer"] == {"result": 0}
     assert platform.created_work == []
 
 
@@ -708,7 +708,7 @@ def test_request_category_label_uses_platform_customer_category_id() -> None:
         "customer": {"kind": 1, "category_id": "811"},
     }
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -725,7 +725,7 @@ def test_request_category_label_uses_platform_customer_category_id() -> None:
             }],
         }))
 
-    assert output["tool_results"]["create_work_order"]["status"] == "created"
+    assert output["commit_tool_results"]["create_work_order"]["status"] == "created"
     assert platform.created_work[0]["category_id"] == "811"
 
 
@@ -734,7 +734,7 @@ def test_existing_work_order_amount_is_updated_for_party_size() -> None:
         orders=[{"id": "order-existing", "status": 1, "store_id": "386", "category_id": "10", "prepay_required": 10, "prepay_paid": 0}]
     )
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -758,7 +758,7 @@ def test_existing_work_order_amount_is_updated_for_party_size() -> None:
             )
         )
 
-    result = output["tool_results"]["create_work_order"]
+    result = output["commit_tool_results"]["create_work_order"]
     assert result["status"] == "reused"
     assert result["prepay_required"] == 20
     assert result["amount_updated"] is True
@@ -769,7 +769,7 @@ def test_existing_work_order_amount_is_updated_for_party_size() -> None:
 def test_paid_registered_customer_syncs_mobile_but_does_not_create_plan() -> None:
     platform = _PlatformClient()
     with tempfile.TemporaryDirectory() as tmpdir:
-        node = create_execute_actions_node(
+        node = create_transaction_actions_node(
             coze_client=object(),
             trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
             store_service=None,
@@ -812,8 +812,6 @@ def test_paid_registered_customer_syncs_mobile_but_does_not_create_plan() -> Non
             }
         ))
 
-    assert output["tool_results"]["add_customer_mobile"]["status"] == "synced"
-    assert output["tool_results"]["create_order_plan"]["error"].endswith(
-        "create_order_plan_disabled_after_payment"
-    )
+    assert output["commit_tool_results"]["add_customer_mobile"]["status"] == "synced"
+    assert "create_order_plan" not in output["commit_tool_results"]
     assert platform.created_plan == []

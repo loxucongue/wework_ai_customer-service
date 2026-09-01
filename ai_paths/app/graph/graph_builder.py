@@ -5,20 +5,29 @@ from typing import Any
 
 from langgraph.graph import END, StateGraph
 
-from app.graph.nodes.action_nodes import create_execute_actions_node
+from app.graph.nodes.fact_actions import create_readonly_fact_actions_node
+from app.graph.nodes.transaction_actions import create_transaction_actions_node
 from app.graph.nodes.appointment_utils import appointment_query_from_state
 from app.graph.nodes.layer_nodes import create_background_context_layer, create_input_normalization_layer
-from app.graph.nodes.parallel_reply_chain import (
+from app.graph.nodes.transaction_commit import (
     create_commit_coordinator_node,
-    create_evidence_join_node,
-    create_parallel_evidence_node,
-    create_post_store_semantic_evidence_node,
     create_prepare_commit_node,
-    create_shared_context_node,
+)
+from app.graph.nodes.material_selection import (
+    create_evidence_join_node,
     parallel_reply_payload,
 )
+from app.graph.nodes.sales_decision import (
+    create_parallel_evidence_node,
+    create_post_store_semantic_evidence_node,
+)
+from app.graph.nodes.authoritative_context import (
+    create_shared_context_node,
+)
 from app.graph.nodes.reply_input import should_use_model_reply
-from app.graph.nodes.reply_nodes import create_synthesize_reply_node
+from app.graph.nodes.reply_generation import (
+    create_synthesize_reply_node,
+)
 from app.graph.nodes.reply_validation import (
     debug_message_contents as _debug_message_contents,
     validated_model_messages as _validated_model_messages,
@@ -138,14 +147,10 @@ def _build_nodes(
         coze_client=coze_client,
         conversation_fetcher=outreach_send_client.fetch_conversation if outreach_send_client else None,
         follow_sequence_fetcher=(
-            semantic_router_service.load_sequence_index
-            if semantic_router_service is not None
-            else None
+            semantic_router_service.load_sequence_index if semantic_router_service is not None else None
         ),
         follow_taxonomy_fetcher=(
-            semantic_router_service.load_checkpoint_taxonomy
-            if semantic_router_service is not None
-            else None
+            semantic_router_service.load_checkpoint_taxonomy if semantic_router_service is not None else None
         ),
     )
     shared_context = create_shared_context_node(
@@ -160,7 +165,7 @@ def _build_nodes(
         semantic_router_service=semantic_router_service,
         sales_strategy_service=sales_strategy_service,
     )
-    execute_readonly_actions = create_execute_actions_node(
+    execute_readonly_actions = create_readonly_fact_actions_node(
         coze_client=coze_client,
         trace_logger=trace_logger,
         store_service=store_service,
@@ -172,7 +177,6 @@ def _build_nodes(
             _extract_city,
         ),
         model_client=model_client,
-        execution_mode="readonly",
     )
     post_store_semantic_evidence = create_post_store_semantic_evidence_node(
         trace_logger=trace_logger,
@@ -194,7 +198,7 @@ def _build_nodes(
         schedule_background_task=None,
     )
     prepare_commit = create_prepare_commit_node(trace_logger=trace_logger)
-    execute_commit_actions = create_execute_actions_node(
+    execute_commit_actions = create_transaction_actions_node(
         coze_client=coze_client,
         trace_logger=trace_logger,
         store_service=store_service,
@@ -205,7 +209,6 @@ def _build_nodes(
             state,
             _extract_city,
         ),
-        execution_mode="commit",
     )
     commit_coordinator = create_commit_coordinator_node(
         trace_logger=trace_logger,
@@ -214,15 +217,15 @@ def _build_nodes(
     return {
         "layer_1_input_normalization": layer_1_input_normalization,
         "layer_2_background_context": layer_2_background_context,
-        "shared_context": shared_context,
-        "parallel_evidence": parallel_evidence,
-        "execute_readonly_actions": execute_readonly_actions,
-        "post_store_semantic_evidence": post_store_semantic_evidence,
-        "evidence_join": evidence_join,
-        "synthesize_reply": synthesize_reply,
-        "prepare_commit": prepare_commit,
-        "execute_commit_actions": execute_commit_actions,
-        "commit_coordinator": commit_coordinator,
+        "authoritative_context": shared_context,
+        "sales_decision": parallel_evidence,
+        "readonly_facts": execute_readonly_actions,
+        "sales_decision_after_tools": post_store_semantic_evidence,
+        "material_selection": evidence_join,
+        "reply_generation": synthesize_reply,
+        "prepare_transaction": prepare_commit,
+        "transaction_actions": execute_commit_actions,
+        "commit_result": commit_coordinator,
     }
 
 
@@ -231,12 +234,12 @@ def _compile_full_graph(nodes: dict[str, Any]):
     node_order = (
         "layer_1_input_normalization",
         "layer_2_background_context",
-        "shared_context",
-        "parallel_evidence",
-        "execute_readonly_actions",
-        "post_store_semantic_evidence",
-        "evidence_join",
-        "synthesize_reply",
+        "authoritative_context",
+        "sales_decision",
+        "readonly_facts",
+        "sales_decision_after_tools",
+        "material_selection",
+        "reply_generation",
     )
     for name in node_order:
         graph.add_node(name, nodes[name])
@@ -250,9 +253,9 @@ def _compile_full_graph(nodes: dict[str, Any]):
 def _compile_commit_graph(nodes: dict[str, Any]):
     graph = StateGraph(AgentState)
     node_order = (
-        "prepare_commit",
-        "execute_commit_actions",
-        "commit_coordinator",
+        "prepare_transaction",
+        "transaction_actions",
+        "commit_result",
     )
     for name in node_order:
         graph.add_node(name, nodes[name])

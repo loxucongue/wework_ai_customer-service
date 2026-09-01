@@ -26,7 +26,6 @@ from app.services.customer_order_context import order_status_text
 from app.services.driving_route_service import rerank_stores_by_driving_route
 from app.services.store_fact_integrity import (
     filter_valid_store_facts,
-    store_fact_is_valid,
 )
 from app.services.store_resolution import (
     build_location_evidence,
@@ -53,7 +52,7 @@ _READ_ONLY_REPLY_CHAIN_TOOLS = {
 _DEFERRED_COMMIT_TOOLS = {"create_work_order", "add_customer_mobile"}
 
 
-def create_execute_actions_node(
+def _create_action_executor(
     *,
     coze_client: CozeClient,
     trace_logger: TraceLogger,
@@ -61,7 +60,7 @@ def create_execute_actions_node(
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
     platform_agent_client: PlatformAgentClient | None = None,
     model_client: ModelClient | None = None,
-    execution_mode: str = "all",
+    execution_mode: str,
 ) -> Callable[[AgentState], Any]:
     async def execute_actions(state: AgentState) -> dict[str, Any]:
         isolated_execution = execution_mode in {"readonly", "commit"}
@@ -2146,14 +2145,6 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         known_stores=[*_snapshot_store_values(), *stores, *candidates],
     )
     filtered_invalid_stores = [*invalid_scope_stores, *invalid_candidates]
-    pre_scope_fields = _store_lookup_scope_fields(
-        {
-            "query": resolved_query,
-            "geocode": scope_geocode,
-            "candidate_stores": [_store_lookup_item(store) for store in candidates],
-        }
-    )
-
     normalized = [_store_lookup_item(store) for store in candidates]
     scope_fields = _store_lookup_scope_fields(
         {

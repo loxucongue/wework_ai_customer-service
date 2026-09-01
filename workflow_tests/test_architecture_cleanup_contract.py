@@ -33,3 +33,40 @@ def test_outreach_has_one_explicit_implementation_per_stage() -> None:
     assert facade.count("FirstDayWorkflow(") == 1
     assert facade.count("TaskExecutor(") == 1
     assert facade.count("MessageGenerator(") == 1
+
+
+def test_v3_graph_has_explicit_fact_decision_material_reply_and_commit_modules() -> None:
+    nodes = ROOT / "ai_paths/app/graph/nodes"
+    assert not (nodes / "parallel_reply_chain.py").exists()
+    for filename in (
+        "authoritative_context.py",
+        "sales_decision.py",
+        "material_selection.py",
+        "reply_generation.py",
+        "fact_actions.py",
+        "transaction_actions.py",
+        "transaction_commit.py",
+    ):
+        assert (nodes / filename).is_file()
+
+    builder = _source("ai_paths/app/graph/graph_builder.py")
+    full_order = (
+        '"authoritative_context"',
+        '"sales_decision"',
+        '"readonly_facts"',
+        '"sales_decision_after_tools"',
+        '"material_selection"',
+        '"reply_generation"',
+    )
+    assert all(builder.index(left) < builder.index(right) for left, right in zip(full_order, full_order[1:]))
+
+
+def test_v3_reply_has_one_repair_and_no_deterministic_business_fallback() -> None:
+    generation = _source("ai_paths/app/graph/nodes/reply_generation.py")
+    reply_nodes = _source("ai_paths/app/graph/nodes/reply_nodes.py")
+    actions = _source("ai_paths/app/graph/nodes/action_nodes.py")
+
+    assert "deterministic_neutral_final_fallback" not in generation + reply_nodes
+    assert "deterministic_store_fact_recovery" not in generation + reply_nodes
+    assert "final_targeted_repair_model" not in generation
+    assert "def create_execute_actions_node" not in actions

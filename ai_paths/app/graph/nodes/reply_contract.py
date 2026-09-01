@@ -1,43 +1,59 @@
 from __future__ import annotations
 
 import asyncio
+
 import copy
+
 import re
+
 import time
+
 from datetime import datetime
-from typing import Any, Callable
+
+from typing import Any
+
 from urllib.parse import urlparse
+
 from zoneinfo import ZoneInfo
 
 from app.graph.nodes.common import json_dumps, model_usage_snapshot
+
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
+
 from app.graph.nodes.derived_observations import build_derived_observations
+
 from app.graph.state import AgentState
+
 from app.policies.business_rules import parallel_reply_business_rules_for_model
+
 from app.schemas import ChatRequest
+
 from app.services.coze_client import CozeClient
+
 from app.services.model_client import ModelClient
+
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
-from app.services.payment_collection import payment_collection_content
+
+
 from app.services.v3_sop_execution_service import SopExecutionService
+
 from app.services.sales_strategy_service import SalesStrategyService
-from app.services.trace_logger import TraceLogger
+
+
 from app.services.sales_recall_service import SalesRecallService
-from app.services.v3_semantic_router_service import (
-    V3SemanticRouterService,
-    script_content_candidates,
-)
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
 READ_ONLY_TOOL_NAMES = {
     "resolve_customer_store",
     "kb_search",
     "appointment_record_query",
 }
-DEFERRED_COMMIT_TOOL_NAMES = {"create_work_order", "add_customer_mobile"}
 
+DEFERRED_COMMIT_TOOL_NAMES = {"create_work_order", "add_customer_mobile"}
 
 TOOL_PLANNER_SYSTEM_PROMPT = """# 对话连续性优先
 - 决定事实是否充足前，必须阅读完整的带时间对话，不能只看当前消息的字面。
@@ -97,376 +113,6 @@ TOOL_PLANNER_SYSTEM_PROMPT += """
 - 客户提供新地点、询问另一城市、否定原定位，或历史记录明确显示排序不完整时，才重新查询。是否承接异议、换效果或活动维度由 Reply 决定。
 """
 
-
-def create_shared_context_node(
-    *,
-    trace_logger: TraceLogger,
-    sop_execution_service: SopExecutionService | None = None,
-) -> Callable[[AgentState], Any]:
-    async def build_shared_context(state: AgentState) -> dict[str, Any]:
-        with trace_logger.node(
-            state,
-            "shared_context",
-            {"request_id": state.get("request_id"), "message_type": _message_type(state)},
-        ) as span:
-            content_catalog = (
-                sop_execution_service.reply_chain_content_catalog()
-                if sop_execution_service is not None
-                else {"schema_version": "reply_chain_content_index_v2", "sop_packs": []}
-            )
-            if sop_execution_service is None:
-                sop_progress = {
-                    "status": "unavailable",
-                    "source": "sop_execution_service_unavailable",
-                    "completed_pack_ids": [],
-                    "completed_categories": [],
-                    "unfinished_sops": [],
-                }
-            else:
-                try:
-                    sop_progress = sop_execution_service.reply_chain_sop_progress(
-                        _request_from_state(state),
-                        request_context=dict(state.get("request_context") or {}),
-                    )
-                except Exception as exc:
-                    sop_progress = {
-                        "status": "error",
-                        "source": "scoped_sop_send_records",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "completed_pack_ids": [],
-                        "completed_categories": [],
-                        "unfinished_sops": [],
-                    }
-            shared = _shared_context(
-                state,
-                content_catalog=content_catalog,
-                sop_progress=sop_progress,
-            )
-            available_assets = getattr(sop_execution_service, "reply_chain_available_assets", None)
-            approved_assets = available_assets() if callable(available_assets) else []
-            shared["available_assets"] = _v3_available_assets_for_turn(
-                state,
-                approved_assets,
-                sent_summary=shared.get("authoritative_facts", {}).get("sent_messages", {}),
-                sop_progress=shared.get("authoritative_facts", {}).get("sop_progress", {}),
-            )
-            for key in ("ai_sales_policy", "sales_strategy_catalog"):
-                value = state.get(key)
-                if isinstance(value, dict) and str(value.get("runtime_mode") or "off") != "off":
-                    shared[key] = copy.deepcopy(value)
-            facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
-            output = {
-                "shared_context": shared,
-                "store_scope_summary": copy.deepcopy(facts.get("visible_store_scope") or {}),
-                "sent_message_summary": copy.deepcopy(facts.get("sent_messages") or {}),
-                "trace": state.get("trace", []),
-            }
-            span["output_snapshot"] = {
-                "schema_version": shared.get("schema_version"),
-                "conversation_count": len(shared.get("conversation") or []),
-                "fact_sections": sorted((shared.get("authoritative_facts") or {}).keys()),
-                "excluded_semantic_fields": shared.get("excluded_semantic_fields") or [],
-            }
-            return output
-
-    return build_shared_context
-
-
-def create_parallel_evidence_node(
-    *,
-    trace_logger: TraceLogger,
-    model_client: ModelClient | None,
-    sop_execution_service: SopExecutionService | None,
-    coze_client: CozeClient | None = None,
-    semantic_router_service: V3SemanticRouterService | None = None,
-    sales_strategy_service: SalesStrategyService | None = None,
-) -> Callable[[AgentState], Any]:
-    async def parallel_evidence(state: AgentState) -> dict[str, Any]:
-        started = time.perf_counter()
-        with trace_logger.node(
-            state,
-            "v3_semantic_route_and_knowledge",
-            {"shared_context_schema": (state.get("shared_context") or {}).get("schema_version")},
-        ) as span:
-            protocol_required = _protocol_required_read_only_tools(state)
-            force_store_required = any(
-                str(item.get("name") or "").strip() == "resolve_customer_store"
-                for item in protocol_required
-                if isinstance(item, dict)
-            )
-            if semantic_router_service is None:
-                semantic_output = {
-                    "status": "degraded",
-                    "semantic_route": {"status": "disabled", "reason": "semantic_router_not_configured"},
-                    "knowledge_evidence": {"status": "disabled", "candidates": [], "sequence_candidates": []},
-                    "tool_plan": {"status": "completed", "decision": "facts_sufficient", "tool_calls": [], "missing_facts": [], "evidence_refs": []},
-                }
-            else:
-                try:
-                    semantic_output = await semantic_router_service.route(
-                        shared_context=copy.deepcopy(state.get("shared_context") or {}),
-                        sequence_result=copy.deepcopy(state.get("follow_sequence_index") or {}),
-                        taxonomy_result=copy.deepcopy(state.get("follow_checkpoint_taxonomy") or {}),
-                        force_store_required=force_store_required,
-                    )
-                except Exception as exc:
-                    semantic_output = {
-                        "status": "degraded",
-                        "semantic_route": {"status": "error", "reason": f"{type(exc).__name__}: {exc}"[:500]},
-                        "knowledge_evidence": {"status": "error", "candidates": [], "sequence_candidates": []},
-                        "tool_plan": {"status": "completed", "decision": "facts_sufficient", "tool_calls": [], "missing_facts": [], "evidence_refs": []},
-                    }
-            semantic_route = copy.deepcopy(semantic_output.get("semantic_route") or {})
-            sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
-            tool_plan = copy.deepcopy(semantic_output.get("tool_plan") or {})
-            strategy_result = _sales_strategy_retrieval(
-                state,
-                semantic_route=semantic_route,
-                service=sales_strategy_service,
-            )
-            tool_plan["tool_calls"] = _merge_tool_calls(
-                _dict_list(tool_plan.get("tool_calls")),
-                protocol_required,
-            )
-            if tool_plan["tool_calls"]:
-                tool_plan["decision"] = "use_tools"
-            assets = _dict_list((state.get("shared_context") or {}).get("available_assets"))
-            recalled_candidates = script_content_candidates(sales_recall)
-            strategy_candidates = _sales_strategy_content_candidates(
-                strategy_result.get("candidates") or []
-            )
-            strategy_mode = str((strategy_result.get("catalog") or {}).get("runtime_mode") or "off")
-            content_candidates = _dedupe_content_candidates(
-                [
-                    *assets,
-                    *recalled_candidates,
-                    *(strategy_candidates if strategy_mode == "active" else []),
-                ]
-            )
-            gate_result = {
-                "schema_version": "v3_asset_catalog_result_v1",
-                "status": "completed",
-                "content_candidate_ids": [item["content_id"] for item in content_candidates],
-                "content_candidates": content_candidates,
-                "reason": "approved_assets_plus_semantic_knowledge",
-            }
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            metrics = {
-                "elapsed_ms": elapsed_ms,
-                "semantic_router_duration_ms": int(semantic_output.get("duration_ms") or 0),
-                "sales_recall_duration_ms": int(sales_recall.get("duration_ms") or 0),
-                "pre_reply_evidence_elapsed_ms": elapsed_ms,
-                "semantic_route_summary": _semantic_route_observability(semantic_route),
-            }
-            output = {
-                "content_gate_result": gate_result,
-                "tool_plan": tool_plan,
-                "sales_recall": sales_recall,
-                "cardpoint_candidates": copy.deepcopy(strategy_result.get("candidates") or []),
-                "followup_strategy_candidates": [],
-                "sales_strategy_retrieval_audit": {
-                    "runtime_mode": strategy_mode,
-                    "candidate_count": len(strategy_result.get("candidates") or []),
-                    "filtered": copy.deepcopy(strategy_result.get("filtered") or []),
-                    "catalog": copy.deepcopy(strategy_result.get("catalog") or {}),
-                    "reply_effect": strategy_mode == "active",
-                },
-                "semantic_route": semantic_route,
-                "store_pre_route": (
-                    copy.deepcopy(semantic_route)
-                    if str(semantic_route.get("phase") or "") == "pre_store_pending"
-                    else {}
-                ),
-                "knowledge_evidence": sales_recall,
-                "parallel_branch_metrics": metrics,
-                # Compatibility input for the existing read-only executor.
-                "planner_tool_calls": list(tool_plan.get("tool_calls") or []),
-                "required_tools": list(tool_plan.get("tool_calls") or []),
-                "planner_source": "v3_semantic_router_store_only",
-                "trace": state.get("trace", []),
-            }
-            span["entry"]["tool_calls"] = [
-                {"name": "deepseek_semantic_router", "output": _branch_trace_output(semantic_route)},
-                {"name": "follow_knowledge_api", "output": _branch_trace_output(sales_recall)},
-                {"name": "v3_store_tool_plan", "output": _branch_trace_output(tool_plan)},
-            ]
-            span["output_snapshot"] = {
-                "checkpoint": (semantic_route.get("checkpoint") or {}).get("primary_code"),
-                "selected_content_ids": gate_result.get("content_candidate_ids") or [],
-                "tool_names": [item.get("name") for item in tool_plan.get("tool_calls") or []],
-                "tool_plan_status": tool_plan.get("status"),
-                "tool_plan_reason": tool_plan.get("reason"),
-                "tool_plan_violations": tool_plan.get("violations") or [],
-                "tool_plan_initial_violations": tool_plan.get("initial_violations") or [],
-                "tool_plan_decision": tool_plan.get("decision"),
-                "sales_recall_status": sales_recall.get("status"),
-                "sales_recall_candidates": sales_recall.get("candidate_count"),
-                "sales_strategy_candidate_count": len(strategy_result.get("candidates") or []),
-                "sales_strategy_runtime_mode": strategy_mode,
-                "follow_sequence_candidates": sales_recall.get("selected_sequence_count"),
-                "follow_knowledge_selector_status": (
-                    (sales_recall.get("selector") or {}).get("status")
-                    if isinstance(sales_recall.get("selector"), dict)
-                    else ""
-                ),
-                "missing_fact_count": len(tool_plan.get("missing_facts") or []),
-                "metrics": metrics,
-            }
-            return output
-
-    return parallel_evidence
-
-
-def create_post_store_semantic_evidence_node(
-    *,
-    trace_logger: TraceLogger,
-    semantic_router_service: V3SemanticRouterService | None = None,
-    sales_strategy_service: SalesStrategyService | None = None,
-) -> Callable[[AgentState], Any]:
-    async def post_store_semantic_evidence(state: AgentState) -> dict[str, Any]:
-        pre_route = (
-            state.get("store_pre_route")
-            if isinstance(state.get("store_pre_route"), dict)
-            else {}
-        )
-        if str(pre_route.get("phase") or "") != "pre_store_pending":
-            return {"trace": state.get("trace", [])}
-
-        started = time.perf_counter()
-        store_fact = _store_resolution_fact_for_post_route(state)
-        with trace_logger.node(
-            state,
-            "v3_post_store_semantic_route_and_knowledge",
-            {
-                "pre_route_phase": pre_route.get("phase"),
-                "store_resolution_status": store_fact.get("status"),
-            },
-        ) as span:
-            if semantic_router_service is None:
-                semantic_output = {
-                    "status": "degraded",
-                    "semantic_route": {
-                        "schema_version": "v3_semantic_route_v1",
-                        "status": "disabled",
-                        "phase": "post_store_final",
-                        "reason": "semantic_router_not_configured",
-                        "checkpoint": {},
-                        "sequence_match": {},
-                        "script_queries": [],
-                        "store_query": {"required": False},
-                    },
-                    "knowledge_evidence": {
-                        "status": "disabled",
-                        "candidates": [],
-                        "sequence_candidates": [],
-                    },
-                }
-            else:
-                try:
-                    semantic_output = await semantic_router_service.route_after_store(
-                        shared_context=copy.deepcopy(state.get("shared_context") or {}),
-                        pre_route=copy.deepcopy(pre_route),
-                        store_resolution_fact=copy.deepcopy(store_fact),
-                        sequence_result=copy.deepcopy(state.get("follow_sequence_index") or {}),
-                        taxonomy_result=copy.deepcopy(state.get("follow_checkpoint_taxonomy") or {}),
-                    )
-                except Exception as exc:
-                    semantic_output = {
-                        "status": "degraded",
-                        "semantic_route": {
-                            "schema_version": "v3_semantic_route_v1",
-                            "status": "error",
-                            "phase": "post_store_final",
-                            "reason": f"{type(exc).__name__}: {exc}"[:500],
-                            "checkpoint": {},
-                            "sequence_match": {},
-                            "script_queries": [],
-                            "store_query": {"required": False},
-                        },
-                        "knowledge_evidence": {
-                            "status": "error",
-                            "candidates": [],
-                            "sequence_candidates": [],
-                        },
-                    }
-
-            semantic_route = copy.deepcopy(semantic_output.get("semantic_route") or {})
-            sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
-            strategy_result = _sales_strategy_retrieval(
-                state,
-                semantic_route=semantic_route,
-                service=sales_strategy_service,
-            )
-            strategy_mode = str((strategy_result.get("catalog") or {}).get("runtime_mode") or "off")
-            existing_gate = copy.deepcopy(state.get("content_gate_result") or {})
-            existing_candidates = _dict_list(existing_gate.get("content_candidates"))
-            recalled_candidates = script_content_candidates(sales_recall)
-            content_candidates = _dedupe_content_candidates(
-                [
-                    *existing_candidates,
-                    *recalled_candidates,
-                    *(
-                        _sales_strategy_content_candidates(strategy_result.get("candidates") or [])
-                        if strategy_mode == "active"
-                        else []
-                    ),
-                ]
-            )
-            gate_result = {
-                **existing_gate,
-                "status": "completed",
-                "content_candidate_ids": [item["content_id"] for item in content_candidates],
-                "content_candidates": content_candidates,
-                "reason": "approved_assets_plus_post_store_semantic_knowledge",
-            }
-            metrics = copy.deepcopy(state.get("parallel_branch_metrics") or {})
-            post_duration_ms = int((time.perf_counter() - started) * 1000)
-            metrics.update(
-                {
-                    "post_store_semantic_router_duration_ms": int(
-                        semantic_output.get("duration_ms") or 0
-                    ),
-                    "post_store_evidence_elapsed_ms": post_duration_ms,
-                    "pre_reply_evidence_elapsed_ms": int(
-                        metrics.get("pre_reply_evidence_elapsed_ms") or 0
-                    )
-                    + post_duration_ms,
-                    "semantic_route_summary": _semantic_route_observability(semantic_route),
-                }
-            )
-            span["entry"]["tool_calls"] = [
-                {"name": "deepseek_post_store_semantic_router", "output": _branch_trace_output(semantic_route)},
-                {"name": "follow_knowledge_api", "output": _branch_trace_output(sales_recall)},
-            ]
-            span["output_snapshot"] = {
-                "checkpoint": (semantic_route.get("checkpoint") or {}).get("primary_code"),
-                "store_resolution_status": store_fact.get("status"),
-                "sales_recall_status": sales_recall.get("status"),
-                "sales_recall_candidates": sales_recall.get("candidate_count"),
-                "selected_content_ids": gate_result.get("content_candidate_ids") or [],
-                "metrics": metrics,
-            }
-            return {
-                "content_gate_result": gate_result,
-                "sales_recall": sales_recall,
-                "cardpoint_candidates": copy.deepcopy(strategy_result.get("candidates") or []),
-                "followup_strategy_candidates": [],
-                "sales_strategy_retrieval_audit": {
-                    "runtime_mode": strategy_mode,
-                    "candidate_count": len(strategy_result.get("candidates") or []),
-                    "filtered": copy.deepcopy(strategy_result.get("filtered") or []),
-                    "catalog": copy.deepcopy(strategy_result.get("catalog") or {}),
-                    "reply_effect": strategy_mode == "active",
-                },
-                "semantic_route": semantic_route,
-                "knowledge_evidence": sales_recall,
-                "parallel_branch_metrics": metrics,
-                "trace": state.get("trace", []),
-            }
-
-    return post_store_semantic_evidence
-
-
 def _semantic_route_observability(route: dict[str, Any]) -> dict[str, Any]:
     """Expose retrieval observations without turning them into persisted sales state."""
 
@@ -486,7 +132,6 @@ def _semantic_route_observability(route: dict[str, Any]) -> dict[str, Any]:
         "sequence_ids": list(sequence.get("sequence_ids") or []),
         "relevant_step_ids": list(sequence.get("relevant_step_ids") or []),
     }
-
 
 def _store_resolution_fact_for_post_route(state: AgentState) -> dict[str, Any]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
@@ -509,62 +154,6 @@ def _store_resolution_fact_for_post_route(state: AgentState) -> dict[str, Any]:
         "reason": "store_resolution_fact_missing_after_tool_execution",
     }
 
-
-def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentState], Any]:
-    async def evidence_join(state: AgentState) -> dict[str, Any]:
-        with trace_logger.node(state, "deterministic_evidence_join", {}) as span:
-            gate = copy.deepcopy(state.get("content_gate_result") or {})
-            tool_plan = copy.deepcopy(state.get("tool_plan") or {})
-            tool_results = copy.deepcopy(state.get("tool_results") or {})
-            fact_envelope = _normalized_tool_fact_envelope(state.get("fact_envelope"))
-            joined = {
-                "schema_version": "reply_chain_evidence_join_v1",
-                "shared_context": copy.deepcopy(state.get("shared_context") or {}),
-                "content_candidates": copy.deepcopy(gate.get("content_candidates") or []),
-                "sales_recall": copy.deepcopy(state.get("sales_recall") or {}),
-                "semantic_route": copy.deepcopy(state.get("semantic_route") or {}),
-                "knowledge_evidence": copy.deepcopy(state.get("knowledge_evidence") or {}),
-                "gate_evidence": _drop_keys(
-                    gate,
-                    {
-                        "content_candidates",
-                        "selector_input",
-                        "selector_output",
-                        "model_usage",
-                        # This only describes whether Gate recalled content. It
-                        # must not narrow the final Reply to a tools-only answer.
-                        "route_advice",
-                    },
-                ),
-                "tool_plan": _drop_keys(tool_plan, {"model_usage"}),
-                "tool_facts": tool_results,
-                # The executor already normalizes raw tool payloads into
-                # authority-scoped facts. Reply needs those facts to emit
-                # valid structured messages, while Join remains agnostic
-                # about whether a sales action should be taken.
-                "normalized_tool_facts": fact_envelope,
-                "missing_facts": copy.deepcopy(tool_plan.get("missing_facts") or []),
-                "authority_conflicts": _authority_conflicts(state, tool_results),
-                "join_policy": "evidence_only_no_customer_copy_no_sales_decision",
-            }
-            output = {
-                "evidence_join": joined,
-                "reply_mode": "parallel_evidence_reply",
-                "trace": state.get("trace", []),
-            }
-            span["output_snapshot"] = {
-                "content_candidate_count": len(joined["content_candidates"]),
-                "sales_recall_status": (joined.get("sales_recall") or {}).get("status"),
-                "sales_recall_candidates": (joined.get("sales_recall") or {}).get("candidate_count"),
-                "tool_fact_names": sorted(tool_results),
-                "missing_fact_count": len(joined["missing_facts"]),
-                "conflict_count": len(joined["authority_conflicts"]),
-            }
-            return output
-
-    return evidence_join
-
-
 def _normalized_tool_fact_envelope(value: Any) -> dict[str, Any]:
     """Expose only executor-owned facts, never legacy sales semantics."""
 
@@ -582,95 +171,6 @@ def _normalized_tool_fact_envelope(value: Any) -> dict[str, Any]:
         for field in allowed_fields
         if field in value
     }
-
-
-def create_prepare_commit_node(*, trace_logger: TraceLogger) -> Callable[[AgentState], Any]:
-    async def prepare_commit(state: AgentState) -> dict[str, Any]:
-        with trace_logger.node(state, "prepare_commit", {}) as span:
-            normalized: list[dict[str, Any]] = []
-            violations: list[str] = []
-            for item in state.get("commit_actions") or []:
-                if not isinstance(item, dict):
-                    violations.append("commit_action_not_object")
-                    continue
-                name = str(item.get("name") or "").strip()
-                if name not in DEFERRED_COMMIT_TOOL_NAMES:
-                    violations.append(f"commit_action_not_allowed:{name or 'missing'}")
-                    continue
-                arguments = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
-                evidence_refs = _string_list(item.get("evidence_refs"))
-                action_violations = _commit_action_violations(
-                    name,
-                    arguments,
-                    state,
-                    evidence_refs=evidence_refs,
-                )
-                if action_violations:
-                    violations.extend(action_violations)
-                    continue
-                normalized.append(
-                    {
-                        "name": name,
-                        **copy.deepcopy(arguments),
-                        "evidence_refs": evidence_refs,
-                    }
-                )
-            output = {
-                "planner_tool_calls": normalized,
-                "required_tools": normalized,
-                "commit_result": {
-                    "status": "prepared" if normalized else "no_actions",
-                    "violations": violations,
-                },
-                "trace": state.get("trace", []),
-            }
-            span["output_snapshot"] = {
-                "commit_tool_names": [item.get("name") for item in normalized],
-                "violations": violations,
-            }
-            return output
-
-    return prepare_commit
-
-
-def create_commit_coordinator_node(
-    *,
-    trace_logger: TraceLogger,
-    sop_execution_service: SopExecutionService | None,
-) -> Callable[[AgentState], Any]:
-    async def commit(state: AgentState) -> dict[str, Any]:
-        with trace_logger.node(state, "commit_coordinator", {}) as span:
-            result = dict(state.get("commit_result") or {})
-            result["write_results"] = copy.deepcopy(state.get("commit_tool_results") or {})
-            if sop_execution_service is not None:
-                try:
-                    # A Reply may use only part of a Gate candidate. Preserve
-                    # that customer-visible answer, but record SOP completion
-                    # only when all required structured payloads were sent.
-                    from app.graph.nodes.reply_validation import (
-                        completed_parallel_selected_content_ids,
-                    )
-
-                    commit_state = dict(state)
-                    commit_state["selected_content_ids"] = completed_parallel_selected_content_ids(
-                        list(state.get("reply_messages") or []),
-                        state,
-                        list(state.get("selected_content_ids") or []),
-                    )
-                    result["sop"] = sop_execution_service.commit_reply_selected_chat_gate_candidate(
-                        state=commit_state,
-                        reply_messages=list(state.get("reply_messages") or []),
-                    )
-                except Exception as exc:
-                    result["sop"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
-            else:
-                result["sop"] = {"status": "skipped", "reason": "sop_execution_service_missing"}
-            output = {"commit_result": result, "trace": state.get("trace", [])}
-            span["output_snapshot"] = result
-            return output
-
-    return commit
-
 
 async def _run_content_gate(
     state: AgentState,
@@ -732,7 +232,6 @@ async def _run_content_gate(
             "duration_ms": int((time.perf_counter() - started) * 1000),
         }
 
-
 def _content_gate_shared_context(state: AgentState) -> dict[str, Any]:
     """Give Gate delivery facts, never prior model sales observations."""
 
@@ -748,10 +247,8 @@ def _content_gate_shared_context(state: AgentState) -> dict[str, Any]:
         shared["derived_observations"] = observations
     return shared
 
-
 async def _run_sales_recall(state: AgentState, coze_client: CozeClient | None) -> dict[str, Any]:
     return await SalesRecallService(coze_client).recall(copy.deepcopy(state.get("shared_context") or {}))
-
 
 async def _finish_sales_recall(
     task: asyncio.Task,
@@ -773,7 +270,6 @@ async def _finish_sales_recall(
         task.cancel()
         return _sales_recall_timeout(started, "kb_recall_timeout")
 
-
 def _sales_recall_timeout(started: float, reason: str) -> dict[str, Any]:
     return {
         "schema_version": "v2_sales_recall_v1",
@@ -784,7 +280,6 @@ def _sales_recall_timeout(started: float, reason: str) -> dict[str, Any]:
         "candidate_count": 0,
         "candidates": [],
     }
-
 
 def _completed_sales_recall(value: Any) -> dict[str, Any]:
     if isinstance(value, Exception):
@@ -809,7 +304,6 @@ def _completed_sales_recall(value: Any) -> dict[str, Any]:
         "candidate_count": 0,
         "candidates": [],
     }
-
 
 def _follow_script_content_candidates(recall: dict[str, Any]) -> list[dict[str, Any]]:
     if str(recall.get("source") or "").strip() != "follow_knowledge_api":
@@ -866,11 +360,9 @@ def _follow_script_content_candidates(recall: dict[str, Any]) -> list[dict[str, 
         )
     return output
 
-
 def _is_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
 
 async def _run_tool_planner(state: AgentState, model_client: ModelClient | None) -> dict[str, Any]:
     started = time.perf_counter()
@@ -1047,7 +539,6 @@ async def _run_tool_planner(state: AgentState, model_client: ModelClient | None)
             "duration_ms": int((time.perf_counter() - started) * 1000),
         }
 
-
 def _tool_planner_budget_seconds(
     model_client: ModelClient,
     name: str,
@@ -1059,7 +550,6 @@ def _tool_planner_budget_seconds(
         return max(0.1, float(value))
     except (TypeError, ValueError):
         return default
-
 
 async def _tool_planner_transport_recovery(
     model_client: ModelClient,
@@ -1091,7 +581,6 @@ async def _tool_planner_transport_recovery(
     )
     return payload, "fast"
 
-
 def _protocol_required_read_only_tools(state: AgentState) -> list[dict[str, Any]]:
     """Recover only tool calls mandated by an inbound message protocol."""
 
@@ -1118,7 +607,6 @@ def _protocol_required_read_only_tools(state: AgentState) -> list[dict[str, Any]
         }
     ]
 
-
 def _protocol_tool_plan_violations(
     state: AgentState,
     tool_calls: list[dict[str, Any]],
@@ -1138,7 +626,6 @@ def _protocol_tool_plan_violations(
         for name in sorted(required_names - planned_names)
     ]
 
-
 def _tool_plan_decision_violations(
     payload: dict[str, Any],
     tool_calls: list[dict[str, Any]],
@@ -1156,7 +643,6 @@ def _tool_plan_decision_violations(
     if decision == "facts_sufficient" and not _string_list(payload.get("evidence_refs")):
         return ["tool_plan_facts_sufficient_missing_evidence_refs"]
     return []
-
 
 def _merge_tool_calls(
     planned: list[dict[str, Any]],
@@ -1189,270 +675,6 @@ def _merge_tool_calls(
         if name not in present
     )
     return output
-
-
-def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
-    joined = copy.deepcopy(state.get("evidence_join") or {})
-    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
-    valid_customer_message_refs = ["current_message"]
-    valid_message_refs = ["current_message"]
-    for item in shared.get("conversation") or []:
-        if not isinstance(item, dict):
-            continue
-        ref = str(item.get("message_ref") or "").strip()
-        if ref and ref not in valid_message_refs:
-            valid_message_refs.append(ref)
-        if (
-            ref
-            and str(item.get("role") or "").strip().lower() in {"customer", "user"}
-            and ref not in valid_customer_message_refs
-        ):
-            valid_customer_message_refs.append(ref)
-    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
-    sop_progress = facts.get("sop_progress") if isinstance(facts.get("sop_progress"), dict) else {}
-    content_indexes = shared.get("content_indexes") if isinstance(shared.get("content_indexes"), dict) else {}
-    content_catalog = (
-        content_indexes.get("available_sop")
-        if isinstance(content_indexes.get("available_sop"), dict)
-        else {}
-    )
-    catalog_by_id = {
-        str(item.get("content_id") or "").strip(): item
-        for item in content_catalog.get("sop_packs") or []
-        if isinstance(item, dict) and str(item.get("content_id") or "").strip()
-    }
-    structured_delivered_assets = [
-        {
-            "ref": f"sop_completed:{content_id}",
-            "content_id": content_id,
-            "asset_role": str((catalog_by_id.get(content_id) or {}).get("asset_role") or "").strip(),
-        }
-        for raw_content_id in sop_progress.get("completed_pack_ids") or []
-        if (content_id := str(raw_content_id).strip()) in catalog_by_id
-    ]
-    sent_messages = (
-        facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
-    )
-    store_delivery = (
-        sent_messages.get("store_address_delivery")
-        if isinstance(sent_messages.get("store_address_delivery"), dict)
-        else {}
-    )
-    store_delivery_request_id = str(store_delivery.get("request_id") or "").strip()
-    store_delivery_ids = [
-        str(item).strip()
-        for item in store_delivery.get("latest_batch_store_ids") or []
-        if str(item).strip()
-    ]
-    if (
-        str(store_delivery.get("batch_confidence") or "").strip() == "high"
-        and store_delivery_request_id
-        and store_delivery_ids
-    ):
-        structured_delivered_assets.append(
-            {
-                "ref": f"store_delivery:{store_delivery_request_id}",
-                "content_id": "",
-                "asset_role": "address_evidence",
-                "store_ids": list(dict.fromkeys(store_delivery_ids)),
-                "delivered_at": str(store_delivery.get("last_sent_at") or "").strip(),
-            }
-        )
-    structured_delivery_refs = [item["ref"] for item in structured_delivered_assets]
-    structured_deposit_refs = [
-        item["ref"]
-        for item in structured_delivered_assets
-        if item.get("asset_role") == "activity_offer"
-    ]
-    structured_supporting_refs = [
-        item["ref"]
-        for item in structured_delivered_assets
-        if item.get("asset_role") in {
-            "address_evidence",
-            "effect_evidence",
-            "objection_support",
-        }
-    ]
-    prior_assistant_refs = [
-        str(item.get("message_ref") or "").strip()
-        for item in shared.get("conversation") or []
-        if isinstance(item, dict)
-        and str(item.get("role") or "").strip().lower() in {"assistant", "staff", "ai"}
-        and str(item.get("message_ref") or "").strip()
-    ]
-    prior_assistant_message_refs = list(dict.fromkeys(prior_assistant_refs))
-    prior_message_and_delivery_refs = list(
-        dict.fromkeys([*valid_message_refs, *structured_delivery_refs])
-    )
-    allowed_selected_content_ids = [
-        str(item.get("content_id") or item.get("id") or "").strip()
-        for item in joined.get("content_candidates") or []
-        if isinstance(item, dict)
-        and str(item.get("content_id") or item.get("id") or "").strip()
-        and str(item.get("delivery_status") or "").strip() != "completed"
-    ]
-    content_candidate_reference_options = [
-        {
-            "content_id": content_id,
-            "used_fact_ref": f"content_asset:{content_id}",
-        }
-        for content_id in dict.fromkeys(allowed_selected_content_ids)
-    ]
-    sales_recall = joined.get("sales_recall") if isinstance(joined.get("sales_recall"), dict) else {}
-    sales_recall_reference_options = [
-        {
-            "ref": f"sales_recall:{source_id}",
-            "source_id": source_id,
-            "authority": "reference_only_not_business_fact",
-        }
-        for item in sales_recall.get("candidates") or []
-        if isinstance(item, dict)
-        and (source_id := str(item.get("source_id") or "").strip())
-    ]
-    follow_sequence_reference_options = [
-        {
-            "sequence_id": sequence_id,
-            "sequence_name": str(item.get("sequence_name") or "").strip(),
-            "valid_step_ids": [
-                str(step.get("step_id") or "").strip()
-                for step in item.get("steps") or []
-                if isinstance(step, dict) and str(step.get("step_id") or "").strip()
-            ],
-            "authority": "business_strategy_reference_not_mandatory_state",
-        }
-        for item in sales_recall.get("sequence_candidates") or []
-        if isinstance(item, dict)
-        and (sequence_id := str(item.get("sequence_id") or "").strip())
-    ]
-    follow_script_reference_options = [
-        {
-            "script_code": str(item.get("source_script_code") or "").strip(),
-            "content_id": str(item.get("content_id") or "").strip(),
-            "paragraph_no": int(item.get("paragraph_no") or 0),
-            "sequence_links": copy.deepcopy(item.get("sequence_links") or []),
-        }
-        for item in joined.get("content_candidates") or []
-        if isinstance(item, dict)
-        and str(item.get("content_id") or "").startswith("follow_script:")
-    ]
-    tool_facts = joined.get("tool_facts") if isinstance(joined.get("tool_facts"), dict) else {}
-    tool_fact_reference_options = [
-        {
-            "ref": f"tool_fact:{tool_name}",
-            "tool_name": tool_name,
-        }
-        for raw_tool_name, tool_fact in tool_facts.items()
-        if (tool_name := str(raw_tool_name or "").strip())
-        and isinstance(tool_fact, dict)
-    ]
-    valid_commit_evidence = _valid_commit_evidence(state, shared)
-    authoritative_fact_reference_options = [
-        {
-            "ref": str(item.get("ref") or "").strip(),
-            "kind": str(item.get("kind") or "").strip(),
-        }
-        for item in valid_commit_evidence
-        if isinstance(item, dict)
-        and str(item.get("ref") or "").strip()
-        and str(item.get("kind") or "").strip() != "customer_message"
-    ]
-    registration_fact_status = _registration_fact_status(state, shared)
-    store_fact_status = _store_fact_status(joined)
-    structured_delivery_options = _structured_delivery_options(joined, state=state)
-    current_message = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
-    protocol_events = (
-        current_message.get("protocol_events")
-        if isinstance(current_message.get("protocol_events"), list)
-        else []
-    )
-    payment_channel_availability = _payment_channel_availability(
-        structured_delivery_options=structured_delivery_options,
-        authoritative_paid=bool(registration_fact_status.get("authoritative_paid")),
-        protocol_events=protocol_events,
-    )
-    reply_evidence = copy.deepcopy(joined)
-    reply_shared = (
-        reply_evidence.get("shared_context")
-        if isinstance(reply_evidence.get("shared_context"), dict)
-        else {}
-    )
-    reply_authoritative = (
-        reply_shared.get("authoritative_facts")
-        if isinstance(reply_shared.get("authoritative_facts"), dict)
-        else {}
-    )
-    # The complete permission inventory is needed by the Tool Planner, but the
-    # final Reply only needs the compact scope plus current-turn matched facts.
-    # Removing this duplicate bulk does not remove any unique business fact.
-    reply_authoritative.pop("raw_visible_store_records", None)
-    return {
-        "schema_version": "parallel_reply_input_v2",
-        # Put the current turn's compact tool contract before the larger evidence
-        # envelope. This changes no business decision; it prevents authoritative
-        # tool results from being buried behind pre-tool content candidates.
-        "structured_delivery_options": structured_delivery_options,
-        "payment_channel_availability": payment_channel_availability,
-        "tool_fact_reference_options": tool_fact_reference_options,
-        "authoritative_fact_reference_options": authoritative_fact_reference_options,
-        "registration_fact_status": registration_fact_status,
-        "store_fact_status": store_fact_status,
-        "current_turn_structural_constraints": _current_turn_structural_constraints(
-            store_fact_status=store_fact_status,
-            structured_delivery_options=structured_delivery_options,
-        ),
-        "evidence": reply_evidence,
-        "ai_sales_policy": copy.deepcopy(shared.get("ai_sales_policy") or {}),
-        "sales_strategy_catalog": copy.deepcopy(shared.get("sales_strategy_catalog") or {}),
-        "valid_message_refs": valid_message_refs,
-        "valid_customer_message_refs": valid_customer_message_refs,
-        "structured_delivered_assets": structured_delivered_assets,
-        "valid_deposit_evidence_refs": list(
-            dict.fromkeys(
-                [
-                    *prior_assistant_message_refs,
-                    *structured_deposit_refs,
-                    *structured_supporting_refs,
-                    "current_message",
-                ]
-            )
-        ),
-        "structured_prior_activity_refs": structured_deposit_refs,
-        "structured_prior_supporting_refs": structured_supporting_refs,
-        # Neutral provenance pools. Their names intentionally do not label any
-        # message as an activity offer or a supporting sales key.
-        "prior_assistant_message_refs": prior_assistant_message_refs,
-        "prior_message_and_delivery_refs": prior_message_and_delivery_refs,
-        "allowed_selected_content_ids": list(dict.fromkeys(allowed_selected_content_ids)),
-        # Exact schema references only; Reply still decides whether to adopt an asset.
-        "content_candidate_reference_options": content_candidate_reference_options,
-        "sales_recall_reference_options": sales_recall_reference_options,
-        "follow_sequence_reference_options": follow_sequence_reference_options,
-        "follow_script_reference_options": follow_script_reference_options,
-        # Neutral provenance identifiers for this turn's actual tool outputs.
-        # They do not describe what the facts mean or whether Reply should use them.
-        "valid_commit_evidence": valid_commit_evidence,
-        "output_contract": {
-            "reply_messages": "required customer-visible message list",
-            "selected_content_ids": "optional; candidate IDs actually adopted and fully delivered",
-            "sales_judgment": (
-                "required compact current-turn judgment: primary_objective, customer_friction_observation and posture; "
-                "only the first two observations may be replayed as low-authority evidence"
-            ),
-            "knowledge_use": (
-                "optional; actual sequence, step or one primary script adopted this turn, never Router-only nominations; "
-                "script_id may record a text-only script that materially shaped the reply"
-            ),
-            "payment_assessment": "optional; include only for a current payment context with exact evidence refs",
-            "deposit_evidence": "optional; required only when payment_collection is actually emitted",
-            "safety_assessment": "optional; include only for a current non-none risk using exact customer refs",
-            "party_size_assessment": "optional; include only for explicit party-size payment evidence",
-            "commit_actions": (
-                "optional validated deferred writes after authoritative payment; add_customer_mobile arguments={mobile}; "
-                "create_work_order arguments={customer_name,mobile,store_id}"
-            ),
-        },
-    }
-
 
 def _current_turn_structural_constraints(
     *,
@@ -1546,7 +768,6 @@ def _current_turn_structural_constraints(
         )
     return constraints
 
-
 def _shared_context(
     state: AgentState,
     *,
@@ -1636,7 +857,6 @@ def _shared_context(
         ],
     }
 
-
 def _current_protocol_events(request_context: dict[str, Any]) -> list[dict[str, str]]:
     """Normalize explicit platform event markers without interpreting payment state."""
 
@@ -1663,7 +883,6 @@ def _current_protocol_events(request_context: dict[str, Any]) -> list[dict[str, 
         )
     return output
 
-
 def _tool_planner_shared_context(state: AgentState) -> dict[str, Any]:
     """Remove sales/content guidance from the read-only tool planning boundary."""
 
@@ -1684,7 +903,6 @@ def _tool_planner_shared_context(state: AgentState) -> dict[str, Any]:
         if rules.get(key) not in (None, "", [], {})
     }
     return shared
-
 
 def _store_scope_for_models(value: dict[str, Any]) -> dict[str, Any]:
     """Keep coverage evidence while withholding store answers from models."""
@@ -1728,7 +946,6 @@ def _store_scope_for_models(value: dict[str, Any]) -> dict[str, Any]:
         output["relevant_regions"] = regions
     return output
 
-
 def _content_index_with_delivery_status(
     content_catalog: dict[str, Any],
     sop_progress: dict[str, Any],
@@ -1768,7 +985,6 @@ def _content_index_with_delivery_status(
         "schema_version": "content_asset_index_v2",
         "sop_packs": items,
     }
-
 
 def _v3_available_assets_for_turn(
     state: AgentState,
@@ -1881,14 +1097,12 @@ def _v3_available_assets_for_turn(
         )
     return _dedupe_content_candidates(output)
 
-
 def _has_structured_delivery(messages: list[dict[str, Any]]) -> bool:
     return any(
         str(item.get("type") or "").strip().lower() not in {"", "text"}
         for item in messages
         if isinstance(item, dict)
     )
-
 
 def _v3_payment_asset_available(
     state: AgentState,
@@ -1902,7 +1116,6 @@ def _v3_payment_asset_available(
     # option using a Python-derived sales stage such as "activity delivered".
     del sop_progress, sent_summary
     return _v3_payment_collection_delivery_available(state)
-
 
 def _asset_delivery_observation(
     item: dict[str, Any],
@@ -1933,10 +1146,8 @@ def _asset_delivery_observation(
         }
     return {"sent_count": 0, "last_sent_at": "", "source": "sent_message_summary"}
 
-
 def _sent_effect_message(message: dict[str, Any], sent_urls: set[str]) -> bool:
     return bool((url := _structured_media_url(message)) and url in sent_urls)
-
 
 def _structured_media_url(message: dict[str, Any]) -> str:
     if not isinstance(message, dict) or str(message.get("type") or "") not in {"image", "video"}:
@@ -1945,7 +1156,6 @@ def _structured_media_url(message: dict[str, Any]) -> str:
     if isinstance(content, dict):
         return str(content.get("url") or "").strip()
     return str(content or "").strip()
-
 
 def _dedupe_content_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
@@ -1961,7 +1171,6 @@ def _dedupe_content_candidates(items: list[dict[str, Any]]) -> list[dict[str, An
         output.append(item)
         seen.add(content_id)
     return output
-
 
 def _sales_strategy_retrieval(
     state: AgentState,
@@ -2006,7 +1215,6 @@ def _sales_strategy_retrieval(
             "error": str(exc),
         }
 
-
 def _nested_asset_ids(value: Any) -> set[str]:
     result: set[str] = set()
     if isinstance(value, dict):
@@ -2019,7 +1227,6 @@ def _nested_asset_ids(value: Any) -> set[str]:
         for nested in value:
             result.update(_nested_asset_ids(nested))
     return result
-
 
 def _sales_strategy_content_candidates(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
@@ -2065,7 +1272,6 @@ def _sales_strategy_content_candidates(values: list[dict[str, Any]]) -> list[dic
             }
         )
     return result
-
 
 def _structured_delivery_options(joined: dict[str, Any], *, state: AgentState) -> dict[str, Any]:
     """Surface current-turn structured options without deciding to use them."""
@@ -2127,7 +1333,6 @@ def _structured_delivery_options(joined: dict[str, Any], *, state: AgentState) -
         }
     return options
 
-
 def _payment_channel_availability(
     *,
     structured_delivery_options: dict[str, Any],
@@ -2171,7 +1376,6 @@ def _payment_channel_availability(
         "source": "platform_payment_channel_contract",
     }
 
-
 def _canonical_store_resolution_for_delivery(
     joined: dict[str, Any],
     *,
@@ -2211,7 +1415,6 @@ def _canonical_store_resolution_for_delivery(
     )
     resolution = lookup.get("store_resolution_fact")
     return resolution if isinstance(resolution, dict) else {}
-
 
 def _payment_collection_delivery_available(state: AgentState) -> bool:
     """Expose the payment card as material only after structural quote evidence.
@@ -2258,7 +1461,6 @@ def _payment_collection_delivery_available(state: AgentState) -> bool:
         return False
     return True
 
-
 def _v3_payment_collection_delivery_available(state: AgentState) -> bool:
     """Expose V3 payment structures without deciding the sales timing.
 
@@ -2290,7 +1492,6 @@ def _v3_payment_collection_delivery_available(state: AgentState) -> bool:
         existing_fact=existing_fact,
     )
     return not is_paid_deposit_state(resolved.get("deposit_state"))
-
 
 def _activity_offer_delivered(
     *,
@@ -2354,7 +1555,6 @@ def _activity_offer_delivered(
         }:
             return True
     return False
-
 
 def _store_fact_status(joined: dict[str, Any]) -> dict[str, Any]:
     """Copy compact location facts without selecting a clarification or store."""
@@ -2433,7 +1633,6 @@ def _store_fact_status(joined: dict[str, Any]) -> dict[str, Any]:
         "source": "normalized_tool_facts",
     }
 
-
 def _conversation(state: AgentState) -> list[dict[str, Any]]:
     """Return complete prior history; the current turn lives in current_message."""
 
@@ -2463,7 +1662,6 @@ def _conversation(state: AgentState) -> list[dict[str, Any]]:
         if last_role in {"customer", "user"}:
             output.pop()
     return output
-
 
 def _authoritative_order_payment_facts(state: AgentState) -> dict[str, Any]:
     """Expose platform facts without old-memory ordering or sales-state labels."""
@@ -2498,7 +1696,6 @@ def _authoritative_order_payment_facts(state: AgentState) -> dict[str, Any]:
         output["appointment"] = copy.deepcopy(context.get("appointment") or {})
     return {key: value for key, value in output.items() if value not in (None, "", [], {})}
 
-
 def _authoritative_existing_payment(state: AgentState) -> tuple[str, str, Any]:
     source = str(state.get("payment_source") or "").strip()
     payment_state = str(state.get("payment_state") or "").strip()
@@ -2516,7 +1713,6 @@ def _authoritative_existing_payment(state: AgentState) -> tuple[str, str, Any]:
     ):
         return stored_state, stored_source, stored
     return "", "", None
-
 
 def _commit_action_violations(
     name: str,
@@ -2608,7 +1804,6 @@ def _commit_action_violations(
         return violations
     return violations
 
-
 def _authoritative_registration_facts(state: AgentState) -> dict[str, Any]:
     """Expose only structured registration values and their source."""
 
@@ -2636,7 +1831,6 @@ def _authoritative_registration_facts(state: AgentState) -> dict[str, Any]:
     if len(mobile) == 11:
         output["mobile"] = mobile
     return output if len(output) > 1 else {}
-
 
 def _registration_fact_status(
     state: AgentState,
@@ -2707,7 +1901,6 @@ def _registration_fact_status(
         output["arrival_intent"] = arrival_intent
     return output
 
-
 def _valid_commit_evidence(
     state: AgentState,
     shared_context: dict[str, Any] | None = None,
@@ -2773,7 +1966,6 @@ def _valid_commit_evidence(
         deduped.append(item)
     return deduped
 
-
 def _commit_value_has_evidence(
     value: str,
     refs: list[str],
@@ -2794,7 +1986,6 @@ def _commit_value_has_evidence(
         if expected in actual:
             return True
     return False
-
 
 def _visible_store_ids(state: AgentState) -> set[str]:
     store_knowledge = (
@@ -2823,7 +2014,6 @@ def _visible_store_ids(state: AgentState) -> set[str]:
         if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
     }
 
-
 def _tool_store_anchor_ids(state: AgentState) -> set[str]:
     results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
     output: set[str] = set()
@@ -2843,7 +2033,6 @@ def _tool_store_anchor_ids(state: AgentState) -> set[str]:
             pending.extend(item for item in value if isinstance(item, (dict, list)))
     return output
 
-
 def _commit_customer_scope(state: AgentState) -> dict[str, Any]:
     shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
     scope = shared.get("customer_scope") if isinstance(shared.get("customer_scope"), dict) else {}
@@ -2854,14 +2043,12 @@ def _commit_customer_scope(state: AgentState) -> dict[str, Any]:
         return {**scope, "persistence_allowed": False, "scope_conflict": "wechat"}
     return scope
 
-
 def _parallel_payment_is_paid(state: AgentState) -> bool:
     shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
     facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
     order_payment = facts.get("orders_and_payment") if isinstance(facts.get("orders_and_payment"), dict) else {}
     resolved = order_payment.get("resolved_payment") if isinstance(order_payment.get("resolved_payment"), dict) else {}
     return is_paid_deposit_state(resolved.get("deposit_state"))
-
 
 def _normalize_read_only_tool_calls(
     raw: Any,
@@ -2912,7 +2099,6 @@ def _normalize_read_only_tool_calls(
         calls.append(normalized)
     return calls, violations
 
-
 def _read_only_tool_argument_violations(name: str, arguments: dict[str, Any]) -> list[str]:
     """Validate tool contracts without inventing business meaning or argument values."""
 
@@ -2923,7 +2109,6 @@ def _read_only_tool_argument_violations(name: str, arguments: dict[str, Any]) ->
         if not any(str(arguments.get(key) or "").strip() for key in ("query", "origin", "address")):
             return [f"tool_call_missing_location_argument:{name}"]
     return []
-
 
 def _canonical_tool_evidence_ref(value: str) -> str:
     """Normalize field-path spelling without inferring or replacing evidence."""
@@ -2938,7 +2123,6 @@ def _canonical_tool_evidence_ref(value: str) -> str:
         return match.group(1)
     return ref
 
-
 def _shared_context_evidence_refs(state: AgentState) -> set[str]:
     shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
     refs = {"current_message"}
@@ -2949,7 +2133,6 @@ def _shared_context_evidence_refs(state: AgentState) -> set[str]:
         if ref:
             refs.add(ref)
     return refs
-
 
 def _request_from_state(state: AgentState) -> ChatRequest:
     return ChatRequest(
@@ -2970,7 +2153,6 @@ def _request_from_state(state: AgentState) -> ChatRequest:
         appointment_time=state.get("appointment_time"),
         request_context=dict(state.get("request_context") or {}),
     )
-
 
 def _gate_conversation_history(state: AgentState) -> list[str]:
     """Give Gate the same full, timestamped conversation that Reply receives."""
@@ -2993,18 +2175,15 @@ def _gate_conversation_history(state: AgentState) -> list[str]:
         return output
     return [str(item) for item in state.get("conversation_history") or []]
 
-
 def _message_type(state: AgentState) -> str:
     context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     return str(context.get("msgtype") or ("image" if state.get("file_image") else "text"))
-
 
 def _gate_route_advice(result: dict[str, Any]) -> str:
     # Gate and Tool Planner always run in parallel. This field only describes
     # whether Gate produced candidate evidence; it must not inherit a legacy
     # direct-reply route or treat legacy reply_messages as a valid candidate.
     return "content_only" if result.get("candidate_packs") else "tools_only"
-
 
 def _authority_conflicts(state: AgentState, tool_results: dict[str, Any]) -> list[dict[str, Any]]:
     conflicts: list[dict[str, Any]] = []
@@ -3017,12 +2196,10 @@ def _authority_conflicts(state: AgentState, tool_results: dict[str, Any]) -> lis
             conflicts.append({"section": tool_name, "type": "tool_error", "detail": result.get("error")})
     return conflicts
 
-
 def _conversation_ends_with(messages: list[dict[str, Any]], content: str) -> bool:
     if not messages:
         return False
     return str(messages[-1].get("content") or "").strip() == content
-
 
 def _branch_trace_output(result: dict[str, Any]) -> dict[str, Any]:
     output = {
@@ -3037,7 +2214,6 @@ def _branch_trace_output(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(selector, dict) and isinstance(selector.get("model_usage"), dict):
         output["selector_model_usage"] = copy.deepcopy(selector["model_usage"])
     return output
-
 
 def _completed_parallel_branch(
     result: dict[str, Any] | BaseException,
@@ -3060,14 +2236,11 @@ def _completed_parallel_branch(
     )
     return output
 
-
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [copy.deepcopy(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
-
 def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
-
 
 def _drop_keys(value: dict[str, Any], keys: set[str]) -> dict[str, Any]:
     return {key: copy.deepcopy(item) for key, item in value.items() if key not in keys}

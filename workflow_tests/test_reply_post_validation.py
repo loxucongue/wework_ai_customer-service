@@ -12,20 +12,22 @@ from app.graph.nodes.reply_nodes import (
     _parallel_generic_reply_repair_messages,
     _parallel_reply_repair_context,
     _reply_validation_state,
-    create_synthesize_reply_node,
+)
+from app.graph.nodes.reply_generation import (
     _run_model_led_reply_pipeline,
 )
 from app.graph.nodes.reply_validation import (
     _validate_parallel_payment_boundaries,
     _validate_parallel_reply_consistency,
     completed_parallel_selected_content_ids,
-    debug_message_contents,
     validate_reply_consistency,
     validated_model_messages,
 )
 from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT
 from app.prompts.v3_sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
-from app.graph.nodes.parallel_reply_chain import TOOL_PLANNER_SYSTEM_PROMPT
+from app.graph.nodes.reply_contract import (
+    TOOL_PLANNER_SYSTEM_PROMPT,
+)
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 
 
@@ -681,7 +683,6 @@ def test_unavailable_payment_channel_metadata_does_not_block_reply_without_payme
 
 
 def test_parallel_rules_expose_customer_charge_fact_to_reply_and_auditor() -> None:
-    from app.policies.business_rules import parallel_reply_business_rules_for_model
 
     rules = parallel_reply_business_rules_for_model()
 

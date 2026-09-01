@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import copy
+
 import json
-import time
+
+
 from typing import Any, Callable
 
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
-from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
+
+
 from app.graph.nodes.reply_quality import (
-    collect_reply_observation_metrics,
     collect_reply_soft_warnings,
 )
+
 from app.graph.nodes.reply_validation import (
     _paid_deposit_context,
     _parallel_paid_deposit_context,
@@ -20,25 +23,32 @@ from app.graph.nodes.reply_validation import (
     completed_parallel_selected_content_ids,
     validate_reply_consistency,
 )
+
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
-from app.graph.nodes.parallel_reply_chain import parallel_reply_payload
-from app.graph.nodes.reply_admission import validate_model_led_reply_admission
-from app.prompts.reply_synthesizer import (
-    alias_reply_reference_fields,
-    build_parallel_reply_messages,
-    restore_reply_output_references,
+
+from app.graph.nodes.material_selection import (
+    parallel_reply_payload,
 )
+
+
+from app.prompts.reply_synthesizer import (
+    build_parallel_reply_messages,
+)
+
 from app.graph.nodes.common import json_dumps
+
 from app.services.payment_collection import (
     normalize_payment_amount_text,
     payment_collection_content,
     payment_collection_context,
 )
+
 from app.services.risk_hold import explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
-from app.services.runtime_budget import can_start_model_retry, model_deadline_monotonic, runtime_budget_snapshot
+
+
 from app.graph.state import AgentState
+
 from app.services.model_client import ModelClient
-from app.services.trace_logger import TraceLogger
 
 
 REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售回复模型。完整 Reply 已超时或未通过硬事实校验，请根据去重后的完整业务事实重新生成客户可见回复。精简只删除重复字段，不代表可以忽略业务规则、最近历史或结构事实。
@@ -59,245 +69,6 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - payment_collection、store_address、image、human_handoff_notice 必须使用输入中已核验的结构事实。
 - 使用自然微信口吻，不解释系统故障，不输出 markdown 或内部分析。
 """
-
-
-class ReplyModelPipelineError(RuntimeError):
-    """Keep failed model payloads available to local traces and release audits."""
-
-    def __init__(self, message: str, *, model_call: dict[str, Any]) -> None:
-        super().__init__(message)
-        self.model_call = model_call
-
-
-def create_synthesize_reply_node(
-    *,
-    trace_logger: TraceLogger,
-    model_client: ModelClient | None,
-    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
-    reply_messages_for_model: Callable[[AgentState], list[dict[str, Any]]],
-    should_use_model_reply: Callable[[AgentState], bool],
-    validated_model_messages: Callable[..., list[dict[str, Any]]],
-    schedule_background_task: Callable[[AgentState], Any] | None = None,
-):
-    async def synthesize_reply(state: AgentState) -> dict[str, Any]:
-        with trace_logger.node(
-            state,
-            "synthesize_reply",
-            {"fact_envelope": state.get("fact_envelope"), "required_tools": state.get("required_tools")},
-        ) as span:
-            errors = list(state.get("errors", []))
-            warnings = list(state.get("warnings", []))
-            messages: list[dict[str, Any]] = []
-            planner_messages: list[dict[str, Any]] = []
-            reply_source = "main_model"
-            model_call: dict[str, Any] | None = None
-
-            planner_decision = str(state.get("planner_decision") or "").strip()
-            planner_messages = _normalize_planner_reply_messages(state.get("planner_reply_messages"), state=state)
-            planner_direct_valid = _planner_direct_reply_is_valid(planner_decision, planner_messages, state, warnings)
-            model_reply_ready = bool(model_client and model_client.available and should_use_model_reply(state))
-
-            if model_reply_ready and model_client is not None:
-                try:
-                    messages, model_call, reply_source = await _run_reply_model_pipeline(
-                        state=state,
-                        model_client=model_client,
-                        model_messages=reply_messages_for_model(state),
-                        validated_model_messages=validated_model_messages,
-                        debug_message_contents=debug_message_contents,
-                        warnings=warnings,
-                    )
-                except Exception as exc:
-                    primary_error = f"{type(exc).__name__}: {exc}"
-                    failed_model_call = getattr(exc, "model_call", None)
-                    model_call = (
-                        failed_model_call
-                        if isinstance(failed_model_call, dict)
-                        else model_call or {"name": "reply_synthesizer_model", "input": {}}
-                    )
-                    model_call["error"] = primary_error
-                    if planner_direct_valid:
-                        messages = _prepare_structural_messages(planner_messages, state, warnings)
-                        validate_reply_consistency(messages, state)
-                        reply_source = "planner_direct_reply_after_model_failure"
-                        model_call["fallback"] = {"strategy": "validated_planner_direct_reply", "reason": primary_error}
-                    else:
-                        errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": primary_error})
-                        messages = []
-            elif planner_direct_valid:
-                messages = _prepare_structural_messages(planner_messages, state, warnings)
-                validate_reply_consistency(messages, state)
-                reply_source = "planner_direct_reply_model_unavailable_fallback"
-                model_call = {
-                    "name": "planner_direct_reply",
-                    "input": {"decision": planner_decision, "messages": len(planner_messages), "reason": "reply_model_unavailable"},
-                    "output": {"messages": len(messages)},
-                }
-            else:
-                reason = "planner_no_reply_not_allowed_for_customer_turn" if planner_decision == "no_reply" else "reply_model_unavailable"
-                errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": reason})
-                model_call = {"name": "reply_synthesizer_model", "input": {}, "error": reason}
-
-            # The parallel chain leaves every customer-visible structure to Reply.
-            # Legacy callers keep this compatibility repair until that path is removed.
-            if not state.get("evidence_join"):
-                messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
-            else:
-                handoff_notice_appended = False
-            if handoff_notice_appended:
-                validate_reply_consistency(messages, state)
-                warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
-                if model_call:
-                    model_call["handoff_notice_appended"] = True
-            if not state.get("evidence_join"):
-                messages, stale_handoff_removed = _suppress_stale_handoff_notice(messages, state)
-            else:
-                stale_handoff_removed = False
-            if stale_handoff_removed:
-                validate_reply_consistency(messages, state)
-                warnings.append({"node": "synthesize_reply", "message": "stale_handoff_notice_removed"})
-                if model_call:
-                    model_call["stale_handoff_notice_removed"] = True
-            fallback_source = ""
-            if not messages and errors and state.get("evidence_join"):
-                messages = _store_fact_recovery_messages(state)
-                if messages:
-                    validate_model_led_reply_admission(messages, state)
-                    reply_source = "deterministic_store_fact_recovery"
-                    fallback_source = reply_source
-                    recovered_error = errors.pop() if errors else None
-                    warnings.append(
-                        {
-                            "node": "synthesize_reply",
-                            "message": "final_reply_recovered_from_store_facts",
-                            "detail": str(
-                                recovered_error.get("detail")
-                                if isinstance(recovered_error, dict)
-                                else recovered_error or ""
-                            )[:500],
-                        }
-                    )
-                    if model_call:
-                        model_call["fallback"] = {"strategy": reply_source}
-                        model_call["output"] = {"messages": len(messages)}
-            if not messages and errors:
-                messages = _neutral_final_fallback_messages()
-                reply_source = "deterministic_neutral_final_fallback"
-                fallback_source = reply_source
-                recovered_error = errors.pop() if errors else None
-                if recovered_error:
-                    warnings.append(
-                        {
-                            "node": "synthesize_reply",
-                            "message": "final_reply_recovered_by_neutral_fallback",
-                            "detail": str(recovered_error.get("detail") if isinstance(recovered_error, dict) else recovered_error),
-                        }
-                    )
-                warnings.append(
-                    {
-                        "node": "synthesize_reply",
-                        "message": "neutral_final_fallback_used",
-                    }
-                )
-                if model_call:
-                    model_call["fallback"] = {"strategy": reply_source}
-                    model_call["output"] = {"messages": len(messages)}
-                if not state.get("evidence_join"):
-                    messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
-                else:
-                    handoff_notice_appended_after_fallback = False
-                if handoff_notice_appended_after_fallback:
-                    warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
-                    if model_call:
-                        model_call["handoff_notice_appended"] = True
-            if messages and not state.get("evidence_join"):
-                warnings.extend(collect_reply_soft_warnings(messages, state))
-            if model_call:
-                span["entry"]["tool_calls"] = [model_call]
-            context_metrics = dict(state.get("model_context_metrics") or {})
-            context_metrics["reply"] = model_call_metrics(model_call, prompt_warning_threshold=16_000)
-            recovery_attempts = [
-                *list(state.get("recovery_attempts") or []),
-                *model_recovery_attempts(model_call, node="synthesize_reply"),
-            ]
-            recovery_reason = str(
-                (model_call or {}).get("primary_error")
-                or (model_call or {}).get("error")
-                or state.get("recovery_reason")
-                or ""
-            )[:500]
-            reply_metadata = (
-                _reply_metadata_from_model_call(model_call, state=state)
-                if state.get("evidence_join")
-                else {}
-            )
-            content_selection_metrics = (
-                _parallel_content_selection_metrics(
-                    state,
-                    messages=messages,
-                    selected_ids=reply_metadata.get("selected_content_ids", []),
-                    used_fact_refs=reply_metadata.get("used_fact_refs", []),
-                )
-                if state.get("evidence_join")
-                else {}
-            )
-            reply_observation_metrics = (
-                collect_reply_observation_metrics(messages, state)
-                if state.get("evidence_join")
-                else {}
-            )
-            output = {
-                "reply_messages": messages,
-                "used_fact_refs": reply_metadata.get("used_fact_refs", []),
-                "selected_content_ids": reply_metadata.get("selected_content_ids", []),
-                "reply_content_decisions": reply_metadata.get("content_decisions", []),
-                "content_selection_metrics": content_selection_metrics,
-                "reply_observation_metrics": reply_observation_metrics,
-                "reply_action": reply_metadata.get("action", "none"),
-                "reply_action_reason": reply_metadata.get("action_reason", ""),
-                "reply_sales_judgment": reply_metadata.get("sales_judgment", {}),
-                "reply_knowledge_use": reply_metadata.get("knowledge_use", {}),
-                "primary_task": reply_metadata.get("primary_task", {}),
-                "secondary_tasks": reply_metadata.get("secondary_tasks", []),
-                "realtime_intent": reply_metadata.get("realtime_intent", {}),
-                "emotion_decision": reply_metadata.get("emotion_decision", {}),
-                "closing_decision": reply_metadata.get("closing_decision", {}),
-                "cardpoint_decision": reply_metadata.get("cardpoint_decision", {}),
-                "reply_payment_assessment": reply_metadata.get("payment_assessment", {}),
-                "reply_payment_channel": reply_metadata.get("payment_channel", "none"),
-                "reply_deposit_evidence": reply_metadata.get("deposit_evidence", {}),
-                "reply_safety_assessment": reply_metadata.get("safety_assessment", {}),
-                "reply_party_size_assessment": reply_metadata.get("party_size_assessment", {}),
-                "commit_actions": reply_metadata.get("commit_actions", []),
-                "reply_source": reply_source,
-                "postprocess_changed": False,
-                "postprocess_reasons": [],
-                "errors": errors,
-                "warnings": warnings,
-                "model_deadline": {
-                    **dict(state.get("model_deadline") or {}),
-                    "reply": dict((model_call or {}).get("deadline") or {}),
-                },
-                "model_context_metrics": context_metrics,
-                "recovery_attempts": recovery_attempts,
-                "recovery_reason": recovery_reason,
-                "fallback_source": fallback_source,
-                "fallback_failure_node": "synthesize_reply" if fallback_source else "",
-                "fallback_retry_count": len(recovery_attempts) if fallback_source else 0,
-                "fallback_violation": recovery_reason if fallback_source else "",
-                "fallback_remaining_budget": (
-                    runtime_budget_snapshot(state, tier=_reply_model_tier(state))
-                    if fallback_source
-                    else {}
-                ),
-                "trace": state.get("trace", []),
-            }
-            span["output_snapshot"] = output
-            _schedule_profile_event_background(schedule_background_task, {**state, **output})
-            return output
-
-    return synthesize_reply
-
 
 def _parallel_content_selection_metrics(
     state: AgentState,
@@ -333,7 +104,6 @@ def _parallel_content_selection_metrics(
         "delivered_count": len(set(delivered_ids)),
     }
 
-
 def _planner_direct_reply_is_valid(
     planner_decision: str,
     planner_messages: list[dict[str, Any]],
@@ -363,409 +133,6 @@ def _planner_direct_reply_is_valid(
         )
         return False
 
-
-async def _run_reply_model_pipeline(
-    *,
-    state: AgentState,
-    model_client: ModelClient,
-    model_messages: list[dict[str, Any]],
-    validated_model_messages: Callable[..., list[dict[str, Any]]],
-    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
-    warnings: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
-    if state.get("evidence_join"):
-        return await _run_model_led_reply_pipeline(
-            state=state,
-            model_client=model_client,
-            model_messages=model_messages,
-            validated_model_messages=validated_model_messages,
-            debug_message_contents=debug_message_contents,
-            warnings=warnings,
-        )
-    tier = _reply_model_tier(state)
-    primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
-    recovery_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 15.0)
-    started_at = time.monotonic()
-    round_deadline = model_deadline_monotonic(state, tier=tier)
-    recovery_reserve_seconds = min(recovery_budget, 9.0)
-    primary_round_deadline = (
-        round_deadline - recovery_reserve_seconds
-        if round_deadline is not None
-        else None
-    )
-    primary_deadline = _capped_deadline(
-        started_at + primary_budget,
-        primary_round_deadline,
-    )
-    model_call: dict[str, Any] = {
-        "name": "reply_synthesizer_model",
-        "input": {"tier": tier, "required": True, "messages": model_messages},
-        "deadline": {
-            "primary_budget_seconds": primary_budget,
-            "recovery_budget_seconds": recovery_budget,
-            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
-        },
-    }
-    primary_error: Exception | None = None
-
-    if primary_deadline is not None and primary_deadline <= started_at + 1.0:
-        primary_error = TimeoutError("reply_primary_skipped_to_preserve_compact_recovery_budget")
-        model_call["primary_error"] = f"{type(primary_error).__name__}: {primary_error}"
-        model_call["primary"] = {
-            "status": "skipped_to_preserve_compact_recovery_budget",
-            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
-        }
-    else:
-        try:
-            payload = await _chat_json_with_deadline(
-                model_client,
-                model_messages,
-                tier=tier,
-                deadline_monotonic=primary_deadline,
-            )
-            model_call["raw_json_output"] = copy.deepcopy(payload)
-            model_call["usage"] = model_usage_snapshot(model_client)
-            try:
-                validation_state = _reply_validation_state(state, payload)
-                messages = validated_model_messages(payload, validation_state)
-                messages = _prepare_structural_messages(messages, validation_state, warnings)
-                validate_reply_consistency(messages, validation_state)
-                _raise_repairable_reply_quality_issues(messages, validation_state)
-            except Exception as validation_exc:
-                if not can_start_model_retry(state, tier=tier):
-                    model_call["retry"] = {
-                        "reason": f"{type(validation_exc).__name__}: {validation_exc}",
-                        "status": "skipped_insufficient_round_budget",
-                        "runtime_budget": runtime_budget_snapshot(state, tier=tier),
-                    }
-                    raise
-                retry_messages = _reply_retry_messages(
-                    model_messages,
-                    validation_exc,
-                    previous_payload=payload,
-                )
-                retry_deadline = _capped_deadline(
-                    time.monotonic() + recovery_budget,
-                    model_deadline_monotonic(state, tier=tier),
-                )
-                retry_payload = await _chat_json_with_deadline(
-                    model_client,
-                    retry_messages,
-                    tier=tier,
-                    deadline_monotonic=retry_deadline,
-                )
-                model_call["retry"] = {
-                    "reason": f"{type(validation_exc).__name__}: {validation_exc}",
-                    "messages": retry_messages,
-                    "raw_json_output": retry_payload,
-                    "usage": model_usage_snapshot(model_client),
-                }
-                retry_validation_state = _reply_validation_state(state, retry_payload)
-                messages = validated_model_messages(retry_payload, retry_validation_state)
-                messages = _prepare_structural_messages(messages, retry_validation_state, warnings)
-                validate_reply_consistency(messages, retry_validation_state)
-                _raise_repairable_reply_quality_issues(messages, retry_validation_state)
-            model_call["draft_messages"] = debug_message_contents(messages)
-            model_call["output"] = {"messages": len(messages)}
-            model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-            return messages, model_call, "main_model"
-        except Exception as exc:
-            primary_error = exc
-            model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
-
-    recovery_messages = _reply_recovery_messages(state, primary_error=primary_error)
-    if not can_start_model_retry(state, tier=tier):
-        model_call["recovery"] = {
-            "status": "skipped_insufficient_round_budget",
-            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
-        }
-        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise RuntimeError(f"reply primary failed: {type(primary_error).__name__}: {primary_error}") from primary_error
-    recovery_deadline = _capped_deadline(
-        time.monotonic() + recovery_budget,
-        model_deadline_monotonic(state, tier=tier),
-    )
-    recovery_call: dict[str, Any] = {
-        "tier": "fast",
-        "messages": recovery_messages,
-        "reason": f"{type(primary_error).__name__}: {primary_error}",
-    }
-    try:
-        recovery_payload = await _chat_json_with_deadline(
-            model_client,
-            recovery_messages,
-            tier="fast",
-            deadline_monotonic=recovery_deadline,
-        )
-        recovery_call["raw_json_output"] = recovery_payload
-        recovery_call["usage"] = model_usage_snapshot(model_client)
-        recovery_validation_state = _reply_validation_state(state, recovery_payload)
-        messages = validated_model_messages(recovery_payload, recovery_validation_state)
-        messages = _prepare_structural_messages(messages, recovery_validation_state, warnings)
-        validate_reply_consistency(messages, recovery_validation_state)
-        _raise_repairable_reply_quality_issues(messages, recovery_validation_state)
-    except Exception as recovery_exc:
-        recovery_call["error"] = f"{type(recovery_exc).__name__}: {recovery_exc}"
-        recovery_call["usage"] = model_usage_snapshot(model_client)
-        model_call["recovery"] = recovery_call
-        if not can_start_model_retry(state, tier=tier):
-            model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-            raise RuntimeError(
-                f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
-                f"compact recovery failed: {type(recovery_exc).__name__}: {recovery_exc}"
-            ) from recovery_exc
-
-        # The compact recovery can still omit one required card or media item.
-        # Give Reply one final, evidence-complete schema repair before using the
-        # neutral fallback. This retry does not choose customer intent or add a
-        # structure in Python; it only returns the exact validation violation to
-        # the model that owns the final reply.
-        final_repair_messages = _reply_recovery_messages(state, primary_error=recovery_exc)
-        final_repair_deadline = _capped_deadline(
-            time.monotonic() + recovery_budget,
-            model_deadline_monotonic(state, tier=tier),
-        )
-        final_repair_call: dict[str, Any] = {
-            "tier": tier,
-            "messages": final_repair_messages,
-            "reason": f"{type(recovery_exc).__name__}: {recovery_exc}",
-        }
-        try:
-            final_repair_payload = await _chat_json_with_deadline(
-                model_client,
-                final_repair_messages,
-                tier=tier,
-                deadline_monotonic=final_repair_deadline,
-            )
-            final_repair_call["raw_json_output"] = final_repair_payload
-            final_repair_call["usage"] = model_usage_snapshot(model_client)
-            final_validation_state = _reply_validation_state(state, final_repair_payload)
-            messages = validated_model_messages(final_repair_payload, final_validation_state)
-            messages = _prepare_structural_messages(messages, final_validation_state, warnings)
-            validate_reply_consistency(messages, final_validation_state)
-            _raise_repairable_reply_quality_issues(messages, final_validation_state)
-        except Exception as final_repair_exc:
-            final_repair_call["error"] = f"{type(final_repair_exc).__name__}: {final_repair_exc}"
-            final_repair_call["usage"] = model_usage_snapshot(model_client)
-            model_call["final_repair"] = final_repair_call
-            model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-            raise RuntimeError(
-                f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
-                f"compact recovery failed: {type(recovery_exc).__name__}: {recovery_exc}; "
-                f"final repair failed: {type(final_repair_exc).__name__}: {final_repair_exc}"
-            ) from final_repair_exc
-
-        model_call["final_repair"] = final_repair_call
-        model_call["draft_messages"] = debug_message_contents(messages)
-        model_call["output"] = {"messages": len(messages)}
-        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        return messages, model_call, "final_targeted_repair_model"
-
-    model_call["recovery"] = recovery_call
-    model_call["draft_messages"] = debug_message_contents(messages)
-    model_call["output"] = {"messages": len(messages)}
-    model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-    return messages, model_call, "compact_recovery_model"
-
-
-async def _run_model_led_reply_pipeline(
-    *,
-    state: AgentState,
-    model_client: ModelClient,
-    model_messages: list[dict[str, Any]],
-    validated_model_messages: Callable[..., list[dict[str, Any]]],
-    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
-    warnings: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
-    """Run the final sales brain once, then allow one evidence-complete repair.
-
-    Transport retries remain ModelClient-owned. This layer does not switch to a
-    smaller scene prompt or manufacture a business reply after validation.
-    """
-
-    tier = _reply_model_tier(state)
-    primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
-    repair_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 25.0)
-    started_at = time.monotonic()
-    round_deadline = model_deadline_monotonic(state, tier=tier)
-    repair_reserve_seconds = min(repair_budget, 9.0)
-    primary_round_deadline = (
-        round_deadline - repair_reserve_seconds
-        if round_deadline is not None
-        else None
-    )
-    primary_deadline = _capped_deadline(started_at + primary_budget, primary_round_deadline)
-    model_call: dict[str, Any] = {
-        "name": "reply_synthesizer_model",
-        "input": {"tier": tier, "required": True, "messages": model_messages},
-        "deadline": {
-            "primary_budget_seconds": primary_budget,
-            "repair_budget_seconds": repair_budget,
-            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
-        },
-    }
-
-    primary_error: Exception
-    if primary_deadline is not None and primary_deadline <= started_at + 1.0:
-        primary_error = TimeoutError("reply_primary_skipped_to_preserve_single_repair_budget")
-        model_call["primary_error"] = f"{type(primary_error).__name__}: {primary_error}"
-    else:
-        try:
-            payload = await _chat_json_with_deadline(
-                model_client,
-                model_messages,
-                tier=tier,
-                deadline_monotonic=primary_deadline,
-            )
-            model_call["raw_json_output"] = copy.deepcopy(payload)
-            model_call["usage"] = model_usage_snapshot(model_client)
-            messages = _validated_parallel_reply_payload(
-                state=state,
-                payload=payload,
-                validated_model_messages=validated_model_messages,
-                warnings=warnings,
-            )
-            model_call["validated_json_output"] = payload
-            model_call["draft_messages"] = debug_message_contents(messages)
-            model_call["output"] = {"messages": len(messages)}
-            model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-            return messages, model_call, "main_model"
-        except Exception as exc:
-            primary_error = exc
-            model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
-
-    if not can_start_model_retry(state, tier=tier):
-        model_call["repair"] = {
-            "status": "skipped_insufficient_round_budget",
-            "reason": f"{type(primary_error).__name__}: {primary_error}",
-            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
-        }
-        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise ReplyModelPipelineError(
-            f"reply primary failed and repair budget is unavailable: "
-            f"{type(primary_error).__name__}: {primary_error}",
-            model_call=model_call,
-        ) from primary_error
-
-    previous_payload = (
-        model_call.get("raw_json_output")
-        if isinstance(model_call.get("raw_json_output"), dict)
-        else None
-    )
-    repair_validation_context = alias_reply_reference_fields(
-        _parallel_reply_repair_context(state),
-        parallel_reply_payload(state),
-    )
-    if previous_payload is None:
-        # A transport timeout or protocol failure produced no business decision
-        # to repair. Re-run the complete Reply task with its full evidence rather
-        # than replacing it with the narrow structural-repair contract.
-        repair_messages = _reply_full_task_retry_messages(model_messages, primary_error)
-        retry_mode = "full_task_retry"
-        second_attempt_budget = repair_budget
-        second_attempt_tier = (
-            "secondary"
-            if bool(getattr(model_client, "secondary_available", False))
-            and hasattr(model_client, "chat_json_secondary")
-            else "fast"
-        )
-    else:
-        repair_messages = _reply_retry_messages(
-            model_messages,
-            primary_error,
-            previous_payload=previous_payload,
-            validation_context=repair_validation_context,
-        )
-        retry_mode = "targeted_repair"
-        second_attempt_budget = repair_budget
-        second_attempt_tier = tier
-    repair_deadline = _capped_deadline(
-        time.monotonic() + second_attempt_budget,
-        round_deadline,
-    )
-    repair_payload: dict[str, Any] | None = None
-    try:
-        if second_attempt_tier == "secondary":
-            repair_payload = await model_client.chat_json_secondary(
-                repair_messages,
-                temperature=0,
-                deadline_monotonic=repair_deadline,
-            )
-        else:
-            repair_payload = await _chat_json_with_deadline(
-                model_client,
-                repair_messages,
-                tier=second_attempt_tier,
-                deadline_monotonic=repair_deadline,
-            )
-        model_call["retry"] = {
-            "mode": retry_mode,
-            "tier": second_attempt_tier,
-            "reason": f"{type(primary_error).__name__}: {primary_error}",
-            "messages": repair_messages,
-            "raw_json_output": copy.deepcopy(repair_payload),
-            "usage": model_usage_snapshot(model_client),
-        }
-        messages = _validated_parallel_reply_payload(
-            state=state,
-            payload=repair_payload,
-            validated_model_messages=validated_model_messages,
-            warnings=warnings,
-        )
-        model_call["validated_json_output"] = repair_payload
-    except Exception as repair_error:
-        model_call["retry"] = {
-            **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
-            "mode": retry_mode,
-            "tier": second_attempt_tier,
-            "reason": f"{type(primary_error).__name__}: {primary_error}",
-            "error": f"{type(repair_error).__name__}: {repair_error}",
-            "usage": model_usage_snapshot(model_client),
-        }
-        model_call["deadline"]["elapsed_ms"] = int(
-            (time.monotonic() - started_at) * 1000
-        )
-        raise ReplyModelPipelineError(
-            f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
-            f"single repair failed: {type(repair_error).__name__}: {repair_error}",
-            model_call=model_call,
-        ) from repair_error
-
-    model_call["draft_messages"] = debug_message_contents(messages)
-    model_call["output"] = {"messages": len(messages)}
-    model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-    reply_source = (
-        "single_full_task_retry_model"
-        if retry_mode == "full_task_retry"
-        else "single_targeted_repair_model"
-    )
-    return messages, model_call, reply_source
-
-
-def _validated_parallel_reply_payload(
-    *,
-    state: AgentState,
-    payload: dict[str, Any],
-    validated_model_messages: Callable[..., list[dict[str, Any]]],
-    warnings: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    restore_reply_output_references(payload, parallel_reply_payload(state))
-    _validate_selected_content_ids(payload, state)
-    if _resolve_selected_content_media_placeholders(payload, state):
-        warnings.append(
-            {
-                "node": "synthesize_reply",
-                "message": "selected_content_media_placeholder_resolved",
-            }
-        )
-    _validate_parallel_raw_reply_schema(payload)
-    validation_state = _reply_validation_state(state, payload)
-    messages = validated_model_messages(payload, validation_state)
-    messages = _prepare_structural_messages(messages, validation_state, warnings)
-    validate_model_led_reply_admission(messages, validation_state)
-    return messages
-
-
 def _validate_selected_content_ids(payload: dict[str, Any], state: AgentState) -> None:
     """Require adoption metadata to reference a deliverable current candidate."""
 
@@ -784,7 +151,6 @@ def _validate_selected_content_ids(payload: dict[str, Any], state: AgentState) -
     invalid_ids = sorted(selected_ids - allowed_ids)
     if invalid_ids:
         raise ValueError("selected_content_id_not_selectable:" + ",".join(invalid_ids))
-
 
 def _resolve_selected_content_media_placeholders(
     payload: dict[str, Any],
@@ -857,7 +223,6 @@ def _resolve_selected_content_media_placeholders(
         resolved = True
     return resolved
 
-
 def _reply_reference_set(value: Any) -> set[str]:
     refs: set[str] = set()
 
@@ -878,7 +243,6 @@ def _reply_reference_set(value: Any) -> set[str]:
 
     visit(value)
     return refs
-
 
 def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
     """Reject lossy compatibility before customer-visible normalization."""
@@ -990,13 +354,11 @@ def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
     if handoff_count > 1:
         raise ValueError("duplicate_human_handoff_notice_in_single_turn")
 
-
 def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state: AgentState) -> None:
     # Style and phrasing diagnostics are observations only.  Promoting them
     # to hard repair would let Python overrule Reply's sales judgement.
     if not state.get("evidence_join"):
         collect_reply_soft_warnings(messages, state)
-
 
 def _prepare_structural_messages(
     messages: list[dict[str, Any]],
@@ -1050,7 +412,6 @@ def _prepare_structural_messages(
         if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
             warning.setdefault("node", "synthesize_reply")
     return prepared
-
 
 def _materialize_selected_content_media(
     messages: list[dict[str, Any]],
@@ -1146,7 +507,6 @@ def _materialize_selected_content_media(
         ]
     return _renumber(prepared), materialized_ids
 
-
 def _passive_media_url(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, dict):
@@ -1157,7 +517,6 @@ def _passive_media_url(message: dict[str, Any]) -> str:
             or ""
         ).strip()
     return str(content or "").strip()
-
 
 def _maybe_append_planner_payment_structure(
     messages: list[dict[str, Any]],
@@ -1184,7 +543,6 @@ def _maybe_append_planner_payment_structure(
             },
         ]
     )
-
 
 def _reply_recovery_messages(
     state: AgentState,
@@ -1218,7 +576,6 @@ def _reply_recovery_messages(
         {"role": "system", "content": REPLY_RECOVERY_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
-
 
 def _reply_metadata_from_model_call(
     model_call: dict[str, Any] | None,
@@ -1258,7 +615,6 @@ def _reply_metadata_from_model_call(
         "party_size_assessment": _normalized_party_size_assessment(payload.get("party_size_assessment")),
         "commit_actions": [item for item in payload.get("commit_actions") or [] if isinstance(item, dict)],
     }
-
 
 def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> AgentState:
     if not state.get("evidence_join"):
@@ -1339,7 +695,6 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
     ]
     return validation_state
 
-
 def _normalized_reply_action(value: Any) -> str:
     action = str(value or "none").strip()
     if action == "answer":
@@ -1350,7 +705,6 @@ def _normalized_reply_action(value: Any) -> str:
     if action not in {"none", "ask", "offer", "payment", "registration"}:
         return "none"
     return action
-
 
 def _reply_action_from_payload(payload: dict[str, Any]) -> str:
     """Derive the legacy action enum from explicit output structures.
@@ -1375,7 +729,6 @@ def _reply_action_from_payload(payload: dict[str, Any]) -> str:
     if isinstance(commit_actions, list) and any(isinstance(item, dict) for item in commit_actions):
         return "registration"
     return "none"
-
 
 def _normalized_content_decisions(value: Any) -> list[dict[str, str]]:
     """Keep model-owned candidate reasoning as audit metadata only."""
@@ -1410,7 +763,6 @@ def _normalized_content_decisions(value: Any) -> list[dict[str, str]]:
         )
         seen.add(content_id)
     return normalized
-
 
 def _normalized_follow_knowledge_use(
     value: Any,
@@ -1523,7 +875,6 @@ def _normalized_follow_knowledge_use(
         "authority": "reply_selected_reference_not_customer_fact",
     }
 
-
 def _legacy_normalized_structured_delivery_decisions(value: Any) -> list[dict[str, str]]:
     """Normalize the old V1 repair payload without entering the V2 contract."""
 
@@ -1547,7 +898,6 @@ def _legacy_normalized_structured_delivery_decisions(value: Any) -> list[dict[st
         )
     return normalized
 
-
 def _normalized_safety_assessment(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     status = str(raw.get("status") or "none").strip()
@@ -1557,7 +907,6 @@ def _normalized_safety_assessment(value: Any) -> dict[str, Any]:
         "status": status,
         "evidence_refs": _normalized_evidence_refs(raw.get("evidence_refs")),
     }
-
 
 def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
@@ -1573,7 +922,6 @@ def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
         "posture": posture,
         "reason": str(raw.get("reason") or "")[:500],
     }
-
 
 def _normalized_policy_decision(
     value: Any,
@@ -1750,17 +1098,14 @@ def _normalized_policy_decision(
         "cardpoint_decision": cardpoint_decision,
     }
 
-
 def _policy_string_list(value: Any, *, limit: int) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip()[:500] for item in value if str(item or "").strip()][:limit]
 
-
 def _policy_enum(value: Any, allowed: set[str], default: str) -> str:
     normalized = str(value or "").strip()
     return normalized if normalized in allowed else default
-
 
 def _normalized_deposit_evidence(value: Any, *, strict: bool = True) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
@@ -1774,7 +1119,6 @@ def _normalized_deposit_evidence(value: Any, *, strict: bool = True) -> dict[str
         "supporting_refs": _normalized_evidence_refs(raw.get("supporting_refs")),
         "current_intent_refs": _normalized_evidence_refs(raw.get("current_intent_refs")),
     }
-
 
 def _normalized_payment_assessment(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
@@ -1796,7 +1140,6 @@ def _normalized_payment_assessment(value: Any) -> dict[str, Any]:
         "evidence_refs": _normalized_evidence_refs(raw.get("evidence_refs")),
     }
 
-
 def _normalized_payment_channel(value: Any) -> str:
     raw = value if isinstance(value, dict) else {}
     status = str(raw.get("status") or "unknown").strip()
@@ -1811,7 +1154,6 @@ def _normalized_payment_channel(value: Any) -> str:
     if channel not in {"none", "payment_card", "transfer", "red_packet"}:
         return "none"
     return channel
-
 
 def _normalized_party_size_assessment(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
@@ -1841,12 +1183,10 @@ def _normalized_party_size_assessment(value: Any) -> dict[str, Any]:
         "evidence_refs": _normalized_evidence_refs(raw.get("evidence_refs")),
     }
 
-
 def _normalized_evidence_refs(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
-
 
 def _customer_message_refs(state: AgentState) -> set[str]:
     shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
@@ -1859,7 +1199,6 @@ def _customer_message_refs(state: AgentState) -> set[str]:
             refs.add(ref)
     refs.add("current_message")
     return refs
-
 
 def _canonical_assessment_refs(value: Any, valid_refs: set[str]) -> list[str]:
     """Normalize unambiguous reference notation without inferring semantics."""
@@ -1884,14 +1223,12 @@ def _canonical_assessment_refs(value: Any, valid_refs: set[str]) -> list[str]:
             output.append(ref)
     return output
 
-
 def _valid_customer_refs(value: Any, valid_refs: set[str]) -> list[str]:
     return [
         ref
         for ref in _canonical_assessment_refs(value, valid_refs)
         if ref in valid_refs
     ]
-
 
 def _compact_recovery_value(value: Any, *, depth: int = 0) -> Any:
     if depth >= 4:
@@ -1907,7 +1244,6 @@ def _compact_recovery_value(value: Any, *, depth: int = 0) -> Any:
     if isinstance(value, str):
         return value[:600]
     return value
-
 
 async def _chat_json_with_deadline(
     model_client: ModelClient,
@@ -1928,7 +1264,6 @@ async def _chat_json_with_deadline(
             raise
         return await model_client.chat_json(messages, tier=tier)
 
-
 def _model_budget_seconds(model_client: ModelClient, name: str, default: float) -> float:
     settings = getattr(model_client, "settings", None)
     value = getattr(settings, name, default) if settings is not None else default
@@ -1937,10 +1272,8 @@ def _model_budget_seconds(model_client: ModelClient, name: str, default: float) 
     except (TypeError, ValueError):
         return default
 
-
 def _capped_deadline(node_deadline: float, round_deadline: float | None) -> float:
     return min(node_deadline, round_deadline) if round_deadline is not None else node_deadline
-
 
 def _reply_full_task_retry_messages(
     messages: list[dict[str, Any]],
@@ -1957,7 +1290,6 @@ def _reply_full_task_retry_messages(
         "只输出一个完整、合法的严格 json 对象。"
     )
     return [*copy.deepcopy(messages), {"role": "user", "content": retry_instruction}]
-
 
 def _reply_retry_messages(
     messages: list[dict[str, Any]],
@@ -2083,7 +1415,6 @@ def _reply_retry_messages(
         ]
     return [*messages, *previous_output, {"role": "user", "content": retry_instruction}]
 
-
 def _parallel_generic_reply_repair_messages(
     messages: list[dict[str, Any]],
     exc: Exception,
@@ -2173,7 +1504,6 @@ def _parallel_generic_reply_repair_messages(
             "content": "这是一次事实与结构最小修复，不是重新制定销售策略。" + json_dumps(repair_contract),
         },
     ]
-
 
 def _legacy_parallel_generic_reply_repair_messages(
     messages: list[dict[str, Any]],
@@ -2289,7 +1619,6 @@ def _legacy_parallel_generic_reply_repair_messages(
         },
     ]
 
-
 def _parallel_repair_required_changes(violations: Any) -> list[dict[str, str]]:
     """Describe one of three generic repair obligations, never sales intent."""
 
@@ -2307,7 +1636,6 @@ def _parallel_repair_required_changes(violations: Any) -> list[dict[str, str]]:
             }
         )
     return required
-
 
 def _parallel_repair_failure_class(violations: list[str]) -> str:
     text = " ".join(violations).lower()
@@ -2335,7 +1663,6 @@ def _parallel_repair_failure_class(violations: list[str]) -> str:
     if any(marker in text for marker in structure_markers):
         return "structure_and_provenance"
     return "deterministic_fact_conflict"
-
 
 def _reply_payment_repair_guard(previous_payload: dict[str, Any] | None) -> str:
     """Keep repair focused without inferring payment semantics in Python.
@@ -2384,7 +1711,6 @@ def _reply_payment_repair_guard(previous_payload: dict[str, Any] | None) -> str:
             "不得只改 payment_assessment 枚举却保留发卡结构，也不得把红包静默改成转账。"
         )
     return ""
-
 
 def _reply_structural_repair_guard(
     error: str,
@@ -2727,7 +2053,6 @@ def _reply_structural_repair_guard(
     }
     return f"最高优先级最终结构清单（覆盖前面冲突的通用措辞）：{json_dumps(contract)}。"
 
-
 def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
     """Expose factual reference choices needed for schema repair."""
 
@@ -2820,12 +2145,10 @@ def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
         "authoritative_paid": bool(_parallel_paid_deposit_context(state)),
     }
 
-
 def _reply_model_tier(state: AgentState) -> str:
     if _needs_strong_reply_model(state):
         return "strong"
     return "reply"
-
 
 def _needs_strong_reply_model(state: AgentState) -> bool:
     if state.get("evidence_join"):
@@ -2851,11 +2174,6 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
         if any(marker in value for marker in ("complaint", "refund", "payment_exception", "risk", "handoff")):
             return True
     return False
-
-
-def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
-    return [{"type": "text", "order": 1, "content": "您稍等一下"}]
-
 
 def _maybe_build_required_payment_collection_fallback(
     state: AgentState,
@@ -2893,10 +2211,8 @@ def _maybe_build_required_payment_collection_fallback(
         ]
     )
 
-
 def _messages_have_payment_collection(messages: list[dict[str, Any]]) -> bool:
     return any(isinstance(item, dict) and str(item.get("type") or "") == "payment_collection" for item in messages)
-
 
 def _state_requires_payment_collection(state: AgentState) -> bool:
     payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
@@ -2914,11 +2230,9 @@ def _state_requires_payment_collection(state: AgentState) -> bool:
         return False
     return False
 
-
 def _state_has_paid_deposit_context(state: AgentState) -> bool:
     """Use the same authoritative paid-fact boundary as final validation."""
     return _paid_deposit_context(state)
-
 
 def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
     if not messages or _messages_have_handoff_notice(messages) or not _state_requests_handoff_notice(state):
@@ -2937,7 +2251,6 @@ def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: Agent
         ),
         True,
     )
-
 
 def _suppress_stale_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
     if _state_has_current_handoff_notice_signal(state):
@@ -2960,7 +2273,6 @@ def _suppress_stale_handoff_notice(messages: list[dict[str, Any]], state: AgentS
         return messages, False
     return _renumber(filtered), changed
 
-
 def _is_stale_handoff_context(state: AgentState) -> bool:
     if explicit_professional_assist_reason(state):
         return False
@@ -2970,7 +2282,6 @@ def _is_stale_handoff_context(state: AgentState) -> bool:
     if _contains_any(current, ("说了三遍", "说了很多遍", "一直问", "还问", "烦死了", "很烦", "不会回答", "强烈不满")):
         return False
     return True
-
 
 def _is_stale_handoff_status_text(text: str) -> bool:
     compact = "".join(str(text or "").split())
@@ -2986,7 +2297,6 @@ def _is_stale_handoff_status_text(text: str) -> bool:
     )
     return any(marker in compact for marker in stale_markers)
 
-
 def _message_text(content: Any) -> str:
     if isinstance(content, dict):
         for key in ("text", "handoff_reason", "reason", "url", "store_id", "amount"):
@@ -2996,20 +2306,17 @@ def _message_text(content: Any) -> str:
         return ""
     return str(content or "")
 
-
 def _messages_have_handoff_notice(messages: list[dict[str, Any]]) -> bool:
     return any(
         isinstance(item, dict) and str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}
         for item in messages
     )
 
-
 def _state_requests_handoff_notice(state: AgentState) -> bool:
     handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
     if bool(handoff.get("needed")):
         return True
     return _state_has_current_handoff_notice_signal(state)
-
 
 def _state_has_current_handoff_notice_signal(state: AgentState) -> bool:
     required_tools = state.get("required_tools") if isinstance(state.get("required_tools"), list) else []
@@ -3022,7 +2329,6 @@ def _state_has_current_handoff_notice_signal(state: AgentState) -> bool:
     structured = _structured_facts(state)
     assist_fact = structured.get("professional_assist") if isinstance(structured.get("professional_assist"), dict) else {}
     return str(assist_fact.get("status") or "") == "requested"
-
 
 def _handoff_notice_reason(state: AgentState) -> str:
     risk_hold = health_risk_hold(state)
@@ -3048,20 +2354,16 @@ def _handoff_notice_reason(state: AgentState) -> str:
             return reason[:180]
     return "高风险或人工诉求，需要内部关注"
 
-
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
-
 
 def _structured_facts(state: AgentState) -> dict[str, Any]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
     return structured if isinstance(structured, dict) else {}
 
-
 def _compact_text(value: Any) -> str:
     return "".join(str(value or "").split()).lower()
-
 
 def _reply_repair_hint(error: str) -> str:
     aggregate_marker = "parallel_reply_hard_violations::"
@@ -3449,7 +2751,6 @@ def _reply_repair_hint(error: str) -> str:
         return "本轮工具已经执行完，不能再说“马上查、帮您查一下、帮您找案例、稍后给您”。请直接基于已有事实回答；如果事实不足，只问客户补一个关键字段，或说明当前没有可发事实。"
     return ""
 
-
 def _filter_unsupported_media(
     messages: list[dict[str, Any]],
     state: AgentState,
@@ -3482,7 +2783,6 @@ def _filter_unsupported_media(
         )
     return _renumber(filtered)
 
-
 def _filter_unsupported_images(
     messages: list[dict[str, Any]],
     state: AgentState,
@@ -3490,7 +2790,6 @@ def _filter_unsupported_images(
 ) -> list[dict[str, Any]]:
     """Backward-compatible name; the safety filter now covers image and video media."""
     return _filter_unsupported_media(messages, state, warnings)
-
 
 def _case_image_urls(state: AgentState) -> set[str]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
@@ -3518,7 +2817,6 @@ def _case_image_urls(state: AgentState) -> set[str]:
     urls.update(_strategy_media_urls(state, "image_urls", "image_url"))
     return urls
 
-
 def _strategy_media_urls(state: AgentState, plural_key: str, singular_key: str) -> set[str]:
     urls: set[str] = set()
     for item in state.get("cardpoint_candidates") or []:
@@ -3530,23 +2828,19 @@ def _strategy_media_urls(state: AgentState, plural_key: str, singular_key: str) 
         urls.update(_normalize_image_url(str(value)) for value in values if str(value or "").strip())
     return urls
 
-
 def _normalize_image_url(value: str) -> str:
     return str(value or "").strip().replace("&amp;", "&")
-
 
 def _message_url(content: Any) -> str:
     if isinstance(content, dict):
         return str(content.get("url") or content.get("image_url") or "").strip()
     return str(content or "").strip()
 
-
 def _renumber(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for index, item in enumerate(messages, start=1):
         result.append({**item, "order": index})
     return result
-
 
 def _materialize_required_store_delivery(
     messages: list[dict[str, Any]],
@@ -3623,50 +2917,6 @@ def _materialize_required_store_delivery(
     ]
     return [*without_cards[:insert_at], *cards, *without_cards[insert_at:]], True
 
-
-def _store_fact_recovery_messages(state: AgentState) -> list[dict[str, Any]]:
-    """Return a factual store delivery when Reply failed after tools succeeded."""
-
-    resolution = _structured_facts(state).get("store_resolution_fact")
-    if not isinstance(resolution, dict):
-        return []
-    status = str(resolution.get("status") or "")
-    if status not in {"send_single", "send_multiple"}:
-        return []
-    required_ids = list(
-        dict.fromkeys(
-            str(item or "").strip()
-            for item in resolution.get("delivery_store_ids") or []
-            if str(item or "").strip()
-        )
-    )
-    expected_count = (
-        1
-        if status == "send_single"
-        else len(required_ids)
-        if resolution.get("allow_broad_scope_delivery")
-        else min(3, len(required_ids))
-    )
-    required_ids = required_ids[:expected_count]
-    if len(required_ids) != expected_count or not required_ids:
-        return []
-    intro = (
-        "按您这个位置，相对近的门店位置发您。"
-        if str(resolution.get("ranking_method") or "")
-        in {"haversine", "driving_route", "driving_route_shortlist"}
-        else "门店位置发您。"
-    )
-    return _renumber(
-        [
-            {"type": "text", "content": intro},
-            *[
-                {"type": "store_address", "content": {"store_id": store_id}}
-                for store_id in required_ids
-            ],
-        ]
-    )
-
-
 def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = None) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -3705,7 +2955,6 @@ def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = 
     messages, _ = _dedupe_payment_collection_messages(messages)
     return _normalize_payment_amount_text_messages(messages)
 
-
 def _dedupe_payment_collection_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
     output: list[dict[str, Any]] = []
     seen_payment = False
@@ -3721,7 +2970,6 @@ def _dedupe_payment_collection_messages(messages: list[dict[str, Any]]) -> tuple
             seen_payment = True
         output.append(item)
     return _renumber(output), changed
-
 
 def _normalize_payment_amount_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     amount = _first_payment_collection_amount(messages)
@@ -3742,7 +2990,6 @@ def _normalize_payment_amount_text_messages(messages: list[dict[str, Any]]) -> l
             output.append({**item, "content": normalize_payment_amount_text(str(content or ""), amount)})
     return _renumber(output)
 
-
 def _first_payment_collection_amount(messages: list[dict[str, Any]]) -> int:
     for item in messages:
         if not isinstance(item, dict) or str(item.get("type") or "") != "payment_collection":
@@ -3756,7 +3003,6 @@ def _first_payment_collection_amount(messages: list[dict[str, Any]]) -> int:
             return 10
         return amount
     return 10
-
 
 def _schedule_profile_event_background(
     schedule_background_task: Callable[[AgentState], Any] | None,

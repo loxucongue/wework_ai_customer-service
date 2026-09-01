@@ -3,10 +3,12 @@ from __future__ import annotations
 import inspect
 import json
 
-from app.graph.nodes.parallel_reply_chain import (
+from app.graph.nodes.reply_contract import (
     _content_gate_shared_context,
     _tool_planner_shared_context,
     _activity_offer_delivered,
+)
+from app.graph.nodes.sales_decision import (
     create_parallel_evidence_node,
 )
 from app.graph.nodes.derived_observations import build_derived_observations
@@ -28,7 +30,6 @@ from app.graph.nodes.reply_validation import (
 from app.graph.nodes.reply_admission import (
     _validate_structured_delivery_conversation_shape,
     validate_model_led_reply_admission,
-    validate_model_led_reply_admission,
 )
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.prompts.reply_synthesizer import (
@@ -37,7 +38,6 @@ from app.prompts.reply_synthesizer import (
     _render_authoritative_facts,
     _render_registration_fact_status,
     _render_tool_facts,
-    _render_must_follow,
     build_parallel_reply_messages,
     restore_reply_output_references,
 )

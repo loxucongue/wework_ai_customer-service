@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.schemas import ChatRequest
-from app.graph.nodes import parallel_reply_chain
-from app.graph.nodes.parallel_reply_chain import (
+from app.graph.nodes import reply_contract
+from app.graph.nodes.reply_contract import (
     _authoritative_order_payment_facts,
     _authoritative_registration_facts,
     _asset_delivery_observation,
@@ -23,11 +23,17 @@ from app.graph.nodes.parallel_reply_chain import (
     _run_tool_planner,
     _shared_context,
     _tool_planner_shared_context,
+)
+from app.graph.nodes.material_selection import (
     create_evidence_join_node,
+    parallel_reply_payload,
+)
+from app.graph.nodes.sales_decision import (
     create_parallel_evidence_node,
     create_post_store_semantic_evidence_node,
+)
+from app.graph.nodes.authoritative_context import (
     create_shared_context_node,
-    parallel_reply_payload,
 )
 from app.graph.graph_builder import ReplyGraphs
 from app.graph.planner.runtime_plan import planner_public_route
@@ -47,6 +53,8 @@ from app.graph.nodes.reply_nodes import (
     _reply_structural_repair_guard,
     _reply_validation_state,
     _validate_parallel_raw_reply_schema,
+)
+from app.graph.nodes.reply_generation import (
     create_synthesize_reply_node,
 )
 from app.prompts.v3_sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT, SOP_CHAT_GATE_SYSTEM_PROMPT
@@ -88,7 +96,7 @@ def test_completed_activity_asset_is_visible_as_prior_delivery_fact() -> None:
 
 
 def test_v3_sent_activity_asset_is_reference_only_not_new_delivery() -> None:
-    assets = parallel_reply_chain._v3_available_assets_for_turn(
+    assets = reply_contract._v3_available_assets_for_turn(
         _parallel_state("我再看看"),
         [
             {
@@ -163,7 +171,7 @@ def test_completed_content_id_is_not_selectable_this_turn() -> None:
 
 def test_v3_deposit_asset_does_not_force_the_one_person_card_template() -> None:
     state = _parallel_state("我和姐姐两个人怎么付")
-    assets = parallel_reply_chain._v3_available_assets_for_turn(
+    assets = reply_contract._v3_available_assets_for_turn(
         state,
         [
             {
@@ -481,7 +489,7 @@ def test_parallel_shared_content_catalog_does_not_expose_mainline_routing() -> N
 
 
 def test_parallel_tool_planner_independently_queries_missing_case_images() -> None:
-    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = reply_contract.TOOL_PLANNER_SYSTEM_PROMPT
 
     assert "只读 Tool Planner" in prompt
     assert "不选择 SOP、精准话术、销冠召回或成交理由" in prompt
@@ -506,7 +514,7 @@ def test_parallel_reply_prompt_uses_history_without_fixed_short_ack_script() -> 
 
 
 def test_protocol_event_summary_preserves_unverified_red_packet_boundary() -> None:
-    events = parallel_reply_chain._current_protocol_events(
+    events = reply_contract._current_protocol_events(
         {
             "merged_customer_messages": [
                 "今天下午交10元",
@@ -539,11 +547,11 @@ def test_protocol_payment_event_removes_duplicate_payment_delivery_options() -> 
         "merged_customer_messages": ["[external_redpacket消息]"],
     }
 
-    assert parallel_reply_chain._v3_payment_collection_delivery_available(state) is False
-    availability = parallel_reply_chain._payment_channel_availability(
+    assert reply_contract._v3_payment_collection_delivery_available(state) is False
+    availability = reply_contract._payment_channel_availability(
         structured_delivery_options={},
         authoritative_paid=False,
-        protocol_events=parallel_reply_chain._current_protocol_events(state["request_context"]),
+        protocol_events=reply_contract._current_protocol_events(state["request_context"]),
     )
     assert availability["payment_card"]["available"] is False
     assert availability["transfer"]["allowed"] is False
@@ -606,7 +614,7 @@ def test_reused_store_conclusion_preserves_scope_without_duplicate_card() -> Non
             "already_delivered_store_ids": ["383"],
         }
     )
-    constraints = parallel_reply_chain._current_turn_structural_constraints(
+    constraints = reply_contract._current_turn_structural_constraints(
         store_fact_status={
             "status": "reuse_confirmed_store",
             "exact_scope_has_store": False,
@@ -655,7 +663,7 @@ def test_parallel_content_gate_treats_recent_real_delivery_as_completed_and_stil
 
 
 def test_tool_planner_does_not_turn_truncated_history_into_a_new_location_question() -> None:
-    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = reply_contract.TOOL_PLANNER_SYSTEM_PROMPT
 
     assert "极短确认、仅标点追问或疑惑表达" in prompt
     assert "紧邻的未完成事实任务" in prompt
@@ -3681,7 +3689,7 @@ def test_tool_planner_rejects_missing_required_read_only_arguments() -> None:
 
 
 def test_tool_planner_prompt_requires_distance_for_parent_scope_location_fallback() -> None:
-    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = reply_contract.TOOL_PLANNER_SYSTEM_PROMPT
 
     assert "所有门店、地址、定位" in prompt
     assert "统一调用" in prompt
@@ -3689,7 +3697,7 @@ def test_tool_planner_prompt_requires_distance_for_parent_scope_location_fallbac
 
 
 def test_tool_planner_prompt_composes_recent_parent_city_with_current_district() -> None:
-    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = reply_contract.TOOL_PLANNER_SYSTEM_PROMPT
 
     assert "客户补充下级地名" in prompt
     assert "不在 Tool Planner 里重建最终目的地" in prompt
@@ -3709,7 +3717,7 @@ def test_sales_recall_wait_is_measured_from_parallel_start(monkeypatch) -> None:
     async def scenario():
         task = asyncio.create_task(asyncio.sleep(1))
         await asyncio.sleep(0.03)
-        return await parallel_reply_chain._finish_sales_recall(
+        return await reply_contract._finish_sales_recall(
             task,
             coze_client=_Client(),
             started=time.perf_counter() - 0.03,
@@ -3724,7 +3732,7 @@ def test_sales_recall_wait_is_measured_from_parallel_start(monkeypatch) -> None:
 
 
 def test_parallel_reply_exposes_store_delivery_as_structure_not_sales_decision() -> None:
-    constraints = parallel_reply_chain._current_turn_structural_constraints(
+    constraints = reply_contract._current_turn_structural_constraints(
         store_fact_status={"status": "send_multiple"},
         structured_delivery_options={
             "store_address": {"available_store_ids": ["601", "602"]}
@@ -3753,14 +3761,14 @@ def test_v3_prompts_treat_customer_reply_as_open_channel_without_forcing_pause_c
 
 
 def test_tool_planner_prompt_forbids_inventing_parent_for_raw_village_name() -> None:
-    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = reply_contract.TOOL_PLANNER_SYSTEM_PROMPT
 
     assert "改口到新地点" in prompt
     assert "地点解析模型处理" in prompt
 
 
 def test_tool_planner_prompt_maps_authenticity_doubt_to_same_dimension_evidence() -> None:
-    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = reply_contract.TOOL_PLANNER_SYSTEM_PROMPT
 
     assert "先判断紧邻话题被质疑对象" in prompt
     assert "若对象是效果或案例真实性" in prompt
@@ -4337,13 +4345,16 @@ def test_parallel_reply_fallback_trace_keeps_failed_raw_json_for_audit() -> None
 
     output = asyncio.run(node(state))
 
-    assert output["reply_source"] == "deterministic_neutral_final_fallback"
+    assert output["reply_source"] == "reply_failed"
+    assert output["reply_messages"] == []
+    assert output["commit_actions"] == []
+    assert output["fallback_source"] == ""
     model_call = state["trace"][-1]["tool_calls"][0]
     assert model_call["raw_json_output"] == {"reply_messages": []}
     assert model_call["retry"]["raw_json_output"] == {"reply_messages": []}
 
 
-def test_parallel_reply_failure_recovers_verified_store_card_instead_of_neutral_text() -> None:
+def test_parallel_reply_failure_does_not_manufacture_store_delivery() -> None:
     class _ModelClient:
         available = True
         last_usage = None
@@ -4406,10 +4417,10 @@ def test_parallel_reply_failure_recovers_verified_store_card_instead_of_neutral_
 
     output = asyncio.run(node(state))
 
-    assert output["reply_source"] == "deterministic_store_fact_recovery"
-    assert output["fallback_source"] == "deterministic_store_fact_recovery"
-    assert [item["type"] for item in output["reply_messages"]] == ["text", "store_address"]
-    assert output["reply_messages"][1]["content"] == {"store_id": "241"}
+    assert output["reply_source"] == "reply_failed"
+    assert output["fallback_source"] == ""
+    assert output["reply_messages"] == []
+    assert output["commit_actions"] == []
     assert all(item.get("content") != "您稍等一下" for item in output["reply_messages"])
 
 
@@ -5406,7 +5417,7 @@ def test_gate_keeps_multiple_model_nominated_content_candidates() -> None:
         "conversation": [{"message_ref": "conv_001", "role": "customer", "content": "历史原话"}],
     }
     result = asyncio.run(
-        parallel_reply_chain._run_content_gate(
+        reply_contract._run_content_gate(
             {"shared_context": shared, "conversion_stage": "legacy_stage", "customer_type": "legacy_type"},
             service,
         )
@@ -5438,7 +5449,7 @@ def test_parallel_gate_ignores_legacy_direct_reply_payload() -> None:
             }
 
     result = asyncio.run(
-        parallel_reply_chain._run_content_gate(
+        reply_contract._run_content_gate(
             {"shared_context": {"schema_version": "shared_context_v2"}},
             _LegacyGateService(),
         )
@@ -5502,7 +5513,7 @@ def test_parallel_repair_hint_combines_asset_delivery_and_deposit_provenance() -
 
 
 def test_tool_planner_requires_current_turn_store_lookup_even_when_scope_is_visible() -> None:
-    prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    prompt = reply_contract.TOOL_PLANNER_SYSTEM_PROMPT
 
     assert "visible_store_scope 只证明客户权限范围内的区域覆盖和数量" in prompt
     assert "客户索要具体门店或地址时仍需查询" in prompt
@@ -5728,7 +5739,7 @@ def test_tool_planner_transport_timeout_prefers_secondary_provider() -> None:
     assert result["status"] == "completed"
     assert result["transport_recovery_tier"] == "secondary"
 def test_v3_distance_objection_uses_completed_search_and_switches_value_dimension() -> None:
-    tool_prompt = parallel_reply_chain.TOOL_PLANNER_SYSTEM_PROMPT
+    tool_prompt = reply_contract.TOOL_PLANNER_SYSTEM_PROMPT
     reply_prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "recent_store_search_evidence" in tool_prompt

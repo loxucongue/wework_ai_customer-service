@@ -15,7 +15,6 @@ from app.prompts.v3_semantic_router import (
     build_v3_checkpoint_router_messages,
     build_v3_post_store_router_messages,
     build_v3_sequence_selector_messages,
-    build_v3_semantic_router_messages,
     _compact_sequence_steps,
 )
 from app.prompts.reply_synthesizer import (
@@ -31,7 +30,9 @@ from app.services.v3_semantic_router_service import (
     _sequences_for_checkpoint,
     script_content_candidates,
 )
-from app.graph.nodes.parallel_reply_chain import _v3_available_assets_for_turn
+from app.graph.nodes.reply_contract import (
+    _v3_available_assets_for_turn,
+)
 
 
 def _shared_context(message: str = "还是太远了") -> dict:

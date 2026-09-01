@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.graph.nodes.parallel_reply_chain import _tool_planner_shared_context
+from app.graph.nodes.reply_contract import (
+    _tool_planner_shared_context,
+)
 from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT
 from app.prompts.v3_sop_chat_gate import PARALLEL_CONTENT_GATE_SYSTEM_PROMPT
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings

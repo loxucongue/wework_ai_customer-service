@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.graph.nodes.action_nodes import create_execute_actions_node
+from app.graph.nodes.fact_actions import create_readonly_fact_actions_node
 from app.services.trace_logger import TraceLogger
 
 
@@ -21,7 +21,7 @@ class _FailingCozeClient:
 class ActionToolErrorIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_customer_store_lookup_error_is_recorded_without_breaking_graph(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            node = create_execute_actions_node(
+            node = create_readonly_fact_actions_node(
                 coze_client=_FailingCozeClient(),
                 trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
                 store_service=None,
@@ -50,7 +50,7 @@ class ActionToolErrorIsolationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_duplicate_invalid_planned_tools_are_skipped_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            node = create_execute_actions_node(
+            node = create_readonly_fact_actions_node(
                 coze_client=_FailingCozeClient(),
                 trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
                 store_service=None,
