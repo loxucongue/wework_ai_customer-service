@@ -7,8 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from app.services.outreach_service import (
-    OutreachService,
+from app.services.outreach.first_day import (
     _compose_outreach_messages,
     _conversation_activity_from_context,
     _first_day_activity_sop_payment_step,
@@ -31,6 +30,8 @@ from app.services.outreach_service import (
     _outreach_plan_structure_error,
     build_outreach_activity_quote_fact,
 )
+from app.services.outreach.planning import PlanGenerator
+from app.services.outreach_service import OutreachService
 from app.services.outreach_first_day_prompts import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
     FIRST_DAY_PLAN_WRITER_PROMPT,
@@ -82,7 +83,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     raise TimeoutError("total timeout 40.0s")
                 return {"ok": True}
 
-        service = OutreachService.__new__(OutreachService)
+        service = PlanGenerator.__new__(PlanGenerator)
         service.model_client = _TimeoutThenSuccessModel()
 
         response, trace = await service._run_first_day_model_node(
@@ -109,7 +110,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 self.calls += 1
                 raise ValueError("invalid json")
 
-        service = OutreachService.__new__(OutreachService)
+        service = PlanGenerator.__new__(PlanGenerator)
         service.model_client = _InvalidModel()
 
         with self.assertRaises(ValueError):
@@ -249,7 +250,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     ]
                 }
 
-        service = OutreachService.__new__(OutreachService)
+        service = PlanGenerator.__new__(PlanGenerator)
         service.sop_reply_pack_service = _SopReplyPackService()
 
         sequence = service._first_day_sop_sequence()
@@ -360,7 +361,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             def load(self) -> dict[str, Any]:
                 raise OSError("temporary config failure")
 
-        service = OutreachService.__new__(OutreachService)
+        service = PlanGenerator.__new__(PlanGenerator)
         service.sop_reply_pack_service = _BrokenSopReplyPackService()
 
         with self.assertRaisesRegex(RuntimeError, "first_day_sop_context_load_failed"):
@@ -2203,7 +2204,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             model_client=_ModelClient(),
             system_client=_ConversationSystemClient(),
         )
-        first = service._plan_lock(
+        first = service.planning._plan_lock(
             {
                 "customer_id": "22000001",
                 "corp_id": "corp-1",
@@ -2211,7 +2212,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 "external_userid": "external-1",
             }
         )
-        second = service._plan_lock(
+        second = service.planning._plan_lock(
             {
                 "customer_id": "22000001",
                 "corp_id": "corp-1",
@@ -2875,7 +2876,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "should_send_payment_collection": False,
         }
 
-        messages = await service._generate_task_messages(task=task, plan={})
+        messages = await service.message._generate_task_messages(task=task, plan={})
 
         self.assertEqual(
             messages,
@@ -2937,7 +2938,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "should_send_payment_collection": False,
         }
 
-        messages = await service._generate_task_messages(task=task, plan={})
+        messages = await service.message._generate_task_messages(task=task, plan={})
 
         self.assertEqual([item["type"] for item in messages], ["text", "text"])
         model_input = json.loads(model.calls[0]["messages"][1]["content"])
@@ -2986,7 +2987,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        messages = await service._generate_task_messages(task=task, plan=plan)
+        messages = await service.message._generate_task_messages(task=task, plan=plan)
 
         self.assertEqual(
             [message["type"] for message in messages],
@@ -3024,7 +3025,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        messages = await service._generate_task_messages(task=task, plan=plan)
+        messages = await service.message._generate_task_messages(task=task, plan=plan)
 
         self.assertEqual([message["type"] for message in messages], ["text", "image"])
         self.assertEqual([message["order"] for message in messages], [1, 2])
@@ -3074,7 +3075,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-        messages = await service._generate_task_messages(task=task, plan=plan)
+        messages = await service.message._generate_task_messages(task=task, plan=plan)
 
         self.assertEqual(
             [message["type"] for message in messages],
@@ -3508,6 +3509,8 @@ class _MonitorOutreachService(OutreachService):
         )
         self.refreshed_messages = refreshed_messages
         self.deleted = deleted
+        self.planning.refresh_customer_conversation = self.refresh_customer_conversation
+        self.first_day._load_monitor_customer_context = self._load_monitor_customer_context
 
     async def refresh_customer_conversation(self, **_kwargs: Any) -> dict[str, Any]:
         return {
@@ -3521,11 +3524,11 @@ class _MonitorOutreachService(OutreachService):
                 "deleted_at": "2026-07-29T10:00:00+08:00" if self.deleted else "",
                 "updated_at": "2026-07-29T10:00:00+08:00",
             },
-            "latest_customer_message_at": self._latest_message_time(
+            "latest_customer_message_at": self.planning._latest_message_time(
                 self.refreshed_messages,
                 sender="customer",
             ),
-            "latest_staff_message_at": self._latest_message_time(
+            "latest_staff_message_at": self.planning._latest_message_time(
                 self.refreshed_messages,
                 sender="staff",
             ),

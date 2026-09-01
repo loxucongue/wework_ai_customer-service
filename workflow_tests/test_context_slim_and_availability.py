@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.graph.nodes.reply_context import reply_user_payload_for_model
-from app.services.outreach_service import outreach_customer_fact_snapshot
+from app.services.outreach.first_day import outreach_customer_fact_snapshot
 
 
 class ContextSlimmingTests(unittest.TestCase):

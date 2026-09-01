@@ -55,7 +55,7 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
             system_client=system,
             customer_context_service=_CustomerContextService(orders=[]),
         )
-        service._generate_task_messages = AsyncMock(
+        service.message._generate_task_messages = AsyncMock(
             return_value=[
                 {
                     "type": "text",
@@ -101,7 +101,7 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
             system_client=system,
             customer_context_service=_CustomerContextService(orders=[]),
         )
-        service._generate_task_messages = AsyncMock(
+        service.message._generate_task_messages = AsyncMock(
             return_value=[
                 {
                     "type": "payment_collection",
@@ -144,7 +144,7 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
             system_client=system,
             customer_context_service=_CustomerContextService(orders=[]),
         )
-        service._generate_task_messages = AsyncMock(
+        service.message._generate_task_messages = AsyncMock(
             return_value=[
                 {"type": "text", "order": 1, "content": {"text": "您点卡片把名额锁住。"}},
                 {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
@@ -177,7 +177,7 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
             system_client=system,
             customer_context_service=_CustomerContextService(orders=[]),
         )
-        service._generate_task_messages = AsyncMock(
+        service.message._generate_task_messages = AsyncMock(
             return_value=[
                 {"type": "text", "order": 1, "content": {"text": "您点卡片把名额锁住。"}},
                 {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},

@@ -13,7 +13,7 @@ from app.services.outreach_first_day_prompts import (
     FIRST_DAY_PLAN_WRITER_PROMPT,
     FIRST_DAY_SCENE_ANALYST_PROMPT,
 )
-from app.services.outreach_service import _first_day_message_policy_error, _first_day_writer_payload
+from app.services.outreach.first_day import _first_day_message_policy_error, _first_day_writer_payload
 
 
 ROOT = Path(__file__).resolve().parents[1]

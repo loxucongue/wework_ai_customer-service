@@ -29,9 +29,8 @@ from app.services.outreach_prompts import (
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.sop_platform_task_policy import personalized_payment_collection_eligibility
-from app.services.outreach_service import (
+from app.services.outreach.first_day import (
     FIRST_DAY_SILENCE_TRIGGER_TYPE,
-    OutreachService,
     _first_day_available_sources_by_scene,
     _first_day_final_plan_error,
     _first_day_scene_analysis_error,
@@ -48,6 +47,7 @@ from app.services.outreach_service import (
     _outreach_plan_structure_error,
     build_outreach_activity_quote_fact,
 )
+from app.services.outreach_service import OutreachService
 
 
 REVIEW_PROMPT = """

@@ -10,7 +10,8 @@ import pytest
 from app.config import Settings
 from app.graph.nodes.reply_context import reply_user_payload_for_model
 from app.graph.nodes.reply_nodes import _filter_unsupported_media, _normalized_policy_decision
-from app.services.outreach_service import OutreachService, _scheduled_at_for_strategy_step, _selected_strategy_steps
+from app.services.outreach.first_day import _scheduled_at_for_strategy_step, _selected_strategy_steps
+from app.services.outreach_service import OutreachService
 from app.services.sales_strategy_service import SalesStrategyService
 
 

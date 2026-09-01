@@ -1,4 +1,4 @@
-from app.services.outreach_service import classify_conversation_refresh_error
+from app.services.outreach.first_day import classify_conversation_refresh_error
 
 
 def test_conversation_refresh_account_not_found_is_not_reported_as_timeout() -> None:

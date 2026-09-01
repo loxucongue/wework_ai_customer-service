@@ -621,16 +621,17 @@ def test_first_day_monitor_logs_and_reuses_conversation_refresh_failure(tmp_path
         model_client=object(),
         system_client=object(),
     )
+    service.planning.refresh_customer_conversation = service.refresh_customer_conversation
 
     first = asyncio.run(
-        service._evaluate_first_day_silence_candidate(
+        service.first_day._evaluate_first_day_silence_candidate(
             candidate,
             silent_minutes=3,
             auto_activate=True,
         )
     )
     second = asyncio.run(
-        service._evaluate_first_day_silence_candidate(
+        service.first_day._evaluate_first_day_silence_candidate(
             candidate,
             silent_minutes=3,
             auto_activate=True,
@@ -690,8 +691,9 @@ def test_first_day_monitor_does_not_replan_completed_cycle_without_customer_repl
         model_client=object(),
         system_client=object(),
     )
+    service.planning.refresh_customer_conversation = service.refresh_customer_conversation
     result = asyncio.run(
-        service._evaluate_first_day_silence_candidate(
+        service.first_day._evaluate_first_day_silence_candidate(
             {
                 "customer_id": "customer-completed-cycle",
                 "corp_id": "corp",

@@ -499,8 +499,11 @@ def test_first_day_outreach_failure_callback_closes_plan_and_run() -> None:
             return changes
 
     repository = Repository()
-    service = OutreachService.__new__(OutreachService)
-    service.repository = repository
+    service = OutreachService(
+        repository=repository,
+        model_client=object(),
+        system_client=object(),
+    )
 
     service.finalize_message_delivery(
         {

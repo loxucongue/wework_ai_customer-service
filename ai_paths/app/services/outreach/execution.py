@@ -2,47 +2,53 @@ from __future__ import annotations
 
 from typing import Any
 
-
-_LEGACY_DEPENDENCIES = (
-    "FIRST_DAY_DAILY_TASK_LIMIT",
-    "FIRST_DAY_SILENCE_TRIGGER_TYPE",
-    "OUTREACH_DAILY_TASK_LIMIT",
-    "OutreachMessagePolicyError",
-    "_filter_recently_sent_outreach_media",
-    "_first_day_wechat_allowed",
-    "_first_day_wechat_allowlist",
-    "_missing_outreach_identity_fields",
-    "_next_outreach_day_start",
-    "_string",
-    "_terminal_outreach_send_failure_reason",
-    "build_customer_scope",
-    "customer_relation_is_deleted",
-    "datetime",
-    "timezone",
-    "utc_now_iso",
+from .first_day import (
+    FIRST_DAY_DAILY_TASK_LIMIT,
+    FIRST_DAY_SILENCE_TRIGGER_TYPE,
+    OUTREACH_DAILY_TASK_LIMIT,
+    OutreachMessagePolicyError,
+    _filter_recently_sent_outreach_media,
+    _first_day_wechat_allowed,
+    _first_day_wechat_allowlist,
+    _missing_outreach_identity_fields,
+    _next_outreach_day_start,
+    _string,
+    _terminal_outreach_send_failure_reason,
+    asyncio,
+    build_customer_scope,
+    customer_relation_is_deleted,
+    datetime,
+    personalized_order_eligibility,
+    personalized_payment_collection_eligibility,
+    timezone,
+    unanswered_payment_collection,
+    utc_now_iso,
 )
 
 
-def _bind_legacy_dependencies() -> None:
-    # Imported lazily to keep the public compatibility module acyclic at load time.
-    from .. import outreach_service as compatibility
-
-    namespace = globals()
-    for name in _LEGACY_DEPENDENCIES:
-        namespace[name] = getattr(compatibility, name)
-
-
 class TaskExecutor:
-    """Focused implementation component backed by the compatibility facade."""
-
-    def __init__(self, service: Any) -> None:
-        self._service = service
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._service, name)
+    def __init__(
+        self,
+        *,
+        repository: Any,
+        system_client: Any,
+        customer_context_service: Any,
+        before_send_retry_seconds: int,
+        first_day_wechat_allowlist: str,
+        planning: Any,
+        first_day: Any,
+        message: Any,
+    ) -> None:
+        self.repository = repository
+        self.system_client = system_client
+        self.customer_context_service = customer_context_service
+        self.before_send_retry_seconds = before_send_retry_seconds
+        self.first_day_wechat_allowlist = first_day_wechat_allowlist
+        self.planning = planning
+        self.first_day = first_day
+        self.message = message
 
     async def execute(self, task_id: str) -> dict[str, Any]:
-        _bind_legacy_dependencies()
         task = self.repository.get_outreach_task(task_id)
         if not task:
             return {"ok": False, "error": "task_not_found"}
@@ -80,7 +86,7 @@ class TaskExecutor:
                 exclude_task_id=task_id,
             )
             self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
-            self._sync_first_day_run_for_task(
+            self.first_day._sync_first_day_run_for_task(
                 plan=plan,
                 task=task,
                 status="blocked",
@@ -119,7 +125,7 @@ class TaskExecutor:
                 event_summary=reason,
                 payload=detail,
             )
-            self._sync_first_day_run_for_task(
+            self.first_day._sync_first_day_run_for_task(
                 plan=plan,
                 task=task,
                 status="blocked",
@@ -148,7 +154,7 @@ class TaskExecutor:
                     "allowlist_configured": bool(_first_day_wechat_allowlist(self.first_day_wechat_allowlist)),
                 },
             )
-            self._sync_first_day_run_for_task(
+            self.first_day._sync_first_day_run_for_task(
                 plan=plan,
                 task=task,
                 status="cancelled",
@@ -192,7 +198,7 @@ class TaskExecutor:
                             event_summary="First-day outreach plan cancelled because its daily task limit was reached",
                             payload={"sent_today": sent_today_count, "daily_task_limit": daily_task_limit},
                         )
-                        self._sync_first_day_run_for_task(
+                        self.first_day._sync_first_day_run_for_task(
                             plan=plan,
                             task=task,
                             status="cancelled",
@@ -223,7 +229,7 @@ class TaskExecutor:
                         event_summary="Personalized outreach daily limit reached; task deferred",
                         payload={"sent_today": sent_today_count, "next_window": next_window.isoformat()},
                     )
-                    self._sync_first_day_run_for_task(
+                    self.first_day._sync_first_day_run_for_task(
                         plan=plan,
                         task=task,
                         status="created",
@@ -233,7 +239,7 @@ class TaskExecutor:
                     return {"ok": True, "status": "rescheduled", "reason": "daily_limit"}
             if task.get("before_send_check"):
                 try:
-                    refresh = await self.refresh_customer_conversation(
+                    refresh = await self.planning.refresh_customer_conversation(
                         customer_id=str(task["customer_id"]),
                         corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
                         user_id=str(task.get("user_id") or plan.get("user_id") or ""),
@@ -270,7 +276,7 @@ class TaskExecutor:
                             event_summary="Customer deleted the sales contact before outreach execution",
                             payload={"customer_relation": customer_relation},
                         )
-                        self._sync_first_day_run_for_task(
+                        self.first_day._sync_first_day_run_for_task(
                             plan=plan,
                             task=task,
                             status="cancelled",
@@ -284,7 +290,7 @@ class TaskExecutor:
                             "reason": "customer_deleted",
                             "customer_relation": customer_relation,
                         }
-                    if self._customer_replied_after_plan(plan, refresh.get("latest_customer_message_at")):
+                    if self.planning._customer_replied_after_plan(plan, refresh.get("latest_customer_message_at")):
                         self.repository.update_outreach_task(task_id, status="skipped")
                         self.repository.skip_remaining_outreach_tasks(
                             str(task["plan_id"]),
@@ -300,7 +306,7 @@ class TaskExecutor:
                             event_summary="Customer replied before outreach task execution",
                             payload=refresh,
                         )
-                        self._sync_first_day_run_for_task(
+                        self.first_day._sync_first_day_run_for_task(
                             plan=plan,
                             task=task,
                             status="cancelled",
@@ -330,7 +336,7 @@ class TaskExecutor:
                             event_summary="Customer order state changed before outreach execution",
                             payload=order_gate,
                         )
-                        self._sync_first_day_run_for_task(
+                        self.first_day._sync_first_day_run_for_task(
                             plan=plan,
                             task=task,
                             status="cancelled",
@@ -354,7 +360,7 @@ class TaskExecutor:
                         event_summary="Conversation check failed before outreach send; send blocked",
                         payload={"error": message},
                     )
-                    self._sync_first_day_run_for_task(
+                    self.first_day._sync_first_day_run_for_task(
                         plan=plan,
                         task=task,
                         status="created",
@@ -366,7 +372,7 @@ class TaskExecutor:
             try:
                 if is_first_day_plan and conversation_id_send_support is True and not send_conversation_id:
                     raise RuntimeError("first_day_conversation_id_unavailable")
-                reply_messages = await self._generate_task_messages(
+                reply_messages = await self.message._generate_task_messages(
                     task=task,
                     plan=plan,
                     recent_messages_override=fresh_conversation_messages,
@@ -388,7 +394,7 @@ class TaskExecutor:
                     event_summary="First-day outreach message remained unsafe after rewrite",
                     payload={"reason": reason},
                 )
-                self._sync_first_day_run_for_task(
+                self.first_day._sync_first_day_run_for_task(
                     plan=plan,
                     task=task,
                     status="blocked",
@@ -434,7 +440,7 @@ class TaskExecutor:
                         event_summary="Skipped a first-day outreach task that contained only a payment card",
                         payload={"reason": reason},
                     )
-                    self._sync_first_day_run_for_task(
+                    self.first_day._sync_first_day_run_for_task(
                         plan=plan,
                         task=task,
                         status="blocked",
@@ -470,7 +476,7 @@ class TaskExecutor:
                         exclude_task_id=task_id,
                     )
                     self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
-                    self._sync_first_day_run_for_task(
+                    self.first_day._sync_first_day_run_for_task(
                         plan=plan,
                         task=task,
                         status="cancelled",
@@ -506,7 +512,7 @@ class TaskExecutor:
                     str(task["plan_id"]),
                     "waiting" if has_remaining else "completed",
                 )
-                self._sync_first_day_run_for_task(
+                self.first_day._sync_first_day_run_for_task(
                     plan=plan,
                     task=task,
                     status="created" if has_remaining else "cancelled",
@@ -604,7 +610,7 @@ class TaskExecutor:
                 event_summary=message[:240],
                 payload={"error": message, "terminal_reason": terminal_reason},
             )
-            self._sync_first_day_run_for_task(
+            self.first_day._sync_first_day_run_for_task(
                 plan=plan,
                 task=task,
                 status="blocked" if terminal_reason else "failed",
@@ -664,7 +670,7 @@ class TaskExecutor:
             event_summary="Outreach task sent",
             payload={"reply_messages": reply_messages, "send_result": send_result},
         )
-        self._sync_first_day_run_for_task(
+        self.first_day._sync_first_day_run_for_task(
             plan=plan,
             task=task,
             status="sent" if not has_remaining_tasks else "created",
@@ -682,3 +688,200 @@ class TaskExecutor:
                 payload={"sent_at": sent_at},
             )
         return {"ok": True, "status": "sent", "send_result": send_result}
+
+    async def execute_due_tasks(self, *, limit: int = 20, auto_approved_only: bool = False) -> dict[str, Any]:
+        tasks = self.repository.list_due_outreach_tasks(
+            limit=limit,
+            auto_approved_only=auto_approved_only,
+        )
+        results = []
+        for task in tasks:
+            results.append(await self.execute(task["id"]))
+        return {"count": len(results), "results": results}
+
+    async def execute_due_first_day_tasks(self, *, limit: int = 20) -> dict[str, Any]:
+        tasks = self.repository.list_due_first_day_tasks(limit=limit)
+        results = []
+        for task in tasks:
+            results.append(await self.execute(task["id"]))
+        return {"count": len(results), "results": results}
+
+    def _unanswered_payment_card_duplicate(
+        self,
+        *,
+        task: dict[str, Any],
+        plan: dict[str, Any],
+        reply_messages: list[dict[str, Any]],
+        recent_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if not any(
+            isinstance(message, dict)
+            and _string(message.get("type")) == "payment_collection"
+            for message in reply_messages
+        ):
+            return {"active": False, "reason": "task_has_no_payment_card"}
+        checked_messages = recent_messages if recent_messages else None
+        if checked_messages is None:
+            context = self.repository.recent_customer_context(
+                str(task["customer_id"]),
+                corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
+                wechat=str(task.get("wechat") or plan.get("wechat") or ""),
+                external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
+            )
+            checked_messages = context.get("recent_messages") or []
+        duplicate = unanswered_payment_collection(checked_messages)
+        return {
+            **duplicate,
+            "customer_id": str(task.get("customer_id") or ""),
+            "corp_id": str(task.get("corp_id") or plan.get("corp_id") or ""),
+            "wechat": str(task.get("wechat") or plan.get("wechat") or ""),
+            "external_userid": str(task.get("external_userid") or plan.get("external_userid") or ""),
+        }
+
+    def finalize_message_delivery(self, dispatch: dict[str, Any]) -> None:
+        context = dispatch.get("source_context") if isinstance(dispatch.get("source_context"), dict) else {}
+        task_id = str(context.get("outreach_task_id") or dispatch.get("source_task_id") or "").strip()
+        if not task_id:
+            raise ValueError("Outreach delivery dispatch is missing outreach_task_id")
+        task = self.repository.get_outreach_task(task_id)
+        if not task:
+            raise ValueError(f"Outreach task not found: {task_id}")
+        plan_detail = self.repository.get_outreach_plan(str(task.get("plan_id") or ""))
+        plan = plan_detail.get("plan") if isinstance(plan_detail.get("plan"), dict) else {}
+        source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+        trigger_context = (
+            source_snapshot.get("trigger_context")
+            if isinstance(source_snapshot.get("trigger_context"), dict)
+            else {}
+        )
+        is_first_day_plan = _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
+        status = str(dispatch.get("status") or "")
+        if status in {"send_failed", "partial_failed"}:
+            error = str(dispatch.get("error_message") or status)
+            self.repository.update_outreach_task(
+                task_id,
+                status="failed" if status == "send_failed" else "partial_failed",
+                error_message=error,
+            )
+            if is_first_day_plan:
+                self.repository.skip_remaining_outreach_tasks(
+                    str(task.get("plan_id") or ""),
+                    reason="message_delivery_failed",
+                    exclude_task_id=task_id,
+                )
+                self.repository.update_outreach_plan_status(str(task.get("plan_id") or ""), "cancelled")
+            self.repository.add_outreach_event(
+                plan_id=str(task.get("plan_id") or ""),
+                task_id=task_id,
+                customer_id=str(task.get("customer_id") or ""),
+                event_type="task_delivery_failed",
+                event_summary="Outreach delivery callback reported failure",
+                payload={"message_delivery": dispatch},
+            )
+            self.first_day._sync_first_day_run_for_task(
+                plan=plan,
+                task=task,
+                status="failed",
+                reason_code="message_delivery_failed",
+                final_decision="failed",
+                terminal=True,
+                error=error,
+            )
+            return
+        if status != "send_succeeded":
+            return
+        sent_at = str(dispatch.get("confirmed_at") or "") or utc_now_iso()
+        self.repository.update_outreach_task(
+            task_id,
+            status="sent",
+            reply_messages=dispatch.get("reply_messages") if isinstance(dispatch.get("reply_messages"), list) else [],
+            sent_at=sent_at,
+            send_status="send_succeeded",
+            system_msgid=str(dispatch.get("system_msgid") or ""),
+        )
+        has_remaining_tasks = bool(self.repository.outreach_plan_has_remaining_tasks(str(task.get("plan_id") or "")))
+        next_plan_status = "waiting" if has_remaining_tasks else "completed"
+        scope = build_customer_scope(
+            corp_id=dispatch.get("corp_id"),
+            wechat=dispatch.get("wechat"),
+            external_userid=dispatch.get("external_userid"),
+            customer_id=dispatch.get("customer_id"),
+        )
+        if scope.persistence_allowed:
+            self.repository.touch_customer_message_time(scope.sales_contact_key, field="last_outreach_at", value=sent_at)
+            self.repository.update_customer_outreach_state(
+                scope.sales_contact_key,
+                outreach_status=next_plan_status,
+                outreach_plan_id=str(task.get("plan_id") or "") if has_remaining_tasks else "",
+                last_outreach_at=sent_at,
+            )
+        self.repository.update_outreach_plan_status(str(task.get("plan_id") or ""), next_plan_status)
+        self.repository.add_outreach_event(
+            plan_id=str(task.get("plan_id") or ""),
+            task_id=task_id,
+            customer_id=str(task.get("customer_id") or ""),
+            event_type="task_sent",
+            event_summary="Outreach task send confirmed by delivery callback",
+            payload={"message_delivery": dispatch},
+        )
+        self.first_day._sync_first_day_run_for_task(
+            plan=plan,
+            task=task,
+            status="sent" if not has_remaining_tasks else "created",
+            reason_code="plan_completed" if not has_remaining_tasks else "first_task_sent",
+            final_decision="sent" if not has_remaining_tasks else "second_task_pending",
+            terminal=not has_remaining_tasks,
+        )
+        if not has_remaining_tasks:
+            self.repository.add_outreach_event(
+                plan_id=str(task.get("plan_id") or ""),
+                task_id=task_id,
+                customer_id=str(task.get("customer_id") or ""),
+                event_type="plan_cycle_completed",
+                event_summary="Final outreach step send confirmed; current personalized outreach cycle completed",
+                payload={"sent_at": sent_at, "message_delivery": dispatch},
+            )
+
+    async def _refresh_order_eligibility(self, *, task: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+        source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+        trigger_context = (
+            source_snapshot.get("trigger_context")
+            if isinstance(source_snapshot.get("trigger_context"), dict)
+            else {}
+        )
+        if trigger_context.get("activation_policy") != "auto_approved":
+            return {"available": True, "eligible": True, "reason": "manual_plan_not_subject_to_auto_order_gate"}
+        if self.customer_context_service is None:
+            return {
+                "available": False,
+                "eligible": False,
+                "reason": "customer_context_service_unavailable",
+            }
+        customer_id = str(task.get("customer_id") or plan.get("customer_id") or "")
+        corp_id = str(task.get("corp_id") or plan.get("corp_id") or "")
+        wechat = str(task.get("wechat") or plan.get("wechat") or "")
+        external_userid = str(task.get("external_userid") or plan.get("external_userid") or "")
+        user_id = str(task.get("user_id") or plan.get("user_id") or "")
+        local_context = self.repository.recent_customer_context(
+            customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+        )
+        request_context = {
+            "customer_id": customer_id,
+            "corp_id": corp_id,
+            "wechat": wechat,
+            "external_userid": external_userid,
+            "user_id": user_id,
+        }
+        customer_context = await asyncio.to_thread(
+            self.customer_context_service.load,
+            customer_id=customer_id,
+            memory=local_context.get("memory") or {},
+            request_context=request_context,
+        )
+        if bool(task.get("should_send_payment_collection")):
+            return personalized_payment_collection_eligibility(customer_context, amount=10)
+        return personalized_order_eligibility(customer_context)
+
