@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import Any
 
 from app.schemas import ChatRequest
@@ -71,63 +69,6 @@ class SopExecutionCore:
         except Exception:
             return {}
         return memory if isinstance(memory, dict) else {}
-
-    async def _judge_event_sop_with_retries(
-        self,
-        selector_input: dict[str, Any],
-    ) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
-        attempts: list[dict[str, Any]] = []
-        last_error = ""
-        overall_deadline = time.monotonic() + self.event_model_total_timeout_seconds
-        for attempt in range(1, self.event_model_retry_attempts + 1):
-            remaining_before_ms = max(0, int((overall_deadline - time.monotonic()) * 1000))
-            if remaining_before_ms <= 0:
-                last_error = "TimeoutError: event model total deadline exhausted"
-                break
-            started = time.perf_counter()
-            deadline = min(overall_deadline, time.monotonic() + self.event_model_attempt_timeout_seconds)
-            try:
-                async with self._event_model_semaphore:
-                    output = await self._judge_event_sop(selector_input, deadline_monotonic=deadline)
-                if getattr(self, "event_schema_only_normalizer_enabled", False) and _string(output.get("error")):
-                    raise ValueError(_string(output.get("error")))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
-                attempts.append(
-                    {
-                        "attempt": attempt,
-                        "status": "failed",
-                        "duration_ms": int((time.perf_counter() - started) * 1000),
-                        "error": last_error,
-                        "remaining_budget_ms_before": remaining_before_ms,
-                        "remaining_budget_ms_after": max(0, int((overall_deadline - time.monotonic()) * 1000)),
-                        "total_deadline_seconds": self.event_model_total_timeout_seconds,
-                        "model_usage": compact(self.model_client.last_usage or {}, max_chars=1800),
-                    }
-                )
-                if attempt < self.event_model_retry_attempts and self.event_model_retry_delay_seconds:
-                    sleep_seconds = min(
-                        self.event_model_retry_delay_seconds,
-                        max(0.0, overall_deadline - time.monotonic()),
-                    )
-                    if sleep_seconds > 0:
-                        await asyncio.sleep(sleep_seconds)
-                continue
-            attempts.append(
-                {
-                    "attempt": attempt,
-                    "status": "succeeded",
-                    "duration_ms": int((time.perf_counter() - started) * 1000),
-                    "remaining_budget_ms_before": remaining_before_ms,
-                    "remaining_budget_ms_after": max(0, int((overall_deadline - time.monotonic()) * 1000)),
-                    "total_deadline_seconds": self.event_model_total_timeout_seconds,
-                    "model_usage": compact(self.model_client.last_usage or {}, max_chars=1800),
-                }
-            )
-            return output, attempts, ""
-        return {}, attempts, last_error or "event model retries exhausted"
 
     def _load_chat_order_gate(
         self,

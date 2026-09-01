@@ -18,7 +18,7 @@ from app.policies.business_rules import load_business_rules, parallel_reply_busi
 from app.prompts.reply_synthesizer import build_parallel_reply_messages
 from app.services.deepseek_semantic_client import DeepSeekSemanticClient
 from app.services.follow_knowledge_client import FollowKnowledgeClient
-from app.services.sop_execution_service import SopExecutionService
+from app.services.v3_sop_execution_service import SopExecutionService
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.v3_semantic_router_service import V3SemanticRouterService, script_content_candidates
 

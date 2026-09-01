@@ -20,7 +20,7 @@ from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.payment_collection import payment_collection_content
-from app.services.sop_execution_service import SopExecutionService
+from app.services.v3_sop_execution_service import SopExecutionService
 from app.services.sales_strategy_service import SalesStrategyService
 from app.services.trace_logger import TraceLogger
 from app.services.sales_recall_service import SalesRecallService

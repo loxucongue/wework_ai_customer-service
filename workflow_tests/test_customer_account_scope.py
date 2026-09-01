@@ -11,7 +11,7 @@ from app.services.customer_payment_state import (
     resolved_payment_fact,
 )
 from app.services.customer_scope import build_customer_scope
-from app.services.sop_event_service import _send_once_key as event_send_once_key
+from app.services.sop.execution_core import _send_once_key as event_send_once_key
 from app.services.sop_platform_task_policy import personalized_order_eligibility
 from app.services.storage import AppRepository, SQLiteStore
 

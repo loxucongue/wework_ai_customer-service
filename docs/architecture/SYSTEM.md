@@ -64,6 +64,14 @@ shared context
 
 Reply 是当前唯一销售语义决策节点。模型负责意图、心理、卡点、节奏和表达；代码负责权威事实、工具、schema、幂等、交易边界、安全和发送结果。
 
+## 第三方 SOP
+
+Worker 中只保留第三方 SOP 两段式链路：`pending` 提供触发时间节点，
+`store-visit-pending` 提供实际发送内容。两者配对后共同进入判断、发送、消费、
+策略数据回传和送达确认。旧 `/sop/events` 接收器、旧事件模型重试、夜间次日融合
+及延迟重放已删除；历史 `sop_events` 和 `sop_send_tasks` 只用于审计、客户数据清理
+以及已有 `source_kind=sop_event` 派发的终态兼容。
+
 ## 发布要求
 
 - `main` 是唯一长期开发和发布分支。

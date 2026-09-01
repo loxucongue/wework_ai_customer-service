@@ -24,18 +24,18 @@ def test_quality_debt_matches_versioned_baseline() -> None:
     completed = _run_audit(BASELINE)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     report = json.loads(completed.stdout)
-    assert report["counts"]["private_test_imports"] == 157
     assert report["counts"] == report["baseline"]
 
 
 def test_quality_debt_growth_returns_nonzero(tmp_path: Path) -> None:
     baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
-    baseline["private_test_imports"] -= 1
+    actual = baseline["private_test_imports"]
+    baseline["private_test_imports"] = actual - 1
     lower_baseline = tmp_path / "lower-baseline.json"
     lower_baseline.write_text(json.dumps(baseline), encoding="utf-8")
     completed = _run_audit(lower_baseline)
     assert completed.returncode != 0
-    assert "private_test_imports: 157 > baseline 156" in completed.stdout
+    assert f"private_test_imports: {actual} > baseline {actual - 1}" in completed.stdout
 
 
 def test_generated_strategy_candidates_are_not_human_gold() -> None:

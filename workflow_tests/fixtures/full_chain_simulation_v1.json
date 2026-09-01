@@ -1,6 +1,6 @@
 {
   "version": "2026-07-24",
-  "purpose": "完全离线的多轮上下文全链路仿真矩阵。28个业务模板各4种客户表达，共112条轨迹。",
+  "purpose": "完全离线的 V3 多轮上下文仿真矩阵。24个业务模板各4种客户表达，共96条轨迹。",
   "defaults": {
     "initial": {
       "customer": {
@@ -620,96 +620,6 @@
       "timeline": [{"kind": "customer_message", "content": "不要了"}],
       "followup": "先不用了，谢谢",
       "variants": ["不要了", "别再发了", "我不做了", "不用联系我"]
-    },
-    {
-      "id": "sop_silence_progression",
-      "category": "SOP Event",
-      "critical": true,
-      "semantic_goal": "客户沉默时按最早未完成主线触达，不跳过需求案例直接发活动。",
-      "expected": {
-        "must_reply": true,
-        "required_types": ["text", "image"]
-      },
-      "initial": {
-        "conversation": [
-          {"direction": "staff", "content": "你好，我先给您介绍一下我们的淡斑项目。", "created_at": "2026-07-24T01:31:00+00:00"}
-        ],
-        "completed_sops": ["s10_new_customer_opening", "event_s10_store_prompt_5min"]
-      },
-      "timeline": [{"kind": "sop_event", "delay_minutes": 30, "created_at": "2026-07-24T02:00:00+00:00"}],
-      "followup": "效果怎么样",
-      "variants": [
-        {"delay_minutes": 30},
-        {"delay_minutes": 60},
-        {"delay_minutes": 70},
-        {"delay_minutes": 120}
-      ]
-    },
-    {
-      "id": "sop_duplicate_avoidance",
-      "category": "SOP Event",
-      "critical": true,
-      "semantic_goal": "历史已完整介绍活动时不重复活动介绍包，应进入预约金阶段；客户随后明确问名额怎么留时，可以简短说明并重新发送最多一张预约金卡。",
-      "initial": {
-        "conversation": [
-          {"direction": "staff", "content": "当前活动总价268，每位先付10元，到店抵扣，做再付258，未做或不满意可退。", "created_at": "2026-07-24T02:00:00+00:00"}
-        ],
-        "completed_sops": ["s10_new_customer_opening", "s10_need_and_case", "s10_activity_intro"]
-      },
-      "timeline": [{"kind": "sop_event", "delay_minutes": 70, "created_at": "2026-07-24T03:00:00+00:00"}],
-      "followup": "这个名额怎么留",
-      "variants": [
-        {"delay_minutes": 70},
-        {"delay_minutes": 90},
-        {"delay_minutes": 120},
-        {"delay_minutes": 180}
-      ]
-    },
-    {
-      "id": "sop_chatting_block",
-      "category": "SOP Event",
-      "critical": true,
-      "semantic_goal": "客户刚刚真实回复、正在聊天时不主动插入SOP。",
-      "expected": {"must_reply": false},
-      "initial": {
-        "conversation": [
-          {"direction": "customer", "content": "我想问一下价格", "created_at": "2026-07-24T02:59:00+00:00"},
-          {"direction": "staff", "content": "好的，我给您说清楚。", "created_at": "2026-07-24T02:59:30+00:00"}
-        ]
-      },
-      "timeline": [{"kind": "sop_event", "delay_minutes": 30, "created_at": "2026-07-24T03:00:00+00:00"}],
-      "variants": [
-        {"delay_minutes": 5},
-        {"delay_minutes": 30},
-        {"delay_minutes": 60},
-        {"delay_minutes": 70}
-      ]
-    },
-    {
-      "id": "platform_task_passthrough",
-      "category": "SOP Event",
-      "semantic_goal": "平台任务直接转发指定内容，不经过模型改选。",
-      "expected": {
-        "must_reply": true,
-        "required_types": ["text", "image"]
-      },
-      "timeline": [{
-        "kind": "platform_task",
-        "payload": {
-          "message_content": [
-            {"type": "text", "content": "到店额外赠送美白小气泡一次，今天到店前6名可以赠送。"},
-            {"type": "image", "content": "https://example.invalid/simulation/visit-gift.jpg"}
-          ],
-          "sop": {"event": "sop_platform_task"}
-        }
-      }],
-      "followup": "我今天下午可以",
-      "variants": [
-        {"day_stage": "day1"},
-        {"day_stage": "day2"},
-        {"day_stage": "day3"},
-        {"day_stage": "day5"}
-      ]
     },
     {
       "id": "unknown_transfer_message",

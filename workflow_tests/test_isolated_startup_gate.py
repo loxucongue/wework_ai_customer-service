@@ -25,7 +25,6 @@ with TestClient(app) as client:
             "PYTHONPATH": str(ROOT / "ai_paths"),
             "AI_PATHS_BACKGROUND_WORKERS_ENABLED": "false",
             "SOP_PLATFORM_PULL_ENABLED": "false",
-            "SOP_QUIET_BACKLOG_FUSION_ENABLED": "false",
             "OUTREACH_FIRST_DAY_SILENCE_ENABLED": "false",
             "STORE_SNAPSHOT_REFRESH_ENABLED": "false",
             "AICS_DB_PATH": str(tmp_path / "isolated.sqlite3"),

@@ -6,7 +6,7 @@ import subprocess
 import time
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -21,9 +21,8 @@ from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
-from app.services.sop_event_service import SopEventService
-from app.services.sop_execution_service import SopExecutionService
 from app.services.sop_reply_pack_service import SopReplyPackService
+from app.services.v3_sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.trace_logger import TraceLogger
 from app.services.voice_transcription import transcribe_voice_request
@@ -52,7 +51,6 @@ class SimulationBundle:
     voice_transcription_client: SimulationVoiceTranscriptionClient
     outreach_client: SimulationOutreachClient
     chat_runtime: ChatRuntime
-    sop_event_service: SopEventService
 
     async def aclose(self) -> None:
         await self.model_client.aclose()
@@ -194,24 +192,7 @@ class SimulationRuntime:
             model_client=model_client,
             memory_store=memory_store,
             customer_context_service=customer_context,
-            event_model_retry_attempts=settings.sop_event_model_retry_attempts,
-            event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
-            event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
-            event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
             chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
-            event_model_max_concurrency=2,
-        )
-        sop_event = SopEventService(
-            repository=repository,
-            sop_reply_pack_service=sop_pack_service,
-            outreach_send_client=outreach,
-            sop_execution_service=sop_execution,
-            memory_store=memory_store,
-            customer_context_service=customer_context,
-            daily_touch_soft_limit=settings.sop_event_daily_touch_soft_limit,
-            default_identity=identity,
-            persistent_retry_attempts=1,
-            retry_batch_size=1,
         )
         graphs = build_reply_graphs(
             coze,
@@ -223,18 +204,17 @@ class SimulationRuntime:
             store_service,
             outreach,
             platform,
+            sop_execution,
         )
         chat_runtime = ChatRuntime(
             full_graph=graphs.full_graph,
-            planner_graph=graphs.planner_graph,
-            finalize_graph=graphs.finalize_graph,
+            commit_graph=graphs.commit_graph,
             trace_logger=trace_logger,
             repository=repository,
             outreach_send_client=outreach,
             memory_store=memory_store,
             platform_reply_coordinator=PlatformReplyCoordinator(settings),
             sop_execution_service=sop_execution,
-            profile_event_extractor=graphs.profile_event_extractor,
             settings=settings,
         )
         return SimulationBundle(
@@ -246,7 +226,6 @@ class SimulationRuntime:
             voice_transcription_client=voice_transcription,
             outreach_client=outreach,
             chat_runtime=chat_runtime,
-            sop_event_service=sop_event,
         )
 
     def _seed_initial_state(self, bundle: SimulationBundle, initial: dict[str, Any]) -> None:
@@ -323,8 +302,6 @@ class SimulationRuntime:
             }
         if kind in {"customer_message", "workflow_message"}:
             result = await self._run_customer_message(bundle, step, index=index)
-        elif kind in {"sop_event", "platform_task"}:
-            result = await self._run_sop_event(bundle, step, index=index, platform_task=kind == "platform_task")
         else:
             raise ValueError(f"unsupported timeline kind: {kind}")
         result["duration_ms"] = round((time.perf_counter() - started) * 1000)
@@ -358,49 +335,6 @@ class SimulationRuntime:
             "sync_reply_messages": sync_messages,
             "response_meta": deepcopy(response.meta),
             "run": run_detail,
-        }
-
-    async def _run_sop_event(
-        self,
-        bundle: SimulationBundle,
-        step: dict[str, Any],
-        *,
-        index: int,
-        platform_task: bool,
-    ) -> dict[str, Any]:
-        payload = deepcopy(step.get("payload") or {})
-        event_type = "sop_platform_task" if platform_task else str(payload.get("event_type") or "sop_friend_added_schedule_batch")
-        event_id = str(payload.get("event_id") or f"sim_event_{bundle.world.scenario_id}_{index}")
-        payload.update(
-            {
-                "source": "simulation",
-                "event_type": event_type,
-                "event_id": event_id,
-                "created_at": str(step.get("created_at") or payload.get("created_at") or _utc_now()),
-            }
-        )
-        if platform_task and isinstance(payload.get("message_content"), list):
-            root_sop = payload.get("sop") if isinstance(payload.get("sop"), dict) else {}
-            root_sop = deepcopy(root_sop)
-            root_sop["platform_task"] = {"message_content": deepcopy(payload.pop("message_content"))}
-            payload["sop"] = root_sop
-        if not payload.get("customers"):
-            payload["customers"] = [_event_customer(bundle.world, step)]
-        if not payload.get("account"):
-            payload["account"] = {
-                "wework_user_id": bundle.world.identity["wechat"],
-                "assignee_id": str(bundle.world.identity["user_id"]),
-                "enterprise_id": bundle.world.identity["corp_id"],
-            }
-        accepted = await bundle.sop_event_service.accept_event(payload)
-        detail = bundle.repository.get_sop_event_detail(event_id)
-        return {
-            "index": index,
-            "kind": "platform_task" if platform_task else "sop_event",
-            "input": payload,
-            "event_id": event_id,
-            "accepted": accepted,
-            "event_detail": detail,
         }
 
     def _build_result(
@@ -479,41 +413,6 @@ def _workflow_payload(world: SimulationWorld, step: dict[str, Any], *, index: in
             "corp_id": world.identity["corp_id"],
             "wechat": world.identity["wechat"],
             "messages_count": len(world.conversation),
-        },
-    }
-
-
-def _event_customer(world: SimulationWorld, step: dict[str, Any]) -> dict[str, Any]:
-    delay = int(step.get("delay_minutes") or 30)
-    first_added_at = str(step.get("first_added_at") or "").strip()
-    if not first_added_at:
-        event_at = _parse_iso_datetime(str(step.get("created_at") or ""))
-        if event_at is not None:
-            first_added_at = (event_at - timedelta(minutes=delay)).isoformat()
-        else:
-            first_added_at = _utc_now()
-    return {
-        "conversation": {
-            "conversation_id": f"sim_conversation_{world.scenario_id}",
-            "sender_id": world.identity["external_userid"],
-            "sender_name": "仿真客户",
-            "external_userid": world.identity["external_userid"],
-            "wework_user_id": world.identity["wechat"],
-            "ai_auto_reply": True,
-        },
-        "customer": {"external_userid": world.identity["external_userid"], "name": "仿真客户"},
-        "first_added_event": {
-            "trace_id": f"sim_first_add_{world.scenario_id}",
-            "device_id": "sim_device",
-            "friend_id": world.identity["external_userid"],
-            "timestamp": first_added_at,
-        },
-        "sop": {
-            "delay_minutes": delay,
-            "day_stage": str(step.get("day_stage") or "day1"),
-            "customer_state": str(step.get("customer_state") or "first_add_ai_notice"),
-            "stage_tag": str(step.get("stage_tag") or "first_add_ai_notice"),
-            "policies": [],
         },
     }
 
@@ -729,19 +628,6 @@ def _safe_name(value: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _parse_iso_datetime(value: str) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed
 
 
 def _git_commit(repo_root: Path) -> str:

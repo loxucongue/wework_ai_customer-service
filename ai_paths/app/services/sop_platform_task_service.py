@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from app.policies.business_rules import sop_platform_business_facts_for_model
 from app.services.payment_collection import PAYMENT_COLLECTION_UNIT_AMOUNT
-from app.services.sop_execution_service import is_platform_auto_opening_message
+from app.services.v3_sop_execution_service import is_platform_auto_opening_message
 from app.services.storage.serialization import utc_now_iso
 
 
@@ -40,7 +40,7 @@ SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
     ),
     "duplicate": ("sop_no_send_duplicate", "内容重复", "SOP内容已发送，不重复触达"),
     "invalid_content": ("sop_no_send_invalid_content", "平台内容无效", "平台任务没有合法消息内容"),
-    "quiet_hours_no_replay": ("sop_no_send_quiet_hours", "夜间禁止", "夜间SOP不发送"),
+    "sop_no_send_quiet_hours": ("sop_no_send_quiet_hours", "夜间禁止", "夜间SOP不发送"),
 }
 
 
@@ -321,7 +321,6 @@ class SopPlatformTaskService:
         self._last_poll_error = ""
         self._pending_total = 0
         self._oldest_due_lag_seconds = 0.0
-        self._deferred_replay_keys: set[str] = set()
 
     async def run(self) -> None:
         if self._running:
@@ -369,7 +368,6 @@ class SopPlatformTaskService:
 
     async def poll_once(self) -> dict[str, int]:
         self._restore_reserved_prefix_ids()
-        self._refresh_deferred_replay_keys()
         free_slots = max(0, self._queue.maxsize - self._queue.qsize())
         if free_slots <= 0:
             return {
@@ -589,7 +587,6 @@ class SopPlatformTaskService:
     async def _recovery_loop(self) -> None:
         while True:
             try:
-                await self.process_deferred_replays()
                 await self.process_recoveries()
             except asyncio.CancelledError:
                 raise
@@ -697,15 +694,15 @@ class SopPlatformTaskService:
             for task in [*tasks, *trigger_tasks]:
                 self._ensure_local_task(task, status="platform_queued")
             self._counters["quiet_consumed_without_replay"] += len(tasks)
-            quiet_hours.update({"blocked": True, "reason": "quiet_hours_no_replay"})
+            quiet_hours.update({"blocked": True, "reason": "sop_no_send_quiet_hours"})
             return await self._consume_batch_without_send(
                 tasks,
                 trigger_tasks=trigger_tasks,
-                reason="quiet_hours_no_replay",
+                reason="sop_no_send_quiet_hours",
                 batch_key=batch_key,
                 biz_type=biz_type,
                 batch_run_id=batch_run_id,
-                decision=_quiet_hours_no_replay_decision(tasks),
+                decision=_quiet_hours_terminal_decision(tasks),
                 audit_context={"quiet_hours": quiet_hours},
             )
         if not _batch_identity_is_consistent([*tasks, *trigger_tasks], identity=identity):
@@ -715,19 +712,6 @@ class SopPlatformTaskService:
             raise RuntimeError(f"platform customer batch missing identity: {','.join(missing)}")
         for task in [*tasks, *trigger_tasks]:
             self._ensure_local_task(task, status="platform_queued")
-
-        if batch_key in self._deferred_replay_keys:
-            self._counters["deferred_replay_appended"] += len(tasks)
-            return await self._consume_batch_without_send(
-                tasks,
-                trigger_tasks=trigger_tasks,
-                reason="deferred_behind_quiet_backlog",
-                batch_key=batch_key,
-                biz_type=biz_type,
-                batch_run_id=batch_run_id,
-                decision=_deferred_replay_queue_decision(tasks),
-                audit_context={"deferred_replay_queue": {"appended": True}},
-            )
 
         status_response = await self.system_client.conversation_status(**identity)
         status_data = (
@@ -1030,18 +1014,11 @@ class SopPlatformTaskService:
             "context": _context_audit(audit_context or {}),
             "consume_results": [],
         }
-        if reason in {"quiet_hours_no_replay", "deferred_behind_quiet_backlog"}:
-            audit["quiet_hours_archive"] = _quiet_hours_no_replay_archive(
+        if reason == "sop_no_send_quiet_hours":
+            audit["quiet_hours_archive"] = _quiet_hours_terminal_audit(
                 terminal_tasks,
                 settings=self.settings,
             )
-            audit["quiet_hours_archive"]["no_replay"] = False
-            audit["deferred_replay"] = {
-                "status": "pending",
-                "queued_at": utc_now_iso(),
-                "source_reason": reason,
-                "interval_seconds": _deferred_replay_interval_seconds(self.settings),
-            }
         if self.settings.sop_platform_shadow_mode:
             for task in terminal_tasks:
                 self._mark_local_task(task, status="shadow_no_send", send_payload=audit)
@@ -1094,369 +1071,6 @@ class SopPlatformTaskService:
             "decision": audit["decision"],
         }
 
-    def _deferred_replay_records(self) -> list[dict[str, Any]]:
-        if not bool(getattr(self.settings, "sop_platform_deferred_replay_enabled", True)):
-            return []
-        day_start, end_at = _deferred_replay_day_bounds()
-        start_at = (
-            datetime.fromisoformat(day_start) - timedelta(days=1)
-        ).isoformat()
-        loader = getattr(self.repository, "list_deferred_platform_sop_tasks", None)
-        if not callable(loader):
-            return []
-        rows = loader(start_at=start_at, end_at=end_at, limit=5000)
-        records: list[dict[str, Any]] = []
-        day_start_epoch = _parse_epoch(day_start)
-        for row in rows:
-            marker = _deferred_replay_marker(row)
-            if not marker and _parse_epoch(row.get("task_created_at")) < day_start_epoch:
-                continue
-            if not _is_deferred_replay_record(row):
-                continue
-            if not marker:
-                payload = row.get("send_payload") if isinstance(row.get("send_payload"), dict) else {}
-                self._mark_deferred_replay(
-                    row,
-                    status="pending",
-                    marker={
-                        "status": "pending",
-                        "queued_at": utc_now_iso(),
-                        "source_reason": str(payload.get("reason") or "quiet_hours_no_replay"),
-                        "interval_seconds": _deferred_replay_interval_seconds(self.settings),
-                        "bootstrap_legacy_archive": True,
-                    },
-                )
-            records.append(row)
-        return records
-
-    def _refresh_deferred_replay_keys(self) -> list[dict[str, Any]]:
-        records = self._deferred_replay_records()
-        self._deferred_replay_keys = {
-            _customer_batch_key(record.get("platform_task") or {})
-            for record in records
-            if _deferred_replay_record_status(record) in {"pending", "sending", "retry", "blocked"}
-            and _customer_batch_key(record.get("platform_task") or {})
-        }
-        return records
-
-    async def process_deferred_replays(self) -> int:
-        if _in_configured_quiet_hours(settings=self.settings):
-            return 0
-        records = self._refresh_deferred_replay_keys()
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for record in records:
-            task = record.get("platform_task") if isinstance(record.get("platform_task"), dict) else {}
-            key = _customer_batch_key(task)
-            if key:
-                grouped.setdefault(key, []).append(record)
-        concurrency = max(
-            1,
-            int(getattr(self.settings, "sop_platform_deferred_replay_concurrency", 6) or 6),
-        )
-        semaphore = asyncio.Semaphore(concurrency)
-
-        async def process_customer(batch_key: str, customer_records: list[dict[str, Any]]) -> int:
-            async with semaphore:
-                lock = self._locks.setdefault(f"customer-batch:{batch_key}", asyncio.Lock())
-                async with lock:
-                    return await self._process_deferred_customer_queue(customer_records)
-
-        if not grouped:
-            return 0
-        return sum(
-            await asyncio.gather(
-                *(process_customer(key, value) for key, value in grouped.items())
-            )
-        )
-
-    async def _process_deferred_customer_queue(self, records: list[dict[str, Any]]) -> int:
-        ordered = sorted(
-            records,
-            key=lambda record: _task_batch_sort_key(record.get("platform_task") or {}),
-        )
-        active = [
-            record
-            for record in ordered
-            if _deferred_replay_record_status(record) in {"pending", "retry", "sending", "blocked"}
-        ]
-        if not active:
-            return 0
-        if any(_deferred_replay_record_status(record) == "sending" for record in active):
-            return 0
-        first_status = _deferred_replay_record_status(active[0])
-        if first_status in {"sending", "blocked"}:
-            return 0
-        last_sent_epoch = max(
-            (
-                _parse_epoch(record.get("sent_at"))
-                for record in ordered
-                if _deferred_replay_record_status(record) == "sent"
-            ),
-            default=0.0,
-        )
-        if last_sent_epoch and time.time() - last_sent_epoch < _deferred_replay_interval_seconds(self.settings):
-            return 0
-        selected = active[0]
-        retry_at = _parse_epoch(_deferred_replay_marker(selected).get("next_retry_at"))
-        if retry_at and retry_at > time.time():
-            return 0
-        task = selected.get("platform_task") if isinstance(selected.get("platform_task"), dict) else {}
-        identity = _task_identity(task)
-        if not all(identity.get(key) for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat")):
-            self._mark_deferred_replay(selected, status="blocked", error="missing_identity")
-            return 0
-        try:
-            status_response = await self.system_client.conversation_status(**identity)
-        except Exception as exc:
-            self._counters["deferred_replay_status_error"] += 1
-            logger.warning("Deferred SOP replay status lookup failed: %s", exc)
-            return 0
-        status_data = status_response.get("data") if isinstance(status_response.get("data"), dict) else status_response
-        ai_auto_reply = _conversation_ai_auto_reply(status_data if isinstance(status_data, dict) else {})
-        if ai_auto_reply is None:
-            return 0
-        if ai_auto_reply is False:
-            self._skip_deferred_replay_records(active, reason="human_takeover")
-            self._counters["deferred_replay_human_skipped"] += len(active)
-            return 0
-
-        conversation = await self.system_client.conversation(**identity, limit=50)
-        conversation_data = (
-            conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
-        )
-        if not isinstance(conversation_data, dict):
-            return 0
-        relation = (
-            conversation_data.get("customer_relation")
-            if isinstance(conversation_data.get("customer_relation"), dict)
-            else {}
-        )
-        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
-            self._skip_deferred_replay_records(active, reason="customer_relation_deleted")
-            return 0
-        timeline = _conversation_timeline(
-            conversation_data.get("messages")
-            if isinstance(conversation_data.get("messages"), list)
-            else []
-        )
-        active_tasks = [
-            record.get("platform_task") if isinstance(record.get("platform_task"), dict) else {}
-            for record in active
-        ]
-        context = await self._load_batch_context(
-            active_tasks[0],
-            identity=identity,
-            relation=relation,
-            timeline=timeline,
-        )
-        context.update(
-            {
-                "management_mode": "ai",
-                "management_source": "conversation_status.takeover.ai_auto_reply",
-                "customer_opened": bool(_timeline_structure(timeline).get("customer_message_count")),
-                "deferred_replay": True,
-            }
-        )
-        if not _customer_has_opened(timeline):
-            decision = {
-                "evaluations": [
-                    {
-                        "task_id": _task_id(active_tasks[0]),
-                        "decision": "send",
-                        "reason": "customer_unopened_earliest_direct",
-                        "evidence_refs": [f"task:{_task_id(active_tasks[0])}"],
-                    }
-                ],
-                "selected_task_id": _task_id(active_tasks[0]),
-                "transition_text": "",
-                "decision_source": "customer_unopened_direct",
-            }
-        else:
-            decision = await self._decide_customer_batch(active_tasks, context=context)
-
-        selected_id = str(decision.get("selected_task_id") or "").strip()
-        if not selected_id:
-            self._skip_deferred_replay_records(
-                active,
-                reason="all_due_groups_filtered",
-                decision=decision,
-            )
-            return 0
-        selected_index = next(
-            (index for index, candidate in enumerate(active_tasks) if _task_id(candidate) == selected_id),
-            -1,
-        )
-        if selected_index < 0:
-            raise RuntimeError("deferred replay model selected an unknown task_id")
-        selected = active[selected_index]
-        task = active_tasks[selected_index]
-        skipped_prefix = active[:selected_index]
-        messages = _platform_messages(task)
-        if not messages:
-            self._mark_deferred_replay(selected, status="blocked", error="missing_original_messages")
-            self._counters["deferred_replay_missing_content"] += 1
-            return 0
-        transition_text = str(decision.get("transition_text") or "").strip()
-        if transition_text:
-            passed = await self._transition_fact_audit(
-                transition_text,
-                selected_task=task,
-                context=context,
-            )
-            if not passed:
-                transition_text = ""
-        final_messages = list(messages)
-        if transition_text:
-            final_messages = [{"type": "text", "order": 1, "content": {"text": transition_text}}] + [
-                {**message, "order": index + 2}
-                for index, message in enumerate(messages)
-            ]
-        local_task_id = str(selected.get("local_task_id") or "")
-        platform_task_id = _task_id(task)
-        marker = {
-            **_deferred_replay_marker(selected),
-            "status": "sending",
-            "started_at": utc_now_iso(),
-            "platform_task_id": platform_task_id,
-            "decision": decision,
-            "skipped_prefix_local_task_ids": [
-                str(record.get("local_task_id") or "") for record in skipped_prefix
-            ],
-        }
-        self._mark_deferred_replay(selected, status="sending", marker=marker)
-        try:
-            send_result = await self.system_client.send(
-                **identity,
-                plan_id=f"platform-sop-deferred-{platform_task_id}",
-                task_id=f"platform-sop-deferred-send-{platform_task_id}",
-                **_platform_send_trace_fields(task),
-                reply_messages=final_messages,
-                source_channel="proactive_message",
-                source_kind="sop_platform_deferred_replay",
-                source_request_id=f"platform_sop_deferred:{platform_task_id}",
-                source_task_id=local_task_id,
-                source_context={
-                    "sop_send_task_id": local_task_id,
-                    "sop_event_id": str(selected.get("event_id") or ""),
-                    "platform_task_id": platform_task_id,
-                    "deferred_replay": True,
-                },
-                delivery_idempotency_key=f"sop_platform_deferred:{local_task_id}",
-            )
-        except Exception as exc:
-            self._mark_deferred_replay(
-                selected,
-                status="retry",
-                error=f"{type(exc).__name__}: {exc}",
-                marker={
-                    **marker,
-                    "status": "retry",
-                    "next_retry_at": (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
-                },
-            )
-            return 0
-        send_data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
-        delivery_status = str(send_data.get("delivery_status") or "")
-        if bool(send_data.get("callback_required")) and delivery_status in {
-            "platform_accepted", "submission_unknown", "sending"
-        }:
-            self._mark_deferred_replay(selected, status="sending", marker=marker, send_response=send_result)
-            return 1
-        sent_at = utc_now_iso()
-        self._mark_deferred_replay(
-            selected,
-            status="sent",
-            marker={**marker, "status": "sent", "sent_at": sent_at},
-            send_response=send_result,
-            sent_at=sent_at,
-        )
-        self._skip_deferred_replay_records(
-            skipped_prefix,
-            reason="filtered_before_selected",
-            decision=decision,
-        )
-        self._counters["deferred_replay_sent"] += 1
-        return 1
-
-    def _skip_deferred_replay_records(
-        self,
-        records: list[dict[str, Any]],
-        *,
-        reason: str,
-        decision: dict[str, Any] | None = None,
-    ) -> None:
-        for record in records:
-            self._mark_deferred_replay(
-                record,
-                status="skipped",
-                error=reason,
-                marker={
-                    **_deferred_replay_marker(record),
-                    "status": "skipped",
-                    "skip_reason": reason,
-                    "decision": decision or {},
-                },
-            )
-
-    def _skip_deferred_replay_prefix_by_ids(
-        self,
-        local_task_ids: list[Any],
-        *,
-        decision: dict[str, Any] | None = None,
-    ) -> None:
-        records: list[dict[str, Any]] = []
-        for raw_id in local_task_ids:
-            local_task_id = str(raw_id or "").strip()
-            if not local_task_id:
-                continue
-            task = self.repository.get_sop_send_task(local_task_id)
-            if not task:
-                continue
-            records.append(
-                {
-                    "local_task_id": local_task_id,
-                    "send_payload": task.get("send_payload") or {},
-                    "task_status": task.get("status") or "",
-                    "sent_at": task.get("sent_at") or "",
-                }
-            )
-        self._skip_deferred_replay_records(
-            records,
-            reason="filtered_before_selected",
-            decision=decision,
-        )
-
-    def _mark_deferred_replay(
-        self,
-        record: dict[str, Any],
-        *,
-        status: str,
-        error: str = "",
-        marker: dict[str, Any] | None = None,
-        send_response: dict[str, Any] | None = None,
-        sent_at: str = "",
-    ) -> None:
-        payload = record.get("send_payload") if isinstance(record.get("send_payload"), dict) else {}
-        next_marker = marker or {**_deferred_replay_marker(record), "status": status}
-        next_payload = {**payload, "deferred_replay": next_marker}
-        task_status = {
-            "sent": "sent",
-            "sending": "deferred_replay_sending",
-            "retry": "deferred_replay_retry",
-        }.get(status, "completed_without_send")
-        self.repository.update_sop_send_task(
-            str(record.get("local_task_id") or ""),
-            status=task_status,
-            send_payload=next_payload,
-            send_response=send_response,
-            error=error,
-            sent_at=sent_at,
-        )
-        record["task_status"] = task_status
-        record["send_payload"] = next_payload
-        if sent_at:
-            record["sent_at"] = sent_at
-
     async def _send_selected_batch_task(
         self,
         selected_task: dict[str, Any],
@@ -1477,15 +1091,15 @@ class SopPlatformTaskService:
         if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
             quiet_tasks = [*skipped_prefix, selected_task]
             self._counters["quiet_consumed_without_replay"] += len(quiet_tasks)
-            quiet_hours.update({"blocked": True, "reason": "quiet_hours_no_replay"})
+            quiet_hours.update({"blocked": True, "reason": "sop_no_send_quiet_hours"})
             return await self._consume_batch_without_send(
                 quiet_tasks,
                 trigger_tasks=trigger_tasks,
-                reason="quiet_hours_no_replay",
+                reason="sop_no_send_quiet_hours",
                 batch_key=batch_key,
                 biz_type=biz_type,
                 batch_run_id=batch_run_id,
-                decision=_quiet_hours_no_replay_decision(quiet_tasks),
+                decision=_quiet_hours_terminal_decision(quiet_tasks),
                 audit_context={**context, "quiet_hours": quiet_hours},
             )
         original_messages = _platform_messages(selected_task)
@@ -3053,46 +2667,6 @@ class SopPlatformTaskService:
         )
         callback_response = {**previous_send_response, "message_delivery": dispatch}
         status = str(dispatch.get("status") or "")
-        if context.get("deferred_replay") is True:
-            record = {
-                "local_task_id": local_task_id,
-                "send_payload": audit,
-                "task_status": str(local_task.get("status") or ""),
-                "sent_at": str(local_task.get("sent_at") or ""),
-            }
-            marker = _deferred_replay_marker(record)
-            if status in {"send_failed", "partial_failed"}:
-                self._mark_deferred_replay(
-                    record,
-                    status="retry",
-                    error=str(dispatch.get("error_message") or status),
-                    marker={
-                        **marker,
-                        "status": "retry",
-                        "next_retry_at": (
-                            datetime.now(timezone.utc) + timedelta(seconds=60)
-                        ).isoformat(),
-                    },
-                    send_response=callback_response,
-                )
-                return
-            if status == "send_succeeded":
-                sent_at = str(dispatch.get("confirmed_at") or "") or utc_now_iso()
-                self._mark_deferred_replay(
-                    record,
-                    status="sent",
-                    marker={**marker, "status": "sent", "sent_at": sent_at},
-                    send_response=callback_response,
-                    sent_at=sent_at,
-                )
-                self._skip_deferred_replay_prefix_by_ids(
-                    marker.get("skipped_prefix_local_task_ids")
-                    if isinstance(marker.get("skipped_prefix_local_task_ids"), list)
-                    else [],
-                    decision=marker.get("decision") if isinstance(marker.get("decision"), dict) else {},
-                )
-                self._counters["deferred_replay_sent"] += 1
-            return
         if platform_task and decision and status in {"send_failed", "partial_failed"}:
             audit = {
                 **audit,
@@ -4457,7 +4031,7 @@ def _platform_run_summary(
         return f"人工接管，{len(tasks)} 条任务无需发送"
     if reason == "customer_relation_deleted":
         return f"客户关系已失效，{len(tasks)} 条任务无需发送"
-    if reason == "quiet_hours_no_replay":
+    if reason == "sop_no_send_quiet_hours":
         return f"夜间拦截并记录，{len(tasks)} 条任务不补发"
     return f"{len(tasks)} 条任务均无需发送"
 
@@ -4944,13 +4518,13 @@ def _in_configured_quiet_hours(*, settings: Any, now: datetime | None = None) ->
     return local_now.hour >= start or local_now.hour < end
 
 
-def _quiet_hours_no_replay_decision(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+def _quiet_hours_terminal_decision(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "evaluations": [
             {
                 "task_id": _task_id(task),
                 "decision": "skip",
-                "reason": "quiet_hours_no_replay",
+                "reason": "sop_no_send_quiet_hours",
                 "evidence_refs": [f"task:{_task_id(task)}"],
             }
             for task in tasks
@@ -4961,7 +4535,7 @@ def _quiet_hours_no_replay_decision(tasks: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def _quiet_hours_no_replay_archive(tasks: list[dict[str, Any]], *, settings: Any) -> dict[str, Any]:
+def _quiet_hours_terminal_audit(tasks: list[dict[str, Any]], *, settings: Any) -> dict[str, Any]:
     start = _bounded_hour(getattr(settings, "sop_platform_quiet_start_hour", 0), default=0)
     end = _bounded_hour(getattr(settings, "sop_platform_quiet_end_hour", 8), default=8)
     ordered_tasks = sorted(tasks, key=_task_batch_sort_key)
@@ -4982,74 +4556,6 @@ def _quiet_hours_no_replay_archive(tasks: list[dict[str, Any]], *, settings: Any
             }
             for index, task in enumerate(ordered_tasks, start=1)
         ],
-    }
-
-
-def _deferred_replay_interval_seconds(settings: Any) -> int:
-    return max(
-        60,
-        int(getattr(settings, "sop_platform_deferred_replay_interval_seconds", 600) or 600),
-    )
-
-
-def _deferred_replay_day_bounds(now: datetime | None = None) -> tuple[str, str]:
-    beijing = timezone(timedelta(hours=8))
-    current = (now or datetime.now(timezone.utc)).astimezone(beijing)
-    local_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
-    local_end = local_start + timedelta(days=1)
-    return (
-        local_start.astimezone(timezone.utc).isoformat(),
-        local_end.astimezone(timezone.utc).isoformat(),
-    )
-
-
-def _deferred_replay_marker(record: dict[str, Any]) -> dict[str, Any]:
-    payload = record.get("send_payload") if isinstance(record.get("send_payload"), dict) else {}
-    marker = payload.get("deferred_replay") if isinstance(payload.get("deferred_replay"), dict) else {}
-    return dict(marker)
-
-
-def _deferred_replay_record_status(record: dict[str, Any]) -> str:
-    marker_status = str(_deferred_replay_marker(record).get("status") or "").strip().lower()
-    if marker_status:
-        return marker_status
-    task_status = str(record.get("task_status") or "").strip().lower()
-    if task_status == "sent":
-        return "sent"
-    if task_status == "deferred_replay_sending":
-        return "sending"
-    if task_status == "deferred_replay_retry":
-        return "retry"
-    return "pending"
-
-
-def _is_deferred_replay_record(record: dict[str, Any]) -> bool:
-    payload = record.get("send_payload") if isinstance(record.get("send_payload"), dict) else {}
-    reason = str(payload.get("reason") or "").strip()
-    marker = _deferred_replay_marker(record)
-    if marker:
-        return str(marker.get("source_reason") or reason) in {
-            "quiet_hours_no_replay",
-            "deferred_behind_quiet_backlog",
-        }
-    archive = payload.get("quiet_hours_archive") if isinstance(payload.get("quiet_hours_archive"), dict) else {}
-    return reason == "quiet_hours_no_replay" and bool(archive)
-
-
-def _deferred_replay_queue_decision(tasks: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "evaluations": [
-            {
-                "task_id": _task_id(task),
-                "decision": "queued",
-                "reason": "deferred_behind_quiet_backlog",
-                "evidence_refs": [f"task:{_task_id(task)}"],
-            }
-            for task in tasks
-        ],
-        "selected_task_id": "",
-        "transition_text": "",
-        "decision_source": "deterministic_deferred_replay_queue",
     }
 
 

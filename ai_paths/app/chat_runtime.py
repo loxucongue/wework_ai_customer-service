@@ -32,7 +32,7 @@ from app.services.platform_reply_coordinator import PlatformReplyCoordinator, Pl
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.ai_sales_policy_service import AiSalesPolicyService
 from app.services.sales_strategy_service import SalesStrategyService
-from app.services.sop_execution_service import SopExecutionService, is_platform_auto_opening_message
+from app.services.v3_sop_execution_service import SopExecutionService, is_platform_auto_opening_message
 from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.storage import AppRepository
 from app.services.store_fact_integrity import store_fact_is_valid

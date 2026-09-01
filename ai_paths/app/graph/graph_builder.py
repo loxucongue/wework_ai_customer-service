@@ -35,7 +35,7 @@ from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_service import StoreService
 from app.services.sales_strategy_service import SalesStrategyService
-from app.services.sop_execution_service import SopExecutionService
+from app.services.v3_sop_execution_service import SopExecutionService
 from app.services.trace_logger import TraceLogger
 from app.graph.nodes.common import json_dumps
 from app.prompts.reply_synthesizer import build_parallel_reply_messages

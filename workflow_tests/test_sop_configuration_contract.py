@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.sop_execution_service import first_add_candidate_packs
+from app.services.v3_sop_execution_service import first_add_candidate_packs
 from app.services.sop_reply_pack_service import SopReplyPackService
 
 

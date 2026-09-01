@@ -73,7 +73,6 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_platform_quiet_hours_defaults_match_production_contract(self) -> None:
         self.assertFalse(Settings.model_fields["sop_platform_quiet_hours_enabled"].default)
-        self.assertFalse(Settings.model_fields["sop_platform_deferred_replay_enabled"].default)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_start_hour"].default, 0)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_end_hour"].default, 8)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_first_add_grace_minutes"].default, 30)
@@ -863,6 +862,34 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "platform_queued")
         self.assertEqual(service.runtime_status()["queue_depth"], 1)
 
+    async def test_content_source_failure_keeps_trigger_unconsumed_until_recovery(self) -> None:
+        service, repo, platform, system = _service(model=_Model([]), shadow_mode=True)
+        trigger = _batch_task("101", text="")
+        trigger["message_content"] = []
+        platform.pending = AsyncMock(return_value={"items": [trigger], "total": 1})
+        platform.store_visit_pending = AsyncMock(side_effect=TimeoutError("content source unavailable"))
+
+        with self.assertRaises(TimeoutError):
+            await service.poll_once()
+
+        self.assertEqual(repo.events, {})
+        self.assertEqual(repo.tasks, {})
+        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(system.send_calls, [])
+
+        platform.store_visit_pending = AsyncMock(
+            return_value={"items": [_batch_task("201", text="恢复后的发送内容")], "total": 1}
+        )
+        recovered = await service.poll_once()
+
+        self.assertEqual(recovered["enqueued_count"], 1)
+        queued = await service._queue.get()
+        self.assertEqual([task["task_id"] for task in queued["tasks"]], [201])
+        self.assertEqual(
+            [task["task_id"] for task in queued["compat_trigger_tasks"]],
+            [101],
+        )
+
     async def test_poll_loop_survives_transient_pending_error(self) -> None:
         model = _Model([])
         service, _repo, _platform, _system = _service(model=model, shadow_mode=True)
@@ -1130,7 +1157,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(repo.tasks), 1)
         self.assertEqual(platform.consume_calls, [])
 
-    async def test_batch_queued_before_quiet_hours_is_archived_and_consumed_without_send(self) -> None:
+    async def test_batch_queued_before_quiet_hours_is_consumed_without_replay(self) -> None:
         settings = _settings(quiet_hours_enabled=True)
         settings.sop_platform_quiet_start_hour = 0
         settings.sop_platform_quiet_end_hour = 0
@@ -1140,14 +1167,13 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("1", 70)])
-        self.assertEqual(platform.consume_details[0]["remark"], "quiet_hours_no_replay")
+        self.assertEqual(platform.consume_details[0]["remark"], "sop_no_send_quiet_hours")
         self.assertEqual(system.conversation_calls, 0)
         self.assertEqual(system.send_calls, [])
         payload = next(iter(repo.tasks.values()))["send_payload"]
         archive = payload["quiet_hours_archive"]
-        self.assertFalse(archive["no_replay"])
-        self.assertEqual(payload["deferred_replay"]["status"], "pending")
-        self.assertEqual(payload["deferred_replay"]["interval_seconds"], 600)
+        self.assertTrue(archive["no_replay"])
+        self.assertNotIn("deferred_replay", payload)
         self.assertEqual(archive["ordered_groups"][0]["task_id"], "1")
         self.assertEqual(
             archive["ordered_groups"][0]["original_messages"],
@@ -1171,7 +1197,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70), ("3", 70)])
-        self.assertTrue(all(item["remark"] == "quiet_hours_no_replay" for item in platform.consume_details))
+        self.assertTrue(all(item["remark"] == "sop_no_send_quiet_hours" for item in platform.consume_details))
         self.assertEqual(system.conversation_calls, 0)
         self.assertEqual(system.send_calls, [])
         self.assertEqual(model.calls, [])
@@ -1181,225 +1207,6 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item["original_messages"][0]["content"]["text"] for item in groups],
             ["第一条，价格原文不改", "第二条，价格原文不改", "第三条，价格原文不改"],
-        )
-
-    async def test_deferred_replay_sends_only_earliest_original_group_per_interval(self) -> None:
-        settings = _settings(quiet_hours_enabled=True)
-        settings.sop_platform_quiet_start_hour = 0
-        settings.sop_platform_quiet_end_hour = 0
-        model = _Model(
-            [
-                {
-                    "evaluations": [
-                        {"task_id": "1", "decision": "send", "reason": "仍适合触达", "evidence_refs": ["task:1"]}
-                    ],
-                    "selected_task_id": "1",
-                    "transition_text": "",
-                },
-                {
-                    "evaluations": [
-                        {"task_id": "2", "decision": "send", "reason": "仍适合触达", "evidence_refs": ["task:2"]}
-                    ],
-                    "selected_task_id": "2",
-                    "transition_text": "",
-                },
-            ]
-        )
-        service, _repo, _platform, system = _service(model=model, settings=settings)
-        await service.process_customer_batch(
-            _customer_batch(
-                _batch_task("1", text="first original message"),
-                _batch_task("2", text="second original message"),
-            )
-        )
-        settings.sop_platform_quiet_hours_enabled = False
-
-        first = await service.process_deferred_replays()
-        immediate_second = await service.process_deferred_replays()
-
-        self.assertEqual(first, 1)
-        self.assertEqual(immediate_second, 0)
-        self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("first original message")])
-
-        with patch(
-            "app.services.sop_platform_task_service.time.time",
-            return_value=time.time() + 601,
-        ):
-            second = await service.process_deferred_replays()
-
-        self.assertEqual(second, 1)
-        self.assertEqual(len(system.send_calls), 2)
-        self.assertEqual(system.send_calls[1]["reply_messages"], [_text("second original message")])
-
-    async def test_new_daytime_task_is_consumed_and_appended_behind_active_replay(self) -> None:
-        settings = _settings(quiet_hours_enabled=True)
-        settings.sop_platform_quiet_start_hour = 0
-        settings.sop_platform_quiet_end_hour = 0
-        service, repo, platform, system = _service(model=_Model([]), settings=settings)
-        await service.process_customer_batch(_customer_batch(_batch_task("1", text="night backlog")))
-        settings.sop_platform_quiet_hours_enabled = False
-        service._refresh_deferred_replay_keys()
-
-        result = await service.process_customer_batch(
-            _customer_batch(_batch_task("2", text="new daytime task"))
-        )
-
-        self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(platform.consume_calls, [("1", 70), ("2", 70)])
-        self.assertEqual(system.send_calls, [])
-        payload = repo.tasks["platform-sop:2"]["send_payload"]
-        self.assertEqual(payload["reason"], "deferred_behind_quiet_backlog")
-        self.assertEqual(payload["deferred_replay"]["status"], "pending")
-
-    async def test_deferred_replay_waits_for_delivery_callback_before_next_group(self) -> None:
-        settings = _settings(quiet_hours_enabled=True)
-        settings.sop_platform_quiet_start_hour = 0
-        settings.sop_platform_quiet_end_hour = 0
-        model = _Model(
-            [
-                {
-                    "evaluations": [
-                        {"task_id": "1", "decision": "send", "reason": "仍适合触达", "evidence_refs": ["task:1"]}
-                    ],
-                    "selected_task_id": "1",
-                    "transition_text": "",
-                }
-            ]
-        )
-        service, repo, _platform, system = _service(model=model, settings=settings)
-        await service.process_customer_batch(
-            _customer_batch(_batch_task("1"), _batch_task("2"))
-        )
-        settings.sop_platform_quiet_hours_enabled = False
-        system.send_responses.append(
-            {
-                "code": 0,
-                "data": {
-                    "callback_required": True,
-                    "delivery_status": "platform_accepted",
-                },
-            }
-        )
-
-        accepted = await service.process_deferred_replays()
-        blocked_while_sending = await service.process_deferred_replays()
-
-        self.assertEqual(accepted, 1)
-        self.assertEqual(blocked_while_sending, 0)
-        first = repo.tasks["platform-sop:1"]
-        self.assertEqual(first["send_payload"]["deferred_replay"]["status"], "sending")
-
-        await service.finalize_message_delivery(
-            {
-                "status": "send_succeeded",
-                "confirmed_at": datetime.now(timezone.utc).isoformat(),
-                "source_task_id": first["id"],
-                "source_context": {
-                    "sop_send_task_id": first["id"],
-                    "sop_event_id": "platform_sop_task:1",
-                    "platform_task_id": "1",
-                    "deferred_replay": True,
-                },
-            }
-        )
-
-        self.assertEqual(
-            repo.tasks["platform-sop:1"]["send_payload"]["deferred_replay"]["status"],
-            "sent",
-        )
-
-    async def test_deferred_replay_human_takeover_skips_queue_without_sending(self) -> None:
-        settings = _settings(quiet_hours_enabled=True)
-        settings.sop_platform_quiet_start_hour = 0
-        settings.sop_platform_quiet_end_hour = 0
-        service, repo, _platform, system = _service(model=_Model([]), settings=settings)
-        await service.process_customer_batch(
-            _customer_batch(_batch_task("1"), _batch_task("2"))
-        )
-        settings.sop_platform_quiet_hours_enabled = False
-        system.conversation_payload["data"]["ai_auto_reply"] = False
-
-        result = await service.process_deferred_replays()
-
-        self.assertEqual(result, 0)
-        self.assertEqual(system.send_calls, [])
-        self.assertTrue(
-            all(
-                task["send_payload"]["deferred_replay"]["status"] == "skipped"
-                for task in repo.tasks.values()
-            )
-        )
-
-    async def test_deferred_replay_uses_ordered_model_filter_and_keeps_later_groups_pending(self) -> None:
-        settings = _settings(quiet_hours_enabled=True)
-        settings.sop_platform_quiet_start_hour = 0
-        settings.sop_platform_quiet_end_hour = 0
-        model = _Model(
-            [
-                {
-                    "evaluations": [
-                        {"task_id": "1", "decision": "skip", "reason": "门店已处理", "evidence_refs": ["task:1"]},
-                        {"task_id": "2", "decision": "skip", "reason": "标准报价已完成", "evidence_refs": ["task:2"]},
-                        {"task_id": "3", "decision": "send", "reason": "含预约金但仍有新的唤醒目的", "evidence_refs": ["task:3"]},
-                    ],
-                    "selected_task_id": "3",
-                    "transition_text": "",
-                }
-            ]
-        )
-        service, repo, _platform, system = _service(model=model, settings=settings)
-        await service.process_customer_batch(
-            _customer_batch(
-                _batch_task("1", text="重复门店询问"),
-                _batch_task("2", text="重复标准报价"),
-                _batch_task("3", text="预约金卡点唤醒内容"),
-                _batch_task("4", text="后续尚未处理内容"),
-            )
-        )
-        settings.sop_platform_quiet_hours_enabled = False
-
-        result = await service.process_deferred_replays()
-
-        self.assertEqual(result, 1)
-        self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("预约金卡点唤醒内容")])
-        self.assertEqual(repo.tasks["platform-sop:1"]["send_payload"]["deferred_replay"]["status"], "skipped")
-        self.assertEqual(repo.tasks["platform-sop:2"]["send_payload"]["deferred_replay"]["status"], "skipped")
-        self.assertEqual(repo.tasks["platform-sop:3"]["send_payload"]["deferred_replay"]["status"], "sent")
-        self.assertEqual(repo.tasks["platform-sop:4"]["send_payload"]["deferred_replay"]["status"], "pending")
-
-    async def test_deferred_replay_all_filtered_skips_all_without_sending(self) -> None:
-        settings = _settings(quiet_hours_enabled=True)
-        settings.sop_platform_quiet_start_hour = 0
-        settings.sop_platform_quiet_end_hour = 0
-        model = _Model(
-            [
-                {
-                    "evaluations": [
-                        {"task_id": "1", "decision": "skip", "reason": "已处理", "evidence_refs": ["task:1"]},
-                        {"task_id": "2", "decision": "skip", "reason": "已处理", "evidence_refs": ["task:2"]},
-                    ],
-                    "selected_task_id": "",
-                    "transition_text": "",
-                }
-            ]
-        )
-        service, repo, _platform, system = _service(model=model, settings=settings)
-        await service.process_customer_batch(
-            _customer_batch(_batch_task("1"), _batch_task("2"))
-        )
-        settings.sop_platform_quiet_hours_enabled = False
-
-        result = await service.process_deferred_replays()
-
-        self.assertEqual(result, 0)
-        self.assertEqual(system.send_calls, [])
-        self.assertTrue(
-            all(
-                task["send_payload"]["deferred_replay"]["status"] == "skipped"
-                for task in repo.tasks.values()
-            )
         )
 
     async def test_incomplete_pending_page_is_not_processed(self) -> None:
@@ -2474,9 +2281,6 @@ def _settings(*, shadow_mode: bool = False, quiet_hours_enabled: bool = False):
         sop_platform_quiet_hours_enabled=quiet_hours_enabled,
         sop_platform_quiet_start_hour=0,
         sop_platform_quiet_end_hour=8,
-        sop_platform_deferred_replay_enabled=True,
-        sop_platform_deferred_replay_interval_seconds=600,
-        sop_platform_deferred_replay_concurrency=6,
         sop_platform_quiet_first_add_grace_minutes=30,
     )
 

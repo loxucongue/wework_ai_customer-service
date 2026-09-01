@@ -21,7 +21,7 @@ from app.services.follow_knowledge_client import FollowKnowledgeClient
 from app.services.model_client import ModelClient
 from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
 from app.services.runtime_budget import build_runtime_budget
-from app.services.sop_execution_service import SopExecutionService
+from app.services.v3_sop_execution_service import SopExecutionService
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.trace_logger import TraceLogger
@@ -395,12 +395,7 @@ async def _main() -> int:
             model_client=model_client,
             memory_store=memory_store,
             customer_context_service=None,
-            event_model_retry_attempts=settings.sop_event_model_retry_attempts,
-            event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
-            event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
-            event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
             chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
-            event_model_max_concurrency=max(1, int(args.concurrency)),
             model_led_objection_playbook_service=ModelLedObjectionPlaybookService(
                 settings.model_led_objection_playbook_path
             ),

@@ -19,7 +19,6 @@ from app.policies.sales_flow import (
     precision_qa_index_for_gate,
     sales_mainline_for_model,
 )
-from app.prompts.global_contract import GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.prompts.v3_sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
 from app.chat_request_context import is_isolated_v2_test_request
 from app.schemas import ChatRequest
@@ -28,7 +27,6 @@ from app.services.customer_scope import customer_scope_from_identity
 from app.services.model_client import ModelClient
 from app.services.sop.execution_core import SopExecutionCore
 from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
-from app.services.sop_event_decision import normalize_event_decision, selected_candidate_packs
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
@@ -37,90 +35,6 @@ from app.services.trace_logger import compact
 
 FIRST_ADD_NEXT_STEP_LOOKAHEAD_MINUTES = 0
 FIRST_ADD_NEXT_STEP_MAX_CANDIDATES = 1
-
-
-SOP_EVENT_SYSTEM_PROMPT = f"""
-{GLOBAL_STRUCTURED_NODE_CONTRACT}
-
-# Role
-你是 `/sop/events` 主动触达决策模型。你负责结合完整聊天、已交付证据、合法候选、频率和安全事实，决定本轮是否触达、交付哪一个新价值以及使用多强的行动引导。代码只提供资格、事实和结构保护，不替你决定销售节奏。
-
-固定新客开场由协议直接发送，不由你改写。`mode=platform_actions` 时必须原样转发平台 `message_content` 的类型、顺序、正文和 URL；除有效忙碌保护或硬安全冲突外选择 `send`，并保持 `text_adjustments=[]`、`message_operations=[]`。
-
-# Input Authority
-- 最新客户消息与最新会话事实优先。
-- `candidate_sops` 已通过到期、客户范围、发送资格、频率和结构过滤；候选顺序只供审计，不是强制主线。
-- `mainline_stage_status`、完成记录和发送记录用于识别历史已交付价值、防止重复并核验付款前置，不要求选择最早阶段。
-- `customer_fact_snapshot` 只提供支付、门店、订单、发送和风险等权威事实，不是客户心理结论。
-
-# Decision Protocol
-1. 先判断现在是否适合主动触达。最新问题待回复、实时聊天、明确工作中、健康风险、投诉退款、强拒绝或要求停止联系时，按事实 defer、skip 或 safety notice，不做营销压单。
-2. 识别历史已经交付的地址、效果、活动和排疑价值。客户不需要明确确认某项价值已经接受，但继续质疑时该问题仍然存在。
-3. 从所有合法到期候选中选择一个历史未重复、最能降低当前决策不确定性的价值。不得按 raw order、最早阶段或固定流程机械选择。
-4. 默认每轮一个价值目标。只有夜间积压且两个资产互补、服务同一个客户目标时才 `merge`；最多两个，不堆地址、效果、活动和付款。
-5. 没有合适固定包但存在真实新价值时可 `send_ai_touch`。轻触必须交付新事实、证据价值或降低行动成本，不能只问“考虑得怎么样、还有什么想了解、今天几点来”。没有任何历史未重复的新价值时才 skip/defer。
-6. CTA 强度由完整历史决定：证据不足就直接交付证据；缺少会改变下一步的信息只问一个问题；已有到店意向可收敛到日期或时段；活动和成交基础成熟且存在付款行动信号时及时成交；暂停边界不推进。
-
-# Sales Evidence Principles
-- 真实案例、门店卡和完整活动资产可直接交付，不先询问客户是否需要。文字负责承接和推进，素材负责证明。
-- 同一内容说过一次后，客户沉默时换证据、换价值或降低行动成本，不换句话重复催促。
-- 可按当前阻力使用这些权威事实：整体过程约45～50分钟；做完不影响正常工作和生活；完成线上活动登记后可先到店了解和检测，确认适合、满意再操作。它们是可选证据，不是固定模板；45～50分钟不是交通时间，到店了解必须保留活动登记前提。
-- 活动报价是预约金卡和催付的硬前置。首次活动介绍不能同轮发卡；订单不是发卡前置。
-- 选择包含预约金卡的候选时，必须填写 `payment_readiness_evidence`：`customer_action_ref` 引用最近一条真实客户行动消息，`supporting_value_ref` 引用该消息之前已经交付地址、效果或排疑价值的真实助手消息。你负责判断语义；代码只核验引用、角色和先后顺序。纯沉默、只有助手消息或缺少另一项真实价值时不得选择收款卡。
-
-# Hard Boundaries
-- 只选择 `candidate_sops` 中真实 ID；不得选择已完成 ID/类目，不得编造门店、案例、图片、价格、支付、赠品、老师、档期、接送或效果承诺。
-- `send` 只选一个包。`merge` 必须正好两个互补包。`send_ai_touch` 和 safety notice 只能输出 text。
-- 已付、健康风险、投诉退款、明确拒付或 `payment_collection_gate` 不支持时不得发送预约金卡。`activity_intro_required` 只能用真实活动完成证据解除，不能靠删卡绕过。
-- 平台频率证据达到保护条件且没有新客户进展时应 skip/defer。历史累计次数不能永久阻止触达。
-- 文本可以为当前聊天自然改写，但不得更改数字、承诺边界或只读结构素材；采用资产后必须完整交付该资产的真实图片或卡片。
-
-# Output
-只输出严格 json：
-{{
-  "decision": "send | merge | send_ai_touch | handoff_or_safety_notice | skip | defer | handoff_to_ai_reply",
-  "strategy": "continue_mainline | recover_backlog | soft_touch | safety_notice | conflict_guard | frequency_guard | realtime_handoff",
-  "selected_pack_ids": ["send 为1个真实候选；merge 为2个互补且服务同一目标的真实候选"],
-  "merge_pack_ids": [],
-  "touch_goal": "resume_mainline | soften_objection | collect_info | payment_followup | visit_followup | safety_handoff | none",
-  "ai_touch_messages": [{{"type":"text","content":{{"text":"仅触达分支的客户可见短句"}}}}],
-  "skip_reason": "",
-  "frequency_reason": "",
-  "backlog_handling": "none | recover_one | merge_two",
-  "suggested_next_window": "",
-  "reason": "一句基于证据的内部原因",
-  "stage_skip_evidence": [{{"stage_id":"","pack_id":"","evidence":"仅用于历史覆盖和付款前置审计"}}],
-  "payment_readiness_evidence": {{"customer_action_ref":"仅发预约金卡时填写最近客户消息ref","supporting_value":"address | effect | objection | none","supporting_value_ref":"行动消息之前的助手消息ref","reason":"模型的简短语义判断"}},
-  "contact_availability_decision": {{"status":"available | busy_now | unknown","customer_evidence_ref":"","assistant_acknowledgement_ref":"","reason":""}},
-  "text_adjustments": [{{"order":1,"text":"仅改写已有 text"}}],
-  "message_operations": [{{"op":"insert_text_after","after_order":1,"text":"只新增无新事实的承接 text"}}]
-}}
-""".strip()
-
-SOP_EVENT_SYSTEM_PROMPT += """
-
-# Contact Availability Contract
-- `recent_conversation` contains the latest 30 messages. Every item has a stable `message_ref`.
-- `customer_fact_snapshot` contains durable structured facts only. Do not infer current psychology from old profile summaries.
-- `contact_availability_evidence` only describes message order and elapsed time. You must decide whether the customer is currently available.
-- If the customer explicitly said they are busy, working, driving, or will talk later, and a later assistant message acknowledged waiting, output `status=busy_now` and cite both message refs.
-- Do not reuse an old busy state when any newer customer message exists after the cited acknowledgement. The newest customer message always wins.
-- With valid `busy_now`: within 360 minutes choose only `skip` or `defer`; after 360 minutes choose `skip`, `defer`, or one low-pressure text through `send_ai_touch`.
-- A busy touch must contain at most one text message. It must not contain an SOP pack, image, video, or payment_collection.
-- This availability protection applies in both `first_add_flow` and `platform_actions`. Platform content priority cannot override a valid current busy state.
-- When the current customer message asks how to pay or asks for the payment card, treat it as new progress and resume the normal mainline.
-- `daily_soft_limit_reached` alone is soft evidence. Combined with valid busy evidence and no new customer progress, follow the busy rules above.
-
-Add this required object to the output JSON:
-"contact_availability_decision": {
-  "status": "available | busy_now | unknown",
-  "customer_evidence_ref": "message_ref or empty",
-  "assistant_acknowledgement_ref": "message_ref or empty",
-  "reason": "brief evidence-based reason"
-}
-
-`strategy` may also be `availability_guard` when the decision is controlled by this contract.
-"""
 
 
 class SopExecutionService(SopExecutionCore):
@@ -134,12 +48,7 @@ class SopExecutionService(SopExecutionCore):
         model_client: ModelClient,
         memory_store: Any | None = None,
         customer_context_service: Any | None = None,
-        event_model_retry_attempts: int = 3,
-        event_model_retry_delay_seconds: float = 1.0,
-        event_model_attempt_timeout_seconds: float = 45.0,
-        event_model_total_timeout_seconds: float = 60.0,
         chat_gate_total_timeout_seconds: float = 15.0,
-        event_model_max_concurrency: int = 2,
         model_led_objection_playbook_service: ModelLedObjectionPlaybookService | None = None,
     ) -> None:
         self.repository = repository
@@ -147,13 +56,8 @@ class SopExecutionService(SopExecutionCore):
         self.model_client = model_client
         self.memory_store = memory_store
         self.customer_context_service = customer_context_service
-        self.event_model_retry_attempts = max(1, int(event_model_retry_attempts or 1))
-        self.event_model_retry_delay_seconds = max(0.0, float(event_model_retry_delay_seconds or 0.0))
-        self.event_model_attempt_timeout_seconds = max(1.0, float(event_model_attempt_timeout_seconds or 45.0))
-        self.event_model_total_timeout_seconds = max(1.0, float(event_model_total_timeout_seconds or 60.0))
         self.chat_gate_total_timeout_seconds = max(1.0, float(chat_gate_total_timeout_seconds or 15.0))
         self.model_led_objection_playbook_service = model_led_objection_playbook_service
-        self._event_model_semaphore = asyncio.Semaphore(max(1, int(event_model_max_concurrency or 1)))
 
     def reply_chain_content_catalog(self) -> dict[str, Any]:
         """Return a metadata-only index; Gate loads bodies through its own boundary."""
@@ -670,262 +574,6 @@ class SopExecutionService(SopExecutionCore):
             "initial_violations": violations,
             "repair_violations": repaired_violations,
         }
-
-    async def evaluate_event_suggestion(
-        self,
-        *,
-        payload: dict[str, Any],
-        customer: dict[str, Any],
-        identity: dict[str, str],
-        event_type: str,
-        conversation_messages: list[dict[str, Any]],
-        conversation_activity: dict[str, Any] | None = None,
-        customer_memory: dict[str, Any] | None = None,
-        customer_context: dict[str, Any] | None = None,
-        candidate_packs: list[dict[str, Any]] | None = None,
-        actions_reply_messages: list[dict[str, Any]] | None = None,
-        event_policy_evidence: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        started = time.perf_counter()
-        candidate_packs = candidate_packs or []
-        actions_reply_messages = actions_reply_messages or []
-        result: dict[str, Any] = {
-            "mode": "event_suggestion",
-            "send_sop": False,
-            "sop_pack_id": "",
-            "sop_pack_name": "",
-            "need_ai_reply": False,
-            "reason": "",
-            "completed_sop_pack_ids": [],
-            "text_adjustments": [],
-            "message_operations": [],
-            "model_usage": {},
-            "error": "",
-        }
-        try:
-            event_policy = event_policy_evidence or {}
-            if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"} and _event_suggestion_activity_block(
-                conversation_activity or {},
-                event_policy,
-            ):
-                result.update(
-                    {
-                        "mode": "event_rejected",
-                        "send_sop": False,
-                        "need_ai_reply": False,
-                        "reason": "event_suggestion_active_chat_or_pending_customer_reply",
-                    }
-                )
-                return _finish(result, started)
-            completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
-                customer_id=identity.get("customer_id", ""),
-                external_userid=identity.get("external_userid", ""),
-                corp_id=identity.get("corp_id", ""),
-                wechat=identity.get("wechat", ""),
-            )
-            completed_categories = _sent_categories(self.repository, identity)
-            result["completed_sop_pack_ids"] = completed_ids
-            result["completed_sop_categories"] = completed_categories
-            selector_input = _event_selector_input(
-                payload=payload,
-                customer=customer,
-                event_type=event_type,
-                conversation_messages=conversation_messages,
-                conversation_activity=conversation_activity or {},
-                customer_memory=customer_memory or {},
-                customer_context=customer_context or {},
-                candidate_packs=candidate_packs,
-                actions_reply_messages=actions_reply_messages,
-                completed_sop_pack_ids=completed_ids,
-                completed_sop_categories=completed_categories,
-                event_policy_evidence=event_policy,
-            )
-            result["selector_input"] = compact(selector_input, max_chars=6000)
-            selector_output, model_attempts, model_error = await self._judge_event_sop_with_retries(selector_input)
-            result["model_attempts"] = model_attempts
-            if model_error:
-                result.update(
-                    {
-                        "mode": "event_model_error",
-                        "send_sop": False,
-                        "need_ai_reply": False,
-                        "error": model_error,
-                        "reason": "event_sop_model_retries_exhausted",
-                    }
-                )
-                return _finish(result, started)
-            result["selector_output"] = selector_output
-            result["model_usage"] = dict(self.model_client.last_usage or {})
-            result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
-            result["message_operations"] = _message_operations(selector_output.get("message_operations"))
-            decision_name = _string(selector_output.get("decision"))
-
-            if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}:
-                if decision_name in {"send_ai_touch", "handoff_or_safety_notice"}:
-                    touch_messages = (
-                        selector_output.get("ai_touch_messages")
-                        if isinstance(selector_output.get("ai_touch_messages"), list)
-                        else []
-                    )
-                    messages, sanitize_summary = sanitize_sop_reply_messages(
-                        touch_messages,
-                        conversation_messages=conversation_messages,
-                    )
-                    send_sop = bool(messages)
-                    result.update(
-                        {
-                            "sop_pack_id": decision_name,
-                            "sop_pack_name": decision_name,
-                            "send_sop": send_sop,
-                            "reply_messages": messages,
-                            "message_sanitize": sanitize_summary,
-                        }
-                    )
-                else:
-                    selected = selected_candidate_packs(selector_output, candidate_packs)
-                    send_sop = bool(selector_output.get("send_sop") and selected)
-                    result.update(
-                        {
-                            "sop_pack_id": str(selected[0].get("id") or "") if selected else "",
-                            "sop_pack_name": " + ".join(str(pack.get("name") or "") for pack in selected),
-                            "send_sop": send_sop,
-                        }
-                    )
-            elif event_type == "sop_platform_task":
-                send_sop = bool(selector_output.get("send_sop"))
-                if decision_name in {"send_ai_touch", "handoff_or_safety_notice"}:
-                    touch_messages = (
-                        selector_output.get("ai_touch_messages")
-                        if isinstance(selector_output.get("ai_touch_messages"), list)
-                        else []
-                    )
-                    messages, sanitize_summary = sanitize_sop_reply_messages(
-                        touch_messages,
-                        conversation_messages=conversation_messages,
-                    )
-                    send_sop = bool(send_sop and messages)
-                    result["reply_messages"] = messages
-                    result["message_sanitize"] = sanitize_summary
-                result.update({"sop_pack_id": "platform_actions", "sop_pack_name": "platform_actions", "send_sop": send_sop})
-            else:
-                send_sop = False
-                result.update({"send_sop": False, "reason": f"unsupported_event_type:{event_type}"})
-
-            result.update(
-                {
-                    "mode": (
-                        "event_selected"
-                        if send_sop
-                        else "event_deferred"
-                        if decision_name == "defer"
-                        else "event_handoff"
-                        if decision_name == "handoff_to_ai_reply"
-                        else "event_rejected"
-                    ),
-                    "need_ai_reply": bool(selector_output.get("need_ai_reply")),
-                    "reason": str(selector_output.get("reason") or result.get("reason") or ""),
-                }
-            )
-            return _finish(result, started)
-        except Exception as exc:
-            result.update(
-                {
-                    "mode": "event_model_error",
-                    "send_sop": False,
-                    "need_ai_reply": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "reason": "event_sop_model_failed",
-                }
-            )
-            return _finish(result, started)
-
-
-    async def _judge_event_sop(
-        self,
-        selector_input: dict[str, Any],
-        *,
-        deadline_monotonic: float | None = None,
-    ) -> dict[str, Any]:
-        messages = [
-            {
-                "role": "system",
-                "content": SOP_EVENT_SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": (
-                    "根据系统提示词和以下 JSON 输入，返回严格 JSON。\n"
-                    + json.dumps(selector_input, ensure_ascii=False, separators=(",", ":"))
-                ),
-            },
-        ]
-        data = await self.model_client.chat_json(
-            messages,
-            tier="reply",
-            temperature=0,
-            deadline_monotonic=deadline_monotonic,
-        )
-        normalized, violations = normalize_event_decision(data if isinstance(data, dict) else {}, selector_input)
-        if not violations:
-            return normalized
-        repair_messages = [
-            {"role": "system", "content": SOP_EVENT_SYSTEM_PROMPT},
-            {
-                "role": "system",
-                "content": (
-                    "# Repair Task\n"
-                    "上一份 JSON 违反主动 SOP 决策结构合同。只修正枚举、候选包数量、真实候选 ID、"
-                    "已完成包幂等、结构消息发送资格和交接资格；"
-                    "若候选的 payment_collection_gate 是 paid_skip_card，"
-                    "且该阶段仍应触达，保留候选包并用 remove_message 删除每一张受限收款卡，同时改写相关 text；"
-                    "activity_intro_required 不能靠删卡绕过，必须选择合法前序候选或拒发。"
-                    "不要根据 violations 改写客户心理、强制选择某个阶段或生成固定轻触文案；只修结构与事实冲突。"
-                    "不要改变输入事实，不要输出 schema 外字段。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "selector_input": selector_input,
-                        "invalid_output": data if isinstance(data, dict) else {},
-                        "violations": violations,
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            },
-        ]
-        repaired = await self.model_client.chat_json(
-            repair_messages,
-            tier="reply",
-            temperature=0,
-            deadline_monotonic=deadline_monotonic,
-        )
-        repaired_output, repaired_violations = normalize_event_decision(
-            repaired if isinstance(repaired, dict) else {},
-            selector_input,
-        )
-        if not repaired_violations:
-            repaired_output["repair_applied"] = True
-            repaired_output["initial_violations"] = violations
-            return repaired_output
-        return {
-            "decision": "skip",
-            "send_sop": False,
-            "sop_pack_id": "",
-            "selected_pack_ids": [],
-            "merge_pack_ids": [],
-            "need_ai_reply": False,
-            "reason": "event_decision_invalid_after_repair",
-            "error": "event_decision_invalid_after_repair:" + ",".join(repaired_violations),
-            "text_adjustments": [],
-            "message_operations": [],
-            "initial_violations": violations,
-            "repair_violations": repaired_violations,
-        }
-
-
 
     def commit_reply_selected_chat_gate_candidate(
         self,

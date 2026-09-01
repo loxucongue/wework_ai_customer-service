@@ -157,7 +157,7 @@ export function SopLogViewer() {
             <Send className="h-5 w-5" />
             SOP 事件日志
           </h1>
-          <p className="mt-1 text-sm text-slate-500">只展示 /sop/events 主动事件入口的接收、对话拉取、模型判断、主动发送 payload 和失败响应体。</p>
+          <p className="mt-1 text-sm text-slate-500">只读展示历史 SOP 事件与发送记录；旧事件接收入口已下线，不再创建新事件。</p>
         </header>
 
         <section className="border-b p-4">

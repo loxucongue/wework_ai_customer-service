@@ -14,7 +14,7 @@ def route_visible_for_role(path: str, role: RuntimeRole) -> bool:
     if role is RuntimeRole.REPLY:
         return path == "/reply/workflow-compatible-v3"
     if role is RuntimeRole.CONTROL:
-        return path.startswith("/admin/") or path.startswith("/callbacks/") or path == "/sop/events"
+        return path.startswith("/admin/") or path.startswith("/callbacks/")
     return False
 
 

@@ -147,26 +147,6 @@ function SidebarContent({
             </div>
           </div>
         ))}
-        <div className="border-t pt-3">
-          {!collapsed && <div className="px-2 pb-1 text-xs font-medium text-zinc-400">历史页面</div>}
-          <a
-            href="/bi"
-            onClick={onNavigate}
-            title={collapsed ? "旧版经营 BI" : undefined}
-            className={cn(
-              "flex h-9 items-center gap-3 rounded-md px-2 text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-950",
-              collapsed && "justify-center",
-            )}
-          >
-            <Archive className="size-4 shrink-0" />
-            {!collapsed && (
-              <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                <span className="truncate">旧版经营 BI</span>
-                <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px]">历史</span>
-              </span>
-            )}
-          </a>
-        </div>
       </nav>
     </>
   );

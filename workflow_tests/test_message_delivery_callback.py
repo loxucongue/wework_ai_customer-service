@@ -8,7 +8,7 @@ import pytest
 from app.schemas import MessageDeliveryCallback
 from app.services.message_delivery import MessageDeliveryService
 from app.services.outreach_service import OutreachService
-from app.services.sop_event_service import SopEventService
+from app.services.sop.delivery_compatibility import SopDeliveryCompatibilityService
 from app.services.sop_platform_task_service import SopPlatformTaskService
 from app.services.storage import AppRepository
 from app.services.storage.sqlite_store import SQLiteStore
@@ -310,9 +310,7 @@ def test_sop_delivery_callback_preserves_existing_send_audit(tmp_path) -> None:
         send_payload={"decision": {"decision": "send"}},
         send_response={"platform_request_id": "platform-request-1"},
     )
-    service = SopEventService.__new__(SopEventService)
-    service.repository = repository
-    service.memory_store = None
+    service = SopDeliveryCompatibilityService(repository=repository)
 
     service.finalize_message_delivery(
         {

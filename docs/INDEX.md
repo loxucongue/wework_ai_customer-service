@@ -17,7 +17,6 @@
 ## 专项文档
 
 - [AI 策略数据源与发布](AI_SALES_POLICY_INTEGRATION.md)
-- [会话模式回调](platform_conversation_mode_relay_integration.md)
 - [消息送达回调](platform_message_delivery_callback_integration.md)
 - [MySQL 切换手册](aics_mysql_cutover_runbook.md)
 - [任务工作流](runbooks/TASK_WORKFLOW.md)

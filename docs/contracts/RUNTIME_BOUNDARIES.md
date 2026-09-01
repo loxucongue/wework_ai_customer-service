@@ -25,6 +25,18 @@
 - 历史 schema/interface version：允许只读兼容。
 - 旧审计记录中的 `v1/v2/legacy` schema 值：只读兼容，不能用来重新启用旧运行链。
 
+## 已删除接口
+
+以下接口不再注册，应用直接返回 404，不保留接受后不执行的兼容层：
+
+- `POST /callbacks/v1/conversation-mode`
+- `POST /sop/events`
+- `GET /admin/sop-platform-tasks/quiet-backlog`
+- `GET /admin/sop-platform-tasks/quiet-backlog/{event_id}`
+
+实时人工接管查询、第三方 SOP 的 `humantakeover` 策略回传、消息送达回调和
+`/admin/sop-events` 历史只读日志不受影响。
+
 ## 运行角色
 
 - `ai-paths-v3.service`：V3 回复 API，必须设置

@@ -183,8 +183,6 @@ async def _review_result(
                      "Every URL in authoritative_configured_sop_media_urls is a configured SOP media asset and may be described "
                      "as a configured case/activity reference. This media authorization does not make unrelated text claims true; "
                      "continue checking all text against authoritative_business_facts. "
-                    "Treat platform_task message_content in authoritative_scenario_timeline as an exact passthrough payload: "
-                    "its text and media are authoritative for that event even when they are not ordinary campaign facts. "
                     "Use these configured sales rules while scoring: a complete visible set of 1-3 stores should be sent as "
                     "cards; after the customer chooses one, asking spot history or returning to cases/activity is valid. "
                     "When 2-3 real store cards were sent and the customer has not selected one, asking which store or district "

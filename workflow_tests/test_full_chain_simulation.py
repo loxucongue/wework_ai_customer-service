@@ -37,13 +37,13 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(_semantic_scores(top_level)["current_question"], 5)
         self.assertEqual(_semantic_scores(top_level)["history_continuity"], 4)
 
-    def test_v1_fixture_expands_to_at_least_one_hundred_scenarios(self) -> None:
+    def test_v1_fixture_expands_to_v3_scenario_floor(self) -> None:
         scenarios = load_suite(REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json")
 
-        self.assertGreaterEqual(len(scenarios), 100)
+        self.assertGreaterEqual(len(scenarios), 90)
         self.assertEqual(len({item["id"] for item in scenarios}), len(scenarios))
         self.assertTrue(all(item.get("timeline") for item in scenarios))
-        self.assertGreaterEqual(sum(len(item["timeline"]) >= 2 for item in scenarios), 100)
+        self.assertGreaterEqual(sum(len(item["timeline"]) >= 2 for item in scenarios), 90)
 
     def test_identity_must_be_simulation_scoped(self) -> None:
         with self.assertRaises(SimulationIsolationError):

@@ -19,13 +19,7 @@ from app.runtime_routes import apply_runtime_route_policy
 from app.schemas import (
     ChatRequest,
     ChatResponse,
-    ConversationModeChangedEvent,
     MessageDeliveryCallback,
-)
-from app.services.conversation_mode_relay import (
-    ConversationModeWritebackRejected,
-    ConversationModeWritebackTimeout,
-    ConversationModeWritebackUnavailable,
 )
 from app.services.run_observability_summary import build_run_observability
 from app.services.voice_transcription import transcribe_voice_request
@@ -43,7 +37,6 @@ trace_logger = services.trace_logger
 storage_store = services.storage_store
 repository = services.repository
 message_delivery_service = services.message_delivery_service
-conversation_mode_relay_service = services.conversation_mode_relay_service
 service_rule_data_service = services.service_rule_data_service
 coze_client = services.coze_client
 voice_transcription_client = services.voice_transcription_client
@@ -69,9 +62,8 @@ follow_knowledge_client = services.follow_knowledge_client
 deepseek_semantic_client = services.deepseek_semantic_client
 v3_semantic_router_service = services.v3_semantic_router_service
 outreach_service = services.outreach_service
-sop_execution_service = services.sop_execution_service
 v3_sop_execution_service = services.v3_sop_execution_service
-sop_event_service = services.sop_event_service
+sop_delivery_compatibility_service = services.sop_delivery_compatibility_service
 sop_platform_task_service = services.sop_platform_task_service
 reply_graphs = services.reply_graphs
 chat_runtime = services.chat_runtime
@@ -159,7 +151,6 @@ async def _run_store_snapshot_refresh_worker() -> None:
 async def _run_outreach_plan_monitor_worker() -> None:
     while True:
         try:
-            await sop_event_service.process_due_quiet_backlog_fusions()
             if settings.outreach_first_day_silence_enabled:
                 await outreach_service.evaluate_first_day_opened_silence_customers(
                     limit=settings.outreach_plan_monitor_batch_size,
@@ -212,7 +203,6 @@ async def startup() -> None:
         store_snapshot_refresh_worker = asyncio.create_task(_run_store_snapshot_refresh_worker())
     if (
         settings.outreach_first_day_silence_enabled
-        or settings.sop_quiet_backlog_fusion_enabled
     ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
         outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
     if (
@@ -446,32 +436,12 @@ async def require_message_delivery_callback_token(
         )
 
 
-async def require_conversation_mode_callback_token(
-    x_callback_token: str | None = Header(default=None, alias="X-Callback-Token"),
-) -> None:
-    expected = str(
-        settings.conversation_mode_callback_token
-        or settings.message_delivery_callback_token
-        or ""
-    ).strip()
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Conversation mode callback token is not configured",
-        )
-    if not x_callback_token or not secrets.compare_digest(x_callback_token, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing conversation mode callback token",
-        )
-
-
 async def _finalize_message_delivery(dispatch: dict[str, Any]) -> None:
     source_kind = str(dispatch.get("source_kind") or "").strip()
     if source_kind == "ai_async_reply":
         chat_runtime.finalize_async_message_delivery(dispatch)
     elif source_kind == "sop_event":
-        sop_event_service.finalize_message_delivery(dispatch)
+        sop_delivery_compatibility_service.finalize_message_delivery(dispatch)
     elif source_kind == "outreach_task":
         outreach_service.finalize_message_delivery(dispatch)
     elif source_kind == "sop_platform_task":
@@ -508,37 +478,6 @@ async def message_delivery_callback(payload: MessageDeliveryCallback) -> dict[st
             "duplicate": bool(result.get("duplicate")),
             "status": str(dispatch.get("status") or ""),
             "finalized": bool(str(dispatch.get("finalized_at") or "").strip()),
-        },
-    }
-
-
-@app.post(
-    "/callbacks/v1/conversation-mode",
-    dependencies=[Depends(require_conversation_mode_callback_token)],
-)
-async def conversation_mode_callback(payload: ConversationModeChangedEvent) -> dict[str, Any]:
-    try:
-        result = await conversation_mode_relay_service.forward(payload)
-    except ConversationModeWritebackUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ConversationModeWritebackTimeout as exc:
-        raise HTTPException(status_code=504, detail=str(exc)) from exc
-    except ConversationModeWritebackRejected as exc:
-        logger.warning(
-            "Conversation mode strategy writeback rejected: event_id=%s status=%s error=%s",
-            payload.event_id,
-            exc.status_code,
-            exc,
-        )
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {
-        "code": 0,
-        "msg": "ok",
-        "data": {
-            "event_id": payload.event_id,
-            "forwarded": True,
-            "writeback_http_status": int(result.get("http_status") or 0),
-            "writeback_response": result.get("response"),
         },
     }
 
@@ -685,34 +624,6 @@ async def admin_sop_platform_tasks(
     )
 
 
-@app.get("/admin/sop-platform-tasks/quiet-backlog", dependencies=[Depends(require_api_key)])
-async def admin_sop_platform_quiet_backlog(
-    local_date: str = "",
-    status: str = "",
-    customer_id: str = "",
-    wechat: str = "",
-    limit: int = 200,
-) -> dict[str, Any]:
-    try:
-        return sop_event_service.admin_quiet_backlog_logs(
-            local_date=local_date,
-            status=status,
-            customer_id=customer_id,
-            wechat=wechat,
-            limit=limit,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/admin/sop-platform-tasks/quiet-backlog/{event_id:path}", dependencies=[Depends(require_api_key)])
-async def admin_sop_platform_quiet_backlog_detail(event_id: str) -> dict[str, Any]:
-    detail = sop_event_service.admin_quiet_backlog_detail(event_id)
-    if not detail:
-        raise HTTPException(status_code=404, detail="quiet backlog fusion event not found")
-    return detail
-
-
 @app.get("/admin/sop-platform-runs", dependencies=[Depends(require_api_key)])
 async def admin_sop_platform_runs(
     limit: int = 100,
@@ -752,18 +663,6 @@ async def admin_sop_platform_task_resend(task_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/sop/events", dependencies=[Depends(require_external_api_key)])
-async def sop_events(
-    background_tasks: BackgroundTasks,
-    payload: dict[str, Any] = Body(...),
-) -> JSONResponse:
-    try:
-        result = await sop_event_service.accept_audit_only(payload)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"code": 400, "msg": str(exc), "data": {"accepted": False}})
-    return JSONResponse(content={"code": 0, "msg": "ok", "data": result})
 
 
 @app.post("/reply/workflow-compatible-v3")

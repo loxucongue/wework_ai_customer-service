@@ -93,10 +93,6 @@ class Settings(BaseSettings):
     model_store_destination_hedge_delay_seconds: float = 3.0
     model_request_retry_attempts: int = 2
     model_request_retry_delay_seconds: float = 0.5
-    sop_event_model_retry_attempts: int = Field(default=3, alias="SOP_EVENT_MODEL_RETRY_ATTEMPTS")
-    sop_event_model_retry_delay_seconds: float = Field(default=1.0, alias="SOP_EVENT_MODEL_RETRY_DELAY_SECONDS")
-    sop_event_model_attempt_timeout_seconds: float = Field(default=45.0, alias="SOP_EVENT_MODEL_ATTEMPT_TIMEOUT_SECONDS")
-    sop_event_model_total_timeout_seconds: float = Field(default=60.0, alias="SOP_EVENT_MODEL_TOTAL_TIMEOUT_SECONDS")
     sop_chat_gate_total_timeout_seconds: float = Field(default=25.0, alias="SOP_CHAT_GATE_TOTAL_TIMEOUT_SECONDS")
     reply_model_semantic_routing_enabled: bool = Field(
         default=False,
@@ -110,33 +106,9 @@ class Settings(BaseSettings):
         default=False,
         alias="REPLY_MODEL_PAYMENT_SEQUENCING_ENABLED",
     )
-    sop_event_schema_only_normalizer_enabled: bool = Field(
-        default=False,
-        alias="SOP_EVENT_SCHEMA_ONLY_NORMALIZER_ENABLED",
-    )
     reply_governance_shadow_mode: bool = Field(
         default=True,
         alias="REPLY_GOVERNANCE_SHADOW_MODE",
-    )
-    sop_event_model_max_concurrency: int = Field(default=20, alias="SOP_EVENT_MODEL_MAX_CONCURRENCY")
-    sop_event_persistent_retry_attempts: int = Field(default=4, alias="SOP_EVENT_PERSISTENT_RETRY_ATTEMPTS")
-    sop_event_persistent_retry_base_delay_seconds: float = Field(
-        default=30.0,
-        alias="SOP_EVENT_PERSISTENT_RETRY_BASE_DELAY_SECONDS",
-    )
-    sop_event_persistent_retry_max_delay_seconds: float = Field(
-        default=300.0,
-        alias="SOP_EVENT_PERSISTENT_RETRY_MAX_DELAY_SECONDS",
-    )
-    sop_event_retry_poll_seconds: float = Field(default=5.0, alias="SOP_EVENT_RETRY_POLL_SECONDS")
-    sop_event_retry_batch_size: int = Field(default=5, alias="SOP_EVENT_RETRY_BATCH_SIZE")
-    sop_quiet_backlog_fusion_enabled: bool = Field(default=True, alias="SOP_QUIET_BACKLOG_FUSION_ENABLED")
-    sop_quiet_backlog_fusion_time: str = Field(default="08:30", alias="SOP_QUIET_BACKLOG_FUSION_TIME")
-    sop_quiet_backlog_fusion_batch_size: int = Field(default=50, alias="SOP_QUIET_BACKLOG_FUSION_BATCH_SIZE")
-    sop_quiet_backlog_fusion_model: str = Field(default="deepseek-chat", alias="SOP_QUIET_BACKLOG_FUSION_MODEL")
-    sop_quiet_backlog_fusion_timeout_seconds: float = Field(
-        default=60.0,
-        alias="SOP_QUIET_BACKLOG_FUSION_TIMEOUT_SECONDS",
     )
     sop_platform_pull_enabled: bool = Field(default=False, alias="SOP_PLATFORM_PULL_ENABLED")
     sop_platform_shadow_mode: bool = Field(default=True, alias="SOP_PLATFORM_SHADOW_MODE")
@@ -181,18 +153,6 @@ class Settings(BaseSettings):
     sop_platform_quiet_hours_enabled: bool = Field(default=False, alias="SOP_PLATFORM_QUIET_HOURS_ENABLED")
     sop_platform_quiet_start_hour: int = Field(default=0, alias="SOP_PLATFORM_QUIET_START_HOUR")
     sop_platform_quiet_end_hour: int = Field(default=8, alias="SOP_PLATFORM_QUIET_END_HOUR")
-    sop_platform_deferred_replay_enabled: bool = Field(
-        default=False,
-        alias="SOP_PLATFORM_DEFERRED_REPLAY_ENABLED",
-    )
-    sop_platform_deferred_replay_interval_seconds: int = Field(
-        default=600,
-        alias="SOP_PLATFORM_DEFERRED_REPLAY_INTERVAL_SECONDS",
-    )
-    sop_platform_deferred_replay_concurrency: int = Field(
-        default=6,
-        alias="SOP_PLATFORM_DEFERRED_REPLAY_CONCURRENCY",
-    )
     sop_platform_quiet_first_add_grace_minutes: int = Field(
         default=30,
         alias="SOP_PLATFORM_QUIET_FIRST_ADD_GRACE_MINUTES",
@@ -280,7 +240,6 @@ class Settings(BaseSettings):
         default=Path("config/sop_objection_materials.json"),
         alias="SOP_OBJECTION_MATERIALS_PATH",
     )
-    sop_event_daily_touch_soft_limit: int = Field(default=2, alias="SOP_EVENT_DAILY_TOUCH_SOFT_LIMIT")
     outreach_send_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SEND_BASE_URL")
     outreach_send_agent_token: str = Field(default="", alias="OUTREACH_SEND_AGENT_TOKEN", repr=False)
     outreach_send_timeout_seconds: int = Field(default=12, alias="OUTREACH_SEND_TIMEOUT_SECONDS")
@@ -304,26 +263,6 @@ class Settings(BaseSettings):
         default="",
         alias="MESSAGE_DELIVERY_CALLBACK_TOKEN",
         repr=False,
-    )
-    conversation_mode_callback_token: str = Field(
-        default="",
-        alias="CONVERSATION_MODE_CALLBACK_TOKEN",
-        repr=False,
-    )
-    conversation_mode_writeback_url: str = Field(
-        default="",
-        alias="CONVERSATION_MODE_WRITEBACK_URL",
-    )
-    conversation_mode_writeback_token: str = Field(
-        default="",
-        alias="CONVERSATION_MODE_WRITEBACK_TOKEN",
-        repr=False,
-    )
-    conversation_mode_writeback_timeout_seconds: float = Field(
-        default=10.0,
-        alias="CONVERSATION_MODE_WRITEBACK_TIMEOUT_SECONDS",
-        gt=0,
-        le=120,
     )
     outreach_auto_send_poll_seconds: float = Field(default=5.0, alias="OUTREACH_AUTO_SEND_POLL_SECONDS")
     outreach_auto_send_batch_size: int = Field(default=20, alias="OUTREACH_AUTO_SEND_BATCH_SIZE")

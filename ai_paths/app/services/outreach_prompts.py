@@ -189,7 +189,7 @@ OUTREACH_PLAN_SYSTEM_PROMPT = """
 - 活动图只适合活动价值、名额或低风险付款动作；不要给价格透明、距离或单纯时间顾虑硬配活动图。
 - 每一步最多一个图片或视频。
 - `recent_media_delivery` 中最近 72 小时已经发送的 URL 或案例文档不得重复。
-- `recent_sop_delivery` 是最近 72 小时由 `/sop/events` 发出的真实内容证据。它不占个性化 Outreach 的每日次数，但必须用于避免重复同一话题、素材和成交动作。
+- `recent_sop_delivery` 是最近 72 小时由主动触达链路发出的真实内容证据。它不占个性化 Outreach 的每日次数，但必须用于避免重复同一话题、素材和成交动作。
 - 不能输出 URL，不能虚构 `asset_id`，不能把固定 SOP 文字复制成当前触达内容。
 
 # Payment Rules

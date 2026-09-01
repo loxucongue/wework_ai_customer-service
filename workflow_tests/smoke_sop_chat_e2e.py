@@ -7,7 +7,7 @@ from typing import Any
 
 from app.chat_runtime import ChatRuntime
 from app.schemas import ChatRequest
-from app.services.sop_execution_service import SopExecutionService
+from app.services.v3_sop_execution_service import SopExecutionService
 
 
 class BackgroundTasks:

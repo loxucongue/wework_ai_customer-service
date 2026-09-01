@@ -19,6 +19,10 @@ def test_retired_reply_routes_are_absent_from_application() -> None:
         "/reply/workflow-compatible",
         "/chat/workflow-compatible-v2",
         "/reply/workflow-compatible-v2",
+        "/callbacks/v1/conversation-mode",
+        "/sop/events",
+        "/admin/sop-platform-tasks/quiet-backlog",
+        "/admin/sop-platform-tasks/quiet-backlog/{event_id}",
     ):
         assert path not in paths
     assert ("/reply/workflow-compatible-v3" in paths) is (main.runtime_role is RuntimeRole.REPLY)
