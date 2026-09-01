@@ -25,7 +25,9 @@ V3 reply                 control API
 ```
 
 - 客户回复产品接口只保留 V3；应用内不再注册旧 V1/V2 路由，公网由 Nginx 对退役地址固定返回 410。
-- control、reply、workers 可以是独立进程，但必须来自同一个 `main` SHA。
+- control、reply、worker 是三个独立进程角色，必须来自同一个 `main` SHA。角色分别使用
+  `AI_PATHS_SERVICE_ROLE=control|reply|worker`；只有 worker 允许
+  `AI_PATHS_BACKGROUND_WORKERS_ENABLED=true`。
 - 第三方协议路径中出现 `v1` 不代表产品 V1，不能按名称删除。
 - 历史接口/schema 版本号只用于读取旧审计或兼容第三方协议，不构成第二套产品运行时。
 
@@ -34,6 +36,8 @@ V3 reply                 control API
 ```text
 ai_paths/app/main.py              FastAPI 生命周期、路由、worker 编排
 ai_paths/app/runtime_services.py  服务依赖装配，禁止在路由文件重复创建客户端
+ai_paths/app/runtime_roles.py     运行角色标准化与旧环境值只读兼容
+ai_paths/app/runtime_routes.py    按角色收口实际暴露的 FastAPI 路由
 ai_paths/app/graph/               唯一 V3 回复图
 ai_paths/app/services/            平台、SOP、存储、发送与策略服务
 ai_paths/app/policies/            版本化运行策略

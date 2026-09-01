@@ -6,16 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Known shutdown NameError in forbidden main.py; release checklist blocks until fixed.",
-)
 def test_application_starts_and_stops_without_production_credentials(tmp_path: Path) -> None:
     probe = """
 import json

@@ -44,4 +44,3 @@ def test_generated_strategy_candidates_are_not_human_gold() -> None:
     assert payload["coverage"]["cases"] == 400
     assert payload["gold_status"] == "pending_human_review"
     assert "Human review is required" in payload["notice"]
-

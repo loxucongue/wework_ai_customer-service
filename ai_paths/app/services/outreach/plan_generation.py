@@ -1042,4 +1042,3 @@ class PlanGenerator:
                 )
             self.repository.update_first_day_outreach_run(workflow_run_id, **updates)
         return {"created": True, **created_plan}
-

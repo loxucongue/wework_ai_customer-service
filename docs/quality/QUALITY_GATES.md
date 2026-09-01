@@ -2,7 +2,7 @@
 
 - status: current-code
 - owner: project
-- baseline_commit: `f36add37412310613936be5bbd8f58fb591fead3`
+- baseline_source: 当前版本化 `quality/baseline.json`
 - production_status: 待现场核验；本文不表示已部署
 
 ## 统一入口
@@ -25,17 +25,18 @@ CI 使用 Python 3.11、Node 22、pnpm 9 和冻结的前端锁文件。默认门
 |---|---:|---|
 | 测试直接导入私有符号 | 157 | 禁止增长 |
 | 涉及测试文件 | 32 | 报告项，不作为独立阈值 |
-| `except Exception` | 188 | 禁止增长 |
+| `except Exception` | 185 | 禁止增长 |
 | 裸 `except` | 0 | 禁止新增 |
 | 静默 `pass` / `return None` | 57 | 禁止增长 |
 | 其中纯 `pass` | 19 | 禁止增长 |
-| 启发式 fail-open 返回 | 20 | 禁止增长，逐项人工复核 |
+| 启发式 fail-open 返回 | 19 | 禁止增长，逐项人工复核 |
 
 基线是债务上限，不是认可清单。减少计数后应同步降低基线；不得通过改名、动态导入或放宽扫描范围绕过门禁。fail-open 是保守的语法启发式：异常分支直接返回 `True`、成功字符串或空容器会被标记，不代表每一项都已确认是业务漏洞。
 
-## 已知豁免
+## 本地环境差异
 
-隔离启动测试已能在无生产凭据、后台 worker 关闭、临时 SQLite 下启动并访问 `/health`，但关闭阶段触发 `main.py` 中未定义名称。由于质量门禁任务禁止修改该文件，测试暂以 `strict xfail` 记录；发布前必须修复并移除豁免。`strict` 保证缺陷修复后测试意外通过时仍提醒维护者清理豁免。
+隔离启动测试已在无生产凭据、后台 worker 关闭、临时 SQLite 下完成启动、`/health`
+和正常关闭，不再保留 shutdown 豁免。
 
 Windows 本机的 `pnpm validate` 组合脚本依赖 POSIX shell 语法，可能返回路径语法错误；可分别执行 `pnpm ts-check` 与 `pnpm lint:build` 获取等价检查结果。完整 CI 和正式发布门禁仍以 Linux 上统一入口返回 0 为准，不豁免任何前端检查。
 

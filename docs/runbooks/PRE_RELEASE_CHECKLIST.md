@@ -7,8 +7,9 @@
 - [ ] `branch=main`，不是临时分支或 detached HEAD。
 - [ ] 记录完整 commit SHA，并确认该 SHA 已合入 `main`。
 - [ ] `dirty=false`，构建输入与提交一致。
-- [ ] control、reply、workers 来自同一个已验证 `main` SHA。
-- [ ] 记录 `service_role` 和 `interface_version=v3`。
+- [ ] control、reply、worker 来自同一个已验证 `main` SHA。
+- [ ] 记录三个服务的 `service_role`；reply 的 `interface_version=v3`。
+- [ ] 核验角色分别为 `control/reply/worker`，且只有 worker 启用后台 workers。
 - [ ] 保存可恢复的上一 release 和回滚命令。
 
 ## 自动门禁
@@ -16,7 +17,7 @@
 - [ ] 在干净环境完整执行 `python scripts/run_quality_gates.py`，返回 0。
 - [ ] Python 编译、离线确定性测试和 V3 路由合同通过。
 - [ ] 私有导入及异常债务未超过版本化基线。
-- [ ] 隔离启动不再有 `strict xfail`；启动、`/health`、关闭均成功。
+- [ ] 隔离启动、`/health` 和关闭均成功。
 - [ ] 前端 TypeScript、ESLint 和生产构建通过冻结锁文件复现。
 - [ ] 测试过程未使用生产 token、真实客户数据、真实发送接口或真实模型。
 
@@ -30,4 +31,3 @@
 - [ ] 需要真实模型效果或全链路在线验证的改动已单独执行并保留可审计结论；不得用自动生成的 400 条候选代替人工金标。
 
 任一阻断项失败，停止发布或立即回滚到已记录 release。
-

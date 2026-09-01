@@ -11,4 +11,3 @@ markers = [
 target-version = "py311"
 line-length = 120
 extend-exclude = ["artifacts", "data", "projects"]
-

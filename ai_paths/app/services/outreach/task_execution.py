@@ -682,4 +682,3 @@ class TaskExecutor:
                 payload={"sent_at": sent_at},
             )
         return {"ok": True, "status": "sent", "send_result": send_result}
-

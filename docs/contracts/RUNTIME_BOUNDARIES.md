@@ -27,8 +27,15 @@
 
 ## 运行角色
 
-- `ai-paths-v3.service`：V3 回复 API。
-- `ai-paths.service`：共享控制面和非 V3 专属 API；在能力迁移前必须保留。
-- `ai-paths-workers.service`：第三方 SOP、主动触达及恢复任务；必须保留。
+- `ai-paths-v3.service`：V3 回复 API，必须设置
+  `AI_PATHS_SERVICE_ROLE=reply`、`AI_PATHS_BACKGROUND_WORKERS_ENABLED=false`。
+- `ai-paths.service`：共享控制面和非 V3 专属 API，必须设置
+  `AI_PATHS_SERVICE_ROLE=control`、`AI_PATHS_BACKGROUND_WORKERS_ENABLED=false`；在能力迁移前必须保留。
+- `ai-paths-workers.service`：第三方 SOP、主动触达及恢复任务，必须设置
+  `AI_PATHS_SERVICE_ROLE=worker`、`AI_PATHS_BACKGROUND_WORKERS_ENABLED=true`；必须保留。
 - `ai-paths-frontend.service`：管理页面和 Next API。
 - 已退役的 refactor/backend/V2 service 不属于当前仓库部署模板，不得重新创建或启用。
+
+应用按角色只暴露所需路由并只构造所需的重型依赖。旧环境值 `primary`、`workers`、
+`model_led_sales_brain_v3` 仅用于迁移兼容；新部署和文档不得继续使用。旧
+`primary + workers=true` 组合会被配置校验拒绝，避免控制面与 worker 再次混装。
