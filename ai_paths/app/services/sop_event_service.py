@@ -22,6 +22,7 @@ from app.services.sop_event_decision import (
     combine_selected_pack_messages,
     selected_candidate_packs,
 )
+from app.services.sop.execution_core import SopExecutionCore
 from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs, is_platform_auto_opening_message
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_platform_task_policy import classify_platform_task_route
@@ -41,7 +42,7 @@ SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES = max(
 )
 
 
-class SopEventService:
+class SopEventService(SopExecutionCore):
     def __init__(
         self,
         *,
@@ -1766,83 +1767,7 @@ class SopEventService:
             error=reason,
         )
 
-    def finalize_message_delivery(self, dispatch: dict[str, Any]) -> None:
-        context = dispatch.get("source_context") if isinstance(dispatch.get("source_context"), dict) else {}
-        task_id = str(context.get("sop_send_task_id") or dispatch.get("source_task_id") or "").strip()
-        if not task_id:
-            raise ValueError("SOP delivery dispatch is missing sop_send_task_id")
-        task = self.repository.get_sop_send_task(task_id)
-        if not task:
-            raise ValueError(f"SOP send task not found: {task_id}")
-        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
-        send_response = task.get("send_response") if isinstance(task.get("send_response"), dict) else {}
-        callback_response = {**send_response, "message_delivery": dispatch}
-        status = str(dispatch.get("status") or "")
-        if status == "send_succeeded":
-            sent_at = str(dispatch.get("confirmed_at") or "") or utc_now_iso()
-            task = self.repository.update_sop_send_task(
-                task_id,
-                status="sent",
-                send_payload=send_payload,
-                send_response=callback_response,
-                sent_at=sent_at,
-            )
-            self._record_successful_send(task, sent_at=sent_at)
-            return
-        if status in {"send_failed", "partial_failed"}:
-            self.repository.update_sop_send_task(
-                task_id,
-                status="failed" if status == "send_failed" else "partial_failed",
-                send_payload=send_payload,
-                send_response=callback_response,
-                error=str(dispatch.get("error_message") or status),
-            )
 
-    def _record_successful_send(self, task: dict[str, Any], *, sent_at: str) -> None:
-        """Persist activity timestamps and minimal SOP history after a confirmed send."""
-        customer_id = _string(task.get("customer_id"))
-        scope = customer_scope_from_identity(task)
-        touch_message_time = getattr(self.repository, "touch_customer_message_time", None)
-        if scope.persistence_allowed and callable(touch_message_time):
-            try:
-                touch_message_time(scope.sales_contact_key, field="last_outreach_at", value=sent_at)
-            except Exception:
-                pass
-        if not customer_id or not self.memory_store:
-            return
-        if not scope.persistence_allowed:
-            return
-        messages = task.get("reply_messages") if isinstance(task.get("reply_messages"), list) else []
-        message_types = [_string(item.get("type")) for item in messages if isinstance(item, dict) and _string(item.get("type"))]
-        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
-        selected_ids = [
-            _string(item)
-            for item in send_payload.get("selected_sop_pack_ids") or []
-            if _string(item)
-        ]
-        selected_categories = [
-            _string(item)
-            for item in send_payload.get("selected_sop_categories") or []
-            if _string(item)
-        ]
-        if not selected_ids:
-            selected_ids = [_string(task.get("sop_pack_id"))]
-        for index, pack_id in enumerate(selected_ids):
-            if not pack_id:
-                continue
-            category = selected_categories[index] if index < len(selected_categories) else _string(task.get("sop_category"))
-            try:
-                self.memory_store.record_sop_pack_sent(
-                    scope.sales_contact_key,
-                    sop_pack_id=pack_id,
-                    sop_category=category,
-                    source_event_id=_string(task.get("event_id")),
-                    message_types=message_types,
-                    sent_at=sent_at,
-                    task_id=_string(task.get("id")),
-                )
-            except Exception:
-                pass
 
 
 def _quiet_backlog_processing_window(now: datetime, *, trigger_time: str) -> dict[str, str]:
