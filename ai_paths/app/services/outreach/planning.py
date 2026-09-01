@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -201,6 +200,39 @@ class PlanGenerator:
         trigger_context: dict[str, Any] | None = None,
         workflow_run_id: str = "",
     ) -> dict[str, Any]:
+        prepared = await self._prepare_plan_context(
+            customer_id=customer_id,
+            corp_id=corp_id,
+            user_id=user_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            current_stage=current_stage,
+            business_goal=business_goal,
+            sop_plan_id=sop_plan_id,
+            source_context=source_context,
+            trigger_context=trigger_context,
+            workflow_run_id=workflow_run_id,
+        )
+        if "terminal_result" in prepared:
+            return prepared["terminal_result"]
+        response = await self._decide_plan(prepared)
+        return await self._materialize_plan(prepared, response)
+
+    async def _prepare_plan_context(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        user_id: str,
+        wechat: str,
+        external_userid: str,
+        current_stage: str,
+        business_goal: str,
+        sop_plan_id: str,
+        source_context: dict[str, Any] | None,
+        trigger_context: dict[str, Any] | None,
+        workflow_run_id: str,
+    ) -> dict[str, Any]:
         first_day_trigger = _is_first_day_opened_silence_trigger(trigger_context)
         context = dict(
             source_context
@@ -254,7 +286,7 @@ class PlanGenerator:
                         error_message=str(exc)[:4000],
                         finished_at=utc_now_iso(),
                     )
-                return result
+                return {"terminal_result": result}
             customer_relation = (
                 refreshed.get("customer_relation")
                 if isinstance(refreshed.get("customer_relation"), dict)
@@ -282,7 +314,7 @@ class PlanGenerator:
                     final_decision="no_plan",
                     finished_at=utc_now_iso(),
                 )
-            return result
+            return {"terminal_result": result}
         if customer_relation_is_deleted(customer_relation):
             result = self._relation_plan_skip(
                 customer_id=customer_id,
@@ -301,7 +333,7 @@ class PlanGenerator:
                     final_decision="no_plan",
                     finished_at=utc_now_iso(),
                 )
-            return result
+            return {"terminal_result": result}
         memory = context.get("memory") or {}
         recent_messages = context.get("recent_messages") or []
         conversation_activity = _conversation_activity_from_context(
@@ -396,6 +428,31 @@ class PlanGenerator:
                 workflow_run_id,
                 input_snapshot_json=source_snapshot,
             )
+        return {
+            "customer_id": customer_id,
+            "corp_id": corp_id,
+            "user_id": user_id,
+            "wechat": wechat,
+            "external_userid": external_userid,
+            "sop_plan_id": sop_plan_id,
+            "trigger_context": trigger_context,
+            "workflow_run_id": workflow_run_id,
+            "first_day_trigger": first_day_trigger,
+            "conversation_activity": conversation_activity,
+            "reply_wait_minutes": reply_wait_minutes,
+            "customer_silence_minutes": customer_silence_minutes,
+            "appointment_material_catalog": appointment_material_catalog,
+            "asset_catalog": asset_catalog,
+            "recent_media": recent_media,
+            "activity_quote_fact": activity_quote_fact,
+            "payment_collection_gate": payment_collection_gate,
+            "source_snapshot": source_snapshot,
+        }
+
+    async def _decide_plan(self, prepared: dict[str, Any]) -> dict[str, Any]:
+        first_day_trigger = prepared["first_day_trigger"]
+        conversation_activity = prepared["conversation_activity"]
+        source_snapshot = prepared["source_snapshot"]
         unopened_first_day = first_day_trigger and _int(
             conversation_activity.get("real_customer_message_count"),
             -1,
@@ -419,371 +476,437 @@ class PlanGenerator:
                 "plan_arc": "",
                 "steps": [],
             }
-        if first_day_trigger and not unopened_first_day:
-            first_day_model_snapshot = dict(source_snapshot)
-            scene_analysis, analyst_trace = await self._run_first_day_model_node(
-                node="scene_analyst",
-                prompt=FIRST_DAY_SCENE_ANALYST_PROMPT,
-                prompt_version=FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION,
-                payload={"source_snapshot": first_day_model_snapshot},
+            return response
+        if first_day_trigger:
+            return await self._decide_first_day_plan(prepared)
+        return await self._decide_standard_plan(prepared)
+
+    async def _decide_first_day_plan(self, prepared: dict[str, Any]) -> dict[str, Any]:
+        appointment_material_catalog = prepared["appointment_material_catalog"]
+        source_snapshot = prepared["source_snapshot"]
+        first_day_model_snapshot, scene_analysis, analyst_trace = await self._analyze_first_day_scene(
+            source_snapshot
+        )
+        source_snapshot["first_day_workflow"] = {
+            "scene_analysis": scene_analysis,
+            "writer_result": {},
+            "verifier_result": {},
+            "traces": {"scene_analyst": analyst_trace},
+        }
+        if not _bool(scene_analysis.get("eligible")):
+            return {
+                "should_create_plan": False,
+                "stall_reason": _string(scene_analysis.get("suppress_reason"))
+                or "first_day_scene_analyst_suppressed",
+                "plan_arc": "",
+                "steps": [],
+            }
+        return await self._write_first_day_plan(
+            source_snapshot=source_snapshot,
+            model_snapshot=first_day_model_snapshot,
+            scene_analysis=scene_analysis,
+            appointment_material_catalog=appointment_material_catalog,
+        )
+
+    async def _analyze_first_day_scene(
+        self, source_snapshot: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        first_day_model_snapshot = dict(source_snapshot)
+        scene_analysis, analyst_trace = await self._run_first_day_model_node(
+            node="scene_analyst",
+            prompt=FIRST_DAY_SCENE_ANALYST_PROMPT,
+            prompt_version=FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION,
+            payload={"source_snapshot": first_day_model_snapshot},
+        )
+        scene_analysis = _normalize_first_day_scene_analysis(
+            scene_analysis,
+            message_count=len(first_day_model_snapshot.get("recent_messages") or []),
+            source_snapshot=first_day_model_snapshot,
+        )
+        scene_error = _first_day_scene_analysis_error(
+            scene_analysis,
+            source_snapshot=first_day_model_snapshot,
+        )
+        if scene_error:
+            invalid_scene_analysis = scene_analysis
+            scene_analysis, repair_trace = await self._run_first_day_model_node(
+                node="scene_analyst_schema_repair",
+                prompt=FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT,
+                prompt_version=FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION,
+                payload={
+                    "source_snapshot": first_day_model_snapshot,
+                    "invalid_scene_analysis": scene_analysis,
+                    "schema_error": scene_error,
+                    "locked_scenes": {
+                        "step1": _string(scene_analysis.get("step1_scene")),
+                        "step2": _string(scene_analysis.get("step2_scene")),
+                    },
+                    "available_sources_by_scene": first_day_model_snapshot.get(
+                        "available_sources_by_scene"
+                    ) or {},
+                    "instruction": "只修复 JSON 结构合同并返回完整场景分析，不得改变已有事实证据。",
+                },
+            )
+            scene_analysis = _merge_first_day_scene_schema_repair(
+                invalid_scene_analysis,
+                scene_analysis,
             )
             scene_analysis = _normalize_first_day_scene_analysis(
                 scene_analysis,
                 message_count=len(first_day_model_snapshot.get("recent_messages") or []),
                 source_snapshot=first_day_model_snapshot,
             )
+            analyst_trace["schema_repair"] = repair_trace
             scene_error = _first_day_scene_analysis_error(
                 scene_analysis,
                 source_snapshot=first_day_model_snapshot,
             )
-            if scene_error:
-                invalid_scene_analysis = scene_analysis
-                scene_analysis, repair_trace = await self._run_first_day_model_node(
-                    node="scene_analyst_schema_repair",
-                    prompt=FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT,
-                    prompt_version=FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION,
-                    payload={
-                        "source_snapshot": first_day_model_snapshot,
-                        "invalid_scene_analysis": scene_analysis,
-                        "schema_error": scene_error,
-                        "locked_scenes": {
-                            "step1": _string(scene_analysis.get("step1_scene")),
-                            "step2": _string(scene_analysis.get("step2_scene")),
-                        },
-                        "available_sources_by_scene": first_day_model_snapshot.get(
-                            "available_sources_by_scene"
-                        ) or {},
-                        "instruction": "只修复 JSON 结构合同并返回完整场景分析，不得改变已有事实证据。",
+        if scene_error:
+            invalid_scene_analysis = scene_analysis
+            scene_analysis, second_repair_trace = await self._run_first_day_model_node(
+                node="scene_analyst_schema_repair_2",
+                prompt=FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT,
+                prompt_version=FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION,
+                payload={
+                    "source_snapshot": first_day_model_snapshot,
+                    "invalid_scene_analysis": scene_analysis,
+                    "schema_error": scene_error,
+                    "locked_scenes": {
+                        "step1": _string(scene_analysis.get("step1_scene")),
+                        "step2": _string(scene_analysis.get("step2_scene")),
                     },
-                )
-                scene_analysis = _merge_first_day_scene_schema_repair(
-                    invalid_scene_analysis,
-                    scene_analysis,
-                )
-                scene_analysis = _normalize_first_day_scene_analysis(
-                    scene_analysis,
-                    message_count=len(first_day_model_snapshot.get("recent_messages") or []),
-                    source_snapshot=first_day_model_snapshot,
-                )
-                analyst_trace["schema_repair"] = repair_trace
-                scene_error = _first_day_scene_analysis_error(
-                    scene_analysis,
-                    source_snapshot=first_day_model_snapshot,
-                )
-            if scene_error:
-                invalid_scene_analysis = scene_analysis
-                scene_analysis, second_repair_trace = await self._run_first_day_model_node(
-                    node="scene_analyst_schema_repair_2",
-                    prompt=FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT,
-                    prompt_version=FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION,
-                    payload={
-                        "source_snapshot": first_day_model_snapshot,
-                        "invalid_scene_analysis": scene_analysis,
-                        "schema_error": scene_error,
-                        "locked_scenes": {
-                            "step1": _string(scene_analysis.get("step1_scene")),
-                            "step2": _string(scene_analysis.get("step2_scene")),
-                        },
-                        "available_sources_by_scene": first_day_model_snapshot.get(
-                            "available_sources_by_scene"
-                        ) or {},
-                        "instruction": "再次只修复剩余 JSON 结构错误，保留已有业务判断并返回完整对象。",
-                    },
-                )
-                scene_analysis = _merge_first_day_scene_schema_repair(
-                    invalid_scene_analysis,
-                    scene_analysis,
-                )
-                scene_analysis = _normalize_first_day_scene_analysis(
-                    scene_analysis,
-                    message_count=len(first_day_model_snapshot.get("recent_messages") or []),
-                    source_snapshot=first_day_model_snapshot,
-                )
-                analyst_trace["schema_repair_2"] = second_repair_trace
-                scene_error = _first_day_scene_analysis_error(
-                    scene_analysis,
-                    source_snapshot=first_day_model_snapshot,
-                )
-            if scene_error:
-                raise RuntimeError(f"first_day_scene_analysis_invalid: {scene_error}")
+                    "available_sources_by_scene": first_day_model_snapshot.get(
+                        "available_sources_by_scene"
+                    ) or {},
+                    "instruction": "再次只修复剩余 JSON 结构错误，保留已有业务判断并返回完整对象。",
+                },
+            )
+            scene_analysis = _merge_first_day_scene_schema_repair(
+                invalid_scene_analysis,
+                scene_analysis,
+            )
+            scene_analysis = _normalize_first_day_scene_analysis(
+                scene_analysis,
+                message_count=len(first_day_model_snapshot.get("recent_messages") or []),
+                source_snapshot=first_day_model_snapshot,
+            )
+            analyst_trace["schema_repair_2"] = second_repair_trace
+            scene_error = _first_day_scene_analysis_error(
+                scene_analysis,
+                source_snapshot=first_day_model_snapshot,
+            )
+        if scene_error:
+            raise RuntimeError(f"first_day_scene_analysis_invalid: {scene_error}")
+        return first_day_model_snapshot, scene_analysis, analyst_trace
 
-            source_snapshot["first_day_workflow"] = {
-                "scene_analysis": scene_analysis,
-                "writer_result": {},
-                "verifier_result": {},
-                "traces": {"scene_analyst": analyst_trace},
+    async def _write_first_day_plan(
+        self,
+        *,
+        source_snapshot: dict[str, Any],
+        model_snapshot: dict[str, Any],
+        scene_analysis: dict[str, Any],
+        appointment_material_catalog: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        first_day_model_snapshot = model_snapshot
+        writer_payload = _first_day_writer_payload(
+            first_day_model_snapshot,
+            scene_analysis,
+            appointment_material_catalog=appointment_material_catalog,
+        )
+        writer_result, writer_trace = await self._run_first_day_model_node(
+            node="plan_writer",
+            prompt=FIRST_DAY_PLAN_WRITER_PROMPT,
+            prompt_version=FIRST_DAY_PLAN_WRITER_PROMPT_VERSION,
+            payload=writer_payload,
+        )
+        source_snapshot["first_day_workflow"]["writer_result"] = writer_result
+        source_snapshot["first_day_workflow"]["traces"]["plan_writer"] = writer_trace
+        normalized_writer_result = _normalize_outreach_plan_response(dict(writer_result))
+        writer_structure_error = _first_day_final_plan_error(
+            normalized_writer_result,
+            scene_analysis=scene_analysis,
+            source_snapshot=first_day_model_snapshot,
+        )
+        source_snapshot["first_day_workflow"]["writer_structure_error"] = writer_structure_error
+        verifier_result, verifier_trace = await self._run_first_day_model_node(
+            node="contract_verifier",
+            prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
+            prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
+            payload={
+                "source_snapshot": first_day_model_snapshot,
+                "scene_contract": scene_analysis,
+                "candidate_plan": writer_result,
+                "candidate_structure_error": writer_structure_error,
+            },
+        )
+        verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
+            verifier_result,
+            scene_analysis=scene_analysis,
+        )
+        verifier_error = _first_day_verifier_error(verifier_result)
+        if verifier_error:
+            verifier_result, verifier_repair_trace = await self._run_first_day_model_node(
+                node="contract_verifier_schema_repair",
+                prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
+                prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
+                payload={
+                    "source_snapshot": first_day_model_snapshot,
+                    "scene_contract": scene_analysis,
+                    "candidate_plan": writer_result,
+                    "invalid_verifier_result": verifier_result,
+                    "schema_error": verifier_error,
+                    "instruction": "只修复审核结果 JSON 合同，不得输出或改写客户计划。",
+                },
+            )
+            verifier_trace["schema_repair"] = verifier_repair_trace
+            verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
+                verifier_result,
+                scene_analysis=scene_analysis,
+            )
+            verifier_error = _first_day_verifier_error(verifier_result)
+        if verifier_error:
+            raise RuntimeError(f"first_day_contract_verifier_invalid: {verifier_error}")
+        if _string(verifier_result.get("decision")) == "replan":
+            original_scene_analysis = scene_analysis
+            original_verifier_result = verifier_result
+            original_verifier_trace = verifier_trace
+            replanned_snapshot = dict(first_day_model_snapshot)
+            replanned_snapshot["scene_replan_feedback"] = {
+                "rejected_scene_contract": original_scene_analysis,
+                "violations": list(verifier_result.get("violations") or []),
+                "instructions": list(verifier_result.get("replan_instructions") or []),
+                "require_different_scenes": True,
             }
-            if not _bool(scene_analysis.get("eligible")):
-                response = {
-                    "should_create_plan": False,
-                    "stall_reason": _string(scene_analysis.get("suppress_reason"))
-                    or "first_day_scene_analyst_suppressed",
-                    "plan_arc": "",
-                    "steps": [],
-                }
-            else:
-                writer_payload = _first_day_writer_payload(
-                    first_day_model_snapshot,
-                    scene_analysis,
-                    appointment_material_catalog=appointment_material_catalog,
+            scene_analysis, replan_trace = await self._run_first_day_model_node(
+                node="scene_analyst_replan",
+                prompt=FIRST_DAY_SCENE_ANALYST_PROMPT,
+                prompt_version=FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION,
+                payload={"source_snapshot": replanned_snapshot},
+            )
+            scene_analysis = _normalize_first_day_scene_analysis(
+                scene_analysis,
+                message_count=len(replanned_snapshot.get("recent_messages") or []),
+                source_snapshot=replanned_snapshot,
+            )
+            scene_error = _first_day_scene_analysis_error(
+                scene_analysis,
+                source_snapshot=replanned_snapshot,
+            )
+            if scene_error:
+                raise RuntimeError(f"first_day_scene_replan_invalid: {scene_error}")
+            if (
+                _string(scene_analysis.get("step1_scene"))
+                == _string(original_scene_analysis.get("step1_scene"))
+                and _string(scene_analysis.get("step2_scene"))
+                == _string(original_scene_analysis.get("step2_scene"))
+            ):
+                raise RuntimeError("first_day_scene_replan_unchanged")
+            writer_payload = _first_day_writer_payload(
+                replanned_snapshot,
+                scene_analysis,
+                appointment_material_catalog=appointment_material_catalog,
+            )
+            writer_result, writer_trace = await self._run_first_day_model_node(
+                node="plan_writer_after_replan",
+                prompt=FIRST_DAY_PLAN_WRITER_PROMPT,
+                prompt_version=FIRST_DAY_PLAN_WRITER_PROMPT_VERSION,
+                payload=writer_payload,
+            )
+            normalized_writer_result = _normalize_outreach_plan_response(dict(writer_result))
+            writer_structure_error = _first_day_final_plan_error(
+                normalized_writer_result,
+                scene_analysis=scene_analysis,
+                source_snapshot=replanned_snapshot,
+            )
+            verifier_result, verifier_trace = await self._run_first_day_model_node(
+                node="contract_verifier_after_replan",
+                prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
+                prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
+                payload={
+                    "source_snapshot": replanned_snapshot,
+                    "scene_contract": scene_analysis,
+                    "candidate_plan": writer_result,
+                    "candidate_structure_error": writer_structure_error,
+                },
+            )
+            verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
+                verifier_result,
+                scene_analysis=scene_analysis,
+            )
+            verifier_error = _first_day_verifier_error(verifier_result)
+            if verifier_error:
+                raise RuntimeError(
+                    f"first_day_contract_verifier_after_replan_invalid: {verifier_error}"
                 )
-                writer_result, writer_trace = await self._run_first_day_model_node(
-                    node="plan_writer",
+            if _string(verifier_result.get("decision")) == "replan":
+                raise RuntimeError("first_day_scene_replan_exhausted")
+            source_snapshot["first_day_workflow"].update(
+                {
+                    "original_scene_analysis": original_scene_analysis,
+                    "scene_replan_verifier_result": original_verifier_result,
+                    "scene_analysis": scene_analysis,
+                    "writer_result": writer_result,
+                    "verifier_result": verifier_result,
+                    "writer_structure_error": writer_structure_error,
+                }
+            )
+            source_snapshot["first_day_workflow"]["traces"].update(
+                {
+                    "contract_verifier_before_replan": original_verifier_trace,
+                    "scene_analyst_replan": replan_trace,
+                    "plan_writer_after_replan": writer_trace,
+                    "contract_verifier_after_replan": verifier_trace,
+                }
+            )
+        source_snapshot["first_day_workflow"]["verifier_result"] = verifier_result
+        source_snapshot["first_day_workflow"]["traces"]["contract_verifier"] = verifier_trace
+        if _string(verifier_result.get("decision")) == "block":
+            violations = verifier_result.get("violations") or []
+            response = {
+                "should_create_plan": False,
+                "stall_reason": _string((violations[0] if violations else {}).get("code"))
+                or "first_day_contract_verifier_blocked",
+                "plan_arc": "",
+                "steps": [],
+            }
+        else:
+            needs_repair = bool(writer_structure_error) or (
+                _string(verifier_result.get("decision")) == "repair"
+            )
+            if needs_repair:
+                violations = list(verifier_result.get("violations") or [])
+                repair_instructions = list(verifier_result.get("repair_instructions") or [])
+                if writer_structure_error and not repair_instructions:
+                    violations.append(
+                        {
+                            "code": "deterministic_contract_error",
+                            "field": "candidate_plan",
+                            "evidence": writer_structure_error,
+                        }
+                    )
+                    repair_instructions.append(
+                        {
+                            "field": "candidate_plan",
+                            "instruction": "修复确定性合同错误，严格保留两个锁定场景和业务目标。",
+                        }
+                    )
+                repaired_writer_result, repair_trace = await self._run_first_day_model_node(
+                    node="plan_writer_repair",
                     prompt=FIRST_DAY_PLAN_WRITER_PROMPT,
                     prompt_version=FIRST_DAY_PLAN_WRITER_PROMPT_VERSION,
-                    payload=writer_payload,
-                )
-                source_snapshot["first_day_workflow"]["writer_result"] = writer_result
-                source_snapshot["first_day_workflow"]["traces"]["plan_writer"] = writer_trace
-                normalized_writer_result = _normalize_outreach_plan_response(dict(writer_result))
-                writer_structure_error = _first_day_final_plan_error(
-                    normalized_writer_result,
-                    scene_analysis=scene_analysis,
-                    source_snapshot=first_day_model_snapshot,
-                )
-                source_snapshot["first_day_workflow"]["writer_structure_error"] = writer_structure_error
-                verifier_result, verifier_trace = await self._run_first_day_model_node(
-                    node="contract_verifier",
-                    prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
-                    prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
-                    payload={
-                        "source_snapshot": first_day_model_snapshot,
-                        "scene_contract": scene_analysis,
-                        "candidate_plan": writer_result,
-                        "candidate_structure_error": writer_structure_error,
-                    },
-                )
-                verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
-                    verifier_result,
-                    scene_analysis=scene_analysis,
-                )
-                verifier_error = _first_day_verifier_error(verifier_result)
-                if verifier_error:
-                    verifier_result, verifier_repair_trace = await self._run_first_day_model_node(
-                        node="contract_verifier_schema_repair",
-                        prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
-                        prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
-                        payload={
-                            "source_snapshot": first_day_model_snapshot,
-                            "scene_contract": scene_analysis,
-                            "candidate_plan": writer_result,
-                            "invalid_verifier_result": verifier_result,
-                            "schema_error": verifier_error,
-                            "instruction": "只修复审核结果 JSON 合同，不得输出或改写客户计划。",
-                        },
-                    )
-                    verifier_trace["schema_repair"] = verifier_repair_trace
-                    verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
-                        verifier_result,
-                        scene_analysis=scene_analysis,
-                    )
-                    verifier_error = _first_day_verifier_error(verifier_result)
-                if verifier_error:
-                    raise RuntimeError(f"first_day_contract_verifier_invalid: {verifier_error}")
-                if _string(verifier_result.get("decision")) == "replan":
-                    original_scene_analysis = scene_analysis
-                    original_verifier_result = verifier_result
-                    original_verifier_trace = verifier_trace
-                    replanned_snapshot = dict(first_day_model_snapshot)
-                    replanned_snapshot["scene_replan_feedback"] = {
-                        "rejected_scene_contract": original_scene_analysis,
-                        "violations": list(verifier_result.get("violations") or []),
-                        "instructions": list(verifier_result.get("replan_instructions") or []),
-                        "require_different_scenes": True,
-                    }
-                    scene_analysis, replan_trace = await self._run_first_day_model_node(
-                        node="scene_analyst_replan",
-                        prompt=FIRST_DAY_SCENE_ANALYST_PROMPT,
-                        prompt_version=FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION,
-                        payload={"source_snapshot": replanned_snapshot},
-                    )
-                    scene_analysis = _normalize_first_day_scene_analysis(
-                        scene_analysis,
-                        message_count=len(replanned_snapshot.get("recent_messages") or []),
-                        source_snapshot=replanned_snapshot,
-                    )
-                    scene_error = _first_day_scene_analysis_error(
-                        scene_analysis,
-                        source_snapshot=replanned_snapshot,
-                    )
-                    if scene_error:
-                        raise RuntimeError(f"first_day_scene_replan_invalid: {scene_error}")
-                    if (
-                        _string(scene_analysis.get("step1_scene"))
-                        == _string(original_scene_analysis.get("step1_scene"))
-                        and _string(scene_analysis.get("step2_scene"))
-                        == _string(original_scene_analysis.get("step2_scene"))
-                    ):
-                        raise RuntimeError("first_day_scene_replan_unchanged")
-                    writer_payload = _first_day_writer_payload(
-                        replanned_snapshot,
+                    payload=_first_day_writer_payload(
+                        first_day_model_snapshot,
                         scene_analysis,
                         appointment_material_catalog=appointment_material_catalog,
-                    )
-                    writer_result, writer_trace = await self._run_first_day_model_node(
-                        node="plan_writer_after_replan",
-                        prompt=FIRST_DAY_PLAN_WRITER_PROMPT,
-                        prompt_version=FIRST_DAY_PLAN_WRITER_PROMPT_VERSION,
-                        payload=writer_payload,
-                    )
-                    normalized_writer_result = _normalize_outreach_plan_response(dict(writer_result))
-                    writer_structure_error = _first_day_final_plan_error(
-                        normalized_writer_result,
-                        scene_analysis=scene_analysis,
-                        source_snapshot=replanned_snapshot,
-                    )
-                    verifier_result, verifier_trace = await self._run_first_day_model_node(
-                        node="contract_verifier_after_replan",
-                        prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
-                        prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
-                        payload={
-                            "source_snapshot": replanned_snapshot,
-                            "scene_contract": scene_analysis,
-                            "candidate_plan": writer_result,
-                            "candidate_structure_error": writer_structure_error,
-                        },
-                    )
-                    verifier_result = _first_day_upgrade_scene_repeat_repair_to_replan(
-                        verifier_result,
-                        scene_analysis=scene_analysis,
-                    )
-                    verifier_error = _first_day_verifier_error(verifier_result)
-                    if verifier_error:
-                        raise RuntimeError(
-                            f"first_day_contract_verifier_after_replan_invalid: {verifier_error}"
-                        )
-                    if _string(verifier_result.get("decision")) == "replan":
-                        raise RuntimeError("first_day_scene_replan_exhausted")
-                    source_snapshot["first_day_workflow"].update(
-                        {
-                            "original_scene_analysis": original_scene_analysis,
-                            "scene_replan_verifier_result": original_verifier_result,
-                            "scene_analysis": scene_analysis,
-                            "writer_result": writer_result,
-                            "verifier_result": verifier_result,
-                            "writer_structure_error": writer_structure_error,
-                        }
-                    )
-                    source_snapshot["first_day_workflow"]["traces"].update(
-                        {
-                            "contract_verifier_before_replan": original_verifier_trace,
-                            "scene_analyst_replan": replan_trace,
-                            "plan_writer_after_replan": writer_trace,
-                            "contract_verifier_after_replan": verifier_trace,
-                        }
-                    )
-                source_snapshot["first_day_workflow"]["verifier_result"] = verifier_result
-                source_snapshot["first_day_workflow"]["traces"]["contract_verifier"] = verifier_trace
-                if _string(verifier_result.get("decision")) == "block":
-                    violations = verifier_result.get("violations") or []
-                    response = {
-                        "should_create_plan": False,
-                        "stall_reason": _string((violations[0] if violations else {}).get("code"))
-                        or "first_day_contract_verifier_blocked",
-                        "plan_arc": "",
-                        "steps": [],
-                    }
-                else:
-                    needs_repair = bool(writer_structure_error) or (
-                        _string(verifier_result.get("decision")) == "repair"
-                    )
-                    if needs_repair:
-                        violations = list(verifier_result.get("violations") or [])
-                        repair_instructions = list(verifier_result.get("repair_instructions") or [])
-                        if writer_structure_error and not repair_instructions:
-                            violations.append(
-                                {
-                                    "code": "deterministic_contract_error",
-                                    "field": "candidate_plan",
-                                    "evidence": writer_structure_error,
-                                }
-                            )
-                            repair_instructions.append(
-                                {
-                                    "field": "candidate_plan",
-                                    "instruction": "修复确定性合同错误，严格保留两个锁定场景和业务目标。",
-                                }
-                            )
-                        repaired_writer_result, repair_trace = await self._run_first_day_model_node(
-                            node="plan_writer_repair",
-                            prompt=FIRST_DAY_PLAN_WRITER_PROMPT,
-                            prompt_version=FIRST_DAY_PLAN_WRITER_PROMPT_VERSION,
-                            payload=_first_day_writer_payload(
-                                first_day_model_snapshot,
-                                scene_analysis,
-                                appointment_material_catalog=appointment_material_catalog,
-                                candidate_plan=writer_result,
-                                violations=violations,
-                                repair_instructions=repair_instructions,
-                                deterministic_error=writer_structure_error,
-                            ),
-                        )
-                        source_snapshot["first_day_workflow"]["writer_repair_result"] = repaired_writer_result
-                        source_snapshot["first_day_workflow"]["traces"]["plan_writer_repair"] = repair_trace
-                        response = _normalize_first_day_repaired_plan(
-                            _normalize_outreach_plan_response(dict(repaired_writer_result)),
-                            scene_analysis=scene_analysis,
-                        )
-                    else:
-                        response = normalized_writer_result
-                    final_error = _first_day_final_plan_error(
-                        response,
-                        scene_analysis=scene_analysis,
-                        source_snapshot=first_day_model_snapshot,
-                    )
-                    source_snapshot["first_day_workflow"]["final_contract_error"] = final_error
-                    if final_error:
-                        response = {
-                            "should_create_plan": False,
-                            "stall_reason": "first_day_plan_repair_failed",
-                            "plan_arc": "",
-                            "steps": [],
-                            "final_contract_error": final_error,
-                        }
-        elif not first_day_trigger:
-            model_messages = [
-                {"role": "system", "content": OUTREACH_PLAN_SYSTEM_PROMPT},
-                {"role": "user", "content": dumps(source_snapshot)},
-            ]
+                        candidate_plan=writer_result,
+                        violations=violations,
+                        repair_instructions=repair_instructions,
+                        deterministic_error=writer_structure_error,
+                    ),
+                )
+                source_snapshot["first_day_workflow"]["writer_repair_result"] = repaired_writer_result
+                source_snapshot["first_day_workflow"]["traces"]["plan_writer_repair"] = repair_trace
+                response = _normalize_first_day_repaired_plan(
+                    _normalize_outreach_plan_response(dict(repaired_writer_result)),
+                    scene_analysis=scene_analysis,
+                )
+            else:
+                response = normalized_writer_result
+            final_error = _first_day_final_plan_error(
+                response,
+                scene_analysis=scene_analysis,
+                source_snapshot=first_day_model_snapshot,
+            )
+            source_snapshot["first_day_workflow"]["final_contract_error"] = final_error
+            if final_error:
+                response = {
+                    "should_create_plan": False,
+                    "stall_reason": "first_day_plan_repair_failed",
+                    "plan_arc": "",
+                    "steps": [],
+                    "final_contract_error": final_error,
+                }
+        return response
+
+    async def _decide_standard_plan(self, prepared: dict[str, Any]) -> dict[str, Any]:
+        source_snapshot = prepared["source_snapshot"]
+        activity_quote_fact = prepared["activity_quote_fact"]
+        reply_wait_minutes = prepared["reply_wait_minutes"]
+        customer_silence_minutes = prepared["customer_silence_minutes"]
+        model_messages = [
+            {"role": "system", "content": OUTREACH_PLAN_SYSTEM_PROMPT},
+            {"role": "user", "content": dumps(source_snapshot)},
+        ]
+        response = await self.model_client.chat_json(
+            model_messages,
+            tier="strong",
+            temperature=0.0,
+        )
+        response = _normalize_outreach_plan_response(response)
+        structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+            response,
+            activity_quote_fact=activity_quote_fact,
+            reply_wait_minutes=reply_wait_minutes,
+            customer_silence_minutes=customer_silence_minutes,
+        )
+        if structure_error:
             response = await self.model_client.chat_json(
-                model_messages,
+                [
+                    *model_messages,
+                    {"role": "assistant", "content": dumps(response)},
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一个 json 不符合结构合同。"
+                            f"错误：{structure_error}。"
+                            "请保留事实和销售判断，重新输出完整有效 json；不要解释。"
+                        ),
+                    },
+                ],
                 tier="strong",
                 temperature=0.0,
             )
             response = _normalize_outreach_plan_response(response)
-            structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
-                response,
-                activity_quote_fact=activity_quote_fact,
-                reply_wait_minutes=reply_wait_minutes,
-                customer_silence_minutes=customer_silence_minutes,
-            )
-            if structure_error:
-                response = await self.model_client.chat_json(
-                    [
-                        *model_messages,
-                        {"role": "assistant", "content": dumps(response)},
+        response = await self.model_client.chat_json(
+            [
+                {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": dumps(
                         {
-                            "role": "user",
-                            "content": (
-                                "上一个 json 不符合结构合同。"
-                                f"错误：{structure_error}。"
-                                "请保留事实和销售判断，重新输出完整有效 json；不要解释。"
-                            ),
-                        },
-                    ],
-                    tier="strong",
-                    temperature=0.0,
-                )
-                response = _normalize_outreach_plan_response(response)
+                            "source_snapshot": source_snapshot,
+                            "candidate_plan": response,
+                        }
+                    ),
+                },
+            ],
+            tier="strong",
+            temperature=0.0,
+        )
+        response = _normalize_outreach_plan_response(response)
+        structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+            response,
+            activity_quote_fact=activity_quote_fact,
+            reply_wait_minutes=reply_wait_minutes,
+            customer_silence_minutes=customer_silence_minutes,
+        )
+        for _repair_attempt in range(3):
+            if not structure_error:
+                break
             response = await self.model_client.chat_json(
                 [
-                    {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
+                    {"role": "system", "content": OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT},
                     {
                         "role": "user",
                         "content": dumps(
                             {
                                 "source_snapshot": source_snapshot,
                                 "candidate_plan": response,
+                                "structure_error": structure_error,
+                                "repair_instruction": (
+                                    "严格按 structure_error 修复完整 json；保留现有业务语义和客户可见文字，"
+                                    "不要重新判断是否创建计划，不要解释。"
+                                ),
                             }
                         ),
                     },
@@ -798,37 +921,24 @@ class PlanGenerator:
                 reply_wait_minutes=reply_wait_minutes,
                 customer_silence_minutes=customer_silence_minutes,
             )
-            for _repair_attempt in range(3):
-                if not structure_error:
-                    break
-                response = await self.model_client.chat_json(
-                    [
-                        {"role": "system", "content": OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT},
-                        {
-                            "role": "user",
-                            "content": dumps(
-                                {
-                                    "source_snapshot": source_snapshot,
-                                    "candidate_plan": response,
-                                    "structure_error": structure_error,
-                                    "repair_instruction": (
-                                        "严格按 structure_error 修复完整 json；保留现有业务语义和客户可见文字，"
-                                        "不要重新判断是否创建计划，不要解释。"
-                                    ),
-                                }
-                            ),
-                        },
-                    ],
-                    tier="strong",
-                    temperature=0.0,
-                )
-                response = _normalize_outreach_plan_response(response)
-                structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
-                    response,
-                    activity_quote_fact=activity_quote_fact,
-                    reply_wait_minutes=reply_wait_minutes,
-                    customer_silence_minutes=customer_silence_minutes,
-                )
+        return response
+
+    async def _materialize_plan(
+        self, prepared: dict[str, Any], response: dict[str, Any]
+    ) -> dict[str, Any]:
+        customer_id = prepared["customer_id"]
+        corp_id = prepared["corp_id"]
+        user_id = prepared["user_id"]
+        wechat = prepared["wechat"]
+        external_userid = prepared["external_userid"]
+        sop_plan_id = prepared["sop_plan_id"]
+        trigger_context = prepared["trigger_context"]
+        workflow_run_id = prepared["workflow_run_id"]
+        first_day_trigger = prepared["first_day_trigger"]
+        reply_wait_minutes = prepared["reply_wait_minutes"]
+        customer_silence_minutes = prepared["customer_silence_minutes"]
+        activity_quote_fact = prepared["activity_quote_fact"]
+        source_snapshot = prepared["source_snapshot"]
         if not bool(response.get("should_create_plan", True)):
             self.repository.add_outreach_event(
                 plan_id="",
@@ -883,6 +993,61 @@ class PlanGenerator:
         )
         if structure_error:
             raise RuntimeError(f"outreach_plan_model_invalid_structure: {structure_error}")
+        raw_steps, tasks = await self._materialize_tasks(prepared, response)
+        source_snapshot["ai_result"] = response
+        created_plan = self.repository.create_outreach_plan(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                user_id=user_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                customer_stage=str(response.get("conversion_stage") or response.get("customer_stage") or ""),
+                stall_reason=str(response.get("stall_reason") or ""),
+                customer_psychology=str(response.get("customer_psychology") or ""),
+                plan_goal=str(response.get("plan_goal") or ""),
+                source_snapshot=source_snapshot,
+                tasks=tasks[:3],
+                sop_plan_id=sop_plan_id,
+                workflow_run_id=workflow_run_id,
+            )
+        if workflow_run_id:
+            plan = created_plan.get("plan") if isinstance(created_plan.get("plan"), dict) else {}
+            created_tasks = created_plan.get("tasks") if isinstance(created_plan.get("tasks"), list) else []
+            current_run = self.repository.get_first_day_outreach_run(
+                workflow_run_id,
+                include_related=False,
+            )
+            recorded_workflow = dict(current_run.get("workflow") or {})
+            recorded_workflow["summary"] = source_snapshot.get("first_day_workflow") or {}
+            updates: dict[str, Any] = {
+                "plan_id": _string(plan.get("id")),
+                "first_task_id": _string((created_tasks[0] if created_tasks else {}).get("id")),
+                "second_task_id": _string((created_tasks[1] if len(created_tasks) > 1 else {}).get("id")),
+                "first_scene": _string((raw_steps[0] if raw_steps else {}).get("scene")),
+                "second_scene": _string((raw_steps[1] if len(raw_steps) > 1 else {}).get("scene")),
+                "workflow_json": recorded_workflow,
+                "final_plan_json": response,
+            }
+            if _string(current_run.get("status")) not in {
+                "blocked", "sent", "cancelled", "failed", "completed"
+            }:
+                updates.update(
+                    status="created",
+                    reason_code="plan_created",
+                    final_decision="send_pending",
+                )
+            self.repository.update_first_day_outreach_run(workflow_run_id, **updates)
+        return {"created": True, **created_plan}
+
+    async def _materialize_tasks(
+        self, prepared: dict[str, Any], response: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        first_day_trigger = prepared["first_day_trigger"]
+        asset_catalog = prepared["asset_catalog"]
+        recent_media = prepared["recent_media"]
+        activity_quote_fact = prepared["activity_quote_fact"]
+        payment_collection_gate = prepared["payment_collection_gate"]
+        source_snapshot = prepared["source_snapshot"]
         raw_steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:2 if first_day_trigger else 3]
 
         primary_resolved_assets = await asyncio.gather(
@@ -1101,50 +1266,7 @@ class PlanGenerator:
             )
         if not tasks:
             raise RuntimeError("outreach_plan_model_missing_reviewable_drafts")
-        source_snapshot["ai_result"] = response
-        created_plan = self.repository.create_outreach_plan(
-                customer_id=customer_id,
-                corp_id=corp_id,
-                user_id=user_id,
-                wechat=wechat,
-                external_userid=external_userid,
-                customer_stage=str(response.get("conversion_stage") or response.get("customer_stage") or ""),
-                stall_reason=str(response.get("stall_reason") or ""),
-                customer_psychology=str(response.get("customer_psychology") or ""),
-                plan_goal=str(response.get("plan_goal") or ""),
-                source_snapshot=source_snapshot,
-                tasks=tasks[:3],
-                sop_plan_id=sop_plan_id,
-                workflow_run_id=workflow_run_id,
-            )
-        if workflow_run_id:
-            plan = created_plan.get("plan") if isinstance(created_plan.get("plan"), dict) else {}
-            created_tasks = created_plan.get("tasks") if isinstance(created_plan.get("tasks"), list) else []
-            current_run = self.repository.get_first_day_outreach_run(
-                workflow_run_id,
-                include_related=False,
-            )
-            recorded_workflow = dict(current_run.get("workflow") or {})
-            recorded_workflow["summary"] = source_snapshot.get("first_day_workflow") or {}
-            updates: dict[str, Any] = {
-                "plan_id": _string(plan.get("id")),
-                "first_task_id": _string((created_tasks[0] if created_tasks else {}).get("id")),
-                "second_task_id": _string((created_tasks[1] if len(created_tasks) > 1 else {}).get("id")),
-                "first_scene": _string((raw_steps[0] if raw_steps else {}).get("scene")),
-                "second_scene": _string((raw_steps[1] if len(raw_steps) > 1 else {}).get("scene")),
-                "workflow_json": recorded_workflow,
-                "final_plan_json": response,
-            }
-            if _string(current_run.get("status")) not in {
-                "blocked", "sent", "cancelled", "failed", "completed"
-            }:
-                updates.update(
-                    status="created",
-                    reason_code="plan_created",
-                    final_decision="send_pending",
-                )
-            self.repository.update_first_day_outreach_run(workflow_run_id, **updates)
-        return {"created": True, **created_plan}
+        return raw_steps, tasks
 
     async def _run_first_day_model_node(
         self,

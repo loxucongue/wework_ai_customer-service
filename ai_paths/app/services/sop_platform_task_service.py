@@ -629,7 +629,6 @@ class SopPlatformTaskService:
                     error="missing_platform_task_payload",
                 )
                 return 0
-            task_id = _task_id(task)
             # The platform keeps unconsumed tasks in the pending feed, so an
             # orphan can remain queued or in flight indefinitely. Recovery must
             # still inspect its durable dispatch. The task lock, delivery
@@ -2246,6 +2245,28 @@ class SopPlatformTaskService:
         task_id: str,
         recovery_status: str,
     ) -> dict[str, Any]:
+        stage = await self._load_platform_task_state(
+            platform_task, task_id=task_id, recovery_status=recovery_status
+        )
+        if "stage_context" not in stage:
+            return stage
+        context = stage["stage_context"]
+        stage = await self._resolve_existing_platform_task(context)
+        if "stage_context" not in stage:
+            return stage
+        context = stage["stage_context"]
+        stage = await self._prepare_platform_task_execution(context)
+        if "stage_context" not in stage:
+            return stage
+        return await self._execute_platform_task(stage["stage_context"])
+
+    async def _load_platform_task_state(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        task_id: str,
+        recovery_status: str,
+    ) -> dict[str, Any]:
         event_id = f"platform_sop_task:{task_id}"
         event_payload = {
             "event_id": event_id,
@@ -2316,6 +2337,27 @@ class SopPlatformTaskService:
                 "task_id": task_id,
                 "reason": "awaiting_message_delivery_callback",
             }
+        return {
+            "stage_context": {
+                "platform_task": platform_task,
+                "task_id": task_id,
+                "recovery_status": recovery_status,
+                "event_id": event_id,
+                "identity": identity,
+                "local_task": local_task,
+                "local_status": local_status,
+            }
+        }
+
+    async def _resolve_existing_platform_task(
+        self, context: dict[str, Any]
+    ) -> dict[str, Any]:
+        platform_task = context["platform_task"]
+        task_id = context["task_id"]
+        recovery_status = context["recovery_status"]
+        event_id = context["event_id"]
+        local_task = context["local_task"]
+        local_status = context["local_status"]
         duplicate_reason = _duplicate_platform_task_reason(
             self.repository,
             local_task=local_task,
@@ -2379,7 +2421,17 @@ class SopPlatformTaskService:
                 "task_id": task_id,
                 "platform_response": completed,
             }
+        return {"stage_context": context}
 
+    async def _prepare_platform_task_execution(
+        self, context: dict[str, Any]
+    ) -> dict[str, Any]:
+        platform_task = context["platform_task"]
+        task_id = context["task_id"]
+        recovery_status = context["recovery_status"]
+        event_id = context["event_id"]
+        identity = context["identity"]
+        local_task = context["local_task"]
         preflight_reason = _task_preflight_no_send_reason(
             platform_task,
             identity=identity,
@@ -2407,7 +2459,6 @@ class SopPlatformTaskService:
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
-        use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
         processing_status = "platform_judging"
         self.repository.update_sop_event_status(event_id, status=processing_status)
         self.repository.update_sop_send_task(
@@ -2466,7 +2517,20 @@ class SopPlatformTaskService:
                 "task_id": task_id,
                 "platform_response": completed,
             }
+        context["preflight_reason"] = preflight_reason
+        context["quiet_hours"] = quiet_hours
+        return {"stage_context": context}
 
+    async def _execute_platform_task(
+        self, context: dict[str, Any]
+    ) -> dict[str, Any]:
+        platform_task = context["platform_task"]
+        task_id = context["task_id"]
+        event_id = context["event_id"]
+        identity = context["identity"]
+        local_task = context["local_task"]
+        preflight_reason = context["preflight_reason"]
+        quiet_hours = context["quiet_hours"]
         try:
             if preflight_reason:
                 context = {
