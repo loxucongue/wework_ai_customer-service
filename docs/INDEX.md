@@ -11,7 +11,8 @@
 5. [AI 销售策略运行合同](AI_SALES_STRATEGY_RUNTIME_AND_TEST_CONTRACT.md)
 6. [当前生产状态](current/PRODUCTION_STATE.md)
 7. [已知问题](current/KNOWN_ISSUES.md)
-8. [当前活动任务](tasks/active/ai-sales-strategy-migration.md)
+
+当前没有未完成的仓库迁移任务。新开发应按“一项任务一个新窗口、从最新 `origin/main` 建立临时 `codex/*` 分支、验证后立即合回并删除”的方式执行。
 
 ## 专项文档
 
