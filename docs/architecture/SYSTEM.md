@@ -28,7 +28,7 @@ V3 reply                 control API
 - control、reply、worker 是三个独立进程角色，必须来自同一个 `main` SHA。角色分别使用
   `AI_PATHS_SERVICE_ROLE=control|reply|worker`；只有 worker 允许
   `AI_PATHS_BACKGROUND_WORKERS_ENABLED=true`。
-- 路由和生命周期已经按角色隔离；`runtime_services.py` 仍会预先创建过多依赖，是下一次架构任务，不能误写成已完成的最小装配。
+- 路由、生命周期和依赖装配均按角色隔离。`runtime_services.py` 只提供 `build_reply_services`、`build_control_services`、`build_worker_services` 三个直接工厂；每个工厂只创建本角色实际使用的客户端与服务。
 - 第三方协议路径中出现 `v1` 不代表产品 V1，不能按名称删除。
 - 历史接口/schema 版本号只用于读取旧审计或兼容第三方协议，不构成第二套产品运行时。
 
@@ -36,7 +36,7 @@ V3 reply                 control API
 
 ```text
 ai_paths/app/main.py              FastAPI 生命周期、路由、worker 编排
-ai_paths/app/runtime_services.py  服务依赖装配及 Reply/Control/Worker 依赖视图
+ai_paths/app/runtime_services.py  Reply/Control/Worker 三个直接服务工厂
 ai_paths/app/runtime_roles.py     运行角色标准化与旧环境值只读兼容
 ai_paths/app/routers/             按角色收口实际暴露的 FastAPI 路由
 ai_paths/app/graph/               唯一 V3 回复图

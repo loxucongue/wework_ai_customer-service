@@ -36,140 +36,29 @@ from app.services.storage import AppRepository, build_store
 from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
 from app.services.trace_logger import TraceLogger
-from app.services.v3_evaluation_service import V3EvaluationService
 from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.v3_sop_execution_service import SopExecutionService as V3SopExecutionService
 from app.services.voice_transcription import DoubaoAsrClient
-from app.runtime_roles import RuntimeRole
-
-
-@dataclass(frozen=True)
-class RuntimeServices:
-    role: RuntimeRole
-    storage_store: Any
-    repository: AppRepository
-    v3_evaluation_service: V3EvaluationService
-    trace_logger: TraceLogger
-    message_delivery_service: MessageDeliveryService
-    async_reply_delivery_finalizer: AsyncReplyDeliveryFinalizer
-    service_rule_data_service: ServiceRuleDataService
-    service_rule_data_client: ServiceRuleDataClient
-    coze_client: CozeClient
-    voice_transcription_client: DoubaoAsrClient
-    model_client: ModelClient
-    ai_sales_policy_service: AiSalesPolicyService
-    sales_strategy_service: SalesStrategyService
-    memory_store: CustomerMemoryStore
-    platform_agent_client: PlatformAgentClient
-    outreach_send_client: OutreachSendClient
-    outreach_system_client: OutreachSystemClient
-    sop_platform_client: SopPlatformClient
-    platform_reply_coordinator: PlatformReplyCoordinator
-    platform_voice_batch_coordinator: PlatformVoiceBatchCoordinator
-    customer_context_service: CustomerContextService
-    store_snapshot_service: StoreSnapshotService
-    customer_store_knowledge_service: CustomerStoreKnowledgeService
-    store_service: StoreService
-    sop_reply_pack_service: SopReplyPackService
-    precision_qa_playbook_service: PrecisionQaPlaybookService
-    sop_objection_material_service: SopObjectionMaterialService
-    model_led_objection_playbook_service: ModelLedObjectionPlaybookService
-    follow_knowledge_client: FollowKnowledgeClient
-    deepseek_semantic_client: DeepSeekSemanticClient
-    deepseek_semantic_fallback_client: ModelClient
-    v3_semantic_router_service: V3SemanticRouterService
-    outreach_service: OutreachService
-    v3_sop_execution_service: V3SopExecutionService
-    sop_delivery_compatibility_service: SopDeliveryCompatibilityService
-    sop_platform_task_service: SopPlatformTaskService
-    reply_graphs: Any
-    chat_runtime: ChatRuntime
-
-    def reply_view(self) -> "ReplyServices":
-        if self.role is not RuntimeRole.REPLY or self.chat_runtime is None:
-            raise RuntimeError("reply runtime was not composed")
-        return ReplyServices(
-            repository=self.repository,
-            chat_runtime=self.chat_runtime,
-            platform_voice_batch_coordinator=self.platform_voice_batch_coordinator,
-            voice_transcription_client=self.voice_transcription_client,
-        )
-
-    def control_view(self) -> "ControlServices":
-        if self.role is not RuntimeRole.CONTROL:
-            raise RuntimeError("control runtime was not composed")
-        required = {
-            "sop_delivery_compatibility_service": self.sop_delivery_compatibility_service,
-            "sop_platform_task_service": self.sop_platform_task_service,
-            "sop_objection_material_service": self.sop_objection_material_service,
-        }
-        missing = [name for name, value in required.items() if value is None]
-        if missing:
-            raise RuntimeError("control runtime missing services: " + ", ".join(missing))
-        return ControlServices(
-            repository=self.repository,
-            async_reply_delivery_finalizer=self.async_reply_delivery_finalizer,
-            message_delivery_service=self.message_delivery_service,
-            outreach_service=self.outreach_service,
-            sop_delivery_compatibility_service=self.sop_delivery_compatibility_service,
-            sop_platform_task_service=self.sop_platform_task_service,
-            memory_store=self.memory_store,
-            ai_sales_policy_service=self.ai_sales_policy_service,
-            precision_qa_playbook_service=self.precision_qa_playbook_service,
-            sales_strategy_service=self.sales_strategy_service,
-            store_snapshot_service=self.store_snapshot_service,
-            trace_logger=self.trace_logger,
-            sop_reply_pack_service=self.sop_reply_pack_service,
-            sop_objection_material_service=self.sop_objection_material_service,
-        )
-
-    def worker_view(self) -> "WorkerServices":
-        if self.role is not RuntimeRole.WORKER or self.sop_platform_task_service is None:
-            raise RuntimeError("worker runtime missing SOP platform task service")
-        return WorkerServices(
-            repository=self.repository,
-            outreach_service=self.outreach_service,
-            service_rule_data_service=self.service_rule_data_service,
-            sop_platform_task_service=self.sop_platform_task_service,
-            store_snapshot_service=self.store_snapshot_service,
-        )
-
-    async def aclose(self) -> None:
-        seen: set[int] = set()
-        for client in (
-            self.platform_voice_batch_coordinator,
-            self.model_client,
-            self.coze_client,
-            self.follow_knowledge_client,
-            self.deepseek_semantic_client,
-            self.deepseek_semantic_fallback_client,
-            self.voice_transcription_client,
-            self.outreach_send_client,
-            self.outreach_system_client,
-            self.sop_platform_client,
-            self.service_rule_data_client,
-        ):
-            if client is None or id(client) in seen:
-                continue
-            seen.add(id(client))
-            close = getattr(client, "aclose", None)
-            if close is not None:
-                await close()
-        if self.platform_agent_client is not None:
-            self.platform_agent_client.close()
-        self.storage_store.close()
 
 
 @dataclass(frozen=True)
 class ReplyServices:
+    storage_store: Any
     repository: AppRepository
     chat_runtime: ChatRuntime
     platform_voice_batch_coordinator: PlatformVoiceBatchCoordinator
     voice_transcription_client: DoubaoAsrClient
+    service_rule_data_service: ServiceRuleDataService
+    _closers: tuple[Any, ...]
+    _platform_agent_client: PlatformAgentClient
+
+    async def aclose(self) -> None:
+        await _close_runtime(self.storage_store, self._platform_agent_client, self._closers)
 
 
 @dataclass(frozen=True)
 class ControlServices:
+    storage_store: Any
     repository: AppRepository
     async_reply_delivery_finalizer: AsyncReplyDeliveryFinalizer
     message_delivery_service: MessageDeliveryService
@@ -184,86 +73,74 @@ class ControlServices:
     trace_logger: TraceLogger
     sop_reply_pack_service: SopReplyPackService
     sop_objection_material_service: SopObjectionMaterialService
+    _closers: tuple[Any, ...]
+    _platform_agent_client: PlatformAgentClient
+
+    async def aclose(self) -> None:
+        await _close_runtime(self.storage_store, self._platform_agent_client, self._closers)
 
 
 @dataclass(frozen=True)
 class WorkerServices:
+    storage_store: Any
     repository: AppRepository
     outreach_service: OutreachService
     service_rule_data_service: ServiceRuleDataService
     sop_platform_task_service: SopPlatformTaskService
     store_snapshot_service: StoreSnapshotService
+    _closers: tuple[Any, ...]
+    _platform_agent_client: PlatformAgentClient
+
+    async def aclose(self) -> None:
+        await _close_runtime(self.storage_store, self._platform_agent_client, self._closers)
 
 
-def build_runtime_services(settings: Settings) -> RuntimeServices:
-    # Imports kept local to make the runtime dependency graph explicit without
-    # forcing route modules to know how infrastructure clients are assembled.
-    role = settings.runtime_role
-    storage_store = build_store(settings)
-    repository = AppRepository(storage_store)
-    v3_evaluation_service = V3EvaluationService(settings.v3_evaluation_dir)
+def build_reply_services(settings: Settings) -> ReplyServices:
+    storage_store, repository = _build_repository(settings)
     trace_logger = TraceLogger(settings)
     message_delivery_service = MessageDeliveryService(settings, repository)
-    service_rule_data_client = ServiceRuleDataClient(settings)
-    service_rule_data_service = ServiceRuleDataService(
-        repository=repository,
-        client=service_rule_data_client,
-        poll_seconds=settings.service_rule_data_poll_seconds,
-        batch_size=settings.service_rule_data_batch_size,
-        max_attempts=settings.service_rule_data_max_attempts,
-        retry_base_seconds=settings.service_rule_data_retry_base_seconds,
-    )
     coze_client = CozeClient(settings)
-    voice_transcription_client = DoubaoAsrClient(settings)
     model_client = ModelClient(settings)
-    ai_sales_policy_service = AiSalesPolicyService(settings)
-    sales_strategy_service = SalesStrategyService(settings)
     memory_store = CustomerMemoryStore(settings, repository)
-    async_reply_delivery_finalizer = AsyncReplyDeliveryFinalizer(repository, memory_store)
     platform_agent_client = PlatformAgentClient(settings)
     outreach_send_client = OutreachSendClient(settings, delivery_service=message_delivery_service)
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
-    sop_platform_client = SopPlatformClient(settings) if role is not RuntimeRole.REPLY else None
-    platform_reply_coordinator = PlatformReplyCoordinator(settings)
+    voice_transcription_client = DoubaoAsrClient(settings)
     platform_voice_batch_coordinator = PlatformVoiceBatchCoordinator(settings)
+    platform_reply_coordinator = PlatformReplyCoordinator(settings)
+    ai_sales_policy_service = AiSalesPolicyService(settings)
+    sales_strategy_service = SalesStrategyService(settings)
     customer_context_service = CustomerContextService(platform_agent_client)
     store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
-    customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_client, store_snapshot_service)
+    customer_store_knowledge_service = CustomerStoreKnowledgeService(
+        platform_agent_client, store_snapshot_service
+    )
     store_service = StoreService(platform_agent_client)
     sop_reply_pack_service = SopReplyPackService(settings)
     precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
-    sop_objection_material_service = (
-        SopObjectionMaterialService(settings.sop_objection_materials_path)
-        if role is not RuntimeRole.REPLY
-        else None
-    )
     model_led_objection_playbook_service = ModelLedObjectionPlaybookService(
         settings.model_led_objection_playbook_path
     )
-    follow_knowledge_client = None
-    deepseek_semantic_fallback_client = None
-    deepseek_semantic_client = None
-    v3_semantic_router_service = None
-    if role is RuntimeRole.REPLY:
-        follow_knowledge_client = FollowKnowledgeClient(settings)
-        deepseek_semantic_fallback_client = ModelClient(
-            settings.model_copy(
-                update={
-                    "model_fast": "gpt-5.4-mini",
-                    "model_fast_fallbacks": "gpt-5.4",
-                    "model_emergency_fallbacks": "",
-                    "model_hedge_max_parallel": 1,
-                }
-            )
+    follow_knowledge_client = FollowKnowledgeClient(settings)
+    semantic_fallback_client = ModelClient(
+        settings.model_copy(
+            update={
+                "model_fast": "gpt-5.4-mini",
+                "model_fast_fallbacks": "gpt-5.4",
+                "model_emergency_fallbacks": "",
+                "model_hedge_max_parallel": 1,
+            }
         )
-        deepseek_semantic_client = DeepSeekSemanticClient(settings, deepseek_semantic_fallback_client)
-        v3_semantic_router_service = V3SemanticRouterService(
-            semantic_client=deepseek_semantic_client,
-            knowledge_client=follow_knowledge_client,
-            script_threshold=settings.deepseek_semantic_script_threshold,
-            max_scripts=settings.deepseek_semantic_max_scripts,
-        )
-    outreach_service = OutreachService(
+    )
+    deepseek_semantic_client = DeepSeekSemanticClient(settings, semantic_fallback_client)
+    v3_semantic_router_service = V3SemanticRouterService(
+        semantic_client=deepseek_semantic_client,
+        knowledge_client=follow_knowledge_client,
+        script_threshold=settings.deepseek_semantic_script_threshold,
+        max_scripts=settings.deepseek_semantic_max_scripts,
+    )
+    outreach_service = _build_outreach_service(
+        settings=settings,
         repository=repository,
         model_client=model_client,
         system_client=outreach_system_client,
@@ -271,28 +148,163 @@ def build_runtime_services(settings: Settings) -> RuntimeServices:
         precision_qa_playbook_service=precision_qa_playbook_service,
         sop_reply_pack_service=sop_reply_pack_service,
         coze_client=coze_client,
-        before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
         sales_strategy_service=sales_strategy_service,
     )
-    v3_sop_execution_service = None
-    if role is RuntimeRole.REPLY:
-        v3_sop_execution_service = V3SopExecutionService(
-            repository=repository,
-            sop_reply_pack_service=sop_reply_pack_service,
-            model_client=model_client,
-            memory_store=memory_store,
-            customer_context_service=customer_context_service,
-            chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
-            model_led_objection_playbook_service=model_led_objection_playbook_service,
-        )
-    sop_delivery_compatibility_service = None
-    sop_platform_task_service = None
-    if role is not RuntimeRole.REPLY:
-        sop_delivery_compatibility_service = SopDeliveryCompatibilityService(
-            repository=repository,
-            memory_store=memory_store,
-        )
-        sop_platform_task_service = SopPlatformTaskService(
+    v3_sop_execution_service = V3SopExecutionService(
+        repository=repository,
+        sop_reply_pack_service=sop_reply_pack_service,
+        model_client=model_client,
+        memory_store=memory_store,
+        customer_context_service=customer_context_service,
+        chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
+        model_led_objection_playbook_service=model_led_objection_playbook_service,
+    )
+    service_rule_data_service = _build_service_rule_data_writer(settings, repository)
+    reply_graphs = build_reply_graphs(
+        coze_client,
+        trace_logger,
+        model_client,
+        memory_store,
+        customer_context_service,
+        customer_store_knowledge_service,
+        store_service,
+        outreach_send_client,
+        platform_agent_client,
+        v3_sop_execution_service,
+        v3_semantic_router_service,
+        sales_strategy_service,
+    )
+    chat_runtime = ChatRuntime(
+        full_graph=reply_graphs.full_graph,
+        commit_graph=reply_graphs.commit_graph,
+        trace_logger=trace_logger,
+        repository=repository,
+        outreach_send_client=outreach_send_client,
+        outreach_system_client=outreach_system_client,
+        memory_store=memory_store,
+        platform_reply_coordinator=platform_reply_coordinator,
+        sop_execution_service=v3_sop_execution_service,
+        service_rule_data_service=service_rule_data_service,
+        ai_sales_policy_service=ai_sales_policy_service,
+        sales_strategy_service=sales_strategy_service,
+        outreach_service=outreach_service,
+        settings=settings,
+    )
+    return ReplyServices(
+        storage_store=storage_store,
+        repository=repository,
+        chat_runtime=chat_runtime,
+        platform_voice_batch_coordinator=platform_voice_batch_coordinator,
+        voice_transcription_client=voice_transcription_client,
+        service_rule_data_service=service_rule_data_service,
+        _closers=(
+            model_client,
+            coze_client,
+            follow_knowledge_client,
+            deepseek_semantic_client,
+            semantic_fallback_client,
+            voice_transcription_client,
+            platform_voice_batch_coordinator,
+            outreach_send_client,
+            outreach_system_client,
+        ),
+        _platform_agent_client=platform_agent_client,
+    )
+
+
+def build_control_services(settings: Settings) -> ControlServices:
+    storage_store, repository = _build_repository(settings)
+    trace_logger = TraceLogger(settings)
+    message_delivery_service = MessageDeliveryService(settings, repository)
+    memory_store = CustomerMemoryStore(settings, repository)
+    async_reply_delivery_finalizer = AsyncReplyDeliveryFinalizer(repository, memory_store)
+    model_client = ModelClient(settings)
+    coze_client = CozeClient(settings)
+    platform_agent_client = PlatformAgentClient(settings)
+    outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
+    ai_sales_policy_service = AiSalesPolicyService(settings)
+    sales_strategy_service = SalesStrategyService(settings)
+    customer_context_service = CustomerContextService(platform_agent_client)
+    store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
+    sop_reply_pack_service = SopReplyPackService(settings)
+    precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
+    sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
+    outreach_service = _build_outreach_service(
+        settings=settings,
+        repository=repository,
+        model_client=model_client,
+        system_client=outreach_system_client,
+        customer_context_service=customer_context_service,
+        precision_qa_playbook_service=precision_qa_playbook_service,
+        sop_reply_pack_service=sop_reply_pack_service,
+        coze_client=coze_client,
+        sales_strategy_service=sales_strategy_service,
+    )
+    sop_platform_client = SopPlatformClient(settings)
+    sop_platform_task_service = SopPlatformTaskService(
+        settings=settings,
+        repository=repository,
+        platform_client=sop_platform_client,
+        system_client=outreach_system_client,
+        model_client=model_client,
+        customer_context_service=customer_context_service,
+        objection_material_service=sop_objection_material_service,
+    )
+    return ControlServices(
+        storage_store=storage_store,
+        repository=repository,
+        async_reply_delivery_finalizer=async_reply_delivery_finalizer,
+        message_delivery_service=message_delivery_service,
+        outreach_service=outreach_service,
+        sop_delivery_compatibility_service=SopDeliveryCompatibilityService(
+            repository=repository, memory_store=memory_store
+        ),
+        sop_platform_task_service=sop_platform_task_service,
+        memory_store=memory_store,
+        ai_sales_policy_service=ai_sales_policy_service,
+        precision_qa_playbook_service=precision_qa_playbook_service,
+        sales_strategy_service=sales_strategy_service,
+        store_snapshot_service=store_snapshot_service,
+        trace_logger=trace_logger,
+        sop_reply_pack_service=sop_reply_pack_service,
+        sop_objection_material_service=sop_objection_material_service,
+        _closers=(model_client, coze_client, outreach_system_client, sop_platform_client),
+        _platform_agent_client=platform_agent_client,
+    )
+
+
+def build_worker_services(settings: Settings) -> WorkerServices:
+    storage_store, repository = _build_repository(settings)
+    message_delivery_service = MessageDeliveryService(settings, repository)
+    model_client = ModelClient(settings)
+    coze_client = CozeClient(settings)
+    platform_agent_client = PlatformAgentClient(settings)
+    outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
+    sales_strategy_service = SalesStrategyService(settings)
+    customer_context_service = CustomerContextService(platform_agent_client)
+    store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
+    sop_reply_pack_service = SopReplyPackService(settings)
+    precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
+    sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
+    outreach_service = _build_outreach_service(
+        settings=settings,
+        repository=repository,
+        model_client=model_client,
+        system_client=outreach_system_client,
+        customer_context_service=customer_context_service,
+        precision_qa_playbook_service=precision_qa_playbook_service,
+        sop_reply_pack_service=sop_reply_pack_service,
+        coze_client=coze_client,
+        sales_strategy_service=sales_strategy_service,
+    )
+    sop_platform_client = SopPlatformClient(settings)
+    service_rule_data_service = _build_service_rule_data_worker(settings, repository)
+    return WorkerServices(
+        storage_store=storage_store,
+        repository=repository,
+        outreach_service=outreach_service,
+        service_rule_data_service=service_rule_data_service,
+        sop_platform_task_service=SopPlatformTaskService(
             settings=settings,
             repository=repository,
             platform_client=sop_platform_client,
@@ -300,44 +312,82 @@ def build_runtime_services(settings: Settings) -> RuntimeServices:
             model_client=model_client,
             customer_context_service=customer_context_service,
             objection_material_service=sop_objection_material_service,
-        )
-    reply_graphs = None
-    chat_runtime = None
-    if role is RuntimeRole.REPLY:
-        reply_graphs = build_reply_graphs(
-            coze_client,
-            trace_logger,
+        ),
+        store_snapshot_service=store_snapshot_service,
+        _closers=(
             model_client,
-            memory_store,
-            customer_context_service,
-            customer_store_knowledge_service,
-            store_service,
-            outreach_send_client,
-            platform_agent_client,
-            v3_sop_execution_service,
-            v3_semantic_router_service,
-            sales_strategy_service,
-        )
-        chat_runtime = ChatRuntime(
-            full_graph=reply_graphs.full_graph,
-            commit_graph=reply_graphs.commit_graph,
-            trace_logger=trace_logger,
-            repository=repository,
-            outreach_send_client=outreach_send_client,
-            outreach_system_client=outreach_system_client,
-            memory_store=memory_store,
-            platform_reply_coordinator=platform_reply_coordinator,
-            sop_execution_service=v3_sop_execution_service,
-            service_rule_data_service=service_rule_data_service,
-            ai_sales_policy_service=ai_sales_policy_service,
-            sales_strategy_service=sales_strategy_service,
-            outreach_service=outreach_service,
-            settings=settings,
-        )
-    return RuntimeServices(
-        **{
-            name: value
-            for name, value in locals().items()
-            if name in RuntimeServices.__dataclass_fields__
-        }
+            coze_client,
+            outreach_system_client,
+            sop_platform_client,
+            service_rule_data_service.client,
+        ),
+        _platform_agent_client=platform_agent_client,
     )
+
+
+def _build_repository(settings: Settings) -> tuple[Any, AppRepository]:
+    storage_store = build_store(settings)
+    return storage_store, AppRepository(storage_store)
+
+
+def _build_outreach_service(
+    *,
+    settings: Settings,
+    repository: AppRepository,
+    model_client: ModelClient,
+    system_client: OutreachSystemClient,
+    customer_context_service: CustomerContextService,
+    precision_qa_playbook_service: PrecisionQaPlaybookService,
+    sop_reply_pack_service: SopReplyPackService,
+    coze_client: CozeClient,
+    sales_strategy_service: SalesStrategyService,
+) -> OutreachService:
+    return OutreachService(
+        repository=repository,
+        model_client=model_client,
+        system_client=system_client,
+        customer_context_service=customer_context_service,
+        precision_qa_playbook_service=precision_qa_playbook_service,
+        sop_reply_pack_service=sop_reply_pack_service,
+        coze_client=coze_client,
+        before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
+        sales_strategy_service=sales_strategy_service,
+    )
+
+
+def _build_service_rule_data_writer(settings: Settings, repository: AppRepository) -> ServiceRuleDataService:
+    return ServiceRuleDataService(
+        repository=repository,
+        client=None,
+        enabled=settings.service_rule_data_enabled,
+        poll_seconds=settings.service_rule_data_poll_seconds,
+        batch_size=settings.service_rule_data_batch_size,
+        max_attempts=settings.service_rule_data_max_attempts,
+        retry_base_seconds=settings.service_rule_data_retry_base_seconds,
+    )
+
+
+def _build_service_rule_data_worker(settings: Settings, repository: AppRepository) -> ServiceRuleDataService:
+    client = ServiceRuleDataClient(settings) if settings.service_rule_data_enabled else None
+    return ServiceRuleDataService(
+        repository=repository,
+        client=client,
+        enabled=settings.service_rule_data_enabled,
+        poll_seconds=settings.service_rule_data_poll_seconds,
+        batch_size=settings.service_rule_data_batch_size,
+        max_attempts=settings.service_rule_data_max_attempts,
+        retry_base_seconds=settings.service_rule_data_retry_base_seconds,
+    )
+
+
+async def _close_runtime(storage_store: Any, platform_agent_client: PlatformAgentClient, closers: tuple[Any, ...]) -> None:
+    seen: set[int] = set()
+    for client in closers:
+        if client is None or id(client) in seen:
+            continue
+        seen.add(id(client))
+        close = getattr(client, "aclose", None)
+        if close is not None:
+            await close()
+    platform_agent_client.close()
+    storage_store.close()

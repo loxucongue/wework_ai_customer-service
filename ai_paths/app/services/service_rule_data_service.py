@@ -23,7 +23,8 @@ class ServiceRuleDataService:
         self,
         *,
         repository: AppRepository,
-        client: ServiceRuleDataClient,
+        client: ServiceRuleDataClient | None,
+        enabled: bool = False,
         poll_seconds: float = 2.0,
         batch_size: int = 10,
         max_attempts: int = 6,
@@ -31,6 +32,7 @@ class ServiceRuleDataService:
     ) -> None:
         self.repository = repository
         self.client = client
+        self.enabled = bool(enabled)
         self.poll_seconds = max(0.5, float(poll_seconds or 2.0))
         self.batch_size = max(1, min(int(batch_size or 10), 100))
         self.max_attempts = max(1, int(max_attempts or 6))
@@ -39,7 +41,11 @@ class ServiceRuleDataService:
 
     @property
     def available(self) -> bool:
-        return self.client.available
+        return self.enabled
+
+    @property
+    def sender_available(self) -> bool:
+        return self.client is not None and self.client.available
 
     def enqueue_customer_open(
         self,
@@ -47,7 +53,7 @@ class ServiceRuleDataService:
         *,
         allow_empty_reply: bool = False,
     ) -> dict[str, Any]:
-        if not self.available:
+        if not self.enabled:
             return {"status": "skipped", "reason": "service_rule_data_not_configured"}
         context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
         if str(context.get("interface_version") or "").lower() != "v3":
@@ -150,7 +156,7 @@ class ServiceRuleDataService:
         }
 
     async def run(self) -> None:
-        if not self.available:
+        if not self.sender_available:
             return
         if self._stop.is_set():
             self._stop = asyncio.Event()
@@ -168,6 +174,8 @@ class ServiceRuleDataService:
                 pass
 
     async def process_due_once(self) -> int:
+        if not self.sender_available:
+            return 0
         records = await asyncio.to_thread(
             self.repository.claim_due_strategy_data_callbacks,
             limit=self.batch_size,
@@ -211,13 +219,17 @@ class ServiceRuleDataService:
         self._stop.set()
 
     def status(self) -> dict[str, Any]:
-        if not self.available:
+        if not self.enabled:
             return {"enabled": False, "outbox": {}}
         try:
             counts = self.repository.strategy_data_outbox_status()
         except Exception as exc:
             return {"enabled": True, "error": f"{type(exc).__name__}: {exc}", "outbox": {}}
-        return {"enabled": True, "outbox": counts}
+        return {
+            "enabled": True,
+            "delivery_enabled": self.sender_available,
+            "outbox": counts,
+        }
 
 
 def customer_reply_type(raw_type: str, *, has_image: bool = False) -> str:

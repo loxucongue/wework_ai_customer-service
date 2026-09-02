@@ -51,3 +51,8 @@
 应用按角色只暴露所需路由并只构造所需的重型依赖。旧环境值 `primary`、`workers`、
 `model_led_sales_brain_v3` 仅用于迁移兼容；新部署和文档不得继续使用。旧
 `primary + workers=true` 组合会被配置校验拒绝，避免控制面与 worker 再次混装。
+
+依赖装配也按角色分开：Reply 只写策略数据 outbox，不创建第三方 SOP 拉取或策略
+数据回传客户端；Control 只保留回调与管理依赖；Worker 才创建第三方 SOP 拉取和
+策略数据实际回传客户端。启用的 Worker 能力缺少自身必需的上游地址或令牌时必须拒绝
+启动；Reply 不因 Worker 专属凭据缺失而失败。

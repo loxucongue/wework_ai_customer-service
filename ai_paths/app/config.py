@@ -346,6 +346,16 @@ class Settings(BaseSettings):
                 raise ValueError("SOP_PLATFORM_PULL_ENABLED=true is only valid for the worker role")
             if not str(self.sop_platform_token or "").strip():
                 raise ValueError("SOP_PLATFORM_PULL_ENABLED=true requires SOP_PLATFORM_TOKEN")
+            if not str(self.sop_platform_base_url or "").strip():
+                raise ValueError("SOP_PLATFORM_PULL_ENABLED=true requires SOP_PLATFORM_BASE_URL")
+            if not str(self.outreach_system_base_url or "").strip() or not str(self.outreach_system_token or "").strip():
+                raise ValueError("SOP_PLATFORM_PULL_ENABLED=true requires OUTREACH_SYSTEM_BASE_URL and OUTREACH_SYSTEM_TOKEN")
+        if role is RuntimeRole.WORKER and self.service_rule_data_enabled:
+            if not str(self.service_rule_data_base_url or "").strip() or not str(self.service_rule_data_token or "").strip():
+                raise ValueError("SERVICE_RULE_DATA_ENABLED=true requires SERVICE_RULE_DATA_BASE_URL and SERVICE_RULE_DATA_TOKEN for worker")
+        if role is RuntimeRole.WORKER and self.outreach_first_day_silence_enabled:
+            if not str(self.outreach_system_base_url or "").strip() or not str(self.outreach_system_token or "").strip():
+                raise ValueError("OUTREACH_FIRST_DAY_SILENCE_ENABLED=true requires OUTREACH_SYSTEM_BASE_URL and OUTREACH_SYSTEM_TOKEN for worker")
         return self
 
 
