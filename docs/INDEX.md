@@ -11,6 +11,7 @@
 5. [AI 销售策略运行合同](contracts/sales-strategy.md)
 6. [当前生产状态](current/PRODUCTION_STATE.md)
 7. [已知问题](current/KNOWN_ISSUES.md)
+8. [访问提示](current/ACCESS_HINTS.md)
 
 ## 共享任务区
 
@@ -20,6 +21,9 @@
 - [活跃任务清单](tasks/active/INDEX.md)
 - [历史任务索引](tasks/history/INDEX.md)
 - [任务模板](tasks/TEMPLATE.md)
+- [接口文档索引](interfaces/INDEX.md)
+- [外部依赖接口](interfaces/external.md)
+- [对外暴露接口](interfaces/public.md)
 
 新开发按“一项任务一个新窗口、从最新 `origin/main` 建立临时 `codex/*` 分支、验证后立即合回并删除”的方式执行。
 
@@ -33,6 +37,7 @@
 
 - `architecture/`：稳定组件关系，不记录临时进度。
 - `contracts/`：不得被实现随意破坏的协议和业务边界。
+- `interfaces/`：外部依赖接口和项目对外暴露接口的稳定索引，不保存 token、原始日志或动态生产状态。
 - `current/`：现场核验后的动态事实；过期时必须明确标记。
 - `tasks/active/`：每个窗口独占一个活跃任务文件，任务、分支和文件所有权必须先登记。
 - `tasks/history/`：只保存已完成任务的简短索引，不保存聊天、报告或重复设计文档。

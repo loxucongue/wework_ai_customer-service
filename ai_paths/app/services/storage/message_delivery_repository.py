@@ -93,6 +93,11 @@ class MessageDeliveryRepositoryMixin:
                     )
         dispatch = self.get_message_dispatch(stored_id)
         dispatch["created"] = created
+        if str(dispatch.get("source_request_id") or "").strip():
+            self.link_v3_strategy_usage_dispatch(
+                request_id=str(dispatch.get("source_request_id") or ""),
+                dispatch_id=stored_id,
+            )
         return dispatch
 
     def get_message_dispatch(self, dispatch_id: str) -> dict[str, Any]:
@@ -182,7 +187,13 @@ class MessageDeliveryRepositoryMixin:
                         dispatch_id,
                     ),
                 )
-        return self.get_message_dispatch(dispatch_id)
+        dispatch = self.get_message_dispatch(dispatch_id)
+        if dispatch and str(dispatch.get("source_request_id") or "").strip():
+            self.link_v3_strategy_usage_dispatch(
+                request_id=str(dispatch.get("source_request_id") or ""),
+                dispatch_id=dispatch_id,
+            )
+        return dispatch
 
     def apply_message_delivery_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         event_id = str(payload.get("event_id") or "").strip()
@@ -256,6 +267,15 @@ class MessageDeliveryRepositoryMixin:
                     ),
                 )
         dispatch = self.get_message_dispatch(dispatch_id)
+        if dispatch:
+            failed_reason = str(dispatch.get("error_message") or dispatch.get("error_code") or "")
+            delivered_at = str(dispatch.get("confirmed_at") or dispatch.get("accepted_at") or "")
+            self.update_v3_strategy_usage_delivery(
+                dispatch_id=dispatch_id,
+                delivery_status=str(dispatch.get("status") or ""),
+                delivered_at=delivered_at,
+                failed_reason=failed_reason,
+            )
         return {"found": True, "duplicate": duplicate, "dispatch": dispatch}
 
     def _apply_delivery_items(self, conn: Any, *, dispatch_id: str, payload: dict[str, Any], now: str) -> None:
@@ -326,7 +346,15 @@ class MessageDeliveryRepositoryMixin:
                 """,
                 (now, now, dispatch_id),
             )
-        return self.get_message_dispatch(dispatch_id)
+        dispatch = self.get_message_dispatch(dispatch_id)
+        if dispatch:
+            self.update_v3_strategy_usage_delivery(
+                dispatch_id=dispatch_id,
+                delivery_status=str(dispatch.get("status") or ""),
+                delivered_at=str(dispatch.get("confirmed_at") or dispatch.get("accepted_at") or ""),
+                failed_reason=str(dispatch.get("error_message") or dispatch.get("error_code") or ""),
+            )
+        return dispatch
 
 
 def _client_message_id(dispatch_id: str, index: int) -> str:

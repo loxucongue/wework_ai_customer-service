@@ -839,6 +839,19 @@ class ChatRuntime:
             final_state=final_state,
             token_usage=model_usage["summary"],
         )
+        try:
+            final_state["v3_strategy_usage_event"] = self._repository.record_v3_strategy_usage(
+                conversation_id=conversation_id,
+                final_state=final_state,
+            )
+        except Exception as exc:
+            final_state.setdefault("warnings", []).append(
+                {
+                    "node": "v3_strategy_analytics",
+                    "message": "usage_event_persistence_failed",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
 
         return ChatResponse(
             request_id=request_id,

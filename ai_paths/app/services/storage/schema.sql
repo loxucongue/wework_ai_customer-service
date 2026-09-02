@@ -360,3 +360,95 @@ CREATE INDEX IF NOT EXISTS idx_message_delivery_events_dispatch
 ON message_delivery_events(dispatch_id, received_at);
 CREATE INDEX IF NOT EXISTS idx_message_delivery_events_status
 ON message_delivery_events(status, received_at);
+
+CREATE TABLE IF NOT EXISTS v3_strategy_usage_events (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    conversation_id TEXT NOT NULL DEFAULT '',
+    customer_id TEXT NOT NULL DEFAULT '',
+    corp_id TEXT NOT NULL DEFAULT '',
+    wechat TEXT NOT NULL DEFAULT '',
+    external_userid TEXT NOT NULL DEFAULT '',
+    user_id TEXT NOT NULL DEFAULT '',
+    sales_contact_key TEXT NOT NULL DEFAULT '',
+    occurred_at TEXT NOT NULL,
+    checkpoint_type_id INTEGER NOT NULL DEFAULT 0,
+    checkpoint_code TEXT NOT NULL DEFAULT '',
+    checkpoint_name TEXT NOT NULL DEFAULT '',
+    checkpoint_tag_id INTEGER NOT NULL DEFAULT 0,
+    checkpoint_tag_name TEXT NOT NULL DEFAULT '',
+    friction_status TEXT NOT NULL DEFAULT '',
+    sequence_id TEXT NOT NULL DEFAULT '',
+    sequence_name TEXT NOT NULL DEFAULT '',
+    sequence_step_id TEXT NOT NULL DEFAULT '',
+    action_code TEXT NOT NULL DEFAULT '',
+    action_name TEXT NOT NULL DEFAULT '',
+    script_id TEXT NOT NULL DEFAULT '',
+    script_code TEXT NOT NULL DEFAULT '',
+    script_name TEXT NOT NULL DEFAULT '',
+    script_match_scope TEXT NOT NULL DEFAULT '',
+    matched_count INTEGER NOT NULL DEFAULT 0,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    sequence_candidate_count INTEGER NOT NULL DEFAULT 0,
+    script_candidate_count INTEGER NOT NULL DEFAULT 0,
+    adopted INTEGER NOT NULL DEFAULT 0,
+    dispatch_id TEXT NOT NULL DEFAULT '',
+    delivery_status TEXT NOT NULL DEFAULT '',
+    delivered_at TEXT NOT NULL DEFAULT '',
+    failed_reason TEXT NOT NULL DEFAULT '',
+    reply_source TEXT NOT NULL DEFAULT '',
+    reply_action TEXT NOT NULL DEFAULT '',
+    intent_code TEXT NOT NULL DEFAULT '',
+    closing_strategy_code TEXT NOT NULL DEFAULT '',
+    emotion_before TEXT NOT NULL DEFAULT '',
+    emotion_after TEXT NOT NULL DEFAULT '',
+    selector_status TEXT NOT NULL DEFAULT '',
+    fallback_used INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    order_state_before_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_occurred
+ON v3_strategy_usage_events(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_contact
+ON v3_strategy_usage_events(corp_id, wechat, external_userid, customer_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_checkpoint
+ON v3_strategy_usage_events(checkpoint_code, checkpoint_tag_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_sequence
+ON v3_strategy_usage_events(sequence_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_script
+ON v3_strategy_usage_events(script_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_action
+ON v3_strategy_usage_events(action_code, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_dispatch
+ON v3_strategy_usage_events(dispatch_id);
+
+CREATE TABLE IF NOT EXISTS v3_strategy_outcome_events (
+    usage_event_id TEXT PRIMARY KEY,
+    customer_replied_1h INTEGER NOT NULL DEFAULT 0,
+    customer_replied_6h INTEGER NOT NULL DEFAULT 0,
+    customer_replied_24h INTEGER NOT NULL DEFAULT 0,
+    customer_replied_72h INTEGER NOT NULL DEFAULT 0,
+    first_reply_after_at TEXT NOT NULL DEFAULT '',
+    first_reply_after_msgid TEXT NOT NULL DEFAULT '',
+    order_state_before TEXT NOT NULL DEFAULT '',
+    order_state_after_24h TEXT NOT NULL DEFAULT '',
+    order_state_after_72h TEXT NOT NULL DEFAULT '',
+    order_state_after_7d TEXT NOT NULL DEFAULT '',
+    paid_after_24h INTEGER NOT NULL DEFAULT 0,
+    paid_after_72h INTEGER NOT NULL DEFAULT 0,
+    paid_after_7d INTEGER NOT NULL DEFAULT 0,
+    scheduled_after_7d INTEGER NOT NULL DEFAULT 0,
+    visited_after_14d INTEGER NOT NULL DEFAULT 0,
+    finished_after_30d INTEGER NOT NULL DEFAULT 0,
+    attribution_source TEXT NOT NULL DEFAULT 'local_windows',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(usage_event_id) REFERENCES v3_strategy_usage_events(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_outcome_updated
+ON v3_strategy_outcome_events(updated_at);

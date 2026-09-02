@@ -31,6 +31,7 @@ class WorkerSupervisor:
         self._start("storage_retention", self._run_storage_retention())
         if self.settings.store_snapshot_refresh_enabled:
             self._start("store_snapshot_refresh", self._run_store_snapshot_refresh())
+        self._start("v3_strategy_outcome_attribution", self._run_v3_strategy_outcome_attribution())
         await self.sync_outreach_workers()
 
     async def stop(self) -> None:
@@ -104,6 +105,21 @@ class WorkerSupervisor:
             except Exception:
                 logger.exception("Store snapshot refresh worker iteration failed")
             await asyncio.sleep(max(300, int(self.settings.store_snapshot_refresh_interval_seconds)))
+
+    async def _run_v3_strategy_outcome_attribution(self) -> None:
+        while True:
+            try:
+                result = await asyncio.to_thread(
+                    self.services.repository.refresh_v3_strategy_outcomes,
+                    limit=self.settings.v3_strategy_analytics_outcome_batch_size,
+                )
+                if result.get("updated"):
+                    logger.info("Updated V3 strategy outcome attribution: %s", result)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("V3 strategy outcome attribution iteration failed")
+            await asyncio.sleep(max(60.0, float(self.settings.v3_strategy_analytics_outcome_poll_seconds)))
 
     async def _run_outreach_plan_monitor(self) -> None:
         while True:

@@ -12,7 +12,7 @@ import httpx
 from app.config import Settings
 
 
-ACTION_CODES = {
+CANONICAL_ACTION_CODES = {
     "empathy",
     "resolve",
     "case",
@@ -22,6 +22,27 @@ ACTION_CODES = {
     "care",
     "appt_confirm",
 }
+PUBLISHED_ACTION_CODES = {
+    "act001",
+    "act002",
+    "act003",
+    "act004",
+    "act005",
+    "act006",
+    "act007",
+    "act008",
+    "act009",
+    "act010",
+    "act011",
+    "act012",
+    "act013",
+    "act014",
+    "act015",
+    "act016",
+    "act017",
+    "act018",
+}
+ACTION_CODES = CANONICAL_ACTION_CODES | PUBLISHED_ACTION_CODES
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 

@@ -75,6 +75,141 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @router.get("/admin/v3-strategy-analytics/summary", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_summary(
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        checkpoint_code: str = "",
+        sequence_id: str = "",
+        script_id: str = "",
+        action_code: str = "",
+        fallback_used: bool | None = None,
+    ) -> dict[str, Any]:
+        return repository.v3_strategy_analytics_summary(
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+            checkpoint_code=checkpoint_code,
+            sequence_id=sequence_id,
+            script_id=script_id,
+            action_code=action_code,
+            fallback_used=fallback_used,
+        )
+
+    @router.get("/admin/v3-strategy-analytics/by-checkpoint", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_by_checkpoint(
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        checkpoint_code: str = "",
+        sequence_id: str = "",
+        script_id: str = "",
+        action_code: str = "",
+        fallback_used: bool | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return repository.v3_strategy_analytics_by_dimension(
+            dimension="checkpoint",
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+            checkpoint_code=checkpoint_code,
+            sequence_id=sequence_id,
+            script_id=script_id,
+            action_code=action_code,
+            fallback_used=fallback_used,
+            limit=limit,
+        )
+
+    @router.get("/admin/v3-strategy-analytics/by-sequence", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_by_sequence(
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        checkpoint_code: str = "",
+        sequence_id: str = "",
+        script_id: str = "",
+        action_code: str = "",
+        fallback_used: bool | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return repository.v3_strategy_analytics_by_dimension(
+            dimension="sequence",
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+            checkpoint_code=checkpoint_code,
+            sequence_id=sequence_id,
+            script_id=script_id,
+            action_code=action_code,
+            fallback_used=fallback_used,
+            limit=limit,
+        )
+
+    @router.get("/admin/v3-strategy-analytics/by-script", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_by_script(
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        checkpoint_code: str = "",
+        sequence_id: str = "",
+        script_id: str = "",
+        action_code: str = "",
+        fallback_used: bool | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return repository.v3_strategy_analytics_by_dimension(
+            dimension="script",
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+            checkpoint_code=checkpoint_code,
+            sequence_id=sequence_id,
+            script_id=script_id,
+            action_code=action_code,
+            fallback_used=fallback_used,
+            limit=limit,
+        )
+
+    @router.get("/admin/v3-strategy-analytics/failures", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_failures(
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        checkpoint_code: str = "",
+        sequence_id: str = "",
+        script_id: str = "",
+        action_code: str = "",
+        fallback_used: bool | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return repository.v3_strategy_analytics_failures(
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+            checkpoint_code=checkpoint_code,
+            sequence_id=sequence_id,
+            script_id=script_id,
+            action_code=action_code,
+            fallback_used=fallback_used,
+            limit=limit,
+        )
+
+    @router.post("/admin/v3-strategy-analytics/outcomes/refresh", dependencies=[Depends(require_api_key)])
+    async def refresh_v3_strategy_outcomes(limit: int = 100) -> dict[str, Any]:
+        return repository.refresh_v3_strategy_outcomes(limit=limit)
+
     @router.get("/admin/runs/{request_id}", dependencies=[Depends(require_api_key)])
     async def run_detail(request_id: str) -> dict[str, Any]:
         detail = repository.get_run(request_id)

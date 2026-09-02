@@ -1,0 +1,91 @@
+# 对外暴露接口
+
+本页记录外部系统、前端或运营工具调用 AI Paths 的接口。鉴权 token 不写入文档。
+
+## 产品回复接口
+
+- 唯一产品入口：`POST /api/ai/reply/workflow-compatible-v3`
+- 代码路由：`ai_paths/app/routers/reply.py`
+- 鉴权：
+  - `Authorization: Bearer <AI_PATHS_API_KEY 或 AI_EXTERNAL_API_KEY>`
+  - 或 `X-API-Key`
+- 读写性质：会触发 V3 回复链路；可能在本地存储运行记录、消息记录、素材使用记录和必要的异步提交状态。
+- 运行边界：
+  - V3 是唯一客户回复产品接口。
+  - V1/V2 回复路由不得重新注册。
+  - 真实发送客户消息必须受发送链路和回调合同约束。
+
+## 消息送达回调
+
+- 接口：`POST /api/ai/callbacks/v1/message-delivery`
+- 代码路由：`ai_paths/app/routers/callbacks.py`
+- 合同文档：`docs/contracts/message-delivery-callback.md`
+- 鉴权：回调 token。
+- 读写性质：写入送达状态，并可能触发对应发送链路的终态处理。
+- 运行边界：
+  - 只记录真实送达事实。
+  - 不能替代 SOP 消费接口或策略数据回传接口。
+
+## 管理和诊断接口
+
+这些接口受 `AI_PATHS_API_KEY` 保护，主要用于运营、诊断和只读观察；写接口必须单独审计。
+
+### 客户与会话
+
+- `GET /admin/conversations`
+- `GET /admin/conversations/{conversation_id}`
+- `GET /admin/customers/{customer_id}/memory`
+- `DELETE /admin/customers/{customer_id}/memory`
+- `GET /admin/customer-records`
+- `POST /admin/customer-records/clear`
+
+### 运行与消息送达
+
+- `GET /admin/message-deliveries/{dispatch_id}`
+- `GET /admin/runs`
+- `GET /admin/runs/{request_id}`
+- `GET /admin/operations-dashboard`
+
+### V3 跟进策略 BI
+
+- `GET /admin/v3-strategy-analytics/summary`
+- `GET /admin/v3-strategy-analytics/by-checkpoint`
+- `GET /admin/v3-strategy-analytics/by-sequence`
+- `GET /admin/v3-strategy-analytics/by-script`
+- `GET /admin/v3-strategy-analytics/failures`
+- `POST /admin/v3-strategy-analytics/outcomes/refresh`
+- 鉴权：`AI_PATHS_API_KEY`。
+- 常用筛选：`started_from`、`started_to`、`corp_id`、`wechat`、`checkpoint_code`、`sequence_id`、`script_id`、`action_code`、`fallback_used`。
+- 指标：使用次数、Reply 采用次数、采用率、发送成功率、客户 24h 开口率、72h 支付率、7d 排客率、selector empty/error 次数、taxonomy fallback 使用次数。
+- 数据边界：不返回完整客户聊天原文；只返回 ID、分类、策略、话术、发送状态和归因窗口结果。
+- 归因口径：时间窗口统计，不声明强因果。当前后台归因只使用本地后续消息和本地 run/order 快照；平台订单只读接口可后续接入同一 outcome 表。
+
+### 策略、门店和 playbook
+
+- `POST /admin/store-snapshot/refresh`
+- `GET /admin/precision-qa-playbook`
+- `PUT /admin/precision-qa-playbook`
+- `GET /admin/ai-sales-policy`
+- `GET /admin/ai-sales-strategy-catalog`
+
+### SOP 与 outreach
+
+- `GET /admin/sop-reply-packs`
+- `PUT /admin/sop-reply-packs`
+- `GET /admin/sop-objection-materials`
+- `PUT /admin/sop-objection-materials`
+- `GET /admin/sop-events`
+- `GET /admin/sop-events/{event_id}`
+- `GET /admin/sop-platform-tasks`
+- `GET /admin/sop-platform-runs`
+- `POST /admin/sop-platform-tasks/{task_id}/resend`
+- `GET /admin/outreach/first-day-settings`
+- `PUT /admin/outreach/first-day-settings`
+- `GET /admin/outreach/first-day-runs`
+- `GET /admin/outreach/first-day-runs/{workflow_run_id}`
+
+## 健康检查
+
+- `GET /health`
+- 用途：发布和运行期健康检查。
+- 注意：健康检查返回的 release、role 和服务状态是现场事实，只在检查时刻有效。

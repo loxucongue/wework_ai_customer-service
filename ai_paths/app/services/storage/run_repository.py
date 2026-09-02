@@ -156,6 +156,7 @@ class RunRepositoryMixin:
             "followup_strategy_candidates": final_state.get("followup_strategy_candidates", []),
             "sales_strategy_retrieval_audit": final_state.get("sales_strategy_retrieval_audit", {}),
             "closing_sequence_shadow": final_state.get("closing_sequence_shadow", {}),
+            "order_state_snapshot": _compact_order_state_snapshot(final_state),
             "ai_sales_policy": {
                 "schema_version": (final_state.get("ai_sales_policy") or {}).get("schema_version", ""),
                 "policy_version": (final_state.get("ai_sales_policy") or {}).get("policy_version", ""),
@@ -390,6 +391,48 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
         # entries and would hide the complete visible conversation.
         stored["observability_v3"] = observability
     return stored
+
+
+def _compact_order_state_snapshot(final_state: dict[str, Any]) -> dict[str, Any]:
+    customer_context = (
+        final_state.get("customer_context")
+        if isinstance(final_state.get("customer_context"), dict)
+        else {}
+    )
+    basic_info = (
+        customer_context.get("basic_info")
+        if isinstance(customer_context.get("basic_info"), dict)
+        else {}
+    )
+    tool_results = (
+        final_state.get("tool_results")
+        if isinstance(final_state.get("tool_results"), dict)
+        else {}
+    )
+    order_context = (
+        tool_results.get("customer_order_context")
+        if isinstance(tool_results.get("customer_order_context"), dict)
+        else {}
+    )
+    if isinstance(order_context.get("data"), dict):
+        order_context = order_context["data"]
+    return {
+        "order_state": str(
+            final_state.get("order_state")
+            or basic_info.get("order_state")
+            or order_context.get("order_state")
+            or order_context.get("status_text")
+            or order_context.get("status")
+            or ""
+        ).strip(),
+        "deposit_state": str(
+            final_state.get("deposit_state")
+            or basic_info.get("deposit_state")
+            or order_context.get("deposit_state")
+            or ""
+        ).strip(),
+        "fee_paid": order_context.get("fee_paid", basic_info.get("fee_paid", "")),
+    }
 
 
 def _run_list_view(run: dict[str, Any]) -> dict[str, Any]:

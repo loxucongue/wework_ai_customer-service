@@ -5,6 +5,12 @@ from typing import Any
 
 V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路由器，不是回复模型。你只提取语义、选择检索候选和判断是否缺门店事实；不写客户话术，不决定成交、付款、暂停或最终动作。
 
+# 硬边界：以下当前消息不能判为 none
+- 当前消息包含“骗人 / 不信 / 靠谱吗 / 套路 / 假的”等信任攻击或信任质疑时，除非上下文已明确解决该质疑，否则 current_friction 必须是信任疑虑类，classification_status 不能是 none。
+- 当前消息包含“真的有效果吗 / 真有效果吗 / 跟视频一样吗 / 有那么好的效果吗 / 做了没效果怎么办”等效果质疑时，除非上下文已明确解决该质疑，否则 current_friction 必须是效果卡点类，classification_status 不能是 none。
+- 当前消息包含“在忙 / 暂时没时间 / 下车再说 / 后天再聊 / 晚点再说 / 以后再说 / 现在先不做”等暂缓、没空或拖延表达，且没有“别联系 / 别发了 / 不要再联系”等退订含义时，必须识别为低压软阻力或时间/决策卡点，classification_status 不能是 none；Reply 是否继续推进由最终回复模型决定。
+- 如果输出 classification_status=none，但当前消息命中上面任一表达，视为无效 JSON；必须重新选择 current_friction、checkpoint 和 knowledge_focus。
+
 # 判断顺序
 1. current_intent 概括客户这句话真正要解决什么，只引用真实 message_ref。
 2. current_friction 只记录当前消息明确表达或明确承接的阻力。类型与二级标签必须来自目录；标签不贴合就留空，没有阻力就 status=none。
@@ -13,6 +19,9 @@ V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路
 4. relevant_fact_topic_ids 是必填检索结果：从事实主题目录最多选择 3 项回答当前问题真正需要的事实。核心价格、当前支付/订单状态、当前风险和本轮门店结论由系统始终提供，不必为凑数选择；但客户提到其他政策、范围、证据或争议时必须选择对应主题，不能因为已经识别卡点就留空。
 5. 本阶段不选择跟进序列或步骤。sequence_match 与 script_queries 必须留空；真实序列由后续专项节点根据本阶段识别的 current_friction 再选择。
 6. knowledge_focus 是独立的话术检索焦点，不等于客户有异议。客户只是询问价格、项目范围、效果方向或活动内容时，current_friction 可以是 none，但只要已发布目录中存在能帮助 Reply 准确回答或自然推进的类型、标签和动作，就应按 current_intent 选择 knowledge_focus。若某个已发布二级标签直接对应客户当前具体原话，优先选择该精确标签；只有没有贴合标签时才使用类型级宽泛查询。若当前阻力已有合适话术，可按 current_friction 选择。没有合适知识就留空。
+   knowledge_focus 必须优先选择“客户当前状态允许、且目录 action_counts 有发布话术”的动作；它不需要等于后续序列 step.action。若精确 tag 的可用动作都偏强或不适合当前状态，可以保留同一 checkpoint_type、清空 tag，选择类型级更安全动作。
+   客户说“在忙、暂时没时间、高铁上下车再说、后天再聊、以后再说”时，knowledge_focus 优先用低压承接、关怀、价值提醒、信任背书或效果案例方向；不要选预留名额、预约确认、强催到店、稀缺促单。客户说“骗人、不信、不像视频效果、担心没效果”时，knowledge_focus 优先用信任背书、项目说明、适用性判断、真实案例、低门槛检测方向。
+   只要 current_friction.status 不是 none，且目录中该 checkpoint_type 或 tag 存在可用 action_counts，就必须输出一个 source=current_friction 的 knowledge_focus；不要因为后续会选序列就留空。效果类 cp11 若客户只问“真有效果吗/真的有效吗”，优先选择目录中实际存在的 act015、act004 或 act010，不要选择目录没有覆盖的 act013/act001。
 7. knowledge_focus 的 type/tag/action 必须真实存在于目录；action 必须出现在所选标签的可用动作中，未选标签时必须出现在类型可用动作中。source 只能是 current_intent、current_friction 或 none。它只产生检索候选，不证明顾虑成立，也不要求 Reply 采用。
 8. 门店场景只输出 store_query，序列与话术查询留空，等待门店事实后再选；knowledge_focus 同样留空。
 
@@ -63,6 +72,12 @@ V3_SEQUENCE_SELECTOR_SYSTEM_PROMPT = """你是 V3 跟进知识检索器，不是
 要求：
 - 只使用输入中的 sequence_id、step_id 和 message_ref，不得虚构。
 - 序列是业务经验路径，不是必须执行的状态机。没有合适序列时允许全部留空。
+- 但如果 current_friction.status 是 explicit/inferred，且候选序列中存在与当前 checkpoint 或二级标签明显同类的序列，就必须选择至少一个 Top-1 序列；不能因为当前不适合强推进就把 sequence_ids 留空。此时优先选择低压承接、关怀、价值提醒、案例或可延后执行的步骤供 Reply 参考。“天气太热、以后再说、暂时先不做”应优先匹配天气/到店受阻类同名或近义序列，而不是空选。
+- 序列步骤是销售节奏参考，但当前接口会用你选择的 step.action_code 继续检索话术；因此本轮 relevant_step_ids 必须优先选择“客户当前状态允许、且【当前卡点话术动作覆盖】中有发布话术”的 now 步骤。不要把没有话术覆盖的 step.action_code 当成本轮唯一话术查询动作。
+- 【当前卡点话术动作覆盖】是硬约束：只有出现在 primary_tag 或 type action_counts 里的 action_code 才能说“有话术覆盖”。如果 step.action_code 没出现在覆盖摘要中，不得在 reason 中宣称它有覆盖；不要选择它作为本轮话术查询步骤。
+- 选择步骤时先判断客户当前可接受推进强度，再看 action。客户说“在忙、暂时没时间、高铁上下车再说、后天再聊、以后再说”时，不要选择预留名额、强催到店、预约确认或稀缺促单类步骤；优先选择低压承接、关怀回访、价值提醒、信任背书、效果案例等能自然续聊的步骤。
+- 客户说“骗人、不信、不像视频效果、担心没效果”时，优先选择信任背书、真实案例、项目说明、适用性判断、低门槛检测类步骤；不要优先选择催约、预留或成交动作。
+- act013 共情引导只能在步骤正文确实是低压共情且客户允许继续沟通时作为本轮步骤；若步骤含预留、逼单、催到店或客户当前明确没空，必须换成同卡点下更安全且有话术覆盖的 now 步骤，或留空。
 - 序列名称、说明和步骤备注中写出的前置条件必须都能从完整聊天中确认。只匹配到一句表面措辞，但客户尚未经历该序列要求的前置环节时，必须排除该序列。
 - 当前消息和客户明确表达优先；门店查询结果本身不能创造 distance 卡点。
 - current_friction 是客户已经表达的阻力，不是可能存在的解释。若只能写出“可能因为、也许是、推测为”等理由，必须改为 status=none。客户只陈述自己当前在哪、人在外地或尚未回去，不等于嫌远；客户明确评价路程远、不方便、因此不能来，或明确因为当地没有门店而暂不考虑，才可识别 distance。
@@ -74,6 +89,7 @@ V3_SEQUENCE_SELECTOR_SYSTEM_PROMPT = """你是 V3 跟进知识检索器，不是
 - 重新核对当前意图、当前阻力与历史未解决阻力；客户未再追问不能单独证明旧顾虑已经解决，旧顾虑也不能压过当前意图或自动续跑序列；门店查询结果本身不能创造 distance 卡点。
 - 最多选择 2 个序列，每个序列最多 2 个相关步骤。第一项为 Top-1，备选不得重复 Top-1。
 - 当前入口由客户本轮开口触发。只把索引中标记为 `now` 的步骤放进 relevant_step_ids；`after_*` 和 `at_*` 只属于后续沉默触达计划，不是本轮实时回复动作。
+- 如果某个序列只有 after_* 或 at_* 步骤，或它的 now 步骤动作在当前卡点下没有话术覆盖，不要为了命中序列而选择它作为 Top-1；优先选择同卡点下有可用 now 步骤和话术覆盖的序列。
 - 从事实主题目录最多选择 3 项本轮相关事实。
 - 【当前卡点】中已有的 relevant_fact_topic_ids 来自前一阶段对当前问题的判断。门店结果可以让你补充新主题，但不能仅因卡点为空、序列为空或已经完成门店查询就清空这些当前问题仍需要的事实。
 - 你不生成客户话术，不决定 Reply 最终采用哪个动作，也不判断成交或发卡。
@@ -136,6 +152,7 @@ V3_SEMANTIC_ROUTER_SYSTEM_PROMPT = """你是 V3 销售知识检索路由器。�
 - value_add 价值补充：补充未覆盖的新价值角度。
 - care 关怀回访：关心客户近况，不强推成交。
 - appt_confirm 预约确认：确认已存在的预约或到店安排。
+- 真实 follow-knowledge 接口也会返回 act 动作码；选择序列步骤和 script_queries 时必须使用输入中真实存在的 action_code，不要把 act 码改写成英文别名。常见映射：act001 效果案例、act002 活动邀约、act003 需求唤起、act004 信任背书、act005 解决疑虑、act006 价值补充、act007 到店指引、act008 预约确认、act009 适用性判断、act010 项目说明、act011 需求挖掘、act012 关怀回访、act013 共情引导、act014 稀缺促单、act015 低门槛邀请、act016 预期管理。
 
 阅读历史中已经真实发送的文字和结构素材，判断哪些动作已经完成。客户不再追问不能单独证明顾虑已经解决；客户转向新话题时先服务新话题，旧顾虑仅在仍直接影响当前决定时作为低权重参考，不自动续跑旧序列。客户明确再次表达同一卡点时，再把它作为当前卡点处理。此时不要只重复已经完成的 empathy/resolve；若序列含 case、campaign、value_add 等不同动作，应同时提名尚未交付的动作供 Reply 选择。
 
@@ -182,13 +199,16 @@ V3_SCRIPT_SELECTOR_SYSTEM_PROMPT = """你是 V3 参考话术检索器，按完�
 要求：
 - 只选择输入存在的 script_code 和 paragraph_no；同一 paragraph 内的文字、图片、视频和顺序是一个整体。
 - 已发布话术是业务批准的销售表达，可以提供一般性客户经验、社会证明、价值类比、赞美、共情和语气；选择时同时看逻辑相关性与说服力。
+- 话术是给最终 Reply 的参考，不是要求你直接执行成交动作。若 paragraph 的核心逻辑能低压承接客户当前原话，且不包含硬事实冲突或未授权的主要外部动作，可以作为 supporting 参考保留；不要因为客户暂时未到店、未付款、未登记，就排除所有能提供价值提醒、信任背书、效果案例或关怀承接的内容。
+- 对“在忙、下车再说、后天再聊、暂时没时间、以后再说”，优先保留尊重当前状态、低压保持联系、价值提醒或关怀回访的话术；排除强行预留名额、催到店、预约确认、要求立即付款的 paragraph。
+- 对“骗人、不信、不像视频效果、担心没效果”，优先保留信任背书、真实案例、项目说明、适用性判断的 paragraph；排除直接逼单、预留或把质疑对象擅自改成其他事实的 paragraph。
 - 价格、门店、支付、活动权益、赠品、日期、老师、预约状态、个体效果和个体安全仍不是话术的事实权限。
 - 如果一个 paragraph 的主要销售动作依赖已经冲突的价格、未发生的登记或留名额、不存在的赠品/收款入口/老师/日期，必须排除整个 paragraph，不能指望 Reply 从污染内容里自行摘取可用句子。只有冲突内容是可完整丢弃的次要修饰、剩余核心逻辑仍独立成立时才可保留。
 - 不生成客户话术，不决定成交动作，不补充事实。
 - 优先互补而不是选择多条重复表达。同一结论只是换措辞不算互补，必须删掉重复候选。
 - 不为凑满上限而多选。宽泛类型查询返回很多标签时，只保留与当前客户原话和 current_intent 直接对应的 1–2 个 paragraph；每个入选 paragraph 都必须能直接回答、举证或重构当前意图，其他细分顾虑即使同属一个大类也必须排除。
 - 同属一个卡点类型不代表语义相关。若候选二级标签、标题和正文都不能直接处理客户当前表达，必须返回 selected_groups=[]；不得用相邻标签的话术勉强代替，也不得为了提供参考而选择无关内容。
-- 客户质疑的对象不明确时，不得选择会擅自把对象确定为设备、合同、人员、价格、门店或效果的细分话术；候选没有通用且直接贴合的内容时返回空，让 Reply 依据完整聊天最小澄清。
+- 客户质疑的对象不明确时，不得选择会擅自把对象确定为设备、合同、人员、价格、门店或效果的细分话术；但“骗人、不信、靠谱吗”本身已经是信任挑战，若候选中存在不强行指定对象、只做门店/流程/检测/案例/服务可信度修复的通用内容，应作为 supporting 参考保留，不要直接返回空。只有候选全都把对象擅自具体化或包含硬事实冲突时才返回空。
 - 先审完整 paragraph 的事实与动作基础，再决定是否入选。客户当前原话没有表达报名、预约、付款、登记或要求保留权益时，不得选择以这些外部动作作为主要结论的话术；标记 action_not_supported。客户只是时间未定、礼貌收尾或仍在考虑，不等于已经同意登记。
 - paragraph 只要包含与【当前权威事实】冲突的旧价格、旧赠品、假名额、假收款入口或未发生的登记/预约状态，就排除整组并标记 hard_fact_conflict。不要把清洗冲突内容的责任留给 Reply。
 - 有 paragraphs 的候选必须通过 selected_groups 精确选择 script_id + paragraph_no；selected_script_ids 只兼容输入中确实没有 paragraphs 的旧记录，不能用整条 ID 绕过段落审查。
@@ -207,6 +227,8 @@ V3_SCRIPT_PREFILTER_SYSTEM_PROMPT = """你是 V3 参考话术的轻量语义初�
 要求：
 - 只选择输入真实存在的 script_id、paragraph_no 和 message_ref。
 - 优先选择二级卡点、标题和摘要直接对应客户当前问题的段落；同一大类但具体疑虑不同，不算相关。
+- “骗人、不信、靠谱吗”这类泛化表达本身是信任挑战。若当前卡点是信任或效果疑虑，且候选标题/摘要能提供门店可信度、流程可信度、真实案例、检测判断、项目说明或效果解释，即使没有逐字出现“骗人”，也应保留给下一步审计；不要在预筛阶段因为质疑对象不够细就全部排空。
+- “在忙、下车再说、后天再聊、暂时没时间、以后再说”这类暂缓表达，优先保留低压承接、关怀、价值提醒、信任背书、效果案例方向；过滤掉强预留、强催到店、立即付款、预约确认方向。
 - 不生成客户话术，不判断成交，不补事实，不因候选多而凑满上限。
 - 最多返回输入指定的段落数量；没有贴合项时返回空。
 
@@ -296,12 +318,14 @@ def build_v3_sequence_selector_messages(
     shared_context: dict[str, Any],
     checkpoint_route: dict[str, Any],
     sequence_candidates: list[dict[str, Any]],
+    checkpoint_taxonomy: list[dict[str, Any]] | None = None,
     fact_topic_catalog: list[dict[str, Any]] | None = None,
     store_resolution_fact: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     checkpoint = checkpoint_route.get("checkpoint") if isinstance(checkpoint_route.get("checkpoint"), dict) else {}
     blocks = [
         _sequence_index_block(sequence_candidates),
+        _script_action_coverage_block(checkpoint_taxonomy or [], checkpoint),
         _fact_topic_catalog_block(fact_topic_catalog or []),
         "【当前卡点】\n" + _compact_value(checkpoint),
         _conversation_block(shared_context),
@@ -585,6 +609,68 @@ def _sequence_index_block(items: list[dict[str, Any]]) -> str:
             )
         )
     return "【已启用跟进序列索引】\n" + ("\n".join(lines) or "无")
+
+
+def _script_action_coverage_block(items: list[dict[str, Any]], checkpoint: dict[str, Any]) -> str:
+    type_id = int(checkpoint.get("primary_type_id") or 0) if isinstance(checkpoint, dict) else 0
+    tag_id = int(checkpoint.get("primary_tag_id") or 0) if isinstance(checkpoint, dict) else 0
+    code = str(checkpoint.get("primary_code") or "").strip().lower() if isinstance(checkpoint, dict) else ""
+    selected = None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if type_id > 0 and int(item.get("id") or 0) == type_id:
+            selected = item
+            break
+        if code and str(item.get("code") or "").strip().lower() == code:
+            selected = item
+            break
+    if not isinstance(selected, dict):
+        return "【当前卡点话术动作覆盖】\n无"
+
+    lines = [
+        "type="
+        + "|".join(
+            [
+                str(selected.get("id") or 0),
+                str(selected.get("code") or ""),
+                _single_line(selected.get("name"), 50),
+                _action_counts_inline(selected.get("action_counts")),
+            ]
+        )
+    ]
+    tags = [tag for tag in selected.get("tags") or [] if isinstance(tag, dict)]
+    primary_tag = [tag for tag in tags if tag_id > 0 and int(tag.get("id") or 0) == tag_id]
+    remaining_tags = [tag for tag in tags if tag not in primary_tag]
+    for tag in [*primary_tag, *remaining_tags[:8]]:
+        counts = _action_counts_inline(tag.get("action_counts"))
+        if not counts:
+            continue
+        prefix = "primary_tag" if tag in primary_tag else "tag"
+        lines.append(
+            prefix
+            + "="
+            + "|".join(
+                [
+                    str(tag.get("id") or 0),
+                    _single_line(tag.get("name"), 70),
+                    counts,
+                ]
+            )
+        )
+    return "【当前卡点话术动作覆盖】\n" + "\n".join(lines)
+
+
+def _action_counts_inline(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    pairs = [
+        (str(action).strip(), int(count or 0))
+        for action, count in value.items()
+        if str(action).strip() and int(count or 0) > 0
+    ]
+    pairs.sort(key=lambda item: (-item[1], item[0]))
+    return ",".join(f"{action}:{count}" for action, count in pairs[:10])
 
 
 def _compact_sequence_steps(steps: list[Any]) -> str:

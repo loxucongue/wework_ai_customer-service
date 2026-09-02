@@ -23,6 +23,8 @@ LOGICAL_TABLES = (
     "message_dispatches",
     "message_dispatch_items",
     "message_delivery_events",
+    "v3_strategy_usage_events",
+    "v3_strategy_outcome_events",
 )
 
 

@@ -251,6 +251,14 @@ class Settings(BaseSettings):
         alias="OUTREACH_SYSTEM_SEND_CONVERSATION_ID_ENABLED",
     )
     background_workers_enabled: bool = Field(default=False, alias="AI_PATHS_BACKGROUND_WORKERS_ENABLED")
+    v3_strategy_analytics_outcome_poll_seconds: float = Field(
+        default=300.0,
+        alias="V3_STRATEGY_ANALYTICS_OUTCOME_POLL_SECONDS",
+    )
+    v3_strategy_analytics_outcome_batch_size: int = Field(
+        default=100,
+        alias="V3_STRATEGY_ANALYTICS_OUTCOME_BATCH_SIZE",
+    )
     message_delivery_callback_required: bool = Field(
         default=False,
         alias="MESSAGE_DELIVERY_CALLBACK_REQUIRED",

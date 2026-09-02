@@ -199,6 +199,7 @@ class V3SemanticRouterService:
             semantic_route=semantic_route,
             sequence_result=sequence_result,
             sequences=sequences,
+            checkpoint_taxonomy=taxonomy,
         )
         total_ms = int((time.perf_counter() - started) * 1000)
         return {
@@ -291,6 +292,7 @@ class V3SemanticRouterService:
             semantic_route=semantic_route,
             sequence_result=sequence_result,
             sequences=sequences,
+            checkpoint_taxonomy=taxonomy,
         )
         total_ms = int((time.perf_counter() - started) * 1000)
         return {
@@ -338,6 +340,7 @@ class V3SemanticRouterService:
             shared_context=shared_context,
             checkpoint_route=checkpoint_route,
             sequence_candidates=candidates,
+            checkpoint_taxonomy=checkpoint_taxonomy or [],
             fact_topic_catalog=fact_topic_catalog or [],
             store_resolution_fact=store_resolution_fact,
         )
@@ -408,10 +411,14 @@ class V3SemanticRouterService:
         semantic_route: dict[str, Any],
         sequence_result: dict[str, Any],
         sequences: list[dict[str, Any]],
+        checkpoint_taxonomy: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
         started = time.perf_counter()
         sequence_candidates = _selected_sequences(sequences, semantic_route)
-        script_result = await self._script_candidates(semantic_route)
+        script_result = await self._script_candidates(
+            semantic_route,
+            checkpoint_taxonomy=checkpoint_taxonomy or [],
+        )
         script_candidates = [item for item in script_result.get("items") or [] if isinstance(item, dict)]
         selector: dict[str, Any] = {"status": "not_needed", "reason": "no_script_candidates"}
         raw_paragraph_group_count = _paragraph_group_count(script_candidates)
@@ -484,7 +491,12 @@ class V3SemanticRouterService:
             return {"status": "disabled", "reason": "follow_knowledge_not_configured", "total": 0, "items": []}
         return await self.knowledge_client.query_all_sequences()
 
-    async def _script_candidates(self, semantic_route: dict[str, Any]) -> dict[str, Any]:
+    async def _script_candidates(
+        self,
+        semantic_route: dict[str, Any],
+        *,
+        checkpoint_taxonomy: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         queries = semantic_route.get("script_queries") if isinstance(semantic_route.get("script_queries"), list) else []
         if self.knowledge_client is None or not self.knowledge_client.available or not queries:
             return {"status": "empty", "option_count": 0, "items": [], "query_results": []}
@@ -523,6 +535,7 @@ class V3SemanticRouterService:
         query_results: list[dict[str, Any]] = []
         exact_candidate_count = 0
         broad_candidate_count = 0
+        seen_query_signatures: set[tuple[int, int, str, str]] = set()
         for index, (query, exact_result) in enumerate(zip(queries, results)):
             fallback_result = fallbacks_by_index.get(index)
             result = fallback_result if isinstance(fallback_result, dict) else exact_result
@@ -555,6 +568,14 @@ class V3SemanticRouterService:
                     else 0,
                 }
             )
+            seen_query_signatures.add(
+                (
+                    int(query.get("checkpoint_type_id") or 0),
+                    0 if fallback_used else requested_tag_id,
+                    str(query.get("checkpoint_code") or "").strip().lower(),
+                    str(query.get("action_code") or "").strip().lower(),
+                )
+            )
             for raw in result.get("items") or []:
                 if not isinstance(raw, dict):
                     continue
@@ -579,6 +600,79 @@ class V3SemanticRouterService:
                     broad_candidate_count += 1
                 else:
                     exact_candidate_count += 1
+
+        taxonomy_fallback_queries = _taxonomy_action_fallback_queries(
+            semantic_route,
+            taxonomy=checkpoint_taxonomy or [],
+            existing_signatures=seen_query_signatures,
+            enabled=not by_code
+            or len(by_code) < 3
+            or any(
+                int(item.get("total") or 0) == 0
+                for item in query_results
+                if str(item.get("action_code") or "").strip()
+            ),
+        )
+        if taxonomy_fallback_queries:
+            taxonomy_results = await asyncio.gather(
+                *[
+                    self.knowledge_client.query_all_scripts(
+                        checkpoint_type_id=int(item.get("checkpoint_type_id") or 0) or None,
+                        checkpoint_tag_id=int(item.get("checkpoint_tag_id") or 0) or None,
+                        checkpoint_code="",
+                        action_code=str(item.get("action_code") or ""),
+                    )
+                    for item in taxonomy_fallback_queries
+                ]
+            )
+            for query, result in zip(taxonomy_fallback_queries, taxonomy_results):
+                requested_tag_id = int(query.get("checkpoint_tag_id") or 0)
+                match_scope = (
+                    "taxonomy_checkpoint_tag_action"
+                    if requested_tag_id > 0
+                    else "taxonomy_checkpoint_type_action"
+                )
+                query_results.append(
+                    {
+                        "checkpoint_code": query.get("checkpoint_code"),
+                        "checkpoint_type_id": query.get("checkpoint_type_id"),
+                        "checkpoint_tag_id": query.get("checkpoint_tag_id"),
+                        "action_code": query.get("action_code"),
+                        "sequence_id": query.get("sequence_id"),
+                        "step_id": query.get("step_id"),
+                        "query_source": query.get("query_source"),
+                        "status": result.get("status"),
+                        "total": int(result.get("total") or 0),
+                        "reason": result.get("reason", ""),
+                        "duration_ms": int(result.get("duration_ms") or 0),
+                        "cache_hit_pages": int(result.get("cache_hit_pages") or 0),
+                        "match_scope": match_scope,
+                        "fallback_used": True,
+                        "exact_total": 0,
+                        "fallback_total": int(result.get("total") or 0),
+                    }
+                )
+                for raw in result.get("items") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    code = str(raw.get("script_code") or "").strip()
+                    if not code:
+                        continue
+                    item = by_code.setdefault(code, copy.deepcopy(raw))
+                    existing_scope = str(item.get("retrieval_match_scope") or "")
+                    if not existing_scope:
+                        item["retrieval_match_scope"] = match_scope
+                    links = item.setdefault("sequence_links", [])
+                    link = {
+                        "sequence_id": "",
+                        "step_id": "",
+                        "action_code": str(query.get("action_code") or ""),
+                        "match_scope": match_scope,
+                        "query_source": str(query.get("query_source") or ""),
+                    }
+                    if link not in links:
+                        links.append(link)
+                    broad_candidate_count += 1
         support_level = (
             "script_exact"
             if exact_candidate_count and not broad_candidate_count
@@ -614,8 +708,25 @@ class V3SemanticRouterService:
             max_paragraph_groups=max_paragraph_groups,
         )
         started = time.perf_counter()
+        structure_retry_used = False
         try:
-            raw = await self.semantic_client.chat_json(messages)
+            try:
+                raw = await self.semantic_client.chat_json(messages)
+            except Exception:
+                structure_retry_used = True
+                retry_messages = [
+                    *messages,
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一次输出不是合法 JSON。不要重新判断业务语义，只修正结构："
+                            "输出单行紧凑 JSON，只包含 group_audits、selected_script_ids、reason；"
+                            "每个 reason_code 必须来自枚举，reason 不超过 20 个汉字。"
+                        ),
+                    },
+                ]
+                raw = await self.semantic_client.chat_json(retry_messages)
+                messages = retry_messages
             valid_ids = {str(item.get("script_code") or "") for item in candidates}
             paragraph_script_ids = {
                 str(item.get("script_code") or "")
@@ -789,6 +900,7 @@ class V3SemanticRouterService:
                     "excluded_groups": excluded_groups,
                     "duration_ms": int((time.perf_counter() - started) * 1000),
                     "model_usage": copy.deepcopy(self.semantic_client.last_usage or {}),
+                    "structure_retry_used": structure_retry_used,
                     "messages": messages,
                 },
                 narrowed,
@@ -799,6 +911,7 @@ class V3SemanticRouterService:
                     "status": "error",
                     "reason": f"{type(exc).__name__}: {exc}"[:500],
                     "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "structure_retry_used": structure_retry_used,
                     "messages": messages,
                 },
                 [],
@@ -1397,6 +1510,96 @@ def _taxonomy_allows_action(
     else:
         counts = checkpoint_type.get("action_counts")
     return isinstance(counts, dict) and int(counts.get(action) or 0) > 0
+
+
+def _taxonomy_action_fallback_queries(
+    route: dict[str, Any],
+    *,
+    taxonomy: list[dict[str, Any]],
+    existing_signatures: set[tuple[int, int, str, str]],
+    enabled: bool,
+    max_actions: int = 4,
+) -> list[dict[str, Any]]:
+    """Add retrieval-only queries for published actions covered by taxonomy.
+
+    This does not decide sales semantics.  It only prevents a model-selected
+    sequence step with an uncovered action_code from starving the downstream
+    script selector when the tenant taxonomy says the same checkpoint has
+    published scripts under nearby actions.
+    """
+
+    if not enabled:
+        return []
+    current_friction = route.get("current_friction") if isinstance(route.get("current_friction"), dict) else {}
+    if str(current_friction.get("status") or "none") == "none":
+        return []
+    checkpoint = route.get("checkpoint") if isinstance(route.get("checkpoint"), dict) else {}
+    checkpoint_type_id = int(checkpoint.get("primary_type_id") or 0)
+    checkpoint_tag_id = int(checkpoint.get("primary_tag_id") or 0)
+    checkpoint_code = str(checkpoint.get("primary_code") or "").strip().lower()
+    if checkpoint_type_id <= 0 or not checkpoint_code or checkpoint_code == "all":
+        return []
+    checkpoint_type = next(
+        (
+            item
+            for item in taxonomy
+            if isinstance(item, dict) and int(item.get("id") or 0) == checkpoint_type_id
+        ),
+        None,
+    )
+    if not isinstance(checkpoint_type, dict):
+        return []
+
+    ordered_actions: list[tuple[str, int, int]] = []
+    if checkpoint_tag_id:
+        tag = next(
+            (
+                item
+                for item in checkpoint_type.get("tags") or []
+                if isinstance(item, dict) and int(item.get("id") or 0) == checkpoint_tag_id
+            ),
+            None,
+        )
+        if isinstance(tag, dict):
+            ordered_actions.extend(_ordered_action_counts(tag.get("action_counts"), scope=1))
+    ordered_actions.extend(_ordered_action_counts(checkpoint_type.get("action_counts"), scope=0))
+
+    output: list[dict[str, Any]] = []
+    seen_actions: set[str] = set()
+    for action_code, _count, scope in ordered_actions:
+        if action_code in seen_actions or action_code not in ACTION_CODES:
+            continue
+        seen_actions.add(action_code)
+        query_tag_id = checkpoint_tag_id if scope == 1 else 0
+        signature = (checkpoint_type_id, query_tag_id, checkpoint_code, action_code)
+        if signature in existing_signatures:
+            continue
+        output.append(
+            {
+                "checkpoint_type_id": checkpoint_type_id,
+                "checkpoint_tag_id": query_tag_id,
+                "checkpoint_code": checkpoint_code,
+                "action_code": action_code,
+                "sequence_id": "",
+                "step_id": "",
+                "query_source": "taxonomy_action_coverage_fallback",
+            }
+        )
+        existing_signatures.add(signature)
+        if len(output) >= max_actions:
+            break
+    return output
+
+
+def _ordered_action_counts(value: Any, *, scope: int) -> list[tuple[str, int, int]]:
+    if not isinstance(value, dict):
+        return []
+    items = [
+        (str(action or "").strip().lower(), int(count or 0), scope)
+        for action, count in value.items()
+        if str(action or "").strip().lower() and int(count or 0) > 0
+    ]
+    return sorted(items, key=lambda item: (-item[1], item[0]))
 
 
 def _semantic_route_contract_issues(route: dict[str, Any]) -> list[str]:

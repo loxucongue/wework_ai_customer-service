@@ -10,6 +10,7 @@ from app.services.storage.run_repository import RunRepositoryMixin
 from app.services.storage.store_base import Store
 from app.services.storage.sop_event_repository import SopEventRepositoryMixin
 from app.services.storage.strategy_data_repository import StrategyDataRepositoryMixin
+from app.services.storage.v3_strategy_analytics_repository import V3StrategyAnalyticsRepositoryMixin
 
 
 class AppRepository(
@@ -22,6 +23,7 @@ class AppRepository(
     RunRepositoryMixin,
     SopEventRepositoryMixin,
     StrategyDataRepositoryMixin,
+    V3StrategyAnalyticsRepositoryMixin,
 ):
     def __init__(self, store: Store):
         self.store = store
