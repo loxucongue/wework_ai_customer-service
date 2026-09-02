@@ -14,12 +14,17 @@ def create_lifespan(
     services: ReplyServices | ControlServices | WorkerServices,
     supervisor: WorkerSupervisor | None,
 ):
+    async def start_supervisor_after_bind() -> None:
+        await asyncio.sleep(2)
+        if supervisor is not None:
+            await supervisor.start()
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         services.storage_store.initialize()
         supervisor_task: asyncio.Task[None] | None = None
         if supervisor is not None:
-            supervisor_task = asyncio.create_task(supervisor.start(), name="worker-supervisor-start")
+            supervisor_task = asyncio.create_task(start_supervisor_after_bind(), name="worker-supervisor-start")
         try:
             yield
         finally:
