@@ -1955,8 +1955,15 @@ class SopPlatformTaskService:
         clean_query = str(query or "").strip().lower()
         from_epoch = _parse_epoch(date_from)
         to_epoch = _parse_epoch(date_to)
-        if status:
-            runs = [run for run in runs if run["status"] == str(status).strip()]
+        clean_status = str(status or "").strip()
+        if clean_status == "unfinished":
+            runs = [
+                run
+                for run in runs
+                if run["status"] in {"pending", "processing", "delivery_pending", "consume_pending"}
+            ]
+        elif clean_status:
+            runs = [run for run in runs if run["status"] == clean_status]
         if log_version:
             runs = [run for run in runs if run["log_version"] == str(log_version).strip()]
         if biz_type:

@@ -147,14 +147,11 @@ const INITIAL_FILTERS = {
 };
 
 const STATUS_OPTIONS = [
-  ["", "全部状态"],
-  ["pending", "等待处理"],
-  ["processing", "处理中"],
-  ["delivery_pending", "发送结果待确认"],
-  ["consume_pending", "等待消费回传"],
-  ["completed", "发送完成"],
+  ["", "全部"],
+  ["unfinished", "未完成"],
+  ["completed", "已发送"],
   ["no_send", "无需发送"],
-  ["exception", "处理异常"],
+  ["exception", "异常"],
 ] as const;
 
 const VERSION_OPTIONS = [
