@@ -3,7 +3,7 @@
 ## 开始
 
 1. 从最新 `origin/main` 创建干净工作区；先检查所有 dirty 文件。
-2. 复制 `docs/tasks/TEMPLATE.md` 为 `docs/tasks/active/<task-id>.md`。
+2. 复制 `docs/tasks/TEMPLATE.md` 为 `docs/tasks/active/<task-id>.md`，并由主 Agent 登记到 `docs/tasks/active/INDEX.md`。
 3. 写明 change contract、base SHA、线上基线、范围和不可破坏合同。
 4. 新窗口只需指定该任务文件，不复制历史聊天。
 
@@ -20,7 +20,7 @@
 2. 合并到 `main`，确认 `dirty=false`，再构建 release。
 3. 部署后验证 V3、API、worker、回调和管理页，并记录回滚点。
 4. 将长期规则沉淀到 `contracts/` 或 ADR，更新 `current/PRODUCTION_STATE.md`。
-5. 删除活动任务文件；删除已合并的临时分支/worktree；按 TTL 清理 artifacts。
+5. 在 `docs/tasks/history/INDEX.md` 增加一行任务、主提交和长期结论链接；删除活动任务文件；删除已合并的临时分支/worktree；按 TTL 清理 artifacts。
 
 ## 磁盘策略
 

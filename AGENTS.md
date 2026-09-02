@@ -31,14 +31,14 @@
 1. 读取本文件。
 2. 读取 `docs/INDEX.md`。
 3. 读取相关合同/架构文档。
-4. 读取唯一的 `docs/tasks/active/<task-id>.md`。
+4. 读取 `docs/tasks/active/INDEX.md`，再读取自己的 `docs/tasks/active/<task-id>.md`。
 5. 核验当前分支、HEAD、dirty 状态；涉及线上时核验实际 release 和服务。
 
 推荐的新窗口指令：
 
-> 读取 AGENTS.md、docs/INDEX.md 和 docs/tasks/active/<task-id>.md；先核实 main、dirty 状态和生产 release，再继续。
+> 读取 AGENTS.md、docs/INDEX.md、docs/tasks/active/INDEX.md 和 docs/tasks/active/<task-id>.md；先核实 main、dirty 状态和生产 release，再继续。
 
-活动任务必须记录：目标、非目标、base SHA、生产基线、涉及模块、不可破坏合同、完成/待办、测试证据、发布和回滚点。完成后把长期结论写入合同或 ADR，并删除活动任务文件；Git 历史就是任务档案。
+每个活跃任务独占一个 `docs/tasks/active/<task-id>.md`，并登记在 `INDEX.md`。活动任务必须记录：目标、非目标、base SHA、生产基线、涉及模块、不可破坏合同、完成/待办、测试证据、发布和回滚点。完成后把长期结论写入合同或 ADR、在 `docs/tasks/history/INDEX.md` 记录一行可追溯摘要，然后删除活动任务文件；Git 历史仍是完整任务档案。
 
 ## 5. 修改与协作
 
