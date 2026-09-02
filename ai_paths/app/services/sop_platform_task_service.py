@@ -4541,11 +4541,14 @@ async def _load_sop_message_groups_for_events(
     if not query_events:
         return {"items": [], "total": 0, "limit": limit, "biz_type": "sop_messages", "complete": True}
 
+    semaphore = asyncio.Semaphore(20)
+
+    async def _fetch(event_log_id: str) -> dict[str, Any]:
+        async with semaphore:
+            return await platform_client.sop_messages(event_log_id=event_log_id, limit=limit)
+
     pages = await asyncio.gather(
-        *[
-            platform_client.sop_messages(event_log_id=event_log_id, limit=limit)
-            for _item, event_log_id in query_events
-        ],
+        *[_fetch(event_log_id) for _item, event_log_id in query_events],
         return_exceptions=True,
     )
     for page in pages:
