@@ -367,7 +367,7 @@ class SopPlatformTaskService:
             self._recovery_worker = None
 
     async def poll_once(self) -> dict[str, int]:
-        self._restore_reserved_prefix_ids()
+        await asyncio.to_thread(self._restore_reserved_prefix_ids)
         free_slots = max(0, self._queue.maxsize - self._queue.qsize())
         if free_slots <= 0:
             return {
