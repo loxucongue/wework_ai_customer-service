@@ -1157,7 +1157,12 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
     if status in {"need_location", "need_location_confirmation", "ambiguous_location"}:
         return "门店最终结论：仍缺一个会改变查询结果的位置事实；只补问这一项，不发送门店卡。"
     if status == "no_valid_candidate" and complete:
-        return "门店最终结论：查询范围完整，该地点当前没有可发送的合法门店。"
+        return (
+            "门店最终结论：查询范围完整，该地点当前没有可发送的合法门店。"
+            "本轮必须只用 text 明确说明当地没有可发送门店，并给一个安全下一步"
+            "（例如询问客户是否有其他常去城市/区域，或先承接项目价值）；"
+            "不得输出 store_address，不得挑选其他城市门店，不得回复为空。"
+        )
     if status in {"send_single", "send_multiple", "reuse_confirmed_store"}:
         is_reuse = status == "reuse_confirmed_store"
         id_source = (

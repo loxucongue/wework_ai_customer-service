@@ -599,7 +599,17 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 and origin_precision in {"city", "district", "unknown", ""}
                 and exact_scope_candidate_ids
             )
-            if use_broad_exact_scope:
+            preserve_no_candidate_resolution = bool(
+                str(previous_resolution.get("status") or "") == "no_valid_candidate"
+                and previous_resolution.get("candidate_search_complete") is True
+                and exact_scope_has_store is False
+                and same_city_has_store is False
+                and not exact_scope_candidate_ids
+            )
+            if preserve_no_candidate_resolution:
+                structured_facts["store_facts"] = previous_store_facts
+                authorized_comparable_stores = []
+            elif use_broad_exact_scope:
                 exact_scope_ids = set(exact_scope_candidate_ids)
                 ranked_ids = [
                     str(item.get("store_id") or item.get("id") or "")
@@ -624,7 +634,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 ]
             else:
                 structured_facts["store_facts"] = distance_store_facts
-            if has_authoritative_ranking and authorized_comparable_stores:
+            if has_authoritative_ranking and authorized_comparable_stores and not preserve_no_candidate_resolution:
                 top_store = _store_fact_from_lookup_item(authorized_comparable_stores[0], state=state)
                 ranking_method = str(value.get("ranking_method") or "haversine")
                 structured_facts["recommended_store"] = {
@@ -657,6 +667,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 ),
             )
             candidate_store_ids = list(dict.fromkeys(ranked_candidate_ids))
+            if preserve_no_candidate_resolution:
+                resolution_status = "no_valid_candidate"
+                candidate_store_ids = []
+                ranked_recommended_store_id = ""
+                visible_candidate_count = 0
             scope_match_level = str(
                 value.get("scope_match_level")
                 or previous_resolution.get("scope_match_level")

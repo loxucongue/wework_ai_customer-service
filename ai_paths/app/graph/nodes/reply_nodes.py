@@ -2360,6 +2360,15 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
 def _structured_facts(state: AgentState) -> dict[str, Any]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    if isinstance(structured, dict) and structured:
+        return structured
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    normalized = (
+        joined.get("normalized_tool_facts")
+        if isinstance(joined.get("normalized_tool_facts"), dict)
+        else {}
+    )
+    structured = normalized.get("structured_facts") if isinstance(normalized.get("structured_facts"), dict) else {}
     return structured if isinstance(structured, dict) else {}
 
 def _compact_text(value: Any) -> str:

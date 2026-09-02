@@ -1279,6 +1279,7 @@ def _validate_store_resolution_contract(messages: list[dict[str, Any]], state: d
         "need_location_confirmation",
         "ambiguous_location",
         "search_incomplete",
+        "no_match",
         "no_valid_candidate",
         "reuse_confirmed_store",
     }:
@@ -1818,6 +1819,15 @@ def _normalized_image_url(value: str) -> str:
 def _structured_facts(state: dict[str, Any]) -> dict[str, Any]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = fact_envelope.get("structured_facts")
+    if isinstance(structured, dict):
+        return structured
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    normalized = (
+        joined.get("normalized_tool_facts")
+        if isinstance(joined.get("normalized_tool_facts"), dict)
+        else {}
+    )
+    structured = normalized.get("structured_facts")
     return structured if isinstance(structured, dict) else {}
 
 
@@ -1843,6 +1853,30 @@ def _has_distance_ranking_fact(structured: dict[str, Any]) -> bool:
 
 def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
     structured = _structured_facts(state)
+    if _is_v3_reply_state(state):
+        resolution = (
+            structured.get("store_resolution_fact")
+            if isinstance(structured.get("store_resolution_fact"), dict)
+            else {}
+        )
+        if str(resolution.get("status") or ""):
+            allowed = {
+                str(item or "").strip()
+                for item in resolution.get("delivery_store_ids") or []
+                if str(item or "").strip()
+            }
+            known_store_records = _known_store_records_for_validation(state)
+            invalid_ids = {
+                str(item.get("store_id") or item.get("id") or "").strip()
+                for item in known_store_records
+                if isinstance(item, dict)
+                and not store_fact_is_valid(
+                    item,
+                    known_stores=known_store_records,
+                )
+            }
+            allowed.difference_update(invalid_ids)
+            return allowed
     allowed: set[str] = set()
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     scope_ids = store_scope_ids(knowledge)

@@ -86,8 +86,19 @@ def create_synthesize_reply_node(
                     errors.append(
                         {"node": "synthesize_reply", "message": "final_reply_failed", "detail": primary_error}
                     )
-                    messages = []
-                    reply_source = "reply_failed"
+                    messages = _verified_store_delivery_failure_recovery(state)
+                    if messages:
+                        warnings.append(
+                            {
+                                "node": "synthesize_reply",
+                                "message": "verified_store_delivery_failure_recovery_used",
+                                "detail": primary_error[:500],
+                            }
+                        )
+                        reply_source = "verified_store_delivery_failure_recovery"
+                    else:
+                        messages = []
+                        reply_source = "reply_failed"
             else:
                 reason = "reply_model_unavailable"
                 errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": reason})
@@ -174,6 +185,56 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
+
+
+def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[str, Any]]:
+    """Recover only already-authorized current-turn store card delivery.
+
+    This is a non-semantic failure guard: it does not choose a store, select a
+    sales strategy, or infer customer intent. It only wraps verified
+    ``structured_delivery_options.store_address.message_payloads`` with the
+    minimum visible text required by the external message contract.
+    """
+
+    if not state.get("evidence_join"):
+        return []
+    payload = parallel_reply_payload(state)
+    delivery_options = (
+        payload.get("structured_delivery_options")
+        if isinstance(payload.get("structured_delivery_options"), dict)
+        else {}
+    )
+    store_delivery = (
+        delivery_options.get("store_address")
+        if isinstance(delivery_options.get("store_address"), dict)
+        else {}
+    )
+    message_payloads = [
+        item
+        for item in store_delivery.get("message_payloads") or []
+        if isinstance(item, dict)
+        and str(item.get("type") or "") == "store_address"
+        and isinstance(item.get("content"), dict)
+        and str(item["content"].get("store_id") or "").strip()
+    ]
+    if not message_payloads:
+        return []
+    messages = [
+        {"type": "text", "order": 1, "content": "我把门店位置发您，您看下这个位置方便吗。"},
+        *[
+            {
+                "type": "store_address",
+                "order": index + 2,
+                "content": {"store_id": str(item["content"].get("store_id") or "").strip()},
+            }
+            for index, item in enumerate(message_payloads[:3])
+        ],
+    ]
+    try:
+        validate_model_led_reply_admission(messages, state)
+    except Exception:
+        return []
+    return messages
 
 
 async def _run_reply_model_pipeline(

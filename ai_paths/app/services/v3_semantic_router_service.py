@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -1401,6 +1402,15 @@ def _normalize_semantic_route(
         refs=location_refs,
         shared_context=shared_context,
     )
+    store_required = bool(store_raw.get("required"))
+    store_purpose = str(store_raw.get("purpose") or "none")[:100]
+    if not store_required:
+        structured_location_hint = _structured_current_location_hint(shared_context)
+        if structured_location_hint:
+            store_required = True
+            store_purpose = "store_search"
+            location_refs = _valid_refs(["current_message"], valid_customer_refs)
+            destination_hint = structured_location_hint
     return {
         "schema_version": "v3_semantic_route_v2",
         "status": "ok",
@@ -1458,8 +1468,8 @@ def _normalize_semantic_route(
             "reason": str(sequence_raw.get("reason") or "")[:500],
         },
         "store_query": {
-            "required": bool(store_raw.get("required")),
-            "purpose": str(store_raw.get("purpose") or "none")[:100],
+            "required": store_required,
+            "purpose": store_purpose,
             "location_evidence_refs": location_refs,
             "destination_hint": destination_hint,
         },
@@ -2109,6 +2119,28 @@ def _store_tool_plan(route: dict[str, Any]) -> dict[str, Any]:
 
 def _valid_refs(raw: Any, valid: set[str]) -> list[str]:
     return list(dict.fromkeys(str(item).strip() for item in raw or [] if str(item).strip() in valid))
+
+
+def _structured_current_location_hint(shared_context: dict[str, Any]) -> str:
+    """Recognize explicit structured location input for tool routing only."""
+
+    current = (
+        shared_context.get("current_message")
+        if isinstance(shared_context.get("current_message"), dict)
+        else {}
+    )
+    content = str(current.get("content") or current.get("raw_content") or "").strip()
+    if not content:
+        return ""
+    match = re.search(r"(?:^|[\s，。；;])(?:门店位置|当前位置|位置|地址|定位)\s*[:：]\s*(.{2,120})", content)
+    if not match:
+        return ""
+    hint = " ".join(match.group(1).split())
+    if not hint:
+        return ""
+    if not re.search(r"(?:省|市|区|县|镇|街|路|号|广场|中心|大厦|商场|写字楼|定位)", hint):
+        return ""
+    return hint[:120]
 
 
 def _sourced_destination_hint(

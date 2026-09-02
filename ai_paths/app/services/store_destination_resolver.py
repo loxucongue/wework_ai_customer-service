@@ -43,6 +43,16 @@ async def resolve_active_store_destination(
 
     payload, valid_refs, customer_refs = _destination_input(state, tool)
     fallback = _fallback_resolution(payload, tool)
+    if fallback.get("destination_query") and str(fallback.get("destination_source") or "") in {
+        "location_card_address",
+        "location_card_coordinates",
+        "tool.destination_hint",
+        "tool.origin",
+        "tool.address",
+        "structured_current_location",
+        "recent_assistant_store_reference",
+    }:
+        return {**fallback, "resolver_status": "deterministic_destination_evidence"}
     if model_client is None or not model_client.available:
         return {**fallback, "resolver_status": "model_unavailable"}
     try:
@@ -171,13 +181,14 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
         )
     ).strip()
     coordinates = str(location_card.get("coordinates") or location_card.get("location") or "").strip()
-    hint = str(
-        tool.get("destination_hint")
-        or tool.get("query")
-        or tool.get("origin")
-        or tool.get("address")
-        or ""
-    ).strip()
+    hint = ""
+    hint_source = ""
+    for key in ("destination_hint", "origin", "address", "query"):
+        value = str(tool.get(key) or "").strip()
+        if value:
+            hint = value
+            hint_source = f"tool.{key}"
+            break
     structured_current = _structured_current_location_query(str(current.get("content") or ""))
     recent_assistant_reference = _recent_assistant_store_reference(payload)
     # A generic customer utterance is not a location fact. When the resolver is
@@ -192,6 +203,17 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
     )
     precision = "coordinates" if coordinates else "unknown"
     reason = "protocol_or_explicit_tool_hint_fallback"
+    destination_source = ""
+    if card_address:
+        destination_source = "location_card_address"
+    elif coordinates:
+        destination_source = "location_card_coordinates"
+    elif hint:
+        destination_source = hint_source
+    elif structured_current:
+        destination_source = "structured_current_location"
+    elif recent_assistant_reference.get("query"):
+        destination_source = "recent_assistant_store_reference"
     if structured_current and not (card_address or coordinates or hint):
         reason = "structured_current_location_fallback"
     elif recent_assistant_reference.get("query") and not (card_address or coordinates or hint or structured_current):
@@ -219,6 +241,7 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
         "needs_clarification": not bool(destination),
         "geocode_before_clarification": bool(destination),
         "reason": reason,
+        "destination_source": destination_source,
         "source_query": source_query or str(destination).strip(),
     }
 
