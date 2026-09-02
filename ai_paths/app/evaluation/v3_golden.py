@@ -74,6 +74,8 @@ def simulation_result_to_golden_result(
     steps = _list(simulation_result.get("steps"))
     last_step = next((item for item in reversed(steps) if isinstance(item, dict)), {})
     meta = _dict(last_step.get("response_meta"))
+    run = _dict(last_step.get("run"))
+    output = _dict(run.get("output_snapshot"))
     branch_metrics = _dict(meta.get("parallel_branch_metrics"))
     messages = _list(last_step.get("sync_reply_messages"))
     if not messages:
@@ -91,6 +93,7 @@ def simulation_result_to_golden_result(
             _dict(meta.get("reply_knowledge_use") or meta.get("knowledge_use"))
         ),
         "semantic_route_summary": deepcopy(_dict(branch_metrics.get("semantic_route_summary"))),
+        "sales_policy": _sales_policy_diagnostics(output),
         "model_usage": _collect_model_usage(simulation_result),
         "hard_pass": bool(simulation_result.get("hard_pass")),
         "hard_errors": deepcopy(_list(simulation_result.get("hard_errors"))),
@@ -99,6 +102,41 @@ def simulation_result_to_golden_result(
         "request_id": last_step.get("request_id"),
         "run_dir": simulation_result.get("run_dir"),
         "human_review": {"status": "pending", "verdict": "", "notes": ""},
+    }
+
+
+def _sales_policy_diagnostics(output: dict[str, Any]) -> dict[str, Any]:
+    """Expose only evaluation-safe decisions; exclude customer scope and raw run snapshots."""
+    candidates = []
+    for item in _list(output.get("cardpoint_candidates"))[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidates.append({
+            "content_id": item.get("content_id"), "category_key": item.get("category_key"),
+            "scenario_name": item.get("scenario_name"), "scenario_keys": deepcopy(_list(item.get("scenario_keys"))),
+            "tactic_tag": item.get("tactic_tag"), "solution_idea": item.get("solution_idea"),
+            "reference_text": item.get("reference_text"), "content_types": deepcopy(_list(item.get("content_types"))),
+        })
+    strategies = []
+    for item in _list(output.get("followup_strategy_candidates"))[:5]:
+        if not isinstance(item, dict):
+            continue
+        strategies.append({
+            "strategy_key": item.get("strategy_key"), "name": item.get("name"),
+            "category_key": item.get("category_key"), "scenario_keys": deepcopy(_list(item.get("scenario_keys"))),
+            "score": item.get("score"),
+        })
+    return {
+        "primary_task": deepcopy(_dict(output.get("primary_task"))),
+        "secondary_tasks": deepcopy(_list(output.get("secondary_tasks"))),
+        "realtime_intent": deepcopy(_dict(output.get("realtime_intent"))),
+        "emotion_decision": deepcopy(_dict(output.get("emotion_decision"))),
+        "closing_decision": deepcopy(_dict(output.get("closing_decision"))),
+        "cardpoint_decision": deepcopy(_dict(output.get("cardpoint_decision"))),
+        "cardpoint_candidates": candidates, "followup_strategy_candidates": strategies,
+        "retrieval_audit": deepcopy(_dict(output.get("sales_strategy_retrieval_audit"))),
+        "policy_runtime": deepcopy(_dict(output.get("ai_sales_policy"))),
+        "catalog_runtime": deepcopy(_dict(output.get("sales_strategy_catalog"))),
     }
 
 

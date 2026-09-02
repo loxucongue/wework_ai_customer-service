@@ -64,6 +64,58 @@ class SopPlatformClient:
             wechat=wechat,
         )
 
+    async def sop_messages(
+        self,
+        *,
+        event_log_id: int | str,
+        limit: int | None = None,
+        corp_id: str = "",
+        wechat: str = "",
+    ) -> dict[str, Any]:
+        if not self.available:
+            raise RuntimeError("SOP_PLATFORM_TOKEN is not configured")
+        clean_event_log_id = str(event_log_id or "").strip()
+        payload: dict[str, Any] = {
+            "corp_id": str(corp_id or "").strip(),
+            "wechat": str(wechat or "").strip(),
+            "limit": max(1, min(int(limit or self.settings.sop_platform_batch_size), 500)),
+        }
+        if not clean_event_log_id or clean_event_log_id == "0":
+            raise ValueError("event_log_id is required for /event/trigger/sop-messages")
+        try:
+            payload["eventLogId"] = int(clean_event_log_id)
+        except ValueError:
+            payload["eventLogId"] = clean_event_log_id
+        response = await self._request("POST", "/event/trigger/sop-messages", json_body=payload)
+        data = response.get("data")
+        items: list[dict[str, Any]] = []
+        total = 0
+        if isinstance(data, list):
+            items = [item for item in data if isinstance(item, dict)]
+            total = len(items)
+        if isinstance(data, dict):
+            try:
+                total = max(0, int(data.get("total") or data.get("remainingGroupCount") or 0))
+            except (TypeError, ValueError):
+                total = 0
+            for key in ("list", "items", "records", "tasks", "remainingGroups"):
+                raw_items = data.get(key)
+                if isinstance(raw_items, list):
+                    items = [item for item in raw_items if isinstance(item, dict)]
+                    break
+            if not items and isinstance(data.get("nextGroup"), dict):
+                items = [data["nextGroup"]]
+        if not total:
+            total = len(items)
+        return {
+            "items": items,
+            "total": total,
+            "limit": payload["limit"],
+            "biz_type": "sop_messages",
+            "event_log_id": clean_event_log_id,
+            "complete": total <= len(items),
+        }
+
     async def _pending_page(
         self,
         *,

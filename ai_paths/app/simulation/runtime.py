@@ -19,9 +19,12 @@ from app.graph.graph_builder import build_reply_graphs
 from app.schemas import ChatRequest
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.ai_sales_policy_service import AiSalesPolicyService
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
+from app.services.sales_strategy_service import SalesStrategyService
 from app.services.sop_reply_pack_service import SopReplyPackService
+from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.v3_sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.trace_logger import TraceLogger
@@ -57,10 +60,18 @@ class SimulationBundle:
 
 
 class SimulationRuntime:
-    def __init__(self, *, repo_root: Path, run_root: Path | None = None, base_settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        repo_root: Path,
+        run_root: Path | None = None,
+        base_settings: Settings | None = None,
+        semantic_router_service: V3SemanticRouterService | None = None,
+    ) -> None:
         self.repo_root = repo_root.resolve()
         self.run_root = (run_root or self.repo_root / ".tmp_runtime" / "simulation").resolve()
         self.base_settings = base_settings or Settings()
+        self.semantic_router_service = semantic_router_service
 
     async def run_scenario(
         self,
@@ -184,6 +195,7 @@ class SimulationRuntime:
         memory_store = CustomerMemoryStore(settings, repository)
         trace_logger = TraceLogger(settings)
         model_client = SimulationModelClient(settings, world)
+        ai_sales_policy = AiSalesPolicyService(settings)
         sop_pack_service = SopReplyPackService(settings)
         _ = PrecisionQaPlaybookService(settings)
         sop_execution = SopExecutionService(
@@ -194,6 +206,7 @@ class SimulationRuntime:
             customer_context_service=customer_context,
             chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
         )
+        sales_strategy = SalesStrategyService(settings)
         graphs = build_reply_graphs(
             coze,
             trace_logger,
@@ -205,6 +218,8 @@ class SimulationRuntime:
             outreach,
             platform,
             sop_execution,
+            self.semantic_router_service,
+            sales_strategy,
         )
         chat_runtime = ChatRuntime(
             full_graph=graphs.full_graph,
@@ -215,6 +230,8 @@ class SimulationRuntime:
             memory_store=memory_store,
             platform_reply_coordinator=PlatformReplyCoordinator(settings),
             sop_execution_service=sop_execution,
+            ai_sales_policy_service=ai_sales_policy,
+            sales_strategy_service=sales_strategy,
             settings=settings,
         )
         return SimulationBundle(

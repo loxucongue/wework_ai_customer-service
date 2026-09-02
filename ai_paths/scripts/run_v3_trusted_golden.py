@@ -11,6 +11,7 @@ from typing import Any
 
 from app.config import Settings
 from app.evaluation.v3_critic import evaluate_with_critic
+from app.evaluation.sales_reply_critic import evaluate_sales_reply
 from app.evaluation.v3_golden import golden_case_to_simulation, simulation_result_to_golden_result
 from app.services.model_client import ModelClient
 from app.services.deepseek_semantic_client import DeepSeekSemanticClient
@@ -162,6 +163,8 @@ async def run(args: argparse.Namespace) -> Path:
     cases = [item for item in golden.get("cases") or [] if isinstance(item, dict)]
     if args.partition:
         cases = [item for item in cases if item.get("evaluation_partition") == args.partition]
+    if args.source_kind:
+        cases = [item for item in cases if item.get("source_kind") == args.source_kind]
     if args.case_id:
         wanted = {item.strip() for item in args.case_id.split(",") if item.strip()}
         cases = [item for item in cases if str(item.get("case_id") or "") in wanted]
@@ -181,6 +184,10 @@ async def run(args: argparse.Namespace) -> Path:
     settings = deepseek_only_settings(
         Settings(), router_model=args.router_model, reply_model=args.reply_model
     )
+    settings = settings.model_copy(update={
+        "ai_sales_policy_enabled": bool(args.enable_sales_policy),
+        "sales_strategy_catalog_enabled": bool(args.enable_sales_strategy_catalog),
+    })
     simulation_root = repo_root / ".tmp_runtime" / "simulation" / run_id
     follow_knowledge = FollowKnowledgeClient(settings)
     deepseek_semantic = DeepSeekSemanticClient(settings, fallback_client=None)
@@ -223,6 +230,8 @@ async def run(args: argparse.Namespace) -> Path:
                 result = simulation_result_to_golden_result(case, simulation)
                 if critic is not None and not result.get("infrastructure_errors"):
                     result["critic"] = await evaluate_with_critic(critic, case=case, result=result)
+                    if args.sales_focus:
+                        result["sales_focus"] = await evaluate_sales_reply(critic, case=case, result=result)
                     result["critic_model_usage"] = critic.last_usage or {}
             except Exception as exc:  # noqa: BLE001 - preserve per-case infrastructure failures
                 result = {
@@ -257,6 +266,10 @@ async def run(args: argparse.Namespace) -> Path:
             "critic": "" if args.skip_critic else args.critic_model,
         },
         "knowledge_condition": args.knowledge_condition,
+        "source_kind": args.source_kind,
+        "sales_focus": bool(args.sales_focus),
+        "sales_policy_enabled": bool(args.enable_sales_policy),
+        "sales_strategy_catalog_enabled": bool(args.enable_sales_strategy_catalog),
         "critic_model": "" if args.skip_critic else args.critic_model,
         "human_calibration_status": "pending_review",
         "results": results,
@@ -274,6 +287,8 @@ async def run(args: argparse.Namespace) -> Path:
     payload["actual_models"] = actual_models
     results_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     evaluation = evaluate(golden, payload)
+    if args.sales_focus:
+        evaluation["sales_focus"] = _sales_focus_summary(results)
     (run_dir / "evaluation.json").write_text(
         json.dumps(evaluation, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -295,6 +310,25 @@ async def run(args: argparse.Namespace) -> Path:
         encoding="utf-8",
     )
     return run_dir
+
+
+def _sales_focus_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for name in ("cardpoint", "closing", "priority"):
+        rows = [item["sales_focus"][name] for item in results if isinstance(item.get("sales_focus"), dict) and isinstance(item["sales_focus"].get(name), dict) and item["sales_focus"][name].get("applicable")]
+        summary[name] = {
+            "applicable_cases": len(rows), "passed_cases": sum(bool(item.get("pass")) for item in rows),
+            "pass_rate": round(sum(bool(item.get("pass")) for item in rows) / len(rows), 4) if rows else None,
+            "average_score": round(sum(int(item.get("score") or 0) for item in rows) / len(rows), 2) if rows else None,
+        }
+    multi_issue = [item["sales_focus"]["priority"] for item in results if isinstance(item.get("sales_focus"), dict) and isinstance(item["sales_focus"].get("priority"), dict) and item["sales_focus"]["priority"].get("multi_issue")]
+    summary["priority_multi_issue"] = {
+        "cases": len(multi_issue), "passed_cases": sum(bool(item.get("pass")) for item in multi_issue),
+        "pass_rate": round(sum(bool(item.get("pass")) for item in multi_issue) / len(multi_issue), 4) if multi_issue else None,
+    }
+    summary["human_review_required"] = sum(bool((item.get("sales_focus") or {}).get("human_review_required")) for item in results)
+    summary["fact_safe_cases"] = sum(bool((item.get("sales_focus") or {}).get("fact_safe")) for item in results)
+    return summary
 
 
 def _report(payload: dict[str, Any], evaluation: dict[str, Any]) -> str:
@@ -365,6 +399,7 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, default=Path(".tmp_runtime/v3_evaluations"))
     parser.add_argument("--run-id", default="")
     parser.add_argument("--partition", choices=("calibration", "holdout"), default="")
+    parser.add_argument("--source-kind", choices=("real_replay", "fixture", "counterfactual"), default="")
     parser.add_argument("--case-id", default="")
     parser.add_argument("--max-cases", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=2)
@@ -372,6 +407,9 @@ def main() -> None:
     parser.add_argument("--reply-model", default="deepseek-v4-pro")
     parser.add_argument("--critic-model", default="deepseek-v4-pro")
     parser.add_argument("--skip-critic", action="store_true")
+    parser.add_argument("--sales-focus", action="store_true")
+    parser.add_argument("--enable-sales-policy", action="store_true")
+    parser.add_argument("--enable-sales-strategy-catalog", action="store_true")
     parser.add_argument("--knowledge-condition", choices=("online", "none", "local"), default="online")
     parser.add_argument(
         "--knowledge-overlay",

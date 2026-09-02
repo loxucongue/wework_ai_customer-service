@@ -68,6 +68,35 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved, [])
         self.assertEqual([item["task_id"] for item in unresolved], [101])
 
+    def test_empty_pending_trigger_loads_matching_sop_message_groups_without_changing_task_id(self) -> None:
+        trigger = _batch_task("101", text="")
+        trigger["message_content"] = []
+        trigger["eventLogId"] = 77
+        group = {
+            **trigger,
+            "id": 9001,
+            "task_id": 101,
+            "eventLogId": 77,
+            "messageGroupId": 22,
+            "_aics_content_source": "sop_messages",
+            "message_content": [
+                {
+                    "msg_type": "text",
+                    "content_text": "sop message body",
+                    "media_url": "",
+                    "media_urls_json": [],
+                    "link_title": "",
+                }
+            ],
+        }
+
+        resolved, unresolved = _resolve_compatible_pending_tasks([trigger], [group])
+
+        self.assertEqual(unresolved, [])
+        self.assertEqual([item["task_id"] for item in resolved], [101])
+        self.assertEqual(resolved[0]["_aics_content_source"], "sop_messages")
+        self.assertEqual(resolved[0]["_aics_compat_trigger_tasks"], [])
+
     def test_platform_poll_default_is_ten_seconds(self) -> None:
         self.assertEqual(Settings.model_fields["sop_platform_poll_seconds"].default, 10.0)
 
@@ -788,6 +817,26 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client._request.await_args.args[1], "/event/trigger/store-visit-pending")  # type: ignore[union-attr]
         self.assertEqual(page["biz_type"], "store_visit")
 
+    async def test_sop_messages_uses_event_log_id_endpoint(self) -> None:
+        client = SopPlatformClient(_settings())
+        client._request = AsyncMock(
+            return_value={
+                "code": 200,
+                "data": {
+                    "eventLogId": 77,
+                    "total": 1,
+                    "list": [{"id": 9001, "eventLogId": 77, "message_content": []}],
+                },
+            }
+        )  # type: ignore[method-assign]
+
+        page = await client.sop_messages(event_log_id=77, limit=100)
+
+        self.assertEqual(client._request.await_args.args[1], "/event/trigger/sop-messages")  # type: ignore[union-attr]
+        self.assertEqual(client._request.await_args.kwargs["json_body"]["eventLogId"], 77)  # type: ignore[union-attr]
+        self.assertEqual(page["biz_type"], "sop_messages")
+        self.assertEqual(page["total"], 1)
+
     async def test_consume_supports_no_send_remark_and_content_exhausted(self) -> None:
         client = SopPlatformClient(_settings())
         client._request = AsyncMock(
@@ -866,8 +915,9 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         service, repo, platform, system = _service(model=_Model([]), shadow_mode=True)
         trigger = _batch_task("101", text="")
         trigger["message_content"] = []
+        trigger["eventLogId"] = 77
         platform.pending = AsyncMock(return_value={"items": [trigger], "total": 1})
-        platform.store_visit_pending = AsyncMock(side_effect=TimeoutError("content source unavailable"))
+        platform.sop_messages = AsyncMock(side_effect=TimeoutError("content source unavailable"))
 
         with self.assertRaises(TimeoutError):
             await service.poll_once()
@@ -877,18 +927,32 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(platform.consume_calls, [])
         self.assertEqual(system.send_calls, [])
 
-        platform.store_visit_pending = AsyncMock(
-            return_value={"items": [_batch_task("201", text="恢复后的发送内容")], "total": 1}
+        platform.sop_messages = AsyncMock(
+            return_value={
+                "items": [
+                    {
+                        "id": 9001,
+                        "eventLogId": 77,
+                        "message_content": [
+                            {
+                                "msg_type": "text",
+                                "content_text": "recovered content",
+                                "media_url": "",
+                                "media_urls_json": [],
+                                "link_title": "",
+                            }
+                        ],
+                    }
+                ],
+                "total": 1,
+            }
         )
         recovered = await service.poll_once()
 
         self.assertEqual(recovered["enqueued_count"], 1)
         queued = await service._queue.get()
-        self.assertEqual([task["task_id"] for task in queued["tasks"]], [201])
-        self.assertEqual(
-            [task["task_id"] for task in queued["compat_trigger_tasks"]],
-            [101],
-        )
+        self.assertEqual([task["task_id"] for task in queued["tasks"]], ["101"])
+        self.assertEqual(queued["compat_trigger_tasks"], [])
 
     async def test_poll_loop_survives_transient_pending_error(self) -> None:
         model = _Model([])
@@ -1146,8 +1210,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         settings.sop_platform_quiet_start_hour = 0
         settings.sop_platform_quiet_end_hour = 0
         service, repo, platform, _system = _service(model=_Model([]), settings=settings)
-        platform.pending = AsyncMock(return_value={"items": [_batch_task("1")], "total": 1})
-        platform.store_visit_pending = AsyncMock(return_value={"items": [], "total": 0})
+        trigger = _batch_task("1")
+        trigger["eventLogId"] = 77
+        platform.pending = AsyncMock(return_value={"items": [trigger], "total": 1})
+        platform.sop_messages = AsyncMock(return_value={"items": [], "total": 0})
 
         result = await service.poll_once()
 
@@ -1211,8 +1277,10 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_incomplete_pending_page_is_not_processed(self) -> None:
         service, repo, platform, _system = _service(model=_Model([]))
-        platform.pending = AsyncMock(return_value={"items": [_batch_task("1")], "total": 2})
-        platform.store_visit_pending = AsyncMock(return_value={"items": [], "total": 0})
+        trigger = _batch_task("1")
+        trigger["eventLogId"] = 77
+        platform.pending = AsyncMock(return_value={"items": [trigger], "total": 2})
+        platform.sop_messages = AsyncMock(return_value={"items": [], "total": 0})
 
         result = await service.poll_once()
 
@@ -1223,28 +1291,41 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_poll_does_not_query_full_content_endpoint_when_pending_has_inline_content(self) -> None:
         service, _repo, platform, _system = _service(model=_Model([]), shadow_mode=True)
         platform.pending = AsyncMock(return_value={"items": [_batch_task("1")], "total": 1})
-        platform.store_visit_pending = AsyncMock(side_effect=AssertionError("unexpected content lookup"))
+        platform.sop_messages = AsyncMock(side_effect=AssertionError("unexpected content lookup"))
 
         result = await service.poll_once()
 
         self.assertEqual(result["enqueued_count"], 1)
-        platform.store_visit_pending.assert_not_awaited()
+        platform.sop_messages.assert_not_awaited()
 
     async def test_poll_queries_full_content_endpoint_for_empty_pending_trigger(self) -> None:
         service, _repo, platform, _system = _service(model=_Model([]), shadow_mode=True)
         trigger = _batch_task("101", text="")
         trigger["message_content"] = []
-        content = _batch_task("201", text="完整消息组")
+        trigger["eventLogId"] = 77
+        content = {
+            "id": 9001,
+            "eventLogId": 77,
+            "message_content": [
+                {
+                    "msg_type": "text",
+                    "content_text": "full content",
+                    "media_url": "",
+                    "media_urls_json": [],
+                    "link_title": "",
+                }
+            ],
+        }
         platform.pending = AsyncMock(return_value={"items": [trigger], "total": 1})
-        platform.store_visit_pending = AsyncMock(return_value={"items": [content], "total": 1})
+        platform.sop_messages = AsyncMock(return_value={"items": [content], "total": 1})
 
         result = await service.poll_once()
 
         self.assertEqual(result["enqueued_count"], 1)
-        platform.store_visit_pending.assert_awaited_once_with(limit=500)
+        platform.sop_messages.assert_awaited_once_with(event_log_id="77", limit=500)
         queued = await service._queue.get()
-        self.assertEqual([item["task_id"] for item in queued["tasks"]], [201])
-        self.assertEqual([item["task_id"] for item in queued["compat_trigger_tasks"]], [101])
+        self.assertEqual([item["task_id"] for item in queued["tasks"]], ["101"])
+        self.assertEqual(queued["compat_trigger_tasks"], [])
         service._queue.task_done()
 
     async def test_human_takeover_consumes_all_due_groups_without_model(self) -> None:
@@ -2434,6 +2515,9 @@ class _Platform:
 
     async def store_visit_pending(self, *, limit=None):
         return {"items": [], "total": 0, "limit": limit, "biz_type": "store_visit"}
+
+    async def sop_messages(self, *, event_log_id, limit=None):
+        return {"items": [], "total": 0, "limit": limit, "event_log_id": event_log_id, "biz_type": "sop_messages"}
 
 
 class _System:

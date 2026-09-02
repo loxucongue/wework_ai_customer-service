@@ -96,6 +96,17 @@ def test_simulation_result_extracts_customer_visible_reply_and_metrics() -> None
     assert result["human_review"]["status"] == "pending"
 
 
+def test_simulation_result_exposes_only_sales_policy_diagnostics() -> None:
+    result = simulation_result_to_golden_result(
+        _case(),
+        {"hard_pass": True, "steps": [{"request_id": "req", "sync_reply_messages": [{"type": "text", "content": "先说清楚价格"}], "response_meta": {}, "run": {"customer_id": "must-not-leak", "output_snapshot": {"primary_task": {"type": "answer_current_question"}, "cardpoint_decision": {"category_key": "price_objection"}, "cardpoint_candidates": [{"content_id": "content-1", "scenario_name": "价格高", "reference_text": "解释价值", "source": {"row": 1}}]}}}]},
+    )
+    assert result["sales_policy"]["cardpoint_decision"]["category_key"] == "price_objection"
+    assert result["sales_policy"]["cardpoint_candidates"][0]["content_id"] == "content-1"
+    assert "source" not in result["sales_policy"]["cardpoint_candidates"][0]
+    assert "customer_id" not in result["sales_policy"]
+
+
 def test_offline_candidate_uses_runtime_provenance_field_names() -> None:
     knowledge = _candidate_knowledge(
         {

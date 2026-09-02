@@ -386,14 +386,11 @@ class SopPlatformTaskService:
                 if isinstance(online_page, list)
                 else online_page.get("items") if isinstance(online_page, dict) else []
             )
-            needs_content_lookup = any(
-                isinstance(item, dict) and not _platform_messages(item)
-                for item in (online_items if isinstance(online_items, list) else [])
+            store_visit_page = await _load_sop_message_groups_for_triggers(
+                self.platform_client,
+                online_items if isinstance(online_items, list) else [],
+                limit=500,
             )
-            if needs_content_lookup:
-                store_visit_page = await self.platform_client.store_visit_pending(limit=500)
-            else:
-                store_visit_page = {"items": [], "total": 0}
             self._last_poll_error = ""
         except Exception as exc:
             self._last_poll_error = f"{type(exc).__name__}: {exc}"
@@ -419,7 +416,7 @@ class SopPlatformTaskService:
             > len(page.get("items") if isinstance(page.get("items"), list) else [])
         ]
         # `/pending` is the due-time driver. New tasks may omit message_content and
-        # expose their full message groups through `/store-visit-pending` instead.
+        # expose their full message groups through `/sop-messages` keyed by eventLogId.
         # The latter is therefore a content source, not an additional business queue.
         self._pending_total = max(
             len(online_page.get("items") or []),
@@ -1844,24 +1841,29 @@ class SopPlatformTaskService:
         platform_error = ""
         if refresh_platform:
             try:
-                online_result, store_visit_result = await asyncio.gather(
+                online_result = await asyncio.gather(
                     self.platform_client.pending(limit=safe_limit),
-                    self.platform_client.store_visit_pending(limit=safe_limit),
                     return_exceptions=True,
                 )
+                online_result = online_result[0]
                 errors: list[str] = []
                 if isinstance(online_result, BaseException):
                     errors.append(f"online_service: {type(online_result).__name__}: {online_result}")
                     online_page = {"items": [], "total": 0}
                 else:
                     online_page = online_result
+                online_items = online_page.get("items") if isinstance(online_page.get("items"), list) else []
+                store_visit_result = await _load_sop_message_groups_for_triggers(
+                    self.platform_client,
+                    online_items,
+                    limit=safe_limit,
+                )
                 if isinstance(store_visit_result, BaseException):
-                    errors.append(f"store_visit: {type(store_visit_result).__name__}: {store_visit_result}")
+                    errors.append(f"sop_messages: {type(store_visit_result).__name__}: {store_visit_result}")
                     store_visit_page = {"items": [], "total": 0}
                 else:
                     store_visit_page = store_visit_result
                 platform_error = " | ".join(errors)
-                online_items = online_page.get("items") if isinstance(online_page.get("items"), list) else []
                 store_visit_items = (
                     store_visit_page.get("items") if isinstance(store_visit_page.get("items"), list) else []
                 )
@@ -3148,10 +3150,15 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
     for index, item in enumerate(raw, start=1):
         if not isinstance(item, dict):
             continue
-        message_type = str(item.get("type") or "").strip().lower()
+        message_type = str(item.get("type") or item.get("msg_type") or item.get("msgType") or "").strip().lower()
         content = item.get("content")
         if message_type == "text":
-            text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+            text = str(
+                (content.get("text") if isinstance(content, dict) else content)
+                or item.get("content_text")
+                or item.get("contentText")
+                or ""
+            ).strip()
             if text:
                 if text == "预约卡片":
                     output.append(
@@ -3167,7 +3174,15 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
                 else:
                     output.append({"type": "text", "order": index, "content": {"text": text}})
         elif message_type in {"image", "video"}:
-            url = str(content.get("url") if isinstance(content, dict) else content or "").strip()
+            url = str(
+                (content.get("url") if isinstance(content, dict) else content)
+                or item.get("media_url")
+                or item.get("mediaUrl")
+                or ""
+            ).strip()
+            media_urls = _platform_media_urls(item)
+            if not url and media_urls:
+                url = media_urls[0]
             if url:
                 output.append({"type": message_type, "order": index, "content": {"url": url}})
         elif message_type == "link":
@@ -3175,9 +3190,28 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
                 normalized_content = dict(content)
             else:
                 normalized_content = {"url": str(content or "").strip()}
+            if not str(normalized_content.get("url") or "").strip():
+                normalized_content["url"] = str(item.get("media_url") or item.get("mediaUrl") or "").strip()
+            title = str(item.get("link_title") or item.get("linkTitle") or "").strip()
+            if title and not str(normalized_content.get("title") or "").strip():
+                normalized_content["title"] = title
             if str(normalized_content.get("url") or "").strip():
                 output.append({"type": "link", "order": index, "content": normalized_content})
     return output
+
+
+def _platform_media_urls(item: dict[str, Any]) -> list[str]:
+    raw = item.get("media_urls_json")
+    if raw is None:
+        raw = item.get("mediaUrlsJson")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = []
+    if not isinstance(raw, list):
+        return []
+    return [str(value).strip() for value in raw if str(value or "").strip()]
 
 
 def _platform_duplicate_send_once_key(platform_task: dict[str, Any]) -> str:
@@ -4489,6 +4523,82 @@ def _compat_contact_key(task: dict[str, Any]) -> str:
     )
 
 
+def _task_event_log_id(task: dict[str, Any]) -> str:
+    for key in ("eventLogId", "event_log_id", "logId", "log_id"):
+        value = str(task.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+async def _load_sop_message_groups_for_triggers(
+    platform_client: Any,
+    online_items: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    triggers = [item for item in online_items if isinstance(item, dict) and not _platform_messages(item)]
+    query_triggers = [(trigger, _task_event_log_id(trigger)) for trigger in triggers]
+    query_triggers = [(trigger, event_log_id) for trigger, event_log_id in query_triggers if event_log_id]
+    if not query_triggers:
+        return {"items": [], "total": 0, "limit": limit, "biz_type": "sop_messages", "complete": True}
+
+    pages = await asyncio.gather(
+        *[
+            platform_client.sop_messages(event_log_id=event_log_id, limit=limit)
+            for _trigger, event_log_id in query_triggers
+        ],
+        return_exceptions=True,
+    )
+    for page in pages:
+        if isinstance(page, BaseException):
+            raise page
+
+    items: list[dict[str, Any]] = []
+    for (trigger, event_log_id), page in zip(query_triggers, pages):
+        page_items = page.get("items") if isinstance(page, dict) and isinstance(page.get("items"), list) else []
+        for group in page_items:
+            if isinstance(group, dict):
+                items.append(_merge_sop_message_group(trigger, group, event_log_id=event_log_id))
+    return {
+        "items": items,
+        "total": len(items),
+        "limit": limit,
+        "biz_type": "sop_messages",
+        "complete": True,
+    }
+
+
+def _merge_sop_message_group(
+    trigger: dict[str, Any],
+    group: dict[str, Any],
+    *,
+    event_log_id: str,
+) -> dict[str, Any]:
+    merged = dict(trigger)
+    for key, value in group.items():
+        if key in {"id", "task_id", "taskId"}:
+            continue
+        merged[key] = value
+    messages = group.get("message_content") if isinstance(group.get("message_content"), list) else None
+    if messages is None and isinstance(group.get("messageContent"), list):
+        messages = group.get("messageContent")
+    if messages is not None:
+        merged["message_content"] = messages
+        merged["messageContent"] = messages
+    task_id = _task_id(trigger)
+    if task_id:
+        merged["task_id"] = task_id
+    merged["_aics_biz_type"] = "online_service"
+    merged["_aics_content_source"] = "sop_messages"
+    merged["_aics_event_log_id"] = event_log_id
+    merged["_aics_sop_message_wait_msg_id"] = str(group.get("id") or "")
+    merged["_aics_sop_message_group_id"] = str(
+        group.get("messageGroupId") or group.get("message_group_id") or group.get("groupId") or ""
+    )
+    return merged
+
+
 def _resolve_compatible_pending_tasks(
     online_items: list[dict[str, Any]],
     store_visit_items: list[dict[str, Any]],
@@ -4512,7 +4622,7 @@ def _resolve_compatible_pending_tasks(
         content_task = {
             **item,
             "_aics_biz_type": "online_service",
-            "_aics_content_source": "store_visit_pending",
+            "_aics_content_source": str(item.get("_aics_content_source") or "sop_messages"),
         }
         full_content_by_contact.setdefault(_compat_contact_key(content_task), []).append(content_task)
 
@@ -4531,10 +4641,12 @@ def _resolve_compatible_pending_tasks(
         for content_task in content_tasks:
             if _task_id(content_task) in legacy_ids:
                 continue
+            trigger_ids = {_task_id(trigger) for trigger in triggers if _task_id(trigger)}
+            compat_triggers = [] if _task_id(content_task) in trigger_ids else _dedupe_tasks(triggers)
             resolved.append(
                 {
                     **content_task,
-                    "_aics_compat_trigger_tasks": _dedupe_tasks(triggers),
+                    "_aics_compat_trigger_tasks": compat_triggers,
                 }
             )
     return _dedupe_tasks(resolved), _dedupe_tasks(unresolved)
