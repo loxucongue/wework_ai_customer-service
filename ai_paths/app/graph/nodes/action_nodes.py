@@ -1729,25 +1729,59 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             None,
         )
         if not geocode and conflict_observation:
-            return {
-                "status": "geocode_query_conflict",
-                "raw_query": raw_query,
-                "query": query,
-                "purpose": purpose,
-                "source": "poi_to_geocode_untrusted_origin",
-                "trusted_origin": {
-                    "available": False,
-                    "source": "none",
-                    "reason": str(conflict_observation.get("reason") or "geocode_conflict"),
-                },
-                "rejected_geocode_observations": rejected_geocode_observations,
-                "query_consistency": conflict_observation.get("query_consistency") or {},
-                "normalization_evidence": _store_normalization_evidence({}, geocode_attempts),
-                "stores": [],
-                "candidate_stores": [],
-                "candidate_store_count": 0,
-                "missing": ["confirmed_location"],
-            }
+            conflict_region_candidates, conflict_region = _stores_for_explicit_visible_region(
+                query,
+                stores,
+            )
+            # Some map providers partially resolve administrative queries such
+            # as "浙江诸暨" and report only the parent region. That is not a
+            # trusted point, but it is also not a customer-location conflict:
+            # downstream logic should keep trying exact visible-region and
+            # resolver-admin fallbacks, then safely return no_match if none
+            # applies. Keep true cross-region conflicts blocking.
+            can_degrade_fragment_conflict = bool(
+                (
+                    str(conflict_observation.get("reason") or "") == "query_fragment_conflict"
+                    and (expected_admin.get("province") or expected_admin.get("city"))
+                )
+                or (
+                    conflict_region_candidates
+                    and _explicit_visible_region_trusted_for_query(
+                        query,
+                        conflict_region,
+                    )
+                )
+            )
+            if can_degrade_fragment_conflict:
+                rejected_geocode_observations.append(
+                    {
+                        "query": resolved_query,
+                        "source": "fragment_conflict_degraded",
+                        "reason": "partial_admin_geocode_untrusted",
+                        "geocode_region": {},
+                        "query_consistency": conflict_observation.get("query_consistency") or {},
+                    }
+                )
+            else:
+                return {
+                    "status": "geocode_query_conflict",
+                    "raw_query": raw_query,
+                    "query": query,
+                    "purpose": purpose,
+                    "source": "poi_to_geocode_untrusted_origin",
+                    "trusted_origin": {
+                        "available": False,
+                        "source": "none",
+                        "reason": str(conflict_observation.get("reason") or "geocode_conflict"),
+                    },
+                    "rejected_geocode_observations": rejected_geocode_observations,
+                    "query_consistency": conflict_observation.get("query_consistency") or {},
+                    "normalization_evidence": _store_normalization_evidence({}, geocode_attempts),
+                    "stores": [],
+                    "candidate_stores": [],
+                    "candidate_store_count": 0,
+                    "missing": ["confirmed_location"],
+                }
 
         if geocode and _unanchored_geocode_requires_confirmation(
             tool,
@@ -1798,6 +1832,12 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
 
     text_candidates = _stores_for_text_query(resolved_query, stores, purpose)
     exact_region_candidates, exact_region = _stores_for_explicit_visible_region(resolved_query, stores)
+    exact_store_reference = any(
+        _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
+        and _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
+        in _compact_store_text(resolved_query)
+        for item in text_candidates
+    )
     resolver_admin_fallback = False
     resolver_admin_scope_preferred = (
         bool(tool.get("use_resolver_admin_fallback"))
@@ -1819,6 +1859,17 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         resolver_admin_fallback = bool(exact_region_candidates)
     if exact_region_candidates and (
         not geocode.get("location") or resolver_admin_fallback
+        or (
+            _explicit_visible_region_trusted_for_query(
+                resolved_query,
+                exact_region,
+                exact_store_reference=exact_store_reference,
+            )
+            and _explicit_visible_region_more_specific_than_geocode(
+                exact_region,
+                geocode,
+            )
+        )
     ):
         normalized, invalid_candidates = filter_valid_store_facts(
             exact_region_candidates,
@@ -1946,12 +1997,6 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "candidate_store_count": 0,
             "missing": ["confirmed_location"],
         }
-    exact_store_reference = any(
-        _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
-        and _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
-        in _compact_store_text(resolved_query)
-        for item in text_candidates
-    )
     scope_geocode = _geocode_for_query_scope(resolved_query, geocode)
     location_evidence = build_location_evidence(
         state,
@@ -2111,7 +2156,10 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if (
         bool(tool.get("allow_broad_scope_delivery"))
         and request_kind not in {"store_detail", "reuse_store"}
-        and scope_level in {"city", "district"}
+        and (
+            scope_level == "city"
+            or (scope_level == "district" and exact_scope_has_store is False)
+        )
         and str(scope_geocode.get("city") or "").strip()
         and not exact_store_reference
     ):
@@ -2216,7 +2264,16 @@ def _stores_for_explicit_visible_region(
         for store in stores:
             value = str(store.get(field) or "").strip()
             compact_value = _compact_store_text(value)
-            if not compact_value or compact_value not in compact_query:
+            aliases = {
+                candidate
+                for candidate in (
+                    compact_value,
+                    _compact_store_text(_strip_admin_suffix(value)),
+                    *(_compact_store_text(token) for token in _region_tokens(value)),
+                )
+                if len(candidate) >= 2
+            }
+            if not aliases or not any(alias in compact_query for alias in aliases):
                 continue
             grouped.setdefault(compact_value, []).append(store)
             original_values[compact_value] = value
@@ -2226,9 +2283,16 @@ def _stores_for_explicit_visible_region(
             continue
         key, matched = next(iter(grouped.items()))
         first = matched[0]
+        region_fields = (
+            ("province", "city", "district", "township")
+            if level == "township"
+            else ("province", "city", "district")
+            if level == "district"
+            else ("province", "city")
+        )
         region = {
             key_name: str(first.get(key_name) or "").strip()
-            for key_name in ("province", "city", "district", "township")
+            for key_name in region_fields
             if str(first.get(key_name) or "").strip()
         }
         region["resolved_admin_level"] = level
@@ -2269,6 +2333,75 @@ def _stores_for_resolver_admin_region(
     }
     region["resolved_admin_level"] = "district" if expected.get("district") else "city"
     return matched, region
+
+
+def _explicit_visible_region_trusted_for_query(
+    query: str,
+    region: dict[str, str],
+    *,
+    exact_store_reference: bool = False,
+) -> bool:
+    """Trust visible-scope region matches only when the customer anchored them.
+
+    A short place like "南城" is not enough by itself because many cities can
+    contain the same district, township or landmark. "东莞南城", "浙江诸暨" or
+    an explicit store name are anchored enough to use the visible store scope
+    when the map provider is broader or wrong.
+    """
+
+    if exact_store_reference:
+        return True
+    level = str(region.get("resolved_admin_level") or "").strip()
+    if level == "city":
+        return bool(
+            _admin_name_mentioned_in_query(
+                query,
+                str(region.get("city") or ""),
+                parent_province=str(region.get("province") or ""),
+            )
+        )
+    if level not in {"district", "township"}:
+        return False
+    province = str(region.get("province") or "").strip()
+    city = str(region.get("city") or "").strip()
+    if city and _admin_name_mentioned_in_query(query, city, parent_province=province):
+        return True
+    if province and _admin_name_mentioned_in_query(query, province):
+        return True
+    region_value = str(region.get("township") or region.get("district") or "").strip()
+    return bool(region_value and _compact_text(region_value) in _compact_text(query))
+
+
+def _explicit_visible_region_more_specific_than_geocode(
+    region: dict[str, str],
+    geocode: dict[str, Any],
+) -> bool:
+    if not isinstance(geocode, dict) or not geocode.get("location"):
+        return True
+    levels = {"unknown": 0, "province": 1, "city": 2, "district": 3, "township": 4}
+    region_level = str(region.get("resolved_admin_level") or "unknown").strip()
+    geocode_level = _geocode_resolved_admin_level("", geocode)
+    if levels.get(region_level, 0) > levels.get(geocode_level, 0):
+        return True
+    if (
+        region_level == geocode_level
+        and region_level in {"city", "district", "township"}
+        and _geocode_ambiguous_regions(geocode)
+    ):
+        return True
+    return False
+
+
+def _geocode_ambiguous_regions(geocode: dict[str, Any]) -> bool:
+    try:
+        candidate_count = int(geocode.get("candidate_count") or 0)
+    except (TypeError, ValueError):
+        candidate_count = 0
+    return bool(
+        geocode.get("ambiguous_regions")
+        or candidate_count > 1
+        or geocode.get("candidate_regions")
+    )
 
 
 def _store_lookup_geocode_queries(tool: dict[str, Any], query: str) -> list[dict[str, Any]]:
@@ -2761,6 +2894,8 @@ def _stores_for_geocode(geocode: dict[str, Any], stores: list[dict[str, Any]], p
     ]
     if city_matches:
         return city_matches
+    if city:
+        return []
     if province:
         return [store for store in stores if _region_equal(store.get("province"), province)]
     return []
