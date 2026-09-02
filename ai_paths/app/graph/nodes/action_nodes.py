@@ -1570,6 +1570,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         known_stores=[*_snapshot_store_values(), *raw_scope_stores],
     )
     expected_admin = {
+        **_explicit_admin_from_query_text(query),
         **_explicit_parent_admin_from_store_scope(query, stores),
         **_normalized_expected_admin(tool.get("expected_admin")),
     }
@@ -1746,14 +1747,63 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
                 stores,
                 expected_admin=expected_admin,
             )
+            if expected_admin.get("city") or expected_admin.get("district"):
+                expected_region_candidates, expected_region = _stores_for_resolver_admin_region(
+                    expected_admin,
+                    stores,
+                )
+                if not expected_region_candidates:
+                    expected_geocode = {
+                        "formatted_address": query,
+                        **{
+                            key: str(expected_admin.get(key) or "").strip()
+                            for key in ("province", "city", "district")
+                            if str(expected_admin.get(key) or "").strip()
+                        },
+                    }
+                    location_evidence = build_location_evidence(
+                        state,
+                        raw_text=raw_query,
+                        query=query,
+                        geocode=expected_geocode,
+                        confirmed_by_customer=True,
+                    )
+                    scope_fields = _store_lookup_scope_fields(
+                        {
+                            "query": query,
+                            "geocode": expected_geocode,
+                            "candidate_stores": [],
+                        }
+                    )
+                    return {
+                        "status": "no_match",
+                        "raw_query": raw_query,
+                        "query": query,
+                        "purpose": purpose,
+                        "source": "customer_scope_explicit_admin_no_local_store",
+                        "geocode": expected_geocode,
+                        "trusted_origin": {
+                            "available": False,
+                            "source": "customer_explicit_admin_text",
+                            "supports_distance_ranking": False,
+                        },
+                        "location_evidence": location_evidence,
+                        "normalization_evidence": _store_normalization_evidence({}, geocode_attempts),
+                        **scope_fields,
+                        "stores": [],
+                        "candidate_stores": [],
+                        "candidate_store_count": 0,
+                        "missing": ["matched_customer_scope_store"],
+                    }
             conflict_text_candidates = _stores_for_text_query(
                 query,
                 stores,
                 purpose,
-                allow_unanchored_generic=_generic_place_query_has_parent_admin(
-                    query_text=_compact_text(query),
-                    geocode=expected_admin,
-                ),
+                # A precise store-name/address mention is reliable evidence
+                # even when the map provider treats the same text as a broad
+                # building/road POI. Keep generic POIs guarded later by
+                # _store_has_explicit_text_reference.
+                allow_unanchored_generic=True,
             )
             conflict_exact_text_reference = (
                 len(conflict_text_candidates) == 1
@@ -1810,11 +1860,24 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
                     "missing": ["confirmed_location"],
                 }
 
-        if geocode and _unanchored_geocode_requires_confirmation(
+        explicit_text_candidate_before_confirmation = _single_explicit_store_text_candidate(
+            resolved_query,
+            stores,
+            purpose,
+        ) or _single_explicit_store_text_candidate(
+            raw_query,
+            stores,
+            purpose,
+        )
+        if (
+            geocode
+            and not explicit_text_candidate_before_confirmation
+            and _unanchored_geocode_requires_confirmation(
             tool,
             state,
             query=resolved_query,
             geocode=geocode,
+            )
         ):
             return {
                 "status": "need_location_confirmation",
@@ -1857,6 +1920,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         stores = _snapshot_stores_for_resolved_geocode(geocode, resolved_query)
         snapshot_scope_fallback = bool(stores)
 
+    text_match_query = resolved_query
     text_candidates = _stores_for_text_query(
         resolved_query,
         stores,
@@ -1866,6 +1930,28 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             geocode=expected_admin,
         ),
     )
+    if not text_candidates:
+        exact_text_candidates = _stores_for_text_query(
+            resolved_query,
+            stores,
+            purpose,
+            allow_unanchored_generic=True,
+        )
+        if (
+            len(exact_text_candidates) == 1
+            and _store_has_explicit_text_reference(resolved_query, exact_text_candidates[0])
+        ):
+            text_candidates = exact_text_candidates
+            text_match_query = resolved_query
+    if raw_query and raw_query != resolved_query:
+        raw_explicit_text_candidate = _single_explicit_store_text_candidate(
+            raw_query,
+            stores,
+            purpose,
+        )
+        if raw_explicit_text_candidate:
+            text_candidates = [raw_explicit_text_candidate]
+            text_match_query = raw_query
     visible_region_expected_admin = {**geocode, **expected_admin}
     if _recent_assistant_requested_customer_location(state):
         short_region_core = _unanchored_place_core(_compact_text(resolved_query))
@@ -1887,7 +1973,74 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         stores,
         expected_admin=visible_region_expected_admin,
     )
-    exact_store_reference = any(_store_has_explicit_text_reference(resolved_query, item) for item in text_candidates)
+    exact_store_reference = any(_store_has_explicit_text_reference(text_match_query, item) for item in text_candidates)
+    if len(text_candidates) == 1 and exact_store_reference:
+        normalized, invalid_candidates = filter_valid_store_facts(
+            text_candidates,
+            known_stores=[*_snapshot_store_values(), *stores, *text_candidates],
+        )
+        normalized = [_store_lookup_item(store) for store in normalized]
+        if normalized:
+            store_region = {
+                key: str(normalized[0].get(key) or "").strip()
+                for key in ("province", "city", "district")
+                if str(normalized[0].get(key) or "").strip()
+            }
+            location_evidence = build_location_evidence(
+                state,
+                raw_text=raw_query,
+                query=text_match_query,
+                geocode={
+                    "formatted_address": str(normalized[0].get("address") or text_match_query),
+                    **store_region,
+                },
+                confirmed_by_customer=True,
+            )
+            location_evidence.update(
+                {
+                    **store_region,
+                    "confirmation_status": "confirmed",
+                    "confirmation_mode": "explicit_store_text_reference",
+                    "confirmation_required_before_match": False,
+                    "confidence": "high",
+                }
+            )
+            scope_fields = _store_lookup_scope_fields(
+                {
+                    "query": resolved_query,
+                    "geocode": {
+                        "formatted_address": str(normalized[0].get("address") or resolved_query),
+                        **store_region,
+                    },
+                    "candidate_stores": normalized,
+                }
+            )
+            return {
+                "status": "ok",
+                "raw_query": raw_query,
+                "query": text_match_query,
+                "purpose": purpose,
+                "source": "customer_scope_exact_text_reference",
+                "allow_broad_scope_delivery": False,
+                "geocode": {
+                    "formatted_address": str(normalized[0].get("address") or resolved_query),
+                    **store_region,
+                },
+                "trusted_origin": {
+                    "available": False,
+                    "source": "customer_explicit_store_text_reference",
+                    "supports_distance_ranking": False,
+                },
+                "location_evidence": location_evidence,
+                "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
+                **scope_fields,
+                "stores": normalized[:12],
+                "candidate_stores": normalized,
+                "candidate_store_count": len(normalized),
+                "filtered_invalid_stores": [*invalid_scope_stores, *invalid_candidates],
+                "tool_errors": [],
+                "missing": [],
+            }
     resolver_admin_fallback = False
     resolver_admin_scope_preferred = (
         bool(tool.get("use_resolver_admin_fallback"))
@@ -2569,30 +2722,116 @@ def _explicit_parent_admin_from_store_scope(
     query_text = _compact_text(query)
     if not query_text:
         return {}
-    generic_place_core = _unanchored_place_core(query_text)
-    generic_place = _unanchored_generic_place_core_requires_confirmation(generic_place_core)
     result: dict[str, str] = {}
     for field in ("province", "city"):
         matches = {
             str(store.get(field) or "").strip()
             for store in stores
             if str(store.get(field) or "").strip()
-            and (
-                _generic_place_query_has_parent_admin(
-                    query_text=query_text,
-                    geocode={field: str(store.get(field) or "")},
-                )
-                if generic_place
-                else _region_value_explicit_at_level(
-                    query_text=query_text,
-                    value=str(store.get(field) or ""),
-                    field=field,
-                    geocode={},
-                )
+            and _generic_place_query_has_parent_admin(
+                query_text=query_text,
+                geocode={field: str(store.get(field) or "")},
             )
         }
         if len(matches) == 1:
             result[field] = next(iter(matches))
+    return result
+
+
+def _explicit_admin_from_query_text(query: str) -> dict[str, str]:
+    text = _clean_store_lookup_query(str(query or "")).strip()
+    compact = _compact_text(text)
+    if not compact:
+        return {}
+    provinces = (
+        "北京市",
+        "天津市",
+        "上海市",
+        "重庆市",
+        "河北省",
+        "山西省",
+        "辽宁省",
+        "吉林省",
+        "黑龙江省",
+        "江苏省",
+        "浙江省",
+        "安徽省",
+        "福建省",
+        "江西省",
+        "山东省",
+        "河南省",
+        "湖北省",
+        "湖南省",
+        "广东省",
+        "海南省",
+        "四川省",
+        "贵州省",
+        "云南省",
+        "陕西省",
+        "甘肃省",
+        "青海省",
+        "台湾省",
+        "内蒙古自治区",
+        "广西壮族自治区",
+        "西藏自治区",
+        "宁夏回族自治区",
+        "新疆维吾尔自治区",
+        "香港特别行政区",
+        "澳门特别行政区",
+    )
+    result: dict[str, str] = {}
+    remainder = compact
+    for province in provinces:
+        province_compact = _compact_text(province)
+        if province_compact not in compact:
+            continue
+        result["province"] = province
+        index = compact.find(province_compact)
+        end = index + len(province_compact)
+        if index >= 0:
+            remainder = compact[end:]
+        if province in {"北京市", "天津市", "上海市", "重庆市"}:
+            result["city"] = province
+        break
+    if not result:
+        province_aliases = {
+            "内蒙古": "内蒙古自治区",
+            "广西": "广西壮族自治区",
+            "西藏": "西藏自治区",
+            "宁夏": "宁夏回族自治区",
+            "新疆": "新疆维吾尔自治区",
+            "香港": "香港特别行政区",
+            "澳门": "澳门特别行政区",
+        }
+        for alias, province in province_aliases.items():
+            alias_compact = _compact_text(alias)
+            if not compact.startswith(alias_compact):
+                continue
+            result["province"] = province
+            remainder = compact[len(alias_compact) :]
+            break
+    if not result:
+        for province in provinces:
+            province_compact = _compact_text(province)
+            province_short = _strip_admin_suffix(province_compact)
+            if len(province_short) < 2 or not compact.startswith(province_short):
+                continue
+            result["province"] = province
+            remainder = compact[len(province_short) :]
+            if province in {"北京市", "天津市", "上海市", "重庆市"}:
+                result["city"] = province
+            break
+    city_match = re.search(r"([\u4e00-\u9fff]{2,12}?市)", remainder)
+    if city_match:
+        result["city"] = city_match.group(1)
+        remainder = remainder[city_match.end() :]
+    district_match = re.search(r"([\u4e00-\u9fffA-Za-z0-9]{1,16}?(?:新区|开发区|高新区|区|县|旗|镇|乡|街道))", remainder)
+    if district_match:
+        result["district"] = district_match.group(1)
+    if result.get("district") and not result.get("city"):
+        # A district-only text is often ambiguous across cities. Let visible
+        # store uniqueness handle it instead of treating it as globally scoped.
+        result.pop("district", None)
     return result
 
 
@@ -3203,6 +3442,8 @@ def _stores_for_text_query(
     scored: list[tuple[int, dict[str, Any]]] = []
     for store in stores:
         score = _store_text_match_score(text, store)
+        if _store_has_explicit_text_reference(query, store):
+            score = max(score, 100)
         if score > 0:
             scored.append((score, store))
     if not scored:
@@ -3220,6 +3461,50 @@ def _stores_for_text_query(
     return [store for _, store in scored]
 
 
+def _single_explicit_store_text_candidate(
+    query: str,
+    stores: list[dict[str, Any]],
+    purpose: str,
+) -> dict[str, Any] | None:
+    """Return a unique explicit store-name/address text hit before geocode ambiguity gates.
+
+    A map provider can geocode a distinctive mall/building name without its
+    parent city and ask for confirmation.  If the same text uniquely appears in
+    the visible store inventory as a store name/address/address tail, the store
+    catalog is the stronger fact source for this workflow.
+    """
+
+    candidate_pool = _unique_store_pool([*stores, *_snapshot_store_values()])
+    candidates = _stores_for_text_query(
+        query,
+        candidate_pool,
+        purpose,
+        allow_unanchored_generic=True,
+    )
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    return candidate if _store_has_explicit_text_reference(query, candidate) else None
+
+
+def _unique_store_pool(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for store in stores:
+        store_id = str(store.get("store_id") or store.get("id") or "").strip()
+        key = store_id or _compact_store_text(
+            " ".join(
+                str(store.get(field) or "")
+                for field in ("store_name", "name", "store_address", "address")
+            )
+        )
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        output.append(store)
+    return output
+
+
 def _store_has_explicit_text_reference(query: str, store: dict[str, Any]) -> bool:
     text = _compact_store_text(query)
     if not text:
@@ -3229,9 +3514,24 @@ def _store_has_explicit_text_reference(query: str, store: dict[str, Any]) -> boo
         return True
     for key in ("address", "store_address", "geocode_formatted_address"):
         address = _compact_store_text(str(store.get(key) or ""))
-        if len(address) >= 6 and (address in text or (len(text) >= 6 and text in address)):
-            return True
+        for candidate in _store_address_reference_candidates(address, store):
+            if len(candidate) >= 6 and (candidate in text or (len(text) >= 6 and text in candidate)):
+                return True
     return False
+
+
+def _store_address_reference_candidates(address: str, store: dict[str, Any]) -> list[str]:
+    if not address:
+        return []
+    candidates = [address]
+    stripped = address
+    for field in ("province", "city", "district"):
+        value = _compact_store_text(str(store.get(field) or ""))
+        if value and stripped.startswith(value):
+            stripped = stripped[len(value) :]
+            if stripped:
+                candidates.append(stripped)
+    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
 def _clean_store_lookup_query(value: str) -> str:
@@ -3439,6 +3739,12 @@ def _generic_place_query_has_parent_admin(*, query_text: str, geocode: dict[str,
                 if index < 0:
                     break
                 tail = query_text[index + len(compact_token) :]
+                if re.match(
+                    r"^(?:[东南西北中上下前后左右一二三四五六七八九十0-9]+)?(?:路|街|道|大道|广场|商场|商城|中心|大厦|写字楼|医院|学校|酒店|机场|车站|地铁站)",
+                    tail,
+                ):
+                    start = index + len(compact_token)
+                    continue
                 if not tail.startswith(("路", "街", "道", "大道", "广场", "商场", "商城", "中心", "大厦", "写字楼", "医院", "学校", "酒店", "机场", "车站", "地铁站")):
                     return True
                 start = index + len(compact_token)

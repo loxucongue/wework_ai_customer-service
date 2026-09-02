@@ -4,6 +4,7 @@ import copy
 import time
 from typing import Any, Callable
 
+from app.graph.nodes.appointment_time_utils import normalize_time_text
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.material_selection import parallel_reply_payload
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
@@ -97,8 +98,19 @@ def create_synthesize_reply_node(
                         )
                         reply_source = "verified_store_delivery_failure_recovery"
                     else:
-                        messages = []
-                        reply_source = "reply_failed"
+                        messages = _appointment_time_failure_recovery(state)
+                        if messages:
+                            warnings.append(
+                                {
+                                    "node": "synthesize_reply",
+                                    "message": "appointment_time_failure_recovery_used",
+                                    "detail": primary_error[:500],
+                                }
+                            )
+                            reply_source = "appointment_time_failure_recovery"
+                        else:
+                            messages = []
+                            reply_source = "reply_failed"
             else:
                 reason = "reply_model_unavailable"
                 errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": reason})
@@ -188,12 +200,13 @@ def create_synthesize_reply_node(
 
 
 def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[str, Any]]:
-    """Recover only already-authorized current-turn store card delivery.
+    """Recover already-authorized current-turn store replies.
 
     This is a non-semantic failure guard: it does not choose a store, select a
     sales strategy, or infer customer intent. It only wraps verified
-    ``structured_delivery_options.store_address.message_payloads`` with the
-    minimum visible text required by the external message contract.
+    ``structured_delivery_options.store_address.message_payloads`` or a verified
+    current-turn store lookup status with the minimum visible text required by
+    the external message contract.
     """
 
     if not state.get("evidence_join"):
@@ -217,24 +230,81 @@ def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[st
         and isinstance(item.get("content"), dict)
         and str(item["content"].get("store_id") or "").strip()
     ]
-    if not message_payloads:
+    if message_payloads:
+        messages = [
+            {"type": "text", "order": 1, "content": "我把门店位置发您，您看下这个位置方便吗。"},
+            *[
+                {
+                    "type": "store_address",
+                    "order": index + 2,
+                    "content": {"store_id": str(item["content"].get("store_id") or "").strip()},
+                }
+                for index, item in enumerate(message_payloads[:3])
+            ],
+        ]
+    else:
+        lookup = _store_lookup_for_recovery(state)
+        status = str(lookup.get("status") or "").strip()
+        if status in {"need_location", "need_location_confirmation", "ambiguous_location", "geocode_query_conflict"}:
+            messages = [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": "可以帮您查附近是否有门店，不过还需要您补一下城市、区县或附近地标，这样我才能查准。",
+                }
+            ]
+        elif status == "no_match":
+            messages = [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": "目前这个范围暂时没有查到可发送的本地门店，您也可以换一个附近城市或更具体位置，我再帮您核对。",
+                }
+            ]
+        else:
+            return []
+    try:
+        validate_model_led_reply_admission(messages, state)
+    except Exception:
+        return []
+    return messages
+
+
+def _appointment_time_failure_recovery(state: AgentState) -> list[dict[str, Any]]:
+    """Recover a non-store appointment-time intent without asserting availability."""
+
+    if not state.get("evidence_join"):
+        return []
+    content = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if not content or not normalize_time_text(content):
         return []
     messages = [
-        {"type": "text", "order": 1, "content": "我把门店位置发您，您看下这个位置方便吗。"},
-        *[
-            {
-                "type": "store_address",
-                "order": index + 2,
-                "content": {"store_id": str(item["content"].get("store_id") or "").strip()},
-            }
-            for index, item in enumerate(message_payloads[:3])
-        ],
+        {
+            "type": "text",
+            "order": 1,
+            "content": "这个时间我先按您的到店意向理解，具体能不能安排还需要先确认门店和接待安排。您在哪个城市或区县？我先帮您查门店，避免白跑。",
+        }
     ]
     try:
         validate_model_led_reply_admission(messages, state)
     except Exception:
         return []
     return messages
+
+
+def _store_lookup_for_recovery(state: AgentState) -> dict[str, Any]:
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results.get("customer_store_lookup"), dict) else {}
+    if lookup:
+        return lookup
+    readonly = tool_results.get("readonly_facts") if isinstance(tool_results.get("readonly_facts"), dict) else {}
+    lookup = readonly.get("customer_store_lookup") if isinstance(readonly.get("customer_store_lookup"), dict) else {}
+    if lookup:
+        return lookup
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    normalized = joined.get("normalized_tool_facts") if isinstance(joined.get("normalized_tool_facts"), dict) else {}
+    lookup = normalized.get("customer_store_lookup") if isinstance(normalized.get("customer_store_lookup"), dict) else {}
+    return lookup
 
 
 async def _run_reply_model_pipeline(

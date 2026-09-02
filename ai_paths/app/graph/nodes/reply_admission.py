@@ -3,10 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from app.graph.nodes.reply_validation import (
+    _validate_appointment_time_facts,
     _validate_parallel_claimed_deposit_evidence,
+    _validate_parallel_appointment_confirmation_facts,
     _validate_parallel_media_facts,
     _validate_parallel_payment_boundaries,
     _validate_parallel_selected_content_delivery,
+    _validate_unconfirmed_store_availability_claim,
     _validate_store_address_message_facts,
     _validate_store_resolution_delivery_mode,
     _validate_store_resolution_contract,
@@ -14,11 +17,11 @@ from app.graph.nodes.reply_validation import (
 
 
 def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    """Validate only structures and externally consequential side effects.
+    """Validate structures and externally consequential factual claims.
 
-    This module intentionally never reads customer-visible text. Reply owns
-    meaning, sales posture, and wording. The checks below only compare emitted
-    structures and model-cited provenance with authoritative runtime facts.
+    Reply owns meaning, sales posture, and wording.  The checks below only
+    compare emitted structures, model-cited provenance, and narrow completed
+    state claims with authoritative runtime facts.
     """
 
     violations: list[str] = []
@@ -27,6 +30,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         lambda: _validate_selected_content_provenance(state),
         lambda: _validate_parallel_claimed_deposit_evidence(messages, state),
         lambda: _validate_parallel_payment_boundaries(messages, state),
+        lambda: _validate_appointment_time_facts(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_parallel_selected_content_delivery(messages, state),
         lambda: _validate_store_resolution_contract(messages, state),
@@ -36,6 +40,8 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
             state,
             check_visible_text=False,
         ),
+        lambda: _validate_parallel_appointment_confirmation_facts(messages, state),
+        lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
     for check in checks:
         try:

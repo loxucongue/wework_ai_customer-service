@@ -138,6 +138,24 @@ def _destination_input(
                 "content": content,
             }
         )
+    if not conversation:
+        for index, raw in enumerate(state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []):
+            content = str(raw or "").strip()
+            if not content:
+                continue
+            role = "assistant" if re.match(r"^\s*(小贝|助手|客服)\s*[:：]", content) else "customer"
+            ref = f"history_{index + 1:03d}"
+            valid_refs.add(ref)
+            if role == "customer":
+                customer_refs.add(ref)
+            conversation.append(
+                {
+                    "message_ref": ref,
+                    "role": role,
+                    "timestamp": "",
+                    "content": content,
+                }
+            )
     location_card = {}
     facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
     if isinstance(facts.get("location_card"), dict):
@@ -191,13 +209,14 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
             break
     structured_current = _structured_current_location_query(str(current.get("content") or ""))
     recent_assistant_reference = _recent_assistant_store_reference(payload)
+    generic_detail_hint = _is_generic_store_detail_hint(hint)
     # A generic customer utterance is not a location fact. When the resolver is
     # unavailable, only a structured location card or a router-grounded hint may
     # be geocoded; otherwise the workflow must request the missing location.
     destination = (
         card_address
         or coordinates
-        or hint
+        or ("" if generic_detail_hint else hint)
         or structured_current
         or recent_assistant_reference.get("query", "")
     )
@@ -208,7 +227,7 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
         destination_source = "location_card_address"
     elif coordinates:
         destination_source = "location_card_coordinates"
-    elif hint:
+    elif hint and not generic_detail_hint:
         destination_source = hint_source
     elif structured_current:
         destination_source = "structured_current_location"
@@ -217,6 +236,8 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
     if structured_current and not (card_address or coordinates or hint):
         reason = "structured_current_location_fallback"
     elif recent_assistant_reference.get("query") and not (card_address or coordinates or hint or structured_current):
+        reason = "recent_assistant_store_reference_fallback"
+    elif recent_assistant_reference.get("query") and generic_detail_hint and not (card_address or coordinates or structured_current):
         reason = "recent_assistant_store_reference_fallback"
     source_query = (
         str(current.get("content") or "").strip()
@@ -269,7 +290,25 @@ def _recent_assistant_store_reference(payload: dict[str, Any]) -> dict[str, str]
         return {}
     asks_resend_or_detail = any(
         marker in current_text
-        for marker in ("导航", "路线", "怎么去", "重新发", "再发", "发我", "地址", "位置")
+        for marker in (
+            "导航",
+            "路线",
+            "怎么去",
+            "重新发",
+            "再发",
+            "发我",
+            "地址",
+            "位置",
+            "地图",
+            "停车",
+            "营业",
+            "几点",
+            "下班",
+            "上班",
+            "开门",
+            "关门",
+            "营业时间",
+        )
     )
     if not asks_resend_or_detail:
         return {}
@@ -290,6 +329,32 @@ def _recent_assistant_store_reference(payload: dict[str, Any]) -> dict[str, str]
             continue
         return {"query": content, "message_ref": str(item.get("message_ref") or "")}
     return {}
+
+
+def _is_generic_store_detail_hint(value: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or "")).lower()
+    if not text:
+        return False
+    return text in {
+        "地图",
+        "地图发我",
+        "导航",
+        "导航发我",
+        "路线",
+        "怎么去",
+        "停车",
+        "停车方便吗",
+        "停车场",
+        "有停车场吗",
+        "营业",
+        "营业时间",
+        "几点下班",
+        "几点开门",
+        "地址",
+        "地址呢",
+        "位置",
+        "位置发我",
+    }
 
 
 def _normalize_resolution(

@@ -335,9 +335,11 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
         lambda: _validate_parallel_payment_boundaries(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_parallel_selected_content_delivery(messages, state),
+        lambda: _validate_appointment_time_facts(messages, state),
         lambda: _validate_store_resolution_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),
+        lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
     violations: list[str] = []
     for check in checks:
@@ -1680,8 +1682,20 @@ def _validate_parallel_appointment_confirmation_facts(
         for item in messages
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     ]
+    if (
+        _customer_asks_direct_visit_or_today_service(state)
+        and not _has_parallel_appointment_confirmation_fact(state)
+        and any(text and _affirmatively_answers_direct_visit_or_today_service(text) for text in text_items)
+    ):
+        raise ValueError("appointment_confirmation_fact_required")
     if not any(text and _asserts_appointment_confirmed(text) for text in text_items):
         return
+    if _has_parallel_appointment_confirmation_fact(state):
+        return
+    raise ValueError("appointment_confirmation_fact_required")
+
+
+def _has_parallel_appointment_confirmation_fact(state: dict[str, Any]) -> bool:
     structured = _structured_facts(state)
     for fact in structured.get("appointment_facts") or []:
         if not isinstance(fact, dict):
@@ -1693,8 +1707,58 @@ def _validate_parallel_appointment_confirmation_facts(
         }:
             continue
         if str(fact.get("appointment_id") or fact.get("appointment_time") or fact.get("time") or "").strip():
-            return
-    raise ValueError("appointment_confirmation_fact_required")
+            return True
+    return False
+
+
+def _customer_asks_direct_visit_or_today_service(state: dict[str, Any]) -> bool:
+    compact = re.sub(r"\s+", "", str(state.get("normalized_content") or state.get("content") or ""))
+    if not compact:
+        return False
+    return any(
+        marker in compact
+        for marker in (
+            "可以直接过去吗",
+            "能直接过去吗",
+            "能不能直接过去",
+            "直接过去可以吗",
+            "直接过去吗",
+            "直接去可以吗",
+            "可以过去吗",
+            "现在过去可以吗",
+            "现在能过去吗",
+            "今天能不能做",
+            "今天可以做吗",
+            "今天能做吗",
+            "今天能不能安排",
+            "今天可以安排吗",
+            "今天能接待吗",
+            "今天可以接待吗",
+        )
+    )
+
+
+def _affirmatively_answers_direct_visit_or_today_service(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return False
+    if compact.startswith(("不可以", "不能", "没办法", "无法")):
+        return False
+    return compact.startswith(
+        (
+            "可以的",
+            "可以呀",
+            "可以哈",
+            "可以啊",
+            "可以，",
+            "可以。",
+            "可以！",
+            "可以~",
+            "可以～",
+            "能的",
+            "没问题",
+        )
+    )
 
 
 def _validate_finished_tool_turn_does_not_promise_pending_work(
@@ -1737,10 +1801,86 @@ def _validate_fact_boundaries(messages: list[dict[str, Any]], state: dict[str, A
         raise ValueError("business_hours_fact_required")
     if _asserts_address(text) and not has_store_detail:
         raise ValueError("store_address_fact_required")
+    _validate_unconfirmed_store_availability_claim(messages, state)
     if _asserts_customer_visible_distance_value(text, state):
         raise ValueError("distance_value_not_customer_visible")
     if _asserts_distance_ranking(text, state) and not has_distance:
         raise ValueError("distance_fact_required")
+
+
+def _validate_unconfirmed_store_availability_claim(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Do not claim a store exists when the current store workflow lacks a match.
+
+    This is a factual boundary only: if the customer asks for a store near a
+    place but the tool says the location is missing/ambiguous/no-match, Reply
+    may ask for city/district/landmark or state no local store, but it must not
+    open with "yes, there is one".
+    """
+
+    if _emitted_store_address_ids(messages):
+        return
+    lookup = _store_lookup_for_validation(state)
+    status = str(lookup.get("status") or "").strip()
+    stores = lookup.get("stores") if isinstance(lookup.get("stores"), list) else []
+    candidates = lookup.get("candidate_stores") if isinstance(lookup.get("candidate_stores"), list) else []
+    if status in {"ok", "matched"} and (stores or candidates):
+        return
+    if status not in {
+        "need_location",
+        "need_location_confirmation",
+        "ambiguous_location",
+        "geocode_query_conflict",
+        "no_match",
+    }:
+        return
+    if not _current_customer_asks_store_availability(state):
+        return
+    text = _compact_text(_combined_text(messages))
+    if not text:
+        return
+    if re.match(r"^(有的|有哦|有呀|有啊|有哈|有呢|有[,，。！!；;、]|有但|有不过|有只是|有机会|可以的有|可以有)", text):
+        raise ValueError("store_availability_fact_required")
+    if any(marker in text for marker in ("这边有店", "附近有", "附近有店", "附近有门店", "有对应门店", "有这边的门店")):
+        if not any(guard in text for guard in ("不确定", "不能确定", "还不确定", "需要", "要看", "得看", "先确认")):
+            raise ValueError("store_availability_fact_required")
+
+
+def _store_lookup_for_validation(state: dict[str, Any]) -> dict[str, Any]:
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results.get("customer_store_lookup"), dict) else {}
+    if lookup:
+        return lookup
+    readonly = tool_results.get("readonly_facts") if isinstance(tool_results.get("readonly_facts"), dict) else {}
+    lookup = readonly.get("customer_store_lookup") if isinstance(readonly.get("customer_store_lookup"), dict) else {}
+    if lookup:
+        return lookup
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    normalized = joined.get("normalized_tool_facts") if isinstance(joined.get("normalized_tool_facts"), dict) else {}
+    lookup = normalized.get("customer_store_lookup") if isinstance(normalized.get("customer_store_lookup"), dict) else {}
+    return lookup
+
+
+def _current_customer_asks_store_availability(state: dict[str, Any]) -> bool:
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    current = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
+    text = _compact_text(
+        str(
+            current.get("content")
+            or current.get("raw_content")
+            or state.get("normalized_content")
+            or state.get("content")
+            or ""
+        )
+    )
+    if not text:
+        return False
+    return bool(
+        any(marker in text for marker in ("门店", "店", "附近", "地址", "位置", "地图", "导航", "怎么去", "停车", "几点下班"))
+        and any(marker in text for marker in ("有", "有没有", "有吗", "有没", "附近", "地址", "位置", "地图", "导航", "怎么去", "停车", "几点下班"))
+    )
 
 
 def _combined_text(messages: list[dict[str, Any]]) -> str:
@@ -2395,6 +2535,30 @@ def _asserts_appointment_confirmed(text: str) -> bool:
         )
     )
     if matched:
+        return True
+    if any(
+        term in compact
+        for term in (
+            "随时可来",
+            "随时可以来",
+            "随时能来",
+            "随时来",
+            "今天都能做",
+            "今天可以做",
+            "今天都能接待",
+            "今天可以接待",
+            "今天能接待",
+            "今天可接待",
+            "现在过去来得及",
+            "直接过去看",
+            "直接过去就行",
+            "直接到店就行",
+            "直接来店就行",
+            "按这个地址去就行",
+            "按这个门店地址过去就行",
+            "按门店地址过去就行",
+        )
+    ):
         return True
     if re.search(rf"{time_token}.{{0,8}}(?:过去|到店|过来|来店)(?:也)?(?:可以|没问题|就行)", compact):
         return True
