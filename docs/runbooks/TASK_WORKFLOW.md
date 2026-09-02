@@ -16,7 +16,7 @@
 
 ## 完成
 
-1. 运行合同测试和任务相关测试，记录命令与结果。
+1. 按本次改动建立并执行最小验证，记录命令、范围与结果；不复用或提交历史测试资产。
 2. 合并到 `main`，确认 `dirty=false`，再构建 release。
 3. 部署后验证 V3、API、worker、回调和管理页，并记录回滚点。
 4. 将长期规则沉淀到 `contracts/` 或 ADR，更新 `current/PRODUCTION_STATE.md`。

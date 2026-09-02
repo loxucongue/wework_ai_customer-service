@@ -28,6 +28,7 @@ V3 reply                 control API
 - control、reply、worker 是三个独立进程角色，必须来自同一个 `main` SHA。角色分别使用
   `AI_PATHS_SERVICE_ROLE=control|reply|worker`；只有 worker 允许
   `AI_PATHS_BACKGROUND_WORKERS_ENABLED=true`。
+- 路由和生命周期已经按角色隔离；`runtime_services.py` 仍会预先创建过多依赖，是下一次架构任务，不能误写成已完成的最小装配。
 - 第三方协议路径中出现 `v1` 不代表产品 V1，不能按名称删除。
 - 历史接口/schema 版本号只用于读取旧审计或兼容第三方协议，不构成第二套产品运行时。
 
@@ -35,7 +36,7 @@ V3 reply                 control API
 
 ```text
 ai_paths/app/main.py              FastAPI 生命周期、路由、worker 编排
-ai_paths/app/runtime_services.py  服务依赖装配及 Reply/Control/Worker 最小依赖视图
+ai_paths/app/runtime_services.py  服务依赖装配及 Reply/Control/Worker 依赖视图
 ai_paths/app/runtime_roles.py     运行角色标准化与旧环境值只读兼容
 ai_paths/app/routers/             按角色收口实际暴露的 FastAPI 路由
 ai_paths/app/graph/               唯一 V3 回复图
@@ -43,15 +44,14 @@ ai_paths/app/services/outreach/   跟进计划、首日流程、消息生成、�
 ai_paths/app/services/sop/        SOP 公共执行与送达兼容能力
 ai_paths/app/services/            其余平台、存储、发送与策略服务
 ai_paths/app/policies/            版本化运行策略
-ai_paths/scripts/                 运维、迁移、隔离评测脚本
+ai_paths/scripts/                 运维、迁移和配置编译脚本
 projects/                         管理前端
-workflow_tests/                   当前确定性合同测试与隔离评测夹具
 config/                           部署时读取的业务配置
 deploy/                           受版本控制的服务和 Nginx 模板
 docs/                             当前架构、合同、运行手册和现场状态
 ```
 
-日志、测试结果、构建包、数据库、门店快照和上传文件都属于运行数据，必须写入 Git 忽略目录，不能作为代码事实来源。
+日志、验证结果、构建包、数据库、门店快照和上传文件都属于运行数据，必须写入 Git 忽略目录，不能作为代码事实来源。
 
 ## V3 回复链
 

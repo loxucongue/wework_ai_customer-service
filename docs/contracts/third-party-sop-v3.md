@@ -3,7 +3,7 @@
 - status: current
 - owner: SOP/platform integration
 - last_verified: 2026-08-31 Asia/Shanghai
-- source_of_truth: 当前 main SOP 代码、确定性测试、生产日志
+- source_of_truth: 当前 main SOP 代码与生产日志；动态状态必须现场核验
 
 ## 消费状态
 

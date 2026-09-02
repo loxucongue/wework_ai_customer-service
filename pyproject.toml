@@ -1,12 +1,3 @@
-[tool.pytest.ini_options]
-testpaths = ["workflow_tests"]
-pythonpath = ["ai_paths", "."]
-addopts = "-ra --strict-markers"
-markers = [
-  "live: requires an explicitly configured external test environment",
-  "model: requires a real model provider and is excluded from deterministic gates",
-]
-
 [tool.ruff]
 target-version = "py311"
 line-length = 120

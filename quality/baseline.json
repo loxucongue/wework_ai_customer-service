@@ -1,8 +1,0 @@
-{
-  "private_test_imports": 152,
-  "broad_exception_handlers": 160,
-  "bare_exception_handlers": 0,
-  "silent_exception_handlers": 51,
-  "pass_only_exception_handlers": 19,
-  "fail_open_exception_handlers": 16
-}

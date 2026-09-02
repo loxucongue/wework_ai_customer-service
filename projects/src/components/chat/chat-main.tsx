@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Activity, BookOpenText, Bot, Sparkles, UserRoundX } from "lucide-react";
+import { Activity, BookOpenText, Bot, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatInput } from "./chat-input";
@@ -9,11 +9,6 @@ import { MessageBubble } from "./message-bubble";
 import type { Conversation, ChatMessage, WorkflowResponse } from "@/types/chat";
 
 const STORAGE_KEY = "chat_conversations";
-const TEST_CONVERSATIONS_URL = "/test-conversations.json";
-const TEST_CONVERSATION_PREFIX = "codex_test_";
-const TEST_CONVERSATION_TITLE = "Codex测试-";
-const LEGACY_TEST_CONVERSATION_PREFIX = "frontend_visible_test_";
-const LEGACY_TEST_CONVERSATION_TITLE = "Codex可视化回归测试";
 const FRONTEND_TEST_WECHAT_CONTEXT = {
   customer_id: "21325693",
   corp_id: "ww943af61cd5d2afe4",
@@ -81,39 +76,10 @@ function saveConversations(conversations: Conversation[]): void {
   }
 }
 
-function mergeConversations(
-  current: Conversation[],
-  incoming: Conversation[]
-): Conversation[] {
-  const persistent = current.filter(
-    (item) =>
-      !item.id.startsWith(TEST_CONVERSATION_PREFIX) &&
-      !item.id.startsWith(LEGACY_TEST_CONVERSATION_PREFIX) &&
-      !item.title.startsWith(TEST_CONVERSATION_TITLE) &&
-      !item.title.startsWith(LEGACY_TEST_CONVERSATION_TITLE)
-  );
-  const seen = new Set(persistent.map((item) => item.id));
-  const fresh = incoming.filter((item) => item.id && !seen.has(item.id));
-  if (fresh.length === 0) return current;
-  return [...fresh, ...persistent].sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-function findNewestIncomingConversation(
-  current: Conversation[],
-  incoming: Conversation[]
-): Conversation | null {
-  const existingIds = new Set(current.map((item) => item.id));
-  const fresh = incoming
-    .filter((item) => item.id && !existingIds.has(item.id))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-  return fresh[0] ?? null;
-}
-
 export function ChatMain() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isClearingMemory, setIsClearingMemory] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -127,37 +93,6 @@ export function ChatMain() {
     }
     setMounted(true);
   }, []);
-
-  useEffect(() => {
-    if (!mounted || typeof window === "undefined") return;
-    if (!["localhost", "127.0.0.1"].includes(window.location.hostname)) return;
-
-    let cancelled = false;
-    fetch(`${TEST_CONVERSATIONS_URL}?t=${Date.now()}`, { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((payload) => {
-        if (cancelled || !payload || !Array.isArray(payload.conversations)) {
-          return;
-        }
-        const incoming = payload.conversations as Conversation[];
-        if (incoming.length === 0) return;
-        setConversations((prev) => {
-          const newestIncoming = findNewestIncomingConversation(prev, incoming);
-          const merged = mergeConversations(prev, incoming);
-          if (newestIncoming) {
-            setActiveId(newestIncoming.id);
-          }
-          return merged;
-        });
-      })
-      .catch(() => {
-        // Local test seed is optional.
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [mounted]);
 
   // Save to localStorage when conversations change
   useEffect(() => {
@@ -196,64 +131,6 @@ export function ChatMain() {
     },
     [activeId]
   );
-
-  const clearActiveMemory = useCallback(async () => {
-    if (!activeConversation || isClearingMemory) return;
-    const ok = window.confirm(
-      "确认清空当前测试客户的画像和历史事件吗？当前页面里的对话消息不会删除。"
-    );
-    if (!ok) return;
-
-    setIsClearingMemory(true);
-    try {
-      const response = await fetch("/api/memory/clear", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(FRONTEND_TEST_WECHAT_CONTEXT),
-      });
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
-      }
-      const notice: ChatMessage = {
-        id: generateId(),
-        role: "assistant",
-        content: "当前测试客户的画像和历史事件已清空，后续回复不会再读取这部分旧记忆。",
-        timestamp: Date.now(),
-      };
-      setConversations((prev) =>
-        prev.map((item) =>
-          item.id === activeConversation.id
-            ? {
-                ...item,
-                messages: [...item.messages, notice],
-                updatedAt: Date.now(),
-              }
-            : item
-        )
-      );
-    } catch (error) {
-      console.error("Failed to clear memory:", error);
-      const notice: ChatMessage = {
-        id: generateId(),
-        role: "assistant",
-        content: "画像清理失败，可以稍后再试，或新建一个对话继续测试。",
-        timestamp: Date.now(),
-      };
-      setConversations((prev) =>
-        prev.map((item) =>
-          item.id === activeConversation.id
-            ? {
-                ...item,
-                messages: [...item.messages, notice],
-                updatedAt: Date.now(),
-              }
-            : item
-        )
-      );
-    } finally {
-      setIsClearingMemory(false);
-    }
-  }, [activeConversation, isClearingMemory]);
 
   const sendMessage = useCallback(
     async (content: string, imageFile?: File) => {
@@ -570,15 +447,6 @@ export function ChatMain() {
                 回复配置
               </button>
             </Link>
-            <button
-              type="button"
-              disabled={!activeConversation || isLoading || isClearingMemory}
-              onClick={clearActiveMemory}
-              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <UserRoundX className="h-3.5 w-3.5" />
-              {isClearingMemory ? "清理中" : "清空画像"}
-            </button>
             <Link href="/logs">
               <button
                 type="button"

@@ -8,7 +8,7 @@
 2. [系统结构](architecture/SYSTEM.md)
 3. [运行边界](contracts/RUNTIME_BOUNDARIES.md)
 4. [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
-5. [AI 销售策略运行合同](contracts/ai-sales-strategy-runtime.md)
+5. [AI 销售策略运行合同](contracts/sales-strategy.md)
 6. [当前生产状态](current/PRODUCTION_STATE.md)
 7. [已知问题](current/KNOWN_ISSUES.md)
 
@@ -16,11 +16,8 @@
 
 ## 专项文档
 
-- [AI 策略数据源与发布](contracts/ai-sales-policy.md)
 - [消息送达回调](contracts/message-delivery-callback.md)
-- [MySQL 切换手册](runbooks/mysql-cutover.md)
 - [任务工作流](runbooks/TASK_WORKFLOW.md)
-- [质量门禁与测试治理](quality/QUALITY_GATES.md)
 - [生产发布前检查清单](runbooks/PRE_RELEASE_CHECKLIST.md)
 
 ## 目录规则
@@ -29,6 +26,6 @@
 - `contracts/`：不得被实现随意破坏的协议和业务边界。
 - `current/`：现场核验后的动态事实；过期时必须明确标记。
 - `tasks/active/`：只保留一个当前任务，完成后删除并把长期结论沉淀到合同。
-- `runbooks/`：可执行的测试、部署、回滚和事故流程。
+- `runbooks/`：可执行的验证、部署、回滚和事故流程。
 - 运行报告、截图、调试 JSON、构建产物和模型输出不得提交到 `docs/`。
 - 历史设计、已退役 V1/V2 测试与重复知识文件不留在当前树；需要追溯时使用 Git 历史。
