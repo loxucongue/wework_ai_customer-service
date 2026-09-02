@@ -1711,10 +1711,22 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
                 confirmed_by_customer=bool(tool.get("confirmed_by_customer")),
             )
             raw_confirmed = str(raw_evidence.get("confirmation_status") or "") == "confirmed"
-        preferred = raw_valid if raw_confirmed else next(
+        normalized_valid = next(
             ((candidate, candidate_geocode) for candidate, candidate_geocode in valid_geocodes if candidate["source"] != "customer_raw"),
-            raw_valid,
+            None,
         )
+        if (
+            raw_valid
+            and normalized_valid
+            and _normalized_geocode_should_override_raw_sentence(
+                raw_query=raw_query,
+                normalized_query=str(normalized_valid[0].get("query") or ""),
+                raw_geocode=raw_valid[1],
+                normalized_geocode=normalized_valid[1],
+            )
+        ):
+            raw_confirmed = False
+        preferred = raw_valid if raw_confirmed else (normalized_valid or raw_valid)
         if preferred:
             selected_candidate, geocode = preferred
             resolved_query = selected_candidate["query"]
@@ -1732,6 +1744,20 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             conflict_region_candidates, conflict_region = _stores_for_explicit_visible_region(
                 query,
                 stores,
+                expected_admin=expected_admin,
+            )
+            conflict_text_candidates = _stores_for_text_query(
+                query,
+                stores,
+                purpose,
+                allow_unanchored_generic=_generic_place_query_has_parent_admin(
+                    query_text=_compact_text(query),
+                    geocode=expected_admin,
+                ),
+            )
+            conflict_exact_text_reference = (
+                len(conflict_text_candidates) == 1
+                and _store_has_explicit_text_reference(query, conflict_text_candidates[0])
             )
             # Some map providers partially resolve administrative queries such
             # as "浙江诸暨" and report only the parent region. That is not a
@@ -1751,6 +1777,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
                         conflict_region,
                     )
                 )
+                or conflict_exact_text_reference
             )
             if can_degrade_fragment_conflict:
                 rejected_geocode_observations.append(
@@ -1830,14 +1857,37 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         stores = _snapshot_stores_for_resolved_geocode(geocode, resolved_query)
         snapshot_scope_fallback = bool(stores)
 
-    text_candidates = _stores_for_text_query(resolved_query, stores, purpose)
-    exact_region_candidates, exact_region = _stores_for_explicit_visible_region(resolved_query, stores)
-    exact_store_reference = any(
-        _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
-        and _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
-        in _compact_store_text(resolved_query)
-        for item in text_candidates
+    text_candidates = _stores_for_text_query(
+        resolved_query,
+        stores,
+        purpose,
+        allow_unanchored_generic=_generic_place_query_has_parent_admin(
+            query_text=_compact_text(resolved_query),
+            geocode=expected_admin,
+        ),
     )
+    visible_region_expected_admin = {**geocode, **expected_admin}
+    if _recent_assistant_requested_customer_location(state):
+        short_region_core = _unanchored_place_core(_compact_text(resolved_query))
+        if (
+            2 <= len(short_region_core) <= 4
+            and not _unanchored_generic_place_core_requires_confirmation(short_region_core)
+        ):
+            # A short district answer immediately after we asked for the
+            # customer's city/district should be resolved against the visible
+            # store inventory first.  Map providers often attach an arbitrary
+            # parent city to district-only text; using that parent would drop a
+            # unique in-inventory match such as "和平区" -> 天津和平店.
+            # Multi-city same-name districts stay ambiguous because
+            # _stores_for_explicit_visible_region groups by full region
+            # signature below.
+            visible_region_expected_admin = {}
+    exact_region_candidates, exact_region = _stores_for_explicit_visible_region(
+        resolved_query,
+        stores,
+        expected_admin=visible_region_expected_admin,
+    )
+    exact_store_reference = any(_store_has_explicit_text_reference(resolved_query, item) for item in text_candidates)
     resolver_admin_fallback = False
     resolver_admin_scope_preferred = (
         bool(tool.get("use_resolver_admin_fallback"))
@@ -2247,6 +2297,8 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
 def _stores_for_explicit_visible_region(
     query: str,
     stores: list[dict[str, Any]],
+    *,
+    expected_admin: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Match explicit structured regions already present in the visible scope.
 
@@ -2258,11 +2310,24 @@ def _stores_for_explicit_visible_region(
     compact_query = _compact_store_text(query)
     if not compact_query:
         return [], {}
+    generic_place_core = _unanchored_place_core(compact_query)
+    generic_place = _unanchored_generic_place_core_requires_confirmation(generic_place_core)
     for field, level in (("township", "township"), ("district", "district"), ("city", "city")):
         grouped: dict[str, list[dict[str, Any]]] = {}
         original_values: dict[str, str] = {}
         for store in stores:
+            if not _store_region_matches_expected_parent_admin(
+                store,
+                expected_admin or {},
+                level=level,
+            ):
+                continue
             value = str(store.get(field) or "").strip()
+            if generic_place and not _generic_place_query_has_parent_admin(
+                query_text=compact_query,
+                geocode={field: value},
+            ):
+                continue
             compact_value = _compact_store_text(value)
             aliases = {
                 candidate
@@ -2275,8 +2340,19 @@ def _stores_for_explicit_visible_region(
             }
             if not aliases or not any(alias in compact_query for alias in aliases):
                 continue
-            grouped.setdefault(compact_value, []).append(store)
-            original_values[compact_value] = value
+            region_key_fields = (
+                ("province", "city", "district", "township")
+                if level == "township"
+                else ("province", "city", "district")
+                if level == "district"
+                else ("province", "city")
+            )
+            region_key = tuple(
+                _compact_store_text(str(store.get(key_name) or ""))
+                for key_name in region_key_fields
+            )
+            grouped.setdefault("|".join(region_key), []).append(store)
+            original_values["|".join(region_key)] = value
         if len(grouped) != 1:
             if grouped:
                 return [], {}
@@ -2299,6 +2375,31 @@ def _stores_for_explicit_visible_region(
         region[field] = original_values[key]
         return matched, region
     return [], {}
+
+
+def _store_region_matches_expected_parent_admin(
+    store: dict[str, Any],
+    expected_admin: dict[str, Any],
+    *,
+    level: str,
+) -> bool:
+    if not isinstance(expected_admin, dict) or not expected_admin:
+        return True
+    parent_fields = (
+        ("province", "city", "district")
+        if level == "township"
+        else ("province", "city")
+        if level == "district"
+        else ("province",)
+        if level == "city"
+        else ()
+    )
+    for field in parent_fields:
+        expected = str(expected_admin.get(field) or "").strip()
+        actual = str(store.get(field) or "").strip()
+        if expected and actual and not _region_equal(actual, expected):
+            return False
+    return True
 
 
 def _stores_for_resolver_admin_region(
@@ -2468,17 +2569,26 @@ def _explicit_parent_admin_from_store_scope(
     query_text = _compact_text(query)
     if not query_text:
         return {}
+    generic_place_core = _unanchored_place_core(query_text)
+    generic_place = _unanchored_generic_place_core_requires_confirmation(generic_place_core)
     result: dict[str, str] = {}
     for field in ("province", "city"):
         matches = {
             str(store.get(field) or "").strip()
             for store in stores
             if str(store.get(field) or "").strip()
-            and _region_value_explicit_at_level(
-                query_text=query_text,
-                value=str(store.get(field) or ""),
-                field=field,
-                geocode={},
+            and (
+                _generic_place_query_has_parent_admin(
+                    query_text=query_text,
+                    geocode={field: str(store.get(field) or "")},
+                )
+                if generic_place
+                else _region_value_explicit_at_level(
+                    query_text=query_text,
+                    value=str(store.get(field) or ""),
+                    field=field,
+                    geocode={},
+                )
             )
         }
         if len(matches) == 1:
@@ -3074,9 +3184,21 @@ def _snapshot_stores_for_resolved_geocode(geocode: dict[str, Any], query: str) -
     ]
 
 
-def _stores_for_text_query(query: str, stores: list[dict[str, Any]], purpose: str) -> list[dict[str, Any]]:
+def _stores_for_text_query(
+    query: str,
+    stores: list[dict[str, Any]],
+    purpose: str,
+    *,
+    allow_unanchored_generic: bool = True,
+) -> list[dict[str, Any]]:
     text = _compact_text(query)
     if not text:
+        return []
+    core = _unanchored_place_core(text)
+    if (
+        not allow_unanchored_generic
+        and _unanchored_generic_place_core_requires_confirmation(core)
+    ):
         return []
     scored: list[tuple[int, dict[str, Any]]] = []
     for store in stores:
@@ -3096,6 +3218,20 @@ def _stores_for_text_query(query: str, stores: list[dict[str, Any]], purpose: st
     if len(scored) > 1 and top_score > scored[1][0]:
         return [store for score, store in scored if score == top_score]
     return [store for _, store in scored]
+
+
+def _store_has_explicit_text_reference(query: str, store: dict[str, Any]) -> bool:
+    text = _compact_store_text(query)
+    if not text:
+        return False
+    store_name = _compact_store_text(str(store.get("store_name") or store.get("name") or ""))
+    if len(store_name) >= 3 and store_name in text:
+        return True
+    for key in ("address", "store_address", "geocode_formatted_address"):
+        address = _compact_store_text(str(store.get(key) or ""))
+        if len(address) >= 6 and (address in text or (len(text) >= 6 and text in address)):
+            return True
+    return False
 
 
 def _clean_store_lookup_query(value: str) -> str:
@@ -3130,6 +3266,27 @@ def _geocode_location_is_ambiguous(
     if exact_store_reference or _has_structured_location_label(raw_query):
         return False
     return True
+
+
+def _normalized_geocode_should_override_raw_sentence(
+    *,
+    raw_query: str,
+    normalized_query: str,
+    raw_geocode: dict[str, Any],
+    normalized_geocode: dict[str, Any],
+) -> bool:
+    normalized_text = _compact_text(normalized_query)
+    raw_text = _compact_text(raw_query)
+    if len(normalized_text) < 2 or normalized_text not in raw_text:
+        return False
+    if not str(normalized_geocode.get("city") or normalized_geocode.get("district") or "").strip():
+        return False
+    for field in ("province", "city", "district"):
+        raw_value = str(raw_geocode.get(field) or "").strip()
+        normalized_value = str(normalized_geocode.get(field) or "").strip()
+        if raw_value and normalized_value and not _region_equal(raw_value, normalized_value):
+            return True
+    return False
 
 
 def _unanchored_geocode_requires_confirmation(
@@ -3192,6 +3349,12 @@ def _unanchored_short_place_requires_confirmation(
         return False
     if _recent_assistant_requested_customer_location(state):
         return False
+    core = _unanchored_place_core(text)
+    if _unanchored_generic_place_core_requires_confirmation(core) and not _generic_place_query_has_parent_admin(
+        query_text=text,
+        geocode=geocode,
+    ):
+        return True
     if any(
         _region_value_explicit_at_level(
             query_text=text,
@@ -3204,17 +3367,11 @@ def _unanchored_short_place_requires_confirmation(
     ):
         return False
 
-    core = re.sub(
-        r"(附近|周边|这边|那边|这里|那里|有没有|有吗|有没|有门店吗|门店|店|地址|位置|导航|怎么去|离我近|近一点|最近)",
-        "",
-        text,
-    )
-    core = re.sub(r"[?？。！!,，、；;：:\-_/\\()\[\]{}]+", "", core)
     if not core:
         return False
+    if _unanchored_generic_place_core_requires_confirmation(core):
+        return True
     if len(core) > 4:
-        return False
-    if any(marker in core for marker in ("广场", "商场", "机场", "车站", "医院", "学校", "大厦", "酒店")):
         return False
     return any(
         _region_value_explicit_at_level(
@@ -3226,6 +3383,66 @@ def _unanchored_short_place_requires_confirmation(
         for field in ("district", "township")
         if str(geocode.get(field) or "").strip()
     )
+
+
+def _unanchored_place_core(text: str) -> str:
+    core = re.sub(
+        r"(附近|周边|这边|那边|这里|那里|有没有|有吗|有没|有门店吗|门店|店|地址|位置|导航|怎么去|离我近|近一点|最近)",
+        "",
+        text,
+    )
+    return re.sub(r"[?？。！!,，、；;：:\-_/\\()\[\]{}]+", "", core)
+
+
+def _unanchored_generic_place_core_requires_confirmation(core: str) -> bool:
+    """Common POI/road names need a parent city or district before matching."""
+
+    if not core:
+        return False
+    generic_exact = {"地铁口", "地铁站", "火车站", "高铁站", "汽车站", "万达", "吾悦"}
+    if core in generic_exact:
+        return True
+    generic_suffixes = (
+        "路",
+        "街",
+        "道",
+        "大道",
+        "广场",
+        "商场",
+        "商城",
+        "中心",
+        "大厦",
+        "写字楼",
+        "医院",
+        "学校",
+        "酒店",
+        "机场",
+        "车站",
+        "地铁站",
+    )
+    return any(core.endswith(suffix) for suffix in generic_suffixes)
+
+
+def _generic_place_query_has_parent_admin(*, query_text: str, geocode: dict[str, Any]) -> bool:
+    for field in ("province", "city", "district"):
+        value = str(geocode.get(field) or "").strip()
+        full_value = _compact_text(value)
+        if len(full_value) >= 2 and full_value in query_text:
+            return True
+        for token in _region_tokens(value):
+            compact_token = _compact_text(token)
+            if len(compact_token) < 2:
+                continue
+            start = 0
+            while True:
+                index = query_text.find(compact_token, start)
+                if index < 0:
+                    break
+                tail = query_text[index + len(compact_token) :]
+                if not tail.startswith(("路", "街", "道", "大道", "广场", "商场", "商城", "中心", "大厦", "写字楼", "医院", "学校", "酒店", "机场", "车站", "地铁站")):
+                    return True
+                start = index + len(compact_token)
+    return False
 
 
 def _recent_assistant_requested_customer_location(state: AgentState) -> bool:
