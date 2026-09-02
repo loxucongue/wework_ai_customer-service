@@ -3163,6 +3163,8 @@ def _unanchored_geocode_requires_confirmation(
     stores = _customer_scope_stores(state)
     if _explicit_parent_admin_from_store_scope(query, stores):
         return False
+    if _unanchored_short_place_requires_confirmation(query=query, state=state, geocode=geocode):
+        return True
     if any(
         _region_value_explicit_at_level(
             query_text=_compact_text(query),
@@ -3175,6 +3177,83 @@ def _unanchored_geocode_requires_confirmation(
     ):
         return False
     return not _geocode_contains_query_anchor(query, geocode)
+
+
+def _unanchored_short_place_requires_confirmation(
+    *,
+    query: str,
+    state: AgentState,
+    geocode: dict[str, Any],
+) -> bool:
+    """Do not trust a map provider's single short-place guess without a parent admin anchor."""
+
+    text = _compact_text(query)
+    if not text:
+        return False
+    if _recent_assistant_requested_customer_location(state):
+        return False
+    if any(
+        _region_value_explicit_at_level(
+            query_text=text,
+            value=str(geocode.get(field) or ""),
+            field=field,
+            geocode=geocode,
+        )
+        for field in ("province", "city")
+        if str(geocode.get(field) or "").strip()
+    ):
+        return False
+
+    core = re.sub(
+        r"(附近|周边|这边|那边|这里|那里|有没有|有吗|有没|有门店吗|门店|店|地址|位置|导航|怎么去|离我近|近一点|最近)",
+        "",
+        text,
+    )
+    core = re.sub(r"[?？。！!,，、；;：:\-_/\\()\[\]{}]+", "", core)
+    if not core:
+        return False
+    if len(core) > 4:
+        return False
+    if any(marker in core for marker in ("广场", "商场", "机场", "车站", "医院", "学校", "大厦", "酒店")):
+        return False
+    return any(
+        _region_value_explicit_at_level(
+            query_text=core,
+            value=str(geocode.get(field) or ""),
+            field=field,
+            geocode=geocode,
+        )
+        for field in ("district", "township")
+        if str(geocode.get(field) or "").strip()
+    )
+
+
+def _recent_assistant_requested_customer_location(state: AgentState) -> bool:
+    """A short place answer is usable when it answers a recent assistant location question."""
+
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    shared_context = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    conversation = shared_context.get("conversation") if isinstance(shared_context.get("conversation"), list) else []
+
+    assistant_texts: list[str] = []
+    for item in reversed(history[-6:]):
+        text = str(item or "")
+        if text.startswith(("小贝:", "助手:", "assistant:", "AI:", "ai:")) or not text.startswith(("用户:", "客户:")):
+            assistant_texts.append(text.split(":", 1)[1] if ":" in text else text)
+    for item in reversed(conversation[-6:]):
+        if not isinstance(item, dict) or str(item.get("role") or "") != "assistant":
+            continue
+        assistant_texts.append(str(item.get("content") or ""))
+
+    for text in assistant_texts[:6]:
+        compact = _compact_text(text)
+        if not compact:
+            continue
+        asks_location = any(marker in compact for marker in ("哪里", "在哪", "哪个城市", "哪个区", "区县", "区域", "定位", "位置", "地址"))
+        store_context = any(marker in compact for marker in ("门店", "店", "匹配", "附近", "导航"))
+        if asks_location and store_context:
+            return True
+    return False
 
 
 def _geocode_contains_query_anchor(query: str, geocode: dict[str, Any]) -> bool:

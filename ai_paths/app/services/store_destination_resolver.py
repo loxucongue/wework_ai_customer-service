@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 
 from app.graph.state import AgentState
@@ -78,6 +79,13 @@ async def resolve_active_store_destination(
             "resolver_status": "invalid_model_output",
             "resolver_violations": violations,
         }
+    if (
+        normalized.get("needs_clarification")
+        and fallback.get("destination_query")
+        and fallback.get("reason")
+        in {"structured_current_location_fallback", "recent_assistant_store_reference_fallback"}
+    ):
+        return {**fallback, "resolver_status": "model_missed_available_store_location"}
     return {
         **normalized,
         "source_query": _source_query_for_refs(payload, normalized.get("evidence_refs") or []),
@@ -170,11 +178,29 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
         or tool.get("address")
         or ""
     ).strip()
+    structured_current = _structured_current_location_query(str(current.get("content") or ""))
+    recent_assistant_reference = _recent_assistant_store_reference(payload)
     # A generic customer utterance is not a location fact. When the resolver is
     # unavailable, only a structured location card or a router-grounded hint may
     # be geocoded; otherwise the workflow must request the missing location.
-    destination = card_address or coordinates or hint
+    destination = (
+        card_address
+        or coordinates
+        or hint
+        or structured_current
+        or recent_assistant_reference.get("query", "")
+    )
     precision = "coordinates" if coordinates else "unknown"
+    reason = "protocol_or_explicit_tool_hint_fallback"
+    if structured_current and not (card_address or coordinates or hint):
+        reason = "structured_current_location_fallback"
+    elif recent_assistant_reference.get("query") and not (card_address or coordinates or hint or structured_current):
+        reason = "recent_assistant_store_reference_fallback"
+    source_query = (
+        str(current.get("content") or "").strip()
+        if reason != "recent_assistant_store_reference_fallback"
+        else str(recent_assistant_reference.get("query") or "").strip()
+    )
     return {
         "request_kind": "match_location",
         "destination_query": destination,
@@ -183,14 +209,64 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
         "destination_subject": "unknown",
         "named_store": "",
         "detail_kind": "none",
-        "evidence_refs": ["current_message"] if destination else [],
+        "evidence_refs": [
+            ref
+            for ref in ("current_message", recent_assistant_reference.get("message_ref", ""))
+            if destination and ref
+        ],
         "superseded_location_refs": [],
         "confidence": "high" if coordinates else "low",
         "needs_clarification": not bool(destination),
         "geocode_before_clarification": bool(destination),
-        "reason": "protocol_or_explicit_tool_hint_fallback",
-        "source_query": str(current.get("content") or destination).strip(),
+        "reason": reason,
+        "source_query": source_query or str(destination).strip(),
     }
+
+
+def _structured_current_location_query(content: str) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    match = re.match(r"^\s*([\u4e00-\u9fffA-Za-z0-9_ /-]{1,16})\s*[:：]\s*(.+?)\s*$", text)
+    if not match:
+        return ""
+    label = re.sub(r"\s+", "", match.group(1)).lower()
+    if not any(marker in label for marker in ("门店", "位置", "地址", "定位", "区域", "商圈", "地标")):
+        return ""
+    value = match.group(2).strip()
+    if len(value) < 2:
+        return ""
+    return value
+
+
+def _recent_assistant_store_reference(payload: dict[str, Any]) -> dict[str, str]:
+    current = payload.get("current_message") if isinstance(payload.get("current_message"), dict) else {}
+    current_text = re.sub(r"\s+", "", str(current.get("content") or "")).lower()
+    if not current_text:
+        return {}
+    asks_resend_or_detail = any(
+        marker in current_text
+        for marker in ("导航", "路线", "怎么去", "重新发", "再发", "发我", "地址", "位置")
+    )
+    if not asks_resend_or_detail:
+        return {}
+    conversation = payload.get("conversation") if isinstance(payload.get("conversation"), list) else []
+    for item in reversed(conversation[-8:]):
+        if not isinstance(item, dict) or str(item.get("role") or "").strip().lower() != "assistant":
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        structured = _structured_current_location_query(content)
+        if structured:
+            return {"query": structured, "message_ref": str(item.get("message_ref") or "")}
+        compact = re.sub(r"\s+", "", content).lower()
+        if "店" not in compact:
+            continue
+        if not any(marker in compact for marker in ("门店", "位置", "地址", "导航", "发")):
+            continue
+        return {"query": content, "message_ref": str(item.get("message_ref") or "")}
+    return {}
 
 
 def _normalize_resolution(
