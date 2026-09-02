@@ -380,7 +380,14 @@ class SopPlatformTaskService:
         started = time.perf_counter()
         self._last_poll_at = utc_now_iso()
         try:
-            online_page = await self.platform_client.pending(limit=500)
+            pull_limit = max(
+                1,
+                min(
+                    free_slots,
+                    max(1, min(int(getattr(self.settings, "sop_platform_batch_size", 50) or 50), 500)),
+                ),
+            )
+            online_page = await self.platform_client.pending(limit=pull_limit)
             online_items = (
                 online_page
                 if isinstance(online_page, list)
@@ -389,7 +396,7 @@ class SopPlatformTaskService:
             store_visit_page = await _load_sop_message_groups_for_events(
                 self.platform_client,
                 online_items if isinstance(online_items, list) else [],
-                limit=500,
+                limit=pull_limit,
             )
             self._last_poll_error = ""
         except Exception as exc:
@@ -402,19 +409,12 @@ class SopPlatformTaskService:
             online_page = {"items": online_page, "total": len(online_page)}
         if isinstance(store_visit_page, list):
             store_visit_page = {"items": store_visit_page, "total": len(store_visit_page)}
-        pages = []
-        for biz_type, page in (("online_service", online_page), ("store_visit", store_visit_page)):
-            if isinstance(page, list):
-                page = {"items": page, "total": len(page)}
-            page = dict(page or {})
-            page["biz_type"] = biz_type
-            pages.append(page)
-        incomplete = [
-            page
-            for page in pages
-            if int(page.get("total") or 0)
-            > len(page.get("items") if isinstance(page.get("items"), list) else [])
-        ]
+        incomplete = []
+        online_items_for_completeness = online_page.get("items") if isinstance(online_page.get("items"), list) else []
+        if int(online_page.get("total") or 0) > len(online_items_for_completeness) and len(
+            online_items_for_completeness
+        ) < pull_limit:
+            incomplete.append(online_page)
         # `/pending` is the due-time driver. `/sop-messages` is the authoritative
         # per-event content source and is queried by eventLogId for every trigger.
         self._pending_total = max(
