@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.services.customer_payment_state import is_paid_deposit_state
+
 from .first_day import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
@@ -84,6 +86,72 @@ from .first_day import (
     time,
     utc_now_iso,
 )
+
+
+def _closing_shadow_terminal_reason(state: dict[str, Any]) -> str:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    takeover = state.get("takeover_guard") if isinstance(state.get("takeover_guard"), dict) else {}
+    if not takeover and isinstance(request_context.get("takeover_guard"), dict):
+        takeover = request_context["takeover_guard"]
+    if (
+        takeover.get("is_human") is True
+        or _string(takeover.get("mode")).lower() == "human"
+        or _string(takeover.get("decision")).lower() == "return_empty"
+    ):
+        return "closing_shadow_human_takeover"
+
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    authoritative = (
+        shared.get("authoritative_facts")
+        if isinstance(shared.get("authoritative_facts"), dict)
+        else {}
+    )
+    order_payment = (
+        authoritative.get("orders_and_payment")
+        if isinstance(authoritative.get("orders_and_payment"), dict)
+        else {}
+    )
+    resolved_payment = (
+        order_payment.get("resolved_payment")
+        if isinstance(order_payment.get("resolved_payment"), dict)
+        else {}
+    )
+    payment_candidates = [
+        state.get("payment_state"),
+        state.get("deposit_state"),
+        resolved_payment.get("deposit_state"),
+    ]
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    basic_info = customer_context.get("basic_info") if isinstance(customer_context.get("basic_info"), dict) else {}
+    stored_deposit = basic_info.get("deposit_state")
+    if isinstance(stored_deposit, dict):
+        payment_candidates.extend((stored_deposit.get("status"), stored_deposit.get("deposit_state")))
+    else:
+        payment_candidates.append(stored_deposit)
+    if any(is_paid_deposit_state(value) for value in payment_candidates):
+        return "closing_shadow_payment_terminal"
+
+    order_states: list[Any] = [state.get("order_state"), basic_info.get("order_state")]
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    order_context = tool_results.get("customer_order_context")
+    if isinstance(order_context, dict) and isinstance(order_context.get("data"), dict):
+        order_context = order_context["data"]
+    if isinstance(order_context, dict):
+        order_states.extend(
+            (order_context.get("order_state"), order_context.get("status_text"), order_context.get("status"))
+        )
+    normalized_states = {
+        _string(item.get("status") or item.get("order_state")) if isinstance(item, dict) else _string(item)
+        for item in order_states
+    }
+    if normalized_states.intersection(
+        {"paid", "waiting_schedule", "scheduled", "visited", "finished", "evaluated", "completed"}
+    ):
+        return "closing_shadow_transaction_terminal"
+    appointment = order_payment.get("appointment") if isinstance(order_payment.get("appointment"), dict) else {}
+    if appointment.get("has_active") or state.get("appointment_id"):
+        return "closing_shadow_transaction_terminal"
+    return ""
 
 
 class PlanGenerator:
@@ -2129,6 +2197,17 @@ class PlanGenerator:
             "external_userid": _string(state.get("external_userid")),
             "customer_id": _string(state.get("customer_id")),
         }
+        terminal_reason = _closing_shadow_terminal_reason(state)
+        if terminal_reason:
+            cancelled = self.repository.cancel_open_closing_sequence_plans(
+                **identity,
+                reason=terminal_reason,
+            )
+            return {
+                "created": False,
+                "cancelled": cancelled,
+                "reason": terminal_reason,
+            }
         schedulable = (
             str(policy.get("runtime_mode") or "off") != "off"
             and str(closing.get("silent_tasks_mode") or "off") == "shadow"
@@ -2397,4 +2476,3 @@ class PlanGenerator:
         if not anchor:
             anchor = _parse_iso(_string(plan.get("created_at")))
         return bool(latest and anchor and latest > anchor)
-

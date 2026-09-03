@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -86,6 +87,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         script_id: str = "",
         action_code: str = "",
         fallback_used: bool | None = None,
+        intent_code: str = "",
+        emotion_code: str = "",
+        closing_sequence_key: str = "",
+        closing_action: str = "",
+        decision_status: str = "",
     ) -> dict[str, Any]:
         return repository.v3_strategy_analytics_summary(
             started_from=started_from,
@@ -97,6 +103,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
             script_id=script_id,
             action_code=action_code,
             fallback_used=fallback_used,
+            intent_code=intent_code,
+            emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key,
+            closing_action=closing_action,
+            decision_status=decision_status,
         )
 
     @router.get("/admin/v3-strategy-analytics/by-checkpoint", dependencies=[Depends(require_api_key)])
@@ -110,6 +121,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         script_id: str = "",
         action_code: str = "",
         fallback_used: bool | None = None,
+        intent_code: str = "",
+        emotion_code: str = "",
+        closing_sequence_key: str = "",
+        closing_action: str = "",
+        decision_status: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
         return repository.v3_strategy_analytics_by_dimension(
@@ -123,6 +139,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
             script_id=script_id,
             action_code=action_code,
             fallback_used=fallback_used,
+            intent_code=intent_code,
+            emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key,
+            closing_action=closing_action,
+            decision_status=decision_status,
             limit=limit,
         )
 
@@ -137,6 +158,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         script_id: str = "",
         action_code: str = "",
         fallback_used: bool | None = None,
+        intent_code: str = "",
+        emotion_code: str = "",
+        closing_sequence_key: str = "",
+        closing_action: str = "",
+        decision_status: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
         return repository.v3_strategy_analytics_by_dimension(
@@ -150,6 +176,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
             script_id=script_id,
             action_code=action_code,
             fallback_used=fallback_used,
+            intent_code=intent_code,
+            emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key,
+            closing_action=closing_action,
+            decision_status=decision_status,
             limit=limit,
         )
 
@@ -164,6 +195,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         script_id: str = "",
         action_code: str = "",
         fallback_used: bool | None = None,
+        intent_code: str = "",
+        emotion_code: str = "",
+        closing_sequence_key: str = "",
+        closing_action: str = "",
+        decision_status: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
         return repository.v3_strategy_analytics_by_dimension(
@@ -177,6 +213,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
             script_id=script_id,
             action_code=action_code,
             fallback_used=fallback_used,
+            intent_code=intent_code,
+            emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key,
+            closing_action=closing_action,
+            decision_status=decision_status,
             limit=limit,
         )
 
@@ -191,6 +232,11 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         script_id: str = "",
         action_code: str = "",
         fallback_used: bool | None = None,
+        intent_code: str = "",
+        emotion_code: str = "",
+        closing_sequence_key: str = "",
+        closing_action: str = "",
+        decision_status: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
         return repository.v3_strategy_analytics_failures(
@@ -203,12 +249,131 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
             script_id=script_id,
             action_code=action_code,
             fallback_used=fallback_used,
+            intent_code=intent_code,
+            emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key,
+            closing_action=closing_action,
+            decision_status=decision_status,
             limit=limit,
+        )
+
+    def _decision_dimension(
+        dimension: str,
+        *,
+        started_from: str,
+        started_to: str,
+        corp_id: str,
+        wechat: str,
+        checkpoint_code: str,
+        sequence_id: str,
+        script_id: str,
+        action_code: str,
+        fallback_used: bool | None,
+        intent_code: str,
+        emotion_code: str,
+        closing_sequence_key: str,
+        closing_action: str,
+        decision_status: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        return repository.v3_strategy_analytics_by_dimension(
+            dimension=dimension,
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+            checkpoint_code=checkpoint_code,
+            sequence_id=sequence_id,
+            script_id=script_id,
+            action_code=action_code,
+            fallback_used=fallback_used,
+            intent_code=intent_code,
+            emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key,
+            closing_action=closing_action,
+            decision_status=decision_status,
+            limit=limit,
+        )
+
+    @router.get("/admin/v3-strategy-analytics/by-intent", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_by_intent(
+        started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",
+        checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
+        action_code: str = "", fallback_used: bool | None = None,
+        intent_code: str = "", emotion_code: str = "", closing_sequence_key: str = "",
+        closing_action: str = "", decision_status: str = "", limit: int = 50,
+    ) -> dict[str, Any]:
+        return _decision_dimension(
+            "intent", started_from=started_from, started_to=started_to, corp_id=corp_id,
+            wechat=wechat, checkpoint_code=checkpoint_code, sequence_id=sequence_id,
+            script_id=script_id, action_code=action_code, fallback_used=fallback_used,
+            intent_code=intent_code, emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key, closing_action=closing_action,
+            decision_status=decision_status, limit=limit,
+        )
+
+    @router.get("/admin/v3-strategy-analytics/by-emotion", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_by_emotion(
+        started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",
+        checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
+        action_code: str = "", fallback_used: bool | None = None,
+        intent_code: str = "", emotion_code: str = "", closing_sequence_key: str = "",
+        closing_action: str = "", decision_status: str = "", limit: int = 50,
+    ) -> dict[str, Any]:
+        return _decision_dimension(
+            "emotion", started_from=started_from, started_to=started_to, corp_id=corp_id,
+            wechat=wechat, checkpoint_code=checkpoint_code, sequence_id=sequence_id,
+            script_id=script_id, action_code=action_code, fallback_used=fallback_used,
+            intent_code=intent_code, emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key, closing_action=closing_action,
+            decision_status=decision_status, limit=limit,
+        )
+
+    @router.get("/admin/v3-strategy-analytics/by-closing", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_by_closing(
+        started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",
+        checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
+        action_code: str = "", fallback_used: bool | None = None,
+        intent_code: str = "", emotion_code: str = "", closing_sequence_key: str = "",
+        closing_action: str = "", decision_status: str = "", limit: int = 50,
+    ) -> dict[str, Any]:
+        return _decision_dimension(
+            "closing", started_from=started_from, started_to=started_to, corp_id=corp_id,
+            wechat=wechat, checkpoint_code=checkpoint_code, sequence_id=sequence_id,
+            script_id=script_id, action_code=action_code, fallback_used=fallback_used,
+            intent_code=intent_code, emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key, closing_action=closing_action,
+            decision_status=decision_status, limit=limit,
+        )
+
+    @router.get("/admin/v3-strategy-analytics/transitions", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_transitions(
+        started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",
+        checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
+        action_code: str = "", fallback_used: bool | None = None,
+        intent_code: str = "", emotion_code: str = "", closing_sequence_key: str = "",
+        closing_action: str = "", decision_status: str = "", limit: int = 50,
+    ) -> dict[str, Any]:
+        return _decision_dimension(
+            "transitions", started_from=started_from, started_to=started_to, corp_id=corp_id,
+            wechat=wechat, checkpoint_code=checkpoint_code, sequence_id=sequence_id,
+            script_id=script_id, action_code=action_code, fallback_used=fallback_used,
+            intent_code=intent_code, emotion_code=emotion_code,
+            closing_sequence_key=closing_sequence_key, closing_action=closing_action,
+            decision_status=decision_status, limit=limit,
         )
 
     @router.post("/admin/v3-strategy-analytics/outcomes/refresh", dependencies=[Depends(require_api_key)])
     async def refresh_v3_strategy_outcomes(limit: int = 100) -> dict[str, Any]:
-        return repository.refresh_v3_strategy_outcomes(limit=limit)
+        provider = services.strategy_outcome_provider
+        provider.reset_batch()
+        result = await asyncio.to_thread(
+            repository.refresh_v3_strategy_outcomes,
+            limit=limit,
+            order_snapshot_provider=provider if provider.enabled else None,
+            order_provider_max_concurrency=settings.v3_strategy_analytics_outcome_max_concurrency,
+        )
+        return {**result, "order_provider": provider.runtime_status()}
 
     @router.get("/admin/runs/{request_id}", dependencies=[Depends(require_api_key)])
     async def run_detail(request_id: str) -> dict[str, Any]:

@@ -82,6 +82,43 @@ class CustomerMemoryStore:
         except (OSError, json.JSONDecodeError):
             return self._empty(customer_id)
 
+    def has_stop_contact(self, customer_id: str) -> bool:
+        """Check both durable DB and local journal, replaying local-only safety facts."""
+
+        clean_customer_id = str(customer_id or "").strip()
+        if not clean_customer_id:
+            return False
+        repository_error: Exception | None = None
+        if self.repository:
+            try:
+                if self.repository.has_stop_contact(clean_customer_id):
+                    return True
+            except Exception as exc:
+                repository_error = exc
+        local_data: dict[str, Any] = {}
+        path = self._path(clean_customer_id)
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                local_data = raw if isinstance(raw, dict) else {}
+            except (OSError, json.JSONDecodeError):
+                local_data = {}
+        stopped = any(
+            isinstance(event, dict)
+            and str(event.get("event_type") or "").strip() == "stop_contact_confirmed"
+            for event in local_data.get("history_events") or []
+        )
+        if stopped and self.repository:
+            try:
+                self.repository.save_memory(clean_customer_id, local_data)
+            except Exception:
+                pass
+        if stopped:
+            return True
+        if repository_error is not None:
+            raise repository_error
+        return False
+
     def save_update(
         self,
         customer_id: str,
@@ -549,10 +586,21 @@ class CustomerMemoryStore:
             encoding="utf-8",
         )
         if self.repository:
-            try:
-                self.repository.save_memory(clean_customer_id, data)
-            except Exception:
-                pass
+            last_error: Exception | None = None
+            for _attempt in range(3):
+                try:
+                    self.repository.save_memory(clean_customer_id, data)
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+            if last_error is not None:
+                return {
+                    "status": "recorded_local_only",
+                    "event_id": event_id,
+                    "reason": "repository_persistence_failed",
+                    "error": f"{type(last_error).__name__}: {last_error}"[:500],
+                }
         return {"status": "recorded", "event_id": event_id}
 
     def record_store_fact(

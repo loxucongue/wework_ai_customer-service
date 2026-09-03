@@ -23,7 +23,9 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 9. 复述或确认客户理解时，先逐项核对关键前提。只要价格、项目结构、付款状态、门店、权益或执行方式中有一项需要纠正，就直接说明哪一项不对；不能先说“对、流程对、您理解得对”，再在后文悄悄换掉客户原来的关键概念。
 10. 先确定 sales_judgment 和采用的证据，再写 1–3 条微信消息。逐句检查：我方已经或将会做的外部动作，必须对应本轮工具事实、结构消息或合法 commit_action。最后只输出严格 JSON。
 
-当输入提供已启用的 `ai_sales_policy` 时，在不增加第二套销售判断的前提下，把同一次判断同时写入可选顶层 `policy_decision`：主任务、实时意图、情绪与逼单序列状态。所有 key 只能来自输入目录；信息不足就留空或 none。逼单序列只描述跨轮状态，不能授权门店、订单、预约或付款动作。未提供已启用策略时省略该字段。
+当输入提供已启用的 `ai_sales_policy` 时，在不增加第二套销售判断的前提下，把同一次判断同时写入顶层 `policy_decision`：主任务、实时意图、情绪与逼单序列状态。所有 key 只能来自输入目录；信息不足就留空或 none。`evidence_refs` 只引用输入给出的客户消息 ref，`basis` 仅作旧消费方兼容说明，不能代替客户证据。逼单序列只描述跨轮状态，不能授权门店、订单、预约或付款动作。未提供已启用策略时省略该字段。
+
+输入若提供 `previous_policy_state`，它只是一条已完成上一轮的稳定摘要，不是当前结论。每次收到客户新消息都必须结合当前消息重新判断意图、情绪、卡点和逼单动作；不得因为上一轮处于某个序列或节点就机械 advance。新卡点必须先将逼单设为 pause；defer 或 lower_pressure 情绪不得提高推进压力；pause_marketing_turn 和 handoff_by_system_rule 本轮不得继续推进。explicit_exit 必须输出 primary_task.type=hard_stop，清空 secondary_tasks，并把 closing_decision 设为 complete、hard_stop、none 压力。
 
 # 二、销售判断
 抓住客户开口后的 5–10 轮窗口，但不要把“死缠烂打”写成不真实承诺。可逆犹豫不等于拒绝：阻力已知时，换一个尚未重复的效果、活动价值、真实案例或行动成本角度；阻力未知时，问一个开放且低摩擦的问题。没有当前行动信号时，不把犹豫直接升级成登记、留名额或付款。
@@ -86,7 +88,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 - safety_assessment：仅在当前健康风险、投诉退款或明确停止时输出，status 为 health_risk、complaint_refund 或 explicit_reject，并引用客户原话。
 - party_size_assessment：仅在客户明确说出付款人数或超过 4 位时输出。
 - commit_actions：仅在权威已付且输入给出完整写入事实时输出；只允许 add_customer_mobile 和 create_work_order，参数及 evidence_refs 必须来自输入。
-- policy_decision：仅当输入提供已启用策略时输出。格式为 {"primary_task":{"type":"","goal":"","basis":[]},"secondary_tasks":[],"realtime_intent":{"type":"","confidence":"high|medium|low","basis":[]},"emotion_decision":{"label":"","pressure":"normal|low|none","flow_action":"keep|lower_pressure|pause_marketing_turn|handoff_by_system_rule","basis":[]},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","sequence_key":"","node_key":"","trigger":"explicit_transaction|blocker_resolved|positive_progress|silent_due|none","customer_state":"engaged|hesitant|soft_reject|hard_stop|new_blocker|none","pressure":"normal|low|none","basis":[]},"cardpoint_decision":{"category_key":"","scenario_query":"","tactic_tags":[],"state":"active|resolved|repeated|none","confidence":"high|medium|low","basis":[]}}。
+- policy_decision：仅当输入提供已启用策略时输出。格式为 {"primary_task":{"type":"","goal":"","basis":[]},"secondary_tasks":[],"realtime_intent":{"type":"","secondary_types":[],"confidence":"high|medium|low","evidence_refs":[],"basis":[]},"emotion_decision":{"label":"","confidence":"high|medium|low","pressure":"normal|low|none","flow_action":"keep|lower_pressure|pause_marketing_turn|handoff_by_system_rule","evidence_refs":[],"basis":[]},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","sequence_key":"","node_key":"","trigger":"explicit_transaction|blocker_resolved|positive_progress|silent_due|none","customer_state":"engaged|hesitant|soft_reject|not_buying_now|hard_stop|new_blocker|transaction_terminal_or_handoff|none","pressure":"normal|low|none","evidence_refs":[],"basis":[]},"cardpoint_decision":{"category_key":"","scenario_query":"","tactic_tags":[],"state":"active|resolved|repeated|none","confidence":"high|medium|low","basis":[]}}。secondary_types 只保留与主意图不同的有效 key，去重后最多 3 个；当前客户原话支持意图、情绪或逼单判断时必须写入对应 evidence_refs。
 
 不要添加合同外字段。所有 ref、ID、URL 和结构内容必须来自输入；没有匹配知识也要自行回答，不得空回复。
 """
@@ -149,6 +151,14 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
                 ),
             )
         )
+        previous_policy_state = _compact_previous_policy_state(payload.get("previous_policy_state"))
+        if previous_policy_state:
+            sections.append(
+                _section(
+                    "上一轮策略状态（仅参考，必须按当前客户新消息重新判断）",
+                    json_dumps(previous_policy_state),
+                )
+            )
     protocol_events = (
         shared.get("current_message", {}).get("protocol_events")
         if isinstance(shared.get("current_message"), dict)
@@ -217,6 +227,32 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         ]
     )
     return "\n\n".join(item for item in sections if item)
+
+
+def _compact_previous_policy_state(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_fields = (
+        "previous_intent",
+        "intent_code",
+        "previous_emotion",
+        "emotion_code",
+        "closing_sequence_key",
+        "sequence_key",
+        "closing_node_key",
+        "node_key",
+        "active_cardpoint",
+        "cardpoint_key",
+        "delivered",
+        "delivery_status",
+        "customer_replied",
+        "order_changed",
+    )
+    return {
+        field: value[field]
+        for field in allowed_fields
+        if field in value and value[field] not in (None, "", [], {})
+    }
 
 
 def _compact_reply_status(facts: dict[str, Any]) -> dict[str, Any]:
@@ -1139,7 +1175,6 @@ def _render_tool_facts(
         raw = evidence.get("tool_facts") if isinstance(evidence.get("tool_facts"), dict) else {}
         for tool_name, result in raw.items():
             if isinstance(result, dict):
-                status = str(result.get("status") or "").strip()
                 if result.get("error"):
                     lines.append(f"{tool_name}：查询未完整返回")
                 else:

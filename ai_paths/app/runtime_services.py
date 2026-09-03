@@ -37,6 +37,7 @@ from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
 from app.services.trace_logger import TraceLogger
 from app.services.v3_semantic_router_service import V3SemanticRouterService
+from app.services.v3_strategy_outcome_service import PlatformOrderOutcomeProvider
 from app.services.v3_sop_execution_service import SopExecutionService as V3SopExecutionService
 from app.services.voice_transcription import DoubaoAsrClient
 
@@ -73,6 +74,7 @@ class ControlServices:
     trace_logger: TraceLogger
     sop_reply_pack_service: SopReplyPackService
     sop_objection_material_service: SopObjectionMaterialService
+    strategy_outcome_provider: PlatformOrderOutcomeProvider
     _closers: tuple[Any, ...]
     _platform_agent_client: PlatformAgentClient
 
@@ -88,6 +90,7 @@ class WorkerServices:
     service_rule_data_service: ServiceRuleDataService
     sop_platform_task_service: SopPlatformTaskService
     store_snapshot_service: StoreSnapshotService
+    strategy_outcome_provider: PlatformOrderOutcomeProvider
     _closers: tuple[Any, ...]
     _platform_agent_client: PlatformAgentClient
 
@@ -268,6 +271,13 @@ def build_control_services(settings: Settings) -> ControlServices:
         trace_logger=trace_logger,
         sop_reply_pack_service=sop_reply_pack_service,
         sop_objection_material_service=sop_objection_material_service,
+        strategy_outcome_provider=PlatformOrderOutcomeProvider(
+            platform_agent_client,
+            enabled=settings.v3_strategy_analytics_platform_order_enabled,
+            request_timeout_seconds=settings.v3_strategy_analytics_outcome_timeout_seconds,
+            max_retries=settings.v3_strategy_analytics_outcome_max_retries,
+            retry_base_seconds=settings.v3_strategy_analytics_outcome_retry_base_seconds,
+        ),
         _closers=(model_client, coze_client, outreach_system_client, sop_platform_client),
         _platform_agent_client=platform_agent_client,
     )
@@ -314,6 +324,13 @@ def build_worker_services(settings: Settings) -> WorkerServices:
             objection_material_service=sop_objection_material_service,
         ),
         store_snapshot_service=store_snapshot_service,
+        strategy_outcome_provider=PlatformOrderOutcomeProvider(
+            platform_agent_client,
+            enabled=settings.v3_strategy_analytics_platform_order_enabled,
+            request_timeout_seconds=settings.v3_strategy_analytics_outcome_timeout_seconds,
+            max_retries=settings.v3_strategy_analytics_outcome_max_retries,
+            retry_base_seconds=settings.v3_strategy_analytics_outcome_retry_base_seconds,
+        ),
         _closers=(
             model_client,
             coze_client,

@@ -7,6 +7,22 @@ from app.services.storage.serialization import dumps, loads_dict, utc_now_iso
 
 
 class MemoryRepositoryMixin:
+    def has_stop_contact(self, customer_id: str) -> bool:
+        clean_customer_id = str(customer_id or "").strip()
+        if not clean_customer_id:
+            return False
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM history_events
+                WHERE customer_id=? AND event_type='stop_contact_confirmed'
+                LIMIT 1
+                """,
+                (clean_customer_id,),
+            ).fetchone()
+        return row is not None
+
     def load_memory(self, customer_id: str) -> dict[str, Any] | None:
         with self.store.connect() as conn:
             row = conn.execute(

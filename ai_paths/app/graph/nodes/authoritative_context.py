@@ -70,6 +70,9 @@ def create_shared_context_node(
                 value = state.get(key)
                 if isinstance(value, dict) and str(value.get("runtime_mode") or "off") != "off":
                     shared[key] = copy.deepcopy(value)
+            previous_policy_state = state.get("previous_policy_state")
+            if isinstance(previous_policy_state, dict) and previous_policy_state:
+                shared["previous_policy_state"] = copy.deepcopy(previous_policy_state)
             facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
             output = {
                 "shared_context": shared,

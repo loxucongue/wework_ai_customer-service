@@ -20,12 +20,16 @@ class SQLiteStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         schema = self.schema_path.read_text(encoding="utf-8")
         with self.connect() as conn:
+            # Existing SQLite tables must gain indexed columns before schema.sql
+            # attempts to create the new indexes. New databases have no tables yet.
+            self._ensure_v3_strategy_analytics_columns(conn)
             conn.executescript(schema)
             self._ensure_customer_memory_columns(conn)
             self._ensure_outreach_plan_columns(conn)
             self._ensure_first_day_outreach_run_columns(conn)
             self._ensure_sop_event_columns(conn)
             self._ensure_sop_send_task_columns(conn)
+            self._ensure_v3_strategy_analytics_columns(conn)
             self._ensure_sales_contact_indexes(conn)
 
     @staticmethod
@@ -200,6 +204,90 @@ class SQLiteStore:
             ON sop_send_tasks(send_once_key)
             WHERE send_once_key<>'' AND status IN ('pending','sent')
             """
+        )
+
+    @staticmethod
+    def _ensure_v3_strategy_analytics_columns(conn: sqlite3.Connection) -> None:
+        table_columns = {
+            "v3_strategy_usage_events": {
+                "policy_version": "TEXT NOT NULL DEFAULT ''",
+                "decision_status": "TEXT NOT NULL DEFAULT ''",
+                "intent_confidence": "TEXT NOT NULL DEFAULT ''",
+                "intent_secondary_json": "TEXT NOT NULL DEFAULT '[]'",
+                "emotion_confidence": "TEXT NOT NULL DEFAULT ''",
+                "emotion_pressure": "TEXT NOT NULL DEFAULT ''",
+                "emotion_flow_action": "TEXT NOT NULL DEFAULT ''",
+                "closing_action": "TEXT NOT NULL DEFAULT ''",
+                "closing_node_key": "TEXT NOT NULL DEFAULT ''",
+                "closing_trigger": "TEXT NOT NULL DEFAULT ''",
+                "closing_customer_state": "TEXT NOT NULL DEFAULT ''",
+                "closing_pressure": "TEXT NOT NULL DEFAULT ''",
+                "cardpoint_category_key": "TEXT NOT NULL DEFAULT ''",
+                "cardpoint_state": "TEXT NOT NULL DEFAULT ''",
+                "decision_reasons_json": "TEXT NOT NULL DEFAULT '[]'",
+                "decision_evidence_refs_json": "TEXT NOT NULL DEFAULT '{}'",
+                "customer_turn_eligible": "INTEGER NOT NULL DEFAULT 1",
+            },
+            "v3_strategy_outcome_events": {
+                "next_usage_event_id": "TEXT NOT NULL DEFAULT ''",
+                "next_intent_code": "TEXT NOT NULL DEFAULT ''",
+                "next_emotion_code": "TEXT NOT NULL DEFAULT ''",
+                "emotion_transition": "TEXT NOT NULL DEFAULT ''",
+                "attribution_anchor_source": "TEXT NOT NULL DEFAULT 'unknown'",
+                "order_source": "TEXT NOT NULL DEFAULT ''",
+                "order_query_status": "TEXT NOT NULL DEFAULT ''",
+                "order_query_error": "TEXT NOT NULL DEFAULT ''",
+                "order_last_refreshed_at": "TEXT NOT NULL DEFAULT ''",
+                "order_state_after_14d": "TEXT NOT NULL DEFAULT ''",
+                "order_state_after_30d": "TEXT NOT NULL DEFAULT ''",
+            },
+        }
+        for table, columns in table_columns.items():
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if table_exists is None:
+                continue
+            existing = {
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for name, definition in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v3_strategy_usage_events'"
+        ).fetchone() is not None:
+            conn.execute(
+                """
+                UPDATE v3_strategy_usage_events SET customer_turn_eligible=0
+                WHERE reply_source IN (
+                    'ignored_platform_auto_message', 'platform_recalled_message',
+                    'platform_superseded', 'platform_filtered'
+                )
+                """
+            )
+        usage_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v3_strategy_usage_events'"
+        ).fetchone()
+        if usage_exists is None:
+            return
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_intent "
+            "ON v3_strategy_usage_events(intent_code, occurred_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_emotion "
+            "ON v3_strategy_usage_events(emotion_before, occurred_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_closing "
+            "ON v3_strategy_usage_events(closing_strategy_code, closing_action, occurred_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_decision "
+            "ON v3_strategy_usage_events(decision_status, occurred_at)"
         )
 
     @staticmethod

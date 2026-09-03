@@ -109,10 +109,20 @@ class WorkerSupervisor:
     async def _run_v3_strategy_outcome_attribution(self) -> None:
         while True:
             try:
+                self.services.strategy_outcome_provider.reset_batch()
                 result = await asyncio.to_thread(
                     self.services.repository.refresh_v3_strategy_outcomes,
                     limit=self.settings.v3_strategy_analytics_outcome_batch_size,
+                    order_snapshot_provider=(
+                        self.services.strategy_outcome_provider
+                        if self.services.strategy_outcome_provider.enabled
+                        else None
+                    ),
+                    order_provider_max_concurrency=(
+                        self.settings.v3_strategy_analytics_outcome_max_concurrency
+                    ),
                 )
+                result["order_provider"] = self.services.strategy_outcome_provider.runtime_status()
                 if result.get("updated"):
                     logger.info("Updated V3 strategy outcome attribution: %s", result)
             except asyncio.CancelledError:

@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from app.config import Settings
 from app.schemas import MessageDeliveryCallback
+from app.services.customer_scope import build_customer_scope
+from app.services.memory_store import CustomerMemoryStore
 from app.services.storage import AppRepository
 
 
@@ -18,6 +20,7 @@ class MessageDeliveryService:
     def __init__(self, settings: Settings, repository: AppRepository) -> None:
         self.settings = settings
         self.repository = repository
+        self._memory_store = CustomerMemoryStore(settings, repository)
         if self.callback_required and not self.callback_url:
             raise RuntimeError(
                 "MESSAGE_DELIVERY_CALLBACK_PUBLIC_URL is required when delivery callbacks are enabled"
@@ -102,6 +105,20 @@ class MessageDeliveryService:
             "callback_url": self.callback_url,
             "callback_required": self.callback_required,
         }
+
+    def assert_proactive_send_allowed(self, identity: dict[str, Any]) -> None:
+        """Fail closed when the scoped contact has an explicit stop-contact fact."""
+
+        scope = build_customer_scope(
+            corp_id=identity.get("corp_id"),
+            wechat=identity.get("wechat"),
+            external_userid=identity.get("external_userid"),
+            customer_id=identity.get("customer_id"),
+        )
+        if not scope.persistence_allowed:
+            raise RuntimeError("proactive_send_missing_customer_scope")
+        if self._memory_store.has_stop_contact(scope.sales_contact_key):
+            raise RuntimeError("explicit_stop_contact")
 
     def record_submission(
         self,

@@ -66,12 +66,18 @@ class PlatformAgentClient:
         page: int = 1,
         limit: int = 10,
         request_context: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+        retry_attempts: int | None = None,
+        retry_backoff_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
         if not customer_id:
             return []
         data = self._get(
             "/platform_agent/order/index",
             self._with_common_params({"customer_id": customer_id, "page": page, "limit": limit}, request_context),
+            timeout_seconds=timeout_seconds,
+            retry_attempts=retry_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
         )
         if isinstance(data, dict):
             rows = data.get("list") or data.get("data") or []
@@ -322,11 +328,26 @@ class PlatformAgentClient:
             merged["wechat"] = self._default_wechat
         return merged
 
-    def _get(self, path: str, params: dict[str, Any]) -> Any:
+    def _get(
+        self,
+        path: str,
+        params: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+        retry_attempts: int | None = None,
+        retry_backoff_seconds: float | None = None,
+    ) -> Any:
         if not self.available:
             raise RuntimeError("Platform agent token is not configured")
         clean_params = {key: value for key, value in params.items() if value not in (None, "")}
-        return self._request_json("GET", path, params=clean_params)
+        return self._request_json(
+            "GET",
+            path,
+            params=clean_params,
+            timeout_seconds=timeout_seconds,
+            retry_attempts=retry_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
         if not self.available:
@@ -341,13 +362,30 @@ class PlatformAgentClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+        retry_attempts: int | None = None,
+        retry_backoff_seconds: float | None = None,
     ) -> Any:
         url = urljoin(self._base_url, path.lstrip("/"))
         client = self._http_client()
         last_exc: Exception | None = None
-        for attempt in range(_REQUEST_RETRY_ATTEMPTS):
+        attempts = max(1, int(retry_attempts or _REQUEST_RETRY_ATTEMPTS))
+        backoff = (
+            max(0.0, float(retry_backoff_seconds))
+            if retry_backoff_seconds is not None
+            else _REQUEST_RETRY_BACKOFF_SECONDS
+        )
+        request_timeout = max(0.5, float(timeout_seconds or self._timeout))
+        for attempt in range(attempts):
             try:
-                response = client.request(method, url, params=params, json=json, headers=self._headers())
+                response = client.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json,
+                    headers=self._headers(),
+                    timeout=httpx.Timeout(request_timeout, connect=min(3.0, request_timeout)),
+                )
                 response.raise_for_status()
                 payload = response.json()
                 code = payload.get("code")
@@ -371,8 +409,8 @@ class PlatformAgentClient:
                 last_exc = exc
                 if exc.response.status_code not in _RETRYABLE_STATUS_CODES:
                     raise
-            if attempt < (_REQUEST_RETRY_ATTEMPTS - 1):
-                time.sleep(_REQUEST_RETRY_BACKOFF_SECONDS * (attempt + 1))
+            if attempt < (attempts - 1):
+                time.sleep(backoff * (2**attempt))
         if last_exc:
             raise last_exc
         raise RuntimeError(f"Platform agent {method} request failed without response")

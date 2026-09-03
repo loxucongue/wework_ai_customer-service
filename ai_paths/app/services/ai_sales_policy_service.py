@@ -10,10 +10,24 @@ from app.config import Settings
 
 
 SCHEMA_VERSION = "ai_sales_policy_v1"
+DECISION_SCHEMA_VERSION = "v3_policy_decision_v2"
 ALLOWED_RUNTIME_MODES = {"active", "shadow", "off"}
 ALLOWED_POLICY_STATUSES = {"draft", "published"}
 ALLOWED_NODE_TIMINGS = {"immediate", "customer_reply", "silent_after"}
 ALLOWED_PRESSURES = {"normal", "low", "none"}
+ALLOWED_SILENT_TASK_MODES = {"off", "shadow"}
+ALLOWED_EMOTION_FLOW_ACTIONS = {
+    "keep", "lower_pressure", "pause_marketing_turn", "handoff_by_system_rule",
+}
+EXPECTED_INTENT_KEYS = {
+    "fact_inquiry", "blocker_expression", "transaction_progress",
+    "information_submission", "defer", "explicit_exit", "normal_exchange",
+}
+EXPECTED_EMOTION_KEYS = {
+    "enthusiastic", "curious", "neutral", "hesitant",
+    "cold", "defensive", "impatient", "angry",
+}
+EXPECTED_CLOSING_SEQUENCE_KEYS = {"gentle_invite", "price_hesitation", "final_confirm"}
 FORBIDDEN_CONFIG_FIELDS = {"raw_prompt", "system_prompt", "prompt_template", "developer_prompt"}
 
 
@@ -98,6 +112,7 @@ class AiSalesPolicyService:
         return {
             "schema_version": policy.get("schema_version"),
             "policy_version": policy.get("policy_version"),
+            "decision_schema_version": policy.get("decision_schema_version"),
             "checksum": policy.get("checksum"),
             "status": policy.get("status"),
             "runtime_mode": runtime_mode,
@@ -114,6 +129,7 @@ class AiSalesPolicyService:
 def _normalize_policy(payload: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(payload)
     result["schema_version"] = _text(payload.get("schema_version"))
+    result["decision_schema_version"] = _text(payload.get("decision_schema_version"))
     result["policy_version"] = _text(payload.get("policy_version"))
     result["status"] = _text(payload.get("status")) or "draft"
     result["runtime_mode"] = _text(payload.get("runtime_mode")) or "off"
@@ -227,6 +243,13 @@ def _audit_policy(policy: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     if policy.get("schema_version") != SCHEMA_VERSION:
         issues.append(_issue("error", "schema_version", "schema_version must be ai_sales_policy_v1"))
+    if policy.get("decision_schema_version") != DECISION_SCHEMA_VERSION:
+        issues.append(
+            _issue(
+                "error", "decision_schema_version",
+                f"decision_schema_version must be {DECISION_SCHEMA_VERSION}",
+            )
+        )
     if not policy.get("policy_version"):
         issues.append(_issue("error", "policy_version", "policy_version is required"))
     if policy.get("status") not in ALLOWED_POLICY_STATUSES:
@@ -237,8 +260,21 @@ def _audit_policy(policy: dict[str, Any]) -> dict[str, Any]:
         issues.append(_issue("error", "raw_prompt_forbidden", f"raw prompt field is forbidden: {path}"))
 
     closing = policy.get("closing") if isinstance(policy.get("closing"), dict) else {}
+    if closing.get("silent_tasks_mode") not in ALLOWED_SILENT_TASK_MODES:
+        issues.append(
+            _issue("error", "silent_tasks_mode", "silent_tasks_mode must be off or shadow")
+        )
     _audit_unique_keys(issues, closing.get("triggers"), "closing.triggers", "key")
     _audit_unique_keys(issues, closing.get("sequences"), "closing.sequences", "sequence_key")
+    sequence_keys = {
+        _text(item.get("sequence_key"))
+        for item in closing.get("sequences") or []
+        if isinstance(item, dict)
+    }
+    if sequence_keys != EXPECTED_CLOSING_SEQUENCE_KEYS:
+        issues.append(
+            _issue("error", "closing_catalog", "closing catalog must contain the versioned 3 sequences")
+        )
     for sequence in closing.get("sequences") or []:
         if not isinstance(sequence, dict):
             continue
@@ -270,12 +306,34 @@ def _audit_policy(policy: dict[str, Any]) -> dict[str, Any]:
 
     intent = policy.get("intent") if isinstance(policy.get("intent"), dict) else {}
     _audit_unique_keys(issues, intent.get("realtime_intents"), "intent.realtime_intents", "key")
+    intent_keys = {
+        _text(item.get("key"))
+        for item in intent.get("realtime_intents") or []
+        if isinstance(item, dict)
+    }
+    if intent_keys != EXPECTED_INTENT_KEYS:
+        issues.append(_issue("error", "intent_catalog", "intent catalog must contain the versioned 7 intents"))
     scoring = intent.get("analytics_scoring") if isinstance(intent.get("analytics_scoring"), dict) else {}
     if bool(scoring.get("controls_reply")) or bool(scoring.get("controls_closing")):
         issues.append(_issue("error", "analytics_controls_runtime", "analytics scoring cannot control reply or closing"))
 
     emotion = policy.get("emotion") if isinstance(policy.get("emotion"), dict) else {}
     _audit_unique_keys(issues, emotion.get("labels"), "emotion.labels", "key")
+    emotion_keys = {
+        _text(item.get("key"))
+        for item in emotion.get("labels") or []
+        if isinstance(item, dict)
+    }
+    if emotion_keys != EXPECTED_EMOTION_KEYS:
+        issues.append(_issue("error", "emotion_catalog", "emotion catalog must contain the versioned 8 emotions"))
+    for item in emotion.get("labels") or []:
+        if isinstance(item, dict) and item.get("flow_action") not in ALLOWED_EMOTION_FLOW_ACTIONS:
+            issues.append(
+                _issue(
+                    "error", "emotion_flow_action",
+                    f"emotion {item.get('key') or '?'} has invalid flow_action",
+                )
+            )
     if not policy.get("system_boundaries"):
         issues.append(_issue("warning", "system_boundaries_empty", "system boundary descriptions are empty"))
     errors = sum(1 for item in issues if item["severity"] == "error")

@@ -265,6 +265,7 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         ),
         "evidence": reply_evidence,
         "ai_sales_policy": copy.deepcopy(shared.get("ai_sales_policy") or {}),
+        "previous_policy_state": copy.deepcopy(shared.get("previous_policy_state") or {}),
         "sales_strategy_catalog": copy.deepcopy(shared.get("sales_strategy_catalog") or {}),
         "valid_message_refs": valid_message_refs,
         "valid_customer_message_refs": valid_customer_message_refs,

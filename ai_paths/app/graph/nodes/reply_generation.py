@@ -20,6 +20,7 @@ from app.graph.nodes.reply_nodes import (
     _model_budget_seconds,
     _parallel_content_selection_metrics,
     _parallel_reply_repair_context,
+    _policy_safety_floor,
     _prepare_structural_messages,
     _reply_full_task_retry_messages,
     _reply_metadata_from_model_call,
@@ -29,6 +30,8 @@ from app.graph.nodes.reply_nodes import (
     _resolve_selected_content_media_placeholders,
     _schedule_profile_event_background,
     _validate_parallel_raw_reply_schema,
+    _validate_policy_reply_consistency,
+    _validate_policy_safety_floor,
     _validate_selected_content_ids,
 )
 
@@ -87,16 +90,30 @@ def create_synthesize_reply_node(
                     errors.append(
                         {"node": "synthesize_reply", "message": "final_reply_failed", "detail": primary_error}
                     )
-                    messages = _verified_store_delivery_failure_recovery(state)
-                    if messages:
+                    safety_recovery = _policy_safety_failure_recovery(model_call)
+                    if safety_recovery:
+                        messages, safe_payload = safety_recovery
+                        model_call["validated_json_output"] = safe_payload
                         warnings.append(
                             {
                                 "node": "synthesize_reply",
-                                "message": "verified_store_delivery_failure_recovery_used",
+                                "message": "policy_safety_failure_recovery_used",
                                 "detail": primary_error[:500],
                             }
                         )
-                        reply_source = "verified_store_delivery_failure_recovery"
+                        reply_source = "policy_safety_failure_recovery"
+                    else:
+                        messages = _verified_store_delivery_failure_recovery(state)
+                    if messages:
+                        if reply_source != "policy_safety_failure_recovery":
+                            warnings.append(
+                                {
+                                    "node": "synthesize_reply",
+                                    "message": "verified_store_delivery_failure_recovery_used",
+                                    "detail": primary_error[:500],
+                                }
+                            )
+                            reply_source = "verified_store_delivery_failure_recovery"
                     else:
                         messages = _appointment_time_failure_recovery(state)
                         if messages:
@@ -135,6 +152,18 @@ def create_synthesize_reply_node(
             reply_metadata = (
                 _reply_metadata_from_model_call(model_call, state=state) if state.get("evidence_join") else {}
             )
+            policy_correction_codes = _policy_correction_codes(model_call)
+            decision_reasons = list(
+                dict.fromkeys(
+                    [
+                        *[str(item) for item in reply_metadata.get("decision_reasons", []) if str(item)],
+                        *policy_correction_codes,
+                    ]
+                )
+            )
+            decision_status = str(reply_metadata.get("decision_status") or "")
+            if policy_correction_codes:
+                decision_status = "degraded"
             content_selection_metrics = (
                 _parallel_content_selection_metrics(
                     state,
@@ -159,6 +188,9 @@ def create_synthesize_reply_node(
                 "reply_action_reason": reply_metadata.get("action_reason", ""),
                 "reply_sales_judgment": reply_metadata.get("sales_judgment", {}),
                 "reply_knowledge_use": reply_metadata.get("knowledge_use", {}),
+                "policy_decision": reply_metadata.get("policy_decision", {}),
+                "decision_status": decision_status,
+                "decision_reasons": decision_reasons,
                 "primary_task": reply_metadata.get("primary_task", {}),
                 "secondary_tasks": reply_metadata.get("secondary_tasks", []),
                 "realtime_intent": reply_metadata.get("realtime_intent", {}),
@@ -197,6 +229,106 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
+
+
+def _policy_correction_codes(model_call: dict[str, Any] | None) -> list[str]:
+    if not isinstance(model_call, dict):
+        return []
+    retry = model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}
+    error_text = " ".join(
+        str(value or "")
+        for value in (
+            model_call.get("primary_error"),
+            model_call.get("error"),
+            retry.get("error"),
+        )
+    )
+    codes: list[str] = []
+    if (
+        "policy_decision_explicit_exit_conflict" in error_text
+        or "policy_safety_floor_removed:explicit_exit" in error_text
+    ):
+        codes.append("explicit_exit_same_turn_sales_conflict")
+    if (
+        "policy_decision_pause_marketing_conflict" in error_text
+        or "policy_safety_floor_removed:pause_marketing" in error_text
+    ):
+        codes.append("pause_marketing_same_turn_sales_conflict")
+    if (
+        "policy_decision_active_cardpoint_conflict" in error_text
+        or "policy_safety_floor_removed:active_cardpoint" in error_text
+    ):
+        codes.append("active_cardpoint_same_turn_sales_conflict")
+    if "policy_decision_schema_invalid" in error_text:
+        codes.append("policy_decision_schema_repaired")
+    return codes
+
+
+def _policy_safety_failure_recovery(
+    model_call: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Return a non-marketing close when both model attempts violate safety."""
+
+    retry = model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}
+    error_text = " ".join(
+        str(value or "")
+        for value in (
+            model_call.get("primary_error"),
+            model_call.get("error"),
+            retry.get("error"),
+        )
+    )
+    if (
+        "policy_decision_explicit_exit_conflict" in error_text
+        or "policy_safety_floor_removed:explicit_exit" in error_text
+    ):
+        recovery_kind = "explicit_exit"
+        text = "好的，知道了，之后不再打扰您。"
+    elif (
+        "policy_decision_pause_marketing_conflict" in error_text
+        or "policy_safety_floor_removed:pause_marketing" in error_text
+    ):
+        recovery_kind = "pause_marketing"
+        text = "收到，我先不继续推了。您说的情况我记下了。"
+    elif (
+        "policy_decision_active_cardpoint_conflict" in error_text
+        or "policy_safety_floor_removed:active_cardpoint" in error_text
+    ):
+        recovery_kind = "active_cardpoint"
+        text = "收到，我先不着急往下推进。您把现在最担心的点告诉我，我先帮您说清楚。"
+    elif "policy_decision_schema_invalid" in error_text:
+        recovery_kind = "schema_invalid"
+        text = "收到，我先不着急往下推进。您现在最想了解哪一点？我先按您当前的问题说清楚。"
+    else:
+        return None
+
+    source = model_call.get("raw_json_output")
+    if recovery_kind == "schema_invalid" and isinstance(retry.get("raw_json_output"), dict):
+        source = retry.get("raw_json_output")
+    if not isinstance(source, dict):
+        source = retry.get("raw_json_output")
+    if not isinstance(source, dict):
+        return None
+    safe_payload = copy.deepcopy(source)
+    safe_payload.update(
+        {
+            "reply_messages": [{"type": "text", "order": 1, "content": text}],
+            "action": "none",
+            "selected_content_ids": [],
+            "content_decisions": [],
+            "commit_actions": [],
+            "knowledge_use": {},
+            "deposit_evidence": {},
+            "sales_judgment": {
+                "customer_goal": "",
+                "primary_objective": "安全收尾",
+                "customer_friction_observation": "",
+                "posture": "close" if recovery_kind == "explicit_exit" else "pause",
+                "reason": "policy_safety_failure_recovery",
+            },
+        }
+    )
+    return safe_payload["reply_messages"], safe_payload
 
 
 def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[str, Any]]:
@@ -409,6 +541,7 @@ async def _run_model_led_reply_pipeline(
     previous_payload = (
         model_call.get("raw_json_output") if isinstance(model_call.get("raw_json_output"), dict) else None
     )
+    safety_floor = _policy_safety_floor(previous_payload, state) if previous_payload else ""
     repair_validation_context = alias_reply_reference_fields(
         _parallel_reply_repair_context(state),
         parallel_reply_payload(state),
@@ -468,6 +601,7 @@ async def _run_model_led_reply_pipeline(
             payload=repair_payload,
             validated_model_messages=validated_model_messages,
             warnings=warnings,
+            safety_floor=safety_floor,
         )
         model_call["validated_json_output"] = repair_payload
     except Exception as repair_error:
@@ -499,6 +633,7 @@ def _validated_parallel_reply_payload(
     payload: dict[str, Any],
     validated_model_messages: Callable[..., list[dict[str, Any]]],
     warnings: list[dict[str, Any]],
+    safety_floor: str = "",
 ) -> list[dict[str, Any]]:
     restore_reply_output_references(payload, parallel_reply_payload(state))
     _validate_selected_content_ids(payload, state)
@@ -510,6 +645,8 @@ def _validated_parallel_reply_payload(
             }
         )
     _validate_parallel_raw_reply_schema(payload)
+    _validate_policy_reply_consistency(payload, state)
+    _validate_policy_safety_floor(payload, state, safety_floor)
     validation_state = _reply_validation_state(state, payload)
     messages = validated_model_messages(payload, validation_state)
     messages = _prepare_structural_messages(messages, validation_state, warnings)

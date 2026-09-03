@@ -263,6 +263,26 @@ class Settings(BaseSettings):
         default=100,
         alias="V3_STRATEGY_ANALYTICS_OUTCOME_BATCH_SIZE",
     )
+    v3_strategy_analytics_outcome_max_concurrency: int = Field(
+        default=4,
+        alias="V3_STRATEGY_ANALYTICS_OUTCOME_MAX_CONCURRENCY",
+    )
+    v3_strategy_analytics_outcome_timeout_seconds: float = Field(
+        default=8.0,
+        alias="V3_STRATEGY_ANALYTICS_OUTCOME_TIMEOUT_SECONDS",
+    )
+    v3_strategy_analytics_outcome_max_retries: int = Field(
+        default=2,
+        alias="V3_STRATEGY_ANALYTICS_OUTCOME_MAX_RETRIES",
+    )
+    v3_strategy_analytics_outcome_retry_base_seconds: float = Field(
+        default=0.5,
+        alias="V3_STRATEGY_ANALYTICS_OUTCOME_RETRY_BASE_SECONDS",
+    )
+    v3_strategy_analytics_platform_order_enabled: bool = Field(
+        default=False,
+        alias="V3_STRATEGY_ANALYTICS_PLATFORM_ORDER_ENABLED",
+    )
     message_delivery_callback_required: bool = Field(
         default=False,
         alias="MESSAGE_DELIVERY_CALLBACK_REQUIRED",

@@ -652,6 +652,30 @@ class ChatRuntime:
         state["sales_contact_key"] = scope.sales_contact_key
         state["global_customer_key"] = scope.global_customer_key
         state["customer_scope"] = scope.as_dict()
+        state["previous_policy_state"] = {}
+        latest_policy_state = getattr(self._repository, "latest_v3_strategy_state", None)
+        if (
+            callable(latest_policy_state)
+            and scope.persistence_allowed
+            and not test_isolated
+        ):
+            try:
+                state["previous_policy_state"] = latest_policy_state(
+                    scope.sales_contact_key,
+                    exclude_request_id=request_id,
+                    corp_id=scope.corp_id,
+                    wechat=scope.wechat,
+                    external_userid=scope.external_userid,
+                    customer_id=scope.customer_id,
+                )
+            except Exception as exc:
+                state.setdefault("warnings", []).append(
+                    {
+                        "stage": "previous_policy_state",
+                        "warning": "Previous policy state unavailable; current turn will be decided independently.",
+                        "detail": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                )
         if self._ai_sales_policy_service is not None:
             try:
                 state["ai_sales_policy"] = self._ai_sales_policy_service.runtime_snapshot()
@@ -725,6 +749,15 @@ class ChatRuntime:
             final_state.pop("follow_knowledge_callback", None)
         reply_messages = [ReplyMessage(**message) for message in raw_reply_messages]
         reply_message_dicts = [message.model_dump() for message in reply_messages]
+        if (
+            not bool(final_state.get("test_isolated"))
+            and _memory_persistence_allowed(final_state)
+        ):
+            _record_stop_contact_fact(
+                self._memory_store,
+                final_state,
+                customer_id=str(final_state.get("sales_contact_key") or ""),
+            )
         if reply_messages and not bool(final_state.get("test_isolated")):
             safe_repository_call(
                 self._repository.add_assistant_message,
@@ -1188,6 +1221,69 @@ def _set_sync_return(state: AgentState, return_type: str, reply_messages: list[d
 def _memory_persistence_allowed(state: AgentState) -> bool:
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     return bool(request_context.get("memory_persist_allowed")) and bool(str(state.get("sales_contact_key") or "").strip())
+
+
+def _record_stop_contact_fact(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+) -> None:
+    """Persist Reply's explicit-exit decision without blocking the customer response."""
+
+    policy_decision = (
+        state.get("policy_decision")
+        if isinstance(state.get("policy_decision"), dict)
+        else {}
+    )
+    realtime_intent = (
+        state.get("realtime_intent")
+        if isinstance(state.get("realtime_intent"), dict)
+        else policy_decision.get("realtime_intent")
+        if isinstance(policy_decision.get("realtime_intent"), dict)
+        else {}
+    )
+    record: dict[str, Any] = {"status": "skipped", "reason": "not_explicit_exit"}
+    if str(realtime_intent.get("type") or "").strip() != "explicit_exit":
+        state["stop_contact_memory_record"] = record
+        return
+    if not memory_store:
+        record["reason"] = "memory_store_unavailable"
+    elif not customer_id:
+        record["reason"] = "missing_sales_contact_key"
+    else:
+        evidence_refs = [
+            str(item).strip()
+            for item in realtime_intent.get("evidence_refs") or []
+            if str(item or "").strip()
+        ]
+        if not evidence_refs:
+            record["reason"] = "missing_valid_customer_evidence"
+        else:
+            try:
+                record.update(
+                    memory_store.record_stop_contact(
+                        customer_id,
+                        request_id=str(state.get("request_id") or ""),
+                        evidence_refs=evidence_refs,
+                        reason="explicit_exit",
+                    )
+                )
+            except Exception as exc:
+                record = {
+                    "status": "error",
+                    "reason": "persistence_failed",
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                }
+    state["stop_contact_memory_record"] = record
+    if record.get("status") != "recorded":
+        state.setdefault("warnings", []).append(
+            {
+                "stage": "stop_contact_memory",
+                "warning": "Explicit stop-contact was detected but could not be persisted.",
+                "detail": str(record.get("error") or record.get("reason") or "")[:500],
+            }
+        )
 
 
 def _record_authoritative_payment_fact(

@@ -134,6 +134,39 @@ class TaskExecutor:
                 terminal=True,
             )
             return {"ok": False, "status": "failed", "error": reason, **detail}
+        scope = build_customer_scope(
+            corp_id=identity["corp_id"],
+            wechat=identity["wechat"],
+            external_userid=identity["external_userid"],
+            customer_id=identity["customer_id"],
+            user_id=identity["user_id"],
+        )
+        if self.repository.has_stop_contact(scope.sales_contact_key):
+            reason = "explicit_stop_contact"
+            self.repository.update_outreach_task(task_id, status="skipped", error_message=reason)
+            self.repository.skip_remaining_outreach_tasks(
+                str(task["plan_id"]),
+                reason=reason,
+                exclude_task_id=task_id,
+            )
+            self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+            self.repository.add_outreach_event(
+                plan_id=str(task["plan_id"]),
+                task_id=task_id,
+                customer_id=str(task["customer_id"]),
+                event_type="task_skipped_explicit_stop_contact",
+                event_summary="Proactive outreach blocked by a persisted stop-contact fact",
+                payload={"sales_contact_key": scope.sales_contact_key},
+            )
+            self.first_day._sync_first_day_run_for_task(
+                plan=plan,
+                task=task,
+                status="cancelled",
+                reason_code=reason,
+                final_decision="no_send",
+                terminal=True,
+            )
+            return {"ok": True, "status": "skipped", "reason": reason}
         if is_first_day_plan and not _first_day_wechat_allowed(identity["wechat"], self.first_day_wechat_allowlist):
             reason = "first_day_wechat_not_allowed"
             self.repository.update_outreach_task(task_id, status="skipped", error_message=reason)
@@ -964,4 +997,3 @@ class TaskExecutor:
         if bool(task.get("should_send_payment_collection")):
             return personalized_payment_collection_eligibility(customer_context, amount=10)
         return personalized_order_eligibility(customer_context)
-

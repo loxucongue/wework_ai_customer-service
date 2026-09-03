@@ -176,7 +176,7 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
             for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
             if str(item or "").strip()
         }
-        delivery_limit = len(ids) if resolution.get("allow_broad_scope_delivery") else 3
+        delivery_limit = len(resolution_ids) if resolution.get("allow_broad_scope_delivery") else 3
         if 1 <= len(resolution_ids) <= delivery_limit:
             output.append(resolution_ids)
 

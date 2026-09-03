@@ -285,6 +285,7 @@ OUTREACH_DURABLE_EVENT_TYPES = {
     "complaint_or_refund_risk",
     "health_risk",
     "manual_handoff",
+    "stop_contact_confirmed",
 }
 
 
@@ -3480,4 +3481,3 @@ class FirstDayWorkflow:
 
     def monitor_status(self) -> dict[str, Any]:
         return dict(self._monitor_status)
-

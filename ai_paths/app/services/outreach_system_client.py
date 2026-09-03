@@ -106,6 +106,15 @@ class OutreachSystemClient:
         source_context: dict[str, Any] | None = None,
         delivery_idempotency_key: str = "",
     ) -> dict[str, Any]:
+        if self._delivery_service:
+            self._delivery_service.assert_proactive_send_allowed(
+                {
+                    "corp_id": corp_id,
+                    "customer_id": customer_id,
+                    "external_userid": external_userid,
+                    "wechat": wechat,
+                }
+            )
         body = {
             "corp_id": corp_id,
             "customer_id": customer_id,

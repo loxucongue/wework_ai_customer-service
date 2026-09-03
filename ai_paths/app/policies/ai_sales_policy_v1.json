@@ -1,9 +1,10 @@
 {
   "schema_version": "ai_sales_policy_v1",
-  "policy_version": "2026-08-31.1",
+  "policy_version": "2026-09-03.1",
+  "decision_schema_version": "v3_policy_decision_v2",
   "status": "published",
   "runtime_mode": "active",
-  "updated_at": "2026-08-31T00:00:00+08:00",
+  "updated_at": "2026-09-03T00:00:00+08:00",
   "purpose": "为 V3 提供统一的决策路由、实时意图、情绪调节和逼单序列配置。配置只描述业务目标，不替代模型语义判断和系统事实校验。",
   "ownership": {
     "business": "运营配置适用场景、节点目标、时间、素材和真实业务口径。",

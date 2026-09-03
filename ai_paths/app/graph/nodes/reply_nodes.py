@@ -933,6 +933,9 @@ def _normalized_policy_decision(
     policy = runtime_state.get("ai_sales_policy") if isinstance(runtime_state.get("ai_sales_policy"), dict) else {}
     if str(policy.get("runtime_mode") or "off") == "off":
         return {
+            "policy_decision": {},
+            "decision_status": "",
+            "decision_reasons": [],
             "primary_task": {},
             "secondary_tasks": [],
             "realtime_intent": {},
@@ -940,6 +943,25 @@ def _normalized_policy_decision(
             "closing_decision": {},
             "cardpoint_decision": {},
         }
+
+    degraded_reasons: list[str] = []
+
+    def degrade(reason: str) -> None:
+        if reason not in degraded_reasons:
+            degraded_reasons.append(reason)
+
+    def checked_enum(candidate: Any, allowed: set[str], default: str, *, field: str) -> str:
+        normalized = str(candidate or "").strip()
+        if not normalized:
+            degrade(f"missing_{field}")
+            return default
+        if normalized not in allowed:
+            degrade(f"invalid_{field}")
+            return default
+        return normalized
+
+    if not isinstance(value, dict):
+        degrade("missing_policy_decision")
 
     routing = policy.get("routing") if isinstance(policy.get("routing"), dict) else {}
     allowed_tasks = {
@@ -949,24 +971,42 @@ def _normalized_policy_decision(
         if isinstance(item, dict) and str(item.get("key") or "").strip()
     }
 
-    def task(candidate: Any) -> dict[str, Any]:
+    def task(candidate: Any, *, field: str) -> dict[str, Any]:
         item = candidate if isinstance(candidate, dict) else {}
         task_type = str(item.get("type") or "").strip()
         if task_type not in allowed_tasks:
+            if candidate not in (None, {}, ""):
+                degrade(f"invalid_{field}")
             return {}
+        if not str(item.get("goal") or "").strip():
+            degrade(f"missing_{field}_goal")
         return {
             "type": task_type,
             "goal": str(item.get("goal") or "").strip()[:500],
             "basis": _policy_string_list(item.get("basis"), limit=6),
         }
 
-    primary_task = task(raw.get("primary_task"))
-    secondary_tasks = [
-        normalized
-        for item in (raw.get("secondary_tasks") if isinstance(raw.get("secondary_tasks"), list) else [])
-        if (normalized := task(item))
-        and normalized.get("type") != primary_task.get("type")
-    ][:3]
+    primary_task = task(raw.get("primary_task"), field="primary_task")
+    if not primary_task:
+        degrade("missing_primary_task")
+    secondary_candidates = raw.get("secondary_tasks")
+    if secondary_candidates is not None and not isinstance(secondary_candidates, list):
+        degrade("invalid_secondary_tasks")
+    elif isinstance(secondary_candidates, list) and len(secondary_candidates) > 3:
+        degrade("too_many_secondary_tasks")
+    secondary_tasks: list[dict[str, Any]] = []
+    seen_secondary_tasks: set[str] = set()
+    for item in secondary_candidates if isinstance(secondary_candidates, list) else []:
+        normalized = task(item, field="secondary_task")
+        task_type = str(normalized.get("type") or "")
+        if not normalized or task_type == primary_task.get("type") or task_type in seen_secondary_tasks:
+            if normalized:
+                degrade("duplicate_secondary_task")
+            continue
+        seen_secondary_tasks.add(task_type)
+        secondary_tasks.append(normalized)
+        if len(secondary_tasks) == 3:
+            break
 
     intent_policy = policy.get("intent") if isinstance(policy.get("intent"), dict) else {}
     allowed_intents = {
@@ -976,10 +1016,38 @@ def _normalized_policy_decision(
     }
     intent_raw = raw.get("realtime_intent") if isinstance(raw.get("realtime_intent"), dict) else {}
     intent_type = str(intent_raw.get("type") or "").strip()
+    if not isinstance(raw.get("realtime_intent"), dict):
+        degrade("missing_realtime_intent")
+    elif intent_type not in allowed_intents:
+        degrade("invalid_realtime_intent")
+    secondary_intents_raw = intent_raw.get("secondary_types")
+    if secondary_intents_raw is not None and not isinstance(secondary_intents_raw, list):
+        degrade("invalid_secondary_intents")
+    elif isinstance(secondary_intents_raw, list) and len(secondary_intents_raw) > 3:
+        degrade("too_many_secondary_intents")
+    secondary_types: list[str] = []
+    for candidate in secondary_intents_raw if isinstance(secondary_intents_raw, list) else []:
+        candidate_type = str(candidate or "").strip()
+        if candidate_type not in allowed_intents:
+            degrade("invalid_secondary_intent")
+            continue
+        if candidate_type == intent_type or candidate_type in secondary_types:
+            continue
+        secondary_types.append(candidate_type)
+        if len(secondary_types) == 3:
+            break
+    valid_customer_refs = _customer_message_refs(runtime_state)
     realtime_intent = (
         {
             "type": intent_type,
-            "confidence": _policy_enum(intent_raw.get("confidence"), {"high", "medium", "low"}, "low"),
+            "secondary_types": secondary_types,
+            "confidence": checked_enum(
+                intent_raw.get("confidence"),
+                {"high", "medium", "low"},
+                "low",
+                field="intent_confidence",
+            ),
+            "evidence_refs": _valid_customer_refs(intent_raw.get("evidence_refs"), valid_customer_refs)[:6],
             "basis": _policy_string_list(intent_raw.get("basis"), limit=6),
         }
         if intent_type in allowed_intents
@@ -995,11 +1063,27 @@ def _normalized_policy_decision(
     emotion_raw = raw.get("emotion_decision") if isinstance(raw.get("emotion_decision"), dict) else {}
     emotion_label = str(emotion_raw.get("label") or "").strip()
     emotion_definition = emotions.get(emotion_label) or {}
+    if not isinstance(raw.get("emotion_decision"), dict):
+        degrade("missing_emotion_decision")
+    elif not emotion_definition:
+        degrade("invalid_emotion_label")
     emotion_decision = (
         {
             "label": emotion_label,
-            "pressure": _policy_enum(emotion_raw.get("pressure"), {"normal", "low", "none"}, "normal"),
+            "confidence": checked_enum(
+                emotion_raw.get("confidence"),
+                {"high", "medium", "low"},
+                "low",
+                field="emotion_confidence",
+            ),
+            "pressure": checked_enum(
+                emotion_raw.get("pressure"),
+                {"normal", "low", "none"},
+                "normal",
+                field="emotion_pressure",
+            ),
             "flow_action": str(emotion_definition.get("flow_action") or "keep"),
+            "evidence_refs": _valid_customer_refs(emotion_raw.get("evidence_refs"), valid_customer_refs)[:6],
             "basis": _policy_string_list(emotion_raw.get("basis"), limit=6),
         }
         if emotion_definition
@@ -1015,18 +1099,22 @@ def _normalized_policy_decision(
         and str(item.get("sequence_key") or "").strip()
     }
     closing_raw = raw.get("closing_decision") if isinstance(raw.get("closing_decision"), dict) else {}
-    action = _policy_enum(
+    if not isinstance(raw.get("closing_decision"), dict):
+        degrade("missing_closing_decision")
+    action = checked_enum(
         closing_raw.get("action"),
         {"none", "enter", "advance", "pause", "fallback", "complete"},
         "none",
+        field="closing_action",
     )
     sequence_key = str(closing_raw.get("sequence_key") or "none").strip() or "none"
     sequence = sequences.get(sequence_key)
     if action == "none":
         sequence_key = "none"
         sequence = None
-    elif sequence is None and action not in {"complete", "pause"}:
-        action = "none"
+    elif sequence is None:
+        degrade("invalid_closing_sequence")
+        action = "pause" if action in {"enter", "advance", "fallback", "pause"} else "none"
         sequence_key = "none"
     node_key = str(closing_raw.get("node_key") or "").strip()
     allowed_nodes = {
@@ -1035,24 +1123,83 @@ def _normalized_policy_decision(
         if isinstance(item, dict) and str(item.get("node_key") or "").strip()
     }
     if node_key not in allowed_nodes:
+        if node_key:
+            degrade("invalid_closing_node")
         node_key = ""
+    if action in {"enter", "advance"} and not node_key:
+        degrade("closing_advance_requires_valid_node")
+        action = "pause"
     closing_decision = {
         "action": action,
         "sequence_key": sequence_key,
         "node_key": node_key,
-        "trigger": _policy_enum(
+        "trigger": checked_enum(
             closing_raw.get("trigger"),
             {"explicit_transaction", "blocker_resolved", "positive_progress", "silent_due", "none"},
             "none",
+            field="closing_trigger",
         ),
-        "customer_state": _policy_enum(
+        "customer_state": checked_enum(
             closing_raw.get("customer_state"),
-            {"engaged", "hesitant", "soft_reject", "hard_stop", "new_blocker", "none"},
+            {
+                "engaged", "hesitant", "soft_reject", "not_buying_now", "hard_stop",
+                "new_blocker", "transaction_terminal_or_handoff", "none",
+            },
             "none",
+            field="closing_customer_state",
         ),
-        "pressure": _policy_enum(closing_raw.get("pressure"), {"normal", "low", "none"}, "none"),
+        "pressure": checked_enum(
+            closing_raw.get("pressure"),
+            {"normal", "low", "none"},
+            "none",
+            field="closing_pressure",
+        ),
+        "evidence_refs": _valid_customer_refs(closing_raw.get("evidence_refs"), valid_customer_refs)[:6],
         "basis": _policy_string_list(closing_raw.get("basis"), limit=6),
     }
+
+    if realtime_intent.get("type") == "defer":
+        if closing_decision["action"] in {"enter", "advance"}:
+            closing_decision["action"] = "pause"
+            closing_decision["node_key"] = ""
+            degrade("defer_cannot_advance_closing")
+        if closing_decision["pressure"] == "normal":
+            closing_decision["pressure"] = "low"
+            degrade("defer_requires_lower_pressure")
+    if closing_decision["customer_state"] == "new_blocker":
+        if closing_decision["action"] != "pause":
+            closing_decision["action"] = "pause"
+            closing_decision["node_key"] = ""
+            degrade("new_blocker_requires_pause")
+        if closing_decision["pressure"] == "normal":
+            closing_decision["pressure"] = "low"
+            degrade("new_blocker_requires_lower_pressure")
+    if closing_decision["customer_state"] in {
+        "not_buying_now",
+        "transaction_terminal_or_handoff",
+    }:
+        if closing_decision["action"] != "complete":
+            closing_decision["action"] = "complete"
+            closing_decision["node_key"] = ""
+            degrade("terminal_customer_state_requires_complete")
+        if closing_decision["pressure"] != "none":
+            closing_decision["pressure"] = "none"
+            degrade("terminal_customer_state_requires_no_pressure")
+    if emotion_decision.get("flow_action") == "lower_pressure":
+        if emotion_decision.get("pressure") == "normal":
+            emotion_decision["pressure"] = "low"
+            degrade("emotion_requires_lower_pressure")
+        if closing_decision.get("pressure") == "normal":
+            closing_decision["pressure"] = "low"
+            degrade("emotion_requires_lower_closing_pressure")
+    elif emotion_decision.get("flow_action") in {"pause_marketing_turn", "handoff_by_system_rule"}:
+        if emotion_decision.get("pressure") != "none":
+            emotion_decision["pressure"] = "none"
+            degrade("emotion_requires_no_pressure")
+        if closing_decision["action"] in {"enter", "advance", "fallback"}:
+            closing_decision["action"] = "pause"
+            closing_decision["node_key"] = ""
+            degrade("emotion_cannot_advance_closing")
 
     catalog = runtime_state.get("sales_strategy_catalog") if isinstance(runtime_state.get("sales_strategy_catalog"), dict) else {}
     category_keys = {
@@ -1077,8 +1224,24 @@ def _normalized_policy_decision(
         else {}
     )
 
+    if cardpoint_decision.get("state") in {"active", "repeated"}:
+        if closing_decision["action"] != "pause":
+            closing_decision["action"] = "pause"
+            closing_decision["node_key"] = ""
+            degrade("active_cardpoint_requires_pause")
+        if closing_decision["pressure"] == "normal":
+            closing_decision["pressure"] = "low"
+            degrade("active_cardpoint_requires_lower_pressure")
+
     if realtime_intent.get("type") == "explicit_exit":
-        primary_task = task({"type": "hard_stop", "goal": "停止自动营销", "basis": realtime_intent.get("basis") or []})
+        if primary_task.get("type") != "hard_stop":
+            degrade("explicit_exit_requires_hard_stop")
+        if closing_decision.get("action") != "complete" or closing_decision.get("customer_state") != "hard_stop":
+            degrade("explicit_exit_requires_complete")
+        primary_task = task(
+            {"type": "hard_stop", "goal": "停止自动营销", "basis": realtime_intent.get("basis") or []},
+            field="primary_task",
+        )
         secondary_tasks = []
         closing_decision.update(
             {
@@ -1089,7 +1252,7 @@ def _normalized_policy_decision(
                 "pressure": "none",
             }
         )
-    return {
+    normalized_decision = {
         "primary_task": primary_task,
         "secondary_tasks": secondary_tasks,
         "realtime_intent": realtime_intent,
@@ -1097,6 +1260,135 @@ def _normalized_policy_decision(
         "closing_decision": closing_decision,
         "cardpoint_decision": cardpoint_decision,
     }
+    return {
+        "policy_decision": normalized_decision,
+        "decision_status": "degraded" if degraded_reasons else "ok",
+        "decision_reasons": degraded_reasons,
+        **normalized_decision,
+    }
+
+
+def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentState) -> None:
+    """Reject model outputs whose structures contradict their own safety decision.
+
+    This does not infer intent from customer text.  It only checks that Reply's
+    structured customer action agrees with Reply's structured policy decision,
+    so the existing single repair can correct a self-contradictory output.
+    """
+
+    normalized = _normalized_policy_decision(payload.get("policy_decision"), state=state)
+    decision = normalized.get("policy_decision")
+    structural_reasons = [
+        str(reason)
+        for reason in normalized.get("decision_reasons") or []
+        if str(reason).startswith(("missing_", "invalid_", "too_many_", "duplicate_"))
+    ]
+    if structural_reasons:
+        raise ValueError(
+            "policy_decision_schema_invalid:" + ",".join(structural_reasons)
+        )
+    if not isinstance(decision, dict) or not decision:
+        return
+    intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
+    emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
+    cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
+    cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
+    explicit_exit = str(intent.get("type") or "") == "explicit_exit"
+    pause_marketing = str(emotion.get("flow_action") or "") in {
+        "pause_marketing_turn",
+        "handoff_by_system_rule",
+    }
+    closing = decision.get("closing_decision") if isinstance(decision.get("closing_decision"), dict) else {}
+    active_cardpoint = (
+        str(cardpoint.get("state") or "") in {"active", "repeated"}
+        or str(closing.get("customer_state") or "") == "new_blocker"
+    )
+    if not explicit_exit and not pause_marketing and not active_cardpoint:
+        return
+
+    sales = _normalized_sales_judgment(payload.get("sales_judgment"))
+    reply_action = _reply_action_from_payload(payload)
+    messages = payload.get("reply_messages") if isinstance(payload.get("reply_messages"), list) else []
+    structured_sales_types = {
+        str(item.get("type") or "").strip()
+        for item in messages
+        if isinstance(item, dict)
+    } & {"payment_collection", "store_address", "image", "video"}
+    commit_actions = [item for item in payload.get("commit_actions") or [] if isinstance(item, dict)]
+
+    conflicts: list[str] = []
+    if sales.get("posture") in {"advance", "switch"}:
+        conflicts.append("sales_posture")
+    allowed_actions = (
+        {"none"}
+        if explicit_exit
+        else {"none", "ask"}
+        if pause_marketing
+        else {"none", "ask", "offer"}
+    )
+    if reply_action not in allowed_actions:
+        conflicts.append("reply_action")
+    if structured_sales_types and (
+        explicit_exit or pause_marketing or "payment_collection" in structured_sales_types
+    ):
+        conflicts.append("structured_sales_message")
+    if commit_actions:
+        conflicts.append("commit_actions")
+    if conflicts:
+        reason = (
+            "explicit_exit"
+            if explicit_exit
+            else "pause_marketing"
+            if pause_marketing
+            else "active_cardpoint"
+        )
+        raise ValueError(
+            f"policy_decision_{reason}_conflict:" + ",".join(conflicts)
+        )
+
+
+def _policy_safety_floor(payload: dict[str, Any], state: AgentState) -> str:
+    """Capture only grounded, model-declared safety state for a repair attempt."""
+
+    normalized = _normalized_policy_decision(payload.get("policy_decision"), state=state)
+    decision = normalized.get("policy_decision")
+    if not isinstance(decision, dict):
+        return ""
+    intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
+    emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
+    cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
+    if str(intent.get("type") or "") == "explicit_exit" and intent.get("evidence_refs"):
+        return "explicit_exit"
+    if (
+        str(emotion.get("flow_action") or "")
+        in {"pause_marketing_turn", "handoff_by_system_rule"}
+        and emotion.get("evidence_refs")
+    ):
+        return "pause_marketing"
+    if str(cardpoint.get("state") or "") in {"active", "repeated"}:
+        category_key = str(cardpoint.get("category_key") or "").strip()
+        if category_key:
+            return f"active_cardpoint:{category_key}"
+    return ""
+
+
+def _validate_policy_safety_floor(
+    payload: dict[str, Any],
+    state: AgentState,
+    safety_floor: str,
+) -> None:
+    if not safety_floor:
+        return
+    current_floor = _policy_safety_floor(payload, state)
+    if safety_floor == "explicit_exit" and current_floor != "explicit_exit":
+        raise ValueError("policy_safety_floor_removed:explicit_exit")
+    if safety_floor == "pause_marketing" and current_floor not in {
+        "pause_marketing",
+        "explicit_exit",
+    }:
+        raise ValueError("policy_safety_floor_removed:pause_marketing")
+    if safety_floor.startswith("active_cardpoint:") and current_floor != safety_floor:
+        raise ValueError("policy_safety_floor_removed:active_cardpoint")
 
 def _policy_string_list(value: Any, *, limit: int) -> list[str]:
     if not isinstance(value, list):

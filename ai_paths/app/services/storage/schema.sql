@@ -402,10 +402,27 @@ CREATE TABLE IF NOT EXISTS v3_strategy_usage_events (
     closing_strategy_code TEXT NOT NULL DEFAULT '',
     emotion_before TEXT NOT NULL DEFAULT '',
     emotion_after TEXT NOT NULL DEFAULT '',
+    policy_version TEXT NOT NULL DEFAULT '',
+    decision_status TEXT NOT NULL DEFAULT '',
+    intent_confidence TEXT NOT NULL DEFAULT '',
+    intent_secondary_json TEXT NOT NULL DEFAULT '[]',
+    emotion_confidence TEXT NOT NULL DEFAULT '',
+    emotion_pressure TEXT NOT NULL DEFAULT '',
+    emotion_flow_action TEXT NOT NULL DEFAULT '',
+    closing_action TEXT NOT NULL DEFAULT '',
+    closing_node_key TEXT NOT NULL DEFAULT '',
+    closing_trigger TEXT NOT NULL DEFAULT '',
+    closing_customer_state TEXT NOT NULL DEFAULT '',
+    closing_pressure TEXT NOT NULL DEFAULT '',
+    cardpoint_category_key TEXT NOT NULL DEFAULT '',
+    cardpoint_state TEXT NOT NULL DEFAULT '',
+    decision_reasons_json TEXT NOT NULL DEFAULT '[]',
+    decision_evidence_refs_json TEXT NOT NULL DEFAULT '{}',
     selector_status TEXT NOT NULL DEFAULT '',
     fallback_used INTEGER NOT NULL DEFAULT 0,
     payload_json TEXT NOT NULL DEFAULT '{}',
     order_state_before_json TEXT NOT NULL DEFAULT '{}',
+    customer_turn_eligible INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -424,6 +441,14 @@ CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_action
 ON v3_strategy_usage_events(action_code, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_dispatch
 ON v3_strategy_usage_events(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_intent
+ON v3_strategy_usage_events(intent_code, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_emotion
+ON v3_strategy_usage_events(emotion_before, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_closing
+ON v3_strategy_usage_events(closing_strategy_code, closing_action, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_decision
+ON v3_strategy_usage_events(decision_status, occurred_at);
 
 CREATE TABLE IF NOT EXISTS v3_strategy_outcome_events (
     usage_event_id TEXT PRIMARY KEY,
@@ -434,9 +459,11 @@ CREATE TABLE IF NOT EXISTS v3_strategy_outcome_events (
     first_reply_after_at TEXT NOT NULL DEFAULT '',
     first_reply_after_msgid TEXT NOT NULL DEFAULT '',
     order_state_before TEXT NOT NULL DEFAULT '',
-    order_state_after_24h TEXT NOT NULL DEFAULT '',
-    order_state_after_72h TEXT NOT NULL DEFAULT '',
-    order_state_after_7d TEXT NOT NULL DEFAULT '',
+  order_state_after_24h TEXT NOT NULL DEFAULT '',
+  order_state_after_72h TEXT NOT NULL DEFAULT '',
+  order_state_after_7d TEXT NOT NULL DEFAULT '',
+  order_state_after_14d TEXT NOT NULL DEFAULT '',
+  order_state_after_30d TEXT NOT NULL DEFAULT '',
     paid_after_24h INTEGER NOT NULL DEFAULT 0,
     paid_after_72h INTEGER NOT NULL DEFAULT 0,
     paid_after_7d INTEGER NOT NULL DEFAULT 0,
@@ -444,6 +471,15 @@ CREATE TABLE IF NOT EXISTS v3_strategy_outcome_events (
     visited_after_14d INTEGER NOT NULL DEFAULT 0,
     finished_after_30d INTEGER NOT NULL DEFAULT 0,
     attribution_source TEXT NOT NULL DEFAULT 'local_windows',
+    next_usage_event_id TEXT NOT NULL DEFAULT '',
+    next_intent_code TEXT NOT NULL DEFAULT '',
+    next_emotion_code TEXT NOT NULL DEFAULT '',
+    emotion_transition TEXT NOT NULL DEFAULT '',
+    attribution_anchor_source TEXT NOT NULL DEFAULT 'unknown',
+    order_source TEXT NOT NULL DEFAULT '',
+    order_query_status TEXT NOT NULL DEFAULT '',
+    order_query_error TEXT NOT NULL DEFAULT '',
+    order_last_refreshed_at TEXT NOT NULL DEFAULT '',
     payload_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

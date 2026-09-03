@@ -139,6 +139,10 @@ class AgentState(TypedDict, total=False):
     sales_progression: dict[str, Any]
     ai_sales_policy: dict[str, Any]
     sales_strategy_catalog: dict[str, Any]
+    previous_policy_state: dict[str, Any]
+    policy_decision: dict[str, Any]
+    decision_status: str
+    decision_reasons: list[str]
     realtime_intent: dict[str, Any]
     emotion_decision: dict[str, Any]
     closing_decision: dict[str, Any]

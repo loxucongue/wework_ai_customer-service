@@ -54,6 +54,10 @@
   - `PLATFORM_AGENT_TOKEN`
   - `PLATFORM_AGENT_REQUEST_FROM`
   - `PLATFORM_AGENT_TIMEOUT_SECONDS`
+  - `V3_STRATEGY_ANALYTICS_OUTCOME_MAX_CONCURRENCY`
+  - `V3_STRATEGY_ANALYTICS_OUTCOME_TIMEOUT_SECONDS`
+  - `V3_STRATEGY_ANALYTICS_OUTCOME_MAX_RETRIES`
+  - `V3_STRATEGY_ANALYTICS_OUTCOME_RETRY_BASE_SECONDS`
 - 鉴权 header：
   - `token`
   - `Request-From`
@@ -78,6 +82,7 @@
 - 运行边界：
   - 写接口只能由 V3 Reply 明确授权后的工具链调用，并受事实、schema、幂等和安全校验约束。
   - 普通销售意图不得由 Python 关键词规则决定是否调用写接口。
+  - V3 策略 outcome worker 只允许调用 `GET /platform_agent/order/index`；按销售接触边界并发查询并缓存原始订单，再按每条事件的基线订单和送达锚点筛选。并发、单次超时、最大重试和指数退避均受独立配置限制；查询失败、基线不足或状态未知时不得记为未成交。
 
 ## Outreach System / Send：聊天记录与主动触达
 
