@@ -35,4 +35,5 @@ workflow_tests/reports/
 artifacts/
 docs/tasks/active/*.local.md
 .codex-task-cache/
+.playwright-cli/
 /tmp/

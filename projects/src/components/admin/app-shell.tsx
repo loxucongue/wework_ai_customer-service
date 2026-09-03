@@ -6,36 +6,36 @@ import { useState } from "react";
 import {
   Archive,
   BarChart3,
-  BookOpenText,
   Bot,
   ChevronLeft,
   DatabaseZap,
   FileClock,
   History,
-  Images,
   Menu,
   MessageSquareText,
   PanelLeft,
   Settings2,
   Sparkles,
+  TrendingUp,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
 const groups = [
   {
     label: "监控",
-    items: [{ href: "/", label: "运维总览", icon: BarChart3 }],
+    items: [
+      { href: "/", label: "运维总览", icon: BarChart3 },
+      { href: "/analytics/sales", label: "销售策略 BI", icon: TrendingUp },
+    ],
   },
   {
     label: "客服与配置",
     items: [
       { href: "/v3-debug", label: "AI 对话调试", icon: Bot },
       { href: "/sop", label: "主线 SOP", icon: MessageSquareText },
-      { href: "/sop/precision", label: "预约卡点话术", icon: BookOpenText },
-      { href: "/sop-materials", label: "SOP 异议素材", icon: Images },
     ],
   },
   {
@@ -85,6 +85,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <SheetContent side="left" className="w-72 gap-0 p-0">
           <SheetHeader className="sr-only">
             <SheetTitle>后台导航</SheetTitle>
+            <SheetDescription>选择要进入的运营后台页面。</SheetDescription>
           </SheetHeader>
           <SidebarContent collapsed={false} pathname={pathname} onNavigate={() => setMobileOpen(false)} />
         </SheetContent>
