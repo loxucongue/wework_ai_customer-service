@@ -400,9 +400,13 @@ class SopPlatformTaskService:
                 if isinstance(online_page, list)
                 else online_page.get("items") if isinstance(online_page, dict) else []
             )
+            stale_online_items, content_lookup_items = _partition_stale_pending_tasks(
+                online_items if isinstance(online_items, list) else [],
+                settings=self.settings,
+            )
             store_visit_page = await _load_sop_message_groups_for_events(
                 self.platform_client,
-                online_items if isinstance(online_items, list) else [],
+                content_lookup_items,
                 limit=pull_limit,
             )
             self._last_poll_error = ""
@@ -439,9 +443,12 @@ class SopPlatformTaskService:
                 "error_count": 1,
             }
         tasks, unresolved_content_triggers = _resolve_compatible_pending_tasks(
-            online_page.get("items") if isinstance(online_page.get("items"), list) else [],
+            content_lookup_items,
             store_visit_page.get("items") if isinstance(store_visit_page.get("items"), list) else [],
         )
+        # Expired tasks are terminal no-send work. Their message content is not
+        # needed, and querying it can block cleanup when the platform is slow.
+        tasks = _dedupe_tasks([*stale_online_items, *tasks])
         quiet_mode = _in_configured_quiet_hours(settings=self.settings)
         if unresolved_content_triggers:
             self._counters["pending_content_lookup_missing"] += len(unresolved_content_triggers)
@@ -3580,6 +3587,18 @@ def _platform_task_is_stale(platform_task: dict[str, Any], *, settings: Any) -> 
     scheduled = _task_scheduled_epoch(platform_task)
     max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 600) or 0))
     return bool(scheduled and max_age and time.time() - scheduled > max_age)
+
+
+def _partition_stale_pending_tasks(
+    tasks: list[dict[str, Any]],
+    *,
+    settings: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    stale: list[dict[str, Any]] = []
+    content_lookup: list[dict[str, Any]] = []
+    for task in tasks:
+        (stale if _platform_task_is_stale(task, settings=settings) else content_lookup).append(task)
+    return stale, content_lookup
 
 
 def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -> dict[str, Any]:

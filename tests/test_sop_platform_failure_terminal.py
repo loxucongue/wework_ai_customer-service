@@ -9,7 +9,11 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
-from app.services.sop_platform_task_service import SopPlatformTaskService, _task_preflight_no_send_reason
+from app.services.sop_platform_task_service import (
+    SopPlatformTaskService,
+    _partition_stale_pending_tasks,
+    _task_preflight_no_send_reason,
+)
 
 
 class _Repository:
@@ -158,3 +162,17 @@ def test_fixed_content_task_also_expires_ten_minutes_after_schedule() -> None:
         )
         == "stale_task"
     )
+
+
+def test_stale_pending_tasks_skip_message_content_lookup() -> None:
+    settings = SimpleNamespace(sop_platform_max_task_age_seconds=600)
+    stale, content_lookup = _partition_stale_pending_tasks(
+        [
+            {"task_id": 101, "scheduledAt": time.time() - 601},
+            {"task_id": 102, "scheduledAt": time.time() - 599},
+        ],
+        settings=settings,
+    )
+
+    assert [task["task_id"] for task in stale] == [101]
+    assert [task["task_id"] for task in content_lookup] == [102]
