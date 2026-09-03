@@ -20,8 +20,14 @@ warnings.simplefilter("ignore")
 
 from app.chat_request_context import build_request_context  # noqa: E402
 from app.config import Settings  # noqa: E402
-from app.runtime_services import build_reply_services  # noqa: E402
+from app.graph.nodes.action_module_outputs import build_planner_fact_output  # noqa: E402
+from app.graph.nodes.action_nodes import _resolve_customer_store_workflow  # noqa: E402, PLC2701
 from app.schemas import ChatRequest  # noqa: E402
+from app.services.coze_client import CozeClient  # noqa: E402
+from app.services.customer_store_knowledge import CustomerStoreKnowledgeService  # noqa: E402
+from app.services.model_client import ModelClient  # noqa: E402
+from app.services.platform_agent_client import PlatformAgentClient  # noqa: E402
+from app.services.store_snapshot_service import StoreSnapshotService  # noqa: E402
 
 
 REQUIRED_IDENTITY_FIELDS = ("customer_id", "corp_id", "wechat", "external_userid", "user_id")
@@ -141,9 +147,9 @@ def _run_online(host: str, ssh_key: Path, identity_path: str, query: str, *, ful
             "export AI_PATHS_SERVICE_ROLE=model_led_sales_brain_v3",
             "AI_PATHS_BACKGROUND_WORKERS_ENABLED=false SOP_PLATFORM_PULL_ENABLED=false;",
             "cd /opt/ai-paths-v3/tmp;",
-            "/opt/ai-paths/venv/bin/python",
-            "/opt/ai-paths-v3/current/ai_paths/scripts/test_real_store_workflow.py",
+            "PYTHONPATH=/opt/ai-paths-v3/current/ai_paths /opt/ai-paths/venv/bin/python -",
             "--full" if full else "",
+            "--identity-source",
             shlex.quote(identity_path),
             shlex.quote(query),
         ]
@@ -154,6 +160,7 @@ def _run_online(host: str, ssh_key: Path, identity_path: str, query: str, *, ful
             capture_output=True,
             text=True,
             encoding="utf-8",
+            input=Path(__file__).read_text(encoding="utf-8"),
             timeout=180,
             check=True,
         )
@@ -212,25 +219,61 @@ def _request(seed: dict[str, Any], query: str) -> ChatRequest:
     )
 
 
-async def _run(services: Any, seed: dict[str, Any], query: str, *, full: bool) -> dict[str, Any]:
+async def _run(seed: dict[str, Any], query: str, *, full: bool) -> dict[str, Any]:
     request = _request(seed, query)
     request_context = build_request_context(request)
     request_context["test_isolated"] = True
     request_context["memory_persist_allowed"] = False
-    state = services.chat_runtime._initial_state(request, f"isolated-store-{uuid4()}", request_context)  # noqa: SLF001
-    final_state = await services.chat_runtime._full_graph.ainvoke(state)  # noqa: SLF001
-    facts = final_state.get("fact_envelope") if isinstance(final_state.get("fact_envelope"), dict) else {}
-    structured = facts.get("structured_facts") if isinstance(facts.get("structured_facts"), dict) else {}
-    resolution = structured.get("store_resolution_fact", {})
-    knowledge = final_state.get("customer_store_knowledge", {})
+    settings = _isolated_settings()
+    platform_client = PlatformAgentClient(settings)
+    coze_client = CozeClient(settings)
+    model_client = ModelClient(settings)
+    snapshot_service = StoreSnapshotService(settings, platform_client)
+    knowledge_service = CustomerStoreKnowledgeService(platform_client, snapshot_service)
+    try:
+        knowledge = await asyncio.to_thread(knowledge_service.load, request_context=request_context)
+        state = {
+            "content": query,
+            "normalized_content": query,
+            "conversation_history": list(seed["conversation_history"]),
+            "request_context": request_context,
+            "customer_store_knowledge": knowledge,
+            "request_id": f"isolated-store-tool-{uuid4()}",
+        }
+        workflow = await _resolve_customer_store_workflow(
+            {
+                "name": "resolve_customer_store",
+                "arguments": {
+                    "purpose": "store_search",
+                    "destination_hint": query,
+                    "use_resolver_admin_fallback": True,
+                    "allow_broad_scope_delivery": True,
+                },
+            },
+            state,
+            coze_client,
+            model_client=model_client,
+        )
+        lookup = workflow.get("customer_store_lookup", {})
+        fact_output = build_planner_fact_output({"customer_store_lookup": lookup}, state)
+        structured = fact_output.get("structured_facts", {})
+        resolution = structured.get("store_resolution_fact", {})
+    finally:
+        await coze_client.aclose()
+        await model_client.aclose()
+        platform_client.close()
+    delivery_ids = {str(item) for item in resolution.get("delivery_store_ids") or []}
+    delivery_stores = [
+        item
+        for item in lookup.get("stores") or []
+        if str(item.get("store_id") or item.get("id") or "") in delivery_ids
+    ]
     output: dict[str, Any] = {
         "input": query,
-        "reply_messages": final_state.get("reply_messages") or [],
-        "route": {key: final_state.get(key) for key in ("scene", "intent", "subflow")},
         "store_scope": {
             "source": knowledge.get("source"),
             "store_count": knowledge.get("store_count", len(knowledge.get("stores") or [])),
-            "error": knowledge.get("error", ""),
+            "error": knowledge.get("error") or knowledge.get("store_scope_error") or "",
         },
         "store_resolution": {
             "status": resolution.get("status"),
@@ -238,20 +281,20 @@ async def _run(services: Any, seed: dict[str, Any], query: str, *, full: bool) -
             "candidate_store_ids": resolution.get("candidate_store_ids") or [],
             "delivery_store_ids": resolution.get("delivery_store_ids") or [],
         },
+        "delivery_stores": delivery_stores,
         "isolation": {
-            "test_isolated": bool(final_state.get("test_isolated")),
-            "memory_persist_allowed": bool(final_state.get("memory_persist_allowed")),
-            "commit_graph_executed": False,
+            "reply_model_executed": False,
+            "reply_messages_generated": False,
+            "memory_persisted": False,
             "external_send_executed": False,
         },
-        "errors": final_state.get("errors") or [],
+        "errors": ([lookup.get("error")] if lookup.get("error") else []),
     }
     if full:
         output.update(
-            tool_plan=final_state.get("tool_plan") or {},
-            tool_results=final_state.get("tool_results") or {},
+            destination_resolution=workflow.get("destination_resolution") or {},
+            customer_store_lookup=lookup,
             store_resolution_fact=resolution,
-            trace=final_state.get("trace") or [],
         )
     return output
 
@@ -272,39 +315,34 @@ async def _main() -> int:
         identity_label = "线上近期 V3 日志"
     print(f"身份已就绪（来源：{identity_label}，客户标识已隐藏）。", flush=True)
     ssh_key = args.ssh_key.expanduser().resolve()
-    services = None if online_identity_path else build_reply_services(_isolated_settings())
-    try:
-        one_shot = " ".join(input_parts).strip()
-        if one_shot:
-            result = (
-                await asyncio.to_thread(_run_online, args.host, ssh_key, online_identity_path, one_shot, full=args.full)
-                if online_identity_path
-                else await _run(services, seed, one_shot, full=args.full)
-            )
-            print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+    one_shot = " ".join(input_parts).strip()
+    if one_shot:
+        result = (
+            await asyncio.to_thread(_run_online, args.host, ssh_key, online_identity_path, one_shot, full=args.full)
+            if online_identity_path
+            else await _run(seed, one_shot, full=args.full)
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+        return 0
+    print("真实 V3 门店匹配工具已启动（不生成回复、不发送、不写客户记忆）。", flush=True)
+    print("输入客户消息后回车；输入 q、quit 或 exit 退出。", flush=True)
+    while True:
+        try:
+            query = await asyncio.to_thread(input, "\n客户输入> ")
+        except (EOFError, KeyboardInterrupt):
+            print()
             return 0
-        print("真实 V3 门店链路已启动（隔离模式，不发送、不写客户记忆）。", flush=True)
-        print("输入客户消息后回车；输入 q、quit 或 exit 退出。", flush=True)
-        while True:
-            try:
-                query = await asyncio.to_thread(input, "\n客户输入> ")
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return 0
-            query = query.strip()
-            if query.lower() in {"q", "quit", "exit"}:
-                return 0
-            if not query:
-                continue
-            result = (
-                await asyncio.to_thread(_run_online, args.host, ssh_key, online_identity_path, query, full=args.full)
-                if online_identity_path
-                else await _run(services, seed, query, full=args.full)
-            )
-            print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
-    finally:
-        if services is not None:
-            await services.aclose()
+        query = query.strip()
+        if query.lower() in {"q", "quit", "exit"}:
+            return 0
+        if not query:
+            continue
+        result = (
+            await asyncio.to_thread(_run_online, args.host, ssh_key, online_identity_path, query, full=args.full)
+            if online_identity_path
+            else await _run(seed, query, full=args.full)
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
 
 
 if __name__ == "__main__":
