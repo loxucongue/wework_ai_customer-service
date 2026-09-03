@@ -60,6 +60,8 @@ def _store_resolution_status(
     if resolved_level == "province":
         if tool_status in {"no_match", "no_candidate_stores"} or visible_candidate_count == 0:
             return "no_valid_candidate"
+        if tool_status == "ok" and visible_candidate_count == 1:
+            return "send_single"
         return "need_location"
     if recommended_store_id:
         return "send_single"
@@ -292,6 +294,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             delivery_store_ids = (
                 [recommended_store_id]
                 if resolution_status == "send_single" and recommended_store_id
+                else candidate_store_ids
+                if resolution_status == "send_multiple" and bool(value.get("allow_broad_scope_delivery"))
                 else candidate_store_ids[:MAX_STORE_DELIVERY_COUNT]
                 if v3_mode and resolution_status == "send_multiple"
                 else candidate_store_ids
@@ -299,7 +303,10 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 else []
             )
             lookup_missing = [str(item) for item in (value.get("missing") or []) if str(item)]
-            candidate_search_complete = "store_scope_unavailable" not in lookup_missing
+            candidate_search_complete = bool(
+                resolution_status != "search_incomplete"
+                and not {"store_scope_unavailable", "destination_resolution"}.intersection(lookup_missing)
+            )
             if resolution_status == "send_single" and not delivery_store_ids and candidate_store_ids:
                 delivery_store_ids = [candidate_store_ids[0]]
                 recommended_store_id = candidate_store_ids[0]
@@ -595,9 +602,19 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             )
             if tie_store_ids:
                 resolution_status = "send_multiple"
+            precise_ranked_ids = (
+                candidate_store_ids[:MAX_STORE_DELIVERY_COUNT]
+                if has_authoritative_ranking
+                and origin_precision in {"coordinates", "exact_address", "poi", "village", "township"}
+                else []
+            )
+            if len(precise_ranked_ids) > 1:
+                resolution_status = "send_multiple"
             delivery_store_ids = (
                 [ranked_recommended_store_id]
                 if resolution_status == "send_single" and ranked_recommended_store_id
+                else precise_ranked_ids
+                if precise_ranked_ids
                 else tie_store_ids
                 if tie_store_ids
                 else candidate_store_ids
@@ -606,7 +623,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if resolution_status == "send_multiple"
                 else []
             )
-            if v3_mode:
+            if v3_mode and not use_broad_exact_scope:
                 delivery_store_ids = delivery_store_ids[:MAX_STORE_DELIVERY_COUNT]
             requested_detail_kind, requested_detail_available = _requested_store_detail_status(
                 destination_resolution,

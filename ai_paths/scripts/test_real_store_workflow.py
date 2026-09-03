@@ -20,7 +20,6 @@ warnings.simplefilter("ignore")
 
 from app.chat_request_context import build_request_context  # noqa: E402
 from app.config import Settings  # noqa: E402
-from app.graph.nodes.action_module_outputs import build_planner_fact_output  # noqa: E402
 from app.graph.nodes.action_nodes import _resolve_customer_store_workflow  # noqa: E402, PLC2701
 from app.schemas import ChatRequest  # noqa: E402
 from app.services.coze_client import CozeClient  # noqa: E402
@@ -38,7 +37,7 @@ PRODUCTION_RUN_DIR = "/opt/ai-paths/logs/runs"
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the production V3 reply graph with a real customer identity in write-free isolation."
+        description="Run only the latest V3 store-matching workflow with a real customer identity in write-free isolation."
     )
     parser.add_argument("input", nargs="*", help="Customer message. Omit it for interactive mode.")
     parser.add_argument("--identity-source", type=Path, help="Use a specific request JSON or pasted request text.")
@@ -254,47 +253,34 @@ async def _run(seed: dict[str, Any], query: str, *, full: bool) -> dict[str, Any
             coze_client,
             model_client=model_client,
         )
-        lookup = workflow.get("customer_store_lookup", {})
-        fact_output = build_planner_fact_output({"customer_store_lookup": lookup}, state)
-        structured = fact_output.get("structured_facts", {})
-        resolution = structured.get("store_resolution_fact", {})
     finally:
         await coze_client.aclose()
         await model_client.aclose()
         platform_client.close()
-    delivery_ids = {str(item) for item in resolution.get("delivery_store_ids") or []}
-    delivery_stores = [
-        item
-        for item in lookup.get("stores") or []
-        if str(item.get("store_id") or item.get("id") or "") in delivery_ids
-    ]
     output: dict[str, Any] = {
         "input": query,
-        "store_scope": {
-            "source": knowledge.get("source"),
-            "store_count": knowledge.get("store_count", len(knowledge.get("stores") or [])),
-            "error": knowledge.get("error") or knowledge.get("store_scope_error") or "",
-        },
-        "store_resolution": {
-            "status": resolution.get("status"),
-            "clarification_required": resolution.get("clarification_required"),
-            "candidate_store_ids": resolution.get("candidate_store_ids") or [],
-            "delivery_store_ids": resolution.get("delivery_store_ids") or [],
-        },
-        "delivery_stores": delivery_stores,
+        "status": workflow.get("status"),
+        "destination_resolution": workflow.get("destination_resolution") or {},
+        "candidate_interpretations": workflow.get("candidate_interpretations") or [],
+        "store_scope": workflow.get("store_scope") or {},
+        "candidate_store_ids": workflow.get("candidate_store_ids") or [],
+        "delivery_store_ids": workflow.get("delivery_store_ids") or [],
+        "delivery_stores": workflow.get("delivery_stores") or [],
+        "ranking_method": workflow.get("ranking_method") or "scope_match",
+        "clarification_required": bool(workflow.get("clarification_required")),
+        "candidate_search_complete": bool(workflow.get("candidate_search_complete")),
         "isolation": {
             "reply_model_executed": False,
             "reply_messages_generated": False,
             "memory_persisted": False,
             "external_send_executed": False,
         },
-        "errors": ([lookup.get("error")] if lookup.get("error") else []),
+        "errors": workflow.get("errors") or [],
     }
     if full:
         output.update(
-            destination_resolution=workflow.get("destination_resolution") or {},
-            customer_store_lookup=lookup,
-            store_resolution_fact=resolution,
+            customer_store_lookup=workflow.get("customer_store_lookup") or {},
+            distance_calculate=workflow.get("distance_calculate") or {},
         )
     return output
 

@@ -140,6 +140,7 @@ class StoreSnapshotService:
         stores_by_id = snapshot.get("stores_by_id") if isinstance(snapshot.get("stores_by_id"), dict) else {}
         stores: list[dict[str, Any]] = []
         missing_ids: list[str] = []
+        missing_rows: list[dict[str, Any]] = []
 
         for row in rows:
             if not isinstance(row, dict):
@@ -154,7 +155,12 @@ class StoreSnapshotService:
                 stores.append(store)
                 continue
             missing_ids.append(store_id)
-            stores.append(self._store_from_row(row, detail={}, detail_source="scope_row_fallback"))
+            missing_rows.append(row)
+
+        # Newly enabled stores can appear in a customer's authorized scope before
+        # the shared snapshot refreshes. Hydrate only those authorized missing IDs
+        # so the matcher does not silently treat a real new store as nonexistent.
+        stores.extend(self._hydrate_rows(missing_rows, dict(request_context or {})))
 
         valid_stores, invalid_stores = filter_valid_store_facts(
             stores,
@@ -465,8 +471,18 @@ def parse_region(address: str) -> tuple[str, str, str]:
     text = clean_text(address)
     if not text:
         return "", "", ""
-    province = _first_match(text, r"^(.{2,12}?(?:省|自治区|特别行政区))")
-    rest = text[len(province) :] if province else text
+    province_aliases = {
+        "新疆": "新疆维吾尔自治区",
+        "广西": "广西壮族自治区",
+        "宁夏": "宁夏回族自治区",
+        "西藏": "西藏自治区",
+        "内蒙古": "内蒙古自治区",
+        "香港": "香港特别行政区",
+        "澳门": "澳门特别行政区",
+    }
+    province_alias = next((alias for alias in province_aliases if text.startswith(alias)), "")
+    province = province_aliases.get(province_alias) or _first_match(text, r"^(.{2,12}?(?:省|自治区|特别行政区))")
+    rest = text[len(province_alias or province) :] if province else text
     city = _first_match(rest, r"^(.{2,12}?(?:市|自治州|地区|盟))")
     rest = rest[len(city) :] if city else rest
     district = _first_match(rest, r"^(.{1,12}?(?:区|县|旗|市))")
@@ -548,7 +564,6 @@ def geocode_region_conflicts(
 
     result_province = clean_text(geocode.get("province"))
     result_city = clean_text(geocode.get("city"))
-    result_district = clean_text(geocode.get("district") or geocode.get("township"))
     address_province, address_city, address_district = address_region
     parking_province, parking_city, _ = parking_region
     conflicts: list[str] = []

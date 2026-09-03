@@ -841,7 +841,7 @@ class ModelClient:
         )
 
     def _base_url(self, model: str | None = None) -> str:
-        return model_selection.base_url(self.settings)
+        return model_selection.base_url(self.settings, model=model)
 
     def _anthropic_base_url(self, model: str | None = None) -> str:
         return self.settings.anthropic_base_url or self._base_url(model)

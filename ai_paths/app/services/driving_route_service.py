@@ -48,8 +48,8 @@ def parse_driving_route_workflow_result(raw: dict[str, Any]) -> dict[str, Any]:
     best = min(
         normalized_paths,
         key=lambda item: (
-            item["duration_seconds"],
             item["distance_meters"],
+            item["duration_seconds"],
             item["route_index"],
         ),
     )
@@ -157,8 +157,8 @@ async def rerank_stores_by_driving_route(
         )
     routed_shortlist.sort(
         key=lambda item: (
-            int(item["driving_duration_seconds"]),
             int(item["driving_distance_meters"]),
+            int(item["driving_duration_seconds"]),
             _store_id(item),
         )
     )

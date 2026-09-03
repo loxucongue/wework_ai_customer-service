@@ -46,28 +46,14 @@ async def resolve_active_store_destination(
     if fallback.get("destination_query") and str(fallback.get("destination_source") or "") in {
         "location_card_address",
         "location_card_coordinates",
-        "tool.destination_hint",
-        "tool.origin",
-        "tool.address",
-        "structured_current_location",
-        "recent_assistant_store_reference",
     }:
         return {**fallback, "resolver_status": "deterministic_destination_evidence"}
     if model_client is None or not model_client.available:
         return {**fallback, "resolver_status": "model_unavailable"}
+    messages = _resolver_messages(payload)
     try:
         raw = await model_client.chat_json(
-            [
-                {"role": "system", "content": STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        "请根据以下事实解析当前门店查询目的地。输入中不含门店候选，"
-                        "所以不要推荐或猜测门店。\n"
-                        + _json_text(payload)
-                    ),
-                },
-            ],
+            messages,
             tier="store_destination",
             temperature=0.0,
             max_parallel_candidates=3,
@@ -84,11 +70,35 @@ async def resolve_active_store_destination(
         customer_refs=customer_refs,
     )
     if violations:
-        return {
-            **fallback,
-            "resolver_status": "invalid_model_output",
-            "resolver_violations": violations,
-        }
+        fallback_client = _fallback_only_model_client(model_client)
+        if fallback_client is not None:
+            try:
+                fallback_raw = await fallback_client.chat_json(
+                    messages,
+                    tier="store_destination",
+                    temperature=0.0,
+                    max_parallel_candidates=1,
+                )
+                fallback_normalized, fallback_violations = _normalize_resolution(
+                    fallback_raw,
+                    valid_refs=valid_refs,
+                    customer_refs=customer_refs,
+                )
+                if not fallback_violations:
+                    return {
+                        **fallback_normalized,
+                        "source_query": _source_query_for_refs(
+                            payload,
+                            fallback_normalized.get("evidence_refs") or [],
+                        ),
+                        "resolver_status": "ok_fallback_model",
+                    }
+                violations = [*violations, *[f"fallback:{item}" for item in fallback_violations]]
+            except Exception as exc:
+                violations.append(f"fallback:{type(exc).__name__}")
+            finally:
+                await fallback_client.aclose()
+        return {**fallback, "resolver_status": "invalid_model_output", "resolver_violations": violations}
     if (
         normalized.get("needs_clarification")
         and fallback.get("destination_query")
@@ -101,6 +111,38 @@ async def resolve_active_store_destination(
         "source_query": _source_query_for_refs(payload, normalized.get("evidence_refs") or []),
         "resolver_status": "ok",
     }
+
+
+def _resolver_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "请根据以下事实解析当前门店查询目的地。输入中不含门店候选，"
+                "所以不要推荐或猜测门店。\n" + _json_text(payload)
+            ),
+        },
+    ]
+
+
+def _fallback_only_model_client(model_client: ModelClient) -> ModelClient | None:
+    fallback_models = [
+        item.strip()
+        for item in str(model_client.settings.model_store_destination_fallbacks or "").split(",")
+        if item.strip()
+    ]
+    if not fallback_models:
+        return None
+    return ModelClient(
+        model_client.settings.model_copy(
+            update={
+                "model_store_destination": fallback_models[0],
+                "model_store_destination_fallbacks": ",".join(fallback_models[1:]),
+                "model_hedge_max_parallel": 1,
+            }
+        )
+    )
 
 
 def _destination_input(
@@ -388,9 +430,38 @@ def _normalize_resolution(
         administrative_context = {}
     administrative_context = {
         key: str(administrative_context.get(key) or "").strip()
-        for key in ("province", "city", "district")
+        for key in ("province", "city", "district", "county_level_city", "township")
         if str(administrative_context.get(key) or "").strip()
     }
+    candidate_interpretations: list[dict[str, Any]] = []
+    for item in raw.get("candidate_interpretations") or []:
+        if not isinstance(item, dict):
+            continue
+        candidate_refs = [
+            str(ref).strip()
+            for ref in item.get("evidence_refs") or []
+            if str(ref).strip() in valid_refs
+        ]
+        candidate_admin = item.get("administrative_context")
+        candidate_admin = candidate_admin if isinstance(candidate_admin, dict) else {}
+        candidate_query = str(item.get("destination_query") or "").strip()
+        if not candidate_query or not candidate_refs or not any(ref in customer_refs for ref in candidate_refs):
+            continue
+        candidate_interpretations.append(
+            {
+                "destination_query": candidate_query,
+                "administrative_context": {
+                    key: str(candidate_admin.get(key) or "").strip()
+                    for key in ("province", "city", "district", "county_level_city", "township")
+                    if str(candidate_admin.get(key) or "").strip()
+                },
+                "poi_query": str(item.get("poi_query") or "").strip(),
+                "confidence": str(item.get("confidence") or "low").strip()
+                if str(item.get("confidence") or "low").strip() in _CONFIDENCE
+                else "low",
+                "evidence_refs": list(dict.fromkeys(candidate_refs)),
+            }
+        )
     needs_clarification = bool(raw.get("needs_clarification"))
     geocode_before_clarification = bool(raw.get("geocode_before_clarification", True))
     if not destination and not named_store and not needs_clarification:
@@ -401,6 +472,8 @@ def _normalize_resolution(
             "destination_query": destination,
             "destination_precision": precision,
             "administrative_context": administrative_context,
+            "poi_query": str(raw.get("poi_query") or "").strip(),
+            "candidate_interpretations": candidate_interpretations,
             "destination_subject": str(raw.get("destination_subject") or "unknown").strip(),
             "named_store": named_store,
             "detail_kind": detail_kind,

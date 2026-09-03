@@ -11,12 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.graph.nodes import action_nodes
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
+from app.services.driving_route_service import parse_driving_route_workflow_result, rerank_stores_by_driving_route
 from app.services.store_destination_resolver import (
     _is_generic_store_detail_hint,
     _structured_current_location_query,
     resolve_active_store_destination,
 )
 from app.services.platform_agent_client import PlatformAgentClient
+from app.services.store_snapshot_service import StoreSnapshotService, parse_region
 
 
 class _FakeGeocodeClient:
@@ -28,6 +30,74 @@ class _FakeGeocodeClient:
         assert workflow_id == "fake-geocode"
         assert parameters.get("address")
         return {"data": [self._geocode]}
+
+
+class _FakeDestinationModel:
+    available = True
+
+    def __init__(self, output: dict[str, object]) -> None:
+        self.output = output
+        self.calls = 0
+
+    async def chat_json(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+        self.calls += 1
+        return self.output
+
+
+class _ClosableDestinationModel(_FakeDestinationModel):
+    async def aclose(self) -> None:
+        return None
+
+
+class _FailingGeocodeClient:
+    settings = SimpleNamespace(geocode_workflow_id="fake-geocode")
+
+    async def run_workflow(self, _workflow_id: str, _parameters: dict[str, object]) -> dict[str, object]:
+        raise TimeoutError("map timeout")
+
+
+class _FakeDrivingRouteClient:
+    async def run_workflow(self, _workflow_id: str, parameters: dict[str, str]) -> dict[str, object]:
+        distance, duration = {
+            "104.100000,30.100000": (49_000, 3_000),
+            "104.200000,30.200000": (46_000, 3_200),
+        }[parameters["destination"]]
+        return {
+            "data": {
+                "output": {
+                    "paths": [{"index": 0, "distance": distance, "duration": duration}],
+                }
+            }
+        }
+
+
+def test_driving_routes_rank_by_distance_before_duration() -> None:
+    parsed = parse_driving_route_workflow_result(
+        {
+            "data": {
+                "output": {
+                    "paths": [
+                        {"index": 0, "distance": 49_000, "duration": 3_000},
+                        {"index": 1, "distance": 46_000, "duration": 3_200},
+                    ]
+                }
+            }
+        }
+    )
+    assert parsed["distance_meters"] == 46_000
+
+    reranked = asyncio.run(
+        rerank_stores_by_driving_route(
+            coze_client=_FakeDrivingRouteClient(),
+            workflow_id="distance",
+            origin_location="104.000000,30.000000",
+            ranked_stores=[
+                {"store_id": "1", "location": "104.100000,30.100000", "distance_km": 10.0},
+                {"store_id": "2", "location": "104.200000,30.200000", "distance_km": 20.0},
+            ],
+        )
+    )
+    assert [item["store_id"] for item in reranked["ranked_stores"]] == ["2", "1"]
 
 
 def test_customer_identity_lookup_does_not_send_request_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,6 +136,255 @@ def test_customer_identity_lookup_does_not_send_request_user_id(monkeypatch: pyt
             "external_userid": "external-1",
         },
     }
+
+
+def test_missing_authorized_snapshot_store_is_hydrated_instead_of_dropped() -> None:
+    service = object.__new__(StoreSnapshotService)
+    service.load_snapshot = lambda **_kwargs: {"stores_by_id": {}, "source": "test", "store_count": 0}
+    hydrated = {
+        "store_id": "68",
+        "store_name": "乌鲁木齐店",
+        "province": "新疆维吾尔自治区",
+        "city": "乌鲁木齐市",
+        "district": "沙依巴克区",
+        "store_address": "新疆乌鲁木齐市沙依巴克区长江路25号新疆果业大厦",
+        "location": "87.60,43.79",
+        "store_fact_integrity": "valid",
+    }
+    service._hydrate_rows = lambda rows, _context: [hydrated] if rows else []
+
+    result = service.stores_for_scope([{"id": "68"}], request_context={"corp_id": "corp"})
+
+    assert result["missing_snapshot_store_ids"] == ["68"]
+    assert [store["store_id"] for store in result["stores"]] == ["68"]
+
+
+def test_store_region_parser_normalizes_autonomous_region_short_name() -> None:
+    assert parse_region("新疆乌鲁木齐市沙依巴克区长江路25号") == (
+        "新疆维吾尔自治区",
+        "乌鲁木齐市",
+        "沙依巴克区",
+    )
+
+
+def test_destination_hint_is_parsed_by_model_instead_of_short_circuiting() -> None:
+    model = _FakeDestinationModel(
+        {
+            "request_kind": "match_location",
+            "destination_query": "四川省成都市简阳市大华国际",
+            "destination_precision": "poi",
+            "administrative_context": {
+                "province": "四川省",
+                "city": "成都市",
+                "county_level_city": "简阳市",
+            },
+            "poi_query": "大华国际",
+            "destination_subject": "customer",
+            "named_store": "",
+            "detail_kind": "none",
+            "candidate_interpretations": [],
+            "evidence_refs": ["current_message"],
+            "superseded_location_refs": [],
+            "confidence": "high",
+            "needs_clarification": False,
+            "geocode_before_clarification": True,
+            "reason": "当前消息明确给出简阳和大华国际",
+        }
+    )
+
+    resolution = asyncio.run(
+        resolve_active_store_destination(
+            model_client=model,
+            state={"content": "简阳大华国际"},
+            tool={"destination_hint": "简阳大华国际"},
+        )
+    )
+
+    assert model.calls == 1
+    assert resolution["resolver_status"] == "ok"
+    assert resolution["destination_query"] == "四川省成都市简阳市大华国际"
+    assert resolution["poi_query"] == "大华国际"
+
+
+def test_invalid_primary_destination_output_uses_valid_fallback_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = _FakeDestinationModel({"request_kind": "invalid"})
+    fallback = _ClosableDestinationModel(
+        {
+            "request_kind": "match_location",
+            "destination_query": "北京市",
+            "destination_precision": "city",
+            "administrative_context": {"province": "北京市", "city": "北京市"},
+            "poi_query": "",
+            "destination_subject": "customer",
+            "named_store": "",
+            "detail_kind": "none",
+            "candidate_interpretations": [],
+            "evidence_refs": ["current_message"],
+            "superseded_location_refs": [],
+            "confidence": "high",
+            "needs_clarification": False,
+            "geocode_before_clarification": True,
+            "reason": "当前消息明确为北京",
+        }
+    )
+    monkeypatch.setattr(
+        "app.services.store_destination_resolver._fallback_only_model_client",
+        lambda _client: fallback,
+    )
+
+    resolution = asyncio.run(
+        resolve_active_store_destination(
+            model_client=primary,
+            state={"content": "北京"},
+            tool={"destination_hint": "北京"},
+        )
+    )
+
+    assert primary.calls == 1
+    assert fallback.calls == 1
+    assert resolution["resolver_status"] == "ok_fallback_model"
+    assert resolution["destination_query"] == "北京市"
+
+
+def test_map_timeout_returns_standard_search_incomplete_contract() -> None:
+    model = _FakeDestinationModel(
+        {
+            "request_kind": "match_location",
+            "destination_query": "四川省成都市简阳市大华国际",
+            "destination_precision": "poi",
+            "administrative_context": {
+                "province": "四川省",
+                "city": "成都市",
+                "county_level_city": "简阳市",
+            },
+            "poi_query": "大华国际",
+            "destination_subject": "customer",
+            "named_store": "",
+            "detail_kind": "none",
+            "candidate_interpretations": [],
+            "evidence_refs": ["current_message"],
+            "superseded_location_refs": [],
+            "confidence": "high",
+            "needs_clarification": False,
+            "geocode_before_clarification": True,
+            "reason": "当前消息明确给出简阳和大华国际",
+        }
+    )
+    state = {
+        "content": "简阳大华国际",
+        "normalized_content": "简阳大华国际",
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {
+            "source": "platform_agent.store_index",
+            "store_count": 1,
+            "stores": [_store("101", "成都店")],
+        },
+    }
+
+    result = asyncio.run(
+        action_nodes._resolve_customer_store_workflow(
+            {"arguments": {"destination_hint": "简阳大华国际", "purpose": "store_search"}},
+            state,
+            _FailingGeocodeClient(),
+            model_client=model,
+        )
+    )
+
+    assert result["status"] == "search_incomplete"
+    assert result["candidate_search_complete"] is False
+    assert result["delivery_store_ids"] == []
+    assert result["errors"] == ["TimeoutError: map timeout"]
+
+
+def test_model_failure_does_not_fall_back_to_guessing_with_map() -> None:
+    state = {
+        "content": "大华国际",
+        "normalized_content": "大华国际",
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {"source": "platform_agent.store_index", "stores": [_store("101", "成都店")]},
+    }
+
+    result = asyncio.run(
+        action_nodes._resolve_customer_store_workflow(
+            {"arguments": {"destination_hint": "大华国际", "purpose": "store_search"}},
+            state,
+            SimpleNamespace(settings=SimpleNamespace(geocode_workflow_id="unused")),
+            model_client=None,
+        )
+    )
+
+    assert result["status"] == "search_incomplete"
+    assert result["candidate_search_complete"] is False
+    assert result["delivery_store_ids"] == []
+
+
+def test_expected_jianyang_anchor_excludes_cross_region_map_candidates() -> None:
+    selected = action_nodes._first_geocode_candidate(
+        [
+            {"province": "辽宁省", "city": "沈阳市", "district": "浑南区", "location": "123.4,41.7"},
+            {"province": "四川省", "city": "成都市", "district": "简阳市", "location": "104.5,30.4"},
+            {"province": "广东省", "city": "中山市", "district": "东区", "location": "113.3,22.5"},
+        ],
+        expected_admin={"province": "四川省", "city": "成都市", "county_level_city": "简阳市"},
+        query="四川省成都市简阳市大华国际",
+    )
+
+    assert selected["province"] == "四川省"
+    assert selected["city"] == "成都市"
+    assert selected["district"] == "简阳市"
+    assert selected["candidate_count"] == 1
+    assert selected["ambiguous_regions"] is False
+    assert len(selected["all_candidate_regions"]) == 3
+
+
+def test_different_destination_interpretations_are_ambiguous_only_when_store_results_differ() -> None:
+    stores = [
+        {**_store("301", "东莞店"), "province": "广东省", "city": "东莞市", "district": "南城街道"},
+        {**_store("302", "江阴店"), "province": "江苏省", "city": "无锡市", "district": "江阴市"},
+    ]
+    results = action_nodes._different_interpretation_store_results(
+        [
+            (
+                {"query": "广东省东莞市东坑镇", "source": "planner_normalized_candidate"},
+                {"province": "广东省", "city": "东莞市", "location": "113.9,22.9"},
+            ),
+            (
+                {"query": "江苏省无锡市江阴市东坑", "source": "planner_normalized_candidate"},
+                {"province": "江苏省", "city": "无锡市", "district": "江阴市", "location": "120.2,31.9"},
+            ),
+        ],
+        stores,
+        "store_search",
+    )
+
+    assert [item["store_ids"] for item in results] == [["301"], ["302"]]
+
+
+def test_ambiguous_interpretation_candidates_are_exposed_without_delivery() -> None:
+    output = action_nodes._finalize_store_workflow_result(
+        {
+            "status": "ambiguous_location",
+            "destination_resolution": {"candidate_interpretations": []},
+            "customer_store_lookup": {
+                "status": "ambiguous_location",
+                "ambiguous_candidate_store_ids": ["301", "302"],
+                "stores": [],
+                "candidate_stores": [],
+            },
+        },
+        {
+            "customer_store_knowledge": {
+                "source": "platform_agent.store_index",
+                "store_count": 2,
+                "stores": [],
+            }
+        },
+    )
+
+    assert output["candidate_store_ids"] == ["301", "302"]
+    assert output["delivery_store_ids"] == []
 
 
 def _store(store_id: str, name: str) -> dict[str, object]:
@@ -278,7 +597,11 @@ def test_shared_address_tail_never_produces_cross_city_cards(monkeypatch: pytest
 
     lookup = asyncio.run(
         action_nodes._customer_store_lookup(
-            {"query": query, "customer_raw_query": query, "purpose": "store_region"},
+            {
+                "query": query,
+                "customer_raw_query": query,
+                "purpose": "store_region",
+            },
             state,
             SimpleNamespace(settings=SimpleNamespace(geocode_workflow_id="")),
         )
@@ -352,7 +675,7 @@ def test_assistant_store_location_history_strips_speaker_prefix() -> None:
     assert query == "深圳龙华店 深圳市龙华区民治街道星河WORLD"
 
 
-def test_combined_store_detail_request_reuses_historical_store_location() -> None:
+def test_combined_store_detail_request_requires_model_to_ground_historical_store_location() -> None:
     state = {
         "shared_context": {
             "current_message": {"content": "地图和营业时间发我"},
@@ -374,7 +697,7 @@ def test_combined_store_detail_request_reuses_historical_store_location() -> Non
         )
     )
 
-    assert resolution["resolver_status"] == "deterministic_destination_evidence"
+    assert resolution["resolver_status"] == "model_unavailable"
     assert resolution["destination_source"] == "recent_assistant_store_reference"
     assert resolution["destination_query"] == "深圳龙华店 深圳市龙华区民治街道星河WORLD"
 
@@ -462,7 +785,7 @@ def test_multiple_stores_in_same_district_are_candidates_not_location_ambiguity(
     assert resolution["delivery_store_ids"] == ["101", "102"]
 
 
-def test_ordinary_province_scope_does_not_emit_city_store_cards() -> None:
+def test_province_scope_with_one_visible_store_emits_that_store() -> None:
     stores = [_store("101", "成都锦江店")]
     state = {
         "request_context": {"interface_version": "v3"},
@@ -492,8 +815,86 @@ def test_ordinary_province_scope_does_not_emit_city_store_cards() -> None:
         state,
     )["structured_facts"]["store_resolution_fact"]
 
-    assert resolution["status"] in {"need_location", "ambiguous_location"}
-    assert resolution["delivery_store_ids"] == []
+    assert resolution["status"] == "send_single"
+    assert resolution["delivery_store_ids"] == ["101"]
+
+
+def test_xinjiang_scope_with_one_visible_store_sends_without_clarification() -> None:
+    store = {
+        **_store("701", "乌鲁木齐店"),
+        "province": "新疆维吾尔自治区",
+        "city": "乌鲁木齐市",
+        "district": "天山区",
+        "store_address": "新疆维吾尔自治区乌鲁木齐市天山区人民路1号",
+    }
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {"source": "platform_agent.store_index", "stores": [store]},
+    }
+
+    lookup = asyncio.run(
+        action_nodes._customer_store_lookup(
+            {
+                "query": "新疆维吾尔自治区",
+                "customer_raw_query": "新疆",
+                "purpose": "store_search",
+                "expected_admin": {"province": "新疆维吾尔自治区"},
+                "destination_precision": "province",
+                "allow_broad_scope_delivery": True,
+            },
+            state,
+            SimpleNamespace(settings=SimpleNamespace(geocode_workflow_id="")),
+        )
+    )
+    resolution = build_planner_fact_output({"customer_store_lookup": lookup}, state)["structured_facts"][
+        "store_resolution_fact"
+    ]
+
+    assert lookup["status"] == "ok"
+    assert resolution["status"] == "send_single"
+    assert resolution["delivery_store_ids"] == ["701"]
+
+
+def test_beijing_is_treated_as_city_scope() -> None:
+    stores = [
+        {
+            **_store(store_id, name),
+            "province": "北京市",
+            "city": "北京市",
+            "district": district,
+            "store_address": f"北京市{district}测试路1号",
+        }
+        for store_id, name, district in (
+            ("801", "北京朝阳店", "朝阳区"),
+            ("802", "北京海淀店", "海淀区"),
+        )
+    ]
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {"source": "platform_agent.store_index", "stores": stores},
+    }
+
+    lookup = asyncio.run(
+        action_nodes._customer_store_lookup(
+            {
+                "query": "北京市",
+                "customer_raw_query": "北京",
+                "purpose": "store_search",
+                "expected_admin": {"province": "北京市", "city": "北京市"},
+                "destination_precision": "city",
+                "allow_broad_scope_delivery": True,
+            },
+            state,
+            SimpleNamespace(settings=SimpleNamespace(geocode_workflow_id="")),
+        )
+    )
+    resolution = build_planner_fact_output({"customer_store_lookup": lookup}, state)["structured_facts"][
+        "store_resolution_fact"
+    ]
+
+    assert lookup["status"] == "ok"
+    assert resolution["status"] == "send_multiple"
+    assert resolution["delivery_store_ids"] == ["801", "802"]
 
 
 def test_unavailable_customer_scope_never_falls_back_to_global_snapshot(
@@ -543,6 +944,8 @@ def test_explicit_customer_store_address_beats_conflicting_geocode() -> None:
     store = {
         **_store("520", "成都都江堰店"),
         "store_address": "四川省成都市都江堰市幸福街道莲花社区都江堰大道211号3栋",
+        "province": "四川省",
+        "city": "成都市",
         "district": "都江堰市",
     }
     state = {
@@ -556,7 +959,11 @@ def test_explicit_customer_store_address_beats_conflicting_geocode() -> None:
 
     lookup = asyncio.run(
         action_nodes._customer_store_lookup(
-            {"query": query, "customer_raw_query": query, "purpose": "store_region"},
+            {
+                "query": query,
+                "customer_raw_query": query,
+                "purpose": "store_region",
+            },
             state,
             _FakeGeocodeClient(
                 {
@@ -579,6 +986,45 @@ def test_explicit_customer_store_address_beats_conflicting_geocode() -> None:
     assert resolution["delivery_store_ids"] == ["520"]
 
 
+def test_explicit_address_tail_cannot_override_a_different_expected_admin() -> None:
+    wrong_region_store = {
+        **_store("189", "重庆巴南店"),
+        "province": "重庆市",
+        "city": "重庆市",
+        "district": "巴南区",
+        "store_address": "重庆市巴南区万达中心B座",
+    }
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {
+            "source": "platform_agent.store_index",
+            "stores": [wrong_region_store],
+        },
+    }
+
+    lookup = asyncio.run(
+        action_nodes._customer_store_lookup(
+            {
+                "query": "江苏省无锡市江阴市万达中心B座",
+                "customer_raw_query": "万达中心B座",
+                "purpose": "store_search",
+                "expected_admin": {
+                    "province": "江苏省",
+                    "city": "无锡市",
+                    "county_level_city": "江阴市",
+                },
+                "destination_precision": "poi",
+            },
+            state,
+            SimpleNamespace(settings=SimpleNamespace(geocode_workflow_id="")),
+        )
+    )
+
+    assert lookup["status"] in {"no_match", "need_location", "need_location_confirmation"}
+    assert lookup["stores"] == []
+    assert lookup["source"] != "customer_explicit_store_text_reference"
+
+
 def test_province_plus_generic_landmark_does_not_trust_geocoded_city() -> None:
     store = {
         **_store("601", "嘉兴海宁店"),
@@ -598,7 +1044,12 @@ def test_province_plus_generic_landmark_does_not_trust_geocoded_city() -> None:
 
     lookup = asyncio.run(
         action_nodes._customer_store_lookup(
-            {"query": query, "customer_raw_query": query, "purpose": "store_region"},
+            {
+                "query": query,
+                "customer_raw_query": query,
+                "purpose": "store_region",
+                "destination_needs_clarification": True,
+            },
             state,
             _FakeGeocodeClient(
                 {

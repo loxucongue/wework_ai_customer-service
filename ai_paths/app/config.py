@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     model_strong: str = "gpt-5.4"
     model_reply: str = "gpt-5.4"
     model_vision: str = "qwen-vl-plus"
-    model_store_destination: str = "claude-haiku-4-5-20251001"
+    model_store_destination: str = "deepseek-chat"
     model_fast_fallbacks: str = "gpt-5.4"
     model_planner_fallbacks: str = "gpt-5.4-mini"
     model_balanced_fallbacks: str = "gpt-5.4"
