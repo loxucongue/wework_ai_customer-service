@@ -537,6 +537,22 @@ class SopPlatformTaskService:
 
         enqueued = 0
         pulled_at = utc_now_iso()
+        persistence_limit = max(
+            1,
+            min(8, int(getattr(self.settings, "sop_platform_task_concurrency", 1) or 1)),
+        )
+        persistence_semaphore = asyncio.Semaphore(persistence_limit)
+
+        async def persist_task(task: dict[str, Any], *, status: str) -> dict[str, Any] | None:
+            async with persistence_semaphore:
+                try:
+                    await asyncio.to_thread(self._ensure_local_task, task, status=status)
+                except Exception:
+                    self._counters["persistence_error"] += 1
+                    logger.exception("Unable to persist pulled third-party SOP task: %s", _task_id(task))
+                    return None
+            return task
+
         for batch_key, batch_tasks in grouped.items():
             trigger_tasks = _batch_compat_trigger_tasks({"tasks": batch_tasks})
             trigger_ids = {_task_id(task) for task in trigger_tasks if _task_id(task)}
@@ -566,32 +582,22 @@ class SopPlatformTaskService:
                 continue
             if self._queue.full():
                 break
-            persisted: list[dict[str, Any]] = []
             for task in eligible:
                 task["_aics_pulled_at"] = pulled_at
-                try:
-                    await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
-                except Exception:
-                    self._counters["persistence_error"] += 1
-                    logger.exception("Unable to persist pulled third-party SOP task: %s", _task_id(task))
-                    continue
-                persisted.append(task)
+            persistence_results = await asyncio.gather(
+                *(persist_task(task, status="platform_queued") for task in eligible)
+            )
+            persisted = [task for task in persistence_results if task is not None]
             if not persisted:
                 continue
             trigger_tasks = _batch_compat_trigger_tasks({"tasks": persisted})
-            for trigger_task in trigger_tasks:
-                try:
-                    await asyncio.to_thread(
-                        self._ensure_local_task,
-                        trigger_task,
-                        status="platform_waiting_content_resolution",
+            if trigger_tasks:
+                await asyncio.gather(
+                    *(
+                        persist_task(trigger_task, status="platform_waiting_content_resolution")
+                        for trigger_task in trigger_tasks
                     )
-                except Exception:
-                    self._counters["persistence_error"] += 1
-                    logger.exception(
-                        "Unable to persist third-party SOP compatibility trigger: %s",
-                        _task_id(trigger_task),
-                    )
+                )
             for task in [*persisted, *trigger_tasks]:
                 self._queued_ids.add(_task_id(task))
             self._queue.put_nowait(
