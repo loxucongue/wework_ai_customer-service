@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 from app.services.sop_platform_task_service import (
     SopPlatformTaskService,
     _partition_stale_pending_tasks,
+    _select_bulk_human_takeover_tasks,
     _task_preflight_no_send_reason,
 )
 
@@ -177,3 +178,22 @@ def test_stale_pending_tasks_skip_message_content_lookup() -> None:
 
     assert [task["task_id"] for task in stale] == [101]
     assert [task["task_id"] for task in content_lookup] == [102]
+
+
+def test_bulk_human_takeover_excludes_kept_wechat_and_new_tasks() -> None:
+    cutoff = time.time() - 60
+    settings = SimpleNamespace(
+        sop_platform_bulk_human_takeover_exclude="SL0906,DY8808",
+        sop_platform_bulk_human_takeover_before=cutoff,
+    )
+    selected = _select_bulk_human_takeover_tasks(
+        [
+            {"task_id": 101, "scheduledAt": cutoff - 1, "user_wechat_id": "SL8003"},
+            {"task_id": 102, "scheduledAt": cutoff - 1, "user_wechat_id": "sl0906"},
+            {"task_id": 103, "scheduledAt": cutoff + 1, "user_wechat_id": "SL8003"},
+        ],
+        settings=settings,
+    )
+
+    assert [task["task_id"] for task in selected] == [101]
+    assert selected[0]["_aics_terminal_outcome"] == "human_takeover"
