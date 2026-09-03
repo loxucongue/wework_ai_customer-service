@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,6 +57,7 @@ def _service() -> tuple[SopPlatformTaskService, _Repository, _Platform]:
     service.system_client = _NoSendSystem()
     service._reserved_prefix_ids = {"prefix-task", "101", "content-msg-id"}
     service._counters = Counter()
+    service._timings = {name: deque(maxlen=500) for name in ("consume", "rule_data")}
     return service, repository, platform
 
 

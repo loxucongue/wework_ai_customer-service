@@ -322,7 +322,17 @@ class SopPlatformTaskService:
         self._counters: Counter[str] = Counter()
         self._timings: dict[str, deque[float]] = {
             name: deque(maxlen=500)
-            for name in ("pull", "claim", "context", "model", "send", "task", "queue_lag")
+            for name in (
+                "pull",
+                "claim",
+                "context",
+                "model",
+                "send",
+                "consume",
+                "rule_data",
+                "task",
+                "queue_lag",
+            )
         }
         self._last_poll_at = ""
         self._last_poll_error = ""
@@ -1826,6 +1836,7 @@ class SopPlatformTaskService:
             "error": "",
         }
         consume_results.append(attempt)
+        started = time.perf_counter()
         try:
             response = await self.platform_client.consume(
                 task_id=task_id,
@@ -1837,6 +1848,8 @@ class SopPlatformTaskService:
             attempt["completed_at"] = utc_now_iso()
             attempt["error"] = f"{type(exc).__name__}: {exc}"
             raise
+        finally:
+            self._observe("consume", time.perf_counter() - started)
         attempt["completed_at"] = utc_now_iso()
         attempt["response"] = response
         attempt["success"] = True
@@ -3094,11 +3107,15 @@ class SopPlatformTaskService:
             ),
             "reply_messages": source.get("reply_messages") if sent else [],
         }
-        return await self._report_rule_data(
-            platform_task,
-            decision=terminal_decision,
-            sent=sent,
-        )
+        started = time.perf_counter()
+        try:
+            return await self._report_rule_data(
+                platform_task,
+                decision=terminal_decision,
+                sent=sent,
+            )
+        finally:
+            self._observe("rule_data", time.perf_counter() - started)
 
     async def _quiet_hours_guard(
         self,
