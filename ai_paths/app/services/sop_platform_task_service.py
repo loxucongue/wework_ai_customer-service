@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
     "sent": ("sop_sent", "SOP发送成功", "SOP消息已发送"),
     "send_failed": ("sop_send_failed", "SOP发送失败", "SOP消息发送失败"),
+    "wecom_aggregate_send_failed": (
+        "wecom_aggregate_send_failed",
+        "发送失败｜企微聚合平台",
+        "企微聚合平台发送失败，任务已消费且未发送",
+    ),
     "human_takeover": ("humantakeover", "人工接管", "当前会话由人工接待"),
     "customer_relation_deleted": ("customer_deleted", "客户删除", "客户关系已删除"),
     "all_due_groups_filtered": ("sop_no_send_all_filtered", "暂无合适内容", "当前没有适合发送的SOP内容"),
@@ -280,6 +285,7 @@ class SopPlatformTaskService:
         "platform_send_uncertain",
         "platform_complete_pending",
         "platform_batch_send_retry",
+        "platform_failure_rule_data_pending",
         "platform_batch_consume_pending",
     ]
 
@@ -1184,7 +1190,8 @@ class SopPlatformTaskService:
                 delivery_idempotency_key=f"sop_platform_task:{local_task_id}",
             )
         except Exception as exc:
-            return self._defer_batch_send_retry(
+            return await self._handle_batch_send_failure(
+                platform_task=selected_task,
                 selected_task_id=selected_id,
                 local_task_id=local_task_id,
                 audit=audit,
@@ -1273,8 +1280,19 @@ class SopPlatformTaskService:
         previous = audit.get("delivery_retry") if isinstance(audit.get("delivery_retry"), dict) else {}
         attempt_count = max(0, int(previous.get("attempt_count") or 0)) + 1
         delay_seconds = 0 if attempt_count == 1 else min(300, 15 * (2 ** min(attempt_count - 2, 5)))
+        first_failure_at = str(previous.get("first_failure_at") or utc_now_iso())
+        retry_window_seconds = max(
+            0,
+            int(getattr(self.settings, "sop_platform_send_retry_timeout_seconds", 600) or 0),
+        )
         retry_state = {
             "attempt_count": attempt_count,
+            "first_failure_at": first_failure_at,
+            "retry_deadline_at": (
+                datetime.fromtimestamp(_parse_epoch(first_failure_at) + retry_window_seconds, tz=timezone.utc).isoformat()
+                if retry_window_seconds
+                else ""
+            ),
             "next_retry_at": (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat(),
             "last_failure": _retryable_delivery_failure(error),
             "last_error": f"{type(error).__name__}: {error}",
@@ -1301,6 +1319,113 @@ class SopPlatformTaskService:
             "error": retry_state["last_error"],
         }
 
+    async def _handle_batch_send_failure(
+        self,
+        *,
+        platform_task: dict[str, Any],
+        selected_task_id: str,
+        local_task_id: str,
+        audit: dict[str, Any],
+        error: Exception,
+    ) -> dict[str, Any]:
+        terminal_outcome = _terminal_delivery_failure_outcome(error)
+        if not terminal_outcome and _delivery_retry_expired(audit, settings=self.settings):
+            terminal_outcome = "send_failed"
+        if terminal_outcome:
+            return await self._complete_batch_send_failure(
+                platform_task=platform_task,
+                selected_task_id=selected_task_id,
+                local_task_id=local_task_id,
+                audit=audit,
+                error=error,
+                outcome=terminal_outcome,
+            )
+        return self._defer_batch_send_retry(
+            selected_task_id=selected_task_id,
+            local_task_id=local_task_id,
+            audit=audit,
+            error=error,
+        )
+
+    async def _complete_batch_send_failure(
+        self,
+        *,
+        platform_task: dict[str, Any],
+        selected_task_id: str,
+        local_task_id: str,
+        audit: dict[str, Any],
+        error: Exception,
+        outcome: str,
+    ) -> dict[str, Any]:
+        remark = (
+            "当前会话由人工接待，任务消费不发送"
+            if outcome == "human_takeover"
+            else "SOP发送超时超过10分钟，任务已消费且未发送"
+            if outcome == "send_failed"
+            else "企微聚合平台发送失败，任务已消费且未发送"
+        )
+        terminal_audit = {
+            **audit,
+            "terminal_failure": {
+                "outcome": outcome,
+                "error": f"{type(error).__name__}: {error}",
+                "completed_at": utc_now_iso(),
+                "consumed_task_id": selected_task_id,
+                "content_msgids_consumed": [],
+            },
+        }
+        try:
+            consumed = await self._consume_with_audit(
+                task_id=selected_task_id,
+                status=70,
+                phase="terminal_send_failure",
+                audit=terminal_audit,
+                remark=remark,
+            )
+            _require_platform_status(consumed, 70)
+        except RuntimeError as exc:
+            if not _platform_task_is_already_no_send(exc):
+                raise
+            terminal_audit["terminal_failure"]["consume_reconciled"] = "platform_already_no_send"
+        self.repository.update_sop_send_task(
+            local_task_id,
+            status="completed_without_send",
+            send_payload=terminal_audit,
+            error="",
+        )
+        event_id = f"platform_sop_task:{selected_task_id}"
+        self.repository.update_sop_event_status(event_id, status="platform_failure_rule_data_pending", error="")
+        rule_data = await self._report_terminal_rule_data(platform_task, outcome=outcome, sent=False)
+        terminal_audit["terminal_failure"]["rule_data"] = rule_data
+        self.repository.update_sop_send_task(
+            local_task_id,
+            status="completed_without_send",
+            send_payload=terminal_audit,
+            error="",
+        )
+        rule_response = rule_data.get("rule_data_response") if isinstance(rule_data, dict) else {}
+        if isinstance(rule_response, dict) and rule_response.get("error"):
+            return {
+                "processed": False,
+                "status": "rule_data_pending",
+                "task_id": selected_task_id,
+                "terminal_task_ids": [],
+            }
+        self.repository.update_sop_event_status(event_id, status="platform_completed", error="")
+        for task_id in [
+            selected_task_id,
+            *terminal_audit.get("skipped_prefix_task_ids", []),
+            *terminal_audit.get("compat_trigger_task_ids", []),
+        ]:
+            self._reserved_prefix_ids.discard(str(task_id or ""))
+        self._counters["send_failure_consumed"] += 1
+        return {
+            "processed": True,
+            "status": "completed_without_send",
+            "task_id": selected_task_id,
+            "terminal_task_ids": [selected_task_id],
+        }
+
     async def _retry_batch_send(
         self,
         platform_task: dict[str, Any],
@@ -1325,6 +1450,15 @@ class SopPlatformTaskService:
         if not final_messages or not local_task_id:
             raise RuntimeError("batch retry is missing immutable send payload")
         retry_state = audit.get("delivery_retry") if isinstance(audit.get("delivery_retry"), dict) else {}
+        if _delivery_retry_expired(audit, settings=self.settings):
+            return await self._complete_batch_send_failure(
+                platform_task=platform_task,
+                selected_task_id=selected_id,
+                local_task_id=local_task_id,
+                audit=audit,
+                error=TimeoutError("SOP delivery retry exceeded configured retry window"),
+                outcome="send_failed",
+            )
         next_retry_epoch = _parse_epoch(retry_state.get("next_retry_at"))
         if next_retry_epoch and next_retry_epoch > time.time():
             return {
@@ -1363,7 +1497,8 @@ class SopPlatformTaskService:
                 delivery_idempotency_key=f"sop_platform_task:{local_task_id}",
             )
         except Exception as exc:
-            return self._defer_batch_send_retry(
+            return await self._handle_batch_send_failure(
+                platform_task=platform_task,
                 selected_task_id=selected_id,
                 local_task_id=local_task_id,
                 audit=audit,
@@ -2366,6 +2501,31 @@ class SopPlatformTaskService:
         event_id = context["event_id"]
         local_task = context["local_task"]
         local_status = context["local_status"]
+        if recovery_status == "platform_failure_rule_data_pending":
+            audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            terminal_failure = (
+                audit.get("terminal_failure") if isinstance(audit.get("terminal_failure"), dict) else {}
+            )
+            outcome = str(terminal_failure.get("outcome") or "send_failed")
+            rule_data = await self._report_terminal_rule_data(platform_task, outcome=outcome, sent=False)
+            terminal_failure["rule_data"] = rule_data
+            audit["terminal_failure"] = terminal_failure
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="completed_without_send",
+                send_payload=audit,
+                error="",
+            )
+            rule_response = rule_data.get("rule_data_response") if isinstance(rule_data, dict) else {}
+            if isinstance(rule_response, dict) and rule_response.get("error"):
+                return {"processed": False, "status": "rule_data_pending", "task_id": task_id}
+            self.repository.update_sop_event_status(event_id, status="platform_completed", error="")
+            return {
+                "processed": True,
+                "status": "completed_without_send",
+                "task_id": task_id,
+                "terminal_task_ids": [task_id],
+            }
         duplicate_reason = _duplicate_platform_task_reason(
             self.repository,
             local_task=local_task,
@@ -2733,31 +2893,35 @@ class SopPlatformTaskService:
         event = self.repository.get_sop_event(event_id) if event_id else {}
         raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
         platform_task = raw_payload.get("platform_task") if isinstance(raw_payload.get("platform_task"), dict) else {}
-        decision = audit.get("decision") if isinstance(audit.get("decision"), dict) else {}
         previous_send_response = (
             local_task.get("send_response") if isinstance(local_task.get("send_response"), dict) else {}
         )
         callback_response = {**previous_send_response, "message_delivery": dispatch}
         status = str(dispatch.get("status") or "")
-        if platform_task and decision and status in {"send_failed", "partial_failed"}:
-            audit = {
-                **audit,
-                "rule_data_response": await self._report_terminal_rule_data(
-                    platform_task,
-                    outcome="send_failed",
-                    decision=decision,
-                    sent=False,
-                ),
-            }
         if status in {"send_failed", "partial_failed"}:
             self.repository.update_sop_send_task(
                 local_task_id,
-                status="processing_retry",
+                status="sending",
                 send_payload=audit,
                 send_response=callback_response,
                 error=str(dispatch.get("error_message") or status),
             )
-            if event_id:
+            if platform_task_id and platform_task:
+                await self._handle_batch_send_failure(
+                    platform_task=platform_task,
+                    selected_task_id=platform_task_id,
+                    local_task_id=local_task_id,
+                    audit=audit,
+                    error=RuntimeError(str(dispatch.get("error_message") or status)),
+                )
+            elif event_id:
+                self.repository.update_sop_send_task(
+                    local_task_id,
+                    status="processing_retry",
+                    send_payload=audit,
+                    send_response=callback_response,
+                    error=str(dispatch.get("error_message") or status),
+                )
                 self.repository.update_sop_event_status(
                     event_id,
                     status="platform_batch_send_retry",
@@ -4480,6 +4644,37 @@ def _retryable_delivery_failure(exc: Exception) -> dict[str, Any]:
         "http_status": 0,
         "detail": message[:2000],
     }
+
+
+def _terminal_delivery_failure_outcome(exc: Exception) -> str:
+    message = str(exc or "").lower()
+    if "manual handoff" in message or "ai_mode_manual" in message or "40907" in message:
+        return "human_takeover"
+    if (
+        "outreach_system_http_409" in message
+        or "managed send requires a verified customer remark" in message
+        or "missing_platform_customer_id" in message
+    ):
+        return "wecom_aggregate_send_failed"
+    return ""
+
+
+def _delivery_retry_expired(
+    audit: dict[str, Any],
+    *,
+    settings: Any,
+    now_epoch: float | None = None,
+) -> bool:
+    retry_state = audit.get("delivery_retry") if isinstance(audit.get("delivery_retry"), dict) else {}
+    first_failure_epoch = _parse_epoch(retry_state.get("first_failure_at"))
+    retry_window_seconds = max(
+        0,
+        int(getattr(settings, "sop_platform_send_retry_timeout_seconds", 600) or 0),
+    )
+    if not first_failure_epoch or not retry_window_seconds:
+        return False
+    current_epoch = time.time() if now_epoch is None else float(now_epoch)
+    return current_epoch - first_failure_epoch >= retry_window_seconds
 
 
 def _batch_tasks(value: dict[str, Any]) -> list[dict[str, Any]]:
