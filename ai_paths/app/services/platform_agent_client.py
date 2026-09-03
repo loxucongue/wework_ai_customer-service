@@ -44,17 +44,17 @@ class PlatformAgentClient:
     ) -> dict[str, Any]:
         if not external_userid:
             return {}
+        # This endpoint resolves the employee from the WeChat account. Passing
+        # the request's numeric user_id changes the upstream lookup semantics
+        # and makes otherwise valid corp/wechat/external-user tuples miss.
+        del user_id
         data = self._get(
             "/platform_agent/customer/get_customer_info",
-            self._with_common_params(
-                {
-                    "user_id": user_id,
-                    "corp_id": corp_id,
-                    "wechat": wechat,
-                    "external_userid": external_userid,
-                },
-                None,
-            ),
+            {
+                "corp_id": corp_id,
+                "wechat": wechat,
+                "external_userid": external_userid,
+            },
         )
         info = data.get("info") if isinstance(data, dict) else None
         return info if isinstance(info, dict) else {}

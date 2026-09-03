@@ -16,6 +16,7 @@ from app.services.store_destination_resolver import (
     _structured_current_location_query,
     resolve_active_store_destination,
 )
+from app.services.platform_agent_client import PlatformAgentClient
 
 
 class _FakeGeocodeClient:
@@ -27,6 +28,44 @@ class _FakeGeocodeClient:
         assert workflow_id == "fake-geocode"
         assert parameters.get("address")
         return {"data": [self._geocode]}
+
+
+def test_customer_identity_lookup_does_not_send_request_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = PlatformAgentClient(
+        SimpleNamespace(
+            platform_agent_base_url="https://platform.example",
+            platform_agent_token="token",
+            platform_agent_request_from="test",
+            platform_agent_timeout_seconds=5,
+            platform_agent_default_user_id=999,
+            platform_agent_default_corp_id="",
+            platform_agent_default_wechat="",
+        )
+    )
+    captured: dict[str, object] = {}
+
+    def fake_get(path: str, params: dict[str, object]) -> dict[str, object]:
+        captured.update({"path": path, "params": params})
+        return {"info": {"id": "customer-1", "customer_add_wechat_id": "relation-1"}}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    result = client.get_customer_info(
+        user_id=7294,
+        corp_id="corp-1",
+        wechat="wechat-1",
+        external_userid="external-1",
+    )
+
+    assert result["id"] == "customer-1"
+    assert captured == {
+        "path": "/platform_agent/customer/get_customer_info",
+        "params": {
+            "corp_id": "corp-1",
+            "wechat": "wechat-1",
+            "external_userid": "external-1",
+        },
+    }
 
 
 def _store(store_id: str, name: str) -> dict[str, object]:
