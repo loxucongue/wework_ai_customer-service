@@ -430,7 +430,9 @@ class SopPlatformTaskService:
                     [item for item in online_page_items if item not in priority_items],
                     settings=self.settings,
                 )
-                bulk_quota = max(1, pull_limit // 5)
+                # Priority accounts keep the front of the queue. Use every
+                # remaining slot to drain no-send work for all other accounts.
+                bulk_quota = max(0, pull_limit - len(priority_items))
                 online_page = {
                     "items": [*priority_items, *bulk_candidates[:bulk_quota]],
                     "total": len(priority_items) + min(len(bulk_candidates), bulk_quota),
