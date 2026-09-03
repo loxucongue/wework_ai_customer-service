@@ -556,7 +556,7 @@ class SopPlatformTaskService:
             for task in eligible:
                 task["_aics_pulled_at"] = pulled_at
                 try:
-                    self._ensure_local_task(task, status="platform_queued")
+                    await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
                 except Exception:
                     self._counters["persistence_error"] += 1
                     logger.exception("Unable to persist pulled third-party SOP task: %s", _task_id(task))
@@ -567,7 +567,11 @@ class SopPlatformTaskService:
             trigger_tasks = _batch_compat_trigger_tasks({"tasks": persisted})
             for trigger_task in trigger_tasks:
                 try:
-                    self._ensure_local_task(trigger_task, status="platform_waiting_content_resolution")
+                    await asyncio.to_thread(
+                        self._ensure_local_task,
+                        trigger_task,
+                        status="platform_waiting_content_resolution",
+                    )
                 except Exception:
                     self._counters["persistence_error"] += 1
                     logger.exception(
@@ -743,7 +747,11 @@ class SopPlatformTaskService:
         if stale_tasks:
             stale_task = stale_tasks[0]
             stale_task_id = _task_id(stale_task)
-            _event, local_task = self._ensure_local_task(stale_task, status="platform_queued")
+            _event, local_task = await asyncio.to_thread(
+                self._ensure_local_task,
+                stale_task,
+                status="platform_queued",
+            )
             return await self._complete_batch_send_failure(
                 platform_task=stale_task,
                 selected_task_id=stale_task_id,
@@ -763,7 +771,7 @@ class SopPlatformTaskService:
         quiet_hours = _quiet_hours_base_summary(tasks[0], settings=self.settings)
         if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
             for task in [*tasks, *trigger_tasks]:
-                self._ensure_local_task(task, status="platform_queued")
+                await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
             self._counters["quiet_consumed_without_replay"] += len(tasks)
             quiet_hours.update({"blocked": True, "reason": "sop_no_send_quiet_hours"})
             return await self._consume_batch_without_send(
@@ -782,7 +790,7 @@ class SopPlatformTaskService:
         if missing:
             raise RuntimeError(f"platform customer batch missing identity: {','.join(missing)}")
         for task in [*tasks, *trigger_tasks]:
-            self._ensure_local_task(task, status="platform_queued")
+            await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
 
         status_response = await self.system_client.conversation_status(**identity)
         status_data = (
@@ -2232,7 +2240,11 @@ class SopPlatformTaskService:
         event_status = str(event.get("status") or "")
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
         if not local_task:
-            _event, local_task = self._ensure_local_task(platform_task, status="platform_received")
+            _event, local_task = await asyncio.to_thread(
+                self._ensure_local_task,
+                platform_task,
+                status="platform_received",
+            )
         task_status = str(local_task.get("status") or "")
         if task_status in {"sent", "sending"} or event_status == "platform_send_uncertain":
             raise RuntimeError("task already sent or sending")
