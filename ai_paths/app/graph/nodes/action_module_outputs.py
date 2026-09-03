@@ -511,6 +511,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 and exact_scope_has_store is False
                 and same_city_has_store is False
                 and not exact_scope_candidate_ids
+                and origin_precision not in {"coordinates", "exact_address", "poi", "village", "township"}
             )
             if preserve_no_candidate_resolution:
                 structured_facts["store_facts"] = previous_store_facts

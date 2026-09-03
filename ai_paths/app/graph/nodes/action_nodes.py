@@ -1481,6 +1481,7 @@ async def _resolve_customer_store_workflow(
         "destination_needs_clarification": bool(destination.get("needs_clarification")),
         "evidence_refs": list(destination.get("evidence_refs") or []),
         "expected_admin": dict(destination.get("administrative_context") or {}),
+        "poi_query": str(destination.get("poi_query") or "").strip(),
         "location_candidates": [
             {
                 "query": str(item.get("destination_query") or "").strip(),
@@ -1681,11 +1682,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         raw_scope_stores,
         known_stores=[*_snapshot_store_values(), *raw_scope_stores],
     )
-    expected_admin = {
-        **_explicit_admin_from_query_text(query),
-        **_explicit_parent_admin_from_store_scope(query, stores),
-        **_normalized_expected_admin(tool.get("expected_admin")),
-    }
+    expected_admin = _merged_expected_admin(tool, query=query, stores=stores)
     query_explicit_text_candidates = _explicit_store_text_candidates(
         query,
         stores,
@@ -2512,6 +2509,14 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         }
 
     location_resolution_status = resolution_status_for_location(location_evidence)
+    if (
+        location_resolution_status
+        and bool(tool.get("confirmed_by_customer"))
+        and not bool(tool.get("destination_needs_clarification"))
+        and bool(expected_admin)
+        and _geocode_matches_expected_admin(geocode, _normalized_expected_admin(expected_admin))
+    ):
+        location_resolution_status = ""
     if location_resolution_status and not exact_store_reference:
         return {
             "status": location_resolution_status,
@@ -2966,11 +2971,9 @@ def _geocode_ambiguous_regions(geocode: dict[str, Any]) -> bool:
         candidate_count = int(geocode.get("candidate_count") or 0)
     except (TypeError, ValueError):
         candidate_count = 0
-    return bool(
-        geocode.get("ambiguous_regions")
-        or candidate_count > 1
-        or geocode.get("candidate_regions")
-    )
+    candidate_regions = geocode.get("candidate_regions")
+    region_count = len(candidate_regions) if isinstance(candidate_regions, list) else 0
+    return bool(geocode.get("ambiguous_regions") or candidate_count > 1 or region_count > 1)
 
 
 def _store_lookup_geocode_queries(tool: dict[str, Any], query: str) -> list[dict[str, Any]]:
@@ -2983,6 +2986,20 @@ def _store_lookup_geocode_queries(tool: dict[str, Any], query: str) -> list[dict
         "requires_confirmation": False,
     }
     candidates: list[dict[str, Any]] = []
+    constrained_query = _administratively_constrained_geocode_query(
+        query,
+        _normalized_expected_admin(tool.get("expected_admin")),
+    )
+    if constrained_query and _compact_text(constrained_query) != _compact_text(query):
+        candidates.append(
+            {
+                "query": constrained_query,
+                "source": "administratively_constrained_candidate",
+                "reason": "customer_grounded_administrative_context",
+                "confidence": "high",
+                "requires_confirmation": False,
+            }
+        )
     if query and _compact_text(query) != _compact_text(customer_raw_query):
         candidates.append(
             {
@@ -3016,6 +3033,32 @@ def _store_lookup_geocode_queries(tool: dict[str, Any], query: str) -> list[dict
         if len(candidates) >= 3:
             break
     return [*candidates, raw] if candidates else [raw]
+
+
+def _administratively_constrained_geocode_query(
+    query: str,
+    expected_admin: dict[str, Any],
+) -> str:
+    """Prefix missing formal admin anchors before asking the map provider."""
+
+    text = str(query or "").strip()
+    if not text or not expected_admin:
+        return text
+    compact = _compact_text(text)
+    prefixes: list[str] = []
+    seen: set[str] = set()
+    for field in ("province", "city", "district"):
+        value = str(expected_admin.get(field) or "").strip()
+        normalized = _compact_text(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        # Keep the customer's original detail, but make abbreviated anchors
+        # formal. This avoids a nationwide POI search silently dropping the
+        # intended city or district.
+        if normalized not in compact:
+            prefixes.append(value)
+    return "".join(prefixes) + text
 
 
 def _store_normalization_evidence(selected: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3136,7 +3179,13 @@ def _explicit_admin_from_query_text(query: str) -> dict[str, str]:
             if province in {"北京市", "天津市", "上海市", "重庆市"}:
                 result["city"] = province
             break
-    city_match = re.search(r"([\u4e00-\u9fff]{2,12}?市)", remainder)
+    # This parser is only a customer-evidence guard around the semantic model.
+    # Require a following lower administrative level so ordinary words such as
+    # "城市广场" and "菜市场" cannot become a fabricated city anchor.
+    city_match = re.match(
+        r"([\u4e00-\u9fff]{2,8}?市)(?=[\u4e00-\u9fff]{1,12}?(?:新区|开发区|高新区|区|县|旗|镇|乡|街道))",
+        remainder,
+    )
     if city_match:
         result["city"] = city_match.group(1)
         remainder = remainder[city_match.end() :]
@@ -3149,12 +3198,50 @@ def _explicit_admin_from_query_text(query: str) -> dict[str, str]:
         remainder,
     )
     if district_match:
-        result["district"] = district_match.group(1)
+        lower_admin = district_match.group(1)
+        if lower_admin.endswith(("镇", "乡", "街道")):
+            result["township"] = lower_admin
+        else:
+            result["district"] = lower_admin
     if result.get("district") and not result.get("city"):
         # A district-only text is often ambiguous across cities. Let visible
         # store uniqueness handle it instead of treating it as globally scoped.
         result.pop("district", None)
     return result
+
+
+def _merged_expected_admin(
+    tool: dict[str, Any],
+    *,
+    query: str,
+    stores: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Merge model hierarchy with only reliable customer-text corrections."""
+
+    raw_model = tool.get("expected_admin") if isinstance(tool.get("expected_admin"), dict) else {}
+    model_admin = _normalized_expected_admin(raw_model)
+    explicit = _explicit_admin_from_query_text(query)
+    county_level_city = str(raw_model.get("county_level_city") or "").strip()
+    if county_level_city and _region_equal(explicit.get("city"), county_level_city):
+        explicit.pop("city", None)
+    model_city = str(model_admin.get("city") or "").strip()
+    if (
+        model_city
+        and explicit.get("city")
+        and not _region_equal(explicit["city"], model_city)
+        and _admin_name_mentioned_in_query(
+            query,
+            model_city,
+            parent_province=str(model_admin.get("province") or ""),
+        )
+    ):
+        explicit.pop("city", None)
+    explicit.pop("township", None)
+    return {
+        **model_admin,
+        **_explicit_parent_admin_from_store_scope(query, stores),
+        **explicit,
+    }
 
 
 def _geocode_explicit_region_conflict(
@@ -3167,8 +3254,13 @@ def _geocode_explicit_region_conflict(
     if not isinstance(geocode, dict) or not geocode.get("location"):
         return False
     normalized_expected = _normalized_expected_admin(expected_admin)
-    if normalized_expected and not _geocode_matches_expected_admin(geocode, normalized_expected):
-        return True
+    if normalized_expected:
+        if not _geocode_matches_expected_admin(geocode, normalized_expected):
+            return True
+        # The map result has already passed every customer/model administrative
+        # anchor. Inventory substring heuristics must not reject that same
+        # result a second time.
+        return False
     text = _compact_text(query)
     if not text:
         return False
@@ -3970,7 +4062,7 @@ def _normalized_geocode_should_override_raw_sentence(
 ) -> bool:
     normalized_text = _compact_text(normalized_query)
     raw_text = _compact_text(raw_query)
-    if len(normalized_text) < 2 or normalized_text not in raw_text:
+    if len(normalized_text) < 2:
         return False
     if not str(normalized_geocode.get("city") or normalized_geocode.get("district") or "").strip():
         return False
@@ -3979,7 +4071,19 @@ def _normalized_geocode_should_override_raw_sentence(
         normalized_value = str(normalized_geocode.get(field) or "").strip()
         if raw_value and normalized_value and not _region_equal(raw_value, normalized_value):
             return True
-    return False
+    if normalized_text in raw_text:
+        return False
+    normalized_score = _geocode_candidate_text_score(
+        normalized_geocode,
+        query=normalized_query,
+        expected_admin={},
+    )
+    raw_score = _geocode_candidate_text_score(
+        raw_geocode,
+        query=raw_query,
+        expected_admin={},
+    )
+    return normalized_score >= 10 and normalized_score >= raw_score + 3
 
 
 def _unanchored_geocode_requires_confirmation(
@@ -4804,6 +4908,16 @@ def _first_geocode_candidate(
             query=query,
         )
     ]
+    compatible = _most_relevant_geocode_candidates(
+        compatible,
+        query=query,
+        expected_admin=normalized_expected,
+    )
+    hierarchy_shifted = _most_relevant_geocode_candidates(
+        hierarchy_shifted,
+        query=query,
+        expected_admin=normalized_expected,
+    )
     selected = (
         compatible[0]
         if normalized_expected and compatible
@@ -4861,6 +4975,67 @@ def _first_geocode_candidate(
     }
 
 
+def _most_relevant_geocode_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    query: str,
+    expected_admin: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Discard map hits whose place text is clearly weaker than the best hit."""
+
+    if len(candidates) < 2:
+        return candidates
+    scored = [
+        (_geocode_candidate_text_score(item, query=query, expected_admin=expected_admin), item)
+        for item in candidates
+    ]
+    top_score = max(score for score, _ in scored)
+    if top_score <= 0:
+        return candidates
+    # Equal or near-equal named places remain ambiguous. A weak result sharing
+    # only a generic word such as "枢纽" must not compete with "上海虹桥".
+    cutoff = max(1, math.ceil(top_score * 0.7))
+    return [item for score, item in scored if score >= cutoff]
+
+
+def _geocode_candidate_text_score(
+    candidate: dict[str, Any],
+    *,
+    query: str,
+    expected_admin: dict[str, str],
+) -> int:
+    query_subject = _compact_text(query)
+    for value in expected_admin.values():
+        for token in _region_tokens(value):
+            compact_token = _compact_text(token)
+            if len(compact_token) >= 2:
+                query_subject = query_subject.replace(compact_token, "")
+
+    candidate_subject = _compact_text(candidate.get("formatted_address"))
+    for field in ("province", "city", "district", "township"):
+        for token in _region_tokens(str(candidate.get(field) or "")):
+            compact_token = _compact_text(token)
+            if len(compact_token) >= 2:
+                candidate_subject = candidate_subject.replace(compact_token, "")
+    if not query_subject or not candidate_subject:
+        return 0
+
+    score = 0
+    for size, weight in ((3, 3), (2, 1)):
+        query_grams = {
+            query_subject[index : index + size]
+            for index in range(max(0, len(query_subject) - size + 1))
+        }
+        candidate_grams = {
+            candidate_subject[index : index + size]
+            for index in range(max(0, len(candidate_subject) - size + 1))
+        }
+        score += weight * len(query_grams & candidate_grams)
+    if candidate_subject in query_subject or query_subject in candidate_subject:
+        score += 8
+    return score
+
+
 def _normalized_expected_admin(value: Any) -> dict[str, str]:
     source = value if isinstance(value, dict) else {}
     normalized = {
@@ -4871,6 +5046,9 @@ def _normalized_expected_admin(value: Any) -> dict[str, str]:
     county_level_city = str(source.get("county_level_city") or "").strip()
     if county_level_city and not normalized.get("district"):
         normalized["district"] = county_level_city
+    district = str(normalized.get("district") or "").strip()
+    if district.endswith(("镇", "乡", "街道")):
+        normalized.pop("district", None)
     return normalized
 
 

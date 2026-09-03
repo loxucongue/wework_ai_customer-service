@@ -400,6 +400,15 @@ def _normalize_resolution(
         return {}, ["resolver_output_not_object"]
     request_kind = str(raw.get("request_kind") or "").strip()
     precision = str(raw.get("destination_precision") or "").strip()
+    precision = {
+        "address": "exact_address",
+        "full_address": "exact_address",
+        "road": "poi",
+        "street": "poi",
+        "landmark": "poi",
+        "county": "district",
+        "county_level_city": "district",
+    }.get(precision, precision)
     detail_kind = str(raw.get("detail_kind") or "none").strip()
     confidence = str(raw.get("confidence") or "").strip()
     refs = [str(item).strip() for item in raw.get("evidence_refs") or [] if str(item).strip()]

@@ -148,6 +148,7 @@ async def rerank_stores_by_driving_route(
         routed_shortlist.append(
             {
                 **store,
+                "distance_km": round(int(route["distance_meters"]) / 1000, 2),
                 "distance_source": "driving_route",
                 "driving_distance_meters": int(route["distance_meters"]),
                 "driving_duration_seconds": int(route["duration_seconds"]),

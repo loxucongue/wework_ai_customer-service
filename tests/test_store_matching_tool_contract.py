@@ -100,6 +100,52 @@ def test_driving_routes_rank_by_distance_before_duration() -> None:
     assert [item["store_id"] for item in reranked["ranked_stores"]] == ["2", "1"]
 
 
+def test_precise_origin_with_no_local_store_delivers_global_nearest_candidates() -> None:
+    stores = [_store("1", "候选一店"), _store("2", "候选二店")]
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {"source": "test", "stores": stores},
+    }
+    destination = {
+        "request_kind": "match_location",
+        "destination_query": "沈阳市沈河区青年大街109号",
+        "destination_precision": "exact_address",
+    }
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "no_match",
+                "destination_resolution": destination,
+                "candidate_search_complete": True,
+                "exact_scope_has_store": False,
+                "same_city_has_store": False,
+                "stores": [],
+                "candidate_stores": [],
+            },
+            "distance_calculate": {
+                "status": "ok",
+                "destination_resolution": destination,
+                "origin": destination["destination_query"],
+                "origin_precision": "exact_address",
+                "ranking_method": "haversine",
+                "ranking_complete": True,
+                "ranked_candidate_count": 2,
+                "unranked_candidate_count": 0,
+                "candidate_store_count": 2,
+                "ranked_stores": [
+                    {**stores[0], "distance_km": 10.0, "distance_source": "haversine"},
+                    {**stores[1], "distance_km": 20.0, "distance_source": "haversine"},
+                ],
+            },
+        },
+        state,
+    )
+    resolution = output["structured_facts"]["store_resolution_fact"]
+
+    assert resolution["status"] == "send_multiple"
+    assert resolution["delivery_store_ids"] == ["1", "2"]
+
+
 def test_customer_identity_lookup_does_not_send_request_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
     client = PlatformAgentClient(
         SimpleNamespace(
@@ -248,6 +294,43 @@ def test_invalid_primary_destination_output_uses_valid_fallback_model(
     assert resolution["destination_query"] == "北京市"
 
 
+def test_destination_model_road_precision_is_normalized_to_public_contract() -> None:
+    model = _FakeDestinationModel(
+        {
+            "request_kind": "match_location",
+            "destination_query": "广州市番禺区市桥大北路",
+            "destination_precision": "road",
+            "administrative_context": {
+                "province": "广东省",
+                "city": "广州市",
+                "district": "番禺区",
+            },
+            "poi_query": "市桥大北路",
+            "destination_subject": "customer",
+            "named_store": "",
+            "detail_kind": "none",
+            "candidate_interpretations": [],
+            "evidence_refs": ["current_message"],
+            "superseded_location_refs": [],
+            "confidence": "high",
+            "needs_clarification": False,
+            "geocode_before_clarification": True,
+            "reason": "当前消息给出完整道路",
+        }
+    )
+
+    resolution = asyncio.run(
+        resolve_active_store_destination(
+            model_client=model,
+            state={"content": "广州市番禺区市桥（旧称）大北路"},
+            tool={"destination_hint": "广州市番禺区市桥（旧称）大北路"},
+        )
+    )
+
+    assert resolution["resolver_status"] == "ok"
+    assert resolution["destination_precision"] == "poi"
+
+
 def test_map_timeout_returns_standard_search_incomplete_contract() -> None:
     model = _FakeDestinationModel(
         {
@@ -337,6 +420,15 @@ def test_expected_jianyang_anchor_excludes_cross_region_map_candidates() -> None
     assert selected["candidate_count"] == 1
     assert selected["ambiguous_regions"] is False
     assert len(selected["all_candidate_regions"]) == 3
+
+
+def test_single_geocode_candidate_region_is_not_treated_as_ambiguous() -> None:
+    assert not action_nodes._geocode_ambiguous_regions(
+        {
+            "candidate_count": 1,
+            "candidate_regions": [{"province": "广东省", "city": "广州市", "district": "天河区"}],
+        }
+    )
 
 
 def test_different_destination_interpretations_are_ambiguous_only_when_store_results_differ() -> None:
@@ -1070,3 +1162,235 @@ def test_province_plus_generic_landmark_does_not_trust_geocoded_city() -> None:
     assert lookup["status"] == "need_location_confirmation"
     assert lookup["stores"] == []
     assert resolution["delivery_store_ids"] == []
+
+
+def test_model_normalized_current_address_does_not_require_second_confirmation() -> None:
+    store = {
+        **_store("901", "深圳龙华店"),
+        "province": "广东省",
+        "city": "深圳市",
+        "district": "龙华区",
+        "store_address": "广东省深圳市龙华区民治大道1号",
+    }
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {"source": "test", "stores": [store]},
+    }
+
+    lookup = asyncio.run(
+        action_nodes._customer_store_lookup(
+            {
+                "query": "广东省深圳市龙华区民治大道",
+                "customer_raw_query": "深圳市宝安区龙华（现龙华区）民治大道",
+                "purpose": "store_search",
+                "destination_precision": "poi",
+                "destination_needs_clarification": False,
+                "confirmed_by_customer": True,
+                "expected_admin": {
+                    "province": "广东省",
+                    "city": "深圳市",
+                    "district": "龙华区",
+                },
+            },
+            state,
+            _FakeGeocodeClient(
+                {
+                    "province": "广东省",
+                    "city": "深圳市",
+                    "district": "龙华区",
+                    "formatted_address": "广东省深圳市龙华区民治大道",
+                    "location": "114.04,22.62",
+                }
+            ),
+        )
+    )
+
+    assert lookup["status"] == "ok"
+
+
+def test_geocode_query_prefixes_missing_formal_admin_anchors() -> None:
+    queries = action_nodes._store_lookup_geocode_queries(
+        {
+            "customer_raw_query": "北京大兴国际机场航站楼内",
+            "expected_admin": {
+                "province": "北京市",
+                "city": "北京市",
+                "district": "大兴区",
+            },
+        },
+        "北京大兴国际机场航站楼内",
+    )
+
+    assert queries[0]["source"] == "administratively_constrained_candidate"
+    assert queries[0]["query"] == "北京市大兴区北京大兴国际机场航站楼内"
+    assert queries[-1]["source"] == "customer_raw"
+
+
+def test_matching_expected_admin_is_not_rejected_by_inventory_substrings() -> None:
+    geocode = {
+        "province": "云南省",
+        "city": "大理白族自治州",
+        "district": "大理市",
+        "formatted_address": "云南省大理白族自治州大理市大理古城南门",
+        "location": "100.159741,25.685401",
+    }
+    unrelated_store = {
+        **_store("901", "测试古城店"),
+        "province": "陕西省",
+        "city": "西安市",
+        "district": "古城区",
+        "store_address": "陕西省西安市古城区测试路1号",
+    }
+
+    assert not action_nodes._geocode_explicit_region_conflict(
+        "大理古城南门游客中心",
+        geocode,
+        [unrelated_store],
+        expected_admin={
+            "province": "云南省",
+            "city": "大理白族自治州",
+            "district": "大理市",
+        },
+    )
+
+
+def test_functional_zone_in_formatted_address_accepts_statutory_district() -> None:
+    geocode = {
+        "province": "四川省",
+        "city": "成都市",
+        "district": "武侯区",
+        "formatted_address": "四川省成都市武侯区高新区天府软件园C区C7楼",
+        "location": "104.071484,30.539677",
+    }
+
+    assert not action_nodes._geocode_explicit_region_conflict(
+        "成都市高新区天府软件园C区7号楼背面",
+        geocode,
+        [],
+        expected_admin={
+            "province": "四川省",
+            "city": "成都市",
+            "district": "高新区",
+        },
+    )
+
+
+def test_geocode_candidates_prefer_matching_place_subject_before_ambiguity() -> None:
+    selected = action_nodes._first_geocode_candidate(
+        [
+            {
+                "province": "上海市",
+                "city": "上海市",
+                "district": "松江区",
+                "formatted_address": "上海市松江区松江枢纽(公交站)",
+                "location": "121.228327,30.984168",
+            },
+            {
+                "province": "上海市",
+                "city": "上海市",
+                "district": "长宁区",
+                "formatted_address": "上海市长宁区上海虹桥",
+                "location": "121.345781,31.194184",
+            },
+        ],
+        expected_admin={"province": "上海市", "city": "上海市"},
+        query="上海市上海虹桥国际枢纽中心",
+    )
+
+    assert selected["district"] == "长宁区"
+    assert selected["candidate_count"] == 1
+    assert selected["ambiguous_regions"] is False
+
+
+def test_equal_named_geocode_candidates_remain_ambiguous() -> None:
+    selected = action_nodes._first_geocode_candidate(
+        [
+            {
+                "province": "四川省",
+                "city": "成都市",
+                "district": "锦江区",
+                "formatted_address": "四川省成都市锦江区万达广场",
+                "location": "104.1,30.6",
+            },
+            {
+                "province": "四川省",
+                "city": "成都市",
+                "district": "金牛区",
+                "formatted_address": "四川省成都市金牛区万达广场",
+                "location": "104.0,30.7",
+            },
+        ],
+        expected_admin={"province": "四川省", "city": "成都市"},
+        query="成都市万达广场",
+    )
+
+    assert selected["candidate_count"] == 2
+    assert selected["ambiguous_regions"] is True
+
+
+def test_canonical_poi_geocode_overrides_weaker_raw_place_result() -> None:
+    assert action_nodes._normalized_geocode_should_override_raw_sentence(
+        raw_query="上海虹桥国际枢纽中心",
+        normalized_query="上海虹桥站",
+        raw_geocode={
+            "province": "上海市",
+            "city": "上海市",
+            "district": "长宁区",
+            "formatted_address": "上海市长宁区虹桥",
+            "location": "121.412279,31.202338",
+        },
+        normalized_geocode={
+            "province": "上海市",
+            "city": "上海市",
+            "district": "闵行区",
+            "formatted_address": "上海市闵行区上海虹桥站",
+            "location": "121.322861,31.194331",
+        },
+    )
+
+
+def test_text_admin_parser_does_not_invent_city_from_place_name() -> None:
+    dongguan = action_nodes._explicit_admin_from_query_text("东莞南城街道万科城市广场")
+    market = action_nodes._explicit_admin_from_query_text("黄桥镇菜市场")
+
+    assert "city" not in dongguan
+    assert str(dongguan.get("township") or "").endswith("南城街道")
+    assert "city" not in market
+    assert str(market.get("township") or "").endswith("黄桥镇")
+
+
+def test_county_level_city_model_hierarchy_beats_flat_text_parse() -> None:
+    merged = action_nodes._merged_expected_admin(
+        {
+            "expected_admin": {
+                "province": "安徽省",
+                "city": "芜湖市",
+                "county_level_city": "无为市",
+                "township": "陡沟镇",
+            }
+        },
+        query="无为市陡沟镇中心卫生院",
+        stores=[],
+    )
+
+    assert merged == {
+        "province": "安徽省",
+        "city": "芜湖市",
+        "district": "无为市",
+    }
+
+
+def test_street_level_model_value_does_not_become_district_constraint() -> None:
+    merged = action_nodes._merged_expected_admin(
+        {
+            "expected_admin": {
+                "province": "广东省",
+                "city": "东莞市",
+                "district": "南城街道",
+            }
+        },
+        query="东莞南城街道万科城市广场",
+        stores=[],
+    )
+
+    assert merged == {"province": "广东省", "city": "东莞市"}
