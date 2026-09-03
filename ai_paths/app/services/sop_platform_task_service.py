@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
     "sent": ("sop_sent", "SOP发送成功", "SOP消息已发送"),
     "send_failed": ("sop_send_failed", "SOP发送失败", "SOP消息发送失败"),
+    "stale_task": ("sop_send_failed", "SOP发送失败", "SOP任务超过10分钟发送时限，已消费且未发送"),
     "wecom_aggregate_send_failed": (
         "wecom_aggregate_send_failed",
         "发送失败｜企微聚合平台",
@@ -690,6 +691,18 @@ class SopPlatformTaskService:
         identity = _task_identity(tasks[0])
         batch_task_ids = [_task_id(task) for task in tasks]
         batch_run_id = f"{biz_type}:{batch_task_ids[0]}"
+        stale_tasks = [task for task in tasks if _platform_task_is_stale(task, settings=self.settings)]
+        if stale_tasks:
+            for task in stale_tasks:
+                self._ensure_local_task(task, status="platform_queued")
+            return await self._consume_batch_without_send(
+                stale_tasks,
+                reason="stale_task",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                audit_context={"source": "scheduled_task_expired_before_first_attempt"},
+            )
         quiet_hours = _quiet_hours_base_summary(tasks[0], settings=self.settings)
         if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
             for task in [*tasks, *trigger_tasks]:
@@ -2627,6 +2640,36 @@ class SopPlatformTaskService:
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
+        if preflight_reason == "stale_task":
+            audit = {
+                "decision": {"decision": "no_send", "reason": "stale_task", "reply_messages": []},
+                "context": {"source": "scheduled_task_expired_before_first_attempt"},
+                "consume_results": [],
+            }
+            consumed = await self._consume_with_audit(
+                task_id=task_id,
+                status=70,
+                phase="stale_task_terminal",
+                audit=audit,
+                remark="SOP任务超过10分钟发送时限，任务已消费且未发送",
+            )
+            _require_platform_status(consumed, 70)
+            rule_data = await self._report_terminal_rule_data(platform_task, outcome="stale_task", sent=False)
+            audit["rule_data"] = rule_data
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="completed_without_send",
+                send_payload=audit,
+                error="",
+            )
+            self.repository.update_sop_event_status(event_id, status="platform_completed", error="")
+            return {
+                "processed": True,
+                "status": "completed_without_send",
+                "task_id": task_id,
+                "terminal_task_ids": [task_id],
+            }
+
         processing_status = "platform_judging"
         self.repository.update_sop_event_status(event_id, status=processing_status)
         self.repository.update_sop_send_task(
@@ -3530,13 +3573,18 @@ def _task_preflight_no_send_reason(
     if not messages and not _has_trusted_ai_copy_source(platform_task):
         return "missing_trusted_platform_content"
     scheduled = _task_scheduled_epoch(platform_task)
-    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 21600) or 0))
-    if use_ai_copy and scheduled and max_age and time.time() - scheduled > max_age:
+    if _platform_task_is_stale(platform_task, settings=settings):
         return "stale_task"
     live_not_before = _parse_epoch(getattr(settings, "sop_platform_live_not_before", ""))
     if live_not_before and (not scheduled or scheduled < live_not_before):
         return "pre_cutover_task"
     return ""
+
+
+def _platform_task_is_stale(platform_task: dict[str, Any], *, settings: Any) -> bool:
+    scheduled = _task_scheduled_epoch(platform_task)
+    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 600) or 0))
+    return bool(scheduled and max_age and time.time() - scheduled > max_age)
 
 
 def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -> dict[str, Any]:

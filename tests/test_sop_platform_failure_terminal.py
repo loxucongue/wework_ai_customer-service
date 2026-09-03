@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
-from app.services.sop_platform_task_service import SopPlatformTaskService
+from app.services.sop_platform_task_service import SopPlatformTaskService, _task_preflight_no_send_reason
 
 
 class _Repository:
@@ -134,3 +134,27 @@ def test_transient_failure_starts_bounded_retry_window_without_consuming() -> No
     assert platform.consume_calls == []
     assert repository.task_updates[-1]["status"] == "processing_retry"
     assert repository.event_updates[-1]["status"] == "platform_batch_send_retry"
+
+
+def test_fixed_content_task_also_expires_ten_minutes_after_schedule() -> None:
+    task = {
+        **_task(),
+        "scheduledAt": time.time() - 601,
+        "useAiCopy": False,
+    }
+    identity = {
+        "corp_id": "corp",
+        "customer_id": "customer",
+        "external_userid": "external",
+        "user_id": "user",
+        "wechat": "wechat",
+    }
+
+    assert (
+        _task_preflight_no_send_reason(
+            task,
+            identity=identity,
+            settings=SimpleNamespace(sop_platform_max_task_age_seconds=600, sop_platform_live_not_before=""),
+        )
+        == "stale_task"
+    )
