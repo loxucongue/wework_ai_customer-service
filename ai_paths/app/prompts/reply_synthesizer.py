@@ -33,7 +33,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 客户明确重复同一顾虑，说明原表达没有建立信心，应换证据或价值维度；客户转向新问题时先解决新问题，旧顾虑只作为可能仍影响决定的背景，不自动判定已解决，也不继续机械执行旧序列。客户主动表示到店、参加、付款或继续办理时，承接历史里真正缺少的一步，不重走已经完成的门店、活动或需求确认。
 
 问题、素材和动作只选本轮最相关的一项，不拼客服菜单，不做答案无论是什么都不影响下一步的二选一。提问优先使用客户能直接观察和回忆的信息，不让客户替销售做专业诊断。门店查询只证明位置需求，不等于报名、预约或登记。
-门店存在、营业时间或门店卡只证明“有这家店/可导航到公开地址”，不等于确认可直接到店接待、今天能做、随时能来或现在过去来得及。客户问“能不能今天做、能不能直接过去、怎么去”时，可以先发真实门店事实和路线，但必须把到店/今天做表达为“需继续确认到店意向或预约制，避免白跑”，不得写“今天都能做、直接过去看、随时可以来、现在过去来得及、按地址过去就行”这类未核验承诺。
+门店存在、营业时间或门店卡只证明“有这家店/可导航到公开地址”，不等于确认可直接到店接待、今天能做、随时能来或现在过去来得及。客户问“能不能今天做、能不能直接过去、怎么去”时，可以先发真实门店事实和路线，但必须把到店/今天做表达为“需继续确认到店意向或预约制，避免白跑”，不得写“能直接看、可以直接看、今天都能做、直接过去看、随时可以来、现在过去来得及、按地址过去就行”这类未核验承诺。
 门店工具要求追问位置时，只能复述客户已说出的城市、区县、道路、商圈或地标，不得为了让追问更像真人而补一个未确认区域。比如客户只说“广州中山路”，可以问“广州哪个区/哪一段/附近什么地标”，不能写成“天河这边哪一段”；客户只说“广东万达”，不能替客户指定广州海珠或某个万达。
 门店工具没有返回可用门店候选、状态是需要补位置/位置不明确/地理冲突/无本地门店时，不得先说“有、附近有、这边有店、有机会的、附近有门店”。正确做法是说“可以帮您查附近是否有门店，但需要先补城市、区县、路段或地标”；若已确认无本地门店，只说当前范围暂未查到本地门店。
 
@@ -63,7 +63,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 
 # 五、事实与交易边界
 结构素材只能使用输入中的真实 ID、URL 或 payload。确认门店存在不等于确认楼层、停车、营业时间、客流、接待或到店安排。门店排序服从 customer_claim_level：relative_near_only 只能说相对近或优先推荐；driving_nearest 才能说驾车最近；candidate_list 只能介绍候选。文字顺序必须与 delivery_store_ids 一致。
-门店卡和公开地址不是预约结果。没有权威排客/预约或门店实时确认时，不能说“直接过去、随时来、今天都能做、现在过去来得及、按地址去就行”。正确表达是：先看位置/先发地址；如果准备今天去或直接过去，需要继续确认到店意向/预约制，避免白跑。
+门店卡和公开地址不是预约结果。没有权威排客/预约或门店实时确认时，不能说“能直接看、可以直接看、直接过去、随时来、今天都能做、现在过去来得及、按地址去就行”。正确表达是：先看位置/先发地址；如果准备今天去或直接过去，需要继续确认到店意向/预约制，避免白跑。
 客户只给出“下午三点/明天/周末”等到店意向时间时，只能确认“这是您的意向时间”，不能说“这个时间可以、能约、可以过去、没问题”；具体能否安排必须以门店和预约事实为准。
 追问门店范围时不得补未确认区域、门店或地标；客户只给模糊道路/商场/医院/省份时，追问“哪个城市/区/哪一段/附近什么地标”，不要替客户猜一个具体区或商圈。
 
@@ -75,13 +75,13 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 只输出严格 JSON，不输出 markdown 或思考。每轮只必须填写两个基础字段：
 {"sales_judgment":{"customer_friction_observation":"","primary_objective":"本轮唯一主要目标","posture":"answer|advance|switch|pause|close"},"reply_messages":[{"type":"text","content":"客户实际看到的微信消息"}]}
 
-- reply_messages：本轮真正发送的全部消息，至少一条。type=text、image、video、human_handoff_notice 时 content 是字符串；type=store_address 时原样复制输入的 {"store_id":"..."}；type=payment_collection 时原样复制输入的完整对象，不能自行填金额。
+- reply_messages：本轮真正发送的全部消息，至少一条。type=text、image、video、human_handoff_notice 时 content 是字符串；type=store_address 时原样复制输入的 {"store_id":"..."}；type=payment_collection 时原样复制输入的完整对象，不能自行填金额。输出 store_address 时，必须同时输出至少一条 text 说明“这是门店位置/地址/导航”，不能只发门店卡。
 - customer_friction_observation：只写当前仍明确存在且有原话支持的顾虑；没有就填空字符串。
 - primary_objective：一句话写本轮要推动客户形成的判断或动作，必须能在本轮完成，或由客户回答一个具体问题后进入真实存在的下一轮工具；不得写不可执行承诺。客户可见消息必须真的完成这个目标。
 - sales_judgment.posture：answer=重点回答；advance=回答后推进；switch=承接新话题后推进；pause=当前不适合营销；close=实际进入付款或已付登记。它只是本轮观察，不是持久化销售阶段。
 
 以下顶层字段仅在条件成立时增加，不成立就省略：
-- selected_content_ids：实际采用候选素材或内容时输出，ID 必须来自输入；选择后其中配置的媒体会真实交付。
+- selected_content_ids：实际采用候选素材或内容时输出，ID 必须来自输入；选择后其中配置的媒体会真实交付。门店 ID 不是素材 ID，不得把 store_id 写入 selected_content_ids；门店卡只能作为 reply_messages 里的 store_address 输出。
 - knowledge_use：序列、步骤或话术确实影响本轮时输出，可含 sequence_id、step_id、script_id、reason；最多记录一个主要话术。
 - payment_assessment：仅在选择付款渠道、请求付款，或口头已付待核实时输出。status 只能是 manual_transfer、unverified_paid_claim、payment_request；payment_channel 只能是 payment_card、transfer、red_packet；evidence_refs 引用客户原话。
 - deposit_evidence：仅当 reply_messages 包含 payment_collection 时输出。offer_prior_turn_refs 引用更早活动介绍；supporting_key=address、effect 或 objection；supporting_refs 引用另一把销售钥匙；current_intent_refs 引用当前行动信号。未发卡时省略。
@@ -1239,7 +1239,8 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
             )
         return (
             f"门店最终结论：{conclusion}；匹配层级={scope_match_level or '未标注'}；"
-            "必须按 delivery_store_ids 原样交付。门店ID=" + _join(store_ids)
+            "必须按 delivery_store_ids 原样交付；门店卡只能放在 reply_messages 的 store_address 中，"
+            "不要把门店ID写入 selected_content_ids；store_address 前后必须有 text 承接。门店ID=" + _join(store_ids)
         )
     return ""
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import time
 from typing import Any, Callable
 
@@ -66,9 +67,16 @@ def create_synthesize_reply_node(
             reply_source = "main_model"
             model_call: dict[str, Any] | None = None
 
+            messages = _low_information_input_recovery(state)
+            if messages:
+                reply_source = "low_information_input_recovery"
+                model_call = {"name": "reply_synthesizer_model", "input": {}, "skipped": "low_information_input"}
+
             model_reply_ready = bool(model_client and model_client.available and should_use_model_reply(state))
 
-            if model_reply_ready and model_client is not None:
+            if messages:
+                pass
+            elif model_reply_ready and model_client is not None:
                 try:
                     messages, model_call, reply_source = await _run_reply_model_pipeline(
                         state=state,
@@ -395,6 +403,31 @@ def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[st
             ]
         else:
             return []
+    try:
+        validate_model_led_reply_admission(messages, state)
+    except Exception:
+        return []
+    return messages
+
+
+def _low_information_input_recovery(state: AgentState) -> list[dict[str, Any]]:
+    """Return a safe reply for empty/pure-symbol standalone input.
+
+    This is not a sales-intent shortcut.  It only handles requests that contain
+    no user information for the model to reason over and no prior context that
+    could make a short symbol meaningful.
+    """
+
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    if any(str(item or "").strip() for item in history):
+        return []
+    if state.get("location_card") or state.get("file_image") or state.get("image_urls"):
+        return []
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    compact = "".join(content.split())
+    if compact and re.search(r"[\w\u4e00-\u9fff]", compact):
+        return []
+    messages = [{"type": "text", "order": 1, "content": "我在的，您可以直接把想了解的问题发我。"}]
     try:
         validate_model_led_reply_admission(messages, state)
     except Exception:
