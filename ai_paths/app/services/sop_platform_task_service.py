@@ -404,13 +404,36 @@ class SopPlatformTaskService:
                     max(1, min(int(getattr(self.settings, "sop_platform_batch_size", 50) or 50), 500)),
                 ),
             )
-            online_page = await self.platform_client.pending(limit=pull_limit)
+            priority_wechats = _configured_priority_wechats(self.settings)
+            priority_pages = (
+                await asyncio.gather(
+                    *(self.platform_client.pending(limit=pull_limit, wechat=wechat) for wechat in priority_wechats)
+                )
+                if priority_wechats
+                else []
+            )
+            priority_items = _dedupe_tasks(
+                [
+                    item
+                    for page in priority_pages
+                    for item in (page.get("items") if isinstance(page, dict) else page if isinstance(page, list) else [])
+                    if isinstance(item, dict)
+                ]
+            )
+            priority_mode = bool(priority_items)
+            if priority_mode:
+                online_page = {
+                    "items": priority_items,
+                    "total": sum(int(page.get("total") or 0) for page in priority_pages if isinstance(page, dict)),
+                }
+            else:
+                online_page = await self.platform_client.pending(limit=pull_limit)
             online_items = (
                 online_page
                 if isinstance(online_page, list)
                 else online_page.get("items") if isinstance(online_page, dict) else []
             )
-            if bool(getattr(self.settings, "sop_platform_bulk_human_takeover_enabled", False)):
+            if bool(getattr(self.settings, "sop_platform_bulk_human_takeover_enabled", False)) and not priority_mode:
                 stale_online_items = _select_bulk_human_takeover_tasks(
                     online_items if isinstance(online_items, list) else [],
                     settings=self.settings,
@@ -3649,6 +3672,16 @@ def _select_bulk_human_takeover_tasks(
         task["_aics_terminal_outcome"] = "human_takeover"
         selected.append(task)
     return selected
+
+
+def _configured_priority_wechats(settings: Any) -> list[str]:
+    return list(
+        dict.fromkeys(
+            value.strip()
+            for value in str(getattr(settings, "sop_platform_priority_wechats", "") or "").split(",")
+            if value.strip()
+        )
+    )
 
 
 def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -> dict[str, Any]:

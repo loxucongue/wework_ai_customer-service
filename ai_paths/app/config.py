@@ -165,6 +165,10 @@ class Settings(BaseSettings):
         default="",
         alias="SOP_PLATFORM_BULK_HUMAN_TAKEOVER_BEFORE",
     )
+    sop_platform_priority_wechats: str = Field(
+        default="",
+        alias="SOP_PLATFORM_PRIORITY_WECHATS",
+    )
     sop_platform_live_not_before: str = Field(default="", alias="SOP_PLATFORM_LIVE_NOT_BEFORE")
     sop_platform_quiet_hours_enabled: bool = Field(default=False, alias="SOP_PLATFORM_QUIET_HOURS_ENABLED")
     sop_platform_quiet_start_hour: int = Field(default=0, alias="SOP_PLATFORM_QUIET_START_HOUR")

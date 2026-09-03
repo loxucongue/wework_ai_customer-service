@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.services.sop_platform_task_service import (
     SopPlatformTaskService,
+    _configured_priority_wechats,
     _partition_stale_pending_tasks,
     _select_bulk_human_takeover_tasks,
     _task_preflight_no_send_reason,
@@ -197,3 +198,9 @@ def test_bulk_human_takeover_excludes_kept_wechat_and_new_tasks() -> None:
 
     assert [task["task_id"] for task in selected] == [101]
     assert selected[0]["_aics_terminal_outcome"] == "human_takeover"
+
+
+def test_priority_wechats_are_trimmed_and_deduplicated_in_order() -> None:
+    settings = SimpleNamespace(sop_platform_priority_wechats="SL0906, DY8808,SL0906,,SL8004")
+
+    assert _configured_priority_wechats(settings) == ["SL0906", "DY8808", "SL8004"]
