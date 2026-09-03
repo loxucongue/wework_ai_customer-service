@@ -410,10 +410,17 @@ class SopPlatformTaskService:
                 if isinstance(online_page, list)
                 else online_page.get("items") if isinstance(online_page, dict) else []
             )
-            stale_online_items, content_lookup_items = _partition_stale_pending_tasks(
-                online_items if isinstance(online_items, list) else [],
-                settings=self.settings,
-            )
+            if bool(getattr(self.settings, "sop_platform_bulk_human_takeover_enabled", False)):
+                stale_online_items = _select_bulk_human_takeover_tasks(
+                    online_items if isinstance(online_items, list) else [],
+                    settings=self.settings,
+                )
+                content_lookup_items = []
+            else:
+                stale_online_items, content_lookup_items = _partition_stale_pending_tasks(
+                    online_items if isinstance(online_items, list) else [],
+                    settings=self.settings,
+                )
             store_visit_page = await _load_sop_message_groups_for_events(
                 self.platform_client,
                 content_lookup_items,
@@ -727,7 +734,7 @@ class SopPlatformTaskService:
                     "consume_results": [],
                 },
                 error=TimeoutError("SOP task exceeded configured send window before first attempt"),
-                outcome="stale_task",
+                outcome=str(stale_task.get("_aics_terminal_outcome") or "stale_task"),
             )
         quiet_hours = _quiet_hours_base_summary(tasks[0], settings=self.settings)
         if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
@@ -3616,6 +3623,32 @@ def _partition_stale_pending_tasks(
     for task in tasks:
         (stale if _platform_task_is_stale(task, settings=settings) else content_lookup).append(task)
     return stale, content_lookup
+
+
+def _select_bulk_human_takeover_tasks(
+    tasks: list[dict[str, Any]],
+    *,
+    settings: Any,
+) -> list[dict[str, Any]]:
+    excluded = {
+        value.strip().lower()
+        for value in str(getattr(settings, "sop_platform_bulk_human_takeover_exclude", "") or "").split(",")
+        if value.strip()
+    }
+    cutoff = _parse_epoch(getattr(settings, "sop_platform_bulk_human_takeover_before", ""))
+    selected: list[dict[str, Any]] = []
+    for task in tasks:
+        identity = _task_identity(task)
+        account_ids = {
+            str(identity.get("user_id") or "").strip().lower(),
+            str(identity.get("wechat") or "").strip().lower(),
+        }
+        scheduled = _task_scheduled_epoch(task)
+        if account_ids.intersection(excluded) or not cutoff or not scheduled or scheduled > cutoff:
+            continue
+        task["_aics_terminal_outcome"] = "human_takeover"
+        selected.append(task)
+    return selected
 
 
 def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -> dict[str, Any]:

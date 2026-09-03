@@ -153,6 +153,18 @@ class Settings(BaseSettings):
         default=600,
         alias="SOP_PLATFORM_SEND_RETRY_TIMEOUT_SECONDS",
     )
+    sop_platform_bulk_human_takeover_enabled: bool = Field(
+        default=False,
+        alias="SOP_PLATFORM_BULK_HUMAN_TAKEOVER_ENABLED",
+    )
+    sop_platform_bulk_human_takeover_exclude: str = Field(
+        default="",
+        alias="SOP_PLATFORM_BULK_HUMAN_TAKEOVER_EXCLUDE",
+    )
+    sop_platform_bulk_human_takeover_before: str = Field(
+        default="",
+        alias="SOP_PLATFORM_BULK_HUMAN_TAKEOVER_BEFORE",
+    )
     sop_platform_live_not_before: str = Field(default="", alias="SOP_PLATFORM_LIVE_NOT_BEFORE")
     sop_platform_quiet_hours_enabled: bool = Field(default=False, alias="SOP_PLATFORM_QUIET_HOURS_ENABLED")
     sop_platform_quiet_start_hour: int = Field(default=0, alias="SOP_PLATFORM_QUIET_START_HOUR")
