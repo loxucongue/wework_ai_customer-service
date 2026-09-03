@@ -1,0 +1,149 @@
+{
+  "rule_response": {
+    "code": 200,
+    "message": "操作成功",
+    "data": {
+      "triggers": [
+        {
+          "id": 101,
+          "typeName": "方案认可后的下一步",
+          "condition": "客户已经认可核心方案，并主动询问价格、预约或下一步",
+          "judgeMethod": "AI",
+          "triggerMode": "independent",
+          "enabled": true,
+          "locked": false,
+          "keywords": "怎么预约,下一步,多少钱",
+          "judgeNote": "先回答当前问题，再判断是否适合低压推进"
+        },
+        {
+          "id": 102,
+          "typeName": "到店意向确认",
+          "condition": "客户主动询问可到店时间、地址或体验流程，且没有未解决卡点",
+          "judgeMethod": "关键词+AI",
+          "triggerMode": "independent",
+          "enabled": true,
+          "locked": false,
+          "keywords": "几点,地址,怎么体验",
+          "judgeNote": "不能把单纯地点补充误判成已经愿意预约"
+        },
+        {
+          "id": 103,
+          "typeName": "家人共同决策",
+          "condition": "客户认可方案但明确需要和家人商量，可邀请共同了解而不是催付",
+          "judgeMethod": "AI",
+          "triggerMode": "independent",
+          "enabled": true,
+          "locked": false,
+          "keywords": "问下家人,商量一下",
+          "judgeNote": "保持低压"
+        },
+        {
+          "id": 104,
+          "typeName": "组合条件样例",
+          "condition": "客户认可效果并且已经确认到店时间",
+          "judgeMethod": "AI",
+          "triggerMode": "combined",
+          "enabled": true,
+          "locked": false,
+          "keywords": "有效果,下午到",
+          "judgeNote": "等待接口补充组合分组"
+        }
+      ],
+      "aiConfirm": {
+        "enabled": true,
+        "guidance": "必须结合当前客户原话确认，不因单个关键词直接推进"
+      },
+      "constraints": {
+        "maxPerDay": 2,
+        "minIntervalMinutes": 30,
+        "prerequisites": [
+          "客户已了解核心方案"
+        ],
+        "taboos": [
+          "客户明确要求停止联系",
+          "投诉或承诺争议尚未处理"
+        ]
+      }
+    }
+  },
+  "sequence_response": {
+    "code": 200,
+    "message": "操作成功",
+    "data": {
+      "total": 3,
+      "list": [
+        {
+          "id": 201,
+          "sequenceName": "温和邀约序列",
+          "subtitle": "先解答再确认一个最小下一步",
+          "triggerText": "客户主动询问时间、地址、体验或预约流程",
+          "enabled": true,
+          "nodes": [
+            {
+              "id": 2011,
+              "timing": "进入逼单后",
+              "delay": 0,
+              "delayUnit": "分钟",
+              "actionTypeId": 3,
+              "actionTypeName": "预约确认",
+              "followCheckpointTypeId": 14,
+              "followCheckpointTypeName": "逼单-约时间类",
+              "aiNote": "先回答问题，再只确认一个可接受的到店时间"
+            },
+            {
+              "id": 2012,
+              "timing": "客户静默后",
+              "delay": 30,
+              "delayUnit": "分钟",
+              "actionTypeId": 6,
+              "actionTypeName": "价值补充",
+              "followCheckpointTypeId": 14,
+              "followCheckpointTypeName": "逼单-约时间类",
+              "aiNote": "低压补充真实价值，不虚构名额"
+            }
+          ]
+        },
+        {
+          "id": 202,
+          "sequenceName": "价格犹豫收口",
+          "subtitle": "价值解释后的低门槛推进",
+          "triggerText": "客户认可方案，但对价格或预约成本仍在权衡",
+          "enabled": true,
+          "nodes": [
+            {
+              "id": 2021,
+              "timing": "进入逼单后",
+              "delay": 0,
+              "delayUnit": "分钟",
+              "actionTypeId": 6,
+              "actionTypeName": "价值补充",
+              "followCheckpointTypeId": 15,
+              "followCheckpointTypeName": "逼单-价格决策类",
+              "aiNote": "完整回答价格后，给出一个低门槛下一步"
+            }
+          ]
+        },
+        {
+          "id": 203,
+          "sequenceName": "共同决策承接",
+          "subtitle": "帮助客户和家人共同了解",
+          "triggerText": "客户需要家人参与决策，但仍愿意继续了解",
+          "enabled": true,
+          "nodes": [
+            {
+              "id": 2031,
+              "timing": "进入逼单后",
+              "delay": 0,
+              "delayUnit": "分钟",
+              "actionTypeId": 4,
+              "actionTypeName": "信任背书",
+              "followCheckpointTypeId": 16,
+              "followCheckpointTypeName": "逼单-共同决策类",
+              "aiNote": "提供便于转述的信息，不催促当场决定"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

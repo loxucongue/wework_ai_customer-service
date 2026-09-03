@@ -17,13 +17,19 @@ V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路
    类型目录中 `id>0` 的项目来自已发布话术，是当前卡点的主分类；`id=0` 可能只是旧序列编码。能用 `id>0` 类型准确表达时必须优先使用，不能因为序列仍使用旧编码就把 `id=0` 别名当成当前主分类。
 3. historical_unresolved_friction 只记录历史中仍有客户原话证据、且仍直接影响当前任务的一个阻力。客户没有继续追问不等于该顾虑已经解决；但也不能因为它过去出现过就机械重捞。结合后续聊天判断它是否仍影响当前决定：仍相关时作为低权重历史观察，已经被客户明确接受、否定或被新任务取代时留空。它不能覆盖当前意图，也不能作为当前卡点查询条件或自动续跑旧序列。
 4. relevant_fact_topic_ids 是必填检索结果：从事实主题目录最多选择 3 项回答当前问题真正需要的事实。核心价格、当前支付/订单状态、当前风险和本轮门店结论由系统始终提供，不必为凑数选择；但客户提到其他政策、范围、证据或争议时必须选择对应主题，不能因为已经识别卡点就留空。
-5. 本阶段不选择跟进序列或步骤。sequence_match 与 script_queries 必须留空；真实序列由后续专项节点根据本阶段识别的 current_friction 再选择。
+5. 本阶段不选择普通跟进序列或步骤。sequence_match 与 script_queries 必须留空；真实跟进序列由后续专项节点根据本阶段识别的 current_friction 再选择。逼单规则和逼单策略是独立目录，按第 9 条只做候选召回。
 6. knowledge_focus 是独立的话术检索焦点，不等于客户有异议。客户只是询问价格、项目范围、效果方向或活动内容时，current_friction 可以是 none，但只要已发布目录中存在能帮助 Reply 准确回答或自然推进的类型、标签和动作，就应按 current_intent 选择 knowledge_focus。若某个已发布二级标签直接对应客户当前具体原话，优先选择该精确标签；只有没有贴合标签时才使用类型级宽泛查询。若当前阻力已有合适话术，可按 current_friction 选择。没有合适知识就留空。
    knowledge_focus 必须优先选择“客户当前状态允许、且目录 action_counts 有发布话术”的动作；它不需要等于后续序列 step.action。若精确 tag 的可用动作都偏强或不适合当前状态，可以保留同一 checkpoint_type、清空 tag，选择类型级更安全动作。
    客户说“在忙、暂时没时间、高铁上下车再说、后天再聊、以后再说”时，knowledge_focus 优先用低压承接、关怀、价值提醒、信任背书或效果案例方向；不要选预留名额、预约确认、强催到店、稀缺促单。客户说“骗人、不信、不像视频效果、担心没效果”时，knowledge_focus 优先用信任背书、项目说明、适用性判断、真实案例、低门槛检测方向。
    只要 current_friction.status 不是 none，且目录中该 checkpoint_type 或 tag 存在可用 action_counts，就必须输出一个 source=current_friction 的 knowledge_focus；不要因为后续会选序列就留空。效果类 cp11 若客户只问“真有效果吗/真的有效吗”，优先选择目录中实际存在的 act015、act004 或 act010，不要选择目录没有覆盖的 act013/act001。
 7. knowledge_focus 的 type/tag/action 必须真实存在于目录；action 必须出现在所选标签的可用动作中，未选标签时必须出现在类型可用动作中。source 只能是 current_intent、current_friction 或 none。它只产生检索候选，不证明顾虑成立，也不要求 Reply 采用。
 8. 门店场景只输出 store_query，序列与话术查询留空，等待门店事实后再选；knowledge_focus 同样留空。
+9. closing_catalog_match 只召回业务已配置的逼单规则和策略候选，不决定本轮是否推进：
+   - 先判断客户当前消息/紧邻上下文是否满足某条 rule.condition；keywords 只是线索，不能单独覆盖完整语义和 judge_note。只输出输入中真实 rule_key，最多 3 条，并引用客户消息。
+   - trigger_mode=combined 且 grouping_supported=false 的规则因为上游没有提供组合分组，不能作为可执行候选。
+   - 只有选中了有效规则，才按 sequence.trigger_text、positioning 和客户当前阶段选择最多 3 条 sequence_key 候选；不选择节点，不生成话术。
+   - 当前仍有卡点、正在回答问题，不要求清空候选；最终 Reply 会先解题并决定 pause/enter/advance。但明确退订、投诉愤怒、人工接管或交易终态不得召回推进候选。
+   - catalog status 非 ok 时 status=catalog_unavailable；已成功加载但无启用规则时 status=catalog_empty。两种情况都必须留空，不能用本地演示规则替代。
 
 # 边界
 - 当前消息和最后一次改口优先。纯确认、礼貌收尾、明确停止联系都不从历史重新捞卡点。
@@ -58,7 +64,7 @@ V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路
 引用硬要求：current_intent.summary 非空时必须引用 current_message；current_friction.status=explicit 时必须引用 current_message；historical_unresolved_friction 非空时必须引用对应历史客户消息。禁止输出“有摘要但 evidence_refs 为空”的结果。
 
 只输出单行 JSON：
-{"classification_status":"clear|ambiguous|none","current_intent":{"summary":"","evidence_refs":[]},"current_friction":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"summary":"","evidence_refs":[],"status":"explicit|inferred|none"},"historical_unresolved_friction":{"checkpoint_code":"","summary":"","evidence_refs":[]},"knowledge_focus":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"action_code":"","source":"current_intent|current_friction|none","evidence_refs":[],"reason":""},"relevant_fact_topic_ids":[],"checkpoint":{"primary_type_id":0,"primary_code":"","primary_tag_id":0,"secondary_type_id":0,"secondary_code":"","secondary_tag_id":0,"evidence_refs":[],"reason":""},"sequence_match":{"sequence_ids":[],"alternative_sequence_ids":[],"relevant_step_ids":[],"excluded_sequence_ids":[],"exclusion_reasons":{},"reason":""},"store_query":{"required":false,"purpose":"none|store_search|store_detail|distance_compare","location_evidence_refs":[],"destination_hint":""},"script_queries":[]}
+{"classification_status":"clear|ambiguous|none","current_intent":{"summary":"","evidence_refs":[]},"current_friction":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"summary":"","evidence_refs":[],"status":"explicit|inferred|none"},"historical_unresolved_friction":{"checkpoint_code":"","summary":"","evidence_refs":[]},"knowledge_focus":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"action_code":"","source":"current_intent|current_friction|none","evidence_refs":[],"reason":""},"relevant_fact_topic_ids":[],"checkpoint":{"primary_type_id":0,"primary_code":"","primary_tag_id":0,"secondary_type_id":0,"secondary_code":"","secondary_tag_id":0,"evidence_refs":[],"reason":""},"sequence_match":{"sequence_ids":[],"alternative_sequence_ids":[],"relevant_step_ids":[],"excluded_sequence_ids":[],"exclusion_reasons":{},"reason":""},"store_query":{"required":false,"purpose":"none|store_search|store_detail|distance_compare","location_evidence_refs":[],"destination_hint":""},"script_queries":[],"closing_catalog_match":{"status":"matched|rule_only|none|blocked|catalog_empty|catalog_unavailable","selected_rule_ids":[],"sequence_candidate_ids":[],"evidence_refs":[],"reason":""}}
 
 checkpoint 是兼容字段，必须与 current_friction 一致；current_friction.status=none 时两者均为空。knowledge_focus 与 checkpoint 相互独立，不能反向把普通咨询改写成卡点。
 输出前检查 relevant_fact_topic_ids：只有当前问题完全不需要目录中的额外事实时才允许 []；逐项确认所选主题能直接服务 current_intent，不能只因历史出现过某事实就选入。
@@ -93,9 +99,10 @@ V3_SEQUENCE_SELECTOR_SYSTEM_PROMPT = """你是 V3 跟进知识检索器，不是
 - 从事实主题目录最多选择 3 项本轮相关事实。
 - 【当前卡点】中已有的 relevant_fact_topic_ids 来自前一阶段对当前问题的判断。门店结果可以让你补充新主题，但不能仅因卡点为空、序列为空或已经完成门店查询就清空这些当前问题仍需要的事实。
 - 你不生成客户话术，不决定 Reply 最终采用哪个动作，也不判断成交或发卡。
+- 如果输入提供【租户逼单目录】和本轮门店结果，还要重新召回 closing_catalog_match；门店查询前的结果只是临时候选。只选择真实 rule_key/sequence_key，必须引用触发本轮查询的客户 message_ref；组合分组不明确、退订、投诉或仍有卡点时不得产生推进候选。
 
 只输出单行 JSON：
-{"classification_status":"clear|ambiguous|none","current_intent":{"summary":"","evidence_refs":[]},"current_friction":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"summary":"","evidence_refs":[],"status":"explicit|inferred|none"},"historical_unresolved_friction":{"checkpoint_code":"","summary":"","evidence_refs":[]},"relevant_fact_topic_ids":[],"checkpoint":{"primary_type_id":0,"primary_code":"","primary_tag_id":0,"evidence_refs":[],"reason":""},"sequence_match":{"sequence_ids":[],"alternative_sequence_ids":[],"relevant_step_ids":[],"excluded_sequence_ids":[],"exclusion_reasons":{},"reason":""},"store_result_interpretation":{"resolved_current_request":false,"remaining_customer_concern_refs":[],"reason":""}}
+{"classification_status":"clear|ambiguous|none","current_intent":{"summary":"","evidence_refs":[]},"current_friction":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"summary":"","evidence_refs":[],"status":"explicit|inferred|none"},"historical_unresolved_friction":{"checkpoint_code":"","summary":"","evidence_refs":[]},"relevant_fact_topic_ids":[],"checkpoint":{"primary_type_id":0,"primary_code":"","primary_tag_id":0,"evidence_refs":[],"reason":""},"sequence_match":{"sequence_ids":[],"alternative_sequence_ids":[],"relevant_step_ids":[],"excluded_sequence_ids":[],"exclusion_reasons":{},"reason":""},"store_result_interpretation":{"resolved_current_request":false,"remaining_customer_concern_refs":[],"reason":""},"closing_catalog_match":{"status":"matched|rule_only|none|blocked|catalog_empty|catalog_unavailable","selected_rule_ids":[],"sequence_candidate_ids":[],"evidence_refs":[],"reason":""}}
 """
 
 
@@ -293,6 +300,7 @@ def build_v3_checkpoint_router_messages(
     checkpoint_taxonomy: list[dict[str, Any]],
     sequence_index: list[dict[str, Any]],
     fact_topic_catalog: list[dict[str, Any]] | None = None,
+    closing_catalog: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT},
@@ -304,6 +312,7 @@ def build_v3_checkpoint_router_messages(
                     _conversation_block(shared_context),
                     _checkpoint_taxonomy_block(checkpoint_taxonomy),
                     _fact_topic_catalog_block(fact_topic_catalog or []),
+                    _closing_catalog_block(closing_catalog or {}, shared_context=shared_context),
                     _current_anchor_block(shared_context),
                     _routing_priority_block(),
                     "请只根据以上真实输入返回 JSON。",
@@ -321,6 +330,7 @@ def build_v3_sequence_selector_messages(
     checkpoint_taxonomy: list[dict[str, Any]] | None = None,
     fact_topic_catalog: list[dict[str, Any]] | None = None,
     store_resolution_fact: dict[str, Any] | None = None,
+    closing_catalog: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     checkpoint = checkpoint_route.get("checkpoint") if isinstance(checkpoint_route.get("checkpoint"), dict) else {}
     blocks = [
@@ -337,6 +347,8 @@ def build_v3_sequence_selector_messages(
                 _store_resolution_fact_block(store_resolution_fact),
             ]
         )
+    if isinstance(closing_catalog, dict) and closing_catalog:
+        blocks.append(_closing_catalog_block(closing_catalog, shared_context=shared_context))
     blocks.append("请从真实候选中返回 JSON；没有合适候选时返回空数组。")
     return [
         {"role": "system", "content": V3_SEQUENCE_SELECTOR_SYSTEM_PROMPT},
@@ -736,6 +748,65 @@ def _fact_topic_catalog_block(items: list[dict[str, Any]]) -> str:
         if isinstance(item, dict) and str(item.get("id") or "").strip()
     ]
     return "【可选权威事实主题】\n主题ID｜名称｜用途\n" + ("\n".join(lines) or "无")
+
+
+def _closing_catalog_block(value: dict[str, Any], *, shared_context: dict[str, Any]) -> str:
+    status = str(value.get("status") or "unavailable")
+    if status != "ok":
+        return "【租户逼单目录】\nstatus=" + status + "；不可召回"
+    rules = value.get("rules") if isinstance(value.get("rules"), dict) else {}
+    trigger_lines = []
+    for item in rules.get("triggers") or []:
+        if not isinstance(item, dict):
+            continue
+        trigger_lines.append(
+            "｜".join(
+                [
+                    str(item.get("rule_key") or ""),
+                    _single_line(item.get("type_name"), 40),
+                    _single_line(item.get("condition"), 160),
+                    str(item.get("trigger_mode") or "independent"),
+                    "supported" if item.get("grouping_supported", True) else "unsupported_grouping",
+                    _single_line(item.get("judge_method"), 40),
+                    _single_line("、".join(item.get("keywords") or []), 100),
+                    _single_line(item.get("judge_note"), 100),
+                ]
+            )
+        )
+    sequence_lines = []
+    for item in value.get("sequences") or []:
+        if not isinstance(item, dict):
+            continue
+        nodes = ",".join(
+            f"{node.get('node_key')}:{node.get('timing')}:{(node.get('action_type') or {}).get('name')}"
+            for node in (item.get("nodes") or [])[:6]
+            if isinstance(node, dict)
+        )
+        sequence_lines.append(
+            "｜".join(
+                [
+                    str(item.get("sequence_key") or ""),
+                    _single_line(item.get("name"), 60),
+                    _single_line(item.get("positioning"), 100),
+                    _single_line(item.get("trigger_text"), 180),
+                    nodes,
+                ]
+            )
+        )
+    previous = shared_context.get("previous_policy_state")
+    return "\n".join(
+        [
+            "【租户逼单目录：只召回候选，不决定动作】",
+            "status=ok；checksum=" + str(value.get("checksum") or "")[:16],
+            "规则：rule_key｜类型｜条件｜模式｜组合可执行性｜判定方式｜关键词线索｜AI说明",
+            *(trigger_lines or ["无启用规则（必须返回 catalog_empty）"]),
+            "策略：sequence_key｜名称｜定位｜适用时机｜节点摘要",
+            *(sequence_lines or ["无启用策略"]),
+            "全局约束=" + _compact_value(rules.get("constraints") or {}),
+            "AI二次确认=" + _compact_value(rules.get("ai_confirm") or {}),
+            "上一轮频控摘要=" + _compact_value(previous or {}),
+        ]
+    )
 
 
 def _action_count_text(value: Any) -> str:

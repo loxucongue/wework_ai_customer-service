@@ -25,6 +25,8 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 
 当输入提供已启用的 `ai_sales_policy` 时，在不增加第二套销售判断的前提下，把同一次判断同时写入顶层 `policy_decision`：主任务、实时意图、情绪与逼单序列状态。所有 key 只能来自输入目录；信息不足就留空或 none。`evidence_refs` 只引用输入给出的客户消息 ref，`basis` 仅作旧消费方兼容说明，不能代替客户证据。逼单序列只描述跨轮状态，不能授权门店、订单、预约或付款动作。未提供已启用策略时省略该字段。
 
+输入若提供 `closing_catalog_evidence`，它是业务配置的“何时可逼单”和“可用哪些策略”的本轮候选，不是必须执行的命令。只允许从 `selected_rules`、`candidate_sequences` 及其 nodes 中选择真实 ID；进入或推进时必须写 rule_ids、sequence_key、node_key，并使用 trigger=business_rule。规则前置项必须逐项有当前聊天或权威事实支持，写入 satisfied_prerequisite_ids。上游 `taboos` 目前混合两类语义：如果文本描述的是当前客户状态且本轮确实发生，写入 blocking_taboo_ids 并 pause；如果文本只是“不得承诺、不得虚构”等回复行为禁令，直接遵守但不要把它误判为客户阻断状态。节点的 script_type 是卡点话术库类型；若【跟进序列与卡点话术候选】中存在 `query_source=closing_catalog_node` 且 sequence_id、step_id 与所选节点一致的话术，优先从中选择贴合客户原话的一条并在 knowledge_use 记录同一 sequence_id、step_id、script_id。没有真实话术候选也不妨碍选择策略目标，但绝不能编造话术库内容。客户当前仍有新卡点时先解决卡点并 pause；当前问题已答且规则成立时，可以在同一回复尾部只做一个低压推进动作，不需要另起模型调用。目录为空、不可用、组合规则分组不明确、频次或间隔受限时不得使用本地演示序列顶替。
+
 输入若提供 `previous_policy_state`，它只是一条已完成上一轮的稳定摘要，不是当前结论。每次收到客户新消息都必须结合当前消息重新判断意图、情绪、卡点和逼单动作；不得因为上一轮处于某个序列或节点就机械 advance。新卡点必须先将逼单设为 pause；defer 或 lower_pressure 情绪不得提高推进压力；pause_marketing_turn 和 handoff_by_system_rule 本轮不得继续推进。explicit_exit 必须输出 primary_task.type=hard_stop，清空 secondary_tasks，并把 closing_decision 设为 complete、hard_stop、none 压力。
 
 # 二、销售判断
@@ -88,7 +90,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 - safety_assessment：仅在当前健康风险、投诉退款或明确停止时输出，status 为 health_risk、complaint_refund 或 explicit_reject，并引用客户原话。
 - party_size_assessment：仅在客户明确说出付款人数或超过 4 位时输出。
 - commit_actions：仅在权威已付且输入给出完整写入事实时输出；只允许 add_customer_mobile 和 create_work_order，参数及 evidence_refs 必须来自输入。
-- policy_decision：仅当输入提供已启用策略时输出。格式为 {"primary_task":{"type":"","goal":"","basis":[]},"secondary_tasks":[],"realtime_intent":{"type":"","secondary_types":[],"confidence":"high|medium|low","evidence_refs":[],"basis":[]},"emotion_decision":{"label":"","confidence":"high|medium|low","pressure":"normal|low|none","flow_action":"keep|lower_pressure|pause_marketing_turn|handoff_by_system_rule","evidence_refs":[],"basis":[]},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","sequence_key":"","node_key":"","trigger":"explicit_transaction|blocker_resolved|positive_progress|silent_due|none","customer_state":"engaged|hesitant|soft_reject|not_buying_now|hard_stop|new_blocker|transaction_terminal_or_handoff|none","pressure":"normal|low|none","evidence_refs":[],"basis":[]},"cardpoint_decision":{"category_key":"","scenario_query":"","tactic_tags":[],"state":"active|resolved|repeated|none","confidence":"high|medium|low","basis":[]}}。secondary_types 只保留与主意图不同的有效 key，去重后最多 3 个；当前客户原话支持意图、情绪或逼单判断时必须写入对应 evidence_refs。
+- policy_decision：仅当输入提供已启用策略时输出。格式为 {"primary_task":{"type":"","goal":"","basis":[]},"secondary_tasks":[],"realtime_intent":{"type":"","secondary_types":[],"confidence":"high|medium|low","evidence_refs":[],"basis":[]},"emotion_decision":{"label":"","confidence":"high|medium|low","pressure":"normal|low|none","flow_action":"keep|lower_pressure|pause_marketing_turn|handoff_by_system_rule","evidence_refs":[],"basis":[]},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","rule_ids":[],"sequence_key":"","node_key":"","trigger":"explicit_transaction|blocker_resolved|positive_progress|business_rule|silent_due|none","customer_state":"engaged|hesitant|soft_reject|not_buying_now|hard_stop|new_blocker|transaction_terminal_or_handoff|none","pressure":"normal|low|none","satisfied_prerequisite_ids":[],"blocking_taboo_ids":[],"evidence_refs":[],"basis":[]},"cardpoint_decision":{"category_key":"","scenario_query":"","tactic_tags":[],"state":"active|resolved|repeated|none","confidence":"high|medium|low","basis":[]}}。secondary_types 只保留与主意图不同的有效 key，去重后最多 3 个；当前客户原话支持意图、情绪或逼单判断时必须写入对应 evidence_refs。
 
 不要添加合同外字段。所有 ref、ID、URL 和结构内容必须来自输入；没有匹配知识也要自行回答，不得空回复。
 """
@@ -157,6 +159,18 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
                 _section(
                     "上一轮策略状态（仅参考，必须按当前客户新消息重新判断）",
                     json_dumps(previous_policy_state),
+                )
+            )
+        closing_catalog = (
+            payload.get("closing_catalog_evidence")
+            if isinstance(payload.get("closing_catalog_evidence"), dict)
+            else {}
+        )
+        if closing_catalog:
+            sections.append(
+                _section(
+                    "本轮租户逼单规则与策略候选（只可从中选择，不要求采用）",
+                    json_dumps(closing_catalog),
                 )
             )
     protocol_events = (
@@ -247,6 +261,9 @@ def _compact_previous_policy_state(value: Any) -> dict[str, Any]:
         "delivery_status",
         "customer_replied",
         "order_changed",
+        "closing_actions_today",
+        "last_closing_action_at",
+        "minutes_since_last_closing_action",
     )
     return {
         field: value[field]
@@ -813,6 +830,8 @@ def _render_knowledge_evidence(value: Any) -> str:
             retrieval_sources.append("当前表达精确检索")
         if "model_selected_relevant_step" in query_sources:
             retrieval_sources.append("序列步骤检索")
+        if "closing_catalog_node" in query_sources:
+            retrieval_sources.append("逼单节点话术类型检索")
         lines.append(
             f"话术ID={script_id or '无'}｜内容ID=follow_script:{source_id}｜{raw.get('script_name') or raw.get('name') or ''}"
             f"｜卡点={checkpoint_type.get('name') or raw.get('checkpoint_name') or raw.get('checkpoint_code') or ''}"

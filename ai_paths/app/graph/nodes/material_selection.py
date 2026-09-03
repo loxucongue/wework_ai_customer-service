@@ -172,6 +172,12 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         for content_id in dict.fromkeys(allowed_selected_content_ids)
     ]
     sales_recall = joined.get("sales_recall") if isinstance(joined.get("sales_recall"), dict) else {}
+    semantic_route = joined.get("semantic_route") if isinstance(joined.get("semantic_route"), dict) else {}
+    closing_catalog_evidence = (
+        semantic_route.get("closing_catalog_evidence")
+        if isinstance(semantic_route.get("closing_catalog_evidence"), dict)
+        else {}
+    )
     sales_recall_reference_options = [
         {
             "ref": f"sales_recall:{source_id}",
@@ -266,6 +272,7 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         "evidence": reply_evidence,
         "ai_sales_policy": copy.deepcopy(shared.get("ai_sales_policy") or {}),
         "previous_policy_state": copy.deepcopy(shared.get("previous_policy_state") or {}),
+        "closing_catalog_evidence": copy.deepcopy(closing_catalog_evidence),
         "sales_strategy_catalog": copy.deepcopy(shared.get("sales_strategy_catalog") or {}),
         "valid_message_refs": valid_message_refs,
         "valid_customer_message_refs": valid_customer_message_refs,

@@ -2231,6 +2231,22 @@ class PlanGenerator:
             ),
             None,
         )
+        closing_catalog = state.get("closing_catalog") if isinstance(state.get("closing_catalog"), dict) else {}
+        if sequence is None and str(sequence_key).startswith("external:sequence:"):
+            if (
+                str(closing_catalog.get("status") or "") == "ok"
+                and str(decision.get("catalog_checksum") or "")
+                and str(decision.get("catalog_checksum") or "") == str(closing_catalog.get("checksum") or "")
+            ):
+                sequence = next(
+                    (
+                        item
+                        for item in closing_catalog.get("sequences") or []
+                        if isinstance(item, dict)
+                        and _string(item.get("sequence_key")) == sequence_key
+                    ),
+                    None,
+                )
         if not sequence:
             cancelled = self.repository.cancel_open_closing_sequence_plans(
                 **identity,
@@ -2274,7 +2290,7 @@ class PlanGenerator:
                 "step_index": index,
                 "scheduled_at": _add_minutes(now, _int(node.get("delay_minutes"), 0)),
                 "intent": _string(node.get("node_key")),
-                "message_goal": _string(node.get("goal")),
+                "message_goal": _string(node.get("goal") or node.get("ai_guidance")),
                 "content_sources": [
                     str(item).strip()
                     for item in node.get("material_sources") or []
@@ -2283,6 +2299,8 @@ class PlanGenerator:
                 "reply_messages": [],
                 "before_send_check": True,
                 "should_send_payment_collection": False,
+                "closing_action_type_id": _int((node.get("action_type") or {}).get("id"), 0),
+                "closing_script_type_id": _int((node.get("script_type") or {}).get("id"), 0),
             }
             for index, node in enumerate(delayed_nodes, start=1)
         ]
@@ -2293,6 +2311,7 @@ class PlanGenerator:
             "sales_contact_key": scope.sales_contact_key,
             "policy_version": policy.get("policy_version"),
             "policy_checksum": policy.get("checksum"),
+            "closing_catalog_checksum": decision.get("catalog_checksum"),
             "sequence_key": sequence_key,
             "current_node_key": current_node_key,
             "closing_decision": decision,
@@ -2308,7 +2327,7 @@ class PlanGenerator:
             customer_stage=_string(state.get("conversion_stage")),
             stall_reason=_string((state.get("cardpoint_decision") or {}).get("scenario_query")),
             customer_psychology=_string((state.get("emotion_decision") or {}).get("label")),
-            plan_goal=_string(sequence.get("positioning") or sequence.get("name")),
+            plan_goal=_string(sequence.get("positioning") or sequence.get("trigger_text") or sequence.get("name")),
             source_snapshot=source_snapshot,
             tasks=tasks,
             sop_plan_id=sop_plan_id,

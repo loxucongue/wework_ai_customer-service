@@ -70,6 +70,9 @@ def create_shared_context_node(
                 value = state.get(key)
                 if isinstance(value, dict) and str(value.get("runtime_mode") or "off") != "off":
                     shared[key] = copy.deepcopy(value)
+            closing_catalog = state.get("closing_catalog")
+            if isinstance(closing_catalog, dict) and "ai_sales_policy" in shared:
+                shared["closing_catalog"] = copy.deepcopy(closing_catalog)
             previous_policy_state = state.get("previous_policy_state")
             if isinstance(previous_policy_state, dict) and previous_policy_state:
                 shared["previous_policy_state"] = copy.deepcopy(previous_policy_state)

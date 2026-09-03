@@ -72,6 +72,7 @@ def create_post_fact_semantic_evidence_node(
                         store_resolution_fact=copy.deepcopy(store_fact),
                         sequence_result=copy.deepcopy(state.get("follow_sequence_index") or {}),
                         taxonomy_result=copy.deepcopy(state.get("follow_checkpoint_taxonomy") or {}),
+                        closing_catalog_result=copy.deepcopy(state.get("closing_catalog") or {}),
                     )
                 except Exception as exc:
                     semantic_output = {
@@ -207,6 +208,7 @@ def create_semantic_evidence_node(
                         shared_context=copy.deepcopy(state.get("shared_context") or {}),
                         sequence_result=copy.deepcopy(state.get("follow_sequence_index") or {}),
                         taxonomy_result=copy.deepcopy(state.get("follow_checkpoint_taxonomy") or {}),
+                        closing_catalog_result=copy.deepcopy(state.get("closing_catalog") or {}),
                         force_store_required=force_store_required,
                     )
                 except Exception as exc:

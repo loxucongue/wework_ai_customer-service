@@ -346,6 +346,37 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
             decision_status=decision_status, limit=limit,
         )
 
+    @router.get("/admin/v3-strategy-analytics/by-closing-rule", dependencies=[Depends(require_api_key)])
+    async def v3_strategy_analytics_by_closing_rule(
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        closing_rule_id: str = "",
+        closing_sequence_key: str = "",
+        closing_action: str = "",
+        closing_catalog_status: str = "",
+        closing_rule_match_status: str = "",
+        closing_constraint_status: str = "",
+        decision_status: str = "",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return repository.v3_strategy_analytics_by_dimension(
+            dimension="closing_rule",
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+            closing_rule_id=closing_rule_id,
+            closing_sequence_key=closing_sequence_key,
+            closing_action=closing_action,
+            closing_catalog_status=closing_catalog_status,
+            closing_rule_match_status=closing_rule_match_status,
+            closing_constraint_status=closing_constraint_status,
+            decision_status=decision_status,
+            limit=limit,
+        )
+
     @router.get("/admin/v3-strategy-analytics/transitions", dependencies=[Depends(require_api_key)])
     async def v3_strategy_analytics_transitions(
         started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",

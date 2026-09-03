@@ -273,6 +273,7 @@ def create_background_context_layer(
     conversation_fetcher: ConversationFetcher | None = None,
     follow_sequence_fetcher: Callable[[], Any] | None = None,
     follow_taxonomy_fetcher: Callable[[], Any] | None = None,
+    closing_catalog_fetcher: Callable[[], Any] | None = None,
 ) -> Callable[[AgentState], Any]:
     async def background_context_layer(state: AgentState) -> dict[str, Any]:
         request_context = request_context_from_state(state)
@@ -302,6 +303,20 @@ def create_background_context_layer(
                         "status": "disabled",
                         "reason": "follow_taxonomy_fetcher_unavailable",
                         "types": [],
+                    },
+                )
+            )
+            policy = state.get("ai_sales_policy") if isinstance(state.get("ai_sales_policy"), dict) else {}
+            closing_catalog_task = asyncio.create_task(
+                _timed_async_call(
+                    "closing_catalog",
+                    closing_catalog_fetcher if str(policy.get("runtime_mode") or "off") != "off" else None,
+                    disabled_result={
+                        "schema_version": "closing_catalog_v1",
+                        "status": "disabled",
+                        "reason": "ai_sales_policy_disabled",
+                        "rules": {},
+                        "sequences": [],
                     },
                 )
             )
@@ -355,7 +370,7 @@ def create_background_context_layer(
                 {},
                 identity,
             )
-            customer_result_timed, conversation_result_timed, store_result_timed, sequence_result_timed, taxonomy_result_timed = await asyncio.gather(
+            customer_result_timed, conversation_result_timed, store_result_timed, sequence_result_timed, taxonomy_result_timed, closing_catalog_result_timed = await asyncio.gather(
                 _await_timed_background_task(
                     customer_task,
                     name="order_index",
@@ -414,6 +429,18 @@ def create_background_context_layer(
                         "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
                     },
                 ),
+                _await_timed_background_task(
+                    closing_catalog_task,
+                    name="closing_catalog",
+                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                    timeout_result={
+                        "schema_version": "closing_catalog_v1",
+                        "status": "error",
+                        "reason": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                        "rules": {},
+                        "sequences": [],
+                    },
+                ),
             )
             customer_result = customer_result_timed["result"]
             customer_store_knowledge = store_result_timed["result"]
@@ -431,6 +458,7 @@ def create_background_context_layer(
                     _without_result(conversation_result_timed),
                     _without_result(sequence_result_timed),
                     _without_result(taxonomy_result_timed),
+                    _without_result(closing_catalog_result_timed),
                 ]
             )
             customer_context = customer_result.get("customer_context", {})
@@ -500,6 +528,7 @@ def create_background_context_layer(
                 "conversation_fetch": conversation_result.get("conversation_fetch", {}),
                 "follow_sequence_index": sequence_result_timed.get("result") or {},
                 "follow_checkpoint_taxonomy": taxonomy_result_timed.get("result") or {},
+                "closing_catalog": closing_catalog_result_timed.get("result") or {},
                 "background_substeps": substeps,
                 "store_context_status": store_context_status,
                 "store_context_elapsed_ms": store_context_elapsed_ms,

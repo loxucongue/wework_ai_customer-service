@@ -23,6 +23,28 @@
 - 首次输出中有客户证据的明确退订、暂停营销情绪和活动卡点构成本轮修复的安全下限；修复不得将其改成普通聊天或直接推进。
 - `cardpoint_decision.state=active|repeated` 时必须先解卡并暂停逼单；只有 `resolved` 才允许重新判断是否进入或推进序列。
 
+## 业务逼单目录
+
+```text
+租户逼单规则 + 启用策略（后台并行只读、缓存）
+  → Semantic Router 在既有调用中召回规则与最多 3 条策略
+  → 门店事实需要补查时，在既有 post-store 判断中重算候选
+  → 按候选节点 followCheckpointTypeId 查询真实卡点话术
+  → V3 Reply 在既有最终调用中选择规则、策略、节点、话术与回复
+  → 代码校验来源 ID、证据、前置项、禁忌、限频、节点时机和话术类型
+  → 即时回复；延时节点只写 shadow
+```
+
+- 规则回答“当前业务场景是否具备逼单资格”，策略回答“可采用哪套节奏”，节点话术类型回答“从哪类已发布表达中取材”；三者都不是客户可见动作命令。
+- Router 只做高召回候选。外部规则命中必须引用本轮真实客户消息；Reply 采用外部策略时必须输出 `trigger=business_rule`、真实 rule/sequence/node ID，并仍是唯一最终语义决策者。
+- Router 识别到当前卡点时，Reply 只有明确把同一轮卡点判为 `resolved` 才能推进；否则代码保守暂停。这是证据一致性校验，不把 Router 变成最终销售决策点。
+- 节点 `followCheckpointTypeId` 是话术库类型外键。检索返回的类型必须一致；若 Reply 采用话术，话术必须与最终 sequence/node/type 关联。没有真实话术候选时允许 Reply 自行组织低风险表达，但不得伪造知识库内容。
+- `delay>0` 的节点只能作为 `silent_after` shadow。`delay=0` 但 timing 不是明确“进入逼单后/立即”的自由文本节点视为 event-driven，不得冒充本轮即时动作。
+- `maxPerDay` 与 `minIntervalMinutes` 首版按同一销售接触边界内 Reply 已作出的 `enter|advance|fallback` 决策保守计数；它限制销售压力，不等同于送达次数。真实触达和送达转化仍按 dispatch/delivery 字段单独统计。
+- 上游 `taboos` 当前混合客户阻断条件和回复行为禁令。Reply 只把本轮真实发生的客户状态写入 `blocking_taboo_ids` 并暂停；“不得承诺/不得虚构”等文本直接约束表达，不伪装成客户状态。
+- 空规则、目录不可用、组合分组不明、节点类型缺失、证据缺失或频控未通过时均 fail closed 为不逼单，不使用本地 3 条演示序列顶替。
+- 目录缓存陈旧时允许使用 last-known-good，并在 BI 写 `closing_catalog_status=stale`；进程重启后的首轮仍需重新读取。多租户共实例和原子发布版本依赖上游补齐后才能启用。
+
 ## 跨轮与归因
 
 - 上一轮只向 Reply 提供同一销售接触边界内的稳定摘要，不提供旧模型分析原文；当前消息始终优先。

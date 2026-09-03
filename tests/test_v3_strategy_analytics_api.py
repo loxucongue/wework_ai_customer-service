@@ -84,6 +84,19 @@ def test_decision_dimension_routes_forward_filters() -> None:
     assert repository.calls[0][1]["checkpoint_code"] == "price"
     assert repository.calls[0][1]["fallback_used"] is True
 
+    response = client.get(
+        "/admin/v3-strategy-analytics/by-closing-rule",
+        params={
+            "closing_rule_id": "external:rule:101",
+            "closing_catalog_status": "stale",
+            "closing_rule_match_status": "matched",
+            "closing_constraint_status": "passed",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["dimension"] == "closing_rule"
+    assert repository.calls[-1][1]["closing_rule_id"] == "external:rule:101"
+
 
 def test_manual_outcome_refresh_uses_platform_provider() -> None:
     client, repository = _client()

@@ -16,6 +16,8 @@
 - 接口：
   - `POST /event/trigger/follow-sequence`：查询已发布跟进序列。
   - `POST /event/trigger/follow-script`：查询已发布卡点话术。
+  - `POST /event/follow/closing-rule`：查询租户启用的逼单触发规则、AI 确认要求、频次/间隔、前置项与禁忌。
+  - `POST /event/follow/closing-sequence`：查询租户启用的逼单策略与节点；节点的 `followCheckpointTypeId` 用于联查 `follow-script` 话术类型。
 - 已观察到的动作码：
   - `act001` 效果案例
   - `act002` 活动邀约
@@ -39,6 +41,12 @@
   - 该接口只提供 V3 Reply 的参考候选，不替代最终销售语义决策。
   - 话术不是价格、门店、支付、活动、名额、履约或安全事实的权威来源。
   - 未配置 token 时必须安全降级为 `follow_knowledge_not_configured`，不能伪造候选。
+  - 逼单规则与策略并行读取并生成本地 checksum；成功空规则表示租户未配置，禁止回退本地演示策略。
+  - `combined` 规则在上游未提供组合分组及 AND/OR 关系前只记录、不可执行。
+  - 候选节点话术按真实 `followCheckpointTypeId` 加入现有话术检索批次；返回话术类型不一致时丢弃。纯逼单话术候选直接交给最终 Reply 选择，不增加独立 selector 模型调用。
+  - 进程内使用 single-flight、短失败缓存与 last-known-good；陈旧快照标记 `freshness_status=stale`。该能力不能替代跨重启的持久快照。
+  - 当前配置仍是一实例一个 `FOLLOW_KNOWLEDGE_TOKEN`。多租户共实例部署前必须提供 corp/tenant 到 token 的显式绑定和按租户隔离的缓存键，不能共享默认 token。
+  - 当前两个逼单接口没有共同 `publishVersion`，数字 ID 也没有不可复用保证；跨接口 checksum 只能审计本次组合，不能证明上游原子发布。上游应补 `tenantKey`、共同版本、稳定 code、标准 timing、组合分组及 taboo 类型。
 - 本地同步：
   - 脚本：`python ai_paths/scripts/sync_follow_knowledge_cache.py --env-file <server-or-local-env>`
   - 输出：`artifacts/follow_knowledge_cache/`

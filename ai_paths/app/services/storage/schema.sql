@@ -414,6 +414,19 @@ CREATE TABLE IF NOT EXISTS v3_strategy_usage_events (
     closing_trigger TEXT NOT NULL DEFAULT '',
     closing_customer_state TEXT NOT NULL DEFAULT '',
     closing_pressure TEXT NOT NULL DEFAULT '',
+    closing_rule_ids_json TEXT NOT NULL DEFAULT '[]',
+    closing_primary_rule_id TEXT NOT NULL DEFAULT '',
+    closing_sequence_source_id TEXT NOT NULL DEFAULT '',
+    closing_node_source_id TEXT NOT NULL DEFAULT '',
+    closing_action_type_id INTEGER NOT NULL DEFAULT 0,
+    closing_action_type_name TEXT NOT NULL DEFAULT '',
+    closing_script_type_id INTEGER NOT NULL DEFAULT 0,
+    closing_script_type_name TEXT NOT NULL DEFAULT '',
+    closing_catalog_checksum TEXT NOT NULL DEFAULT '',
+    closing_catalog_status TEXT NOT NULL DEFAULT '',
+    closing_rule_match_status TEXT NOT NULL DEFAULT '',
+    closing_constraint_status TEXT NOT NULL DEFAULT '',
+    closing_constraint_reasons_json TEXT NOT NULL DEFAULT '[]',
     cardpoint_category_key TEXT NOT NULL DEFAULT '',
     cardpoint_state TEXT NOT NULL DEFAULT '',
     decision_reasons_json TEXT NOT NULL DEFAULT '[]',
@@ -447,6 +460,10 @@ CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_emotion
 ON v3_strategy_usage_events(emotion_before, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_closing
 ON v3_strategy_usage_events(closing_strategy_code, closing_action, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_closing_catalog
+ON v3_strategy_usage_events(closing_catalog_status, closing_rule_match_status, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_closing_rule
+ON v3_strategy_usage_events(closing_primary_rule_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_decision
 ON v3_strategy_usage_events(decision_status, occurred_at);
 

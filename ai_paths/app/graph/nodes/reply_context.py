@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference, target_time_status
@@ -74,6 +75,9 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "current_turn_resolution": state.get("current_turn_resolution", {}),
         "sales_progression": state.get("sales_progression", {}),
         "ai_sales_policy": _ai_sales_policy_for_reply(state),
+        "closing_catalog_evidence": copy.deepcopy(
+            ((state.get("semantic_route") or {}).get("closing_catalog_evidence") or {})
+        ),
         "primary_task": state.get("primary_task", {}),
         "secondary_tasks": state.get("secondary_tasks", []),
         "realtime_intent": state.get("realtime_intent", {}),
@@ -153,6 +157,7 @@ def reply_recovery_payload_for_model(state: AgentState) -> dict[str, Any]:
         "appointment_decision",
         "sales_progression",
         "ai_sales_policy",
+        "closing_catalog_evidence",
         "primary_task",
         "secondary_tasks",
         "realtime_intent",

@@ -779,6 +779,26 @@ def _normalized_follow_knowledge_use(
         for item in recall.get("sequence_candidates") or []
         if isinstance(item, dict) and str(item.get("sequence_id") or "").strip()
     }
+    closing_catalog_evidence = _closing_catalog_evidence_from_state(state or {})
+    for sequence in closing_catalog_evidence.get("candidate_sequences") or []:
+        if not isinstance(sequence, dict):
+            continue
+        sequence_id = str(sequence.get("sequence_key") or "").strip()
+        if not sequence_id:
+            continue
+        sequences[sequence_id] = {
+            "sequence_id": sequence_id,
+            "sequence_name": str(sequence.get("name") or "").strip(),
+            "checkpoint_code": "",
+            "steps": [
+                {
+                    "step_id": str(node.get("node_key") or "").strip(),
+                    "action_code": "",
+                }
+                for node in sequence.get("nodes") or []
+                if isinstance(node, dict) and str(node.get("node_key") or "").strip()
+            ],
+        }
     scripts: dict[str, dict[str, Any]] = {}
     for item in recall.get("candidates") or []:
         if not isinstance(item, dict):
@@ -1098,6 +1118,15 @@ def _normalized_policy_decision(
         and item.get("enabled")
         and str(item.get("sequence_key") or "").strip()
     }
+    closing_catalog_evidence = _closing_catalog_evidence_from_state(runtime_state)
+    external_catalog_present = bool(closing_catalog_evidence)
+    external_catalog_status = str(closing_catalog_evidence.get("status") or "")
+    if external_catalog_present:
+        sequences = {
+            str(item.get("sequence_key") or "").strip(): item
+            for item in closing_catalog_evidence.get("candidate_sequences") or []
+            if isinstance(item, dict) and str(item.get("sequence_key") or "").strip()
+        }
     closing_raw = raw.get("closing_decision") if isinstance(raw.get("closing_decision"), dict) else {}
     if not isinstance(raw.get("closing_decision"), dict):
         degrade("missing_closing_decision")
@@ -1107,10 +1136,13 @@ def _normalized_policy_decision(
         "none",
         field="closing_action",
     )
+    requested_active_closing_action = action in {"enter", "advance", "fallback"}
     sequence_key = str(closing_raw.get("sequence_key") or "none").strip() or "none"
     sequence = sequences.get(sequence_key)
     if action == "none":
         sequence_key = "none"
+        sequence = None
+    elif action == "complete" and sequence_key == "none":
         sequence = None
     elif sequence is None:
         degrade("invalid_closing_sequence")
@@ -1129,16 +1161,153 @@ def _normalized_policy_decision(
     if action in {"enter", "advance"} and not node_key:
         degrade("closing_advance_requires_valid_node")
         action = "pause"
+    selected_node = next(
+        (
+            item
+            for item in (sequence or {}).get("nodes") or []
+            if isinstance(item, dict) and str(item.get("node_key") or "").strip() == node_key
+        ),
+        {},
+    )
+    action_type = selected_node.get("action_type") if isinstance(selected_node.get("action_type"), dict) else {}
+    script_type = selected_node.get("script_type") if isinstance(selected_node.get("script_type"), dict) else {}
+    action_type_id = _policy_non_negative_int(action_type.get("id"))
+    script_type_id = _policy_non_negative_int(script_type.get("id"))
+    selected_rule_ids = {
+        str(item.get("rule_key") or "").strip()
+        for item in closing_catalog_evidence.get("selected_rules") or []
+        if isinstance(item, dict) and str(item.get("rule_key") or "").strip()
+    }
+    rule_ids = [
+        item
+        for item in _policy_string_list(closing_raw.get("rule_ids"), limit=3)
+        if item in selected_rule_ids
+    ]
+    constraints = (
+        closing_catalog_evidence.get("constraints")
+        if isinstance(closing_catalog_evidence.get("constraints"), dict)
+        else {}
+    )
+    prerequisite_ids = {
+        str(item.get("key") or "").strip()
+        for item in constraints.get("prerequisites") or []
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
+    }
+    taboo_ids = {
+        str(item.get("key") or "").strip()
+        for item in constraints.get("taboos") or []
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
+    }
+    satisfied_prerequisite_ids = [
+        item
+        for item in _policy_string_list(closing_raw.get("satisfied_prerequisite_ids"), limit=20)
+        if item in prerequisite_ids
+    ]
+    blocking_taboo_ids = [
+        item
+        for item in _policy_string_list(closing_raw.get("blocking_taboo_ids"), limit=20)
+        if item in taboo_ids
+    ]
+    constraint_reasons: list[str] = []
+    active_closing_action = requested_active_closing_action
+    closing_trigger = checked_enum(
+        closing_raw.get("trigger"),
+        {"explicit_transaction", "blocker_resolved", "positive_progress", "silent_due", "business_rule", "none"},
+        "none",
+        field="closing_trigger",
+    )
+    if external_catalog_present:
+        match_status = str(closing_catalog_evidence.get("match_status") or "none")
+        if active_closing_action and closing_trigger != "business_rule":
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("external_closing_requires_business_rule_trigger")
+            degrade("external_closing_requires_business_rule_trigger")
+        if active_closing_action and external_catalog_status != "ok":
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_catalog_unavailable")
+            degrade("closing_catalog_unavailable")
+        elif active_closing_action and match_status != "matched":
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append(f"closing_rule_match_{match_status or 'none'}")
+            degrade("closing_rule_not_matched")
+        elif active_closing_action and not rule_ids:
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_rule_id_required")
+            degrade("closing_rule_id_required")
+        if active_closing_action and not selected_node:
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_node_required")
+            degrade("closing_node_required")
+        if active_closing_action and selected_node and not action_type_id:
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("external_closing_action_type_id_missing")
+            degrade("external_closing_action_type_id_missing")
+        if active_closing_action and selected_node and not script_type_id:
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("external_closing_script_type_id_missing")
+            degrade("external_closing_script_type_id_missing")
+        if active_closing_action and set(satisfied_prerequisite_ids) != prerequisite_ids:
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_prerequisite_not_confirmed")
+            degrade("closing_prerequisite_not_confirmed")
+        if active_closing_action and blocking_taboo_ids:
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_taboo_present")
+            degrade("closing_taboo_present")
+        ai_confirm = (
+            closing_catalog_evidence.get("ai_confirm")
+            if isinstance(closing_catalog_evidence.get("ai_confirm"), dict)
+            else {}
+        )
+        closing_refs = _valid_customer_refs(closing_raw.get("evidence_refs"), valid_customer_refs)[:6]
+        if active_closing_action and ai_confirm.get("enabled") and not closing_refs:
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_ai_confirmation_missing_evidence")
+            degrade("closing_ai_confirmation_missing_evidence")
+        previous = (
+            runtime_state.get("previous_policy_state")
+            if isinstance(runtime_state.get("previous_policy_state"), dict)
+            else {}
+        )
+        max_per_day = _policy_non_negative_int(constraints.get("max_per_day"))
+        actions_today = _policy_non_negative_int(previous.get("closing_actions_today"))
+        if active_closing_action and max_per_day > 0 and actions_today >= max_per_day:
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_daily_limit_reached")
+            degrade("closing_daily_limit_reached")
+        min_interval = _policy_non_negative_int(constraints.get("min_interval_minutes"))
+        minutes_since_last = previous.get("minutes_since_last_closing_action")
+        if (
+            active_closing_action
+            and min_interval > 0
+            and minutes_since_last not in (None, "")
+            and _policy_non_negative_int(minutes_since_last) < min_interval
+        ):
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_min_interval_not_reached")
+            degrade("closing_min_interval_not_reached")
+        if active_closing_action and selected_node and selected_node.get("timing") != "immediate":
+            action = "pause"
+            node_key = ""
+            constraint_reasons.append("closing_delayed_node_not_realtime")
+            degrade("closing_delayed_node_not_realtime")
     closing_decision = {
         "action": action,
         "sequence_key": sequence_key,
         "node_key": node_key,
-        "trigger": checked_enum(
-            closing_raw.get("trigger"),
-            {"explicit_transaction", "blocker_resolved", "positive_progress", "silent_due", "none"},
-            "none",
-            field="closing_trigger",
-        ),
+        "trigger": closing_trigger,
         "customer_state": checked_enum(
             closing_raw.get("customer_state"),
             {
@@ -1156,6 +1325,26 @@ def _normalized_policy_decision(
         ),
         "evidence_refs": _valid_customer_refs(closing_raw.get("evidence_refs"), valid_customer_refs)[:6],
         "basis": _policy_string_list(closing_raw.get("basis"), limit=6),
+        "rule_ids": rule_ids,
+        "sequence_source_id": str((sequence or {}).get("source_id") or ""),
+        "node_source_id": str(selected_node.get("source_id") or "") if node_key else "",
+        "action_type_id": action_type_id if node_key else 0,
+        "action_type_name": str(action_type.get("name") or "") if node_key else "",
+        "script_type_id": script_type_id if node_key else 0,
+        "script_type_name": str(script_type.get("name") or "") if node_key else "",
+        "catalog_checksum": str(closing_catalog_evidence.get("checksum") or ""),
+        "catalog_status": (
+            str(closing_catalog_evidence.get("freshness_status") or "")
+            if str(closing_catalog_evidence.get("freshness_status") or "") == "stale"
+            else external_catalog_status or "local_policy"
+        ),
+        "rule_match_status": str(closing_catalog_evidence.get("match_status") or "local_policy"),
+        "constraint_status": (
+            "blocked" if constraint_reasons else "passed" if active_closing_action else "not_evaluated"
+        ),
+        "constraint_reasons": constraint_reasons,
+        "satisfied_prerequisite_ids": satisfied_prerequisite_ids,
+        "blocking_taboo_ids": blocking_taboo_ids,
     }
 
     if realtime_intent.get("type") == "defer":
@@ -1224,6 +1413,53 @@ def _normalized_policy_decision(
         else {}
     )
 
+    semantic_route = (
+        runtime_state.get("semantic_route")
+        if isinstance(runtime_state.get("semantic_route"), dict)
+        else {}
+    )
+    if not semantic_route:
+        evidence_join = (
+            runtime_state.get("evidence_join")
+            if isinstance(runtime_state.get("evidence_join"), dict)
+            else {}
+        )
+        semantic_route = (
+            evidence_join.get("semantic_route")
+            if isinstance(evidence_join.get("semantic_route"), dict)
+            else {}
+        )
+    current_friction = (
+        semantic_route.get("current_friction")
+        if isinstance(semantic_route.get("current_friction"), dict)
+        else {}
+    )
+    router_has_current_friction = str(current_friction.get("status") or "none").strip().lower() not in {
+        "",
+        "none",
+    }
+    if (
+        router_has_current_friction
+        and cardpoint_decision.get("state") != "resolved"
+        and closing_decision["action"] in {"enter", "advance", "fallback"}
+    ):
+        closing_decision.update(
+            {
+                "action": "pause",
+                "node_key": "",
+                "node_source_id": "",
+                "action_type_id": 0,
+                "action_type_name": "",
+                "script_type_id": 0,
+                "script_type_name": "",
+                "constraint_status": "blocked",
+            }
+        )
+        closing_decision["constraint_reasons"].append(
+            "current_friction_requires_resolved_cardpoint"
+        )
+        degrade("current_friction_requires_resolved_cardpoint")
+
     if cardpoint_decision.get("state") in {"active", "repeated"}:
         if closing_decision["action"] != "pause":
             closing_decision["action"] = "pause"
@@ -1289,6 +1525,7 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         )
     if not isinstance(decision, dict) or not decision:
         return
+    _validate_closing_script_selection(payload, state, decision)
     intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
     emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
     cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
@@ -1347,6 +1584,71 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         )
 
 
+def _validate_closing_script_selection(
+    payload: dict[str, Any],
+    state: AgentState,
+    decision: dict[str, Any],
+) -> None:
+    """Validate only the upstream node-to-script foreign-key relationship."""
+
+    closing = (
+        decision.get("closing_decision")
+        if isinstance(decision.get("closing_decision"), dict)
+        else {}
+    )
+    if str(closing.get("action") or "") not in {"enter", "advance", "fallback"}:
+        return
+    sequence_id = str(closing.get("sequence_key") or "").strip()
+    node_id = str(closing.get("node_key") or "").strip()
+    required_type_id = _policy_non_negative_int(closing.get("script_type_id"))
+    if not sequence_id.startswith("external:sequence:") or not node_id or required_type_id <= 0:
+        return
+    selected_sources = {
+        str(item).split(":", 1)[1].rsplit(":p", 1)[0]
+        for item in payload.get("selected_content_ids") or []
+        if str(item).startswith("follow_script:")
+    }
+    knowledge_use = payload.get("knowledge_use") if isinstance(payload.get("knowledge_use"), dict) else {}
+    knowledge_script = str(knowledge_use.get("script_id") or "").strip()
+    if knowledge_script.startswith("follow_script:"):
+        knowledge_script = knowledge_script.split(":", 1)[1].rsplit(":p", 1)[0]
+    if knowledge_script:
+        selected_sources.add(knowledge_script)
+    if not selected_sources:
+        return
+    recall = state.get("sales_recall") if isinstance(state.get("sales_recall"), dict) else {}
+    selected_scripts = []
+    for item in recall.get("candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        keys = {
+            str(item.get(key) or "").strip()
+            for key in ("script_id", "id", "source_id", "script_code")
+            if str(item.get(key) or "").strip()
+        }
+        if keys & selected_sources:
+            selected_scripts.append(item)
+    if not selected_scripts:
+        return
+    for item in selected_scripts:
+        checkpoint_type = (
+            item.get("checkpoint_type")
+            if isinstance(item.get("checkpoint_type"), dict)
+            else {}
+        )
+        if _policy_non_negative_int(checkpoint_type.get("id")) != required_type_id:
+            continue
+        if any(
+            isinstance(link, dict)
+            and str(link.get("sequence_id") or "").strip() == sequence_id
+            and str(link.get("step_id") or "").strip() == node_id
+            and str(link.get("query_source") or "").strip() == "closing_catalog_node"
+            for link in item.get("sequence_links") or []
+        ):
+            return
+    raise ValueError("closing_selected_script_type_mismatch")
+
+
 def _policy_safety_floor(payload: dict[str, Any], state: AgentState) -> str:
     """Capture only grounded, model-declared safety state for a repair attempt."""
 
@@ -1398,6 +1700,27 @@ def _policy_string_list(value: Any, *, limit: int) -> list[str]:
 def _policy_enum(value: Any, allowed: set[str], default: str) -> str:
     normalized = str(value or "").strip()
     return normalized if normalized in allowed else default
+
+
+def _policy_non_negative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _closing_catalog_evidence_from_state(state: AgentState) -> dict[str, Any]:
+    direct = state.get("closing_catalog_evidence")
+    if isinstance(direct, dict) and direct:
+        return direct
+    route = state.get("semantic_route") if isinstance(state.get("semantic_route"), dict) else {}
+    value = route.get("closing_catalog_evidence")
+    if isinstance(value, dict) and value:
+        return value
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    joined_route = joined.get("semantic_route") if isinstance(joined.get("semantic_route"), dict) else {}
+    value = joined_route.get("closing_catalog_evidence")
+    return value if isinstance(value, dict) else {}
 
 def _normalized_deposit_evidence(value: Any, *, strict: bool = True) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}

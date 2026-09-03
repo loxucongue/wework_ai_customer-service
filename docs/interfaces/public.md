@@ -52,6 +52,7 @@
 - `GET /admin/v3-strategy-analytics/by-intent`
 - `GET /admin/v3-strategy-analytics/by-emotion`
 - `GET /admin/v3-strategy-analytics/by-closing`
+- `GET /admin/v3-strategy-analytics/by-closing-rule`
 - `GET /admin/v3-strategy-analytics/by-checkpoint`
 - `GET /admin/v3-strategy-analytics/by-sequence`
 - `GET /admin/v3-strategy-analytics/by-script`
@@ -61,7 +62,7 @@
 - `by-intent`、`by-emotion`、`by-closing`、`transitions` 属于统一销售决策观测增强接口；部署未包含对应后端版本时，管理页面必须将这些维度标记为暂不可用，不能把缺失数据解释为零。
 - 管理页面：`/analytics/sales`；前端通过同源只读聚合代理 `/api/v3-strategy-analytics` 读取上述查询接口。代理先读取现有核心接口，仅在 `summary` 声明统一决策指标后再读取意图、情绪、逼单和跨轮变化，避免向旧后端持续请求不存在的接口。单个维度不可用时展示局部空态，`summary` 不可用时展示明确错误，不伪造零值。
 - 鉴权：`AI_PATHS_API_KEY`。
-- 常用筛选：`started_from`、`started_to`、`corp_id`、`wechat`、`checkpoint_code`、`sequence_id`、`script_id`、`action_code`、`fallback_used`、`intent_code`、`emotion_code`、`closing_sequence_key`、`closing_action`、`decision_status`。
+- 常用筛选：`started_from`、`started_to`、`corp_id`、`wechat`、`checkpoint_code`、`sequence_id`、`script_id`、`action_code`、`fallback_used`、`intent_code`、`emotion_code`、`closing_rule_id`（最终决策保留的主命中规则）、`closing_sequence_key`、`closing_action`、`closing_catalog_status`、`closing_rule_match_status`、`closing_constraint_status`、`decision_status`。
 - 指标：使用与采用、策略决策覆盖/降级、发送成功、客户 24h 开口、72h 支付、7d 排客、意图/情绪/逼单分布、真实跨轮情绪变化、selector empty/error、taxonomy fallback、退订误推进、新卡点未暂停、订单查询成功率和订单窗口可归因率。
 - 数据边界：不返回完整客户聊天原文；只返回 ID、分类、策略、话术、发送状态和归因窗口结果。
 - 归因口径：时间窗口统计，不声明强因果。客户开口只来自已标记为真实客户轮次的后续 V3 消息；平台自动消息、撤回、去重/覆盖和隔离评测消息不计入。启用平台订单归因后，支付、排客、到店和完成优先使用平台只读订单状态。送达未知不计算开口/订单窗口；订单接口成功但基线不足与查询失败分别统计，均不能写成未成交。

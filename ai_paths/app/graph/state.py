@@ -74,6 +74,7 @@ class AgentState(TypedDict, total=False):
     background_fact_views: dict[str, Any]
     follow_sequence_index: dict[str, Any]
     follow_checkpoint_taxonomy: dict[str, Any]
+    closing_catalog: dict[str, Any]
     store_context_status: str
     store_context_elapsed_ms: int
     store_context_skipped_steps: list[str]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,11 @@ USAGE_ADDITIONS = {
     "closing_trigger", "closing_customer_state", "closing_pressure",
     "cardpoint_category_key", "cardpoint_state", "decision_reasons_json",
     "decision_evidence_refs_json", "customer_turn_eligible",
+    "closing_rule_ids_json", "closing_primary_rule_id", "closing_sequence_source_id", "closing_node_source_id",
+    "closing_action_type_id", "closing_action_type_name", "closing_script_type_id",
+    "closing_script_type_name", "closing_catalog_checksum", "closing_catalog_status",
+    "closing_rule_match_status", "closing_constraint_status",
+    "closing_constraint_reasons_json",
 }
 OUTCOME_ADDITIONS = {
     "next_usage_event_id", "next_intent_code", "next_emotion_code",
@@ -126,6 +132,22 @@ def test_usage_mapping_is_structured_idempotent_and_excludes_basis(tmp_path: Pat
         "confidence": "high",
     }
     state["decision_reasons"] = ["active_cardpoint_requires_pause"]
+    state["closing_decision"].update(
+        {
+            "rule_ids": ["external:rule:101"],
+            "sequence_source_id": "201",
+            "node_source_id": "2011",
+            "action_type_id": 3,
+            "action_type_name": "预约确认",
+            "script_type_id": 14,
+            "script_type_name": "逼单-约时间类",
+            "catalog_checksum": "catalog-checksum",
+            "catalog_status": "ok",
+            "rule_match_status": "matched",
+            "constraint_status": "passed",
+            "constraint_reasons": [],
+        }
+    )
 
     first = repository.record_v3_strategy_usage(conversation_id="conversation-1", final_state=state)
     second = repository.record_v3_strategy_usage(conversation_id="conversation-1", final_state=state)
@@ -139,10 +161,19 @@ def test_usage_mapping_is_structured_idempotent_and_excludes_basis(tmp_path: Pat
     assert row["emotion_after"] == ""
     assert row["policy_version"] == "2026-09-03.1"
     assert row["decision_status"] == "ok"
+    assert row["adopted"] == 0
     assert row["intent_confidence"] == "high"
     assert json.loads(row["intent_secondary_json"]) == ["general_chat"]
     assert row["closing_action"] == "enter"
     assert row["closing_node_key"] == "ask_next_step"
+    assert json.loads(row["closing_rule_ids_json"]) == ["external:rule:101"]
+    assert row["closing_primary_rule_id"] == "external:rule:101"
+    assert row["closing_sequence_source_id"] == "201"
+    assert row["closing_action_type_name"] == "预约确认"
+    assert row["closing_script_type_id"] == 14
+    assert row["closing_catalog_status"] == "ok"
+    assert row["closing_rule_match_status"] == "matched"
+    assert row["closing_constraint_status"] == "passed"
     assert row["cardpoint_category_key"] == "price"
     assert row["cardpoint_state"] == "resolved"
     assert json.loads(row["decision_reasons_json"]) == ["active_cardpoint_requires_pause"]
@@ -162,6 +193,71 @@ def test_usage_mapping_is_structured_idempotent_and_excludes_basis(tmp_path: Pat
     assert latest["active_cardpoint"] == ""
     summary = repository.v3_strategy_analytics_summary()
     assert summary["new_blocker_not_paused_count"] == 1
+
+
+def test_usage_replay_preserves_original_event_and_delivery_fields(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    state = _state("request-replayed", closing_action="enter", closing_sequence="gentle_invitation")
+    first = repository.record_v3_strategy_usage(
+        conversation_id="conversation-1",
+        final_state=state,
+    )
+    original_occurred_at = "2026-09-03T01:02:03+00:00"
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE v3_strategy_usage_events "
+            "SET occurred_at=?, dispatch_id='dispatch-1', delivery_status='send_failed', "
+            "delivered_at='2026-09-03T01:02:05+00:00', failed_reason='provider_error' "
+            "WHERE id=?",
+            (original_occurred_at, first["id"]),
+        )
+
+    replay_state = _state("request-replayed", closing_action="none", closing_sequence="none")
+    replayed = repository.record_v3_strategy_usage(
+        conversation_id="different-conversation-must-not-overwrite",
+        final_state=replay_state,
+    )
+
+    assert replayed == {"status": "recorded", "id": first["id"], "created": False}
+    row = _row(
+        repository,
+        "SELECT conversation_id, occurred_at, dispatch_id, delivery_status, delivered_at, "
+        "failed_reason, closing_action, closing_strategy_code "
+        "FROM v3_strategy_usage_events WHERE request_id=?",
+        ("request-replayed",),
+    )
+    assert row == {
+        "conversation_id": "conversation-1",
+        "occurred_at": original_occurred_at,
+        "dispatch_id": "dispatch-1",
+        "delivery_status": "send_failed",
+        "delivered_at": "2026-09-03T01:02:05+00:00",
+        "failed_reason": "provider_error",
+        "closing_action": "enter",
+        "closing_strategy_code": "gentle_invitation",
+    }
+
+
+def test_usage_concurrent_replay_creates_exactly_one_event(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+
+    def record_once(_: int) -> dict[str, Any]:
+        return repository.record_v3_strategy_usage(
+            conversation_id="conversation-1",
+            final_state=_state("request-concurrent"),
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(record_once, range(8)))
+
+    assert sum(1 for result in results if result["created"]) == 1
+    assert len({result["id"] for result in results}) == 1
+    count = _row(
+        repository,
+        "SELECT COUNT(*) AS value FROM v3_strategy_usage_events WHERE request_id=?",
+        ("request-concurrent",),
+    )
+    assert count["value"] == 1
 
 
 def test_next_turn_links_only_the_exact_sales_contact(tmp_path: Path) -> None:
@@ -744,6 +840,53 @@ def test_filters_dimensions_and_summary_use_delivery_known_denominator(tmp_path:
     assert transitions["items"] == []
 
 
+def test_by_closing_uses_closing_action_adoption_without_changing_global_adoption(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    closing_state = _state(
+        "request-closing",
+        closing_action="enter",
+        closing_sequence="gentle_invitation",
+        closing_node="ask_next_step",
+    )
+    closing_state["closing_decision"]["rule_ids"] = ["external:rule:101"]
+    repository.record_v3_strategy_usage(
+        conversation_id="conversation-1",
+        final_state=closing_state,
+    )
+    follow_state = _state(
+        "request-follow",
+        intent="normal_exchange",
+        closing_action="none",
+        closing_sequence="none",
+    )
+    follow_state["reply_knowledge_use"] = {"selected_script_ids": ["script-1"]}
+    repository.record_v3_strategy_usage(
+        conversation_id="conversation-1",
+        final_state=follow_state,
+    )
+
+    summary = repository.v3_strategy_analytics_summary()
+    assert summary["adopted_count"] == 1
+    assert summary["adoption_rate"] == 0.5
+    intent_items = repository.v3_strategy_analytics_by_dimension(dimension="intent")["items"]
+    assert sum(item["adopted_count"] for item in intent_items) == 1
+
+    closing_items = repository.v3_strategy_analytics_by_dimension(dimension="closing")["items"]
+    by_action = {item["closing_action"]: item for item in closing_items}
+    assert by_action["enter"]["adopted_count"] == 1
+    assert by_action["enter"]["adoption_rate"] == 1.0
+    assert by_action["none"]["adopted_count"] == 0
+    assert by_action["none"]["adoption_rate"] == 0.0
+    by_rule = repository.v3_strategy_analytics_by_dimension(
+        dimension="closing_rule",
+        closing_rule_id="external:rule:101",
+    )
+    assert by_rule["items"][0]["closing_rule_id"] == "external:rule:101"
+    assert by_rule["items"][0]["adopted_count"] == 1
+
+
 def test_system_guard_is_excluded_from_policy_coverage_and_not_a_failure(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     state = _state("takeover-request", intent="explicit_exit")
@@ -913,6 +1056,7 @@ def test_sqlite_old_schema_upgrade_and_mysql_metadata_include_new_columns(tmp_pa
     for name in (
         "idx_v3_strategy_usage_intent", "idx_v3_strategy_usage_emotion",
         "idx_v3_strategy_usage_closing", "idx_v3_strategy_usage_decision",
+        "idx_v3_strategy_usage_closing_catalog", "idx_v3_strategy_usage_closing_rule",
     ):
         lines = old_schema.splitlines()
         old_schema = "\n".join(

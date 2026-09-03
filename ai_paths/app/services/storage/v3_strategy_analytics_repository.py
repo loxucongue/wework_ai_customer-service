@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from app.services.customer_order_context import order_status_text
 from app.services.storage.serialization import dumps, loads_dict, loads_list, utc_now_iso
@@ -28,15 +29,14 @@ _USAGE_COLUMNS = (
     "policy_version", "decision_status", "intent_confidence", "intent_secondary_json",
     "emotion_confidence", "emotion_pressure", "emotion_flow_action", "closing_action",
     "closing_node_key", "closing_trigger", "closing_customer_state", "closing_pressure",
+    "closing_rule_ids_json", "closing_primary_rule_id", "closing_sequence_source_id", "closing_node_source_id",
+    "closing_action_type_id", "closing_action_type_name", "closing_script_type_id",
+    "closing_script_type_name", "closing_catalog_checksum", "closing_catalog_status",
+    "closing_rule_match_status", "closing_constraint_status", "closing_constraint_reasons_json",
     "cardpoint_category_key", "cardpoint_state", "decision_reasons_json",
     "decision_evidence_refs_json", "selector_status", "fallback_used", "payload_json",
     "order_state_before_json", "customer_turn_eligible", "created_at", "updated_at",
 )
-_USAGE_UPDATE_COLUMNS = tuple(
-    column for column in _USAGE_COLUMNS if column not in {"id", "request_id", "created_at"}
-)
-
-
 class V3StrategyAnalyticsRepositoryMixin:
     def record_v3_strategy_usage(
         self,
@@ -65,10 +65,6 @@ class V3StrategyAnalyticsRepositoryMixin:
             now=utc_now_iso(),
         )
         with self.store.connect() as conn:
-            existing = conn.execute(
-                "SELECT id, created_at FROM v3_strategy_usage_events WHERE request_id=?",
-                (request_id,),
-            ).fetchone()
             dispatch = conn.execute(
                 """
                 SELECT id, status, confirmed_at, accepted_at, error_message, error_code
@@ -83,34 +79,23 @@ class V3StrategyAnalyticsRepositoryMixin:
                 event["delivery_status"] = _text(dispatch["status"])
                 event["delivered_at"] = _text(dispatch["confirmed_at"] or dispatch["accepted_at"])
                 event["failed_reason"] = _text(dispatch["error_message"] or dispatch["error_code"])
-            if existing is None:
-                previous = _previous_usage_for_event(conn, event)
-                conn.execute(
-                    f"INSERT INTO v3_strategy_usage_events ({', '.join(_USAGE_COLUMNS)}) "
-                    f"VALUES ({', '.join('?' for _ in _USAGE_COLUMNS)})",
-                    _usage_insert_values(event),
-                )
-                event_id = event["id"]
-                created = True
-                if event["customer_turn_eligible"] and previous is not None:
-                    _link_previous_usage(conn, previous=previous, current=event)
-            else:
-                event_id = _text(existing["id"])
-                event["id"] = event_id
-                conn.execute(
-                    "UPDATE v3_strategy_usage_events SET "
-                    + ", ".join(
-                        (
-                            "emotion_after=COALESCE(NULLIF(?, ''), emotion_after)"
-                            if column == "emotion_after"
-                            else f"{column}=?"
-                        )
-                        for column in _USAGE_UPDATE_COLUMNS
-                    )
-                    + " WHERE request_id=?",
-                    _usage_update_values(event),
-                )
-                created = False
+            previous = _previous_usage_for_event(conn, event)
+            conn.execute(
+                f"INSERT INTO v3_strategy_usage_events ({', '.join(_USAGE_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _USAGE_COLUMNS)}) "
+                "ON CONFLICT(request_id) DO NOTHING",
+                _usage_insert_values(event),
+            )
+            stored = conn.execute(
+                "SELECT id FROM v3_strategy_usage_events WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if stored is None:
+                raise RuntimeError("V3 strategy usage idempotent insert did not produce a row")
+            event_id = _text(stored["id"])
+            created = event_id == event["id"]
+            if created and event["customer_turn_eligible"] and previous is not None:
+                _link_previous_usage(conn, previous=previous, current=event)
         return {"status": "recorded", "id": event_id, "created": created}
 
     def latest_v3_strategy_state(
@@ -168,6 +153,22 @@ class V3StrategyAnalyticsRepositoryMixin:
                 """,
                 tuple(params),
             ).fetchone()
+            shanghai = ZoneInfo("Asia/Shanghai")
+            local_now = datetime.now(timezone.utc).astimezone(shanghai)
+            local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_start_utc = local_day_start.astimezone(timezone.utc).isoformat()
+            frequency = conn.execute(
+                f"""
+                SELECT
+                    SUM(CASE WHEN u.closing_action IN ('enter','advance','fallback') THEN 1 ELSE 0 END)
+                        AS closing_actions_today,
+                    MAX(CASE WHEN u.closing_action IN ('enter','advance','fallback') THEN u.occurred_at ELSE '' END)
+                        AS last_closing_action_at
+                FROM v3_strategy_usage_events u
+                WHERE {' AND '.join(clauses)} AND u.occurred_at>=?
+                """,
+                (*params, day_start_utc),
+            ).fetchone()
         if row is None:
             return {}
         value = dict(row)
@@ -180,6 +181,15 @@ class V3StrategyAnalyticsRepositoryMixin:
             ),
             order_before,
         )
+        frequency_value = dict(frequency) if frequency is not None else {}
+        last_closing_action_at = _text(frequency_value.get("last_closing_action_at"))
+        minutes_since_last_closing_action: int | None = None
+        parsed_last_closing = _parse_dt(last_closing_action_at)
+        if parsed_last_closing is not None:
+            minutes_since_last_closing_action = max(
+                0,
+                int((datetime.now(timezone.utc) - parsed_last_closing).total_seconds() // 60),
+            )
         return {
             "previous_intent": _text(value.get("intent_code")),
             "previous_emotion": _text(value.get("emotion_before")),
@@ -205,6 +215,9 @@ class V3StrategyAnalyticsRepositoryMixin:
             "request_id": _text(value.get("request_id")),
             "occurred_at": _text(value.get("occurred_at")),
             "decision_status": _text(value.get("decision_status")),
+            "closing_actions_today": _int(frequency_value.get("closing_actions_today")),
+            "last_closing_action_at": last_closing_action_at,
+            "minutes_since_last_closing_action": minutes_since_last_closing_action,
         }
 
     def link_v3_strategy_usage_dispatch(self, *, request_id: str, dispatch_id: str) -> dict[str, Any]:
@@ -434,7 +447,10 @@ class V3StrategyAnalyticsRepositoryMixin:
                                   OR u.decision_reasons_json LIKE '%"active_cardpoint_same_turn_sales_conflict"%'
                              THEN 1 ELSE 0 END) AS new_blocker_not_paused_count,
                     SUM(CASE WHEN u.selector_status IN ('empty','error') THEN 1 ELSE 0 END) AS selector_empty_or_error_count,
-                    SUM(CASE WHEN u.fallback_used=1 THEN 1 ELSE 0 END) AS taxonomy_fallback_count
+                    SUM(CASE WHEN u.fallback_used=1 THEN 1 ELSE 0 END) AS taxonomy_fallback_count,
+                    SUM(CASE WHEN u.closing_rule_match_status='matched' THEN 1 ELSE 0 END) AS closing_rule_matched_count,
+                    SUM(CASE WHEN u.closing_constraint_status='blocked' THEN 1 ELSE 0 END) AS closing_constraint_blocked_count,
+                    SUM(CASE WHEN u.closing_catalog_status IN ('error','disabled','unavailable') THEN 1 ELSE 0 END) AS closing_catalog_unavailable_count
                 FROM v3_strategy_usage_events u
                 LEFT JOIN v3_strategy_outcome_events o ON o.usage_event_id=u.id
                 {where_sql}
@@ -458,8 +474,20 @@ class V3StrategyAnalyticsRepositoryMixin:
             "intent": ("u.intent_code", "u.intent_code"),
             "emotion": ("u.emotion_before AS emotion_code", "u.emotion_before"),
             "closing": (
-                "u.closing_strategy_code AS closing_sequence_key, u.closing_action, u.closing_node_key",
-                "u.closing_strategy_code, u.closing_action, u.closing_node_key",
+                "u.closing_strategy_code AS closing_sequence_key, u.closing_sequence_source_id, "
+                "u.closing_action, u.closing_node_key, u.closing_node_source_id, "
+                "u.closing_action_type_id, u.closing_action_type_name, "
+                "u.closing_script_type_id, u.closing_script_type_name, "
+                "u.closing_catalog_status, u.closing_rule_match_status, u.closing_constraint_status",
+                "u.closing_strategy_code, u.closing_sequence_source_id, u.closing_action, "
+                "u.closing_node_key, u.closing_node_source_id, u.closing_action_type_id, "
+                "u.closing_action_type_name, u.closing_script_type_id, u.closing_script_type_name, "
+                "u.closing_catalog_status, u.closing_rule_match_status, u.closing_constraint_status",
+            ),
+            "closing_rule": (
+                "u.closing_primary_rule_id AS closing_rule_id, u.closing_rule_match_status, "
+                "u.closing_constraint_status",
+                "u.closing_primary_rule_id, u.closing_rule_match_status, u.closing_constraint_status",
             ),
             "transitions": (
                 "u.intent_code, o.next_intent_code, u.emotion_before AS emotion_code, "
@@ -471,6 +499,11 @@ class V3StrategyAnalyticsRepositoryMixin:
         if dimension not in specs:
             raise ValueError(f"unsupported analytics dimension: {dimension}")
         select_keys, group_keys = specs[dimension]
+        adopted_count_sql = (
+            "SUM(CASE WHEN u.closing_action IN ('enter','advance','fallback') THEN 1 ELSE 0 END)"
+            if dimension in {"closing", "closing_rule"}
+            else "SUM(CASE WHEN u.adopted=1 THEN 1 ELSE 0 END)"
+        )
         where_sql, params = _analytics_filters(filters)
         if dimension == "transitions":
             transition_clause = (
@@ -490,7 +523,7 @@ class V3StrategyAnalyticsRepositoryMixin:
                 SELECT
                     {select_keys},
                     COUNT(*) AS usage_count,
-                    SUM(CASE WHEN u.adopted=1 THEN 1 ELSE 0 END) AS adopted_count,
+                    {adopted_count_sql} AS adopted_count,
                     SUM(CASE WHEN u.dispatch_id<>'' THEN 1 ELSE 0 END) AS dispatch_count,
                     SUM(CASE WHEN u.delivery_status=? THEN 1 ELSE 0 END) AS delivery_success_count,
                     SUM(CASE WHEN COALESCE(o.customer_replied_24h, 0)=1 THEN 1 ELSE 0 END) AS replied_24h_count,
@@ -533,7 +566,10 @@ class V3StrategyAnalyticsRepositoryMixin:
                                   OR u.decision_reasons_json LIKE '%"active_cardpoint_same_turn_sales_conflict"%'
                              THEN 1 ELSE 0 END) AS new_blocker_not_paused_count,
                     SUM(CASE WHEN u.selector_status IN ('empty','error') THEN 1 ELSE 0 END) AS selector_empty_or_error_count,
-                    SUM(CASE WHEN u.fallback_used=1 THEN 1 ELSE 0 END) AS taxonomy_fallback_count
+                    SUM(CASE WHEN u.fallback_used=1 THEN 1 ELSE 0 END) AS taxonomy_fallback_count,
+                    SUM(CASE WHEN u.closing_rule_match_status='matched' THEN 1 ELSE 0 END) AS closing_rule_matched_count,
+                    SUM(CASE WHEN u.closing_constraint_status='blocked' THEN 1 ELSE 0 END) AS closing_constraint_blocked_count,
+                    SUM(CASE WHEN u.closing_catalog_status IN ('error','disabled','unavailable') THEN 1 ELSE 0 END) AS closing_catalog_unavailable_count
                 FROM v3_strategy_usage_events u
                 LEFT JOIN v3_strategy_outcome_events o ON o.usage_event_id=u.id
                 {where_sql}
@@ -578,6 +614,13 @@ class V3StrategyAnalyticsRepositoryMixin:
                        u.emotion_confidence, u.emotion_pressure, u.emotion_flow_action,
                        u.closing_strategy_code, u.closing_action, u.closing_node_key,
                        u.closing_trigger, u.closing_customer_state, u.closing_pressure,
+                       u.closing_rule_ids_json, u.closing_primary_rule_id,
+                       u.closing_sequence_source_id, u.closing_node_source_id,
+                       u.closing_action_type_id, u.closing_action_type_name,
+                       u.closing_script_type_id, u.closing_script_type_name,
+                       u.closing_catalog_checksum, u.closing_catalog_status,
+                       u.closing_rule_match_status, u.closing_constraint_status,
+                       u.closing_constraint_reasons_json,
                        u.cardpoint_category_key, u.cardpoint_state, u.decision_reasons_json
                 FROM v3_strategy_usage_events u
                 {prefix} {failure_clause}
@@ -673,6 +716,7 @@ def _usage_event_from_state(*, conversation_id: str, final_state: dict[str, Any]
         "message_count": len(_list(final_state.get("reply_messages"))),
     }
     adopted = bool(knowledge_use.get("sequence_id") or selected_script_ids)
+    closing_rule_ids = _string_list(closing.get("rule_ids"))[:3]
     return {
         "id": str(uuid4()),
         "request_id": _text(final_state.get("request_id")),
@@ -730,6 +774,21 @@ def _usage_event_from_state(*, conversation_id: str, final_state: dict[str, Any]
         "closing_trigger": _text(closing.get("trigger")),
         "closing_customer_state": _text(closing.get("customer_state")),
         "closing_pressure": _text(closing.get("pressure")),
+        "closing_rule_ids_json": dumps(closing_rule_ids),
+        "closing_primary_rule_id": closing_rule_ids[0] if closing_rule_ids else "",
+        "closing_sequence_source_id": _text(closing.get("sequence_source_id")),
+        "closing_node_source_id": _text(closing.get("node_source_id")),
+        "closing_action_type_id": _int(closing.get("action_type_id")),
+        "closing_action_type_name": _text(closing.get("action_type_name")),
+        "closing_script_type_id": _int(closing.get("script_type_id")),
+        "closing_script_type_name": _text(closing.get("script_type_name")),
+        "closing_catalog_checksum": _text(closing.get("catalog_checksum")),
+        "closing_catalog_status": _text(closing.get("catalog_status")),
+        "closing_rule_match_status": _text(closing.get("rule_match_status")),
+        "closing_constraint_status": _text(closing.get("constraint_status")),
+        "closing_constraint_reasons_json": dumps(
+            _string_list(closing.get("constraint_reasons"))[:20]
+        ),
         "cardpoint_category_key": _text(cardpoint.get("category_key")),
         "cardpoint_state": _text(cardpoint.get("state")),
         "decision_reasons_json": dumps(_string_list(final_state.get("decision_reasons"))[:20]),
@@ -746,10 +805,6 @@ def _usage_event_from_state(*, conversation_id: str, final_state: dict[str, Any]
 
 def _usage_insert_values(event: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(event[key] for key in _USAGE_COLUMNS)
-
-
-def _usage_update_values(event: dict[str, Any]) -> tuple[Any, ...]:
-    return tuple(event[key] for key in _USAGE_UPDATE_COLUMNS) + (event["request_id"],)
 
 
 def _previous_usage_for_event(conn: Any, event: dict[str, Any]) -> Any | None:
@@ -1220,7 +1275,11 @@ def _analytics_filters(filters: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
         "intent_code": "u.intent_code",
         "emotion_code": "u.emotion_before",
         "closing_sequence_key": "u.closing_strategy_code",
+        "closing_rule_id": "u.closing_primary_rule_id",
         "closing_action": "u.closing_action",
+        "closing_catalog_status": "u.closing_catalog_status",
+        "closing_rule_match_status": "u.closing_rule_match_status",
+        "closing_constraint_status": "u.closing_constraint_status",
         "decision_status": "u.decision_status",
     }
     if _text(filters.get("started_from")):
@@ -1275,6 +1334,8 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
             "order_backfill_current_only_count",
             "hard_stop_wrong_advance_count", "new_blocker_not_paused_count",
             "selector_empty_or_error_count", "taxonomy_fallback_count",
+            "closing_rule_matched_count", "closing_constraint_blocked_count",
+            "closing_catalog_unavailable_count",
         }},
         "usage_count": usage_count,
         "adopted_count": adopted_count,
@@ -1313,6 +1374,9 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
         "new_blocker_not_paused_count": _int(row.get("new_blocker_not_paused_count")),
         "selector_empty_or_error_count": _int(row.get("selector_empty_or_error_count")),
         "taxonomy_fallback_count": _int(row.get("taxonomy_fallback_count")),
+        "closing_rule_matched_count": _int(row.get("closing_rule_matched_count")),
+        "closing_constraint_blocked_count": _int(row.get("closing_constraint_blocked_count")),
+        "closing_catalog_unavailable_count": _int(row.get("closing_catalog_unavailable_count")),
     }
 
 
@@ -1321,6 +1385,12 @@ def _decode_usage_row(row: dict[str, Any]) -> dict[str, Any]:
     row["fallback_used"] = bool(row.get("fallback_used"))
     if "decision_reasons_json" in row:
         row["decision_reasons"] = loads_list(_text(row.pop("decision_reasons_json")))
+    if "closing_rule_ids_json" in row:
+        row["closing_rule_ids"] = loads_list(_text(row.pop("closing_rule_ids_json")))
+    if "closing_constraint_reasons_json" in row:
+        row["closing_constraint_reasons"] = loads_list(
+            _text(row.pop("closing_constraint_reasons_json"))
+        )
     return row
 
 

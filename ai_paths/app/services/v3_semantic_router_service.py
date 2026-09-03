@@ -55,12 +55,33 @@ class V3SemanticRouterService:
             return {"status": "unavailable", "types": []}
         return await loader()
 
+    async def load_closing_catalog(self) -> dict[str, Any]:
+        if self.knowledge_client is None or not self.knowledge_client.available:
+            return {
+                "schema_version": "closing_catalog_v1",
+                "status": "disabled",
+                "reason": "follow_knowledge_not_configured",
+                "rules": {},
+                "sequences": [],
+            }
+        loader = getattr(self.knowledge_client, "query_closing_catalog", None)
+        if loader is None:
+            return {
+                "schema_version": "closing_catalog_v1",
+                "status": "unavailable",
+                "reason": "closing_catalog_client_unavailable",
+                "rules": {},
+                "sequences": [],
+            }
+        return await loader()
+
     async def route(
         self,
         *,
         shared_context: dict[str, Any],
         sequence_result: dict[str, Any] | None = None,
         taxonomy_result: dict[str, Any] | None = None,
+        closing_catalog_result: dict[str, Any] | None = None,
         force_store_required: bool = False,
     ) -> dict[str, Any]:
         started = time.perf_counter()
@@ -79,11 +100,13 @@ class V3SemanticRouterService:
         sequences = [item for item in sequence_result.get("items") or [] if isinstance(item, dict)]
         taxonomy = _taxonomy_types(taxonomy_result, sequences=sequences)
         fact_topics = v3_fact_topic_catalog_for_model()
+        closing_catalog = _normalized_closing_catalog(closing_catalog_result)
         router_messages = build_v3_checkpoint_router_messages(
             shared_context=shared_context,
             checkpoint_taxonomy=taxonomy,
             sequence_index=[],
             fact_topic_catalog=fact_topics,
+            closing_catalog=closing_catalog,
         )
         router_started = time.perf_counter()
         try:
@@ -98,6 +121,7 @@ class V3SemanticRouterService:
             sequences=sequences,
             checkpoint_taxonomy=taxonomy,
             fact_topic_catalog=fact_topics,
+            closing_catalog=closing_catalog,
         )
         contract_issues = _semantic_route_contract_issues(semantic_route)
         contract_repair_used = False
@@ -126,6 +150,7 @@ class V3SemanticRouterService:
                     sequences=sequences,
                     checkpoint_taxonomy=taxonomy,
                     fact_topic_catalog=fact_topics,
+                    closing_catalog=closing_catalog,
                 )
             except Exception:
                 # Keep the first normalized result. Missing references remain
@@ -142,6 +167,10 @@ class V3SemanticRouterService:
         semantic_route["model_usage"] = copy.deepcopy(self.semantic_client.last_usage or {})
         semantic_route["contract_repair_used"] = contract_repair_used
         semantic_route["contract_issues"] = _semantic_route_contract_issues(semantic_route)
+        semantic_route["closing_catalog_evidence"] = _closing_catalog_evidence(
+            closing_catalog,
+            semantic_route.get("closing_catalog_match"),
+        )
         checkpoint_router_ms = int(semantic_route["duration_ms"])
 
         if bool((semantic_route.get("store_query") or {}).get("required")):
@@ -194,6 +223,10 @@ class V3SemanticRouterService:
             semantic_route["contract_issues"] = checkpoint_contract_issues
         else:
             semantic_route = _expand_sequence_action_queries(semantic_route, sequences=sequences)
+        semantic_route["closing_catalog_evidence"] = _closing_catalog_evidence(
+            closing_catalog,
+            semantic_route.get("closing_catalog_match"),
+        )
         semantic_route["phase"] = "non_store_final"
         knowledge, selector_messages = await self._knowledge_for_route(
             shared_context=shared_context,
@@ -231,6 +264,7 @@ class V3SemanticRouterService:
         store_resolution_fact: dict[str, Any],
         sequence_result: dict[str, Any] | None = None,
         taxonomy_result: dict[str, Any] | None = None,
+        closing_catalog_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         sequence_result = sequence_result if isinstance(sequence_result, dict) else await self._sequence_index()
@@ -264,7 +298,9 @@ class V3SemanticRouterService:
             "store_query": copy.deepcopy(pre_route.get("store_query") or {}),
             "sequence_match": _empty_sequence_match(),
             "script_queries": [],
+            "closing_catalog_match": copy.deepcopy(pre_route.get("closing_catalog_match") or {}),
         }
+        closing_catalog = _normalized_closing_catalog(closing_catalog_result)
         semantic_route, router_messages = await self._select_sequence_route(
             shared_context=shared_context,
             checkpoint_route=checkpoint_route,
@@ -272,6 +308,8 @@ class V3SemanticRouterService:
             store_resolution_fact=store_resolution_fact,
             checkpoint_taxonomy=taxonomy,
             fact_topic_catalog=v3_fact_topic_catalog_for_model(),
+            closing_catalog=closing_catalog,
+            allow_closing_rematch=True,
         )
         sequence_selector_ms = int(semantic_route.get("duration_ms") or 0)
         semantic_route["phase"] = "post_store_final"
@@ -288,6 +326,10 @@ class V3SemanticRouterService:
                 (pre_route.get("store_query") or {}).get("destination_hint") or ""
             ),
         }
+        semantic_route["closing_catalog_evidence"] = _closing_catalog_evidence(
+            closing_catalog,
+            semantic_route.get("closing_catalog_match"),
+        )
         knowledge, selector_messages = await self._knowledge_for_route(
             shared_context=shared_context,
             semantic_route=semantic_route,
@@ -325,6 +367,8 @@ class V3SemanticRouterService:
         store_resolution_fact: dict[str, Any] | None = None,
         checkpoint_taxonomy: list[dict[str, Any]] | None = None,
         fact_topic_catalog: list[dict[str, Any]] | None = None,
+        closing_catalog: dict[str, Any] | None = None,
+        allow_closing_rematch: bool = False,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
         """Ask the model to select only among metadata-filtered real sequences."""
 
@@ -344,6 +388,7 @@ class V3SemanticRouterService:
             checkpoint_taxonomy=checkpoint_taxonomy or [],
             fact_topic_catalog=fact_topic_catalog or [],
             store_resolution_fact=store_resolution_fact,
+            closing_catalog=closing_catalog if allow_closing_rematch else None,
         )
         started = time.perf_counter()
         try:
@@ -366,6 +411,10 @@ class V3SemanticRouterService:
             "store_query",
         ):
             payload[key] = copy.deepcopy(checkpoint_route.get(key))
+        if not allow_closing_rematch:
+            payload["closing_catalog_match"] = copy.deepcopy(
+                checkpoint_route.get("closing_catalog_match")
+            )
         # The selector may add fact topics made relevant by the store result,
         # but it must not erase topics already selected for the customer's
         # current question by the first model pass.
@@ -393,7 +442,12 @@ class V3SemanticRouterService:
             sequences=candidates,
             checkpoint_taxonomy=checkpoint_taxonomy,
             fact_topic_catalog=fact_topic_catalog,
+            closing_catalog=closing_catalog if allow_closing_rematch else None,
         )
+        if not allow_closing_rematch:
+            output["closing_catalog_match"] = copy.deepcopy(
+                checkpoint_route.get("closing_catalog_match") or {}
+            )
         output["duration_ms"] = int((time.perf_counter() - started) * 1000)
         output["model_usage"] = copy.deepcopy(self.semantic_client.last_usage or {})
         if error:
@@ -423,19 +477,36 @@ class V3SemanticRouterService:
         script_candidates = [item for item in script_result.get("items") or [] if isinstance(item, dict)]
         selector: dict[str, Any] = {"status": "not_needed", "reason": "no_script_candidates"}
         raw_paragraph_group_count = _paragraph_group_count(script_candidates)
+        closing_only = bool(script_candidates) and bool(script_result.get("query_results")) and all(
+            str(item.get("query_source") or "") == "closing_catalog_node"
+            for item in script_result.get("query_results") or []
+            if isinstance(item, dict)
+        )
         # Published knowledge is a sales-expression source, not an authority for
         # current prices, entitlements or executable actions.  Candidate count
         # therefore controls only the output size; every non-empty result still
         # needs the model-led relevance and authority screen.
         prefilter: dict[str, Any] = {}
-        if script_candidates and raw_paragraph_group_count > self.script_threshold:
+        if script_candidates and not closing_only and raw_paragraph_group_count > self.script_threshold:
             prefilter, script_candidates = await self._prefilter_scripts(
                 shared_context=shared_context,
                 semantic_route=semantic_route,
                 candidates=script_candidates,
                 max_paragraph_groups=self.script_threshold,
             )
-        if script_candidates:
+        if closing_only:
+            script_candidates = _first_script_groups(
+                script_candidates,
+                max_groups=MAX_PARAGRAPH_GROUPS,
+            )
+            selector = {
+                "status": "not_needed",
+                "reason": "closing_type_candidates_deferred_to_reply",
+                "candidate_count": len(script_candidates),
+                "paragraph_candidate_count": _paragraph_group_count(script_candidates),
+                "duration_ms": 0,
+            }
+        elif script_candidates:
             selector, script_candidates = await self._narrow_scripts(
                 shared_context=shared_context,
                 semantic_route=semantic_route,
@@ -498,7 +569,15 @@ class V3SemanticRouterService:
         *,
         checkpoint_taxonomy: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        queries = semantic_route.get("script_queries") if isinstance(semantic_route.get("script_queries"), list) else []
+        route_queries = (
+            semantic_route.get("script_queries")
+            if isinstance(semantic_route.get("script_queries"), list)
+            else []
+        )
+        queries = [
+            *route_queries,
+            *_closing_script_queries(semantic_route, existing_queries=route_queries),
+        ]
         if self.knowledge_client is None or not self.knowledge_client.available or not queries:
             return {"status": "empty", "option_count": 0, "items": [], "query_results": []}
         tasks = [
@@ -543,12 +622,13 @@ class V3SemanticRouterService:
             fallback_used = isinstance(fallback_result, dict)
             requested_tag_id = int(query.get("checkpoint_tag_id") or 0)
             match_scope = (
-                "checkpoint_type_tag_action"
+                "closing_script_type"
+                if str(query.get("query_source") or "") == "closing_catalog_node"
+                else "checkpoint_type_tag_action"
                 if requested_tag_id > 0 and not fallback_used
                 else "checkpoint_type_action"
             )
-            query_results.append(
-                {
+            query_audit = {
                     "checkpoint_code": query.get("checkpoint_code"),
                     "checkpoint_type_id": query.get("checkpoint_type_id"),
                     "checkpoint_tag_id": query.get("checkpoint_tag_id"),
@@ -556,6 +636,7 @@ class V3SemanticRouterService:
                     "sequence_id": query.get("sequence_id"),
                     "step_id": query.get("step_id"),
                     "query_source": query.get("query_source"),
+                    "sequence_links": copy.deepcopy(query.get("sequence_links") or []),
                     "status": result.get("status"),
                     "total": int(result.get("total") or 0),
                     "reason": result.get("reason", ""),
@@ -567,8 +648,9 @@ class V3SemanticRouterService:
                     "fallback_total": int(fallback_result.get("total") or 0)
                     if isinstance(fallback_result, dict)
                     else 0,
+                    "rejected_type_mismatch_count": 0,
                 }
-            )
+            query_results.append(query_audit)
             seen_query_signatures.add(
                 (
                     int(query.get("checkpoint_type_id") or 0),
@@ -580,6 +662,17 @@ class V3SemanticRouterService:
             for raw in result.get("items") or []:
                 if not isinstance(raw, dict):
                     continue
+                if str(query.get("query_source") or "") == "closing_catalog_node":
+                    returned_type = (
+                        raw.get("checkpoint_type")
+                        if isinstance(raw.get("checkpoint_type"), dict)
+                        else {}
+                    )
+                    if int(returned_type.get("id") or 0) != int(
+                        query.get("checkpoint_type_id") or 0
+                    ):
+                        query_audit["rejected_type_mismatch_count"] += 1
+                        continue
                 code = str(raw.get("script_code") or "").strip()
                 if not code:
                     continue
@@ -588,15 +681,31 @@ class V3SemanticRouterService:
                 if not existing_scope or match_scope == "checkpoint_type_tag_action":
                     item["retrieval_match_scope"] = match_scope
                 links = item.setdefault("sequence_links", [])
-                link = {
-                    "sequence_id": str(query.get("sequence_id") or ""),
-                    "step_id": str(query.get("step_id") or ""),
-                    "action_code": str(query.get("action_code") or ""),
-                    "match_scope": match_scope,
-                    "query_source": str(query.get("query_source") or ""),
-                }
-                if link not in links:
-                    links.append(link)
+                query_links = query.get("sequence_links")
+                if not isinstance(query_links, list) or not query_links:
+                    query_links = [
+                        {
+                            "sequence_id": str(query.get("sequence_id") or ""),
+                            "step_id": str(query.get("step_id") or ""),
+                            "action_code": str(query.get("action_code") or ""),
+                            "query_source": str(query.get("query_source") or ""),
+                        }
+                    ]
+                for raw_link in query_links:
+                    if not isinstance(raw_link, dict):
+                        continue
+                    link = {
+                        **copy.deepcopy(raw_link),
+                        "sequence_id": str(raw_link.get("sequence_id") or ""),
+                        "step_id": str(raw_link.get("step_id") or ""),
+                        "action_code": str(raw_link.get("action_code") or ""),
+                        "match_scope": match_scope,
+                        "query_source": str(
+                            raw_link.get("query_source") or query.get("query_source") or ""
+                        ),
+                    }
+                    if link not in links:
+                        links.append(link)
                 if match_scope == "checkpoint_type_action":
                     broad_candidate_count += 1
                 else:
@@ -1146,6 +1255,7 @@ def _normalize_semantic_route(
     sequences: list[dict[str, Any]],
     checkpoint_taxonomy: list[dict[str, Any]] | None = None,
     fact_topic_catalog: list[dict[str, Any]] | None = None,
+    closing_catalog: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = raw if isinstance(raw, dict) else {}
     valid_refs = {"current_message"}
@@ -1411,6 +1521,11 @@ def _normalize_semantic_route(
             store_purpose = "store_search"
             location_refs = _valid_refs(["current_message"], valid_customer_refs)
             destination_hint = structured_location_hint
+    closing_catalog_match = _normalize_closing_catalog_match(
+        payload.get("closing_catalog_match"),
+        catalog=_normalized_closing_catalog(closing_catalog),
+        valid_customer_refs=valid_customer_refs,
+    )
     return {
         "schema_version": "v3_semantic_route_v2",
         "status": "ok",
@@ -1474,6 +1589,147 @@ def _normalize_semantic_route(
             "destination_hint": destination_hint,
         },
         "script_queries": script_queries,
+        "closing_catalog_match": closing_catalog_match,
+    }
+
+
+def _normalized_closing_catalog(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    status = str(raw.get("status") or "unavailable").strip().lower()
+    if status != "ok":
+        return {
+            "schema_version": "closing_catalog_v1",
+            "status": status if status in {"disabled", "error", "unavailable"} else "unavailable",
+            "freshness_status": "unavailable",
+            "reason": str(raw.get("reason") or "closing_catalog_unavailable")[:500],
+            "checksum": "",
+            "eligibility_status": "unavailable",
+            "rules": {},
+            "sequences": [],
+            "quality_flags": list(raw.get("quality_flags") or [])[:20],
+        }
+    rules = raw.get("rules") if isinstance(raw.get("rules"), dict) else {}
+    triggers = [item for item in rules.get("triggers") or [] if isinstance(item, dict)]
+    sequences = [item for item in raw.get("sequences") or [] if isinstance(item, dict)]
+    return {
+        "schema_version": "closing_catalog_v1",
+        "status": "ok",
+        "freshness_status": str(raw.get("freshness_status") or "fresh")[:32],
+        "source": str(raw.get("source") or "follow_knowledge_api"),
+        "checksum": str(raw.get("checksum") or "")[:128],
+        "eligibility_status": "configured" if triggers else "catalog_empty",
+        "rules": {
+            "triggers": triggers,
+            "ai_confirm": copy.deepcopy(rules.get("ai_confirm") or {}),
+            "constraints": copy.deepcopy(rules.get("constraints") or {}),
+        },
+        "sequences": sequences,
+        "quality_flags": [str(item)[:200] for item in raw.get("quality_flags") or []][:20],
+    }
+
+
+def _normalize_closing_catalog_match(
+    value: Any,
+    *,
+    catalog: dict[str, Any],
+    valid_customer_refs: set[str],
+) -> dict[str, Any]:
+    if str(catalog.get("status") or "") != "ok":
+        return {
+            "status": "catalog_unavailable",
+            "selected_rule_ids": [],
+            "sequence_candidate_ids": [],
+            "evidence_refs": [],
+            "reason": str(catalog.get("reason") or "closing catalog unavailable")[:300],
+        }
+    triggers = {
+        str(item.get("rule_key") or ""): item
+        for item in (catalog.get("rules") or {}).get("triggers") or []
+        if isinstance(item, dict) and str(item.get("rule_key") or "")
+    }
+    if not triggers:
+        return {
+            "status": "catalog_empty",
+            "selected_rule_ids": [],
+            "sequence_candidate_ids": [],
+            "evidence_refs": [],
+            "reason": "tenant has no enabled closing rule",
+        }
+    raw = value if isinstance(value, dict) else {}
+    selected_rule_ids = [
+        item
+        for item in dict.fromkeys(str(entry or "").strip() for entry in raw.get("selected_rule_ids") or [])
+        if item in triggers
+    ][:3]
+    unsupported = [
+        rule_id
+        for rule_id in selected_rule_ids
+        if not bool((triggers.get(rule_id) or {}).get("grouping_supported", True))
+    ]
+    sequence_map = {
+        str(item.get("sequence_key") or ""): item
+        for item in catalog.get("sequences") or []
+        if isinstance(item, dict) and str(item.get("sequence_key") or "")
+    }
+    sequence_candidate_ids = [
+        item
+        for item in dict.fromkeys(
+            str(entry or "").strip() for entry in raw.get("sequence_candidate_ids") or []
+        )
+        if item in sequence_map
+    ][:3]
+    if not selected_rule_ids or unsupported:
+        sequence_candidate_ids = []
+    evidence_refs = _valid_refs(raw.get("evidence_refs"), valid_customer_refs)
+    missing_evidence = bool(selected_rule_ids) and not evidence_refs
+    if missing_evidence:
+        selected_rule_ids = []
+        sequence_candidate_ids = []
+    status = "matched" if selected_rule_ids and sequence_candidate_ids else (
+        "blocked" if unsupported else "rule_only" if selected_rule_ids else "none"
+    )
+    return {
+        "status": status,
+        "selected_rule_ids": selected_rule_ids,
+        "sequence_candidate_ids": sequence_candidate_ids,
+        "evidence_refs": evidence_refs[:6],
+        "reason": (
+            "combined trigger grouping is not defined by upstream contract"
+            if unsupported
+            else "closing rule match requires customer evidence"
+            if missing_evidence
+            else str(raw.get("reason") or "")[:300]
+        ),
+    }
+
+
+def _closing_catalog_evidence(value: Any, match_value: Any) -> dict[str, Any]:
+    catalog = _normalized_closing_catalog(value)
+    match = match_value if isinstance(match_value, dict) else {}
+    rule_ids = {str(item) for item in match.get("selected_rule_ids") or []}
+    sequence_ids = {str(item) for item in match.get("sequence_candidate_ids") or []}
+    rules = catalog.get("rules") if isinstance(catalog.get("rules"), dict) else {}
+    return {
+        "schema_version": "closing_catalog_evidence_v1",
+        "status": str(catalog.get("status") or "unavailable"),
+        "freshness_status": str(catalog.get("freshness_status") or "unavailable"),
+        "eligibility_status": str(catalog.get("eligibility_status") or "unavailable"),
+        "match_status": str(match.get("status") or "none"),
+        "checksum": str(catalog.get("checksum") or ""),
+        "selected_rules": [
+            copy.deepcopy(item)
+            for item in rules.get("triggers") or []
+            if isinstance(item, dict) and str(item.get("rule_key") or "") in rule_ids
+        ],
+        "candidate_sequences": [
+            copy.deepcopy(item)
+            for item in catalog.get("sequences") or []
+            if isinstance(item, dict) and str(item.get("sequence_key") or "") in sequence_ids
+        ],
+        "ai_confirm": copy.deepcopy(rules.get("ai_confirm") or {}),
+        "constraints": copy.deepcopy(rules.get("constraints") or {}),
+        "quality_flags": list(catalog.get("quality_flags") or []),
+        "reason": str(match.get("reason") or catalog.get("reason") or "")[:300],
     }
 
 
@@ -1597,6 +1853,90 @@ def _taxonomy_action_fallback_queries(
         )
         existing_signatures.add(signature)
         if len(output) >= max_actions:
+            break
+    return output
+
+
+def _closing_script_queries(
+    semantic_route: dict[str, Any],
+    *,
+    existing_queries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Translate matched closing node types into the existing script retrieval batch.
+
+    The mapping is contractual rather than semantic: followCheckpointTypeId is the
+    upstream foreign key into the published follow-script catalog.  Reply still
+    decides whether a sequence, node, or returned expression is appropriate.
+    """
+
+    evidence = (
+        semantic_route.get("closing_catalog_evidence")
+        if isinstance(semantic_route.get("closing_catalog_evidence"), dict)
+        else {}
+    )
+    if (
+        str(evidence.get("status") or "") != "ok"
+        or str(evidence.get("match_status") or "") != "matched"
+    ):
+        return []
+    existing_signatures = {
+        (
+            int(item.get("checkpoint_type_id") or 0),
+            int(item.get("checkpoint_tag_id") or 0),
+            str(item.get("checkpoint_code") or "").strip().lower(),
+            str(item.get("action_code") or "").strip().lower(),
+        )
+        for item in existing_queries
+        if isinstance(item, dict)
+    }
+    by_script_type: dict[int, dict[str, Any]] = {}
+    for sequence in evidence.get("candidate_sequences") or []:
+        if not isinstance(sequence, dict):
+            continue
+        sequence_id = str(sequence.get("sequence_key") or "").strip()
+        if not sequence_id:
+            continue
+        for node in sequence.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            script_type = node.get("script_type") if isinstance(node.get("script_type"), dict) else {}
+            action_type = node.get("action_type") if isinstance(node.get("action_type"), dict) else {}
+            script_type_id = int(script_type.get("id") or 0)
+            node_id = str(node.get("node_key") or "").strip()
+            if script_type_id <= 0 or not node_id:
+                continue
+            query = by_script_type.setdefault(
+                script_type_id,
+                {
+                    "checkpoint_type_id": script_type_id,
+                    "checkpoint_tag_id": 0,
+                    "checkpoint_code": "",
+                    "action_code": "",
+                    "sequence_id": "",
+                    "step_id": "",
+                    "query_source": "closing_catalog_node",
+                    "sequence_links": [],
+                },
+            )
+            link = {
+                "sequence_id": sequence_id,
+                "step_id": node_id,
+                "action_code": "",
+                "query_source": "closing_catalog_node",
+                "closing_action_type_id": int(action_type.get("id") or 0),
+                "closing_action_type_name": str(action_type.get("name") or "")[:120],
+                "closing_script_type_id": script_type_id,
+                "closing_script_type_name": str(script_type.get("name") or "")[:120],
+            }
+            if link not in query["sequence_links"]:
+                query["sequence_links"].append(link)
+    output: list[dict[str, Any]] = []
+    for script_type_id, query in by_script_type.items():
+        signature = (script_type_id, 0, "", "")
+        if signature in existing_signatures:
+            continue
+        output.append(query)
+        if len(output) >= 8:
             break
     return output
 
@@ -1967,6 +2307,29 @@ def _filter_script_groups(
             continue
         item = copy.deepcopy(raw)
         remaining -= 1
+        output.append(item)
+    return output
+
+
+def _first_script_groups(
+    candidates: list[dict[str, Any]],
+    *,
+    max_groups: int,
+) -> list[dict[str, Any]]:
+    """Bound exact-type closing expressions without adding a selector model call."""
+
+    output: list[dict[str, Any]] = []
+    remaining = max(1, int(max_groups or 1))
+    for raw in candidates:
+        if remaining <= 0:
+            break
+        item = copy.deepcopy(raw)
+        paragraphs = [value for value in item.get("paragraphs") or [] if isinstance(value, dict)]
+        if paragraphs:
+            item["paragraphs"] = paragraphs[:remaining]
+            remaining -= len(item["paragraphs"])
+        else:
+            remaining -= 1
         output.append(item)
     return output
 

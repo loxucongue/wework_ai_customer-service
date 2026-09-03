@@ -152,6 +152,9 @@ def _build_nodes(
         follow_taxonomy_fetcher=(
             semantic_router_service.load_checkpoint_taxonomy if semantic_router_service is not None else None
         ),
+        closing_catalog_fetcher=(
+            semantic_router_service.load_closing_catalog if semantic_router_service is not None else None
+        ),
     )
     shared_context = create_shared_context_node(
         trace_logger=trace_logger,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -65,6 +67,9 @@ class FollowKnowledgeClient:
         self._client_loop_id: int | None = None
         self._cache: dict[tuple[Any, ...], _CacheEntry] = {}
         self._cache_lock = asyncio.Lock()
+        self._closing_catalog_lock = asyncio.Lock()
+        self._closing_catalog_last_good: dict[str, Any] = {}
+        self._closing_catalog_failure_cache: _CacheEntry | None = None
 
     @property
     def available(self) -> bool:
@@ -242,6 +247,168 @@ class FollowKnowledgeClient:
             "duration_ms": int(result.get("duration_ms") or 0),
         }
 
+    async def query_closing_rules(self) -> dict[str, Any]:
+        """Load tenant-owned closing entry rules and non-semantic constraints."""
+
+        return await self._query_data_object(
+            path="event/follow/closing-rule",
+            payload={},
+            schema_version="closing_rule_query_v1",
+            data_normalizer=_normalize_closing_rules,
+        )
+
+    async def query_closing_sequences(
+        self,
+        *,
+        sequence_name: str = "",
+        subtitle: str = "",
+        trigger_text: str = "",
+    ) -> dict[str, Any]:
+        """Load enabled closing sequences. Script bodies are intentionally not fetched here."""
+
+        payload = {
+            "sequenceName": _text(sequence_name)[:80],
+            "subtitle": _text(subtitle)[:200],
+            "triggerText": _text(trigger_text)[:200],
+        }
+        return await self._query_data_object(
+            path="event/follow/closing-sequence",
+            payload=payload,
+            schema_version="closing_sequence_query_v1",
+            data_normalizer=_normalize_closing_sequences,
+        )
+
+    async def query_closing_catalog(self) -> dict[str, Any]:
+        """Build one immutable snapshot for Router, Reply validation and BI provenance."""
+
+        started = time.perf_counter()
+        cached_failure = self._closing_catalog_failure_cache
+        if cached_failure is not None and cached_failure.expires_at > time.monotonic():
+            result = copy.deepcopy(cached_failure.value)
+            result["cache_hit"] = True
+            result["failure_cache_hit"] = True
+            result["duration_ms"] = int((time.perf_counter() - started) * 1000)
+            return result
+        async with self._closing_catalog_lock:
+            cached_failure = self._closing_catalog_failure_cache
+            if cached_failure is not None and cached_failure.expires_at > time.monotonic():
+                result = copy.deepcopy(cached_failure.value)
+                result["cache_hit"] = True
+                result["failure_cache_hit"] = True
+                result["duration_ms"] = int((time.perf_counter() - started) * 1000)
+                return result
+            try:
+                rules_result, sequences_result = await asyncio.wait_for(
+                    asyncio.gather(
+                        self.query_closing_rules(),
+                        self.query_closing_sequences(),
+                    ),
+                    timeout=max(0.25, min(self._timeout, 2.5)),
+                )
+            except TimeoutError:
+                rules_result = {
+                    "status": "error",
+                    "reason": "closing_catalog_timeout",
+                    "cache_hit": False,
+                }
+                sequences_result = {
+                    "status": "error",
+                    "reason": "closing_catalog_timeout",
+                    "cache_hit": False,
+                }
+            result = self._closing_catalog_result(
+                rules_result=rules_result,
+                sequences_result=sequences_result,
+                started=started,
+            )
+            if result.get("status") == "ok":
+                result["freshness_status"] = "fresh"
+                self._closing_catalog_last_good = copy.deepcopy(result)
+                self._closing_catalog_failure_cache = None
+                return result
+            if self._closing_catalog_last_good:
+                stale = copy.deepcopy(self._closing_catalog_last_good)
+                stale.update(
+                    {
+                        "freshness_status": "stale",
+                        "reason": str(result.get("reason") or "closing_catalog_refresh_failed")[:500],
+                        "cache_hit": True,
+                        "failure_cache_hit": False,
+                        "duration_ms": int((time.perf_counter() - started) * 1000),
+                        "quality_flags": list(
+                            dict.fromkeys(
+                                [
+                                    *[str(item) for item in stale.get("quality_flags") or []],
+                                    "stale_after_refresh_error",
+                                ]
+                            )
+                        ),
+                    }
+                )
+                failure_value = stale
+            else:
+                result["freshness_status"] = "unavailable"
+                failure_value = result
+            failure_ttl = max(1.0, min(5.0, self._cache_ttl or 5.0))
+            self._closing_catalog_failure_cache = _CacheEntry(
+                expires_at=time.monotonic() + failure_ttl,
+                value=copy.deepcopy(failure_value),
+            )
+            return failure_value
+
+    def _closing_catalog_result(
+        self,
+        *,
+        rules_result: dict[str, Any],
+        sequences_result: dict[str, Any],
+        started: float,
+    ) -> dict[str, Any]:
+        statuses = {
+            str(rules_result.get("status") or "error"),
+            str(sequences_result.get("status") or "error"),
+        }
+        status = "ok" if statuses == {"ok"} else (
+            "disabled" if "disabled" in statuses else "error"
+        )
+        rules = copy.deepcopy(rules_result.get("rules") or {}) if status == "ok" else {}
+        sequences = copy.deepcopy(sequences_result.get("sequences") or []) if status == "ok" else []
+        quality_flags = list(
+            dict.fromkeys(
+                [
+                    *[str(item) for item in rules_result.get("quality_flags") or [] if str(item)],
+                    *[str(item) for item in sequences_result.get("quality_flags") or [] if str(item)],
+                ]
+            )
+        )
+        checksum_payload = {"rules": rules, "sequences": sequences}
+        checksum = hashlib.sha256(
+            json.dumps(
+                checksum_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest() if status == "ok" else ""
+        trigger_count = len(rules.get("triggers") or []) if isinstance(rules, dict) else 0
+        return {
+            "schema_version": "closing_catalog_v1",
+            "status": status,
+            "source": "follow_knowledge_api",
+            "reason": "" if status == "ok" else str(
+                rules_result.get("reason") or sequences_result.get("reason") or "closing_catalog_unavailable"
+            )[:500],
+            "checksum": checksum,
+            "rules": rules,
+            "sequences": sequences,
+            "trigger_count": trigger_count,
+            "sequence_count": len(sequences),
+            "node_count": sum(len(item.get("nodes") or []) for item in sequences if isinstance(item, dict)),
+            "eligibility_status": "configured" if trigger_count else "catalog_empty",
+            "quality_flags": quality_flags,
+            "cache_hit": bool(rules_result.get("cache_hit") and sequences_result.get("cache_hit")),
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
+
     async def _query_all_pages(self, fetch_page, *, schema_version: str) -> dict[str, Any]:
         started = time.perf_counter()
         items: list[dict[str, Any]] = []
@@ -342,6 +509,59 @@ class FollowKnowledgeClient:
                 **_empty_result(schema_version, f"{type(exc).__name__}: {exc}"),
                 "status": "error",
                 "query": copy.deepcopy(payload),
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            }
+
+    async def _query_data_object(
+        self,
+        *,
+        path: str,
+        payload: dict[str, Any],
+        schema_version: str,
+        data_normalizer,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        if not self.available:
+            return {
+                "schema_version": schema_version,
+                "status": "disabled",
+                "source": "follow_knowledge_api",
+                "reason": "follow_knowledge_not_configured",
+                "cache_hit": False,
+                "duration_ms": 0,
+            }
+        cache_key = (path, *sorted(payload.items()))
+        cached = await self._cached(cache_key)
+        if cached is not None:
+            cached["cache_hit"] = True
+            cached["duration_ms"] = int((time.perf_counter() - started) * 1000)
+            return cached
+        try:
+            response = await self._request_with_retry(path, payload)
+            body = _response_body(response)
+            if response.status_code >= 400:
+                raise RuntimeError(f"http_status:{response.status_code}")
+            if not isinstance(body, dict) or int(body.get("code") or 0) != 200:
+                message = _text(body.get("message")) if isinstance(body, dict) else "invalid_response"
+                raise RuntimeError(f"business_error:{message or 'unknown'}")
+            data = body.get("data") if isinstance(body.get("data"), dict) else {}
+            result = {
+                "schema_version": schema_version,
+                "status": "ok",
+                "source": "follow_knowledge_api",
+                **data_normalizer(data),
+                "cache_hit": False,
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+            }
+            await self._store_cache(cache_key, result)
+            return result
+        except Exception as exc:
+            return {
+                "schema_version": schema_version,
+                "status": "error",
+                "source": "follow_knowledge_api",
+                "reason": f"{type(exc).__name__}: {exc}"[:500],
+                "cache_hit": False,
                 "duration_ms": int((time.perf_counter() - started) * 1000),
             }
 
@@ -543,6 +763,180 @@ def _legacy_script_paragraphs(raw: dict[str, Any], *, media: dict[str, Any]) -> 
     return [{"paragraph_no": 1, "messages": messages}] if messages else []
 
 
+def _normalize_closing_rules(data: dict[str, Any]) -> dict[str, Any]:
+    quality_flags: list[str] = []
+    triggers: list[dict[str, Any]] = []
+    for position, raw in enumerate(data.get("triggers") or [], start=1):
+        if not isinstance(raw, dict) or raw.get("enabled") is False:
+            continue
+        source_id = _text(raw.get("id"))
+        if not source_id:
+            quality_flags.append(f"trigger_missing_id:{position}")
+            continue
+        trigger_mode = _code(raw.get("triggerMode")) or "independent"
+        if trigger_mode not in {"independent", "combined"}:
+            quality_flags.append(f"trigger_mode_invalid:{source_id}")
+            trigger_mode = "independent"
+        if trigger_mode == "combined":
+            # The current upstream contract has no group id / AND-OR relation.
+            # Keep it observable but do not pretend the grouping is deterministic.
+            quality_flags.append(f"combined_group_unspecified:{source_id}")
+        keywords = [
+            item.strip()
+            for item in _text(raw.get("keywords")).replace("，", ",").split(",")
+            if item.strip()
+        ]
+        triggers.append(
+            {
+                "rule_key": f"external:rule:{source_id}",
+                "source_id": source_id,
+                "type_name": _text(raw.get("typeName")),
+                "condition": _text(raw.get("condition"))[:500],
+                "judge_method": _text(raw.get("judgeMethod"))[:100],
+                "trigger_mode": trigger_mode,
+                "locked": bool(raw.get("locked")),
+                "keywords": list(dict.fromkeys(keywords))[:40],
+                "judge_note": _text(raw.get("judgeNote"))[:500],
+                "grouping_supported": trigger_mode == "independent",
+            }
+        )
+    ai_confirm = data.get("aiConfirm") if isinstance(data.get("aiConfirm"), dict) else {}
+    constraints = data.get("constraints") if isinstance(data.get("constraints"), dict) else {}
+    prerequisites = [
+        {
+            "key": f"external:prerequisite:{position}",
+            "text": _text(value)[:500],
+        }
+        for position, value in enumerate(constraints.get("prerequisites") or [], start=1)
+        if _text(value)
+    ]
+    taboos = [
+        {
+            "key": f"external:taboo:{position}",
+            "text": _text(value)[:500],
+        }
+        for position, value in enumerate(constraints.get("taboos") or [], start=1)
+        if _text(value)
+    ]
+    return {
+        "rules": {
+            "triggers": triggers,
+            "ai_confirm": {
+                "enabled": bool(ai_confirm.get("enabled")),
+                "guidance": _text(ai_confirm.get("guidance"))[:500],
+            },
+            "constraints": {
+                "max_per_day": _non_negative_int(constraints.get("maxPerDay")),
+                "min_interval_minutes": _non_negative_int(constraints.get("minIntervalMinutes")),
+                "prerequisites": prerequisites,
+                "taboos": taboos,
+            },
+        },
+        "quality_flags": list(dict.fromkeys(quality_flags)),
+    }
+
+
+def _normalize_closing_sequences(data: dict[str, Any]) -> dict[str, Any]:
+    quality_flags: list[str] = []
+    sequences: list[dict[str, Any]] = []
+    for position, raw in enumerate(data.get("list") or [], start=1):
+        if not isinstance(raw, dict) or raw.get("enabled") is False:
+            continue
+        source_id = _text(raw.get("id"))
+        if not source_id:
+            quality_flags.append(f"sequence_missing_id:{position}")
+            continue
+        nodes: list[dict[str, Any]] = []
+        for node_position, node in enumerate(raw.get("nodes") or [], start=1):
+            if not isinstance(node, dict):
+                continue
+            node_id = _text(node.get("id"))
+            if not node_id:
+                quality_flags.append(f"node_missing_id:{source_id}:{node_position}")
+                continue
+            delay_minutes, delay_supported = _closing_delay_minutes(
+                node.get("delay"),
+                node.get("delayUnit"),
+            )
+            if not delay_supported:
+                quality_flags.append(f"delay_unit_invalid:{node_id}")
+            action_type_id = _positive_int(node.get("actionTypeId")) or 0
+            script_type_id = _positive_int(node.get("followCheckpointTypeId")) or 0
+            if not action_type_id:
+                quality_flags.append(f"action_type_missing:{node_id}")
+            if not script_type_id:
+                quality_flags.append(f"script_type_missing:{node_id}")
+            timing = _closing_timing(node.get("timing"), delay_minutes=delay_minutes)
+            if delay_minutes == 0 and timing != "immediate":
+                quality_flags.append(f"realtime_timing_not_machine_readable:{node_id}")
+            nodes.append(
+                {
+                    "node_key": f"external:node:{node_id}",
+                    "source_id": node_id,
+                    "sort_order": node_position,
+                    "timing": timing,
+                    "timing_text": _text(node.get("timing"))[:100],
+                    "delay": _non_negative_int(node.get("delay")),
+                    "delay_unit": _text(node.get("delayUnit"))[:20],
+                    "delay_minutes": delay_minutes,
+                    "action_type": {
+                        "id": action_type_id,
+                        "name": _text(node.get("actionTypeName"))[:120],
+                    },
+                    "script_type": {
+                        "id": script_type_id,
+                        "name": _text(node.get("followCheckpointTypeName"))[:120],
+                    },
+                    "ai_guidance": _text(node.get("aiNote"))[:500],
+                }
+            )
+        sequences.append(
+            {
+                "sequence_key": f"external:sequence:{source_id}",
+                "source_id": source_id,
+                "name": _text(raw.get("sequenceName"))[:120],
+                "positioning": _text(raw.get("subtitle"))[:300],
+                "trigger_text": _text(raw.get("triggerText"))[:500],
+                "enabled": True,
+                "nodes": nodes,
+            }
+        )
+    return {
+        "sequences": sequences,
+        "total": max(len(sequences), _non_negative_int(data.get("total"))),
+        "quality_flags": list(dict.fromkeys(quality_flags)),
+    }
+
+
+def _closing_delay_minutes(value: Any, unit: Any) -> tuple[int, bool]:
+    delay = _non_negative_int(value)
+    normalized_unit = _text(unit)
+    factors = {
+        "分钟": 1,
+        "minute": 1,
+        "minutes": 1,
+        "小时": 60,
+        "hour": 60,
+        "hours": 60,
+        "天": 1440,
+        "day": 1440,
+        "days": 1440,
+    }
+    if delay == 0:
+        return 0, normalized_unit in factors or not normalized_unit
+    factor = factors.get(normalized_unit)
+    return (delay * factor, True) if factor is not None else (delay, False)
+
+
+def _closing_timing(value: Any, *, delay_minutes: int) -> str:
+    if delay_minutes > 0:
+        return "silent_after"
+    timing = _text(value).strip().lower()
+    if timing in {"进入逼单后", "进入后", "立即", "即时", "enter", "immediate"}:
+        return "immediate"
+    return "event_driven"
+
+
 def _normalize_sequence(raw: dict[str, Any]) -> dict[str, Any] | None:
     sequence_id = _text(raw.get("id"))
     name = _text(raw.get("sequenceName"))
@@ -619,6 +1013,13 @@ def _positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _non_negative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _is_http_url(value: str) -> bool:
