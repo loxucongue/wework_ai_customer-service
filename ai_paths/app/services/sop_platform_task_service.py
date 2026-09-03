@@ -405,32 +405,28 @@ class SopPlatformTaskService:
                 ),
             )
             priority_wechats = _configured_priority_wechats(self.settings)
-            priority_pages = []
-            priority_errors: list[str] = []
-            for wechat in priority_wechats:
-                try:
-                    priority_pages.append(await self.platform_client.pending(limit=pull_limit, wechat=wechat))
-                except Exception as exc:
-                    priority_errors.append(f"{wechat}:{type(exc).__name__}:{exc}")
-                    self._counters["priority_poll_error"] += 1
-            priority_items = _dedupe_tasks(
-                [
-                    item
-                    for page in priority_pages
-                    for item in (page.get("items") if isinstance(page, dict) else page if isinstance(page, list) else [])
-                    if isinstance(item, dict)
-                ]
+            online_page = await self.platform_client.pending(limit=500 if priority_wechats else pull_limit)
+            online_page_items = (
+                online_page
+                if isinstance(online_page, list)
+                else online_page.get("items") if isinstance(online_page, dict) else []
             )
+            global_pending_total = (
+                len(online_page)
+                if isinstance(online_page, list)
+                else int(online_page.get("total") or 0) if isinstance(online_page, dict) else 0
+            )
+            priority_items = [
+                item
+                for item in online_page_items
+                if isinstance(item, dict) and _is_priority_wechat(item, priority_wechats)
+            ]
             priority_mode = bool(priority_items)
             if priority_mode:
                 online_page = {
                     "items": priority_items,
-                    "total": sum(int(page.get("total") or 0) for page in priority_pages if isinstance(page, dict)),
+                    "total": len(priority_items),
                 }
-            elif priority_errors:
-                raise RuntimeError(f"priority SOP polling incomplete: {'; '.join(priority_errors)}")
-            else:
-                online_page = await self.platform_client.pending(limit=pull_limit)
             online_items = (
                 online_page
                 if isinstance(online_page, list)
@@ -472,6 +468,7 @@ class SopPlatformTaskService:
         # `/pending` is the due-time driver. `/sop-messages` is the authoritative
         # per-event content source and is queried by eventLogId for every trigger.
         self._pending_total = max(
+            global_pending_total,
             len(online_page.get("items") or []),
             int(online_page.get("total") or 0),
         )
@@ -3683,6 +3680,19 @@ def _configured_priority_wechats(settings: Any) -> list[str]:
             value.strip()
             for value in str(getattr(settings, "sop_platform_priority_wechats", "") or "").split(",")
             if value.strip()
+        )
+    )
+
+
+def _is_priority_wechat(task: dict[str, Any], priority_wechats: list[str]) -> bool:
+    configured = {value.lower() for value in priority_wechats}
+    identity = _task_identity(task)
+    return bool(
+        configured.intersection(
+            {
+                str(identity.get("user_id") or "").strip().lower(),
+                str(identity.get("wechat") or "").strip().lower(),
+            }
         )
     )
 

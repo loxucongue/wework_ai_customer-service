@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 from app.services.sop_platform_task_service import (
     SopPlatformTaskService,
     _configured_priority_wechats,
+    _is_priority_wechat,
     _partition_stale_pending_tasks,
     _select_bulk_human_takeover_tasks,
     _task_preflight_no_send_reason,
@@ -204,3 +205,11 @@ def test_priority_wechats_are_trimmed_and_deduplicated_in_order() -> None:
     settings = SimpleNamespace(sop_platform_priority_wechats="SL0906, DY8808,SL0906,,SL8004")
 
     assert _configured_priority_wechats(settings) == ["SL0906", "DY8808", "SL8004"]
+
+
+def test_priority_wechat_matches_platform_user_id_without_remote_filter() -> None:
+    assert _is_priority_wechat(
+        {"user_wechat_id": "sl0906", "user_wechat": "internal-name"},
+        ["SL0906", "DY8808"],
+    )
+    assert not _is_priority_wechat({"user_wechat_id": "SL8003"}, ["SL0906", "DY8808"])
