@@ -693,15 +693,24 @@ class SopPlatformTaskService:
         batch_run_id = f"{biz_type}:{batch_task_ids[0]}"
         stale_tasks = [task for task in tasks if _platform_task_is_stale(task, settings=self.settings)]
         if stale_tasks:
-            for task in stale_tasks:
-                self._ensure_local_task(task, status="platform_queued")
-            return await self._consume_batch_without_send(
-                stale_tasks,
-                reason="stale_task",
-                batch_key=batch_key,
-                biz_type=biz_type,
-                batch_run_id=batch_run_id,
-                audit_context={"source": "scheduled_task_expired_before_first_attempt"},
+            stale_task = stale_tasks[0]
+            stale_task_id = _task_id(stale_task)
+            _event, local_task = self._ensure_local_task(stale_task, status="platform_queued")
+            return await self._complete_batch_send_failure(
+                platform_task=stale_task,
+                selected_task_id=stale_task_id,
+                local_task_id=str(local_task.get("id") or ""),
+                audit={
+                    "audit_schema_version": 2,
+                    "processing_mode": "expired_before_first_attempt",
+                    "batch_run_id": batch_run_id,
+                    "batch_key": batch_key,
+                    "biz_type": biz_type,
+                    "batch_task_ids": batch_task_ids,
+                    "consume_results": [],
+                },
+                error=TimeoutError("SOP task exceeded configured send window before first attempt"),
+                outcome="stale_task",
             )
         quiet_hours = _quiet_hours_base_summary(tasks[0], settings=self.settings)
         if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
@@ -1373,6 +1382,8 @@ class SopPlatformTaskService:
         remark = (
             "当前会话由人工接待，任务消费不发送"
             if outcome == "human_takeover"
+            else "SOP任务超过10分钟发送时限，任务已消费且未发送"
+            if outcome == "stale_task"
             else "SOP发送超时超过10分钟，任务已消费且未发送"
             if outcome == "send_failed"
             else "企微聚合平台发送失败，任务已消费且未发送"
@@ -2641,34 +2652,18 @@ class SopPlatformTaskService:
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
         if preflight_reason == "stale_task":
-            audit = {
-                "decision": {"decision": "no_send", "reason": "stale_task", "reply_messages": []},
-                "context": {"source": "scheduled_task_expired_before_first_attempt"},
-                "consume_results": [],
-            }
-            consumed = await self._consume_with_audit(
-                task_id=task_id,
-                status=70,
-                phase="stale_task_terminal",
-                audit=audit,
-                remark="SOP任务超过10分钟发送时限，任务已消费且未发送",
+            return await self._complete_batch_send_failure(
+                platform_task=platform_task,
+                selected_task_id=task_id,
+                local_task_id=str(local_task.get("id") or ""),
+                audit={
+                    "audit_schema_version": 2,
+                    "processing_mode": "expired_before_first_attempt",
+                    "consume_results": [],
+                },
+                error=TimeoutError("SOP task exceeded configured send window before first attempt"),
+                outcome="stale_task",
             )
-            _require_platform_status(consumed, 70)
-            rule_data = await self._report_terminal_rule_data(platform_task, outcome="stale_task", sent=False)
-            audit["rule_data"] = rule_data
-            self.repository.update_sop_send_task(
-                str(local_task.get("id") or ""),
-                status="completed_without_send",
-                send_payload=audit,
-                error="",
-            )
-            self.repository.update_sop_event_status(event_id, status="platform_completed", error="")
-            return {
-                "processed": True,
-                "status": "completed_without_send",
-                "task_id": task_id,
-                "terminal_task_ids": [task_id],
-            }
 
         processing_status = "platform_judging"
         self.repository.update_sop_event_status(event_id, status=processing_status)
