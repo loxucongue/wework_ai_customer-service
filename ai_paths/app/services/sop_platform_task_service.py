@@ -424,9 +424,16 @@ class SopPlatformTaskService:
             ]
             priority_mode = bool(priority_items)
             if priority_mode:
+                for item in priority_items:
+                    item["_aics_priority_account"] = True
+                bulk_candidates = _select_bulk_human_takeover_tasks(
+                    [item for item in online_page_items if item not in priority_items],
+                    settings=self.settings,
+                )
+                bulk_quota = max(1, pull_limit // 5)
                 online_page = {
-                    "items": priority_items,
-                    "total": len(priority_items),
+                    "items": [*priority_items, *bulk_candidates[:bulk_quota]],
+                    "total": len(priority_items) + min(len(bulk_candidates), bulk_quota),
                 }
             online_items = (
                 online_page
@@ -507,7 +514,12 @@ class SopPlatformTaskService:
                 for trigger in quiet_unresolved_triggers:
                     trigger["_aics_content_unavailable"] = True
                 tasks = _dedupe_tasks([*tasks, *quiet_unresolved_triggers])
-        tasks.sort(key=_task_batch_sort_key)
+        tasks.sort(
+            key=lambda task: (
+                0 if task.get("_aics_priority_account") else 1,
+                _task_batch_sort_key(task),
+            )
+        )
         now_epoch = time.time()
         lags = [max(0.0, now_epoch - value) for value in map(_task_scheduled_epoch, tasks) if value]
         self._oldest_due_lag_seconds = max(lags, default=0.0)
