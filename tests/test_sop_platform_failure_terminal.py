@@ -14,9 +14,18 @@ from app.services.sop_platform_task_service import (
     _configured_priority_wechats,
     _is_priority_wechat,
     _partition_stale_pending_tasks,
+    _platform_task_is_already_no_send,
     _select_bulk_human_takeover_tasks,
     _task_preflight_no_send_reason,
 )
+
+
+def test_terminal_platform_states_are_reconciled_without_retry() -> None:
+    for state in ("无需发送", "已取消", "已完成", "已失败", "失败"):
+        error = RuntimeError(f"sop_platform_task_terminal_state:{state}: 任务不可消费（当前状态：{state}）")
+        assert _platform_task_is_already_no_send(error)
+
+    assert not _platform_task_is_already_no_send(RuntimeError("connect timeout"))
 
 
 class _Repository:

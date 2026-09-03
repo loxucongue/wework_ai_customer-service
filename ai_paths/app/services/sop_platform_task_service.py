@@ -5297,7 +5297,12 @@ def _require_platform_status(response: dict[str, Any], expected: int) -> None:
 
 def _platform_task_is_already_no_send(error: Exception) -> bool:
     message = str(error or "")
-    return "任务不可消费" in message and "当前状态：无需发送" in message
+    if "任务不可消费" not in message:
+        return False
+    return any(
+        f"当前状态：{state}" in message
+        for state in ("无需发送", "已取消", "已完成", "已失败", "失败")
+    )
 
 
 _BEIJING_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
