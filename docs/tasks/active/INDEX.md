@@ -4,5 +4,3 @@
 | --- | --- | --- | --- | --- | --- |
 开始新任务时，主 Agent 先替换本表中的占位行，再创建对应 `<task-id>.md`。同一文件或目录不能被两个活跃任务同时登记。
 # Active Tasks
-
-- [Store matching core rebuild](store-matching-core-rebuild.md)
