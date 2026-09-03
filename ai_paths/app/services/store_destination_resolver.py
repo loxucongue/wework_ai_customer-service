@@ -271,6 +271,7 @@ def _structured_current_location_query(content: str) -> str:
     text = str(content or "").strip()
     if not text:
         return ""
+    text = re.sub(r"^\s*(?:小贝|助手|客服|AI回复)\s*[:：]\s*", "", text)
     match = re.match(r"^\s*([\u4e00-\u9fffA-Za-z0-9_ /-]{1,16})\s*[:：]\s*(.+?)\s*$", text)
     if not match:
         return ""
@@ -335,26 +336,16 @@ def _is_generic_store_detail_hint(value: str) -> bool:
     text = re.sub(r"\s+", "", str(value or "")).lower()
     if not text:
         return False
-    return text in {
-        "地图",
-        "地图发我",
-        "导航",
-        "导航发我",
-        "路线",
-        "怎么去",
-        "停车",
-        "停车方便吗",
-        "停车场",
-        "有停车场吗",
-        "营业",
-        "营业时间",
-        "几点下班",
-        "几点开门",
-        "地址",
-        "地址呢",
-        "位置",
-        "位置发我",
-    }
+    remainder = re.sub(
+        r"(重新发|再发|发我|发一下|麻烦发|给我|地图|导航|路线|怎么过去|怎么去|"
+        r"停车方便吗|有停车场吗|停车场|停车|营业时间|几点下班|几点开门|几点关门|"
+        r"营业|地址|位置)",
+        "",
+        text,
+    )
+    remainder = re.sub(r"(和|及|以及|还有|都|也|呢|吗|嘛|么|一下|看看|查下|查一下)", "", remainder)
+    remainder = re.sub(r"[?？。！!,，、；;：:\-_/\\()\[\]{}]+", "", remainder)
+    return not remainder
 
 
 def _normalize_resolution(

@@ -42,7 +42,7 @@ def test_unique_explicit_address_tail_beats_broad_geocode(monkeypatch: pytest.Mo
 
     matched = action_nodes._single_explicit_store_text_candidate(
         "我在幸福街道莲花社区都江堰大道211号3栋附近，可以直接过去吗",
-        [],
+        [store],
         "store_region",
     )
 

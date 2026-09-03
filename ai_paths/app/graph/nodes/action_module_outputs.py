@@ -5,7 +5,6 @@ import re
 from typing import Any
 
 from app.graph.nodes.appointment_time_utils import summarize_available_slots, target_time_status
-from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.graph.state import AgentState
 from app.policies.business_rules import load_business_rules
@@ -107,105 +106,6 @@ def _destination_fingerprint(
         str(query or destination.get("destination_query") or "").strip(),
     ]
     return "|".join(item for item in parts if item)
-
-
-def _normalized_destination_identity(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip()).casefold()
-
-
-def _same_destination_as_previous_delivery(
-    current: dict[str, Any],
-    previous: dict[str, Any],
-) -> bool:
-    current_fingerprint = _normalized_destination_identity(current.get("destination_fingerprint"))
-    previous_fingerprint = _normalized_destination_identity(previous.get("destination_fingerprint"))
-    if current_fingerprint and previous_fingerprint:
-        return current_fingerprint == previous_fingerprint
-
-    current_destination = (
-        current.get("destination_resolution")
-        if isinstance(current.get("destination_resolution"), dict)
-        else {}
-    )
-    previous_destination = (
-        previous.get("destination_resolution")
-        if isinstance(previous.get("destination_resolution"), dict)
-        else {}
-    )
-    current_values = {
-        _normalized_destination_identity(item)
-        for item in (
-            current.get("raw_place"),
-            current.get("normalized_query"),
-            current_destination.get("destination_query"),
-        )
-        if _normalized_destination_identity(item)
-    }
-    previous_values = {
-        _normalized_destination_identity(item)
-        for item in (
-            previous.get("raw_place"),
-            previous.get("normalized_query"),
-            previous_destination.get("destination_query"),
-        )
-        if _normalized_destination_identity(item)
-    }
-    return bool(current_values & previous_values)
-
-
-def _reuse_previous_store_delivery(
-    state: AgentState,
-    resolution: dict[str, Any],
-) -> dict[str, Any]:
-    """Suppress only an already delivered final result for the exact same destination."""
-
-    if str(resolution.get("status") or "") not in {"send_single", "send_multiple"}:
-        return resolution
-    if not bool(resolution.get("recommendation_final_for_destination")):
-        return resolution
-
-    current_store_ids = [
-        str(item or "").strip()
-        for item in resolution.get("delivery_store_ids") or []
-        if str(item or "").strip()
-    ]
-    if not current_store_ids:
-        return resolution
-
-    sent_summary = sent_message_summary_for_model(state)
-    previous_delivery = (
-        sent_summary.get("store_address_delivery")
-        if isinstance(sent_summary.get("store_address_delivery"), dict)
-        else {}
-    )
-    previous_store_ids = [
-        str(item or "").strip()
-        for item in previous_delivery.get("latest_batch_store_ids") or []
-        if str(item or "").strip()
-    ]
-    previous_search = (
-        previous_delivery.get("store_search_evidence")
-        if isinstance(previous_delivery.get("store_search_evidence"), dict)
-        else {}
-    )
-    if str(previous_delivery.get("batch_confidence") or "") != "high":
-        return resolution
-    if previous_search.get("candidate_search_complete") is not True:
-        return resolution
-    if set(previous_store_ids) != set(current_store_ids):
-        return resolution
-    if not _same_destination_as_previous_delivery(resolution, previous_search):
-        return resolution
-
-    return {
-        **resolution,
-        "status": "reuse_confirmed_store",
-        "outcome": "resolved",
-        "delivery_store_ids": [],
-        "already_delivered_store_ids": current_store_ids,
-        "delivery_mode": "none",
-        "reason": "same_destination_final_recommendation_already_delivered",
-    }
 
 
 def _coverage_status(
@@ -467,7 +367,6 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
             store_resolution_fact["visible_candidate_ids"] = candidate_store_ids
             store_resolution_fact["delivery_store_ids"] = delivery_store_ids
-            store_resolution_fact = _reuse_previous_store_delivery(state, store_resolution_fact)
             structured_facts["store_resolution_fact"] = store_resolution_fact
             missing_slots.extend(lookup_missing[:4])
             continue
@@ -850,7 +749,6 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
             store_resolution_fact["visible_candidate_ids"] = candidate_store_ids
             store_resolution_fact["delivery_store_ids"] = delivery_store_ids
-            store_resolution_fact = _reuse_previous_store_delivery(state, store_resolution_fact)
             structured_facts["store_resolution_fact"] = store_resolution_fact
             facts.append(
                 "distance_calculate: "
