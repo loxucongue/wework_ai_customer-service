@@ -405,7 +405,8 @@ class SopPlatformTaskService:
                 ),
             )
             priority_wechats = _configured_priority_wechats(self.settings)
-            online_page = await self.platform_client.pending(limit=500 if priority_wechats else pull_limit)
+            priority_scan_limit = 50 if priority_wechats else pull_limit
+            online_page = await self.platform_client.pending(limit=priority_scan_limit)
             online_page_items = (
                 online_page
                 if isinstance(online_page, list)
