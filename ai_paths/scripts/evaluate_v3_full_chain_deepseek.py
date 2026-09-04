@@ -232,6 +232,20 @@ def build_settings(output_dir: Path) -> Settings:
     )
 
 
+def validate_evaluation_settings(settings: Settings) -> None:
+    """Fail closed when a supposedly full-chain run lacks its real catalogs."""
+
+    missing: list[str] = []
+    if not settings.model_relay_api_key:
+        missing.append("MODEL_RELAY_API_KEY")
+    if not settings.deepseek_api_key:
+        missing.append("DEEPSEEK_API_KEY")
+    if settings.follow_knowledge_enabled and not settings.follow_knowledge_token:
+        missing.append("FOLLOW_KNOWLEDGE_TOKEN")
+    if missing:
+        raise RuntimeError("evaluation required configuration missing: " + ",".join(missing))
+
+
 def _block_write(name: str, audit: dict[str, Any]):
     def blocked(*_args: Any, **_kwargs: Any) -> Any:
         audit["blocked_attempts"].append(name)
@@ -361,6 +375,11 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
     sequences = recall.get("sequence_candidates") or recall.get("sequences") or []
     scripts = recall.get("script_candidates") or recall.get("scripts") or recall.get("items") or recall.get("candidates") or []
     knowledge = state.get("reply_knowledge_use") if isinstance(state.get("reply_knowledge_use"), dict) else {}
+    selected_script_ids = [
+        _text(item)
+        for item in knowledge.get("selected_script_ids") or []
+        if _text(item)
+    ]
     tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
     store = tool_results.get("resolve_customer_store") or tool_results.get("customer_store_lookup") or {}
     failure = state.get("reply_failure") if isinstance(state.get("reply_failure"), dict) else {}
@@ -375,7 +394,7 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
         "sequence_candidates": [_text(item.get("name") or item.get("sequence_name") or item.get("sequence_key") or item.get("id")) for item in sequences[:3] if isinstance(item, dict)],
         "script_candidates": [_text(item.get("script_name") or item.get("name") or item.get("script_id") or item.get("id")) for item in scripts[:6] if isinstance(item, dict)],
         "adopted_sequence_id": _text(knowledge.get("sequence_id")),
-        "adopted_script_id": _text(knowledge.get("script_id")),
+        "adopted_script_id": ";".join(selected_script_ids),
         "store_status": _text(store.get("status") or store.get("match_status")),
         "decision_status": _text(state.get("decision_status")),
         "decision_reasons": [_text(item) for item in state.get("decision_reasons") or [] if _text(item)],
@@ -448,6 +467,7 @@ async def close_runtime(runtime: dict[str, Any]) -> None:
 
 async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     settings = build_settings(args.output)
+    validate_evaluation_settings(settings)
     audit: dict[str, Any] = {"blocked_attempts": [], "write_methods_installed": 3}
     runtime = build_runtime(settings, audit)
     samples, distribution = choose_samples(load_candidates(args.days), args.limit)

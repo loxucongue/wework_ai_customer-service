@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 
-from scripts.evaluate_v3_full_chain_deepseek import build_metrics, choose_samples, compact_facts  # noqa: E402
+from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
+    build_metrics,
+    choose_samples,
+    compact_facts,
+    decision_summary,
+    validate_evaluation_settings,
+)
 
 
 def _candidate(index: int, bucket: str) -> dict[str, object]:
@@ -89,3 +98,29 @@ def test_judge_receives_actual_authority_and_tool_facts() -> None:
     assert facts["authoritative_facts"]["orders_and_payment"]["resolved_payment"]["deposit_state"] == "paid_by_order"
     assert facts["business_authority"]["offer"]["new_customer_price"] == 268
     assert facts["normalized_tool_facts"]["structured_facts"]["store_lookup_status"]["status"] == "matched"
+
+
+def test_summary_reads_normalized_selected_script_ids() -> None:
+    summary = decision_summary(
+        {
+            "reply_knowledge_use": {
+                "sequence_id": "67",
+                "selected_script_ids": ["script-3", "script-8"],
+            }
+        }
+    )
+
+    assert summary["adopted_sequence_id"] == "67"
+    assert summary["adopted_script_id"] == "script-3;script-8"
+
+
+def test_full_chain_evaluation_fails_when_knowledge_token_is_missing() -> None:
+    settings = SimpleNamespace(
+        model_relay_api_key="relay",
+        deepseek_api_key="deepseek",
+        follow_knowledge_enabled=True,
+        follow_knowledge_token="",
+    )
+
+    with pytest.raises(RuntimeError, match="FOLLOW_KNOWLEDGE_TOKEN"):
+        validate_evaluation_settings(settings)
