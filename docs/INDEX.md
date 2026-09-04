@@ -9,9 +9,10 @@
 3. [运行边界](contracts/RUNTIME_BOUNDARIES.md)
 4. [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
 5. [AI 销售策略运行合同](contracts/sales-strategy.md)
-6. [当前生产状态](current/PRODUCTION_STATE.md)
-7. [已知问题](current/KNOWN_ISSUES.md)
-8. [访问提示](current/ACCESS_HINTS.md)
+6. [V3 意图、情绪与路由合同](contracts/v3-intent-emotion-routing.md)
+7. [当前生产状态](current/PRODUCTION_STATE.md)
+8. [已知问题](current/KNOWN_ISSUES.md)
+9. [访问提示](current/ACCESS_HINTS.md)
 
 ## 共享任务区
 

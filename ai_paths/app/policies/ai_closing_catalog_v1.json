@@ -1,0 +1,171 @@
+{
+  "schema_version": "ai_closing_catalog_v1",
+  "catalog_version": "2026-09-04.real-scenes-v1",
+  "business_status": "provisional",
+  "description": "业务接口未完成期间使用的逼单规则、策略和话术目录。只提供候选，不替代 V3 Reply 的最终语义决策。",
+  "rules": {
+    "triggers": [
+      {
+        "rule_key": "local:rule:recognized_pending_time",
+        "source_id": "recognized_pending_time",
+        "type_name": "已认可方案但还没确定到店时间",
+        "condition": "客户明确认可项目方向、主要效果或费用说明，当前没有继续追问价格、效果、距离、安全等问题，只差确定大致到店时间。",
+        "judge_method": "AI结合上下文判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": ["可以去看看", "过几天去", "周末可能有空", "这个方案可以"],
+        "judge_note": "必须有明确认可或继续信号；主要卡点已回答；订单未支付且未预约。只有考虑一下、晚点再说而没有继续意愿时不命中。",
+        "grouping_supported": true
+      },
+      {
+        "rule_key": "local:rule:store_accepted",
+        "source_id": "store_accepted",
+        "type_name": "已接受真实门店并愿意到店",
+        "condition": "系统已查到真实门店，客户明确表示该门店可以去、愿意过去了解或主动询问营业时间，当前只差确认时间或预约。",
+        "judge_method": "AI结合门店工具事实判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": ["这家可以", "离我不远", "我过去看看", "你们几点营业"],
+        "judge_note": "门店必须来自实时工具；客户只是问地址、仍表示太远或门店尚未核实时不命中。",
+        "grouping_supported": true
+      },
+      {
+        "rule_key": "local:rule:visit_time_provided",
+        "source_id": "visit_time_provided",
+        "type_name": "已明确到店日期或时段但还没预约",
+        "condition": "客户本人已经给出今天、明天、周末、某个日期或上午下午等到店时间，主要问题已解决，但系统显示预约尚未完成。",
+        "judge_method": "AI结合预约事实判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": ["明天下午去", "周六有时间", "月底过去", "下午三点左右可以"],
+        "judge_note": "时间必须由客户本人提出；门店和营业时间真实可用；已经预约或真实档期未知时不命中。",
+        "grouping_supported": true
+      },
+      {
+        "rule_key": "local:rule:blocker_resolved_continue",
+        "source_id": "blocker_resolved_continue",
+        "type_name": "原有卡点已解决并明确愿意继续",
+        "condition": "客户此前对预约金、费用、效果或距离存在顾虑，相关问题已按真实事实解释，客户随后明确表示理解、接受、可以继续或愿意办理下一步。",
+        "judge_method": "AI结合前后轮证据判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": ["这样可以", "明白了", "那就预约吧", "可以继续登记", "这个门店能去"],
+        "judge_note": "必须有客户在解释后的继续信号；销售单方面认为已解决、客户沉默或出现新卡点时不命中。",
+        "grouping_supported": true
+      },
+      {
+        "rule_key": "local:rule:defer_with_return_intent",
+        "source_id": "defer_with_return_intent",
+        "type_name": "时间不方便但明确保留后续到店意愿",
+        "condition": "客户认可项目和到店方向，只因工作、照顾家人、出行或临时安排现在无法到店，并明确表示之后会来或同意在某个时间再联系。",
+        "judge_method": "AI结合上下文判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": ["这周忙下周再约", "月底有空再过去", "过几天你再联系我", "等家里安排好就去"],
+        "judge_note": "必须有明确后续意愿或回访授权；只说忙、以后再说、考虑一下时不命中，也不能在本轮强推预约或付款。",
+        "grouping_supported": true
+      }
+    ],
+    "ai_confirm": {
+      "enabled": true,
+      "guidance": "关键词只作线索。必须同时核对当前客户原话、未解决卡点、订单/预约事实以及退订、投诉、健康风险和人工接管状态。"
+    },
+    "constraints": {
+      "max_per_day": 2,
+      "min_interval_minutes": 30,
+      "prerequisites": [
+        {"key": "local:prerequisite:customer_progress_signal", "text": "客户当前有明确继续、到店或允许后续联系的信号"},
+        {"key": "local:prerequisite:no_unresolved_blocker", "text": "客户当前没有仍未解决的新卡点"}
+      ],
+      "taboos": [
+        {"key": "local:taboo:explicit_opt_out", "text": "客户明确要求不要联系或停止发送"},
+        {"key": "local:taboo:complaint_or_anger", "text": "客户正在投诉、愤怒或要求人工处理"},
+        {"key": "local:taboo:health_risk", "text": "客户存在需要先处理的健康或安全风险"},
+        {"key": "local:taboo:transaction_terminal", "text": "客户已经支付、预约成功或进入交易终态"}
+      ]
+    }
+  },
+  "sequences": [
+    {
+      "sequence_key": "local:sequence:confirm_time_range",
+      "source_id": "confirm_time_range",
+      "name": "低压确认时间范围",
+      "positioning": "客户已认可方案且没有新卡点，只差大致时间；先问工作日、周末或日期范围。",
+      "trigger_text": "已认可方案但还没确定到店时间",
+      "enabled": true,
+      "nodes": [
+        {"node_key": "local:node:acknowledge_acceptance", "source_id": "acknowledge_acceptance", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8101, "name": "认可承接"}, "script_type": {"id": 9101, "name": "认可承接"}, "ai_guidance": "复述客户已经认可的内容，不重新重复整套活动介绍。"},
+        {"node_key": "local:node:ask_time_range", "source_id": "ask_time_range", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8102, "name": "时间范围确认"}, "script_type": {"id": 9102, "name": "时间范围确认"}, "ai_guidance": "一次只问工作日、周末或哪一周，降低客户回答成本。"},
+        {"node_key": "local:node:confirm_visit_intent", "source_id": "confirm_visit_intent", "sort_order": 3, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8103, "name": "到店意向确认"}, "script_type": {"id": 9103, "name": "到店意向确认"}, "ai_guidance": "客户给出大致范围后，再确认是否愿意查看真实门店时段。"}
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:store_to_appointment",
+      "source_id": "store_to_appointment",
+      "name": "门店确认后推进预约",
+      "positioning": "客户已接受工具查询出的真实门店并愿意到店，只差日期或预约。",
+      "trigger_text": "已接受真实门店并愿意到店",
+      "enabled": true,
+      "nodes": [
+        {"node_key": "local:node:confirm_store_choice", "source_id": "confirm_store_choice", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8104, "name": "门店选择确认"}, "script_type": {"id": 9104, "name": "门店选择确认"}, "ai_guidance": "复述客户选择的真实门店，不重复发送已确认的信息。"},
+        {"node_key": "local:node:ask_store_time_range", "source_id": "ask_store_time_range", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8102, "name": "时间范围确认"}, "script_type": {"id": 9102, "name": "时间范围确认"}, "ai_guidance": "询问工作日还是周末、上午还是下午更方便。"},
+        {"node_key": "local:node:offer_verified_slots", "source_id": "offer_verified_slots", "sort_order": 3, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8107, "name": "真实时段二选一"}, "script_type": {"id": 9107, "name": "真实时段二选一"}, "ai_guidance": "只有工具返回真实可用时段后才给两个时段。"},
+        {"node_key": "local:node:confirm_appointment_result", "source_id": "confirm_appointment_result", "sort_order": 4, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8108, "name": "预约结果确认"}, "script_type": {"id": 9108, "name": "预约结果确认"}, "ai_guidance": "预约接口返回成功后再确认，返回前不得说已经约好。"}
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:narrow_visit_slot",
+      "source_id": "narrow_visit_slot",
+      "name": "复述时间后收窄时段",
+      "positioning": "客户已主动给出日期或时间范围，系统确认尚未预约。",
+      "trigger_text": "已明确到店日期或时段但还没预约",
+      "enabled": true,
+      "nodes": [
+        {"node_key": "local:node:repeat_customer_date", "source_id": "repeat_customer_date", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8105, "name": "客户日期复述"}, "script_type": {"id": 9105, "name": "客户日期复述"}, "ai_guidance": "使用客户原话中的日期确认，不把到店意向写成预约成功。"},
+        {"node_key": "local:node:ask_day_period", "source_id": "ask_day_period", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8106, "name": "上午下午确认"}, "script_type": {"id": 9106, "name": "上午下午确认"}, "ai_guidance": "日期明确但时段较宽时，只问上午还是下午。"},
+        {"node_key": "local:node:offer_verified_slots_after_date", "source_id": "offer_verified_slots_after_date", "sort_order": 3, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8107, "name": "真实时段二选一"}, "script_type": {"id": 9107, "name": "真实时段二选一"}, "ai_guidance": "使用工具返回的真实可预约时段，不能自行编造档期。"},
+        {"node_key": "local:node:confirm_appointment_after_slot", "source_id": "confirm_appointment_after_slot", "sort_order": 4, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8108, "name": "预约结果确认"}, "script_type": {"id": 9108, "name": "预约结果确认"}, "ai_guidance": "客户选择后调用预约流程，只有成功回执才能确认。"}
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:resolved_to_next_step",
+      "source_id": "resolved_to_next_step",
+      "name": "解卡确认后推进下一步",
+      "positioning": "原顾虑已解决且客户明确愿意继续，只推进一个与当前状态一致的动作。",
+      "trigger_text": "原有卡点已解决并明确愿意继续",
+      "enabled": true,
+      "nodes": [
+        {"node_key": "local:node:confirm_blocker_resolved", "source_id": "confirm_blocker_resolved", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8109, "name": "卡点解决确认"}, "script_type": {"id": 9109, "name": "卡点解决确认"}, "ai_guidance": "简短确认客户最关心的问题已经说清，避免重复制造疑虑。"},
+        {"node_key": "local:node:confirm_continue_intent", "source_id": "confirm_continue_intent", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8110, "name": "继续意向确认"}, "script_type": {"id": 9110, "name": "继续意向确认"}, "ai_guidance": "先获得继续推进的明确授权，不直接默认客户同意。"},
+        {"node_key": "local:node:explain_single_next_step", "source_id": "explain_single_next_step", "sort_order": 3, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8111, "name": "唯一下一步说明"}, "script_type": {"id": 9111, "name": "唯一下一步说明"}, "ai_guidance": "客户确认继续后，只说明当前系统允许的一个下一步。"}
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:authorized_followup_window",
+      "source_id": "authorized_followup_window",
+      "name": "约定低压回访时间",
+      "positioning": "客户现在无法到店但明确愿意之后再安排；只约定回访窗口。",
+      "trigger_text": "时间不方便但明确保留后续到店意愿",
+      "enabled": true,
+      "nodes": [
+        {"node_key": "local:node:acknowledge_time_difficulty", "source_id": "acknowledge_time_difficulty", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8112, "name": "时间困难承接"}, "script_type": {"id": 9112, "name": "时间困难承接"}, "ai_guidance": "先尊重工作、家庭或行程安排，不连续追问具体时间。"},
+        {"node_key": "local:node:confirm_followup_window", "source_id": "confirm_followup_window", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8113, "name": "回访窗口确认"}, "script_type": {"id": 9113, "name": "回访窗口确认"}, "ai_guidance": "询问在哪一周或哪一天再联系更合适，先获得客户授权。"}
+      ]
+    }
+  ],
+  "scripts": [
+    {"id": "local_closing_001", "script_code": "local_closing_001", "source_ref": "local_closing_script:local_closing_001", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "认可承接", "body_text": "明白，您对这个方案方向是认可的。我不重复给您讲一大段，咱们只看您大概什么时候方便。", "checkpoint_type": {"id": 9101, "code": "closing_acknowledge_acceptance", "name": "认可承接"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_acknowledge_acceptance", "checkpoint_name": "认可承接", "action_code": "", "action_name": "认可承接", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_001:p1", "messages": [{"type": "text", "content": "明白，您对这个方案方向是认可的。我不重复给您讲一大段，咱们只看您大概什么时候方便。"}]}], "data_quality_flags": []},
+    {"id": "local_closing_002", "script_code": "local_closing_002", "source_ref": "local_closing_script:local_closing_002", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "时间范围确认", "body_text": "您看更可能是工作日、周末，还是要到下周以后？", "checkpoint_type": {"id": 9102, "code": "closing_time_range", "name": "时间范围确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_time_range", "checkpoint_name": "时间范围确认", "action_code": "", "action_name": "时间范围确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_002:p1", "messages": [{"type": "text", "content": "您看更可能是工作日、周末，还是要到下周以后？"}]}], "data_quality_flags": []},
+    {"id": "local_closing_003", "script_code": "local_closing_003", "source_ref": "local_closing_script:local_closing_003", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "到店意向确认", "body_text": "这个时间范围我记下了。您愿意的话，我再按真实门店安排帮您看可选时段。", "checkpoint_type": {"id": 9103, "code": "closing_visit_intent", "name": "到店意向确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_visit_intent", "checkpoint_name": "到店意向确认", "action_code": "", "action_name": "到店意向确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_003:p1", "messages": [{"type": "text", "content": "这个时间范围我记下了。您愿意的话，我再按真实门店安排帮您看可选时段。"}]}], "data_quality_flags": []},
+    {"id": "local_closing_004", "script_code": "local_closing_004", "source_ref": "local_closing_script:local_closing_004", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "门店选择确认", "body_text": "好的，您选的是[工具确认的门店名称]。这个位置您能接受的话，我们接着看您方便的日期。", "checkpoint_type": {"id": 9104, "code": "closing_store_choice", "name": "门店选择确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_store_choice", "checkpoint_name": "门店选择确认", "action_code": "", "action_name": "门店选择确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_004:p1", "messages": [{"type": "text", "content": "好的，您选的是[工具确认的门店名称]。这个位置您能接受的话，我们接着看您方便的日期。"}]}], "data_quality_flags": ["requires_authoritative_store_fact"]},
+    {"id": "local_closing_005", "script_code": "local_closing_005", "source_ref": "local_closing_script:local_closing_005", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "客户日期复述", "body_text": "您是准备[客户原话中的日期]过来，对吗？", "checkpoint_type": {"id": 9105, "code": "closing_repeat_date", "name": "客户日期复述"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_repeat_date", "checkpoint_name": "客户日期复述", "action_code": "", "action_name": "客户日期复述", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_005:p1", "messages": [{"type": "text", "content": "您是准备[客户原话中的日期]过来，对吗？"}]}], "data_quality_flags": ["requires_customer_date_evidence"]},
+    {"id": "local_closing_006", "script_code": "local_closing_006", "source_ref": "local_closing_script:local_closing_006", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "上午下午确认", "body_text": "您当天上午方便一些，还是下午方便一些？", "checkpoint_type": {"id": 9106, "code": "closing_day_period", "name": "上午下午确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_day_period", "checkpoint_name": "上午下午确认", "action_code": "", "action_name": "上午下午确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_006:p1", "messages": [{"type": "text", "content": "您当天上午方便一些，还是下午方便一些？"}]}], "data_quality_flags": []},
+    {"id": "local_closing_007", "script_code": "local_closing_007", "source_ref": "local_closing_script:local_closing_007", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "真实时段二选一", "body_text": "当天目前可选的是[真实时段A]和[真实时段B]，您选哪个更合适？", "checkpoint_type": {"id": 9107, "code": "closing_verified_slots", "name": "真实时段二选一"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_verified_slots", "checkpoint_name": "真实时段二选一", "action_code": "", "action_name": "真实时段二选一", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_007:p1", "messages": [{"type": "text", "content": "当天目前可选的是[真实时段A]和[真实时段B]，您选哪个更合适？"}]}], "data_quality_flags": ["requires_authoritative_slot_facts"]},
+    {"id": "local_closing_008", "script_code": "local_closing_008", "source_ref": "local_closing_script:local_closing_008", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "预约结果确认", "body_text": "已经为您确认好[真实门店、日期和时段]。如果安排有变化，您提前告诉我。", "checkpoint_type": {"id": 9108, "code": "closing_appointment_result", "name": "预约结果确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_appointment_result", "checkpoint_name": "预约结果确认", "action_code": "", "action_name": "预约结果确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_008:p1", "messages": [{"type": "text", "content": "已经为您确认好[真实门店、日期和时段]。如果安排有变化，您提前告诉我。"}]}], "data_quality_flags": ["requires_successful_appointment_fact"]},
+    {"id": "local_closing_009", "script_code": "local_closing_009", "source_ref": "local_closing_script:local_closing_009", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "卡点解决确认", "body_text": "刚才您担心的[具体问题]，现在还有哪一点没有说清楚吗？", "checkpoint_type": {"id": 9109, "code": "closing_blocker_check", "name": "卡点解决确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_blocker_check", "checkpoint_name": "卡点解决确认", "action_code": "", "action_name": "卡点解决确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_009:p1", "messages": [{"type": "text", "content": "刚才您担心的[具体问题]，现在还有哪一点没有说清楚吗？"}]}], "data_quality_flags": ["requires_current_blocker_context"]},
+    {"id": "local_closing_010", "script_code": "local_closing_010", "source_ref": "local_closing_script:local_closing_010", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "继续意向确认", "body_text": "如果这一点您可以接受，我们再继续看下一步；您是想先看时间，还是先了解预约方式？", "checkpoint_type": {"id": 9110, "code": "closing_continue_intent", "name": "继续意向确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_continue_intent", "checkpoint_name": "继续意向确认", "action_code": "", "action_name": "继续意向确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_010:p1", "messages": [{"type": "text", "content": "如果这一点您可以接受，我们再继续看下一步；您是想先看时间，还是先了解预约方式？"}]}], "data_quality_flags": []},
+    {"id": "local_closing_011", "script_code": "local_closing_011", "source_ref": "local_closing_script:local_closing_011", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "唯一下一步说明", "body_text": "可以，您现在只需要完成这一步：[系统返回的唯一下一步]。其他信息暂时不用重复提供。", "checkpoint_type": {"id": 9111, "code": "closing_single_next_step", "name": "唯一下一步说明"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_single_next_step", "checkpoint_name": "唯一下一步说明", "action_code": "", "action_name": "唯一下一步说明", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_011:p1", "messages": [{"type": "text", "content": "可以，您现在只需要完成这一步：[系统返回的唯一下一步]。其他信息暂时不用重复提供。"}]}], "data_quality_flags": ["requires_authoritative_next_step"]},
+    {"id": "local_closing_012", "script_code": "local_closing_012", "source_ref": "local_closing_script:local_closing_012", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "时间困难承接", "body_text": "明白，您现在确实不好安排，那咱们先不急着定具体时间。", "checkpoint_type": {"id": 9112, "code": "closing_defer_acknowledgement", "name": "时间困难承接"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_defer_acknowledgement", "checkpoint_name": "时间困难承接", "action_code": "", "action_name": "时间困难承接", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_012:p1", "messages": [{"type": "text", "content": "明白，您现在确实不好安排，那咱们先不急着定具体时间。"}]}], "data_quality_flags": []},
+    {"id": "local_closing_013", "script_code": "local_closing_013", "source_ref": "local_closing_script:local_closing_013", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "回访窗口确认", "body_text": "您看我到[客户方便的日期或时间范围]再联系您，可以吗？", "checkpoint_type": {"id": 9113, "code": "closing_followup_window", "name": "回访窗口确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_followup_window", "checkpoint_name": "回访窗口确认", "action_code": "", "action_name": "回访窗口确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_013:p1", "messages": [{"type": "text", "content": "您看我到[客户方便的日期或时间范围]再联系您，可以吗？"}]}], "data_quality_flags": ["requires_customer_followup_window"]}
+  ]
+}

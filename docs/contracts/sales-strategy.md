@@ -2,7 +2,7 @@
 
 - status: candidate
 - owner: reply-runtime
-- source_of_truth: `ai_paths/app/policies/ai_sales_policy_v1.json`、`sales_strategy_catalog_v1.json` 与当前 V3 代码
+- source_of_truth: `ai_paths/app/policies/ai_sales_policy_v1.json`、`ai_closing_catalog_v1.json`、`sales_strategy_catalog_v1.json` 与当前 V3 代码
 
 ## 边界
 
@@ -26,7 +26,7 @@
 ## 业务逼单目录
 
 ```text
-租户逼单规则 + 启用策略（后台并行只读、缓存）
+租户逼单规则 + 启用策略（外部接口或版本化本地 JSON，只读、缓存）
   → Semantic Router 在既有调用中召回规则与最多 3 条策略
   → 门店事实需要补查时，在既有 post-store 判断中重算候选
   → 按候选节点 followCheckpointTypeId 查询真实卡点话术
@@ -36,13 +36,13 @@
 ```
 
 - 规则回答“当前业务场景是否具备逼单资格”，策略回答“可采用哪套节奏”，节点话术类型回答“从哪类已发布表达中取材”；三者都不是客户可见动作命令。
-- Router 只做高召回候选。外部规则命中必须引用本轮真实客户消息；Reply 采用外部策略时必须输出 `trigger=business_rule`、真实 rule/sequence/node ID，并仍是唯一最终语义决策者。
+- Router 只做高召回候选。规则命中必须引用本轮真实客户消息；Reply 采用目录策略时必须输出 `trigger=business_rule`、本轮目录中的 rule/sequence/node 稳定 ID，并仍是唯一最终语义决策者。
 - Router 识别到当前卡点时，Reply 只有明确把同一轮卡点判为 `resolved` 才能推进；否则代码保守暂停。这是证据一致性校验，不把 Router 变成最终销售决策点。
-- 节点 `followCheckpointTypeId` 是话术库类型外键。检索返回的类型必须一致；若 Reply 采用话术，话术必须与最终 sequence/node/type 关联。没有真实话术候选时允许 Reply 自行组织低风险表达，但不得伪造知识库内容。
+- 节点话术类型 ID 是同一目录内的话术类型外键。外部目录使用 `followCheckpointTypeId`，本地目录使用保留的本地类型 ID；检索返回的类型必须一致。若 Reply 采用话术，话术必须与最终 sequence/node/type 关联。没有真实话术候选时允许 Reply 自行组织低风险表达，但不得伪造知识库内容。
 - `delay>0` 的节点只能作为 `silent_after` shadow。`delay=0` 但 timing 不是明确“进入逼单后/立即”的自由文本节点视为 event-driven，不得冒充本轮即时动作。
 - `maxPerDay` 与 `minIntervalMinutes` 首版按同一销售接触边界内 Reply 已作出的 `enter|advance|fallback` 决策保守计数；它限制销售压力，不等同于送达次数。真实触达和送达转化仍按 dispatch/delivery 字段单独统计。
 - 上游 `taboos` 当前混合客户阻断条件和回复行为禁令。Reply 只把本轮真实发生的客户状态写入 `blocking_taboo_ids` 并暂停；“不得承诺/不得虚构”等文本直接约束表达，不伪装成客户状态。
-- 空规则、目录不可用、组合分组不明、节点类型缺失、证据缺失或频控未通过时均 fail closed 为不逼单，不使用本地 3 条演示序列顶替。
+- 当前临时目录由 `AI_CLOSING_CATALOG_SOURCE` 选择：`external` 不回退，`local` 不访问逼单接口，`external_then_local` 只在接口未配置、异常或返回空目录时切换到版本化本地 JSON。两种来源不会在同一轮混用，来源和 checksum 必须保留。除该显式配置外，不得再使用 policy 内的演示序列或其他隐式策略顶替。
 - 目录缓存陈旧时允许使用 last-known-good，并在 BI 写 `closing_catalog_status=stale`；进程重启后的首轮仍需重新读取。多租户共实例和原子发布版本依赖上游补齐后才能启用。
 
 ## 跨轮与归因
@@ -58,7 +58,7 @@
 
 ## 当前开关
 
-- AI 销售策略通过 `AI_SALES_POLICY_ENABLED` 独立启用；策略目录默认关闭，显式启用后也只提供候选，不替代当前 V3 回复。
+- AI 销售策略通过 `AI_SALES_POLICY_ENABLED` 独立启用；逼单目录来源由 `AI_CLOSING_CATALOG_SOURCE` 选择，目录只提供候选，不替代当前 V3 回复。本地目录当前为 `provisional`，生产启用前仍需业务确认。
 - 延时逼单和四大区跟进维持 `shadow`：允许审计，不允许真实发送。
 - 意向分只用于分析，不触发回复、逼单、开单或发卡。
 

@@ -1601,7 +1601,13 @@ def _validate_closing_script_selection(
     sequence_id = str(closing.get("sequence_key") or "").strip()
     node_id = str(closing.get("node_key") or "").strip()
     required_type_id = _policy_non_negative_int(closing.get("script_type_id"))
-    if not sequence_id.startswith("external:sequence:") or not node_id or required_type_id <= 0:
+    evidence = _closing_catalog_evidence_from_state(state)
+    catalog_sequence_ids = {
+        str(item.get("sequence_key") or "").strip()
+        for item in evidence.get("candidate_sequences") or []
+        if isinstance(item, dict) and str(item.get("sequence_key") or "").strip()
+    }
+    if sequence_id not in catalog_sequence_ids or not node_id or required_type_id <= 0:
         return
     selected_sources = {
         str(item).split(":", 1)[1].rsplit(":p", 1)[0]

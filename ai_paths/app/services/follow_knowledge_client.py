@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from app.config import Settings
+from app.services.local_closing_catalog import LocalClosingCatalogProvider
 
 
 CANONICAL_ACTION_CODES = {
@@ -70,10 +71,15 @@ class FollowKnowledgeClient:
         self._closing_catalog_lock = asyncio.Lock()
         self._closing_catalog_last_good: dict[str, Any] = {}
         self._closing_catalog_failure_cache: _CacheEntry | None = None
+        self._local_closing_catalog = LocalClosingCatalogProvider(settings)
 
     @property
     def available(self) -> bool:
         return bool(self._enabled and self._base_url.strip("/") and self._token)
+
+    @property
+    def closing_catalog_available(self) -> bool:
+        return bool(self.available or self._local_closing_catalog.enabled)
 
     async def aclose(self) -> None:
         if self._client and not self._client.is_closed:
@@ -282,6 +288,11 @@ class FollowKnowledgeClient:
         """Build one immutable snapshot for Router, Reply validation and BI provenance."""
 
         started = time.perf_counter()
+        if self._local_closing_catalog.mode == "local":
+            return self._local_closing_result(
+                external_result=None,
+                reason="local_source_selected",
+            )
         cached_failure = self._closing_catalog_failure_cache
         if cached_failure is not None and cached_failure.expires_at > time.monotonic():
             result = copy.deepcopy(cached_failure.value)
@@ -321,11 +332,23 @@ class FollowKnowledgeClient:
                 sequences_result=sequences_result,
                 started=started,
             )
-            if result.get("status") == "ok":
+            external_usable = bool(
+                result.get("status") == "ok"
+                and int(result.get("trigger_count") or 0) > 0
+                and int(result.get("sequence_count") or 0) > 0
+            )
+            if external_usable:
                 result["freshness_status"] = "fresh"
                 self._closing_catalog_last_good = copy.deepcopy(result)
                 self._closing_catalog_failure_cache = None
                 return result
+            if result.get("status") == "ok":
+                local = self._local_closing_result(
+                    external_result=result,
+                    reason="external_closing_catalog_empty",
+                )
+                if local.get("status") == "ok":
+                    return local
             if self._closing_catalog_last_good:
                 stale = copy.deepcopy(self._closing_catalog_last_good)
                 stale.update(
@@ -347,14 +370,64 @@ class FollowKnowledgeClient:
                 )
                 failure_value = stale
             else:
-                result["freshness_status"] = "unavailable"
-                failure_value = result
+                local = self._local_closing_result(
+                    external_result=result,
+                    reason=str(result.get("reason") or "external_closing_catalog_unavailable"),
+                )
+                if local.get("status") == "ok":
+                    failure_value = local
+                else:
+                    result["freshness_status"] = "unavailable"
+                    result["quality_flags"] = list(
+                        dict.fromkeys(
+                            [
+                                *[str(item) for item in result.get("quality_flags") or []],
+                                "local_closing_catalog_unavailable",
+                            ]
+                        )
+                    )
+                    failure_value = result
             failure_ttl = max(1.0, min(5.0, self._cache_ttl or 5.0))
             self._closing_catalog_failure_cache = _CacheEntry(
                 expires_at=time.monotonic() + failure_ttl,
                 value=copy.deepcopy(failure_value),
             )
             return failure_value
+
+    async def query_closing_scripts(
+        self,
+        *,
+        checkpoint_type_id: int,
+        catalog_source: str = "",
+    ) -> dict[str, Any]:
+        """Use the script source belonging to the selected closing catalog snapshot."""
+
+        if str(catalog_source or "").strip() == "local_closing_catalog":
+            return self._local_closing_catalog.query_scripts(
+                checkpoint_type_id=checkpoint_type_id,
+            )
+        return await self.query_all_scripts(checkpoint_type_id=checkpoint_type_id)
+
+    def _local_closing_result(
+        self,
+        *,
+        external_result: dict[str, Any] | None,
+        reason: str,
+    ) -> dict[str, Any]:
+        if not self._local_closing_catalog.enabled:
+            return external_result or {
+                "schema_version": "closing_catalog_v1",
+                "status": "unavailable",
+                "source": "local_closing_catalog",
+                "reason": "local_closing_catalog_disabled",
+            }
+        local = self._local_closing_catalog.load()
+        local["fallback_used"] = external_result is not None
+        local["fallback_reason"] = str(reason or "")[:500]
+        if external_result is not None:
+            local["external_status"] = str(external_result.get("status") or "unavailable")
+            local["external_reason"] = str(external_result.get("reason") or "")[:500]
+        return local
 
     def _closing_catalog_result(
         self,

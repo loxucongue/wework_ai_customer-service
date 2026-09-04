@@ -797,7 +797,8 @@ def _closing_catalog_block(value: dict[str, Any], *, shared_context: dict[str, A
     return "\n".join(
         [
             "【租户逼单目录：只召回候选，不决定动作】",
-            "status=ok；checksum=" + str(value.get("checksum") or "")[:16],
+            "status=ok；source=" + str(value.get("source") or "")
+            + "；checksum=" + str(value.get("checksum") or "")[:16],
             "规则：rule_key｜类型｜条件｜模式｜组合可执行性｜判定方式｜关键词线索｜AI说明",
             *(trigger_lines or ["无启用规则（必须返回 catalog_empty）"]),
             "策略：sequence_key｜名称｜定位｜适用时机｜节点摘要",

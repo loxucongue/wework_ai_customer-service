@@ -198,6 +198,171 @@ def test_closing_catalog_singleflight_and_stale_last_good() -> None:
     assert "stale_after_refresh_error" in stale["quality_flags"]
 
 
+def test_local_closing_catalog_runs_without_external_token() -> None:
+    client = FollowKnowledgeClient(
+        Settings(
+            FOLLOW_KNOWLEDGE_ENABLED=False,
+            FOLLOW_KNOWLEDGE_TOKEN="",
+            AI_CLOSING_CATALOG_SOURCE="local",
+        )
+    )
+
+    catalog = asyncio.run(client.query_closing_catalog())
+    scripts = asyncio.run(
+        client.query_closing_scripts(
+            checkpoint_type_id=9101,
+            catalog_source="local_closing_catalog",
+        )
+    )
+
+    assert client.available is False
+    assert client.closing_catalog_available is True
+    assert catalog["status"] == "ok"
+    assert catalog["source"] == "local_closing_catalog"
+    assert catalog["trigger_count"] == 5
+    assert catalog["sequence_count"] == 5
+    assert catalog["script_count"] == 13
+    assert scripts["total"] == 1
+    assert scripts["items"][0]["script_name"] == "认可承接"
+
+
+def test_empty_external_closing_catalog_falls_back_to_local_config() -> None:
+    client = FollowKnowledgeClient(
+        Settings(
+            FOLLOW_KNOWLEDGE_ENABLED=True,
+            FOLLOW_KNOWLEDGE_BASE_URL="https://example.invalid",
+            FOLLOW_KNOWLEDGE_TOKEN="test-only",
+            AI_CLOSING_CATALOG_SOURCE="external_then_local",
+        )
+    )
+
+    async def request(path: str, _payload: dict[str, Any]) -> httpx.Response:
+        data = (
+            {"triggers": [], "aiConfirm": {}, "constraints": {}}
+            if path.endswith("closing-rule")
+            else {"total": 0, "list": []}
+        )
+        return httpx.Response(200, json={"code": 200, "message": "ok", "data": data})
+
+    client._request_with_retry = request  # type: ignore[method-assign]
+    catalog = asyncio.run(client.query_closing_catalog())
+
+    assert catalog["status"] == "ok"
+    assert catalog["source"] == "local_closing_catalog"
+    assert catalog["fallback_used"] is True
+    assert catalog["fallback_reason"] == "external_closing_catalog_empty"
+    assert catalog["external_status"] == "ok"
+
+
+def test_external_closing_catalog_remains_preferred_when_configured() -> None:
+    fixture = _fixture()
+    client = FollowKnowledgeClient(
+        Settings(
+            FOLLOW_KNOWLEDGE_ENABLED=True,
+            FOLLOW_KNOWLEDGE_BASE_URL="https://example.invalid",
+            FOLLOW_KNOWLEDGE_TOKEN="test-only",
+            AI_CLOSING_CATALOG_SOURCE="external_then_local",
+        )
+    )
+
+    async def request(path: str, _payload: dict[str, Any]) -> httpx.Response:
+        body = fixture["rule_response"] if path.endswith("closing-rule") else fixture["sequence_response"]
+        return httpx.Response(200, json=body)
+
+    client._request_with_retry = request  # type: ignore[method-assign]
+    catalog = asyncio.run(client.query_closing_catalog())
+
+    assert catalog["source"] == "follow_knowledge_api"
+    assert catalog.get("fallback_used") is not True
+
+
+def test_local_closing_ids_and_script_type_are_valid_reply_evidence() -> None:
+    client = FollowKnowledgeClient(
+        Settings(FOLLOW_KNOWLEDGE_ENABLED=False, AI_CLOSING_CATALOG_SOURCE="local")
+    )
+    catalog = asyncio.run(client.query_closing_catalog())
+    evidence = _closing_catalog_evidence(
+        catalog,
+        {
+            "status": "matched",
+            "selected_rule_ids": ["local:rule:recognized_pending_time"],
+            "sequence_candidate_ids": ["local:sequence:confirm_time_range"],
+        },
+    )
+    decision = _decision()
+    decision["closing_decision"].update(
+        {
+            "rule_ids": ["local:rule:recognized_pending_time"],
+            "sequence_key": "local:sequence:confirm_time_range",
+            "node_key": "local:node:acknowledge_acceptance",
+            "satisfied_prerequisite_ids": [
+                "local:prerequisite:customer_progress_signal",
+                "local:prerequisite:no_unresolved_blocker",
+            ],
+        }
+    )
+
+    result = _normalized_policy_decision(decision, state=_policy_state(evidence))
+
+    assert result["closing_decision"]["action"] == "enter"
+    assert result["closing_decision"]["sequence_source_id"] == "confirm_time_range"
+    assert result["closing_decision"]["script_type_id"] == 9101
+
+
+def test_router_retrieves_local_script_from_the_same_catalog_source() -> None:
+    class SemanticClient:
+        available = True
+        last_usage: dict[str, Any] = {}
+
+        async def chat_json(self, _messages: list[dict[str, str]]) -> dict[str, Any]:
+            return {
+                "current_intent": {
+                    "summary": "客户认可方案并愿意继续确认时间",
+                    "evidence_refs": ["current_message"],
+                },
+                "current_friction": {"status": "none"},
+                "closing_catalog_match": {
+                    "selected_rule_ids": ["local:rule:recognized_pending_time"],
+                    "sequence_candidate_ids": ["local:sequence:confirm_time_range"],
+                    "evidence_refs": ["current_message"],
+                },
+                "store_query": {"required": False},
+            }
+
+    client = FollowKnowledgeClient(
+        Settings(FOLLOW_KNOWLEDGE_ENABLED=False, AI_CLOSING_CATALOG_SOURCE="local")
+    )
+    service = V3SemanticRouterService(
+        semantic_client=SemanticClient(),  # type: ignore[arg-type]
+        knowledge_client=client,
+    )
+    catalog = asyncio.run(service.load_closing_catalog())
+    output = asyncio.run(
+        service.route(
+            shared_context={
+                "current_message": {"content": "这个方案可以，周末可能有空"},
+                "conversation": [],
+            },
+            sequence_result={"status": "disabled", "items": [], "total": 0},
+            taxonomy_result={"status": "disabled", "types": []},
+            closing_catalog_result=catalog,
+        )
+    )
+
+    evidence = output["semantic_route"]["closing_catalog_evidence"]
+    assert evidence["source"] == "local_closing_catalog"
+    assert evidence["match_status"] == "matched"
+    assert output["knowledge_evidence"]["candidate_count"] == 3
+    assert {
+        item["checkpoint_type"]["id"]
+        for item in output["knowledge_evidence"]["candidates"]
+    } == {9101, 9102, 9103}
+    assert all(
+        item["source"] == "local_closing_catalog"
+        for item in output["knowledge_evidence"]["script_query_results"]
+    )
+
+
 def test_router_keeps_only_real_rule_and_sequence_candidates() -> None:
     catalog = _catalog()
     route = _normalize_semantic_route(

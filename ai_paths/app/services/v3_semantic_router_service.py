@@ -56,7 +56,9 @@ class V3SemanticRouterService:
         return await loader()
 
     async def load_closing_catalog(self) -> dict[str, Any]:
-        if self.knowledge_client is None or not self.knowledge_client.available:
+        if self.knowledge_client is None or not bool(
+            getattr(self.knowledge_client, "closing_catalog_available", self.knowledge_client.available)
+        ):
             return {
                 "schema_version": "closing_catalog_v1",
                 "status": "disabled",
@@ -578,15 +580,10 @@ class V3SemanticRouterService:
             *route_queries,
             *_closing_script_queries(semantic_route, existing_queries=route_queries),
         ]
-        if self.knowledge_client is None or not self.knowledge_client.available or not queries:
+        if self.knowledge_client is None or not queries:
             return {"status": "empty", "option_count": 0, "items": [], "query_results": []}
         tasks = [
-            self.knowledge_client.query_all_scripts(
-                checkpoint_type_id=int(item.get("checkpoint_type_id") or 0) or None,
-                checkpoint_tag_id=int(item.get("checkpoint_tag_id") or 0) or None,
-                checkpoint_code=str(item.get("checkpoint_code") or ""),
-                action_code=str(item.get("action_code") or ""),
-            )
+            self._query_scripts_for_route(item)
             for item in queries
         ]
         results = await asyncio.gather(*tasks)
@@ -640,6 +637,7 @@ class V3SemanticRouterService:
                     "status": result.get("status"),
                     "total": int(result.get("total") or 0),
                     "reason": result.get("reason", ""),
+                    "source": result.get("source", ""),
                     "duration_ms": int(result.get("duration_ms") or 0),
                     "cache_hit_pages": int(result.get("cache_hit_pages") or 0),
                     "match_scope": match_scope,
@@ -799,6 +797,22 @@ class V3SemanticRouterService:
             "items": list(by_code.values()),
             "query_results": query_results,
         }
+
+    async def _query_scripts_for_route(self, query: dict[str, Any]) -> dict[str, Any]:
+        if (
+            str(query.get("query_source") or "") == "closing_catalog_node"
+            and hasattr(self.knowledge_client, "query_closing_scripts")
+        ):
+            return await self.knowledge_client.query_closing_scripts(
+                checkpoint_type_id=int(query.get("checkpoint_type_id") or 0),
+                catalog_source=str(query.get("catalog_source") or ""),
+            )
+        return await self.knowledge_client.query_all_scripts(
+            checkpoint_type_id=int(query.get("checkpoint_type_id") or 0) or None,
+            checkpoint_tag_id=int(query.get("checkpoint_tag_id") or 0) or None,
+            checkpoint_code=str(query.get("checkpoint_code") or ""),
+            action_code=str(query.get("action_code") or ""),
+        )
 
     async def _narrow_scripts(
         self,
@@ -1601,6 +1615,7 @@ def _normalized_closing_catalog(value: Any) -> dict[str, Any]:
             "schema_version": "closing_catalog_v1",
             "status": status if status in {"disabled", "error", "unavailable"} else "unavailable",
             "freshness_status": "unavailable",
+            "source": str(raw.get("source") or ""),
             "reason": str(raw.get("reason") or "closing_catalog_unavailable")[:500],
             "checksum": "",
             "eligibility_status": "unavailable",
@@ -1616,6 +1631,8 @@ def _normalized_closing_catalog(value: Any) -> dict[str, Any]:
         "status": "ok",
         "freshness_status": str(raw.get("freshness_status") or "fresh")[:32],
         "source": str(raw.get("source") or "follow_knowledge_api"),
+        "fallback_used": bool(raw.get("fallback_used")),
+        "fallback_reason": str(raw.get("fallback_reason") or "")[:500],
         "checksum": str(raw.get("checksum") or "")[:128],
         "eligibility_status": "configured" if triggers else "catalog_empty",
         "rules": {
@@ -1713,6 +1730,9 @@ def _closing_catalog_evidence(value: Any, match_value: Any) -> dict[str, Any]:
         "schema_version": "closing_catalog_evidence_v1",
         "status": str(catalog.get("status") or "unavailable"),
         "freshness_status": str(catalog.get("freshness_status") or "unavailable"),
+        "source": str(catalog.get("source") or ""),
+        "fallback_used": bool(catalog.get("fallback_used")),
+        "fallback_reason": str(catalog.get("fallback_reason") or "")[:500],
         "eligibility_status": str(catalog.get("eligibility_status") or "unavailable"),
         "match_status": str(match.get("status") or "none"),
         "checksum": str(catalog.get("checksum") or ""),
@@ -1864,9 +1884,9 @@ def _closing_script_queries(
 ) -> list[dict[str, Any]]:
     """Translate matched closing node types into the existing script retrieval batch.
 
-    The mapping is contractual rather than semantic: followCheckpointTypeId is the
-    upstream foreign key into the published follow-script catalog.  Reply still
-    decides whether a sequence, node, or returned expression is appropriate.
+    The mapping is contractual rather than semantic: the node script type is the
+    foreign key into the script collection from the same catalog source. Reply
+    still decides whether a sequence, node, or returned expression is appropriate.
     """
 
     evidence = (
@@ -1915,6 +1935,7 @@ def _closing_script_queries(
                     "sequence_id": "",
                     "step_id": "",
                     "query_source": "closing_catalog_node",
+                    "catalog_source": str(evidence.get("source") or ""),
                     "sequence_links": [],
                 },
             )

@@ -242,6 +242,14 @@ class Settings(BaseSettings):
     follow_knowledge_token: str = Field(default="", alias="FOLLOW_KNOWLEDGE_TOKEN", repr=False)
     follow_knowledge_timeout_seconds: float = Field(default=4.0, alias="FOLLOW_KNOWLEDGE_TIMEOUT_SECONDS")
     follow_knowledge_cache_ttl_seconds: float = Field(default=60.0, alias="FOLLOW_KNOWLEDGE_CACHE_TTL_SECONDS")
+    closing_catalog_source: str = Field(
+        default="external_then_local",
+        alias="AI_CLOSING_CATALOG_SOURCE",
+    )
+    closing_catalog_local_path: Path = Field(
+        default=Path("app/policies/ai_closing_catalog_v1.json"),
+        alias="AI_CLOSING_CATALOG_LOCAL_PATH",
+    )
     service_rule_data_enabled: bool = Field(default=False, alias="SERVICE_RULE_DATA_ENABLED")
     service_rule_data_base_url: str = Field(default="https://test.api.customer.4ba.cn", alias="SERVICE_RULE_DATA_BASE_URL")
     service_rule_data_token: str = Field(default="", alias="SERVICE_RULE_DATA_TOKEN", repr=False)
