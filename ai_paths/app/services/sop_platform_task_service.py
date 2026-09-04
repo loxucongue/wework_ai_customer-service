@@ -415,6 +415,31 @@ class SopPlatformTaskService:
                     ),
                 )
 
+    def _log_task_phase(
+        self,
+        *,
+        task_id: str,
+        phase: str,
+        started: float,
+        result: str = "ok",
+    ) -> None:
+        queue = getattr(self, "_queue", None)
+        in_flight_ids = getattr(self, "_in_flight_ids", set())
+        logger.warning(
+            "sop_task_phase %s",
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "phase": phase,
+                    "result": result,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "queue_depth": queue.qsize() if queue is not None else 0,
+                    "in_flight_count": len(in_flight_ids),
+                },
+                ensure_ascii=True,
+            ),
+        )
+
     async def poll_once(self) -> dict[str, int]:
         await asyncio.to_thread(self._restore_reserved_prefix_ids)
         free_slots = max(0, self._queue.maxsize - self._queue.qsize())
@@ -843,10 +868,22 @@ class SopPlatformTaskService:
         missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
         if missing:
             raise RuntimeError(f"platform customer batch missing identity: {','.join(missing)}")
+        phase_started = time.perf_counter()
         for task in [*tasks, *trigger_tasks]:
             await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
+        self._log_task_phase(
+            task_id=batch_task_ids[0],
+            phase="persist_local_tasks",
+            started=phase_started,
+        )
 
+        phase_started = time.perf_counter()
         status_response = await self.system_client.conversation_status(**identity)
+        self._log_task_phase(
+            task_id=batch_task_ids[0],
+            phase="conversation_status",
+            started=phase_started,
+        )
         status_data = (
             status_response.get("data")
             if isinstance(status_response.get("data"), dict)
@@ -862,7 +899,13 @@ class SopPlatformTaskService:
             "management_source": "conversation_status.takeover.ai_auto_reply",
             "management_status": _compact_management_status(status_data),
         }
+        phase_started = time.perf_counter()
         conversation = await self.system_client.conversation(**identity, limit=50)
+        self._log_task_phase(
+            task_id=batch_task_ids[0],
+            phase="conversation_history",
+            started=phase_started,
+        )
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
         if not isinstance(data, dict):
             raise RuntimeError("platform customer conversation response is invalid")
@@ -899,11 +942,17 @@ class SopPlatformTaskService:
                 audit_context=base_audit_context,
                 content_exhausted=True,
             )
+        phase_started = time.perf_counter()
         context = await self._load_batch_context(
             tasks[0],
             identity=identity,
             relation=relation,
             timeline=timeline,
+        )
+        self._log_task_phase(
+            task_id=batch_task_ids[0],
+            phase="load_batch_context",
+            started=phase_started,
         )
         customer_unopened = not _customer_has_opened(timeline)
         same_day_unopened = _is_same_day_unopened(tasks, timeline=timeline)
@@ -929,7 +978,13 @@ class SopPlatformTaskService:
                 "decision_source": "customer_unopened_direct",
             }
         else:
+            phase_started = time.perf_counter()
             decision = await self._decide_customer_batch(tasks, context=context)
+            self._log_task_phase(
+                task_id=batch_task_ids[0],
+                phase="batch_decision",
+                started=phase_started,
+            )
 
         selected_id = str(decision.get("selected_task_id") or "").strip()
         if not selected_id:
@@ -1296,13 +1351,20 @@ class SopPlatformTaskService:
                 "reply_messages": final_messages,
             }
 
+        phase_started = time.perf_counter()
         claimed = await self._consume_with_audit(
             task_id=selected_id,
             status=20,
             phase="claim_before_send",
             audit=audit,
         )
+        self._log_task_phase(
+            task_id=selected_id,
+            phase="platform_claim_status_20",
+            started=phase_started,
+        )
         _require_platform_status(claimed, 20)
+        phase_started = time.perf_counter()
         await asyncio.to_thread(
             self.repository.update_sop_event_status,
             f"platform_sop_task:{selected_id}",
@@ -1327,9 +1389,15 @@ class SopPlatformTaskService:
             status="sending",
             send_payload=audit,
         )
+        self._log_task_phase(
+            task_id=selected_id,
+            phase="persist_before_send",
+            started=phase_started,
+        )
         for task_id in [*skipped_ids, selected_id, *trigger_ids]:
             self._reserved_prefix_ids.add(task_id)
         try:
+            phase_started = time.perf_counter()
             send_result = await self.system_client.send(
                 **send_payload,
                 source_channel="proactive_message",
@@ -1347,7 +1415,18 @@ class SopPlatformTaskService:
                 },
                 delivery_idempotency_key=f"sop_platform_task:{local_task_id}",
             )
+            self._log_task_phase(
+                task_id=selected_id,
+                phase="managed_send",
+                started=phase_started,
+            )
         except Exception as exc:
+            self._log_task_phase(
+                task_id=selected_id,
+                phase="managed_send",
+                started=phase_started,
+                result=f"error:{type(exc).__name__}",
+            )
             return await self._handle_batch_send_failure(
                 platform_task=selected_task,
                 selected_task_id=selected_id,
@@ -1404,11 +1483,17 @@ class SopPlatformTaskService:
                 "send_response": send_result,
             }
 
+        phase_started = time.perf_counter()
         terminal_ids = await self._finalize_batch_prefix(
             selected_task_id=selected_id,
             skipped_prefix_task_ids=skipped_ids,
             compat_trigger_task_ids=trigger_ids,
             audit=audit,
+        )
+        self._log_task_phase(
+            task_id=selected_id,
+            phase="finalize_consume_and_rule_data",
+            started=phase_started,
         )
         self.repository.update_sop_send_task(
             local_task_id,
@@ -3264,6 +3349,11 @@ class SopPlatformTaskService:
             )
         finally:
             self._observe("rule_data", time.perf_counter() - started)
+            self._log_task_phase(
+                task_id=_task_id(platform_task),
+                phase="platform_rule_data",
+                started=started,
+            )
 
     async def _quiet_hours_guard(
         self,

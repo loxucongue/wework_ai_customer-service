@@ -309,7 +309,8 @@ class SopPlatformClient:
                 platform_code = preview_payload.get("code")
         except ValueError:
             pass
-        logger.info(
+        log_response = logger.warning if task_id else logger.info
+        log_response(
             "sop_platform_http %s",
             json.dumps(
                 {
