@@ -3036,7 +3036,8 @@ class FirstDayWorkflow:
         )
         lock = self.planning._plan_lock(identity)
         async with lock:
-            active = self.repository.get_active_outreach_plan_for_customer(
+            active = await asyncio.to_thread(
+                self.repository.get_active_outreach_plan_for_customer,
                 customer_id,
                 corp_id=identity["corp_id"],
                 wechat=identity["wechat"],
@@ -3046,7 +3047,8 @@ class FirstDayWorkflow:
                 return {"status": "skipped", "customer_id": customer_id, "reason": "nonterminal_plan_exists"}
             run_finder = getattr(self.repository, "find_first_day_outreach_run_by_fingerprint", None)
             existing_run = (
-                run_finder(
+                await asyncio.to_thread(
+                    run_finder,
                     customer_id=customer_id,
                     corp_id=identity["corp_id"],
                     wechat=identity["wechat"],
@@ -3077,7 +3079,8 @@ class FirstDayWorkflow:
                 workflow_run_id = _string(existing_run.get("workflow_run_id"))
                 run_updater = getattr(self.repository, "update_first_day_outreach_run", None)
                 if callable(run_updater):
-                    run_updater(
+                    await asyncio.to_thread(
+                        run_updater,
                         workflow_run_id,
                         status="running",
                         reason_code="preflight_retry",
@@ -3100,7 +3103,8 @@ class FirstDayWorkflow:
             else:
                 run_creator = getattr(self.repository, "create_first_day_outreach_run", None)
                 if callable(run_creator):
-                    run = run_creator(
+                    run = await asyncio.to_thread(
+                        run_creator,
                         **identity,
                         trigger_type=FIRST_DAY_SILENCE_TRIGGER_TYPE,
                         conversation_fingerprint=candidate_fingerprint,
@@ -3122,9 +3126,9 @@ class FirstDayWorkflow:
 
             run_updater = getattr(self.repository, "update_first_day_outreach_run", None)
 
-            def _update_run(**changes: Any) -> None:
+            async def _update_run(**changes: Any) -> None:
                 if workflow_run_id and callable(run_updater):
-                    run_updater(workflow_run_id, **changes)
+                    await asyncio.to_thread(run_updater, workflow_run_id, **changes)
 
             try:
                 refreshed = await self.planning.refresh_customer_conversation(
@@ -3136,7 +3140,7 @@ class FirstDayWorkflow:
                     limit=50,
                 )
             except Exception as exc:
-                _update_run(
+                await _update_run(
                     status="failed",
                     reason_code="conversation_refresh_failed",
                     final_decision="retry_pending",
@@ -3165,7 +3169,7 @@ class FirstDayWorkflow:
                     relation=customer_relation,
                     trigger_context={"source": "silence_monitor", "trigger_type": FIRST_DAY_SILENCE_TRIGGER_TYPE},
                 )
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="customer_relation_unavailable",
                     final_decision="no_plan",
@@ -3182,7 +3186,7 @@ class FirstDayWorkflow:
                     relation=customer_relation,
                     trigger_context={"source": "silence_monitor", "trigger_type": FIRST_DAY_SILENCE_TRIGGER_TYPE},
                 )
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="customer_deleted",
                     final_decision="no_plan",
@@ -3198,7 +3202,7 @@ class FirstDayWorkflow:
             first_added_at = _string(refreshed.get("first_added_at"))
             authoritative_added_at = _parse_iso(first_added_at)
             if not authoritative_added_at:
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="first_added_at_unavailable",
                     final_decision="no_plan",
@@ -3210,7 +3214,7 @@ class FirstDayWorkflow:
                     "reason": "first_added_at_unavailable",
                 }
             if not _is_within_first_day(first_added_at):
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="not_first_day",
                     final_decision="no_plan",
@@ -3219,7 +3223,7 @@ class FirstDayWorkflow:
                 return {"status": "skipped", "customer_id": customer_id, "reason": "not_first_day"}
             conversation_id = _string(refreshed.get("conversation_id"))
             if not conversation_id:
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="conversation_id_unavailable",
                     final_decision="no_plan",
@@ -3233,7 +3237,8 @@ class FirstDayWorkflow:
             local_now = datetime.now(timezone.utc).astimezone(OUTREACH_BEIJING_TIMEZONE)
             local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
             local_day_end = local_day_start + timedelta(days=1)
-            created_today = self.repository.count_outreach_plans_for_trigger_between(
+            created_today = await asyncio.to_thread(
+                self.repository.count_outreach_plans_for_trigger_between,
                 customer_id=customer_id,
                 corp_id=identity["corp_id"],
                 wechat=identity["wechat"],
@@ -3243,7 +3248,7 @@ class FirstDayWorkflow:
                 ended_at=local_day_end.astimezone(timezone.utc).isoformat(),
             )
             if created_today >= FIRST_DAY_DAILY_PLAN_LIMIT:
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="first_day_daily_plan_limit_reached",
                     final_decision="no_plan",
@@ -3262,7 +3267,7 @@ class FirstDayWorkflow:
             latest_customer = _parse_iso(latest_customer_text)
             latest_staff = _parse_iso(latest_staff_text)
             if real_customer_count <= 0 or not latest_customer:
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="customer_never_spoke",
                     final_decision="no_plan",
@@ -3270,7 +3275,7 @@ class FirstDayWorkflow:
                 )
                 return {"status": "skipped", "customer_id": customer_id, "reason": "customer_never_spoke"}
             if not latest_staff or latest_staff <= latest_customer:
-                _update_run(
+                await _update_run(
                     status="cancelled",
                     reason_code="customer_replied",
                     final_decision="no_plan",
@@ -3284,7 +3289,7 @@ class FirstDayWorkflow:
                 external_userid=identity["external_userid"],
                 latest_customer_message_at=latest_customer_text,
             ):
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="outreach_cycle_completed_without_new_customer_reply",
                     final_decision="no_plan",
@@ -3300,7 +3305,7 @@ class FirstDayWorkflow:
                 int((datetime.now(timezone.utc) - latest_staff.astimezone(timezone.utc)).total_seconds() // 60),
             )
             if wait_minutes < silent_minutes:
-                _update_run(
+                await _update_run(
                     status="cancelled",
                     reason_code="reply_wait_below_threshold",
                     final_decision="wait_for_silence",
@@ -3316,7 +3321,8 @@ class FirstDayWorkflow:
                 latest_staff_message_at=latest_staff_text,
             )
             authoritative_existing_run = (
-                run_finder(
+                await asyncio.to_thread(
+                    run_finder,
                     customer_id=customer_id,
                     corp_id=identity["corp_id"],
                     wechat=identity["wechat"],
@@ -3329,7 +3335,7 @@ class FirstDayWorkflow:
             if authoritative_existing_run and _string(
                 authoritative_existing_run.get("workflow_run_id")
             ) != workflow_run_id:
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="authoritative_fingerprint_already_logged",
                     final_decision="no_plan",
@@ -3343,15 +3349,16 @@ class FirstDayWorkflow:
                         authoritative_existing_run.get("workflow_run_id")
                     ),
                 }
-            _update_run(conversation_fingerprint=conversation_fingerprint)
-            if self.repository.has_outreach_evaluation_fingerprint(
+            await _update_run(conversation_fingerprint=conversation_fingerprint)
+            if await asyncio.to_thread(
+                self.repository.has_outreach_evaluation_fingerprint,
                 customer_id=customer_id,
                 corp_id=identity["corp_id"],
                 wechat=identity["wechat"],
                 external_userid=identity["external_userid"],
                 conversation_fingerprint=conversation_fingerprint,
             ):
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code="conversation_fingerprint_already_evaluated",
                     final_decision="no_plan",
@@ -3362,7 +3369,8 @@ class FirstDayWorkflow:
                     "customer_id": customer_id,
                     "reason": "conversation_fingerprint_already_evaluated",
                 }
-            local_context = self.repository.recent_customer_context(
+            local_context = await asyncio.to_thread(
+                self.repository.recent_customer_context,
                 customer_id,
                 corp_id=identity["corp_id"],
                 wechat=identity["wechat"],
@@ -3374,7 +3382,7 @@ class FirstDayWorkflow:
             )
             order_gate = personalized_order_eligibility(customer_context)
             if not order_gate.get("available"):
-                _update_run(
+                await _update_run(
                     status="failed",
                     reason_code="order_context_unavailable",
                     final_decision="retry_pending",
@@ -3386,7 +3394,7 @@ class FirstDayWorkflow:
                 return {"status": "skipped", "customer_id": customer_id, "reason": "order_context_unavailable"}
             if not order_gate.get("eligible"):
                 order_reason = _string(order_gate.get("reason")) or "order_not_eligible"
-                _update_run(
+                await _update_run(
                     status="blocked",
                     reason_code=order_reason,
                     final_decision="no_plan",
