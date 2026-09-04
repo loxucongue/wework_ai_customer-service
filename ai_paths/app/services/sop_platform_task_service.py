@@ -319,6 +319,7 @@ class SopPlatformTaskService:
         self._terminal_order: deque[str] = deque()
         self._workers: list[asyncio.Task[None]] = []
         self._recovery_worker: asyncio.Task[None] | None = None
+        self._event_loop_watchdog_worker: asyncio.Task[None] | None = None
         self._running = False
         self._counters: Counter[str] = Counter()
         self._timings: dict[str, deque[float]] = {
@@ -353,6 +354,10 @@ class SopPlatformTaskService:
             self._recovery_loop(),
             name="sop-platform-recovery",
         )
+        self._event_loop_watchdog_worker = asyncio.create_task(
+            self._event_loop_watchdog(),
+            name="sop-platform-event-loop-watchdog",
+        )
         try:
             while True:
                 try:
@@ -377,12 +382,38 @@ class SopPlatformTaskService:
             tasks = [*self._workers]
             if self._recovery_worker is not None:
                 tasks.append(self._recovery_worker)
+            if self._event_loop_watchdog_worker is not None:
+                tasks.append(self._event_loop_watchdog_worker)
             for task in tasks:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             self._workers = []
             self._recovery_worker = None
+            self._event_loop_watchdog_worker = None
+
+    async def _event_loop_watchdog(self) -> None:
+        interval_seconds = 0.5
+        loop = asyncio.get_running_loop()
+        expected = loop.time() + interval_seconds
+        while True:
+            await asyncio.sleep(interval_seconds)
+            now = loop.time()
+            lag_seconds = max(0.0, now - expected)
+            expected = now + interval_seconds
+            if lag_seconds >= 0.5:
+                self._counters["event_loop_lag"] += 1
+                logger.warning(
+                    "sop_event_loop_lag %s",
+                    json.dumps(
+                        {
+                            "lag_ms": round(lag_seconds * 1000, 1),
+                            "queue_depth": self._queue.qsize(),
+                            "in_flight_count": len(self._in_flight_ids),
+                        },
+                        ensure_ascii=True,
+                    ),
+                )
 
     async def poll_once(self) -> dict[str, int]:
         await asyncio.to_thread(self._restore_reserved_prefix_ids)
@@ -675,14 +706,15 @@ class SopPlatformTaskService:
         if _in_configured_quiet_hours(settings=self.settings):
             self._counters["quiet_recovery_blocked"] += 1
             return 0
-        events = self.repository.list_sop_events_by_statuses(
+        events = await asyncio.to_thread(
+            self.repository.list_sop_events_by_statuses,
             self.RECOVERY_STATUSES,
             limit=self.settings.sop_platform_recovery_batch_size,
             event_type="platform_sop_task",
         )
         orphan_loader = getattr(self.repository, "list_orphaned_platform_sop_events", None)
         orphan_events = (
-            orphan_loader(limit=self.settings.sop_platform_recovery_batch_size)
+            await asyncio.to_thread(orphan_loader, limit=self.settings.sop_platform_recovery_batch_size)
             if callable(orphan_loader)
             else []
         )
@@ -699,7 +731,8 @@ class SopPlatformTaskService:
             payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
             task = payload.get("platform_task") if isinstance(payload.get("platform_task"), dict) else {}
             if not task:
-                self.repository.update_sop_event_status(
+                await asyncio.to_thread(
+                    self.repository.update_sop_event_status,
                     str(event.get("event_id") or ""),
                     status="platform_failed",
                     error="missing_platform_task_payload",
@@ -1158,11 +1191,25 @@ class SopPlatformTaskService:
                     "rule_data": rule_data,
                 }
             )
-            self._mark_local_task(task, status="completed_without_send", send_payload=audit)
-            self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
+            await asyncio.to_thread(
+                self._mark_local_task,
+                task,
+                status="completed_without_send",
+                send_payload=audit,
+            )
+            await asyncio.to_thread(
+                self.repository.update_sop_event_status,
+                f"platform_sop_task:{task_id}",
+                status="platform_completed",
+            )
             terminal_ids.append(task_id)
         for task in terminal_tasks:
-            self._mark_local_task(task, status="completed_without_send", send_payload=audit)
+            await asyncio.to_thread(
+                self._mark_local_task,
+                task,
+                status="completed_without_send",
+                send_payload=audit,
+            )
         return {
             "processed": True,
             "status": "completed_without_send",
@@ -1256,8 +1303,15 @@ class SopPlatformTaskService:
             audit=audit,
         )
         _require_platform_status(claimed, 20)
-        self.repository.update_sop_event_status(f"platform_sop_task:{selected_id}", status="platform_processing")
-        local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{selected_id}")
+        await asyncio.to_thread(
+            self.repository.update_sop_event_status,
+            f"platform_sop_task:{selected_id}",
+            status="platform_processing",
+        )
+        local_task = await asyncio.to_thread(
+            self.repository.get_sop_send_task_by_idempotency_key,
+            f"platform-sop:{selected_id}",
+        )
         local_task_id = str(local_task.get("id") or "")
         send_payload = {
             **identity,
@@ -1267,7 +1321,12 @@ class SopPlatformTaskService:
             "reply_messages": final_messages,
         }
         audit["request"] = send_payload
-        self.repository.update_sop_send_task(local_task_id, status="sending", send_payload=audit)
+        await asyncio.to_thread(
+            self.repository.update_sop_send_task,
+            local_task_id,
+            status="sending",
+            send_payload=audit,
+        )
         for task_id in [*skipped_ids, selected_id, *trigger_ids]:
             self._reserved_prefix_ids.add(task_id)
         try:
@@ -1489,7 +1548,8 @@ class SopPlatformTaskService:
                 raise
             terminal_audit["terminal_failure"]["consume_reconciled"] = "platform_already_no_send"
         terminal_audit["terminal_failure"]["platform_consume_completed_at"] = utc_now_iso()
-        self.repository.update_sop_send_task(
+        await asyncio.to_thread(
+            self.repository.update_sop_send_task,
             local_task_id,
             status="completed_without_send",
             send_payload=terminal_audit,
@@ -1497,13 +1557,19 @@ class SopPlatformTaskService:
         )
         terminal_audit["terminal_failure"]["local_terminal_recorded_at"] = utc_now_iso()
         event_id = f"platform_sop_task:{selected_task_id}"
-        self.repository.update_sop_event_status(event_id, status="platform_failure_rule_data_pending", error="")
+        await asyncio.to_thread(
+            self.repository.update_sop_event_status,
+            event_id,
+            status="platform_failure_rule_data_pending",
+            error="",
+        )
         terminal_audit["terminal_failure"]["rule_data_requested_at"] = utc_now_iso()
         rule_data = await self._report_terminal_rule_data(platform_task, outcome=outcome, sent=False)
         terminal_audit["terminal_failure"]["rule_data_completed_at"] = utc_now_iso()
         terminal_audit["terminal_failure"]["rule_data"] = rule_data
         terminal_audit["terminal_failure"]["local_audit_finalized_at"] = utc_now_iso()
-        self.repository.update_sop_send_task(
+        await asyncio.to_thread(
+            self.repository.update_sop_send_task,
             local_task_id,
             status="completed_without_send",
             send_payload=terminal_audit,
@@ -1517,7 +1583,12 @@ class SopPlatformTaskService:
                 "task_id": selected_task_id,
                 "terminal_task_ids": [],
             }
-        self.repository.update_sop_event_status(event_id, status="platform_completed", error="")
+        await asyncio.to_thread(
+            self.repository.update_sop_event_status,
+            event_id,
+            status="platform_completed",
+            error="",
+        )
         for task_id in [
             selected_task_id,
             *terminal_audit.get("skipped_prefix_task_ids", []),

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from typing import Any
 
 import httpx
 
 from app.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class SopPlatformTaskStateError(RuntimeError):
@@ -262,11 +267,64 @@ class SopPlatformClient:
             "x-event-token": self.settings.sop_platform_token,
             "Content-Type": "application/json; charset=utf-8",
         }
-        kwargs: dict[str, Any] = {"headers": headers}
+        started = time.perf_counter()
+        trace_events: list[dict[str, Any]] = []
+        task_id = str((json_body or {}).get("taskId") or (json_body or {}).get("eventLogId") or "")
+
+        async def trace(event_name: str, _info: dict[str, Any]) -> None:
+            trace_events.append(
+                {
+                    "event": event_name,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
+            )
+
+        kwargs: dict[str, Any] = {"headers": headers, "extensions": {"trace": trace}}
         if json_body is not None:
             kwargs["content"] = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
-        response = await self._http_client().request(method, url, **kwargs)
+        try:
+            response = await self._http_client().request(method, url, **kwargs)
+        except Exception as exc:
+            logger.warning(
+                "sop_platform_http %s",
+                json.dumps(
+                    {
+                        "method": method,
+                        "path": path,
+                        "task_id": task_id,
+                        "result": "exception",
+                        "exception_type": type(exc).__name__,
+                        "total_ms": round((time.perf_counter() - started) * 1000, 1),
+                        "trace": trace_events,
+                    },
+                    ensure_ascii=True,
+                ),
+            )
+            raise
         text = response.text
+        platform_code: Any = None
+        try:
+            preview_payload = response.json()
+            if isinstance(preview_payload, dict):
+                platform_code = preview_payload.get("code")
+        except ValueError:
+            pass
+        logger.info(
+            "sop_platform_http %s",
+            json.dumps(
+                {
+                    "method": method,
+                    "path": path,
+                    "task_id": task_id,
+                    "result": "response",
+                    "http_status": response.status_code,
+                    "platform_code": platform_code,
+                    "total_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "trace": trace_events,
+                },
+                ensure_ascii=True,
+            ),
+        )
         if response.status_code >= 400:
             raise RuntimeError(f"sop_platform_http_{response.status_code}: {text[:800]}")
         try:
