@@ -20,6 +20,7 @@ from app.graph.nodes.reply_nodes import (  # noqa: E402
 )
 from app.graph.nodes.reply_generation import (  # noqa: E402
     ReplyModelPipelineError,
+    _reply_failure_diagnostic,
     _policy_safety_failure_recovery,
     _run_reply_model_pipeline,
 )
@@ -405,6 +406,80 @@ def test_pause_marketing_emotion_rejects_same_turn_advance() -> None:
 
     with pytest.raises(ValueError, match="policy_decision_pause_marketing_conflict"):
         _validate_policy_reply_consistency(payload, _state())
+
+
+def test_pause_without_started_closing_sequence_is_valid() -> None:
+    decision = _valid_decision()
+    decision["closing_decision"].update(
+        {
+            "action": "pause",
+            "sequence_key": "none",
+            "node_key": "",
+            "customer_state": "new_blocker",
+            "pressure": "low",
+        }
+    )
+    normalized = _normalized_policy_decision(decision, state=_state())
+    payload = {
+        "reply_messages": [{"type": "text", "order": 1, "content": "这个顾虑我先帮您说清楚"}],
+        "action": "offer",
+        "sales_judgment": {"posture": "switch"},
+        "commit_actions": [],
+        "policy_decision": decision,
+    }
+
+    assert normalized["closing_decision"]["action"] == "pause"
+    assert "invalid_closing_sequence" not in normalized["decision_reasons"]
+    _validate_policy_reply_consistency(payload, _state())
+
+
+def test_active_cardpoint_still_rejects_closing_advance_posture() -> None:
+    decision = _valid_decision()
+    decision["closing_decision"].update(
+        {
+            "action": "pause",
+            "sequence_key": "none",
+            "node_key": "",
+            "customer_state": "new_blocker",
+            "pressure": "low",
+        }
+    )
+    payload = {
+        "reply_messages": [{"type": "text", "order": 1, "content": "先付预约金吧"}],
+        "action": "offer",
+        "sales_judgment": {"posture": "advance"},
+        "commit_actions": [],
+        "policy_decision": decision,
+    }
+
+    with pytest.raises(ValueError, match="policy_decision_active_cardpoint_conflict"):
+        _validate_policy_reply_consistency(payload, _state())
+
+
+def test_reply_failure_diagnostic_redacts_provider_and_contract_errors() -> None:
+    provider = _reply_failure_diagnostic(
+        {
+            "primary_error": "RuntimeError: Model HTTP 429: secret provider body",
+            "retry": {"error": "TimeoutError: total timeout 25.0s"},
+        }
+    )
+    recovered = _reply_failure_diagnostic(
+        {
+            "primary_error": "ValueError: policy_decision_schema_invalid:invalid_closing_sequence",
+            "validated_json_output": {"reply_messages": []},
+        }
+    )
+
+    assert provider == {
+        "status": "failed",
+        "stage": "repair",
+        "category": "provider",
+        "code": "model_timeout",
+        "repair_attempted": True,
+    }
+    assert "secret" not in json.dumps(provider)
+    assert recovered["status"] == "recovered"
+    assert recovered["code"] == "policy_schema_invalid"
 
 
 def test_policy_safety_recovery_removes_all_sales_actions() -> None:

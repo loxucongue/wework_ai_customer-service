@@ -172,6 +172,7 @@ def create_synthesize_reply_node(
             decision_status = str(reply_metadata.get("decision_status") or "")
             if policy_correction_codes:
                 decision_status = "degraded"
+            reply_failure = _reply_failure_diagnostic(model_call)
             content_selection_metrics = (
                 _parallel_content_selection_metrics(
                     state,
@@ -223,6 +224,7 @@ def create_synthesize_reply_node(
                 "model_context_metrics": context_metrics,
                 "recovery_attempts": recovery_attempts,
                 "recovery_reason": recovery_reason,
+                "reply_failure": reply_failure,
                 "fallback_source": fallback_source,
                 "fallback_failure_node": "synthesize_reply" if fallback_source else "",
                 "fallback_retry_count": len(recovery_attempts) if fallback_source else 0,
@@ -270,6 +272,75 @@ def _policy_correction_codes(model_call: dict[str, Any] | None) -> list[str]:
     if "policy_decision_schema_invalid" in error_text:
         codes.append("policy_decision_schema_repaired")
     return codes
+
+
+def _reply_failure_diagnostic(model_call: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a stable, redacted failure classification for evaluation and BI.
+
+    Provider response bodies and model output are intentionally excluded.  The
+    diagnostic says which attempt failed and why at an operational/contract
+    level, so an evaluation report does not collapse every case into the
+    unhelpful ``final_reply_failed`` label.
+    """
+
+    if not isinstance(model_call, dict):
+        return {}
+    retry = model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}
+    primary_error = str(model_call.get("primary_error") or "")
+    final_error = str(model_call.get("error") or "")
+    repair_error = str(retry.get("error") or "")
+    if not (primary_error or final_error or repair_error):
+        return {}
+
+    error_text = " ".join((primary_error, repair_error, final_error)).lower()
+    if repair_error:
+        stage = "repair"
+    elif primary_error:
+        stage = "primary"
+    else:
+        stage = "pipeline"
+    recovered = bool(model_call.get("validated_json_output"))
+
+    code = "unknown_reply_failure"
+    category = "unknown"
+    patterns = (
+        ("policy_decision_explicit_exit_conflict", "policy_explicit_exit_conflict", "policy_safety"),
+        ("policy_decision_pause_marketing_conflict", "policy_pause_marketing_conflict", "policy_safety"),
+        ("policy_decision_active_cardpoint_conflict", "policy_active_cardpoint_conflict", "policy_safety"),
+        ("policy_safety_floor_removed", "policy_safety_floor_removed", "policy_safety"),
+        ("policy_decision_schema_invalid", "policy_schema_invalid", "policy_contract"),
+        ("selected_content", "content_selection_invalid", "reply_contract"),
+        ("reply_schema", "reply_schema_invalid", "reply_contract"),
+        ("jsondecodeerror", "model_json_invalid", "model_protocol"),
+        ("json output", "model_json_invalid", "model_protocol"),
+        ("no model api key", "model_unavailable", "configuration"),
+        ("reply_model_unavailable", "model_unavailable", "configuration"),
+        ("timeout", "model_timeout", "provider"),
+        ("deadline", "model_timeout", "provider"),
+        ("http 429", "model_rate_limited", "provider"),
+        ("http_status:429", "model_rate_limited", "provider"),
+    )
+    for marker, candidate_code, candidate_category in patterns:
+        if marker in error_text:
+            code = candidate_code
+            category = candidate_category
+            break
+    else:
+        http_match = re.search(r"(?:model http|http_status:)\s*(5\d\d)", error_text)
+        if http_match:
+            code = f"model_http_{http_match.group(1)}"
+            category = "provider"
+        elif "validation" in error_text or "invalid" in error_text:
+            code = "reply_validation_failed"
+            category = "reply_contract"
+
+    return {
+        "status": "recovered" if recovered else "failed",
+        "stage": stage,
+        "category": category,
+        "code": code,
+        "repair_attempted": bool(retry),
+    }
 
 
 def _policy_safety_failure_recovery(

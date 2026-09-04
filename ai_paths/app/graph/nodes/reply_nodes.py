@@ -1146,6 +1146,11 @@ def _normalized_policy_decision(
     if action == "none":
         sequence_key = "none"
         sequence = None
+    elif action == "pause" and sequence_key == "none":
+        # Pausing is a valid decision before any closing sequence has started.
+        # A new blocker, defer signal, or pressure boundary must not be turned
+        # into a schema failure merely because there is no sequence to pause.
+        sequence = None
     elif action == "complete" and sequence_key == "none":
         sequence = None
     elif sequence is None:
@@ -1162,7 +1167,7 @@ def _normalized_policy_decision(
         if node_key:
             degrade("invalid_closing_node")
         node_key = ""
-    if action in {"enter", "advance"} and not node_key:
+    if action in {"enter", "advance", "fallback"} and not node_key:
         degrade("closing_advance_requires_valid_node")
         action = "pause"
     selected_node = next(
@@ -1595,7 +1600,14 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
     commit_actions = [item for item in payload.get("commit_actions") or [] if isinstance(item, dict)]
 
     conflicts: list[str] = []
-    if sales.get("posture") in {"advance", "switch"}:
+    if explicit_exit or pause_marketing:
+        if sales.get("posture") in {"advance", "switch"}:
+            conflicts.append("sales_posture")
+    elif active_cardpoint and sales.get("posture") == "advance":
+        # ``switch`` means changing from the closing path to the blocker-solving
+        # path. It may use a follow-up sequence or script, but closing itself
+        # remains paused. Treating it as an advance discarded otherwise safe
+        # and useful blocker replies.
         conflicts.append("sales_posture")
     allowed_actions = (
         {"none"}

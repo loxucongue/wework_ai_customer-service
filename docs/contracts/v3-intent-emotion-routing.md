@@ -43,6 +43,7 @@ Semantic Router 的 `current_intent.summary` 是检索与工具规划摘要，�
 - 客户每次发新消息都重新判断，上一轮意图、情绪和逼单节点只作摘要，不得机械延续。
 - 明确退出、投诉/愤怒、健康风险、人工接管和交易终态由代码强校验，不能被模型或业务配置覆盖。
 - 缺少分类等观测字段时记录 `decision_status=degraded`；策略扩展不得让正常客户回复因 BI 字段缺失而返回 5xx。
+- 当前无可执行逼单序列时，`closing_decision=pause + sequence_key=none` 是合法决策；新卡点可以切换到解卡表达和跟进话术，但不能把该 `switch` 误记为逼单推进。
 
 ## 可提供的数据
 
