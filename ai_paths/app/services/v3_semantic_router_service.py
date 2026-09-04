@@ -19,9 +19,10 @@ from app.services.deepseek_semantic_client import DeepSeekSemanticClient
 from app.services.follow_knowledge_client import ACTION_CODES, FollowKnowledgeClient
 
 
-MAX_SEQUENCE_CANDIDATES = 2
-MAX_STEPS_PER_SEQUENCE = 2
-MAX_PARAGRAPH_GROUPS = 4
+MAX_SEQUENCE_CANDIDATES = 3
+MAX_SEQUENCE_STEPS_TOTAL = 4
+MAX_STEPS_PER_SEQUENCE = 4
+MAX_PARAGRAPH_GROUPS = 6
 
 
 class V3SemanticRouterService:
@@ -126,38 +127,6 @@ class V3SemanticRouterService:
             closing_catalog=closing_catalog,
         )
         contract_issues = _semantic_route_contract_issues(semantic_route)
-        contract_repair_used = False
-        if not route_error and contract_issues:
-            contract_repair_used = True
-            repair_messages = [
-                *router_messages,
-                {"role": "assistant", "content": json.dumps(raw_route, ensure_ascii=False)},
-                {
-                    "role": "user",
-                    "content": (
-                        "上一份 JSON 未满足结构引用合同："
-                        + ",".join(contract_issues)
-                        + "。不要重做语义判断，只从上方聊天选择真实 message_ref。"
-                        "只输出：{\"current_intent_refs\":[],\"current_friction_refs\":[],"
-                        "\"historical_unresolved_friction_refs\":[]}。"
-                    ),
-                },
-            ]
-            try:
-                repaired_refs = await self.semantic_client.chat_json(repair_messages)
-                repaired_raw = _apply_semantic_reference_repair(raw_route, repaired_refs)
-                semantic_route = _normalize_semantic_route(
-                    repaired_raw,
-                    shared_context=shared_context,
-                    sequences=sequences,
-                    checkpoint_taxonomy=taxonomy,
-                    fact_topic_catalog=fact_topics,
-                    closing_catalog=closing_catalog,
-                )
-            except Exception:
-                # Keep the first normalized result. Missing references remain
-                # observable and must not turn into a business fallback.
-                pass
         if force_store_required:
             semantic_route.setdefault("store_query", {})["required"] = True
             semantic_route["store_query"]["purpose"] = str(
@@ -167,8 +136,15 @@ class V3SemanticRouterService:
             semantic_route.update({"status": "error", "reason": route_error})
         semantic_route["duration_ms"] = int((time.perf_counter() - router_started) * 1000)
         semantic_route["model_usage"] = copy.deepcopy(self.semantic_client.last_usage or {})
-        semantic_route["contract_repair_used"] = contract_repair_used
+        semantic_route["contract_repair_used"] = False
         semantic_route["contract_issues"] = _semantic_route_contract_issues(semantic_route)
+        if contract_issues and not route_error:
+            semantic_route.update(
+                {
+                    "status": "degraded",
+                    "reason": "semantic_contract_missing_references",
+                }
+            )
         semantic_route["closing_catalog_evidence"] = _closing_catalog_evidence(
             closing_catalog,
             semantic_route.get("closing_catalog_match"),
@@ -198,33 +174,11 @@ class V3SemanticRouterService:
                 },
             }
 
-        sequence_selector_messages: list[dict[str, str]] = []
-        sequence_selector_ms = 0
-        current_friction = (
-            semantic_route.get("current_friction")
-            if isinstance(semantic_route.get("current_friction"), dict)
-            else {}
+        semantic_route = _apply_deterministic_sequence_top_k(
+            semantic_route,
+            shared_context=shared_context,
+            sequences=sequences,
         )
-        if (
-            str(current_friction.get("status") or "none") != "none"
-            and _sequences_for_checkpoint(sequences, semantic_route)
-        ):
-            checkpoint_model_usage = copy.deepcopy(semantic_route.get("model_usage") or {})
-            checkpoint_contract_repair_used = bool(semantic_route.get("contract_repair_used"))
-            checkpoint_contract_issues = list(semantic_route.get("contract_issues") or [])
-            semantic_route, sequence_selector_messages = await self._select_sequence_route(
-                shared_context=shared_context,
-                checkpoint_route=semantic_route,
-                sequences=sequences,
-                checkpoint_taxonomy=taxonomy,
-                fact_topic_catalog=fact_topics,
-            )
-            sequence_selector_ms = int(semantic_route.get("duration_ms") or 0)
-            semantic_route["checkpoint_model_usage"] = checkpoint_model_usage
-            semantic_route["contract_repair_used"] = checkpoint_contract_repair_used
-            semantic_route["contract_issues"] = checkpoint_contract_issues
-        else:
-            semantic_route = _expand_sequence_action_queries(semantic_route, sequences=sequences)
         semantic_route["closing_catalog_evidence"] = _closing_catalog_evidence(
             closing_catalog,
             semantic_route.get("closing_catalog_match"),
@@ -247,18 +201,18 @@ class V3SemanticRouterService:
             "duration_ms": total_ms,
             "timings": {
                 "checkpoint_router_ms": checkpoint_router_ms,
-                "sequence_selector_ms": sequence_selector_ms,
+                "sequence_selector_ms": 0,
                 "knowledge_ms": int(knowledge.get("duration_ms") or 0),
                 "total_ms": total_ms,
             },
             "prompt_preview": {
                 "router_messages": router_messages,
-                "sequence_selector_messages": sequence_selector_messages,
-                "selector_messages": selector_messages,
+                "sequence_selector_messages": [],
+                "selector_messages": [],
             },
         }
 
-    async def route_after_store(
+    async def complete_after_store(
         self,
         *,
         shared_context: dict[str, Any],
@@ -271,12 +225,6 @@ class V3SemanticRouterService:
         started = time.perf_counter()
         sequence_result = sequence_result if isinstance(sequence_result, dict) else await self._sequence_index()
         sequences = [item for item in sequence_result.get("items") or [] if isinstance(item, dict)]
-        taxonomy_result = (
-            taxonomy_result
-            if isinstance(taxonomy_result, dict)
-            else await self.load_checkpoint_taxonomy()
-        )
-        taxonomy = _taxonomy_types(taxonomy_result, sequences=sequences)
         provisional = (
             pre_route.get("provisional_checkpoint")
             if isinstance(pre_route.get("provisional_checkpoint"), dict)
@@ -302,18 +250,18 @@ class V3SemanticRouterService:
             "script_queries": [],
             "closing_catalog_match": copy.deepcopy(pre_route.get("closing_catalog_match") or {}),
         }
-        closing_catalog = _normalized_closing_catalog(closing_catalog_result)
-        semantic_route, router_messages = await self._select_sequence_route(
-            shared_context=shared_context,
-            checkpoint_route=checkpoint_route,
-            sequences=sequences,
-            store_resolution_fact=store_resolution_fact,
-            checkpoint_taxonomy=taxonomy,
-            fact_topic_catalog=v3_fact_topic_catalog_for_model(),
-            closing_catalog=closing_catalog,
-            allow_closing_rematch=True,
+        taxonomy_result = (
+            taxonomy_result
+            if isinstance(taxonomy_result, dict)
+            else await self.load_checkpoint_taxonomy()
         )
-        sequence_selector_ms = int(semantic_route.get("duration_ms") or 0)
+        taxonomy = _taxonomy_types(taxonomy_result, sequences=sequences)
+        closing_catalog = _normalized_closing_catalog(closing_catalog_result)
+        semantic_route = _apply_deterministic_sequence_top_k(
+            checkpoint_route,
+            shared_context=shared_context,
+            sequences=sequences,
+        )
         semantic_route["phase"] = "post_store_final"
         semantic_route["provisional_checkpoint"] = copy.deepcopy(
             pre_route.get("provisional_checkpoint") or pre_route.get("checkpoint") or {}
@@ -332,6 +280,11 @@ class V3SemanticRouterService:
             closing_catalog,
             semantic_route.get("closing_catalog_match"),
         )
+        semantic_route["store_result_interpretation"] = {
+            "status": str(store_resolution_fact.get("status") or "unknown"),
+            "resolved_by_reply": True,
+            "reason": "authoritative_store_fact_deferred_to_final_reply",
+        }
         knowledge, selector_messages = await self._knowledge_for_route(
             shared_context=shared_context,
             semantic_route=semantic_route,
@@ -349,14 +302,14 @@ class V3SemanticRouterService:
             "duration_ms": total_ms,
             "timings": {
                 "checkpoint_router_ms": 0,
-                "sequence_selector_ms": sequence_selector_ms,
+                "sequence_selector_ms": 0,
                 "knowledge_ms": int(knowledge.get("duration_ms") or 0),
                 "total_ms": total_ms,
             },
             "prompt_preview": {
                 "router_messages": [],
-                "sequence_selector_messages": router_messages,
-                "selector_messages": selector_messages,
+                "sequence_selector_messages": [],
+                "selector_messages": [],
             },
         }
 
@@ -477,67 +430,28 @@ class V3SemanticRouterService:
             checkpoint_taxonomy=checkpoint_taxonomy or [],
         )
         script_candidates = [item for item in script_result.get("items") or [] if isinstance(item, dict)]
-        selector: dict[str, Any] = {"status": "not_needed", "reason": "no_script_candidates"}
         raw_paragraph_group_count = _paragraph_group_count(script_candidates)
-        closing_only = bool(script_candidates) and bool(script_result.get("query_results")) and all(
-            str(item.get("query_source") or "") == "closing_catalog_node"
-            for item in script_result.get("query_results") or []
-            if isinstance(item, dict)
+        script_candidates = _rank_script_groups(
+            script_candidates,
+            query_text=_semantic_retrieval_text(shared_context, semantic_route),
+            max_groups=MAX_PARAGRAPH_GROUPS,
         )
-        # Published knowledge is a sales-expression source, not an authority for
-        # current prices, entitlements or executable actions.  Candidate count
-        # therefore controls only the output size; every non-empty result still
-        # needs the model-led relevance and authority screen.
-        prefilter: dict[str, Any] = {}
-        if script_candidates and not closing_only and raw_paragraph_group_count > self.script_threshold:
-            prefilter, script_candidates = await self._prefilter_scripts(
-                shared_context=shared_context,
-                semantic_route=semantic_route,
-                candidates=script_candidates,
-                max_paragraph_groups=self.script_threshold,
+        retrieval_mode = (
+            "same_type_action_relaxed"
+            if any(
+                bool(item.get("fallback_used"))
+                for item in script_result.get("query_results") or []
+                if isinstance(item, dict)
             )
-        if closing_only:
-            script_candidates = _first_script_groups(
-                script_candidates,
-                max_groups=MAX_PARAGRAPH_GROUPS,
-            )
-            selector = {
-                "status": "not_needed",
-                "reason": "closing_type_candidates_deferred_to_reply",
-                "candidate_count": len(script_candidates),
-                "paragraph_candidate_count": _paragraph_group_count(script_candidates),
-                "duration_ms": 0,
-            }
-        elif script_candidates:
-            selector, script_candidates = await self._narrow_scripts(
-                shared_context=shared_context,
-                semantic_route=semantic_route,
-                candidates=script_candidates,
-                max_scripts=min(self.max_scripts, MAX_PARAGRAPH_GROUPS),
-                max_paragraph_groups=MAX_PARAGRAPH_GROUPS,
-            )
-            if prefilter:
-                selector["prefilter"] = {
-                    key: copy.deepcopy(value)
-                    for key, value in prefilter.items()
-                    if key != "messages"
-                }
-        elif prefilter:
-            selector = {
-                "status": "empty" if prefilter.get("status") != "error" else "error",
-                "reason": str(prefilter.get("reason") or "prefilter_no_relevant_candidates"),
-                "prefilter": {
-                    key: copy.deepcopy(value)
-                    for key, value in prefilter.items()
-                    if key != "messages"
-                },
-            }
-
-        selector_messages = copy.deepcopy(selector.get("messages") or [])
+            else "deterministic_top_k"
+        )
         selector_for_runtime = {
-            key: copy.deepcopy(value)
-            for key, value in selector.items()
-            if key != "messages"
+            "status": "not_needed",
+            "reason": "deterministic_top_k",
+            "retrieval_mode": retrieval_mode,
+            "candidate_count": len(script_candidates),
+            "paragraph_candidate_count": _paragraph_group_count(script_candidates),
+            "duration_ms": 0,
         }
         knowledge = {
             "schema_version": "v3_knowledge_evidence_v1",
@@ -556,9 +470,10 @@ class V3SemanticRouterService:
             "candidate_count": len(script_candidates),
             "candidates": [_script_reference(item) for item in script_candidates],
             "selector": selector_for_runtime,
+            "retrieval_mode": retrieval_mode,
             "duration_ms": int((time.perf_counter() - started) * 1000),
         }
-        return knowledge, selector_messages
+        return knowledge, []
 
     async def _sequence_index(self) -> dict[str, Any]:
         if self.knowledge_client is None or not self.knowledge_client.available:
@@ -589,9 +504,18 @@ class V3SemanticRouterService:
         results = await asyncio.gather(*tasks)
         fallback_tasks: list[Any] = []
         fallback_indexes: list[int] = []
+        has_any_ordinary_exact = any(
+            str(query.get("query_source") or "") != "closing_catalog_node"
+            and str(result.get("status") or "") == "ok"
+            and int(result.get("total") or 0) > 0
+            for query, result in zip(queries, results)
+        )
         for index, (query, result) in enumerate(zip(queries, results)):
             if (
-                str(result.get("status") or "") == "ok"
+                not has_any_ordinary_exact
+                and not fallback_tasks
+                and str(query.get("query_source") or "") != "closing_catalog_node"
+                and str(result.get("status") or "") == "ok"
                 and int(result.get("total") or 0) == 0
                 and int(query.get("checkpoint_type_id") or 0) > 0
                 and int(query.get("checkpoint_tag_id") or 0) > 0
@@ -612,7 +536,6 @@ class V3SemanticRouterService:
         query_results: list[dict[str, Any]] = []
         exact_candidate_count = 0
         broad_candidate_count = 0
-        seen_query_signatures: set[tuple[int, int, str, str]] = set()
         for index, (query, exact_result) in enumerate(zip(queries, results)):
             fallback_result = fallbacks_by_index.get(index)
             result = fallback_result if isinstance(fallback_result, dict) else exact_result
@@ -647,29 +570,39 @@ class V3SemanticRouterService:
                     if isinstance(fallback_result, dict)
                     else 0,
                     "rejected_type_mismatch_count": 0,
+                    "rejected_tag_mismatch_count": 0,
+                    "rejected_action_mismatch_count": 0,
                 }
             query_results.append(query_audit)
-            seen_query_signatures.add(
-                (
-                    int(query.get("checkpoint_type_id") or 0),
-                    0 if fallback_used else requested_tag_id,
-                    str(query.get("checkpoint_code") or "").strip().lower(),
-                    str(query.get("action_code") or "").strip().lower(),
-                )
-            )
             for raw in result.get("items") or []:
                 if not isinstance(raw, dict):
                     continue
-                if str(query.get("query_source") or "") == "closing_catalog_node":
-                    returned_type = (
-                        raw.get("checkpoint_type")
-                        if isinstance(raw.get("checkpoint_type"), dict)
+                returned_type = (
+                    raw.get("checkpoint_type")
+                    if isinstance(raw.get("checkpoint_type"), dict)
+                    else {}
+                )
+                requested_type_id = int(query.get("checkpoint_type_id") or 0)
+                if requested_type_id > 0 and int(returned_type.get("id") or 0) != requested_type_id:
+                    query_audit["rejected_type_mismatch_count"] += 1
+                    continue
+                if str(query.get("query_source") or "") != "closing_catalog_node":
+                    returned_action = str(raw.get("action_code") or "").strip().lower()
+                    requested_action = str(query.get("action_code") or "").strip().lower()
+                    if requested_action and returned_action != requested_action:
+                        query_audit["rejected_action_mismatch_count"] += 1
+                        continue
+                    returned_tag = (
+                        raw.get("checkpoint_tag")
+                        if isinstance(raw.get("checkpoint_tag"), dict)
                         else {}
                     )
-                    if int(returned_type.get("id") or 0) != int(
-                        query.get("checkpoint_type_id") or 0
+                    if (
+                        requested_tag_id > 0
+                        and not fallback_used
+                        and int(returned_tag.get("id") or 0) != requested_tag_id
                     ):
-                        query_audit["rejected_type_mismatch_count"] += 1
+                        query_audit["rejected_tag_mismatch_count"] += 1
                         continue
                 code = str(raw.get("script_code") or "").strip()
                 if not code:
@@ -709,78 +642,6 @@ class V3SemanticRouterService:
                 else:
                     exact_candidate_count += 1
 
-        taxonomy_fallback_queries = _taxonomy_action_fallback_queries(
-            semantic_route,
-            taxonomy=checkpoint_taxonomy or [],
-            existing_signatures=seen_query_signatures,
-            enabled=not by_code
-            or len(by_code) < 3
-            or any(
-                int(item.get("total") or 0) == 0
-                for item in query_results
-                if str(item.get("action_code") or "").strip()
-            ),
-        )
-        if taxonomy_fallback_queries:
-            taxonomy_results = await asyncio.gather(
-                *[
-                    self.knowledge_client.query_all_scripts(
-                        checkpoint_type_id=int(item.get("checkpoint_type_id") or 0) or None,
-                        checkpoint_tag_id=int(item.get("checkpoint_tag_id") or 0) or None,
-                        checkpoint_code="",
-                        action_code=str(item.get("action_code") or ""),
-                    )
-                    for item in taxonomy_fallback_queries
-                ]
-            )
-            for query, result in zip(taxonomy_fallback_queries, taxonomy_results):
-                requested_tag_id = int(query.get("checkpoint_tag_id") or 0)
-                match_scope = (
-                    "taxonomy_checkpoint_tag_action"
-                    if requested_tag_id > 0
-                    else "taxonomy_checkpoint_type_action"
-                )
-                query_results.append(
-                    {
-                        "checkpoint_code": query.get("checkpoint_code"),
-                        "checkpoint_type_id": query.get("checkpoint_type_id"),
-                        "checkpoint_tag_id": query.get("checkpoint_tag_id"),
-                        "action_code": query.get("action_code"),
-                        "sequence_id": query.get("sequence_id"),
-                        "step_id": query.get("step_id"),
-                        "query_source": query.get("query_source"),
-                        "status": result.get("status"),
-                        "total": int(result.get("total") or 0),
-                        "reason": result.get("reason", ""),
-                        "duration_ms": int(result.get("duration_ms") or 0),
-                        "cache_hit_pages": int(result.get("cache_hit_pages") or 0),
-                        "match_scope": match_scope,
-                        "fallback_used": True,
-                        "exact_total": 0,
-                        "fallback_total": int(result.get("total") or 0),
-                    }
-                )
-                for raw in result.get("items") or []:
-                    if not isinstance(raw, dict):
-                        continue
-                    code = str(raw.get("script_code") or "").strip()
-                    if not code:
-                        continue
-                    item = by_code.setdefault(code, copy.deepcopy(raw))
-                    existing_scope = str(item.get("retrieval_match_scope") or "")
-                    if not existing_scope:
-                        item["retrieval_match_scope"] = match_scope
-                    links = item.setdefault("sequence_links", [])
-                    link = {
-                        "sequence_id": "",
-                        "step_id": "",
-                        "action_code": str(query.get("action_code") or ""),
-                        "match_scope": match_scope,
-                        "query_source": str(query.get("query_source") or ""),
-                    }
-                    if link not in links:
-                        links.append(link)
-                    broad_candidate_count += 1
         support_level = (
             "script_exact"
             if exact_candidate_count and not broad_candidate_count
@@ -2009,6 +1870,240 @@ def _apply_semantic_reference_repair(raw_route: Any, repaired_refs: Any) -> dict
     return output
 
 
+def _semantic_retrieval_text(
+    shared_context: dict[str, Any],
+    route: dict[str, Any],
+) -> str:
+    """Build a retrieval-only query from model output and the current message.
+
+    The value is used only to rank already-published metadata. It does not
+    infer a new intent or authorize a sales action.
+    """
+
+    current = (
+        shared_context.get("current_message")
+        if isinstance(shared_context.get("current_message"), dict)
+        else {}
+    )
+    fragments: list[Any] = [current.get("content") or current.get("raw_content")]
+    for field in ("current_intent", "current_friction", "knowledge_focus", "checkpoint"):
+        value = route.get(field) if isinstance(route.get(field), dict) else {}
+        fragments.extend(
+            value.get(key)
+            for key in (
+                "summary",
+                "reason",
+                "checkpoint_code",
+                "checkpoint_type_name",
+                "checkpoint_tag_name",
+                "primary_code",
+                "primary_name",
+                "primary_tag_name",
+                "action_code",
+            )
+        )
+    return " ".join(str(value).strip() for value in fragments if str(value or "").strip())
+
+
+def _retrieval_terms(value: Any) -> set[str]:
+    text = str(value or "").strip().lower()
+    if not text:
+        return set()
+    terms = {
+        token
+        for token in re.findall(r"[a-z0-9_\-]{2,}", text)
+        if token
+    }
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        if len(run) <= 8:
+            terms.add(run)
+        for size in (2, 3):
+            terms.update(run[index : index + size] for index in range(max(0, len(run) - size + 1)))
+    return terms
+
+
+def _retrieval_overlap(query_terms: set[str], value: Any) -> int:
+    if not query_terms:
+        return 0
+    return len(query_terms.intersection(_retrieval_terms(value)))
+
+
+def _current_step_candidates(sequence: dict[str, Any], *, query_terms: set[str]) -> list[dict[str, Any]]:
+    candidates: list[tuple[int, int, str, dict[str, Any]]] = []
+    for step in sequence.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("id") or "").strip()
+        action_code = str(step.get("action_code") or "").strip().lower()
+        if not step_id or action_code not in ACTION_CODES:
+            continue
+        trigger_base = str(step.get("trigger_base") or "").strip().lower()
+        relative_value = max(0, int(step.get("relative_value") or 0))
+        if trigger_base not in {
+            "",
+            "customer_reply",
+            "last_reply",
+            "current_message",
+            "immediate",
+            "now",
+        } or relative_value > 0:
+            continue
+        searchable = " ".join(
+            str(step.get(key) or "")
+            for key in ("action_code", "action_name", "trigger_base_name", "remark")
+        )
+        score = _retrieval_overlap(query_terms, searchable)
+        candidates.append(
+            (
+                -score,
+                int(step.get("sort_order") or 0),
+                step_id,
+                step,
+            )
+        )
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in candidates]
+
+
+def _apply_deterministic_sequence_top_k(
+    route: dict[str, Any],
+    *,
+    shared_context: dict[str, Any],
+    sequences: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Rank real external sequences and current nodes without a selector model."""
+
+    output = copy.deepcopy(route)
+    output["script_queries"] = []
+    friction = output.get("current_friction") if isinstance(output.get("current_friction"), dict) else {}
+    if str(friction.get("status") or "none") == "none":
+        output["sequence_match"] = _empty_sequence_match()
+        return _expand_sequence_action_queries(output, sequences=[])
+
+    checkpoint = output.get("checkpoint") if isinstance(output.get("checkpoint"), dict) else {}
+    checkpoint_code = str(checkpoint.get("primary_code") or "").strip().lower()
+    query_text = _semantic_retrieval_text(shared_context, output)
+    query_terms = _retrieval_terms(query_text)
+    ranked: list[tuple[int, str, dict[str, Any], list[dict[str, Any]]]] = []
+    for sequence in sequences:
+        if not isinstance(sequence, dict):
+            continue
+        sequence_id = str(sequence.get("id") or "").strip()
+        if not sequence_id:
+            continue
+        sequence_code = str(sequence.get("checkpoint_code") or "").strip().lower()
+        searchable = " ".join(
+            str(sequence.get(key) or "")
+            for key in ("checkpoint_code", "checkpoint_name", "sequence_name", "description")
+        )
+        searchable += " " + " ".join(
+            " ".join(
+                str(step.get(key) or "")
+                for key in ("action_code", "action_name", "remark")
+            )
+            for step in sequence.get("steps") or []
+            if isinstance(step, dict)
+        )
+        score = 5 * _retrieval_overlap(query_terms, searchable)
+        if checkpoint_code and sequence_code == checkpoint_code:
+            score += 100
+        elif sequence_code == "all":
+            score += 10
+        current_steps = _current_step_candidates(sequence, query_terms=query_terms)
+        if score <= 0 or not current_steps:
+            continue
+        ranked.append((-score, sequence_id, sequence, current_steps))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    ranked = ranked[:MAX_SEQUENCE_CANDIDATES]
+
+    selected_ids = [item[1] for item in ranked]
+    selected_step_ids: list[str] = []
+    # Give each selected sequence one usable node before filling the remaining slots.
+    for _, _, _, steps in ranked:
+        if steps and len(selected_step_ids) < MAX_SEQUENCE_STEPS_TOTAL:
+            selected_step_ids.append(str(steps[0].get("id") or ""))
+    depth = 1
+    while len(selected_step_ids) < MAX_SEQUENCE_STEPS_TOTAL:
+        added = False
+        for _, _, _, steps in ranked:
+            if depth < len(steps):
+                selected_step_ids.append(str(steps[depth].get("id") or ""))
+                added = True
+                if len(selected_step_ids) >= MAX_SEQUENCE_STEPS_TOTAL:
+                    break
+        if not added:
+            break
+        depth += 1
+
+    output["sequence_match"] = {
+        "sequence_ids": selected_ids,
+        "alternative_sequence_ids": selected_ids[1:],
+        "relevant_step_ids": [value for value in selected_step_ids if value],
+        "excluded_sequence_ids": [],
+        "exclusion_reasons": {},
+        "reason": "deterministic_top_k",
+    }
+    return _expand_sequence_action_queries(output, sequences=[item[2] for item in ranked])
+
+
+def _rank_script_groups(
+    candidates: list[dict[str, Any]],
+    *,
+    query_text: str,
+    max_groups: int,
+) -> list[dict[str, Any]]:
+    """Return at most ``max_groups`` published paragraph groups in stable order."""
+
+    query_terms = _retrieval_terms(query_text)
+    ranked: list[tuple[int, str, int, bool]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for raw in candidates:
+        if not isinstance(raw, dict):
+            continue
+        script_id = str(raw.get("script_code") or "").strip()
+        if not script_id:
+            continue
+        by_id[script_id] = raw
+        checkpoint_type = raw.get("checkpoint_type") if isinstance(raw.get("checkpoint_type"), dict) else {}
+        checkpoint_tag = raw.get("checkpoint_tag") if isinstance(raw.get("checkpoint_tag"), dict) else {}
+        base = " ".join(
+            str(value or "")
+            for value in (
+                raw.get("script_name"),
+                raw.get("checkpoint_code"),
+                checkpoint_type.get("name"),
+                checkpoint_tag.get("name"),
+                raw.get("action_code"),
+                raw.get("action_name"),
+            )
+        )
+        paragraphs = [item for item in raw.get("paragraphs") or [] if isinstance(item, dict)]
+        if not paragraphs:
+            searchable = base + " " + str(raw.get("body_text") or "")
+            ranked.append((-_retrieval_overlap(query_terms, searchable), script_id, 0, False))
+            continue
+        for paragraph in paragraphs:
+            paragraph_no = max(1, int(paragraph.get("paragraph_no") or 1))
+            body = " ".join(
+                str(message.get("content") or "")
+                for message in paragraph.get("messages") or []
+                if isinstance(message, dict)
+            )
+            ranked.append(
+                (-_retrieval_overlap(query_terms, base + " " + body), script_id, paragraph_no, True)
+            )
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    selected = ranked[: max(1, int(max_groups or 1))]
+    selected_groups = [(script_id, paragraph_no) for _, script_id, paragraph_no, has_group in selected if has_group]
+    selected_scripts = [script_id for _, script_id, _, has_group in selected if not has_group]
+    return _filter_script_groups(
+        list(by_id.values()),
+        selected_groups=selected_groups,
+        selected_script_ids=selected_scripts,
+        max_groups=max_groups,
+    )
+
+
 def _sequences_for_checkpoint(
     sequences: list[dict[str, Any]],
     route: dict[str, Any],
@@ -2206,13 +2301,13 @@ def _expand_sequence_action_queries(
         for item in queries
         if isinstance(item, dict)
     }
-    seen_query_signatures = {
+    query_by_signature = {
         (
             int(item.get("checkpoint_type_id") or 0),
             int(item.get("checkpoint_tag_id") or 0),
             str(item.get("checkpoint_code") or "").strip().lower(),
             str(item.get("action_code") or "").strip().lower(),
-        )
+        ): item
         for item in queries
         if isinstance(item, dict)
     }
@@ -2239,8 +2334,20 @@ def _expand_sequence_action_queries(
                     not step_id
                     or action not in ACTION_CODES
                     or key in seen_actions
-                    or query_signature in seen_query_signatures
                 ):
+                    continue
+                link = {
+                    "sequence_id": sequence_id,
+                    "step_id": step_id,
+                    "action_code": action,
+                    "query_source": "deterministic_top_k_step",
+                }
+                existing_query = query_by_signature.get(query_signature)
+                if isinstance(existing_query, dict):
+                    links = existing_query.setdefault("sequence_links", [])
+                    if link not in links:
+                        links.append(link)
+                    seen_actions.add(key)
                     continue
                 queries.append(
                     {
@@ -2250,11 +2357,12 @@ def _expand_sequence_action_queries(
                         "action_code": action,
                         "sequence_id": sequence_id,
                         "step_id": step_id,
-                        "query_source": "model_selected_relevant_step",
+                        "query_source": "deterministic_top_k_step",
+                        "sequence_links": [link],
                     }
                 )
                 seen_actions.add(key)
-                seen_query_signatures.add(query_signature)
+                query_by_signature[query_signature] = queries[-1]
 
     focus = output.get("knowledge_focus") if isinstance(output.get("knowledge_focus"), dict) else {}
     focus_type_id = int(focus.get("checkpoint_type_id") or 0)
@@ -2269,7 +2377,7 @@ def _expand_sequence_action_queries(
         and focus_action in ACTION_CODES
         and str(focus.get("source") or "none") != "none"
         and focus_key not in seen_actions
-        and focus_signature not in seen_query_signatures
+        and focus_signature not in query_by_signature
     ):
         queries.append(
             {
@@ -2300,7 +2408,7 @@ def _filter_script_groups(
     selected_script_ids: list[str],
     max_groups: int,
 ) -> list[dict[str, Any]]:
-    """Keep only model-selected real paragraph groups and preserve source message order."""
+    """Keep selected real paragraph groups and preserve source message order."""
 
     group_set = set(selected_groups)
     script_set = set(selected_script_ids)

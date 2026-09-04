@@ -84,7 +84,6 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "emotion_decision": state.get("emotion_decision", {}),
         "closing_decision": state.get("closing_decision", {}),
         "cardpoint_decision": state.get("cardpoint_decision", {}),
-        "cardpoint_candidates": _sales_strategy_candidates_for_reply(state.get("cardpoint_candidates")),
         "reply_contract": state.get("reply_contract", {}),
         "sop_gate_decision": state.get("sop_gate_decision", {}),
         "sop_gate_candidate_messages": state.get("sop_gate_candidate_messages", []),
@@ -418,9 +417,6 @@ def _ai_sales_policy_for_reply(state: AgentState) -> dict[str, Any]:
     primary_key = str((state.get("primary_task") or {}).get("type") or "").strip()
     intent_key = str((state.get("realtime_intent") or {}).get("type") or "").strip()
     emotion_key = str((state.get("emotion_decision") or {}).get("label") or "").strip()
-    closing_decision = state.get("closing_decision") if isinstance(state.get("closing_decision"), dict) else {}
-    sequence_key = str(closing_decision.get("sequence_key") or "").strip()
-    node_key = str(closing_decision.get("node_key") or "").strip()
     selected_task = next(
         (item for item in routing.get("business_tasks") or [] if isinstance(item, dict) and item.get("key") == primary_key),
         {},
@@ -431,22 +427,6 @@ def _ai_sales_policy_for_reply(state: AgentState) -> dict[str, Any]:
     )
     selected_emotion = next(
         (item for item in emotion.get("labels") or [] if isinstance(item, dict) and item.get("key") == emotion_key),
-        {},
-    )
-    selected_sequence = next(
-        (
-            item
-            for item in closing.get("sequences") or []
-            if isinstance(item, dict) and item.get("sequence_key") == sequence_key
-        ),
-        {},
-    )
-    selected_node = next(
-        (
-            item
-            for item in selected_sequence.get("nodes") or []
-            if isinstance(item, dict) and item.get("node_key") == node_key
-        ),
         {},
     )
     return _drop_empty(
@@ -471,47 +451,8 @@ def _ai_sales_policy_for_reply(state: AgentState) -> dict[str, Any]:
                     "flow_action": selected_emotion.get("flow_action"),
                 }
             ),
-            "selected_closing_node": _drop_empty(
-                {
-                    "sequence_key": selected_sequence.get("sequence_key"),
-                    "applies_when": selected_sequence.get("applies_when"),
-                    "node_key": selected_node.get("node_key"),
-                    "timing": selected_node.get("timing"),
-                    "goal": selected_node.get("goal"),
-                    "required_facts": selected_node.get("required_facts"),
-                    "pressure": selected_node.get("pressure"),
-                    "ai_guidance": selected_node.get("ai_guidance"),
-                }
-            ),
         }
     )
-
-
-def _sales_strategy_candidates_for_reply(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    result: list[dict[str, Any]] = []
-    for item in value[:5]:
-        if not isinstance(item, dict):
-            continue
-        result.append(
-            _drop_empty(
-                {
-                    "content_id": item.get("content_id"),
-                    "scenario_name": item.get("scenario_name"),
-                    "tactic_tag": item.get("tactic_tag"),
-                    "solution_idea": item.get("solution_idea"),
-                    "reference_text": item.get("reference_text"),
-                    "image_url": item.get("image_url"),
-                    "video_url": item.get("video_url"),
-                    "image_urls": item.get("image_urls"),
-                    "video_urls": item.get("video_urls"),
-                    "content_types": item.get("content_types"),
-                    "usage": "reference_only_rephrase_do_not_copy",
-                }
-            )
-        )
-    return result
 
 
 def _sop_progress_for_reply(

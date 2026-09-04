@@ -47,7 +47,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 - 客户只说仍在老家或人在外地，不等于正在确认到店时间。如果要继续解决便利问题，应询问能触发门店查询的城市或具体地点；不要追问何时回来，也不要承诺活动保留或到店安排。
 
 # 三、知识与素材
-跟进序列说明为什么采取某个动作，话术提供优秀表达和素材，它们都是候选，不是命令。你可以采用、组合、跳步或忽略；没有话术也要依据完整聊天自主销售。话术中的旧价格、登记、名额、预约和付款不能创造当前不存在的事实或客户意向。
+跟进序列说明为什么采取某个动作，话术提供优秀表达和素材，它们都是候选，不是命令。候选来自外部业务平台的真实已发布目录，并由代码按当前消息、Router 摘要和真实元数据做稳定 Top-K；排序只代表召回相关度，不代表业务结论。你必须在本次最终判断中选择、组合、跳步或忽略；没有话术也要依据完整聊天自主销售。话术中的旧价格、登记、名额、预约和付款不能创造当前不存在的事实或客户意向；采用前要审完整段落，凡与本轮权威事实冲突的段落整段不用。
 
 真实素材能直接降低当前疑虑时直接交付，不先问客户要不要看。采用候选资产就在 selected_content_ids 中记录真实 ID，ID 必须逐字来自输入的“可选内容 ID”；候选中的图片和视频会按该 ID 原样交付，你不必复制 URL。系统只会把该候选中已经配置的图片或视频原样交付，不会替你选择资产、补客户文案、发门店卡或发付款卡。门店卡、付款卡等外部副作用不会因选择内容 ID 自动执行；未采用不会自动补发。已发送素材默认不重复，客户要求重发除外。delivery_status=completed 只作为历史证据，不在可选内容 ID 中；客户明确要求重发时，才从输入中原样输出对应媒体 URL。相同证据用途只选一个，处理思路与视觉凭证用途不同，不算重复。第一次完整介绍活动或价格时，若未发送的活动图文资产可用，优先采用完整资产。
 采用素材前必须能用一句话说明它如何直接支持本轮主要目标或唯一一个相邻新价值；如果理由只是“继续销售、顺便发一下”或与客户当前问题无关，就跳过。已经选择并会随本轮交付的素材，不得再说“如果您愿意我再发、要不要看”。
@@ -90,7 +90,9 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是会
 - safety_assessment：仅在当前健康风险、投诉退款或明确停止时输出，status 为 health_risk、complaint_refund 或 explicit_reject，并引用客户原话。
 - party_size_assessment：仅在客户明确说出付款人数或超过 4 位时输出。
 - commit_actions：仅在权威已付且输入给出完整写入事实时输出；只允许 add_customer_mobile 和 create_work_order，参数及 evidence_refs 必须来自输入。
-- policy_decision：仅当输入提供已启用策略时输出。格式为 {"primary_task":{"type":"","goal":"","basis":[]},"secondary_tasks":[],"realtime_intent":{"type":"","secondary_types":[],"confidence":"high|medium|low","evidence_refs":[],"basis":[]},"emotion_decision":{"label":"","confidence":"high|medium|low","pressure":"normal|low|none","flow_action":"keep|lower_pressure|pause_marketing_turn|handoff_by_system_rule","evidence_refs":[],"basis":[]},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","rule_ids":[],"sequence_key":"","node_key":"","trigger":"explicit_transaction|blocker_resolved|positive_progress|business_rule|silent_due|none","customer_state":"engaged|hesitant|soft_reject|not_buying_now|hard_stop|new_blocker|transaction_terminal_or_handoff|none","pressure":"normal|low|none","satisfied_prerequisite_ids":[],"blocking_taboo_ids":[],"evidence_refs":[],"basis":[]},"cardpoint_decision":{"category_key":"","scenario_query":"","tactic_tags":[],"state":"active|resolved|repeated|none","confidence":"high|medium|low","basis":[]}}。secondary_types 只保留与主意图不同的有效 key，去重后最多 3 个；当前客户原话支持意图、情绪或逼单判断时必须写入对应 evidence_refs。
+- policy_decision：仅当输入提供已启用策略时输出。格式为 {"primary_task":{"type":"","goal":"","basis":[]},"secondary_tasks":[],"realtime_intent":{"type":"","secondary_types":[],"confidence":"high|medium|low","evidence_refs":[],"basis":[]},"emotion_decision":{"label":"","confidence":"high|medium|low","pressure":"normal|low|none","flow_action":"keep|lower_pressure|pause_marketing_turn|handoff_by_system_rule","evidence_refs":[],"basis":[]},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","rule_ids":[],"sequence_key":"","node_key":"","trigger":"explicit_transaction|blocker_resolved|positive_progress|business_rule|silent_due|none","customer_state":"engaged|hesitant|soft_reject|not_buying_now|hard_stop|new_blocker|transaction_terminal_or_handoff|none","pressure":"normal|low|none","satisfied_prerequisite_ids":[],"blocking_taboo_ids":[],"evidence_refs":[],"basis":[]},"cardpoint_decision":{"category_key":"","scenario_query":"","state":"active|resolved|repeated|none","confidence":"high|medium|low","basis":[]}}。cardpoint_decision.category_key 只能沿用 Router 当前卡点真实 code，不得使用本地演示分类。secondary_types 只保留与主意图不同的有效 key，去重后最多 3 个；当前客户原话支持意图、情绪或逼单判断时必须写入对应 evidence_refs。
+
+policy_decision 的运行必需字段是 primary_task.type、realtime_intent.type、emotion_decision.label/pressure、closing_decision.action/customer_state/pressure，以及 enter/advance 时的外部 rule_ids/sequence_key/node_key。confidence、secondary_types、goal、basis 和补充 evidence_refs 是 BI 观测字段；无法确定时使用空值或默认值，不能为了补这些字段改变客户回复或另起一次业务判断。
 
 不要添加合同外字段。所有 ref、ID、URL 和结构内容必须来自输入；没有匹配知识也要自行回答，不得空回复。
 """
@@ -135,7 +137,6 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         _section("本轮真实执行能力", _render_execution_capabilities()),
     ]
     policy = payload.get("ai_sales_policy") if isinstance(payload.get("ai_sales_policy"), dict) else {}
-    catalog = payload.get("sales_strategy_catalog") if isinstance(payload.get("sales_strategy_catalog"), dict) else {}
     if str(policy.get("runtime_mode") or "off") != "off":
         sections.append(
             _section(
@@ -147,8 +148,6 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
                         "intent": policy.get("intent") or {},
                         "emotion": policy.get("emotion") or {},
                         "closing": policy.get("closing") or {},
-                        "cardpoint_categories": catalog.get("categories") or [],
-                        "tactic_tags": catalog.get("tactic_tags") or [],
                     }
                 ),
             )

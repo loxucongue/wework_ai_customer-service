@@ -31,15 +31,11 @@ from app.services.ai_sales_policy_service import _audit_policy  # noqa: E402
 
 
 def _state() -> dict[str, Any]:
-    policy_path = PROJECT_ROOT / "ai_paths" / "app" / "policies" / "ai_sales_policy_v1.json"
+    policy_path = PROJECT_ROOT / "ai_paths" / "app" / "policies" / "ai_sales_policy_v2.json"
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
     policy["runtime_mode"] = "active"
     return {
         "ai_sales_policy": policy,
-        "sales_strategy_catalog": {
-            "categories": [{"category_key": "price", "name": "价格"}],
-            "tactic_tags": [],
-        },
         "shared_context": {
             "conversation": [
                 {"role": "customer", "message_ref": "customer:previous"},
@@ -47,6 +43,77 @@ def _state() -> dict[str, Any]:
             ]
         },
     }
+
+
+def _external_closing_state(*, with_friction: bool = False) -> dict[str, Any]:
+    state = _state()
+    state["closing_catalog_evidence"] = {
+        "status": "ok",
+        "match_status": "matched",
+        "checksum": "external-catalog-checksum",
+        "selected_rules": [
+            {
+                "rule_key": "external:rule:102",
+                "source_id": "102",
+                "type_name": "意向确认",
+                "trigger_mode": "independent",
+            }
+        ],
+        "candidate_sequences": [
+            {
+                "sequence_key": "external:sequence:201",
+                "source_id": "201",
+                "name": "价格犹豫收口",
+                "nodes": [
+                    {
+                        "node_key": "external:node:2011",
+                        "source_id": "2011",
+                        "name": "预约确认 / 逼单-约时间类 / 进入逼单后",
+                        "timing": "immediate",
+                        "action_type": {"id": 3, "name": "预约确认"},
+                        "script_type": {"id": 14, "name": "逼单-约时间类"},
+                    }
+                ],
+            }
+        ],
+        "constraints": {
+            "max_per_day": 2,
+            "min_interval_minutes": 30,
+            "prerequisites": [],
+            "taboos": [],
+        },
+        "ai_confirm": {"enabled": True},
+    }
+    state["previous_policy_state"] = {
+        "closing_actions_today": 0,
+        "minutes_since_last_closing_action": 120,
+    }
+    if with_friction:
+        state["semantic_route"] = {
+            "current_friction": {
+                "status": "explicit",
+                "checkpoint_code": "price",
+                "summary": "客户仍有价格顾虑",
+            }
+        }
+    return state
+
+
+def _set_external_closing(decision: dict[str, Any], *, action: str = "enter") -> None:
+    decision["closing_decision"].update(
+        {
+            "action": action,
+            "rule_ids": ["external:rule:102"],
+            "sequence_key": "external:sequence:201",
+            "node_key": "external:node:2011",
+            "trigger": "business_rule",
+            "customer_state": "engaged",
+            "pressure": "normal",
+            "satisfied_prerequisite_ids": [],
+            "blocking_taboo_ids": [],
+            "evidence_refs": ["current_message"],
+        }
+    )
 
 
 def _valid_decision() -> dict[str, Any]:
@@ -85,7 +152,7 @@ def _valid_decision() -> dict[str, Any]:
 
 
 def test_policy_catalog_and_runtime_contract_are_fail_closed() -> None:
-    policy_path = PROJECT_ROOT / "ai_paths" / "app" / "policies" / "ai_sales_policy_v1.json"
+    policy_path = PROJECT_ROOT / "ai_paths" / "app" / "policies" / "ai_sales_policy_v2.json"
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
     assert _audit_policy(policy)["error_count"] == 0
 
@@ -301,15 +368,7 @@ def test_policy_safety_recovery_removes_all_sales_actions() -> None:
 
 def test_active_cardpoint_pauses_closing_but_resolved_cardpoint_does_not() -> None:
     active = _valid_decision()
-    active["closing_decision"].update(
-        {
-            "action": "advance",
-            "sequence_key": "price_hesitation",
-            "node_key": "value_reframe",
-            "customer_state": "engaged",
-            "pressure": "normal",
-        }
-    )
+    _set_external_closing(active, action="advance")
     active["cardpoint_decision"] = {
         "category_key": "price",
         "state": "active",
@@ -318,12 +377,14 @@ def test_active_cardpoint_pauses_closing_but_resolved_cardpoint_does_not() -> No
     resolved = json.loads(json.dumps(active, ensure_ascii=False))
     resolved["cardpoint_decision"]["state"] = "resolved"
 
-    active_result = _normalized_policy_decision(active, state=_state())
-    resolved_result = _normalized_policy_decision(resolved, state=_state())
+    state = _external_closing_state(with_friction=True)
+    active_result = _normalized_policy_decision(active, state=state)
+    resolved_result = _normalized_policy_decision(resolved, state=state)
 
     assert active_result["closing_decision"]["action"] == "pause"
     assert active_result["closing_decision"]["pressure"] == "low"
-    assert "active_cardpoint_requires_pause" in active_result["decision_reasons"]
+    assert "current_friction_requires_resolved_cardpoint" in active_result["decision_reasons"]
+    assert "active_cardpoint_requires_lower_pressure" in active_result["decision_reasons"]
     assert resolved_result["closing_decision"]["action"] == "advance"
     assert resolved_result["cardpoint_decision"]["state"] == "resolved"
 
@@ -512,22 +573,28 @@ def test_lower_pressure_emotion_also_limits_closing_pressure() -> None:
     raw["emotion_decision"].update(
         {"label": "hesitant", "pressure": "normal", "confidence": "high"}
     )
-    raw["closing_decision"].update(
-        {
-            "action": "enter",
-            "sequence_key": "gentle_invite",
-            "node_key": "confirm_visit",
-            "customer_state": "hesitant",
-            "pressure": "normal",
-        }
-    )
+    _set_external_closing(raw)
+    raw["closing_decision"]["customer_state"] = "hesitant"
 
-    result = _normalized_policy_decision(raw, state=_state())
+    result = _normalized_policy_decision(raw, state=_external_closing_state())
 
     assert result["emotion_decision"]["pressure"] == "low"
     assert result["closing_decision"]["action"] == "enter"
     assert result["closing_decision"]["pressure"] == "low"
     assert "emotion_requires_lower_closing_pressure" in result["decision_reasons"]
+
+
+def test_missing_optional_bi_fields_degrades_without_requesting_structure_repair() -> None:
+    raw = _valid_decision()
+    raw["realtime_intent"].pop("confidence")
+    raw["realtime_intent"].pop("secondary_types")
+    raw["emotion_decision"].pop("confidence")
+    raw["primary_task"].pop("goal")
+
+    normalized = _normalized_policy_decision(raw, state=_state())
+
+    assert normalized["decision_status"] == "degraded"
+    _validate_policy_reply_consistency({"policy_decision": raw}, _state())
 
 
 def test_explicit_exit_without_valid_customer_evidence_is_not_persisted() -> None:
@@ -556,16 +623,11 @@ def test_invalid_closing_sequence_or_node_cannot_advance() -> None:
         }
     )
     invalid_node = _valid_decision()
-    invalid_node["closing_decision"].update(
-        {
-            "action": "advance",
-            "sequence_key": "gentle_invite",
-            "node_key": "unknown_node",
-        }
-    )
+    _set_external_closing(invalid_node, action="advance")
+    invalid_node["closing_decision"]["node_key"] = "unknown_node"
 
     sequence_result = _normalized_policy_decision(invalid_sequence, state=_state())
-    node_result = _normalized_policy_decision(invalid_node, state=_state())
+    node_result = _normalized_policy_decision(invalid_node, state=_external_closing_state())
 
     assert sequence_result["closing_decision"]["sequence_key"] == "none"
     assert sequence_result["decision_status"] == "degraded"

@@ -17,8 +17,6 @@ from app.graph.nodes.reply_contract import (
     _dict_list,
     _merge_tool_calls,
     _protocol_required_read_only_tools,
-    _sales_strategy_content_candidates,
-    _sales_strategy_retrieval,
     _semantic_route_observability,
     _store_resolution_fact_for_post_route,
 )
@@ -39,7 +37,7 @@ def create_post_fact_semantic_evidence_node(
         store_fact = _store_resolution_fact_for_post_route(state)
         with trace_logger.node(
             state,
-            "v3_post_store_semantic_route_and_knowledge",
+            "v3_post_store_retrieval_after_facts",
             {
                 "pre_route_phase": pre_route.get("phase"),
                 "store_resolution_status": store_fact.get("status"),
@@ -66,7 +64,7 @@ def create_post_fact_semantic_evidence_node(
                 }
             else:
                 try:
-                    semantic_output = await semantic_router_service.route_after_store(
+                    semantic_output = await semantic_router_service.complete_after_store(
                         shared_context=copy.deepcopy(state.get("shared_context") or {}),
                         pre_route=copy.deepcopy(pre_route),
                         store_resolution_fact=copy.deepcopy(store_fact),
@@ -96,12 +94,6 @@ def create_post_fact_semantic_evidence_node(
 
             semantic_route = copy.deepcopy(semantic_output.get("semantic_route") or {})
             sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
-            strategy_result = _sales_strategy_retrieval(
-                state,
-                semantic_route=semantic_route,
-                service=sales_strategy_service,
-            )
-            strategy_mode = str((strategy_result.get("catalog") or {}).get("runtime_mode") or "off")
             existing_gate = copy.deepcopy(state.get("content_gate_result") or {})
             existing_candidates = _dict_list(existing_gate.get("content_candidates"))
             recalled_candidates = script_content_candidates(sales_recall)
@@ -109,11 +101,6 @@ def create_post_fact_semantic_evidence_node(
                 [
                     *existing_candidates,
                     *recalled_candidates,
-                    *(
-                        _sales_strategy_content_candidates(strategy_result.get("candidates") or [])
-                        if strategy_mode == "active"
-                        else []
-                    ),
                 ]
             )
             gate_result = {
@@ -127,7 +114,8 @@ def create_post_fact_semantic_evidence_node(
             post_duration_ms = int((time.perf_counter() - started) * 1000)
             metrics.update(
                 {
-                    "post_store_semantic_router_duration_ms": int(semantic_output.get("duration_ms") or 0),
+                    "post_store_semantic_router_duration_ms": 0,
+                    "post_store_retrieval_duration_ms": int(semantic_output.get("duration_ms") or 0),
                     "post_store_evidence_elapsed_ms": post_duration_ms,
                     "pre_reply_evidence_elapsed_ms": int(metrics.get("pre_reply_evidence_elapsed_ms") or 0)
                     + post_duration_ms,
@@ -135,7 +123,7 @@ def create_post_fact_semantic_evidence_node(
                 }
             )
             span["entry"]["tool_calls"] = [
-                {"name": "deepseek_post_store_semantic_router", "output": _branch_trace_output(semantic_route)},
+                {"name": "deterministic_post_store_retrieval", "output": _branch_trace_output(semantic_route)},
                 {"name": "follow_knowledge_api", "output": _branch_trace_output(sales_recall)},
             ]
             span["output_snapshot"] = {
@@ -149,14 +137,14 @@ def create_post_fact_semantic_evidence_node(
             return {
                 "content_gate_result": gate_result,
                 "sales_recall": sales_recall,
-                "cardpoint_candidates": copy.deepcopy(strategy_result.get("candidates") or []),
+                "cardpoint_candidates": [],
                 "followup_strategy_candidates": [],
                 "sales_strategy_retrieval_audit": {
-                    "runtime_mode": strategy_mode,
-                    "candidate_count": len(strategy_result.get("candidates") or []),
-                    "filtered": copy.deepcopy(strategy_result.get("filtered") or []),
-                    "catalog": copy.deepcopy(strategy_result.get("catalog") or {}),
-                    "reply_effect": strategy_mode == "active",
+                    "runtime_mode": "off",
+                    "candidate_count": 0,
+                    "filtered": [],
+                    "catalog": {"source": "external_follow_knowledge_only"},
+                    "reply_effect": False,
                 },
                 "semantic_route": semantic_route,
                 "knowledge_evidence": sales_recall,
@@ -227,11 +215,6 @@ def create_semantic_evidence_node(
             semantic_route = copy.deepcopy(semantic_output.get("semantic_route") or {})
             sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
             tool_plan = copy.deepcopy(semantic_output.get("tool_plan") or {})
-            strategy_result = _sales_strategy_retrieval(
-                state,
-                semantic_route=semantic_route,
-                service=sales_strategy_service,
-            )
             tool_plan["tool_calls"] = _merge_tool_calls(
                 _dict_list(tool_plan.get("tool_calls")),
                 protocol_required,
@@ -240,13 +223,10 @@ def create_semantic_evidence_node(
                 tool_plan["decision"] = "use_tools"
             assets = _dict_list((state.get("shared_context") or {}).get("available_assets"))
             recalled_candidates = script_content_candidates(sales_recall)
-            strategy_candidates = _sales_strategy_content_candidates(strategy_result.get("candidates") or [])
-            strategy_mode = str((strategy_result.get("catalog") or {}).get("runtime_mode") or "off")
             content_candidates = _dedupe_content_candidates(
                 [
                     *assets,
                     *recalled_candidates,
-                    *(strategy_candidates if strategy_mode == "active" else []),
                 ]
             )
             gate_result = {
@@ -268,14 +248,14 @@ def create_semantic_evidence_node(
                 "content_gate_result": gate_result,
                 "tool_plan": tool_plan,
                 "sales_recall": sales_recall,
-                "cardpoint_candidates": copy.deepcopy(strategy_result.get("candidates") or []),
+                "cardpoint_candidates": [],
                 "followup_strategy_candidates": [],
                 "sales_strategy_retrieval_audit": {
-                    "runtime_mode": strategy_mode,
-                    "candidate_count": len(strategy_result.get("candidates") or []),
-                    "filtered": copy.deepcopy(strategy_result.get("filtered") or []),
-                    "catalog": copy.deepcopy(strategy_result.get("catalog") or {}),
-                    "reply_effect": strategy_mode == "active",
+                    "runtime_mode": "off",
+                    "candidate_count": 0,
+                    "filtered": [],
+                    "catalog": {"source": "external_follow_knowledge_only"},
+                    "reply_effect": False,
                 },
                 "semantic_route": semantic_route,
                 "store_pre_route": (
@@ -307,8 +287,8 @@ def create_semantic_evidence_node(
                 "tool_plan_decision": tool_plan.get("decision"),
                 "sales_recall_status": sales_recall.get("status"),
                 "sales_recall_candidates": sales_recall.get("candidate_count"),
-                "sales_strategy_candidate_count": len(strategy_result.get("candidates") or []),
-                "sales_strategy_runtime_mode": strategy_mode,
+                "sales_strategy_candidate_count": 0,
+                "sales_strategy_runtime_mode": "off",
                 "follow_sequence_candidates": sales_recall.get("selected_sequence_count"),
                 "follow_knowledge_selector_status": (
                     (sales_recall.get("selector") or {}).get("status")

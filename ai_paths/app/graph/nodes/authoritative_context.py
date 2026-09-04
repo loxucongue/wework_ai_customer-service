@@ -66,7 +66,7 @@ def create_shared_context_node(
                 sent_summary=shared.get("authoritative_facts", {}).get("sent_messages", {}),
                 sop_progress=shared.get("authoritative_facts", {}).get("sop_progress", {}),
             )
-            for key in ("ai_sales_policy", "sales_strategy_catalog"):
+            for key in ("ai_sales_policy",):
                 value = state.get(key)
                 if isinstance(value, dict) and str(value.get("runtime_mode") or "off") != "off":
                     shared[key] = copy.deepcopy(value)

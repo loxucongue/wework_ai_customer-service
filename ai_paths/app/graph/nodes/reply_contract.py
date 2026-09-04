@@ -39,7 +39,6 @@ from app.services.customer_payment_state import is_paid_deposit_state, resolved_
 
 from app.services.v3_sop_execution_service import SopExecutionService
 
-from app.services.sales_strategy_service import SalesStrategyService
 
 
 from app.services.sales_recall_service import SalesRecallService
@@ -1171,107 +1170,6 @@ def _dedupe_content_candidates(items: list[dict[str, Any]]) -> list[dict[str, An
         output.append(item)
         seen.add(content_id)
     return output
-
-def _sales_strategy_retrieval(
-    state: AgentState,
-    *,
-    semantic_route: dict[str, Any],
-    service: SalesStrategyService | None,
-) -> dict[str, Any]:
-    if service is None:
-        return {"candidates": [], "filtered": [], "catalog": {"runtime_mode": "off"}}
-    catalog = state.get("sales_strategy_catalog")
-    if not isinstance(catalog, dict) or str(catalog.get("runtime_mode") or "off") == "off":
-        return {"candidates": [], "filtered": [], "catalog": {"runtime_mode": "off"}}
-    current_intent = semantic_route.get("current_intent") if isinstance(semantic_route.get("current_intent"), dict) else {}
-    friction = semantic_route.get("current_friction") if isinstance(semantic_route.get("current_friction"), dict) else {}
-    query = " ".join(
-        value
-        for value in (
-            str(current_intent.get("summary") or "").strip(),
-            str(friction.get("checkpoint_type_name") or "").strip(),
-            str(friction.get("checkpoint_tag_name") or "").strip(),
-            str(friction.get("summary") or "").strip(),
-        )
-        if value
-    )
-    if not query:
-        return {"candidates": [], "filtered": [], "catalog": copy.deepcopy(catalog)}
-    try:
-        return service.retrieve_content_pool(
-            query=query,
-            fact_context={
-                "authoritative_facts": (state.get("shared_context") or {}).get("authoritative_facts") or {},
-                "fact_envelope": state.get("fact_envelope") or {},
-            },
-            recent_asset_ids=_nested_asset_ids(state.get("sent_message_summary") or {}),
-            limit=5,
-        )
-    except ValueError as exc:
-        return {
-            "candidates": [],
-            "filtered": [],
-            "catalog": {"runtime_mode": "off"},
-            "error": str(exc),
-        }
-
-def _nested_asset_ids(value: Any) -> set[str]:
-    result: set[str] = set()
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            if key in {"asset_id", "content_id"} and str(nested or "").strip():
-                result.add(str(nested).strip())
-            else:
-                result.update(_nested_asset_ids(nested))
-    elif isinstance(value, list):
-        for nested in value:
-            result.update(_nested_asset_ids(nested))
-    return result
-
-def _sales_strategy_content_candidates(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for raw in values[:5]:
-        if not isinstance(raw, dict):
-            continue
-        source_id = str(raw.get("content_id") or "").strip()
-        if not source_id:
-            continue
-        messages = [
-            {"type": message_type, "content": str(url).strip()}
-            for message_type, field in (("image", "image_urls"), ("video", "video_urls"))
-            for url in raw.get(field) or []
-            if _is_http_url(str(url).strip())
-        ]
-        content_id = f"sales_strategy:{source_id}"
-        result.append(
-            {
-                "content_id": content_id,
-                "source_content_id": source_id,
-                "content_type": "sales_strategy_reference",
-                "name": str(raw.get("scenario_name") or source_id).strip(),
-                "purpose": str(raw.get("solution_idea") or raw.get("tactic_tag") or "卡点解题参考").strip(),
-                "asset_role": "sales_reference",
-                "delivery_status": "available",
-                "render_strategy": "adaptable",
-                "fact_refs": [f"content_asset:{content_id}"],
-                "evidence_refs": [],
-                "requires_prior_asset_roles": [],
-                "approved_points": [],
-                "reference_text": str(raw.get("reference_text") or "").strip(),
-                "authority": "reference_only_not_business_fact",
-                "usage_policy": "reference_only_rephrase_do_not_copy",
-                "messages": messages,
-                "media": messages,
-                "required_structured_media": messages,
-                "selection_constraints": {
-                    "authority_scope": "approved_sales_expression",
-                    "hard_fact_authority": False,
-                    "complete_reference_group": True,
-                    "authoritative_facts_override": True,
-                },
-            }
-        )
-    return result
 
 def _structured_delivery_options(joined: dict[str, Any], *, state: AgentState) -> dict[str, Any]:
     """Surface current-turn structured options without deciding to use them."""

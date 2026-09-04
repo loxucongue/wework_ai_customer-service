@@ -25,6 +25,7 @@ from app.services.follow_knowledge_client import (  # noqa: E402
 )
 from app.services.v3_semantic_router_service import (  # noqa: E402
     V3SemanticRouterService,
+    _apply_deterministic_sequence_top_k,
     _closing_catalog_evidence,
     _normalize_semantic_route,
 )
@@ -57,7 +58,7 @@ def _catalog(*, empty_rules: bool = False) -> dict[str, Any]:
 
 def _policy_state(evidence: dict[str, Any]) -> dict[str, Any]:
     policy = json.loads(
-        (PROJECT_ROOT / "ai_paths" / "app" / "policies" / "ai_sales_policy_v1.json").read_text(
+        (PROJECT_ROOT / "ai_paths" / "app" / "policies" / "ai_sales_policy_v2.json").read_text(
             encoding="utf-8"
         )
     )
@@ -69,7 +70,6 @@ def _policy_state(evidence: dict[str, Any]) -> dict[str, Any]:
             "closing_actions_today": 0,
             "minutes_since_last_closing_action": 120,
         },
-        "sales_strategy_catalog": {"categories": [], "tactic_tags": []},
         "shared_context": {"conversation": []},
     }
 
@@ -457,6 +457,9 @@ def test_reply_adopts_valid_external_rule_and_derives_node_types() -> None:
     assert closing["action"] == "enter"
     assert closing["sequence_source_id"] == "201"
     assert closing["node_source_id"] == "2011"
+    assert closing["primary_rule_name"] == "到店意向确认"
+    assert closing["sequence_name"] == "温和邀约序列"
+    assert closing["node_name"] == "预约确认 / 逼单-约时间类 / 进入逼单后"
     assert closing["action_type_id"] == 3
     assert closing["script_type_id"] == 14
     assert closing["catalog_checksum"] == "catalog-checksum"
@@ -539,7 +542,13 @@ def test_reply_requires_router_friction_to_be_explicitly_resolved() -> None:
         },
     )
     state = _policy_state(evidence)
-    state["semantic_route"] = {"current_friction": {"status": "explicit"}}
+    state["semantic_route"] = {
+        "current_friction": {
+            "status": "explicit",
+            "checkpoint_code": "price",
+            "summary": "客户仍有价格顾虑",
+        }
+    }
 
     blocked = _normalized_policy_decision(_decision(), state=state)
     assert blocked["closing_decision"]["action"] == "pause"
@@ -554,7 +563,6 @@ def test_reply_requires_router_friction_to_be_explicitly_resolved() -> None:
         "confidence": "high",
         "basis": [],
     }
-    state["sales_strategy_catalog"]["categories"] = [{"category_key": "price"}]
     resolved = _normalized_policy_decision(resolved_decision, state=state)
     assert resolved["closing_decision"]["action"] == "enter"
 
@@ -678,39 +686,26 @@ def test_closing_recall_uses_existing_router_call_only() -> None:
     assert script["retrieval_match_scope"] == "closing_script_type"
     assert script["sequence_links"][0]["sequence_id"] == "external:sequence:201"
     assert script["sequence_links"][0]["step_id"] == "external:node:2011"
-    assert output["knowledge_evidence"]["selector"]["reason"] == (
-        "closing_type_candidates_deferred_to_reply"
-    )
+    assert output["knowledge_evidence"]["selector"]["reason"] == "deterministic_top_k"
 
 
-def test_post_store_selector_rechecks_closing_catalog_match() -> None:
+def test_post_store_retrieval_does_not_repeat_sales_semantic_decision() -> None:
     class SemanticClient:
         available = True
         last_usage: dict[str, Any] = {}
+        calls = 0
 
         async def chat_json(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-            assert "本轮权威门店查询结果" in messages[-1]["content"]
-            assert "external:rule:102" in messages[-1]["content"]
-            return {
-                "closing_catalog_match": {
-                    "selected_rule_ids": ["external:rule:102"],
-                    "sequence_candidate_ids": ["external:sequence:201"],
-                    "evidence_refs": ["current_message"],
-                },
-                "sequence_match": {},
-                "store_result_interpretation": {
-                    "resolved_current_request": True,
-                    "remaining_customer_concern_refs": [],
-                    "reason": "已查到可用门店",
-                },
-            }
+            self.calls += 1
+            raise AssertionError("post-store retrieval must not call the sales semantic model")
 
+    semantic = SemanticClient()
     service = V3SemanticRouterService(
-        semantic_client=SemanticClient(),  # type: ignore[arg-type]
+        semantic_client=semantic,  # type: ignore[arg-type]
         knowledge_client=None,
     )
     output = asyncio.run(
-        service.route_after_store(
+        service.complete_after_store(
             shared_context={
                 "current_message": {"content": "周六能去哪个店"},
                 "conversation": [],
@@ -722,7 +717,12 @@ def test_post_store_selector_rechecks_closing_catalog_match() -> None:
                 },
                 "current_friction": {"status": "none"},
                 "checkpoint": {},
-                "closing_catalog_match": {"status": "none"},
+                "closing_catalog_match": {
+                    "status": "matched",
+                    "selected_rule_ids": ["external:rule:102"],
+                    "sequence_candidate_ids": ["external:sequence:201"],
+                    "evidence_refs": ["current_message"],
+                },
             },
             store_resolution_fact={"status": "resolved", "stores": [{"store_id": "s1"}]},
             sequence_result={"status": "ok", "items": [], "total": 0},
@@ -731,7 +731,165 @@ def test_post_store_selector_rechecks_closing_catalog_match() -> None:
         )
     )
 
+    assert semantic.calls == 0
     assert output["semantic_route"]["closing_catalog_match"]["status"] == "matched"
     assert output["semantic_route"]["closing_catalog_evidence"]["candidate_sequences"][0][
         "sequence_key"
     ] == "external:sequence:201"
+    assert output["timings"]["checkpoint_router_ms"] == 0
+
+
+def test_deterministic_top_k_is_stable_and_bounded() -> None:
+    route = {
+        "current_intent": {"summary": "客户觉得价格高，想先了解低压方案"},
+        "current_friction": {"status": "explicit", "summary": "价格犹豫"},
+        "checkpoint": {
+            "primary_code": "price",
+            "primary_type_id": 8,
+            "primary_tag_id": 2,
+        },
+    }
+    sequences = [
+        {
+            "id": f"sequence-{index}",
+            "checkpoint_code": "price",
+            "checkpoint_name": "价格",
+            "sequence_name": f"价格方案 {index}",
+            "description": "低压解释价格和价值",
+            "steps": [
+                {
+                    "id": f"step-{index}-1",
+                    "sort_order": 1,
+                    "action_code": "empathy",
+                    "action_name": "低压承接",
+                    "trigger_base": "current_message",
+                    "relative_value": 0,
+                },
+                {
+                    "id": f"step-{index}-2",
+                    "sort_order": 2,
+                    "action_code": "value_add",
+                    "action_name": "价值说明",
+                    "trigger_base": "customer_reply",
+                    "relative_value": 0,
+                },
+            ],
+        }
+        for index in range(1, 6)
+    ]
+    shared_context = {
+        "current_message": {"content": "价格有点高，先给我低压讲讲价值"},
+        "conversation": [],
+    }
+
+    first = _apply_deterministic_sequence_top_k(
+        route,
+        shared_context=shared_context,
+        sequences=sequences,
+    )
+    second = _apply_deterministic_sequence_top_k(
+        route,
+        shared_context=shared_context,
+        sequences=list(reversed(sequences)),
+    )
+
+    assert first["sequence_match"] == second["sequence_match"]
+    assert len(first["sequence_match"]["sequence_ids"]) == 3
+    assert len(first["sequence_match"]["relevant_step_ids"]) == 4
+    assert all(
+        query["query_source"] == "deterministic_top_k_step"
+        for query in first["script_queries"]
+    )
+
+
+def test_ordinary_script_relaxation_stays_on_same_type_and_action() -> None:
+    class KnowledgeClient:
+        available = True
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def query_all_scripts(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls.append(kwargs)
+            if kwargs.get("checkpoint_tag_id") is not None:
+                return {"status": "ok", "total": 0, "items": []}
+            return {
+                "status": "ok",
+                "total": 1,
+                "items": [
+                    {
+                        "script_code": "script-1",
+                        "script_name": "价格低压承接",
+                        "checkpoint_type": {"id": 8, "name": "价格"},
+                        "checkpoint_tag": {"id": 0, "name": ""},
+                        "action_code": "empathy",
+                        "action_name": "低压承接",
+                        "paragraphs": [],
+                    }
+                ],
+            }
+
+    knowledge = KnowledgeClient()
+    service = V3SemanticRouterService(
+        semantic_client=None,  # type: ignore[arg-type]
+        knowledge_client=knowledge,  # type: ignore[arg-type]
+    )
+    result = asyncio.run(
+        service._script_candidates(
+            {
+                "script_queries": [
+                    {
+                        "checkpoint_type_id": 8,
+                        "checkpoint_tag_id": 2,
+                        "checkpoint_code": "price",
+                        "action_code": "empathy",
+                        "query_source": "deterministic_top_k_step",
+                    }
+                ]
+            }
+        )
+    )
+
+    assert len(knowledge.calls) == 2
+    assert knowledge.calls[1]["checkpoint_type_id"] == 8
+    assert knowledge.calls[1]["checkpoint_tag_id"] is None
+    assert knowledge.calls[1]["action_code"] == "empathy"
+    assert result["query_results"][0]["fallback_used"] is True
+    assert result["items"][0]["retrieval_match_scope"] == "checkpoint_type_action"
+
+
+def test_closing_script_type_never_relaxes() -> None:
+    class KnowledgeClient:
+        available = True
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def query_all_scripts(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls.append(kwargs)
+            return {"status": "ok", "total": 0, "items": []}
+
+    knowledge = KnowledgeClient()
+    service = V3SemanticRouterService(
+        semantic_client=None,  # type: ignore[arg-type]
+        knowledge_client=knowledge,  # type: ignore[arg-type]
+    )
+    result = asyncio.run(
+        service._script_candidates(
+            {
+                "script_queries": [
+                    {
+                        "checkpoint_type_id": 14,
+                        "checkpoint_tag_id": 0,
+                        "checkpoint_code": "",
+                        "action_code": "",
+                        "query_source": "closing_catalog_node",
+                    }
+                ]
+            }
+        )
+    )
+
+    assert len(knowledge.calls) == 1
+    assert result["status"] == "empty"
+    assert result["query_results"][0]["fallback_used"] is False

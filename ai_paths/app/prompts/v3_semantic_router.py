@@ -17,13 +17,13 @@ V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路
    类型目录中 `id>0` 的项目来自已发布话术，是当前卡点的主分类；`id=0` 可能只是旧序列编码。能用 `id>0` 类型准确表达时必须优先使用，不能因为序列仍使用旧编码就把 `id=0` 别名当成当前主分类。
 3. historical_unresolved_friction 只记录历史中仍有客户原话证据、且仍直接影响当前任务的一个阻力。客户没有继续追问不等于该顾虑已经解决；但也不能因为它过去出现过就机械重捞。结合后续聊天判断它是否仍影响当前决定：仍相关时作为低权重历史观察，已经被客户明确接受、否定或被新任务取代时留空。它不能覆盖当前意图，也不能作为当前卡点查询条件或自动续跑旧序列。
 4. relevant_fact_topic_ids 是必填检索结果：从事实主题目录最多选择 3 项回答当前问题真正需要的事实。核心价格、当前支付/订单状态、当前风险和本轮门店结论由系统始终提供，不必为凑数选择；但客户提到其他政策、范围、证据或争议时必须选择对应主题，不能因为已经识别卡点就留空。
-5. 本阶段不选择普通跟进序列或步骤。sequence_match 与 script_queries 必须留空；真实跟进序列由后续专项节点根据本阶段识别的 current_friction 再选择。逼单规则和逼单策略是独立目录，按第 9 条只做候选召回。
+5. 本阶段不选择普通跟进序列或步骤。sequence_match 与 script_queries 必须留空；代码会用本阶段识别的 current_friction、当前消息和已发布元数据做透明、稳定的 Top-K 召回，最终仍由 V3 Reply 选择是否采用。逼单规则和逼单策略是独立目录，按第 9 条只做候选召回。
 6. knowledge_focus 是独立的话术检索焦点，不等于客户有异议。客户只是询问价格、项目范围、效果方向或活动内容时，current_friction 可以是 none，但只要已发布目录中存在能帮助 Reply 准确回答或自然推进的类型、标签和动作，就应按 current_intent 选择 knowledge_focus。若某个已发布二级标签直接对应客户当前具体原话，优先选择该精确标签；只有没有贴合标签时才使用类型级宽泛查询。若当前阻力已有合适话术，可按 current_friction 选择。没有合适知识就留空。
    knowledge_focus 必须优先选择“客户当前状态允许、且目录 action_counts 有发布话术”的动作；它不需要等于后续序列 step.action。若精确 tag 的可用动作都偏强或不适合当前状态，可以保留同一 checkpoint_type、清空 tag，选择类型级更安全动作。
    客户说“在忙、暂时没时间、高铁上下车再说、后天再聊、以后再说”时，knowledge_focus 优先用低压承接、关怀、价值提醒、信任背书或效果案例方向；不要选预留名额、预约确认、强催到店、稀缺促单。客户说“骗人、不信、不像视频效果、担心没效果”时，knowledge_focus 优先用信任背书、项目说明、适用性判断、真实案例、低门槛检测方向。
    只要 current_friction.status 不是 none，且目录中该 checkpoint_type 或 tag 存在可用 action_counts，就必须输出一个 source=current_friction 的 knowledge_focus；不要因为后续会选序列就留空。效果类 cp11 若客户只问“真有效果吗/真的有效吗”，优先选择目录中实际存在的 act015、act004 或 act010，不要选择目录没有覆盖的 act013/act001。
 7. knowledge_focus 的 type/tag/action 必须真实存在于目录；action 必须出现在所选标签的可用动作中，未选标签时必须出现在类型可用动作中。source 只能是 current_intent、current_friction 或 none。它只产生检索候选，不证明顾虑成立，也不要求 Reply 采用。
-8. 门店场景只输出 store_query，序列与话术查询留空，等待门店事实后再选；knowledge_focus 同样留空。
+8. 门店场景只输出 store_query，序列与话术查询留空；门店事实返回后由代码完成候选召回，V3 Reply 直接依据真实门店事实决定介绍、追问还是如实说明未匹配，不再做第二次销售语义判断。knowledge_focus 同样留空。
 9. closing_catalog_match 只召回业务已配置的逼单规则和策略候选，不决定本轮是否推进：
    - 先判断客户当前消息/紧邻上下文是否满足某条 rule.condition；keywords 只是线索，不能单独覆盖完整语义和 judge_note。只输出输入中真实 rule_key，最多 3 条，并引用客户消息。
    - trigger_mode=combined 且 grouping_supported=false 的规则因为上游没有提供组合分组，不能作为可执行候选。
