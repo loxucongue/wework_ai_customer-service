@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -146,7 +147,8 @@ class OutreachSystemClient:
         dispatch_id = ""
         callback_required = False
         if self._delivery_service and self._delivery_service.enabled:
-            prepared = self._delivery_service.prepare_dispatch(
+            prepared = await asyncio.to_thread(
+                self._delivery_service.prepare_dispatch,
                 source_channel=source_channel,
                 source_kind=source_kind,
                 source_request_id=source_request_id or task_id,
@@ -203,7 +205,8 @@ class OutreachSystemClient:
             )
         except Exception as exc:
             if self._delivery_service and dispatch_id:
-                self._delivery_service.record_submission(
+                await asyncio.to_thread(
+                    self._delivery_service.record_submission,
                     dispatch_id,
                     status="submission_failed",
                     error_code=type(exc).__name__,
@@ -215,7 +218,8 @@ class OutreachSystemClient:
         delivery_status = "submission_unknown" if upstream_status == "accepted_no_response" else "platform_accepted"
         if self._delivery_service and dispatch_id:
             metadata = delivery_response_metadata(result)
-            self._delivery_service.record_submission(
+            await asyncio.to_thread(
+                self._delivery_service.record_submission,
                 dispatch_id,
                 status=delivery_status,
                 platform_request_id=metadata["platform_request_id"],
@@ -224,7 +228,7 @@ class OutreachSystemClient:
                 error_message="platform send response timed out" if delivery_status == "submission_unknown" else "",
             )
             if not callback_required:
-                self._delivery_service.mark_finalized(dispatch_id)
+                await asyncio.to_thread(self._delivery_service.mark_finalized, dispatch_id)
         result_data = dict(data)
         result_data.update(
             {

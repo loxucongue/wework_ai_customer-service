@@ -1359,17 +1359,6 @@ class SopPlatformTaskService:
             started=phase_started,
         )
         _require_platform_status(claimed, 20)
-        phase_started = time.perf_counter()
-        await asyncio.to_thread(
-            self.repository.update_sop_event_status,
-            f"platform_sop_task:{selected_id}",
-            status="platform_processing",
-        )
-        local_task = await asyncio.to_thread(
-            self.repository.get_sop_send_task_by_idempotency_key,
-            f"platform-sop:{selected_id}",
-        )
-        local_task_id = str(local_task.get("id") or "")
         send_payload = {
             **identity,
             "plan_id": f"platform-sop-{selected_id}",
@@ -1378,12 +1367,16 @@ class SopPlatformTaskService:
             "reply_messages": final_messages,
         }
         audit["request"] = send_payload
-        await asyncio.to_thread(
-            self.repository.update_sop_send_task,
-            local_task_id,
-            status="sending",
+        phase_started = time.perf_counter()
+        local_task = await asyncio.to_thread(
+            self.repository.prepare_platform_sop_send,
+            event_id=f"platform_sop_task:{selected_id}",
+            idempotency_key=f"platform-sop:{selected_id}",
             send_payload=audit,
         )
+        local_task_id = str(local_task.get("id") or "")
+        if not local_task_id:
+            raise RuntimeError("platform SOP local task disappeared before send")
         self._log_task_phase(
             task_id=selected_id,
             phase="persist_before_send",

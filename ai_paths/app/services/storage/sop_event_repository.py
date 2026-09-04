@@ -404,6 +404,45 @@ class SopEventRepositoryMixin:
             ).fetchone()
         return self._decode_sop_send_task(dict(row)) if row else {}
 
+    def prepare_platform_sop_send(
+        self,
+        *,
+        event_id: str,
+        idempotency_key: str,
+        send_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically persist the event and local task before delivery."""
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            conn.execute(
+                """
+                UPDATE sop_events
+                SET status='platform_processing', error='', next_retry_at='', updated_at=?
+                WHERE event_id=?
+                """,
+                (now, event_id),
+            )
+            row = conn.execute(
+                "SELECT id FROM sop_send_tasks WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if not row:
+                return {}
+            task_id = str(row["id"] or "")
+            conn.execute(
+                """
+                UPDATE sop_send_tasks
+                SET status='sending', send_payload_json=?, error='', updated_at=?
+                WHERE id=?
+                """,
+                (dumps(send_payload), now, task_id),
+            )
+            prepared = conn.execute(
+                "SELECT * FROM sop_send_tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        return self._decode_sop_send_task(dict(prepared)) if prepared else {}
+
     def list_sop_send_tasks_by_ids(self, task_ids: list[str]) -> list[dict[str, Any]]:
         normalized = list(dict.fromkeys(str(task_id or "").strip() for task_id in task_ids if str(task_id or "").strip()))
         if not normalized:

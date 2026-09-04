@@ -17,4 +17,6 @@
 - Test evidence: `143 passed` on 2026-09-04, including explicit HTTP timing-log redaction coverage.
 - Local persistence optimization: event insert/update now reads the resulting row on the same connection, and no-send batches persist each local terminal state once after platform consume plus strategy callback. A single no-send task drops from roughly nine local transactions to five without changing platform call order or terminal labels.
 - Persistence impact: multi-task batches expose local terminal state after the batch's external terminal work completes instead of writing partial audit twice. A crash leaves the durable event recoverable; platform consume and strategy callback remain idempotently reconciled, and customer content is not replayed.
+- Send-path optimization: the pre-send event transition, local task lookup, and local task transition now commit atomically in one transaction. Delivery-ledger prepare/submission/finalization calls run outside the asyncio event loop; their ordering and idempotency contract are unchanged.
+- Current verification: `144 passed`, including a storage-level test that observes both event and task transitions after the atomic pre-send commit.
 - Rollback: previous release `ai-paths-unified-20260903-8c736d48`.
