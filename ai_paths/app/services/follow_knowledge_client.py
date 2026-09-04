@@ -942,10 +942,22 @@ def _normalize_closing_sequences(data: dict[str, Any]) -> dict[str, Any]:
             timing = _closing_timing(node.get("timing"), delay_minutes=delay_minutes)
             if delay_minutes == 0 and timing != "immediate":
                 quality_flags.append(f"realtime_timing_not_machine_readable:{node_id}")
+            node_name = " / ".join(
+                dict.fromkeys(
+                    value
+                    for value in (
+                        _text(node.get("actionTypeName")),
+                        _text(node.get("followCheckpointTypeName")),
+                        _text(node.get("timing")),
+                    )
+                    if value
+                )
+            )[:120]
             nodes.append(
                 {
                     "node_key": f"external:node:{node_id}",
                     "source_id": node_id,
+                    "name": node_name,
                     "sort_order": node_position,
                     "timing": timing,
                     "timing_text": _text(node.get("timing"))[:100],

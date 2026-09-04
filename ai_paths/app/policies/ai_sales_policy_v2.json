@@ -1,0 +1,76 @@
+{
+  "schema_version": "ai_sales_policy_v2",
+  "policy_version": "2026-09-04.1",
+  "decision_schema_version": "v3_policy_decision_v3",
+  "status": "published",
+  "runtime_mode": "active",
+  "updated_at": "2026-09-04T00:00:00+08:00",
+  "purpose": "为 V3 Reply 提供主任务、实时意图、情绪调节和逼单决策合同。逼单规则、策略与节点全部来自外部 follow knowledge 目录。",
+  "ownership": {
+    "business": "在外部业务平台维护逼单规则、策略、节点和话术类型。",
+    "model": "在同一次最终 Reply 调用中判断意图、情绪、逼单状态和客户回复。",
+    "code": "负责真实目录、事实、ID 校验、客户边界、安全约束、Shadow 和 BI。"
+  },
+  "closing": {
+    "enabled": true,
+    "catalog_source": "external_follow_knowledge",
+    "silent_tasks_mode": "shadow",
+    "description": "本地不配置逼单序列；enter/advance 必须引用本轮外部真实 rule、sequence、node ID。"
+  },
+  "routing": {
+    "mode": "collect_all_choose_one_primary",
+    "description": "保留同一句话中的全部有效信号，确定一个主任务和最多三个次要信号。",
+    "fixed_priority": [
+      {"key": "risk", "name": "健康、安全或投诉风险", "action": "停止销售并按现有规则处理"},
+      {"key": "human_takeover", "name": "人工接管", "action": "停止 AI 销售和自动触达"},
+      {"key": "hard_stop", "name": "明确退订", "action": "停止全部自动营销"},
+      {"key": "transaction_terminal", "name": "交易终态", "action": "转入服务承接，不重复逼单"}
+    ],
+    "business_tasks": [
+      {"key": "answer_current_question", "name": "回答当前问题", "goal": "优先完整解决客户本轮明确提出的问题。"},
+      {"key": "resolve_blocker", "name": "处理当前卡点", "goal": "识别并处理仍然活跃的核心顾虑。"},
+      {"key": "transaction_progression", "name": "执行成交动作", "goal": "在事实和工具允许时完成一个门店、订单、付款或预约动作。"},
+      {"key": "closing_progression", "name": "推进逼单策略", "goal": "依据外部规则和策略候选执行一个合法节点目标。"},
+      {"key": "normal_conversation", "name": "普通交流", "goal": "自然承接确认、感谢或闲聊，不机械重开旧问题。"}
+    ]
+  },
+  "intent": {
+    "realtime_intents": [
+      {"key": "fact_inquiry", "name": "咨询事实", "definition": "询问价格、效果、门店、时间、流程或规则。", "usage": "优先回答；缺少权威事实时调用工具。"},
+      {"key": "blocker_expression", "name": "表达卡点", "definition": "对价格、效果、信任、距离、时间或决策成本存在阻力。", "usage": "判断新卡点、同卡点或已化解，再选择处理角度。"},
+      {"key": "transaction_progress", "name": "推进成交", "definition": "准备预约、到店、付款或确认下一步。", "usage": "在外部规则和事实允许时进入合法成交动作。"},
+      {"key": "information_submission", "name": "提交信息", "definition": "提供城市、门店、人数、姓名、电话、日期或时间。", "usage": "承接最近未完成动作，不重复询问已经提供的信息。"},
+      {"key": "defer", "name": "暂缓", "definition": "表示现在忙、改天、等待安排或暂时考虑，但没有明确退出。", "usage": "降低压力或暂停，不直接判定客户流失。"},
+      {"key": "explicit_exit", "name": "明确退出", "definition": "明确要求不要联系、停止发送或退出营销。", "usage": "触发系统停止边界。"},
+      {"key": "normal_exchange", "name": "普通交流", "definition": "确认、感谢、闲聊或表情回复。", "usage": "自然承接上下文，不机械重开旧问题。"}
+    ],
+    "analytics_scoring": {
+      "enabled": true,
+      "controls_reply": false,
+      "controls_closing": false,
+      "purpose": "仅用于客户分层、BI 和运营复盘。"
+    }
+  },
+  "emotion": {
+    "weak_evidence": ["回复速度", "单个表情", "单条短回复", "标点数量"],
+    "labels": [
+      {"key": "enthusiastic", "name": "热情", "reply_effect": "适当提高互动感，但不过度热情。", "flow_action": "keep"},
+      {"key": "curious", "name": "好奇", "reply_effect": "提高信息密度并耐心解释。", "flow_action": "keep"},
+      {"key": "neutral", "name": "中性", "reply_effect": "保持正常、友好和简洁。", "flow_action": "keep"},
+      {"key": "hesitant", "name": "犹豫", "reply_effect": "降低压力，先处理权衡因素。", "flow_action": "lower_pressure"},
+      {"key": "cold", "name": "冷淡", "reply_effect": "减少篇幅和连续追问。", "flow_action": "lower_pressure"},
+      {"key": "defensive", "name": "防备", "reply_effect": "优先真实证据，减少营销口吻。", "flow_action": "lower_pressure"},
+      {"key": "impatient", "name": "不耐烦", "reply_effect": "只回答当前问题并立即缩短表达。", "flow_action": "pause_marketing_turn"},
+      {"key": "angry", "name": "愤怒或投诉", "reply_effect": "正面承接，不继续销售。", "flow_action": "handoff_by_system_rule"}
+    ]
+  },
+  "system_boundaries": [
+    "风险、人工接管、明确退订和交易终态不能由业务配置关闭。",
+    "逼单 enter/advance 必须引用本轮外部真实 rule、sequence、node ID。",
+    "付款卡必须有同门店、同金额的有效未付订单或本轮开单成功事实。",
+    "延时任务只允许 Shadow，且只能引用带 checksum 的外部节点。",
+    "不同企微账号必须使用独立的销售接触状态和幂等边界。",
+    "活动、价格、门店、订单、预约和案例素材缺少真实事实时不得猜测。",
+    "每轮先回答客户当前问题，再执行最多一个合法推进动作。"
+  ]
+}

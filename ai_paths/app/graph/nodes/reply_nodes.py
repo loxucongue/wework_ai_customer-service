@@ -1110,23 +1110,14 @@ def _normalized_policy_decision(
         else {}
     )
 
-    closing_policy = policy.get("closing") if isinstance(policy.get("closing"), dict) else {}
-    sequences = {
-        str(item.get("sequence_key") or "").strip(): item
-        for item in closing_policy.get("sequences") or []
-        if isinstance(item, dict)
-        and item.get("enabled")
-        and str(item.get("sequence_key") or "").strip()
-    }
     closing_catalog_evidence = _closing_catalog_evidence_from_state(runtime_state)
     external_catalog_present = bool(closing_catalog_evidence)
     external_catalog_status = str(closing_catalog_evidence.get("status") or "")
-    if external_catalog_present:
-        sequences = {
-            str(item.get("sequence_key") or "").strip(): item
-            for item in closing_catalog_evidence.get("candidate_sequences") or []
-            if isinstance(item, dict) and str(item.get("sequence_key") or "").strip()
-        }
+    sequences = {
+        str(item.get("sequence_key") or "").strip(): item
+        for item in closing_catalog_evidence.get("candidate_sequences") or []
+        if isinstance(item, dict) and str(item.get("sequence_key") or "").strip()
+    }
     closing_raw = raw.get("closing_decision") if isinstance(raw.get("closing_decision"), dict) else {}
     if not isinstance(raw.get("closing_decision"), dict):
         degrade("missing_closing_decision")
@@ -1326,6 +1317,18 @@ def _normalized_policy_decision(
         "evidence_refs": _valid_customer_refs(closing_raw.get("evidence_refs"), valid_customer_refs)[:6],
         "basis": _policy_string_list(closing_raw.get("basis"), limit=6),
         "rule_ids": rule_ids,
+        "sequence_name": str((sequence or {}).get("name") or "") if sequence_key != "none" else "",
+        "node_name": str(selected_node.get("name") or "") if node_key else "",
+        "primary_rule_name": str(
+            next(
+                (
+                    item.get("type_name") or item.get("name") or ""
+                    for item in closing_catalog_evidence.get("selected_rules") or []
+                    if isinstance(item, dict) and str(item.get("rule_key") or "") in rule_ids
+                ),
+                "",
+            )
+        ),
         "sequence_source_id": str((sequence or {}).get("source_id") or ""),
         "node_source_id": str(selected_node.get("source_id") or "") if node_key else "",
         "action_type_id": action_type_id if node_key else 0,
@@ -1336,9 +1339,9 @@ def _normalized_policy_decision(
         "catalog_status": (
             str(closing_catalog_evidence.get("freshness_status") or "")
             if str(closing_catalog_evidence.get("freshness_status") or "") == "stale"
-            else external_catalog_status or "local_policy"
+            else external_catalog_status or "unavailable"
         ),
-        "rule_match_status": str(closing_catalog_evidence.get("match_status") or "local_policy"),
+        "rule_match_status": str(closing_catalog_evidence.get("match_status") or "none"),
         "constraint_status": (
             "blocked" if constraint_reasons else "passed" if active_closing_action else "not_evaluated"
         ),
@@ -1390,29 +1393,6 @@ def _normalized_policy_decision(
             closing_decision["node_key"] = ""
             degrade("emotion_cannot_advance_closing")
 
-    catalog = runtime_state.get("sales_strategy_catalog") if isinstance(runtime_state.get("sales_strategy_catalog"), dict) else {}
-    category_keys = {
-        str(item.get("category_key") or "").strip()
-        for item in catalog.get("categories") or []
-        if isinstance(item, dict) and str(item.get("category_key") or "").strip()
-    }
-    tactic_tags = {str(item).strip() for item in catalog.get("tactic_tags") or [] if str(item).strip()}
-    card_raw = raw.get("cardpoint_decision") if isinstance(raw.get("cardpoint_decision"), dict) else {}
-    category_key = str(card_raw.get("category_key") or "").strip()
-    card_state = _policy_enum(card_raw.get("state"), {"active", "resolved", "repeated", "none"}, "none")
-    cardpoint_decision = (
-        {
-            "category_key": category_key,
-            "scenario_query": str(card_raw.get("scenario_query") or "").strip()[:300],
-            "tactic_tags": [item for item in _policy_string_list(card_raw.get("tactic_tags"), limit=4) if item in tactic_tags],
-            "state": card_state,
-            "confidence": _policy_enum(card_raw.get("confidence"), {"high", "medium", "low"}, "low"),
-            "basis": _policy_string_list(card_raw.get("basis"), limit=6),
-        }
-        if category_key in category_keys and card_state != "none"
-        else {}
-    )
-
     semantic_route = (
         runtime_state.get("semantic_route")
         if isinstance(runtime_state.get("semantic_route"), dict)
@@ -1438,6 +1418,34 @@ def _normalized_policy_decision(
         "",
         "none",
     }
+    card_raw = raw.get("cardpoint_decision") if isinstance(raw.get("cardpoint_decision"), dict) else {}
+    external_category_key = str(
+        current_friction.get("checkpoint_code")
+        or (semantic_route.get("checkpoint") or {}).get("primary_code")
+        or ""
+    ).strip()
+    requested_card_state = _policy_enum(
+        card_raw.get("state"),
+        {"active", "resolved", "repeated", "none"},
+        "active" if router_has_current_friction else "none",
+    )
+    cardpoint_decision = (
+        {
+            "category_key": external_category_key,
+            "scenario_query": str(
+                card_raw.get("scenario_query") or current_friction.get("summary") or ""
+            ).strip()[:300],
+            "state": requested_card_state,
+            "confidence": _policy_enum(
+                card_raw.get("confidence"),
+                {"high", "medium", "low"},
+                "low",
+            ),
+            "basis": _policy_string_list(card_raw.get("basis"), limit=6),
+        }
+        if router_has_current_friction and external_category_key
+        else {}
+    )
     if (
         router_has_current_friction
         and cardpoint_decision.get("state") != "resolved"
@@ -1514,10 +1522,31 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
 
     normalized = _normalized_policy_decision(payload.get("policy_decision"), state=state)
     decision = normalized.get("policy_decision")
+    core_structure_reasons = {
+        "missing_policy_decision",
+        "missing_primary_task",
+        "invalid_primary_task",
+        "missing_realtime_intent",
+        "invalid_realtime_intent",
+        "missing_emotion_decision",
+        "invalid_emotion_label",
+        "missing_emotion_pressure",
+        "invalid_emotion_pressure",
+        "missing_closing_decision",
+        "missing_closing_action",
+        "invalid_closing_action",
+        "missing_closing_customer_state",
+        "invalid_closing_customer_state",
+        "missing_closing_pressure",
+        "invalid_closing_pressure",
+        "invalid_closing_sequence",
+        "invalid_closing_node",
+        "closing_advance_requires_valid_node",
+    }
     structural_reasons = [
         str(reason)
         for reason in normalized.get("decision_reasons") or []
-        if str(reason).startswith(("missing_", "invalid_", "too_many_", "duplicate_"))
+        if str(reason) in core_structure_reasons
     ]
     if structural_reasons:
         raise ValueError(
@@ -1528,7 +1557,6 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
     _validate_closing_script_selection(payload, state, decision)
     intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
     emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
-    cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
     cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
     explicit_exit = str(intent.get("type") or "") == "explicit_exit"
     pause_marketing = str(emotion.get("flow_action") or "") in {

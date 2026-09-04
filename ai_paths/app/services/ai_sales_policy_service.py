@@ -9,12 +9,10 @@ from typing import Any, Protocol
 from app.config import Settings
 
 
-SCHEMA_VERSION = "ai_sales_policy_v1"
-DECISION_SCHEMA_VERSION = "v3_policy_decision_v2"
+SCHEMA_VERSION = "ai_sales_policy_v2"
+DECISION_SCHEMA_VERSION = "v3_policy_decision_v3"
 ALLOWED_RUNTIME_MODES = {"active", "shadow", "off"}
 ALLOWED_POLICY_STATUSES = {"draft", "published"}
-ALLOWED_NODE_TIMINGS = {"immediate", "customer_reply", "silent_after"}
-ALLOWED_PRESSURES = {"normal", "low", "none"}
 ALLOWED_SILENT_TASK_MODES = {"off", "shadow"}
 ALLOWED_EMOTION_FLOW_ACTIONS = {
     "keep", "lower_pressure", "pause_marketing_turn", "handoff_by_system_rule",
@@ -27,7 +25,6 @@ EXPECTED_EMOTION_KEYS = {
     "enthusiastic", "curious", "neutral", "hesitant",
     "cold", "defensive", "impatient", "angry",
 }
-EXPECTED_CLOSING_SEQUENCE_KEYS = {"gentle_invite", "price_hesitation", "final_confirm"}
 FORBIDDEN_CONFIG_FIELDS = {"raw_prompt", "system_prompt", "prompt_template", "developer_prompt"}
 
 
@@ -40,7 +37,7 @@ class LocalJsonAiSalesPolicyProvider:
     def __init__(self, settings: Settings) -> None:
         configured = Path(settings.ai_sales_policy_path)
         ai_paths_root = Path(__file__).resolve().parents[2]
-        self.default_path = Path(__file__).resolve().parents[1] / "policies" / "ai_sales_policy_v1.json"
+        self.default_path = Path(__file__).resolve().parents[1] / "policies" / "ai_sales_policy_v2.json"
         self.path = configured if configured.is_absolute() else ai_paths_root / configured
 
     def load_raw(self) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -145,54 +142,12 @@ def _normalize_policy(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_closing(raw: dict[str, Any]) -> dict[str, Any]:
-    result = deepcopy(raw)
-    result["enabled"] = bool(raw.get("enabled", False))
-    result["silent_tasks_mode"] = _text(raw.get("silent_tasks_mode")) or "off"
-    result["rules"] = _mapping(raw.get("rules"), "closing.rules")
-    result["triggers"] = [
-        {
-            "key": _identifier(item.get("key")),
-            "name": _text(item.get("name")),
-            "owner": _text(item.get("owner")),
-            "description": _text(item.get("description")),
-        }
-        for item in _mapping_list(raw.get("triggers"), "closing.triggers")
-    ]
-    sequences: list[dict[str, Any]] = []
-    for sequence in _mapping_list(raw.get("sequences"), "closing.sequences"):
-        normalized_sequence = {
-            "sequence_key": _identifier(sequence.get("sequence_key")),
-            "name": _text(sequence.get("name")),
-            "positioning": _text(sequence.get("positioning")),
-            "enabled": bool(sequence.get("enabled", False)),
-            "applies_when": _text(sequence.get("applies_when")),
-            "nodes": [],
-        }
-        for node in _mapping_list(sequence.get("nodes"), "closing.sequence.nodes"):
-            normalized_sequence["nodes"].append(
-                {
-                    "node_key": _identifier(node.get("node_key")),
-                    "name": _text(node.get("name")),
-                    "timing": _text(node.get("timing")),
-                    "delay_minutes": _non_negative_int(node.get("delay_minutes")),
-                    "goal": _text(node.get("goal")),
-                    "required_facts": _identifier_list(node.get("required_facts")),
-                    "material_sources": _identifier_list(node.get("material_sources")),
-                    "pressure": _text(node.get("pressure")),
-                    "ai_guidance": _text(node.get("ai_guidance")),
-                }
-            )
-        sequences.append(normalized_sequence)
-    result["sequences"] = sequences
-    result["fallbacks"] = [
-        {
-            "customer_state": _identifier(item.get("customer_state")),
-            "action": _identifier(item.get("action")),
-            "description": _text(item.get("description")),
-        }
-        for item in _mapping_list(raw.get("fallbacks"), "closing.fallbacks")
-    ]
-    return result
+    return {
+        "enabled": bool(raw.get("enabled", False)),
+        "catalog_source": _identifier(raw.get("catalog_source")),
+        "silent_tasks_mode": _text(raw.get("silent_tasks_mode")) or "off",
+        "description": _text(raw.get("description")),
+    }
 
 
 def _normalize_routing(raw: dict[str, Any]) -> dict[str, Any]:
@@ -242,7 +197,7 @@ def _normalize_emotion(raw: dict[str, Any]) -> dict[str, Any]:
 def _audit_policy(policy: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     if policy.get("schema_version") != SCHEMA_VERSION:
-        issues.append(_issue("error", "schema_version", "schema_version must be ai_sales_policy_v1"))
+        issues.append(_issue("error", "schema_version", f"schema_version must be {SCHEMA_VERSION}"))
     if policy.get("decision_schema_version") != DECISION_SCHEMA_VERSION:
         issues.append(
             _issue(
@@ -264,39 +219,14 @@ def _audit_policy(policy: dict[str, Any]) -> dict[str, Any]:
         issues.append(
             _issue("error", "silent_tasks_mode", "silent_tasks_mode must be off or shadow")
         )
-    _audit_unique_keys(issues, closing.get("triggers"), "closing.triggers", "key")
-    _audit_unique_keys(issues, closing.get("sequences"), "closing.sequences", "sequence_key")
-    sequence_keys = {
-        _text(item.get("sequence_key"))
-        for item in closing.get("sequences") or []
-        if isinstance(item, dict)
-    }
-    if sequence_keys != EXPECTED_CLOSING_SEQUENCE_KEYS:
+    if closing.get("catalog_source") != "external_follow_knowledge":
         issues.append(
-            _issue("error", "closing_catalog", "closing catalog must contain the versioned 3 sequences")
+            _issue(
+                "error",
+                "closing_catalog_source",
+                "closing catalog_source must be external_follow_knowledge",
+            )
         )
-    for sequence in closing.get("sequences") or []:
-        if not isinstance(sequence, dict):
-            continue
-        sequence_key = _text(sequence.get("sequence_key"))
-        if not sequence_key or not sequence.get("name") or not sequence.get("applies_when"):
-            issues.append(_issue("error", "closing_sequence_required", f"sequence {sequence_key or '?'} is incomplete"))
-        nodes = sequence.get("nodes") if isinstance(sequence.get("nodes"), list) else []
-        if sequence.get("enabled") and not nodes:
-            issues.append(_issue("error", "closing_nodes_empty", f"enabled sequence {sequence_key} has no nodes"))
-        _audit_unique_keys(issues, nodes, f"closing.sequences.{sequence_key}.nodes", "node_key")
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            node_key = _text(node.get("node_key"))
-            if node.get("timing") not in ALLOWED_NODE_TIMINGS:
-                issues.append(_issue("error", "closing_timing", f"node {sequence_key}.{node_key} has invalid timing"))
-            if node.get("pressure") not in ALLOWED_PRESSURES:
-                issues.append(_issue("error", "closing_pressure", f"node {sequence_key}.{node_key} has invalid pressure"))
-            if not node.get("goal"):
-                issues.append(_issue("error", "closing_goal", f"node {sequence_key}.{node_key} goal is required"))
-            if node.get("timing") == "silent_after" and int(node.get("delay_minutes") or 0) <= 0:
-                issues.append(_issue("error", "closing_delay", f"silent node {sequence_key}.{node_key} needs a positive delay"))
 
     routing = policy.get("routing") if isinstance(policy.get("routing"), dict) else {}
     if routing.get("mode") != "collect_all_choose_one_primary":
@@ -409,17 +339,6 @@ def _text_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         raise ValueError("value must be a list")
     return [_text(item) for item in value if _text(item)]
-
-
-def _identifier_list(value: Any) -> list[str]:
-    return [item for item in (_identifier(entry) for entry in _text_list(value)) if item]
-
-
-def _non_negative_int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _checksum(policy: dict[str, Any]) -> str:

@@ -2221,32 +2221,23 @@ class PlanGenerator:
             )
             return {"created": False, "cancelled": cancelled, "reason": "closing_not_schedulable"}
         sequence_key = _string(decision.get("sequence_key"))
-        sequence = next(
-            (
-                item
-                for item in closing.get("sequences") or []
-                if isinstance(item, dict)
-                and item.get("enabled")
-                and _string(item.get("sequence_key")) == sequence_key
-            ),
-            None,
-        )
         closing_catalog = state.get("closing_catalog") if isinstance(state.get("closing_catalog"), dict) else {}
-        if sequence is None and str(sequence_key).startswith("external:sequence:"):
-            if (
-                str(closing_catalog.get("status") or "") == "ok"
-                and str(decision.get("catalog_checksum") or "")
-                and str(decision.get("catalog_checksum") or "") == str(closing_catalog.get("checksum") or "")
-            ):
-                sequence = next(
-                    (
-                        item
-                        for item in closing_catalog.get("sequences") or []
-                        if isinstance(item, dict)
-                        and _string(item.get("sequence_key")) == sequence_key
-                    ),
-                    None,
-                )
+        sequence = None
+        if (
+            str(sequence_key).startswith("external:sequence:")
+            and str(closing_catalog.get("status") or "") == "ok"
+            and str(decision.get("catalog_checksum") or "")
+            and str(decision.get("catalog_checksum") or "") == str(closing_catalog.get("checksum") or "")
+        ):
+            sequence = next(
+                (
+                    item
+                    for item in closing_catalog.get("sequences") or []
+                    if isinstance(item, dict)
+                    and _string(item.get("sequence_key")) == sequence_key
+                ),
+                None,
+            )
         if not sequence:
             cancelled = self.repository.cancel_open_closing_sequence_plans(
                 **identity,
