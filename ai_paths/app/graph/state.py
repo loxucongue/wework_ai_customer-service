@@ -85,6 +85,7 @@ class AgentState(TypedDict, total=False):
     model_context_metrics: dict[str, Any]
     recovery_attempts: list[dict[str, Any]]
     recovery_reason: str
+    reply_failure: dict[str, Any]
     fallback_source: str
 
     # V3 parallel reply evidence and commit state. These fields are turn-local

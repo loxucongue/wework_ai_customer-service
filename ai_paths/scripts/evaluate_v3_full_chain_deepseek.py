@@ -359,7 +359,7 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
     friction = route.get("current_friction") if isinstance(route.get("current_friction"), dict) else {}
     recall = state.get("sales_recall") if isinstance(state.get("sales_recall"), dict) else {}
     sequences = recall.get("sequence_candidates") or recall.get("sequences") or []
-    scripts = recall.get("script_candidates") or recall.get("scripts") or recall.get("items") or []
+    scripts = recall.get("script_candidates") or recall.get("scripts") or recall.get("items") or recall.get("candidates") or []
     knowledge = state.get("reply_knowledge_use") if isinstance(state.get("reply_knowledge_use"), dict) else {}
     tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
     store = tool_results.get("resolve_customer_store") or tool_results.get("customer_store_lookup") or {}
@@ -443,10 +443,14 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
         if fatal.is_set():
             return
         state = build_state(sample, settings, runtime["policy"])
-        started = time.perf_counter()
         try:
             async with semaphore:
+                # Per-case latency starts only after the concurrency slot is
+                # acquired. Queueing behind earlier cases is batch throughput,
+                # not end-to-end latency for this customer request.
+                started = time.perf_counter()
                 final = await asyncio.wait_for(runtime["graph"].ainvoke(state), timeout=155.0)
+                duration_ms = int((time.perf_counter() - started) * 1000)
                 await asyncio.sleep(max(0.0, args.runtime_gap_seconds))
             models = set(model_names(final))
             for client_name in ("model_client", "semantic_client"):
@@ -463,7 +467,7 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
                 "case_id": f"C{index + 1:04d}", "identity_hash": sample["identity_hash"],
                 "bucket": sample["bucket"], "customer_excerpt": redact(sample["content"], 100),
                 "reply_excerpt": redact(reply_text(final), 180), **summary, "model_names": models,
-                "duration_ms": int((time.perf_counter() - started) * 1000), "judge": {}, "runtime_error": "",
+                "duration_ms": duration_ms, "judge": {}, "runtime_error": "",
             }
             private_rows[index] = {
                 "case_id": f"C{index + 1:04d}", "bucket": sample["bucket"], "content": sample["content"],
@@ -474,6 +478,7 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
             fatal.set()
             audit["blocked_attempts"].append("graph_runtime")
         except Exception as exc:
+            started = locals().get("started", time.perf_counter())
             message = f"{type(exc).__name__}: {exc}"
             if "non-DeepSeek" in message:
                 fatal.set()

@@ -30,6 +30,7 @@
 ## 涉及模块与文件所有权
 
 - `ai_paths/app/prompts/reply_synthesizer.py`
+- `ai_paths/app/graph/state.py`
 - `ai_paths/app/graph/nodes/reply_generation.py`
 - `ai_paths/app/graph/nodes/reply_nodes.py`
 - `ai_paths/scripts/evaluate_v3_full_chain_deepseek.py`
