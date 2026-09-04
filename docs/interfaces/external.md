@@ -46,9 +46,12 @@
   - 逼单目录在业务接口未就绪期间可显式使用版本化本地 JSON。`external_then_local` 模式下，外部规则与策略正常且非空时优先外部；接口未配置、异常或成功返回空目录时使用本地目录。`local` 模式完全不请求两个逼单接口，适合联调和隔离评测。
   - 本地目录来源固定标记为 `local_closing_catalog`，使用独立稳定 key 和 checksum，不伪装成平台数字 ID；本地话术仍不是门店、预约、价格或交易事实来源。
   - `combined` 规则在上游未提供组合分组及 AND/OR 关系前只记录、不可执行。
+  - 普通跟进序列、taxonomy/话术、逼单规则和逼单策略是 V3 Reply 的唯一在线业务知识来源；本地同步目录不参与线上降级。
   - 候选节点话术按真实 `followCheckpointTypeId` 加入现有话术检索批次；返回话术类型不一致时丢弃。纯逼单话术候选直接交给最终 Reply 选择，不增加独立 selector 模型调用。
+  - 普通话术精确查询为空时只允许一次同 `checkpoint_type_id + action_code` 放宽，移除 tag 后仍须核对返回类型和动作；逼单话术不允许跨类型放宽。
   - 进程内使用 single-flight、短失败缓存与 last-known-good；陈旧快照标记 `freshness_status=stale`。该能力不能替代跨重启的持久快照。
-  - 当前服务实例只有一个业务知识租户，`slXXXX` 是该租户下不同企微号，共享一个 `FOLLOW_KNOWLEDGE_TOKEN` 和业务目录；客户状态仍按 `corp_id + wechat + external_userid/customer_id` 隔离。未来若出现第二个业务租户，优先拆分服务实例和 token，再评估租户路由。
+  - 当前部署是一实例一个知识租户、一个 `FOLLOW_KNOWLEDGE_TOKEN`；所有 `slXXXX` 是该租户下不同企微号，可以共享只含业务知识的目录缓存。客户聊天、订单、记忆、限频和策略状态不得进入共享缓存，仍按 `corp_id + wechat + external_userid/customer_id` 隔离。
+  - `corp_id` 不是 Follow Knowledge 租户 ID，不用于选择 token。未来出现第二个业务知识租户时采用独立服务实例和 token，再按实际部署需求评审路由方案。
   - 当前两个逼单接口没有共同 `publishVersion`，数字 ID 也没有不可复用保证；跨接口 checksum 只能审计本次组合，不能证明上游原子发布。上游应补 `tenantKey`、共同版本、稳定 code、标准 timing、组合分组及 taboo 类型。
 - 本地同步：
   - 脚本：`python ai_paths/scripts/sync_follow_knowledge_cache.py --env-file <server-or-local-env>`
@@ -144,7 +147,8 @@
   - `CLAUDE_RELAY_API_KEY`
 - 读写性质：模型推理调用；不得向模型提交超过业务需要的客户数据。
 - 运行边界：
-  - 语义路由模型只产生证据和候选，不生成客户话术。
+  - 语义路由模型每轮只调用一次，只产生卡点、工具需求和检索条件，不生成客户话术。
+  - 门店工具补齐事实后不再调用第二次销售语义模型；最终 Reply 直接消费真实门店事实。
   - V3 Reply 模型是唯一销售语义决策点。
 
 ## Coze / 门店快照

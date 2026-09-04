@@ -39,6 +39,9 @@ from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
 
 
+RUNTIME_SAFE_FALLBACK_TEXT = "抱歉，我这边刚刚没处理好，麻烦您把刚才的问题再发一次。"
+
+
 class ChatRuntime:
     def __init__(
         self,
@@ -471,38 +474,6 @@ class ChatRuntime:
             }
             return commit_state
 
-    async def _evaluate_sop_gate(
-        self,
-        request: ChatRequest,
-        request_id: str,
-        request_context: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._sop_execution_service:
-            return {"mode": "skipped", "send_sop": False, "reason": "sop_execution_service_missing"}
-        return await self._sop_execution_service.evaluate_chat_gate(
-            request,
-            request_id=request_id,
-            request_context=request_context,
-        )
-
-    @staticmethod
-    def _sop_reply_state(initial_state: AgentState, sop_gate: dict[str, Any]) -> AgentState:
-        state: AgentState = dict(initial_state)
-        messages = sop_gate.get("reply_messages") if isinstance(sop_gate.get("reply_messages"), list) else []
-        state["reply_messages"] = messages
-        state["sync_reply_messages"] = messages
-        state["reply_source"] = "sop_gate"
-        state["planner_decision"] = "direct_reply"
-        state["planner_stage"] = "SOP"
-        state["planner_sub_rule_id"] = str(sop_gate.get("sop_pack_id") or "")
-        state["async_final_reply"] = {
-            "scheduled": bool(sop_gate.get("need_ai_reply")),
-            "status": "scheduled" if sop_gate.get("need_ai_reply") else "not_required",
-            "reason": "sop_gate_requested_ai_reply" if sop_gate.get("need_ai_reply") else "",
-        }
-        _set_sync_return(state, "sop_reply", messages)
-        return state
-
     async def _run_graph_with_preemption(
         self,
         graph: Any,
@@ -690,20 +661,6 @@ class ChatRuntime:
                         "warning": "AI sales policy unavailable; policy extension disabled for this turn.",
                     }
                 ]
-        if self._sales_strategy_service is not None:
-            try:
-                state["sales_strategy_catalog"] = self._sales_strategy_service.runtime_summary()
-            except ValueError as exc:
-                state["sales_strategy_catalog"] = {
-                    "runtime_mode": "off",
-                    "runtime_health": {"status": "unavailable", "last_error": str(exc)},
-                }
-                state.setdefault("warnings", []).append(
-                    {
-                        "stage": "sales_strategy_catalog",
-                        "warning": "Sales strategy catalog unavailable; candidate retrieval disabled for this turn.",
-                    }
-                )
         return state
 
     def _handle_graph_exception(self, initial_state: AgentState, exc: Exception) -> AgentState:
@@ -991,7 +948,7 @@ def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, 
     state["fallback_retry_count"] = len(state.get("recovery_attempts") or [])
     state["fallback_violation"] = str(state.get("recovery_reason") or "")[:500]
     state["fallback_remaining_budget"] = runtime_budget_snapshot(state, tier="reply")
-    return [{"type": "text", "order": 1, "content": {"text": "您稍等一下"}}]
+    return [{"type": "text", "order": 1, "content": {"text": RUNTIME_SAFE_FALLBACK_TEXT}}]
 
 
 def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:

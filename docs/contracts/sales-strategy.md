@@ -2,7 +2,7 @@
 
 - status: candidate
 - owner: reply-runtime
-- source_of_truth: `ai_paths/app/policies/ai_sales_policy_v1.json`、`ai_closing_catalog_v1.json`、`sales_strategy_catalog_v1.json` 与当前 V3 代码
+- source_of_truth: `ai_paths/app/policies/ai_sales_policy_v2.json`、`ai_closing_catalog_v1.json`、外部 Follow Knowledge 已发布目录与当前 V3 代码
 
 ## 边界
 
@@ -17,9 +17,10 @@
 - `realtime_intent.type` 是本轮最终主意图，`secondary_types` 只保留其他有效信号；Semantic Router 的意图字段只用于检索与工具规划。
 - `emotion_decision.label` 描述客户发送本轮消息时的情绪，只能调整表达压力和流程动作，不能授权交易或事实承诺。
 - `closing_decision` 只允许 `none|enter|advance|pause|fallback|complete`；客户新消息必须重新判断，新卡点、暂缓、明确退订和暂停营销情绪不得机械推进旧节点。
-- 首版目录固定为 7 类实时意图、8 类情绪和 3 组逼单序列，均由版本化 policy 管理。
-- policy 加载时必须校验决策 schema 版本、7/8/3 完整目录、情绪流程动作枚举和 `silent_tasks_mode=off|shadow`；配置不合法时不得静默启用。
-- 策略结构缺失、非法或与同轮客户动作自相矛盾时，只允许使用 Reply 既有的唯一一次修复机会；修复仍失败时返回非营销安全收尾并标记 `decision_status=degraded`，不得让客户请求失败。
+- 策略配置固定管理 7 类实时意图、8 类情绪、任务优先级、安全边界和 Shadow 模式；逼单规则、策略和节点不再复制进本地 policy。
+- policy 加载时必须校验决策 schema 版本、7/8 完整目录、情绪流程动作枚举、`catalog_source=external_follow_knowledge` 和 `silent_tasks_mode=off|shadow`；配置不合法时不得静默启用。
+- 主任务、主意图、情绪流程动作、逼单动作和客户状态属于运行必需字段。它们缺失、非法或与同轮客户动作自相矛盾时，只允许使用 Reply 既有的唯一一次修复机会；修复仍失败时返回非营销安全收尾并标记 `decision_status=degraded`，不得让客户请求失败。
+- 置信度、次要意图、说明和补充证据属于 BI 观测字段；缺失时只降级记账，不触发第二次模型调用。
 - 首次输出中有客户证据的明确退订、暂停营销情绪和活动卡点构成本轮修复的安全下限；修复不得将其改成普通聊天或直接推进。
 - `cardpoint_decision.state=active|repeated` 时必须先解卡并暂停逼单；只有 `resolved` 才允许重新判断是否进入或推进序列。
 
@@ -27,23 +28,27 @@
 
 ```text
 租户逼单规则 + 启用策略（外部接口或版本化本地 JSON，只读、缓存）
-  → Semantic Router 在既有调用中召回规则与最多 3 条策略
-  → 门店事实需要补查时，在既有 post-store 判断中重算候选
-  → 按候选节点 followCheckpointTypeId 查询真实卡点话术
-  → V3 Reply 在既有最终调用中选择规则、策略、节点、话术与回复
+  → Semantic Router 在唯一一次调用中识别卡点、工具需求并召回规则/策略条件
+  → 代码从同一来源目录稳定排序：最多 3 条普通序列、合计 4 个当前节点、6 个话术段落
+  → 必要门店事实工具补齐；不再进行 post-store 销售语义重算
+  → 按逼单节点话术类型严格查询同来源话术
+  → V3 Reply 在唯一一次最终调用中选择规则、策略、节点、话术与回复
   → 代码校验来源 ID、证据、前置项、禁忌、限频、节点时机和话术类型
   → 即时回复；延时节点只写 shadow
 ```
 
 - 规则回答“当前业务场景是否具备逼单资格”，策略回答“可采用哪套节奏”，节点话术类型回答“从哪类已发布表达中取材”；三者都不是客户可见动作命令。
 - Router 只做高召回候选。规则命中必须引用本轮真实客户消息；Reply 采用目录策略时必须输出 `trigger=business_rule`、本轮目录中的 rule/sequence/node 稳定 ID，并仍是唯一最终语义决策者。
+- 普通跟进话术精确查询为空时，最多放宽一次到“同卡点类型 + 同动作”，只能移除 tag，不能换动作或跨卡点。逼单话术不得放宽 `followCheckpointTypeId`。
+- 确定性排序不是业务结论。最终 Reply 必须复核客户当前原话、权威事实和允许的推进压力，可不采用任何候选。
 - Router 识别到当前卡点时，Reply 只有明确把同一轮卡点判为 `resolved` 才能推进；否则代码保守暂停。这是证据一致性校验，不把 Router 变成最终销售决策点。
 - 节点话术类型 ID 是同一目录内的话术类型外键。外部目录使用 `followCheckpointTypeId`，本地目录使用保留的本地类型 ID；检索返回的类型必须一致。若 Reply 采用话术，话术必须与最终 sequence/node/type 关联。没有真实话术候选时允许 Reply 自行组织低风险表达，但不得伪造知识库内容。
 - `delay>0` 的节点只能作为 `silent_after` shadow。`delay=0` 但 timing 不是明确“进入逼单后/立即”的自由文本节点视为 event-driven，不得冒充本轮即时动作。
 - `maxPerDay` 与 `minIntervalMinutes` 首版按同一销售接触边界内 Reply 已作出的 `enter|advance|fallback` 决策保守计数；它限制销售压力，不等同于送达次数。真实触达和送达转化仍按 dispatch/delivery 字段单独统计。
 - 上游 `taboos` 当前混合客户阻断条件和回复行为禁令。Reply 只把本轮真实发生的客户状态写入 `blocking_taboo_ids` 并暂停；“不得承诺/不得虚构”等文本直接约束表达，不伪装成客户状态。
 - 当前临时目录由 `AI_CLOSING_CATALOG_SOURCE` 选择：`external` 不回退，`local` 不访问逼单接口，`external_then_local` 只在接口未配置、异常或返回空目录时切换到版本化本地 JSON。两种来源不会在同一轮混用，来源和 checksum 必须保留。除该显式配置外，不得再使用 policy 内的演示序列或其他隐式策略顶替。
-- 目录缓存陈旧时允许使用 last-known-good，并在 BI 写 `closing_catalog_status=stale`；进程重启后的首轮仍需重新读取。多租户共实例和原子发布版本依赖上游补齐后才能启用。
+- 目录缓存陈旧时允许使用 last-known-good，并在 BI 写 `closing_catalog_status=stale`；进程重启后的首轮仍需重新读取。当前服务实例只有一个知识租户，所有 `slXXXX` 企微号共享同一个只读知识凭证与知识缓存；客户状态仍按销售接触边界隔离。
+- 若未来新增第二个业务知识租户，优先部署独立服务实例和 token；当前不以 `corp_id` 猜测知识租户，也不预建闲置的 token 路由。
 
 ## 跨轮与归因
 
@@ -55,10 +60,12 @@
 - 平台订单查询按销售接触边界缓存原始订单，再按每个 usage event 的送达锚点和基线订单重新筛选；历史订单不能冒充本轮成交。
 - 平台撤回、自动消息、去重/覆盖等协议事件可保留审计记录，但必须标记为非真实客户轮次，不得覆盖稳定策略状态、回填下一情绪或计入开口/订单归因。`test_isolated=true` 不写 usage，且其消息与 run 快照不得进入生产归因。
 - usage 只保存策略 key、置信度、证据引用和纠正 reason code，不保存完整聊天、模型思维或原始模型输出。
+- BI 中的逼单规则、策略和节点名称必须由本轮真实外部 ID 反查目录得到，模型自由文本不能作为业务名称。`retrieval_mode` 区分稳定 Top-K 与“同类型同动作”一次放宽。
 
 ## 当前开关
 
 - AI 销售策略通过 `AI_SALES_POLICY_ENABLED` 独立启用；逼单目录来源由 `AI_CLOSING_CATALOG_SOURCE` 选择，目录只提供候选，不替代当前 V3 回复。本地目录当前为 `provisional`，生产启用前仍需业务确认。
+- 本地 `sales_strategy_catalog_v1` 保持退出 V3 Reply 运行链，仅允许离线评测或旧主动触达兼容使用。
 - 延时逼单和四大区跟进维持 `shadow`：允许审计，不允许真实发送。
 - 意向分只用于分析，不触发回复、逼单、开单或发卡。
 

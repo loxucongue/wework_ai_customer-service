@@ -58,15 +58,17 @@ docs/                             当前架构、合同、运行手册和现场�
 ```text
 input / background context
   → authoritative context
-  → semantic evidence
-  → read-only facts
-  → semantic evidence after facts
+  → Semantic Router（一次：卡点、工具需求、检索条件）
+  → 确定性 Top-K（外部已发布目录）
+  → 必要的 read-only facts
   → material selection
-  → Reply decision
+  → V3 Reply（一次：意图、情绪、逼单、最终回复）
   → transaction commit / send audit
 ```
 
-Semantic Router 只提供分类、检索查询和只读工具需求，不决定客户可见销售动作。Reply 是唯一销售语义与客户可见动作决策节点；代码负责权威事实、工具、schema、幂等、交易边界、安全和发送结果。
+Semantic Router 只提供分类、检索查询和只读工具需求，不决定客户可见销售动作。代码从外部已发布跟进/话术/逼单目录做稳定、可审计的候选裁剪；门店事实补齐后不再重跑销售语义。Reply 是唯一销售语义与客户可见动作决策节点；代码负责权威事实、工具、schema、幂等、交易边界、安全和发送结果。
+
+当前部署只有一个业务知识租户，所有 `slXXXX` 企微号共用实例级 Follow Knowledge 凭证与业务知识缓存。共享知识不改变客户数据边界：记忆、策略状态、发送频次和订单仍按 `corp_id + wechat + external_userid/customer_id` 隔离。
 
 ## Outreach
 
