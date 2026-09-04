@@ -1246,6 +1246,9 @@ class SopPlatformTaskService:
                     "rule_data": rule_data,
                 }
             )
+            terminal_ids.append(task_id)
+        for task in terminal_tasks:
+            task_id = _task_id(task)
             await asyncio.to_thread(
                 self._mark_local_task,
                 task,
@@ -1256,14 +1259,6 @@ class SopPlatformTaskService:
                 self.repository.update_sop_event_status,
                 f"platform_sop_task:{task_id}",
                 status="platform_completed",
-            )
-            terminal_ids.append(task_id)
-        for task in terminal_tasks:
-            await asyncio.to_thread(
-                self._mark_local_task,
-                task,
-                status="completed_without_send",
-                send_payload=audit,
             )
         return {
             "processed": True,

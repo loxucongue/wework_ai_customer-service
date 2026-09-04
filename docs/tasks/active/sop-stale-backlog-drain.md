@@ -15,4 +15,6 @@
 - Latency correction: worker wall-clock spans were polluted by synchronous MySQL work blocking the asyncio event loop, so they are not evidence of upstream latency by themselves.
 - Current hotfix: recovery scans and the active no-send/send terminal path run blocking repository calls in worker threads. Structured HTTP trace logs record path, task ID, response codes, total time, and transport phase timestamps; an event-loop watchdog records lag separately without tokens or message content.
 - Test evidence: `143 passed` on 2026-09-04, including explicit HTTP timing-log redaction coverage.
+- Local persistence optimization: event insert/update now reads the resulting row on the same connection, and no-send batches persist each local terminal state once after platform consume plus strategy callback. A single no-send task drops from roughly nine local transactions to five without changing platform call order or terminal labels.
+- Persistence impact: multi-task batches expose local terminal state after the batch's external terminal work completes instead of writing partial audit twice. A crash leaves the durable event recoverable; platform consume and strategy callback remain idempotently reconciled, and customer content is not replayed.
 - Rollback: previous release `ai-paths-unified-20260903-8c736d48`.

@@ -35,7 +35,11 @@ class SopEventRepositoryMixin:
                 ),
             )
             created = result.rowcount > 0
-        event = self.get_sop_event(event_id)
+            row = conn.execute(
+                "SELECT * FROM sop_events WHERE event_id=? OR id=?",
+                (event_id, event_id),
+            ).fetchone()
+        event = self._decode_sop_event(dict(row)) if row else {}
         event["created"] = created
         return event
 
@@ -131,7 +135,11 @@ class SopEventRepositoryMixin:
                 """,
                 (status, error, now, event_id),
             )
-        return self.get_sop_event(event_id)
+            row = conn.execute(
+                "SELECT * FROM sop_events WHERE event_id=? OR id=?",
+                (event_id, event_id),
+            ).fetchone()
+        return self._decode_sop_event(dict(row)) if row else {}
 
     def list_platform_sop_task_records(
         self,
