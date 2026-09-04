@@ -869,20 +869,34 @@ class SopPlatformTaskService:
         if missing:
             raise RuntimeError(f"platform customer batch missing identity: {','.join(missing)}")
         phase_started = time.perf_counter()
-        for task in [*tasks, *trigger_tasks]:
-            await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
+        await asyncio.gather(*(
+            asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
+            for task in [*tasks, *trigger_tasks]
+        ))
         self._log_task_phase(
             task_id=batch_task_ids[0],
             phase="persist_local_tasks",
             started=phase_started,
         )
 
-        phase_started = time.perf_counter()
-        status_response = await self.system_client.conversation_status(**identity)
+        async def load_status() -> tuple[dict[str, Any], float]:
+            started = time.perf_counter()
+            result = await self.system_client.conversation_status(**identity)
+            return result, started
+
+        async def load_conversation() -> tuple[dict[str, Any], float]:
+            started = time.perf_counter()
+            result = await self.system_client.conversation(**identity, limit=50)
+            return result, started
+
+        (status_response, status_started), (conversation, conversation_started) = await asyncio.gather(
+            load_status(),
+            load_conversation(),
+        )
         self._log_task_phase(
             task_id=batch_task_ids[0],
             phase="conversation_status",
-            started=phase_started,
+            started=status_started,
         )
         status_data = (
             status_response.get("data")
@@ -899,12 +913,10 @@ class SopPlatformTaskService:
             "management_source": "conversation_status.takeover.ai_auto_reply",
             "management_status": _compact_management_status(status_data),
         }
-        phase_started = time.perf_counter()
-        conversation = await self.system_client.conversation(**identity, limit=50)
         self._log_task_phase(
             task_id=batch_task_ids[0],
             phase="conversation_history",
-            started=phase_started,
+            started=conversation_started,
         )
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
         if not isinstance(data, dict):
@@ -1247,19 +1259,14 @@ class SopPlatformTaskService:
                 }
             )
             terminal_ids.append(task_id)
-        for task in terminal_tasks:
-            task_id = _task_id(task)
-            await asyncio.to_thread(
-                self._mark_local_task,
-                task,
-                status="completed_without_send",
+        await asyncio.gather(*(
+            asyncio.to_thread(
+                self.repository.complete_platform_sop_task_without_send,
+                platform_task_id=_task_id(task),
                 send_payload=audit,
             )
-            await asyncio.to_thread(
-                self.repository.update_sop_event_status,
-                f"platform_sop_task:{task_id}",
-                status="platform_completed",
-            )
+            for task in terminal_tasks
+        ))
         return {
             "processed": True,
             "status": "completed_without_send",

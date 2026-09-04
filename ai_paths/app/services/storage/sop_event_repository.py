@@ -443,6 +443,36 @@ class SopEventRepositoryMixin:
             ).fetchone()
         return self._decode_sop_send_task(dict(prepared)) if prepared else {}
 
+    def complete_platform_sop_task_without_send(
+        self,
+        *,
+        platform_task_id: str,
+        send_payload: dict[str, Any],
+    ) -> None:
+        """Persist the no-send task and event terminal states in one transaction."""
+        task_id = str(platform_task_id or "").strip()
+        if not task_id:
+            raise ValueError("platform_task_id is required")
+        now = utc_now_iso()
+        event_id = f"platform_sop_task:{task_id}"
+        with self.store.connect() as conn:
+            conn.execute(
+                """
+                UPDATE sop_send_tasks
+                SET status='completed_without_send', send_payload_json=?, error='', updated_at=?
+                WHERE idempotency_key=?
+                """,
+                (dumps(send_payload), now, f"platform-sop:{task_id}"),
+            )
+            conn.execute(
+                """
+                UPDATE sop_events
+                SET status='platform_completed', error='', next_retry_at='', updated_at=?
+                WHERE event_id=?
+                """,
+                (now, event_id),
+            )
+
     def list_sop_send_tasks_by_ids(self, task_ids: list[str]) -> list[dict[str, Any]]:
         normalized = list(dict.fromkeys(str(task_id or "").strip() for task_id in task_ids if str(task_id or "").strip()))
         if not normalized:

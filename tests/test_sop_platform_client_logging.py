@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 
 from app.services.sop_platform_client import SopPlatformClient
+from app.services.outreach_system_client import OutreachSystemClient
 
 
 def test_http_timing_log_has_safe_identifiers_without_request_content(caplog) -> None:
@@ -44,3 +45,19 @@ def test_http_timing_log_has_safe_identifiers_without_request_content(caplog) ->
     assert payload["http_status"] == 200
     assert secret_text not in message
     assert "secret-token" not in message
+
+
+def test_managed_send_phase_log_contains_only_timing_metadata(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="app.services.outreach_system_client"):
+        OutreachSystemClient._log_managed_send_phase(
+            "platform-sop-send-60623",
+            "delivery_prepare",
+            0.0,
+        )
+
+    message = next(record.message for record in caplog.records if record.message.startswith("managed_send_phase "))
+    payload = json.loads(message.removeprefix("managed_send_phase "))
+    assert payload["task_id"] == "platform-sop-send-60623"
+    assert payload["phase"] == "delivery_prepare"
+    assert payload["elapsed_ms"] >= 0
+    assert set(payload) == {"task_id", "phase", "elapsed_ms", "result"}

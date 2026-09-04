@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from typing import Any
 
 import httpx
 
 from app.config import Settings
 from app.services.message_delivery import MessageDeliveryService, delivery_response_metadata
+
+
+logger = logging.getLogger(__name__)
 
 
 class OutreachSystemClient:
@@ -147,6 +152,7 @@ class OutreachSystemClient:
         dispatch_id = ""
         callback_required = False
         if self._delivery_service and self._delivery_service.enabled:
+            phase_started = time.perf_counter()
             prepared = await asyncio.to_thread(
                 self._delivery_service.prepare_dispatch,
                 source_channel=source_channel,
@@ -167,6 +173,7 @@ class OutreachSystemClient:
                 source_context=source_context or {},
                 idempotency_key=delivery_idempotency_key,
             )
+            self._log_managed_send_phase(task_id, "delivery_prepare", phase_started)
             dispatch = prepared.get("dispatch") if isinstance(prepared.get("dispatch"), dict) else {}
             dispatch_id = str(prepared.get("dispatch_id") or "")
             callback_required = bool(prepared.get("callback_required"))
@@ -198,13 +205,22 @@ class OutreachSystemClient:
                     },
                 }
         try:
+            phase_started = time.perf_counter()
             result = await self._request(
                 "POST",
                 "/api/v1/platform-agent/ai-outreach/send",
                 json_body=body,
             )
+            self._log_managed_send_phase(task_id, "outreach_send_http", phase_started)
         except Exception as exc:
+            self._log_managed_send_phase(
+                task_id,
+                "outreach_send_http",
+                phase_started,
+                result=f"error:{type(exc).__name__}",
+            )
             if self._delivery_service and dispatch_id:
+                persist_started = time.perf_counter()
                 await asyncio.to_thread(
                     self._delivery_service.record_submission,
                     dispatch_id,
@@ -212,12 +228,14 @@ class OutreachSystemClient:
                     error_code=type(exc).__name__,
                     error_message=str(exc),
                 )
+                self._log_managed_send_phase(task_id, "delivery_submission_persist", persist_started)
             raise
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         upstream_status = str(data.get("send_status") or result.get("msg") or "")
         delivery_status = "submission_unknown" if upstream_status == "accepted_no_response" else "platform_accepted"
         if self._delivery_service and dispatch_id:
             metadata = delivery_response_metadata(result)
+            persist_started = time.perf_counter()
             await asyncio.to_thread(
                 self._delivery_service.record_submission,
                 dispatch_id,
@@ -227,8 +245,11 @@ class OutreachSystemClient:
                 error_code="read_timeout" if delivery_status == "submission_unknown" else "",
                 error_message="platform send response timed out" if delivery_status == "submission_unknown" else "",
             )
+            self._log_managed_send_phase(task_id, "delivery_submission_persist", persist_started)
             if not callback_required:
+                finalize_started = time.perf_counter()
                 await asyncio.to_thread(self._delivery_service.mark_finalized, dispatch_id)
+                self._log_managed_send_phase(task_id, "delivery_finalize", finalize_started)
         result_data = dict(data)
         result_data.update(
             {
@@ -239,6 +260,28 @@ class OutreachSystemClient:
         )
         result["data"] = result_data
         return result
+
+    @staticmethod
+    def _log_managed_send_phase(
+        task_id: str,
+        phase: str,
+        started: float,
+        *,
+        result: str = "ok",
+    ) -> None:
+        logger.warning(
+            "managed_send_phase %s",
+            json.dumps(
+                {
+                    "task_id": str(task_id or ""),
+                    "phase": phase,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "result": result,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
 
     async def _request(
         self,
