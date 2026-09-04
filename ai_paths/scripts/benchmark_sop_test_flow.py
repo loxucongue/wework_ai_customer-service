@@ -84,7 +84,9 @@ async def benchmark(
     headers = {"x-event-token": token, "Content-Type": "application/json; charset=utf-8"}
     timings: dict[str, float] = {}
     total_started = time.perf_counter()
+    client_started = time.perf_counter()
     async with httpx.AsyncClient(timeout=max(1.0, timeout), transport=transport) as client:
+        timings["client_setup_ms"] = (time.perf_counter() - client_started) * 1000
         started = time.perf_counter()
         pending_response = await client.post(
             f"{base_url}/event/trigger/pending",
@@ -151,6 +153,13 @@ async def benchmark(
         if not isinstance(rule_payload, dict) or not _ok(rule_payload):
             raise RuntimeError(f"service-rule-data failed: {rule_payload}")
         timings["total_ms"] = (time.perf_counter() - total_started) * 1000
+        timings["local_overhead_ms"] = max(
+            0.0,
+            timings["total_ms"]
+            - timings["pending_ms"]
+            - timings["consume_ms"]
+            - timings["rule_data_ms"],
+        )
         result.update(
             {
                 "status": "completed_without_send",

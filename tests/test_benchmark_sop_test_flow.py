@@ -53,7 +53,14 @@ def test_benchmark_executes_terminal_flow_in_order() -> None:
         "/event/trigger/consume",
         "/event/trigger/service-rule-data",
     ]
-    assert set(result["timings_ms"]) == {"pending_ms", "consume_ms", "rule_data_ms", "total_ms"}
+    assert set(result["timings_ms"]) == {
+        "client_setup_ms",
+        "pending_ms",
+        "consume_ms",
+        "rule_data_ms",
+        "local_overhead_ms",
+        "total_ms",
+    }
 
 
 def test_benchmark_refuses_production_and_protected_accounts() -> None:
