@@ -61,16 +61,30 @@
 - 增加脱敏的 Reply 失败分类，区分提供方、模型协议、策略合同和策略安全问题。
 - 新增 DeepSeek 两阶段真实身份隔离评测工具，运行与评审不再交错争用配额，分层样本最终随机交错。
 - 修正模型预算起点：拿到并发槽后才创建 state 和 runtime budget；单条延迟不再包含队列等待。
+- 修正 `pause + sequence_key=none`、安全解卡 posture 和 BI 可选字段被过度当成整轮失败的问题。
+- DeepSeek 针对性修复现在携带具体事实错误说明，并要求保留未冲突的意图、情绪、卡点和 B 单暂停结构。
+- 修正评测脚本读取旧 `script_id` 导致“话术采用永远为 0”的统计错误；实际运行字段为 `selected_script_ids`。
+- 评测启动前强制检查 DeepSeek、Relay 和启用状态下的 Follow Knowledge 凭证，缺失即失败，不再生成伪 0 候选报告。
+- 修正 DeepSeek 评审门店事实优先级：本轮 `store_resolution_fact` 高于历史订单关联门店。
+- 使用真实客户身份和服务器只读事实完成 20 条门禁与 120 条正式隔离重测，全程未发送、未写生产库。
 
 ## 待办
 
-- 提交优化并执行真实样本重测。
+- 120 条仍有 5 条最终无可交付回复，集中为档期/预约事实重复违规和 2 条未细分 reply contract 失败；未达到 99% policy 覆盖门槛。
+- 120 条没有出现 B 单 `enter/advance`，只能证明 none/pause 安全，不能证明实时 B 单进入与推进效果；需补业务确认的正例样本。
+- 外部历史话术存在“诋毁其他技术”“名额有限/锁技师”等缺少本轮事实的高风险表达，需业务清洗或增加发布审核后再追求更高采用率。
+- 真实样本分布不足：明确退订仅 1 条，健康/交易各 3 条，未覆盖原计划各类最低数量；当前结果不是 400 条业务金标验收。
+- 由于上线门槛未通过，本任务分支暂不合入 `main`、不部署。
 
 ## 测试结果
 
 - `python -m py_compile ai_paths/scripts/evaluate_v3_full_chain_deepseek.py`：通过。
-- `python -m pytest -q tests/test_store_workflow_boundaries.py tests/test_store_matching_tool_contract.py tests/test_v3_policy_decision_contract.py tests/test_v3_closing_catalog_integration.py tests/test_v3_deepseek_eval_protocol.py`：113 passed。
+- `python -m pytest -q tests/test_store_workflow_boundaries.py tests/test_store_matching_tool_contract.py tests/test_v3_policy_decision_contract.py tests/test_v3_closing_catalog_integration.py tests/test_v3_deepseek_eval_protocol.py`：119 passed。
 - `git diff --check`：通过。
+- 20 条最终门禁（`778252d2`）：主模型有效 20/20，policy 覆盖 100%，DeepSeek 初评 95%，候选可采用 6，序列/话术采用 2/2，无安全失败、无依据事实或生产写入。
+- 120 条正式重测（`8046ff2b`）：主模型有效 112/120，policy 覆盖 93.33%，DeepSeek 初评 94.17%，有效策略行意图/情绪一致率 98.21%/100%，候选可采用 22，序列/话术采用 10/10，P50/P95 10.676s/16.543s，无安全失败、无依据事实或生产写入。
+- 120 条失败来源：policy schema 1、门店事实恢复 1、档期事实 3、预约确认事实 1、未细分 reply contract 2；其中 3 条经安全恢复仍有正确客户可见回复，5 条无可交付回复。
+- 服务器 V3 环境为两层：基础模型配置来自 `/opt/ai-paths/.env`，Follow Knowledge 租户凭证来自 `/opt/ai-paths-v3/v3.env`；测试只加载第一层会产生无效的 0 候选报告。
 
 ## 发布与回滚
 
@@ -80,3 +94,5 @@
 
 - 策略覆盖率、检索召回率和条件采用率必须使用不同分母，禁止把 0/全样本直接解释为选择器失效。
 - 模型评测与模型评审不得在同一受限流量窗口混跑。
+- “完整意图+情绪+B 单结构覆盖”只证明字段存在，不证明 B 单规则已命中；必须单列 enter/advance 正例覆盖率。
+- 知识候选采用率不能作为单独成功指标；候选内容本身的事实、合规和竞品表达质量必须先通过发布审核。
