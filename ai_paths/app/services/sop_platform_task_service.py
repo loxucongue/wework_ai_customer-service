@@ -2603,12 +2603,13 @@ class SopPlatformTaskService:
             "created_at": str(platform_task.get("scheduledAt") or platform_task.get("scheduled_at") or ""),
             "platform_task": platform_task,
         }
-        event = self.repository.create_sop_event(event_payload)
+        event = await asyncio.to_thread(self.repository.create_sop_event, event_payload)
         current_status = str(event.get("status") or "")
         if current_status == "platform_completed" and recovery_status != "platform_processing":
             return {"processed": False, "status": current_status, "task_id": task_id}
         identity = _task_identity(platform_task)
-        local_task = self.repository.create_sop_send_task(
+        local_task = await asyncio.to_thread(
+            self.repository.create_sop_send_task,
             event_id=event_id,
             idempotency_key=f"platform-sop:{task_id}",
             send_once_key=_platform_duplicate_send_once_key(platform_task),
@@ -2694,7 +2695,8 @@ class SopPlatformTaskService:
             rule_data = await self._report_terminal_rule_data(platform_task, outcome=outcome, sent=False)
             terminal_failure["rule_data"] = rule_data
             audit["terminal_failure"] = terminal_failure
-            self.repository.update_sop_send_task(
+            await asyncio.to_thread(
+                self.repository.update_sop_send_task,
                 str(local_task.get("id") or ""),
                 status="completed_without_send",
                 send_payload=audit,
@@ -2807,7 +2809,7 @@ class SopPlatformTaskService:
                     },
                 },
             )
-            self.repository.update_sop_event_status(event_id, status="shadow_no_send")
+            await asyncio.to_thread(self.repository.update_sop_event_status, event_id, status="shadow_no_send")
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
@@ -2826,8 +2828,9 @@ class SopPlatformTaskService:
             )
 
         processing_status = "platform_judging"
-        self.repository.update_sop_event_status(event_id, status=processing_status)
-        self.repository.update_sop_send_task(
+        await asyncio.to_thread(self.repository.update_sop_event_status, event_id, status=processing_status)
+        await asyncio.to_thread(
+            self.repository.update_sop_send_task,
             str(local_task.get("id") or ""),
             status="judging",
             send_payload={
@@ -2843,19 +2846,20 @@ class SopPlatformTaskService:
             "platform_complete_pending",
         }
         if not self.settings.sop_platform_shadow_mode and not claimed:
-            self.repository.update_sop_event_status(event_id, status="platform_claiming")
+            await asyncio.to_thread(self.repository.update_sop_event_status, event_id, status="platform_claiming")
             started = time.perf_counter()
             claim_response = await self.platform_client.consume(task_id=task_id, status=20)
             self._observe("claim", time.perf_counter() - started)
             _require_platform_status(claim_response, 20)
-            self.repository.update_sop_event_status(event_id, status="platform_processing")
+            await asyncio.to_thread(self.repository.update_sop_event_status, event_id, status="platform_processing")
 
         if not self.settings.sop_platform_shadow_mode and recovery_status == "platform_send_uncertain":
             stored_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             send_payload = stored_payload.get("request") if isinstance(stored_payload.get("request"), dict) else {}
             if not send_payload:
                 raise RuntimeError("uncertain send recovery is missing the original idempotent request")
-            self.repository.update_sop_send_task(
+            await asyncio.to_thread(
+                self.repository.update_sop_send_task,
                 str(local_task.get("id") or ""),
                 status="sent",
                 send_payload=stored_payload,
@@ -2866,7 +2870,11 @@ class SopPlatformTaskService:
                 },
                 sent_at=utc_now_iso(),
             )
-            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            await asyncio.to_thread(
+                self.repository.update_sop_event_status,
+                event_id,
+                status="platform_complete_pending",
+            )
             completed = await self.platform_client.consume(task_id=task_id, status=30)
             _require_platform_status(completed, 30)
             stored_decision = stored_payload.get("decision") if isinstance(stored_payload.get("decision"), dict) else {}
@@ -2876,7 +2884,7 @@ class SopPlatformTaskService:
                 sent=True,
                 decision=stored_decision,
             )
-            self.repository.update_sop_event_status(event_id, status="platform_completed")
+            await asyncio.to_thread(self.repository.update_sop_event_status, event_id, status="platform_completed")
             return {
                 "processed": True,
                 "status": "sent",
