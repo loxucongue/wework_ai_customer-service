@@ -387,7 +387,25 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
 def compact_facts(state: dict[str, Any]) -> dict[str, Any]:
     shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
     facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
-    return {key: facts[key] for key in ("customer", "orders", "payment", "visible_store_scope", "appointment") if key in facts}
+    rules = shared.get("rules") if isinstance(shared.get("rules"), dict) else {}
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    normalized_tools = (
+        joined.get("normalized_tool_facts")
+        if isinstance(joined.get("normalized_tool_facts"), dict)
+        else {}
+    )
+    return {
+        "authoritative_facts": {
+            key: facts[key]
+            for key in (
+                "orders_and_payment", "visible_store_scope", "request_store_facts",
+                "registration_facts", "fact_source_status",
+            )
+            if key in facts
+        },
+        "business_authority": rules.get("AUTHORITATIVE FACTS") or {},
+        "normalized_tool_facts": normalized_tools,
+    }
 
 
 def judge_messages(private: dict[str, Any]) -> list[dict[str, str]]:

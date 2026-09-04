@@ -7,7 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 
-from scripts.evaluate_v3_full_chain_deepseek import build_metrics, choose_samples  # noqa: E402
+from scripts.evaluate_v3_full_chain_deepseek import build_metrics, choose_samples, compact_facts  # noqa: E402
 
 
 def _candidate(index: int, bucket: str) -> dict[str, object]:
@@ -68,3 +68,24 @@ def test_metrics_use_conditional_adoption_denominator() -> None:
     assert metrics["adoption_eligible_count"] == 1
     assert metrics["sequence_adopted_count"] == 1
     assert metrics["script_adopted_count"] == 1
+
+
+def test_judge_receives_actual_authority_and_tool_facts() -> None:
+    facts = compact_facts(
+        {
+            "shared_context": {
+                "authoritative_facts": {
+                    "orders_and_payment": {"resolved_payment": {"deposit_state": "paid_by_order"}},
+                    "visible_store_scope": {"count": 10},
+                },
+                "rules": {"AUTHORITATIVE FACTS": {"offer": {"new_customer_price": 268}}},
+            },
+            "evidence_join": {
+                "normalized_tool_facts": {"structured_facts": {"store_lookup_status": {"status": "matched"}}}
+            },
+        }
+    )
+
+    assert facts["authoritative_facts"]["orders_and_payment"]["resolved_payment"]["deposit_state"] == "paid_by_order"
+    assert facts["business_authority"]["offer"]["new_customer_price"] == 268
+    assert facts["normalized_tool_facts"]["structured_facts"]["store_lookup_status"]["status"] == "matched"

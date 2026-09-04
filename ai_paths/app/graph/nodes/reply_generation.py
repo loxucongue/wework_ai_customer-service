@@ -309,6 +309,10 @@ def _reply_failure_diagnostic(model_call: dict[str, Any] | None) -> dict[str, An
         ("policy_decision_active_cardpoint_conflict", "policy_active_cardpoint_conflict", "policy_safety"),
         ("policy_safety_floor_removed", "policy_safety_floor_removed", "policy_safety"),
         ("policy_decision_schema_invalid", "policy_schema_invalid", "policy_contract"),
+        ("fact_required", "authoritative_fact_required", "fact_validation"),
+        ("unsupported_store", "authoritative_store_fact_invalid", "fact_validation"),
+        ("store_address_text", "authoritative_store_fact_invalid", "fact_validation"),
+        ("distance_value", "authoritative_store_fact_invalid", "fact_validation"),
         ("selected_content", "content_selection_invalid", "reply_contract"),
         ("reply_schema", "reply_schema_invalid", "reply_contract"),
         ("jsondecodeerror", "model_json_invalid", "model_protocol"),
@@ -330,7 +334,7 @@ def _reply_failure_diagnostic(model_call: dict[str, Any] | None) -> dict[str, An
         if http_match:
             code = f"model_http_{http_match.group(1)}"
             category = "provider"
-        elif "validation" in error_text or "invalid" in error_text:
+        elif "valueerror" in error_text or "validation" in error_text or "invalid" in error_text:
             code = "reply_validation_failed"
             category = "reply_contract"
 

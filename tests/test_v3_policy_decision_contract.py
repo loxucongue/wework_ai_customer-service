@@ -480,6 +480,11 @@ def test_reply_failure_diagnostic_redacts_provider_and_contract_errors() -> None
     assert "secret" not in json.dumps(provider)
     assert recovered["status"] == "recovered"
     assert recovered["code"] == "policy_schema_invalid"
+    fact = _reply_failure_diagnostic(
+        {"error": "ReplyModelPipelineError: ValueError: store_address_fact_required"}
+    )
+    assert fact["category"] == "fact_validation"
+    assert fact["code"] == "authoritative_fact_required"
 
 
 def test_policy_safety_recovery_removes_all_sales_actions() -> None:
