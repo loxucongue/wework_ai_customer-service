@@ -303,6 +303,17 @@ def _reply_failure_diagnostic(model_call: dict[str, Any] | None) -> dict[str, An
 
     code = "unknown_reply_failure"
     category = "unknown"
+    # Prefer the final repair's deterministic fact code over the broad
+    # ``fact_required`` wrapper.  These identifiers contain no customer or
+    # provider content and make evaluation/BI failures actionable.
+    terminal_error = (repair_error or final_error or primary_error).lower()
+    fact_codes = re.findall(
+        r"\b([a-z][a-z0-9_]*(?:fact_required|fact_invalid|confirmation_required))\b",
+        terminal_error,
+    )
+    if fact_codes:
+        code = fact_codes[-1]
+        category = "fact_validation"
     patterns = (
         ("policy_decision_explicit_exit_conflict", "policy_explicit_exit_conflict", "policy_safety"),
         ("policy_decision_pause_marketing_conflict", "policy_pause_marketing_conflict", "policy_safety"),
@@ -330,11 +341,11 @@ def _reply_failure_diagnostic(model_call: dict[str, Any] | None) -> dict[str, An
         ("http_status:429", "model_rate_limited", "provider"),
     )
     for marker, candidate_code, candidate_category in patterns:
-        if marker in error_text:
+        if code == "unknown_reply_failure" and marker in error_text:
             code = candidate_code
             category = candidate_category
             break
-    else:
+    if code == "unknown_reply_failure":
         http_match = re.search(r"(?:model http|http_status:)\s*(5\d\d)", error_text)
         if http_match:
             code = f"model_http_{http_match.group(1)}"

@@ -15,6 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 from app.graph.nodes.reply_nodes import (  # noqa: E402
     _normalized_policy_decision,
     _policy_safety_floor,
+    _reply_retry_messages,
     _validate_policy_reply_consistency,
     _validate_policy_safety_floor,
 )
@@ -499,6 +500,32 @@ def test_reply_failure_diagnostic_redacts_provider_and_contract_errors() -> None
     )
     assert fact["category"] == "fact_validation"
     assert fact["code"] == "store_address_fact_required"
+    repaired_fact = _reply_failure_diagnostic(
+        {
+            "primary_error": "ValueError: registration_confirmation_fact_required",
+            "retry": {"error": "ValueError: appointment_confirmation_fact_required"},
+        }
+    )
+    assert repaired_fact["code"] == "appointment_confirmation_fact_required"
+
+
+def test_parallel_reply_repair_includes_specific_fact_instruction_and_preserves_policy() -> None:
+    repaired = _reply_retry_messages(
+        [{"role": "user", "content": "原始事实"}],
+        ValueError("parallel_reply_hard_violations::registration_confirmation_fact_required"),
+        previous_payload={
+            "reply_messages": [{"type": "text", "content": "已经给您登记好了"}],
+            "policy_decision": _valid_decision(),
+        },
+        validation_context={
+            "schema_version": "parallel_reply_repair_context_v2",
+            "current_message": {"message_ref": "current_message", "content": "下午过去"},
+        },
+    )
+
+    contract_text = str(repaired[-1]["content"])
+    assert "不能说已经登记、已经留好名额、已经安排或已经预约" in contract_text
+    assert "policy_decision 不是本次错误来源时必须原样保留" in contract_text
 
 
 def test_policy_safety_recovery_removes_all_sales_actions() -> None:

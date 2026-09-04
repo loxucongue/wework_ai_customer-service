@@ -2106,6 +2106,12 @@ def _parallel_generic_reply_repair_messages(
     marker = next((item for item in markers if item in raw_error), "")
     violation_codes = raw_error.split(marker, 1)[1].split(";;") if marker else [raw_error]
     violations = [item.strip() for item in violation_codes if item.strip()]
+    targeted_repair_instructions = [
+        hint
+        for hint in (_reply_repair_hint(violation) for violation in violations)
+        if hint
+    ]
+    payment_repair_instruction = _reply_payment_repair_guard(previous_payload)
     structured_delivery_options = (
         validation_context.get("structured_delivery_options")
         if isinstance(validation_context.get("structured_delivery_options"), dict)
@@ -2120,8 +2126,12 @@ def _parallel_generic_reply_repair_messages(
             "降级 action，并删除对应结构消息、资产选择、content_asset 引用和副作用声明；"
             "保留未冲突的事实解释、客户可见内容和销售判断。"
         ),
+        "targeted_repair_instructions": targeted_repair_instructions,
+        "payment_repair_instruction": payment_repair_instruction,
         "rules": [
             "不得重新判断客户心理、成交阶段或销售节奏，不得按错误码生成新销售话术。",
+            "policy_decision 不是本次错误来源时必须原样保留；不得因删除事实冲突话术而删掉意图、情绪、卡点和逼单暂停判断。",
+            "事实不足时删除完成态、可用性或已安排断言，改成真实的条件表达、追问或说明待核对；不得换一种措辞重复同一断言。",
             "所有 ID、URL、金额、结构消息和 evidence_refs 只能取自 valid_reference_contract。",
             "采用内容资产就完整交付其必需结构；无法完整交付就删除该资产 ID 和对应引用。",
             "只输出完整严格 json，不解释错误，不输出 markdown 或内部分析。",
