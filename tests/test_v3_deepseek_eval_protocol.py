@@ -15,6 +15,7 @@ from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
     choose_samples,
     compact_facts,
     decision_summary,
+    judge_messages,
     validate_evaluation_settings,
 )
 
@@ -124,3 +125,18 @@ def test_full_chain_evaluation_fails_when_knowledge_token_is_missing() -> None:
 
     with pytest.raises(RuntimeError, match="FOLLOW_KNOWLEDGE_TOKEN"):
         validate_evaluation_settings(settings)
+
+
+def test_judge_uses_current_store_resolution_over_historical_order_store() -> None:
+    messages = judge_messages(
+        {
+            "history": [],
+            "content": "地址在哪",
+            "facts": {},
+            "summary": {},
+            "reply": "当前范围暂未查到本地门店",
+            "bucket": "store",
+        }
+    )
+
+    assert "历史订单里出现的门店只说明旧订单关联" in messages[0]["content"]
