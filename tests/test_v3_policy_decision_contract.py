@@ -433,7 +433,7 @@ def test_pause_without_started_closing_sequence_is_valid() -> None:
     _validate_policy_reply_consistency(payload, _state())
 
 
-def test_active_cardpoint_still_rejects_closing_advance_posture() -> None:
+def test_active_cardpoint_posture_label_does_not_discard_safe_reply() -> None:
     decision = _valid_decision()
     decision["closing_decision"].update(
         {
@@ -445,10 +445,24 @@ def test_active_cardpoint_still_rejects_closing_advance_posture() -> None:
         }
     )
     payload = {
-        "reply_messages": [{"type": "text", "order": 1, "content": "先付预约金吧"}],
+        "reply_messages": [{"type": "text", "order": 1, "content": "这个顾虑我先用案例给您说清楚"}],
         "action": "offer",
         "sales_judgment": {"posture": "advance"},
         "commit_actions": [],
+        "policy_decision": decision,
+    }
+
+    _validate_policy_reply_consistency(payload, _state())
+
+
+def test_active_cardpoint_still_rejects_structured_payment_action() -> None:
+    decision = _valid_decision()
+    decision["closing_decision"].update(
+        {"action": "pause", "sequence_key": "none", "node_key": "", "customer_state": "new_blocker", "pressure": "low"}
+    )
+    payload = {
+        "reply_messages": [{"type": "payment_collection", "order": 1, "content": {"amount": 10}}],
+        "action": "offer", "sales_judgment": {"posture": "advance"}, "commit_actions": [],
         "policy_decision": decision,
     }
 
@@ -484,7 +498,7 @@ def test_reply_failure_diagnostic_redacts_provider_and_contract_errors() -> None
         {"error": "ReplyModelPipelineError: ValueError: store_address_fact_required"}
     )
     assert fact["category"] == "fact_validation"
-    assert fact["code"] == "authoritative_fact_required"
+    assert fact["code"] == "store_address_fact_required"
 
 
 def test_policy_safety_recovery_removes_all_sales_actions() -> None:

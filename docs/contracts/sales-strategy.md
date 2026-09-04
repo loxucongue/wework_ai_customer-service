@@ -24,7 +24,7 @@
 - 首次输出中有客户证据的明确退订、暂停营销情绪和活动卡点构成本轮修复的安全下限；修复不得将其改成普通聊天或直接推进。
 - `cardpoint_decision.state=active|repeated` 时必须先解卡并暂停逼单；只有 `resolved` 才允许重新判断是否进入或推进序列。
 - `closing_decision.action=pause` 可以表示“当前不进入逼单”，尚未开始任何序列时 `sequence_key=none`、`node_key` 为空是合法状态，不得按缺失序列判为结构错误。
-- 活动卡点下 `sales_judgment.posture=switch` 表示从逼单切换到解卡路径，可以采用跟进序列或卡点话术；它不等于 `closing_decision=advance`。明确退订或暂停营销时仍禁止 `switch/advance`。
+- 活动卡点下 `sales_judgment.posture=switch` 表示从逼单切换到解卡路径，可以采用跟进序列或卡点话术；它不等于 `closing_decision=advance`。如果模型误把该观察标签写成 `advance`，但最终 closing 已暂停、客户可见动作和结构消息均安全，不能仅凭标签丢弃整段解卡回复；明确退订或暂停营销时仍禁止 `switch/advance`。
 
 ## 业务逼单目录
 

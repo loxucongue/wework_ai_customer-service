@@ -1603,12 +1603,12 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
     if explicit_exit or pause_marketing:
         if sales.get("posture") in {"advance", "switch"}:
             conflicts.append("sales_posture")
-    elif active_cardpoint and sales.get("posture") == "advance":
-        # ``switch`` means changing from the closing path to the blocker-solving
-        # path. It may use a follow-up sequence or script, but closing itself
-        # remains paused. Treating it as an advance discarded otherwise safe
-        # and useful blocker replies.
-        conflicts.append("sales_posture")
+    # For an active blocker, the normalized closing decision, customer-visible
+    # action, structured messages and commit actions are authoritative.  The
+    # compact sales posture is an observation label; rejecting an otherwise
+    # safe blocker-solving reply solely because it says ``advance`` discarded
+    # useful follow-up knowledge. Explicit exit and pause-marketing remain
+    # strict above because any advance label conflicts with their final state.
     allowed_actions = (
         {"none"}
         if explicit_exit
