@@ -35,6 +35,8 @@ USAGE_ADDITIONS = {
     "closing_script_type_name", "closing_catalog_checksum", "closing_catalog_status",
     "closing_rule_match_status", "closing_constraint_status",
     "closing_constraint_reasons_json",
+    "closing_primary_rule_name", "closing_sequence_name", "closing_node_name",
+    "retrieval_mode",
 }
 OUTCOME_ADDITIONS = {
     "next_usage_event_id", "next_intent_code", "next_emotion_code",
@@ -146,8 +148,12 @@ def test_usage_mapping_is_structured_idempotent_and_excludes_basis(tmp_path: Pat
             "rule_match_status": "matched",
             "constraint_status": "passed",
             "constraint_reasons": [],
+            "primary_rule_name": "意向确认",
+            "sequence_name": "价格犹豫收口",
+            "node_name": "预约确认 / 逼单-约时间类 / 进入逼单后",
         }
     )
+    state["sales_recall"] = {"retrieval_mode": "deterministic_top_k"}
 
     first = repository.record_v3_strategy_usage(conversation_id="conversation-1", final_state=state)
     second = repository.record_v3_strategy_usage(conversation_id="conversation-1", final_state=state)
@@ -174,6 +180,17 @@ def test_usage_mapping_is_structured_idempotent_and_excludes_basis(tmp_path: Pat
     assert row["closing_catalog_status"] == "ok"
     assert row["closing_rule_match_status"] == "matched"
     assert row["closing_constraint_status"] == "passed"
+    assert row["closing_primary_rule_name"] == "意向确认"
+    assert row["closing_sequence_name"] == "价格犹豫收口"
+    assert row["closing_node_name"] == "预约确认 / 逼单-约时间类 / 进入逼单后"
+    assert row["retrieval_mode"] == "deterministic_top_k"
+    closing_item = repository.v3_strategy_analytics_by_dimension(
+        dimension="closing",
+        retrieval_mode="deterministic_top_k",
+    )["items"][0]
+    assert closing_item["closing_primary_rule_name"] == "意向确认"
+    assert closing_item["closing_sequence_name"] == "价格犹豫收口"
+    assert closing_item["closing_node_name"] == "预约确认 / 逼单-约时间类 / 进入逼单后"
     assert row["cardpoint_category_key"] == "price"
     assert row["cardpoint_state"] == "resolved"
     assert json.loads(row["decision_reasons_json"]) == ["active_cardpoint_requires_pause"]
@@ -1057,6 +1074,7 @@ def test_sqlite_old_schema_upgrade_and_mysql_metadata_include_new_columns(tmp_pa
         "idx_v3_strategy_usage_intent", "idx_v3_strategy_usage_emotion",
         "idx_v3_strategy_usage_closing", "idx_v3_strategy_usage_decision",
         "idx_v3_strategy_usage_closing_catalog", "idx_v3_strategy_usage_closing_rule",
+        "idx_v3_strategy_usage_retrieval",
     ):
         lines = old_schema.splitlines()
         old_schema = "\n".join(

@@ -237,6 +237,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         closing_sequence_key: str = "",
         closing_action: str = "",
         decision_status: str = "",
+        retrieval_mode: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
         return repository.v3_strategy_analytics_failures(
@@ -254,6 +255,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
             closing_sequence_key=closing_sequence_key,
             closing_action=closing_action,
             decision_status=decision_status,
+            retrieval_mode=retrieval_mode,
             limit=limit,
         )
 
@@ -335,15 +337,16 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
         action_code: str = "", fallback_used: bool | None = None,
         intent_code: str = "", emotion_code: str = "", closing_sequence_key: str = "",
-        closing_action: str = "", decision_status: str = "", limit: int = 50,
+        closing_action: str = "", decision_status: str = "", retrieval_mode: str = "",
+        limit: int = 50,
     ) -> dict[str, Any]:
-        return _decision_dimension(
-            "closing", started_from=started_from, started_to=started_to, corp_id=corp_id,
+        return repository.v3_strategy_analytics_by_dimension(
+            dimension="closing", started_from=started_from, started_to=started_to, corp_id=corp_id,
             wechat=wechat, checkpoint_code=checkpoint_code, sequence_id=sequence_id,
             script_id=script_id, action_code=action_code, fallback_used=fallback_used,
             intent_code=intent_code, emotion_code=emotion_code,
             closing_sequence_key=closing_sequence_key, closing_action=closing_action,
-            decision_status=decision_status, limit=limit,
+            decision_status=decision_status, retrieval_mode=retrieval_mode, limit=limit,
         )
 
     @router.get("/admin/v3-strategy-analytics/by-closing-rule", dependencies=[Depends(require_api_key)])

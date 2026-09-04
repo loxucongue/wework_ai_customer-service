@@ -29,12 +29,13 @@ _USAGE_COLUMNS = (
     "policy_version", "decision_status", "intent_confidence", "intent_secondary_json",
     "emotion_confidence", "emotion_pressure", "emotion_flow_action", "closing_action",
     "closing_node_key", "closing_trigger", "closing_customer_state", "closing_pressure",
-    "closing_rule_ids_json", "closing_primary_rule_id", "closing_sequence_source_id", "closing_node_source_id",
+    "closing_rule_ids_json", "closing_primary_rule_id", "closing_primary_rule_name",
+    "closing_sequence_name", "closing_node_name", "closing_sequence_source_id", "closing_node_source_id",
     "closing_action_type_id", "closing_action_type_name", "closing_script_type_id",
     "closing_script_type_name", "closing_catalog_checksum", "closing_catalog_status",
     "closing_rule_match_status", "closing_constraint_status", "closing_constraint_reasons_json",
     "cardpoint_category_key", "cardpoint_state", "decision_reasons_json",
-    "decision_evidence_refs_json", "selector_status", "fallback_used", "payload_json",
+    "decision_evidence_refs_json", "selector_status", "retrieval_mode", "fallback_used", "payload_json",
     "order_state_before_json", "customer_turn_eligible", "created_at", "updated_at",
 )
 class V3StrategyAnalyticsRepositoryMixin:
@@ -448,6 +449,7 @@ class V3StrategyAnalyticsRepositoryMixin:
                              THEN 1 ELSE 0 END) AS new_blocker_not_paused_count,
                     SUM(CASE WHEN u.selector_status IN ('empty','error') THEN 1 ELSE 0 END) AS selector_empty_or_error_count,
                     SUM(CASE WHEN u.fallback_used=1 THEN 1 ELSE 0 END) AS taxonomy_fallback_count,
+                    SUM(CASE WHEN u.retrieval_mode='same_type_action_relaxed' THEN 1 ELSE 0 END) AS retrieval_relaxed_count,
                     SUM(CASE WHEN u.closing_rule_match_status='matched' THEN 1 ELSE 0 END) AS closing_rule_matched_count,
                     SUM(CASE WHEN u.closing_constraint_status='blocked' THEN 1 ELSE 0 END) AS closing_constraint_blocked_count,
                     SUM(CASE WHEN u.closing_catalog_status IN ('error','disabled','unavailable') THEN 1 ELSE 0 END) AS closing_catalog_unavailable_count
@@ -474,20 +476,25 @@ class V3StrategyAnalyticsRepositoryMixin:
             "intent": ("u.intent_code", "u.intent_code"),
             "emotion": ("u.emotion_before AS emotion_code", "u.emotion_before"),
             "closing": (
-                "u.closing_strategy_code AS closing_sequence_key, u.closing_sequence_source_id, "
-                "u.closing_action, u.closing_node_key, u.closing_node_source_id, "
+                "u.closing_strategy_code AS closing_sequence_key, u.closing_sequence_name, "
+                "u.closing_sequence_source_id, u.closing_action, u.closing_node_key, "
+                "u.closing_node_name, u.closing_node_source_id, u.closing_primary_rule_name, "
                 "u.closing_action_type_id, u.closing_action_type_name, "
                 "u.closing_script_type_id, u.closing_script_type_name, "
-                "u.closing_catalog_status, u.closing_rule_match_status, u.closing_constraint_status",
-                "u.closing_strategy_code, u.closing_sequence_source_id, u.closing_action, "
-                "u.closing_node_key, u.closing_node_source_id, u.closing_action_type_id, "
+                "u.closing_catalog_status, u.closing_rule_match_status, u.closing_constraint_status, "
+                "u.retrieval_mode",
+                "u.closing_strategy_code, u.closing_sequence_name, u.closing_sequence_source_id, "
+                "u.closing_action, u.closing_node_key, u.closing_node_name, "
+                "u.closing_node_source_id, u.closing_primary_rule_name, u.closing_action_type_id, "
                 "u.closing_action_type_name, u.closing_script_type_id, u.closing_script_type_name, "
-                "u.closing_catalog_status, u.closing_rule_match_status, u.closing_constraint_status",
+                "u.closing_catalog_status, u.closing_rule_match_status, u.closing_constraint_status, "
+                "u.retrieval_mode",
             ),
             "closing_rule": (
-                "u.closing_primary_rule_id AS closing_rule_id, u.closing_rule_match_status, "
-                "u.closing_constraint_status",
-                "u.closing_primary_rule_id, u.closing_rule_match_status, u.closing_constraint_status",
+                "u.closing_primary_rule_id AS closing_rule_id, u.closing_primary_rule_name, "
+                "u.closing_rule_match_status, u.closing_constraint_status",
+                "u.closing_primary_rule_id, u.closing_primary_rule_name, "
+                "u.closing_rule_match_status, u.closing_constraint_status",
             ),
             "transitions": (
                 "u.intent_code, o.next_intent_code, u.emotion_before AS emotion_code, "
@@ -567,6 +574,7 @@ class V3StrategyAnalyticsRepositoryMixin:
                              THEN 1 ELSE 0 END) AS new_blocker_not_paused_count,
                     SUM(CASE WHEN u.selector_status IN ('empty','error') THEN 1 ELSE 0 END) AS selector_empty_or_error_count,
                     SUM(CASE WHEN u.fallback_used=1 THEN 1 ELSE 0 END) AS taxonomy_fallback_count,
+                    SUM(CASE WHEN u.retrieval_mode='same_type_action_relaxed' THEN 1 ELSE 0 END) AS retrieval_relaxed_count,
                     SUM(CASE WHEN u.closing_rule_match_status='matched' THEN 1 ELSE 0 END) AS closing_rule_matched_count,
                     SUM(CASE WHEN u.closing_constraint_status='blocked' THEN 1 ELSE 0 END) AS closing_constraint_blocked_count,
                     SUM(CASE WHEN u.closing_catalog_status IN ('error','disabled','unavailable') THEN 1 ELSE 0 END) AS closing_catalog_unavailable_count
@@ -607,14 +615,15 @@ class V3StrategyAnalyticsRepositoryMixin:
                        u.checkpoint_code, u.checkpoint_name, u.checkpoint_tag_id, u.checkpoint_tag_name,
                        u.sequence_id, u.sequence_name, u.sequence_step_id,
                        u.action_code, u.action_name, u.script_id, u.script_code, u.script_name,
-                       u.script_match_scope, u.selector_status, u.fallback_used,
+                       u.script_match_scope, u.selector_status, u.retrieval_mode, u.fallback_used,
                        u.adopted, u.dispatch_id, u.delivery_status, u.failed_reason,
                        u.reply_source, u.reply_action, u.policy_version, u.decision_status,
                        u.intent_code, u.intent_confidence, u.emotion_before,
                        u.emotion_confidence, u.emotion_pressure, u.emotion_flow_action,
                        u.closing_strategy_code, u.closing_action, u.closing_node_key,
                        u.closing_trigger, u.closing_customer_state, u.closing_pressure,
-                       u.closing_rule_ids_json, u.closing_primary_rule_id,
+                       u.closing_rule_ids_json, u.closing_primary_rule_id, u.closing_primary_rule_name,
+                       u.closing_sequence_name, u.closing_node_name,
                        u.closing_sequence_source_id, u.closing_node_source_id,
                        u.closing_action_type_id, u.closing_action_type_name,
                        u.closing_script_type_id, u.closing_script_type_name,
@@ -776,6 +785,9 @@ def _usage_event_from_state(*, conversation_id: str, final_state: dict[str, Any]
         "closing_pressure": _text(closing.get("pressure")),
         "closing_rule_ids_json": dumps(closing_rule_ids),
         "closing_primary_rule_id": closing_rule_ids[0] if closing_rule_ids else "",
+        "closing_primary_rule_name": _text(closing.get("primary_rule_name")),
+        "closing_sequence_name": _text(closing.get("sequence_name")),
+        "closing_node_name": _text(closing.get("node_name")),
         "closing_sequence_source_id": _text(closing.get("sequence_source_id")),
         "closing_node_source_id": _text(closing.get("node_source_id")),
         "closing_action_type_id": _int(closing.get("action_type_id")),
@@ -794,6 +806,7 @@ def _usage_event_from_state(*, conversation_id: str, final_state: dict[str, Any]
         "decision_reasons_json": dumps(_string_list(final_state.get("decision_reasons"))[:20]),
         "decision_evidence_refs_json": dumps(_decision_evidence_refs(final_state)),
         "selector_status": _text(selector.get("status")),
+        "retrieval_mode": _text(recall.get("retrieval_mode") or selector.get("retrieval_mode")),
         "fallback_used": 1 if fallback_used else 0,
         "payload_json": dumps(payload),
         "order_state_before_json": dumps(order_state_before),
@@ -1281,6 +1294,7 @@ def _analytics_filters(filters: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
         "closing_rule_match_status": "u.closing_rule_match_status",
         "closing_constraint_status": "u.closing_constraint_status",
         "decision_status": "u.decision_status",
+        "retrieval_mode": "u.retrieval_mode",
     }
     if _text(filters.get("started_from")):
         clauses.append("u.occurred_at>=?")
@@ -1334,6 +1348,7 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
             "order_backfill_current_only_count",
             "hard_stop_wrong_advance_count", "new_blocker_not_paused_count",
             "selector_empty_or_error_count", "taxonomy_fallback_count",
+            "retrieval_relaxed_count",
             "closing_rule_matched_count", "closing_constraint_blocked_count",
             "closing_catalog_unavailable_count",
         }},
@@ -1374,6 +1389,7 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
         "new_blocker_not_paused_count": _int(row.get("new_blocker_not_paused_count")),
         "selector_empty_or_error_count": _int(row.get("selector_empty_or_error_count")),
         "taxonomy_fallback_count": _int(row.get("taxonomy_fallback_count")),
+        "retrieval_relaxed_count": _int(row.get("retrieval_relaxed_count")),
         "closing_rule_matched_count": _int(row.get("closing_rule_matched_count")),
         "closing_constraint_blocked_count": _int(row.get("closing_constraint_blocked_count")),
         "closing_catalog_unavailable_count": _int(row.get("closing_catalog_unavailable_count")),

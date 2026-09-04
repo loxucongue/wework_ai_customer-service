@@ -62,14 +62,19 @@ type MetricSet = {
   new_blocker_not_paused_count?: number;
   selector_empty_or_error_count?: number;
   taxonomy_fallback_count?: number;
+  retrieval_relaxed_count?: number;
 };
 
 type DimensionItem = MetricSet & {
   intent_code?: string;
   emotion_code?: string;
   closing_sequence_key?: string;
+  closing_sequence_name?: string;
   closing_action?: string;
   closing_node_key?: string;
+  closing_node_name?: string;
+  closing_primary_rule_name?: string;
+  retrieval_mode?: string;
   checkpoint_code?: string;
   checkpoint_name?: string;
   sequence_id?: string;
@@ -150,13 +155,6 @@ const closingLabels: Record<string, string> = {
   fallback: "降级承接",
   complete: "结束序列",
 };
-const sequenceLabels: Record<string, string> = {
-  gentle_invite: "温和邀约",
-  price_hesitation: "价格犹豫",
-  final_confirm: "最终确认",
-  none: "未进入序列",
-};
-
 export function SalesStrategyDashboard() {
   const initial = useMemo(() => defaultFilters(30), []);
   const [draft, setDraft] = useState<Filters>(initial);
@@ -296,6 +294,8 @@ export function SalesStrategyDashboard() {
           />
         </div>}
 
+        {salesDecision && <ClosingStrategyTable items={data?.closing?.items} />}
+
         <div className="grid gap-4 xl:grid-cols-2">
           <RankTable
             title="卡点与跟进序列"
@@ -433,10 +433,10 @@ function HealthGrid({ summary }: { summary: MetricSet }) {
   const items = [
     { label: "明确退订误推进", value: summary.hard_stop_wrong_advance_count, danger: true },
     { label: "新卡点未暂停", value: summary.new_blocker_not_paused_count, danger: true },
-    { label: "Selector 空/错误", value: summary.selector_empty_or_error_count },
+    { label: "旧 Selector 空/错误", value: summary.selector_empty_or_error_count },
     { label: "策略降级", value: summary.decision_degraded_count },
     { label: "送达未知", value: summary.delivery_unknown_count },
-    { label: "Taxonomy fallback", value: summary.taxonomy_fallback_count },
+    { label: "同类型同动作放宽", value: summary.retrieval_relaxed_count ?? summary.taxonomy_fallback_count },
   ].filter((item) => item.value !== undefined);
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-2">
@@ -514,6 +514,31 @@ function ScriptTable({ items = [] }: { items?: DimensionItem[] }) {
   );
 }
 
+function ClosingStrategyTable({ items = [] }: { items?: DimensionItem[] }) {
+  return (
+    <Panel title="逼单策略实际使用" subtitle="名称来自本轮外部业务目录，ID 只用于追溯">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] text-left text-sm">
+          <thead className="border-b text-xs text-slate-500"><tr><th className="pb-2 font-medium">规则</th><th className="pb-2 font-medium">策略 / 节点</th><th className="pb-2 font-medium">动作</th><th className="pb-2 font-medium">召回方式</th><th className="pb-2 text-right font-medium">使用</th><th className="pb-2 text-right font-medium">24h 开口</th></tr></thead>
+          <tbody className="divide-y divide-slate-100">
+            {items.slice(0, 12).map((item, index) => (
+              <tr key={`${item.closing_sequence_key || "none"}-${item.closing_node_key || "none"}-${index}`}>
+                <td className="max-w-52 truncate py-3" title={item.closing_primary_rule_name}>{item.closing_primary_rule_name || "未命中规则"}</td>
+                <td className="max-w-72 py-3"><div className="truncate font-medium text-slate-800" title={item.closing_sequence_name}>{item.closing_sequence_name || item.closing_sequence_key || "未进入策略"}</div><div className="truncate text-xs text-slate-500" title={item.closing_node_name}>{item.closing_node_name || item.closing_node_key || "无节点"}</div></td>
+                <td className="py-3"><Badge variant="outline">{closingLabels[item.closing_action || ""] || item.closing_action || "未判断"}</Badge></td>
+                <td className="py-3 text-xs text-slate-500">{item.retrieval_mode === "deterministic_top_k" ? "稳定 Top-K" : item.retrieval_mode || "—"}</td>
+                <td className="py-3 text-right tabular-nums">{number(item.usage_count)}</td>
+                <td className="py-3 text-right tabular-nums">{percent(item.customer_replied_24h_rate)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!items.length && <Empty label="暂无逼单策略使用数据" />}
+      </div>
+    </Panel>
+  );
+}
+
 function TransitionTable({ items = [] }: { items?: DimensionItem[] }) {
   return (
     <Panel title="下一轮变化" subtitle="只统计客户下一次真实回复，不预测 emotion_after">
@@ -546,7 +571,7 @@ function FailureTable({ items = [] }: { items?: FailureItem[] }) {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={item.decision_status === "degraded" ? "destructive" : "outline"}>{item.decision_status || item.selector_status || "异常"}</Badge>
-                <span className="truncate text-sm font-medium text-slate-800">{item.checkpoint_name || item.checkpoint_code || item.sequence_name || "策略链路"}</span>
+                <span className="truncate text-sm font-medium text-slate-800">{item.checkpoint_name || item.checkpoint_code || item.closing_sequence_name || item.sequence_name || item.closing_primary_rule_name || "策略链路"}</span>
               </div>
               <div className="mt-1 truncate text-xs text-slate-500" title={item.failed_reason || item.decision_reasons?.join(", ")}>{item.failed_reason || item.decision_reasons?.join("、") || "请结合 request_id 查看运行日志"}</div>
             </div>
@@ -570,7 +595,7 @@ function Empty({ label, success = false }: { label: string; success?: boolean })
 function mergeStrategyItems(checkpoints: DimensionItem[] = [], sequences: DimensionItem[] = []) {
   return [
     ...checkpoints.map((metrics) => ({ name: metrics.checkpoint_name || metrics.checkpoint_code || "未命名卡点", type: "卡点", metrics })),
-    ...sequences.map((metrics) => ({ name: metrics.sequence_name || sequenceLabels[metrics.sequence_id || ""] || metrics.sequence_id || "未命名序列", type: "序列", metrics })),
+    ...sequences.map((metrics) => ({ name: metrics.sequence_name || metrics.sequence_id || "未命名序列", type: "序列", metrics })),
   ].sort((a, b) => (b.metrics.usage_count || 0) - (a.metrics.usage_count || 0));
 }
 

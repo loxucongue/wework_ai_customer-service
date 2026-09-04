@@ -224,6 +224,9 @@ class SQLiteStore:
                 "closing_pressure": "TEXT NOT NULL DEFAULT ''",
                 "closing_rule_ids_json": "TEXT NOT NULL DEFAULT '[]'",
                 "closing_primary_rule_id": "TEXT NOT NULL DEFAULT ''",
+                "closing_primary_rule_name": "TEXT NOT NULL DEFAULT ''",
+                "closing_sequence_name": "TEXT NOT NULL DEFAULT ''",
+                "closing_node_name": "TEXT NOT NULL DEFAULT ''",
                 "closing_sequence_source_id": "TEXT NOT NULL DEFAULT ''",
                 "closing_node_source_id": "TEXT NOT NULL DEFAULT ''",
                 "closing_action_type_id": "INTEGER NOT NULL DEFAULT 0",
@@ -239,6 +242,7 @@ class SQLiteStore:
                 "cardpoint_state": "TEXT NOT NULL DEFAULT ''",
                 "decision_reasons_json": "TEXT NOT NULL DEFAULT '[]'",
                 "decision_evidence_refs_json": "TEXT NOT NULL DEFAULT '{}'",
+                "retrieval_mode": "TEXT NOT NULL DEFAULT ''",
                 "customer_turn_eligible": "INTEGER NOT NULL DEFAULT 1",
             },
             "v3_strategy_outcome_events": {
@@ -305,6 +309,10 @@ class SQLiteStore:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_closing_rule "
             "ON v3_strategy_usage_events(closing_primary_rule_id, occurred_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_retrieval "
+            "ON v3_strategy_usage_events(retrieval_mode, occurred_at)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_v3_strategy_usage_decision "

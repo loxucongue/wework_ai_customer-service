@@ -74,6 +74,7 @@ def test_decision_dimension_routes_forward_filters() -> None:
                 "script_id": "script-1",
                 "action_code": "explain_value",
                 "fallback_used": "true",
+                "retrieval_mode": "same_type_action_relaxed",
             },
         )
         assert response.status_code == 200
@@ -83,6 +84,7 @@ def test_decision_dimension_routes_forward_filters() -> None:
     assert repository.calls[0][1]["emotion_code"] == "hesitant"
     assert repository.calls[0][1]["checkpoint_code"] == "price"
     assert repository.calls[0][1]["fallback_used"] is True
+    assert repository.calls[2][1]["retrieval_mode"] == "same_type_action_relaxed"
 
     response = client.get(
         "/admin/v3-strategy-analytics/by-closing-rule",

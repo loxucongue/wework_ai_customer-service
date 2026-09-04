@@ -577,6 +577,9 @@ v3_strategy_usage_events = Table(
     _short("closing_pressure", length=32),
     _json("closing_rule_ids_json", "[]"),
     _short("closing_primary_rule_id", length=128),
+    _short("closing_primary_rule_name"),
+    _short("closing_sequence_name"),
+    _short("closing_node_name"),
     _id("closing_sequence_source_id"),
     _id("closing_node_source_id"),
     Column("closing_action_type_id", Integer, nullable=False, server_default="0"),
@@ -593,6 +596,7 @@ v3_strategy_usage_events = Table(
     _json("decision_reasons_json", "[]"),
     _json("decision_evidence_refs_json", "{}"),
     _short("selector_status", length=64),
+    _short("retrieval_mode", length=64),
     Column("fallback_used", Integer, nullable=False, server_default="0"),
     _json("payload_json", "{}"),
     _json("order_state_before_json", "{}"),
@@ -630,6 +634,7 @@ v3_strategy_usage_events = Table(
         "occurred_at",
     ),
     Index("idx_aics_v3_strategy_usage_closing_rule", "closing_primary_rule_id", "occurred_at"),
+    Index("idx_aics_v3_strategy_usage_retrieval", "retrieval_mode", "occurred_at"),
     Index("idx_aics_v3_strategy_usage_decision", "decision_status", "occurred_at"),
 )
 

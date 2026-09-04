@@ -22,27 +22,6 @@ type KeyedItem = {
   flow_action?: string;
 };
 
-type ClosingNode = {
-  node_key: string;
-  name: string;
-  timing: "immediate" | "customer_reply" | "silent_after";
-  delay_minutes: number;
-  goal: string;
-  required_facts: string[];
-  material_sources: string[];
-  pressure: "normal" | "low" | "none";
-  ai_guidance: string;
-};
-
-type ClosingSequence = {
-  sequence_key: string;
-  name: string;
-  positioning: string;
-  enabled: boolean;
-  applies_when: string;
-  nodes: ClosingNode[];
-};
-
 type AiSalesPolicy = {
   schema_version: string;
   policy_version: string;
@@ -54,11 +33,9 @@ type AiSalesPolicy = {
   ownership: Record<string, string>;
   closing: {
     enabled: boolean;
+    catalog_source: string;
     silent_tasks_mode: string;
-    rules: Record<string, string | number>;
-    triggers: KeyedItem[];
-    sequences: ClosingSequence[];
-    fallbacks: Array<{ customer_state: string; action: string; description: string }>;
+    description: string;
   };
   routing: {
     mode: string;
@@ -88,17 +65,11 @@ const EMPTY_POLICY: AiSalesPolicy = {
   updated_at: "",
   purpose: "",
   ownership: {},
-  closing: { enabled: false, silent_tasks_mode: "off", rules: {}, triggers: [], sequences: [], fallbacks: [] },
+  closing: { enabled: false, catalog_source: "", silent_tasks_mode: "off", description: "" },
   routing: { mode: "", description: "", fixed_priority: [], business_tasks: [] },
   intent: { realtime_intents: [], analytics_scoring: {} },
   emotion: { weak_evidence: [], labels: [] },
   system_boundaries: [],
-};
-
-const TIMING_LABELS: Record<ClosingNode["timing"], string> = {
-  immediate: "进入后立即执行",
-  customer_reply: "客户回复后重判",
-  silent_after: "持续静默后执行",
 };
 
 const OWNER_LABELS: Record<string, string> = {
@@ -140,10 +111,10 @@ export function AiSalesPolicyWorkbench() {
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-semibold tracking-tight">AI 回复策略配置</h1>
-            <Badge variant="secondary">本地临时配置 · 只读</Badge>
+            <Badge variant="secondary">V3 运行合同 · 只读</Badge>
           </div>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            当前页面直接展示 V3 正在读取的同一份 JSON。后续第三方平台完成后，只替换配置数据源，不改 Planner、Reply 和审计契约。
+            当前页面展示 V3 的决策和安全合同；逼单规则、策略、节点和话术由外部业务平台统一维护。
           </p>
         </div>
         <Button variant="outline" onClick={() => void loadPolicy()} disabled={loading}>
@@ -196,106 +167,23 @@ export function AiSalesPolicyWorkbench() {
         </TabsList>
 
         <TabsContent value="closing" className="space-y-4">
-          <div className="rounded-lg border bg-muted/20 p-4 text-sm leading-6">
-            实时节点由 Planner 在当前回复中判断；客户一旦回复就重新规划。静默节点目前只记录判断，不创建真实发送任务。
-          </div>
-          {policy.closing.sequences.map((sequence) => (
-            <Card key={sequence.sequence_key} className="gap-4 py-5">
-              <CardHeader className="px-5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <CardTitle className="text-base">{sequence.name}</CardTitle>
-                  <Badge variant={sequence.enabled ? "default" : "secondary"}>{sequence.enabled ? "启用" : "停用"}</Badge>
-                  <Badge variant="outline">{sequence.sequence_key}</Badge>
-                </div>
-                <CardDescription>{sequence.positioning} · {sequence.applies_when}</CardDescription>
-              </CardHeader>
-              <CardContent className="overflow-x-auto px-5">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="min-w-32">节点</TableHead>
-                      <TableHead className="min-w-36">时机</TableHead>
-                      <TableHead className="min-w-72">节点目标</TableHead>
-                      <TableHead className="min-w-44">事实要求</TableHead>
-                      <TableHead className="min-w-64">AI 指导</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {sequence.nodes.map((node) => (
-                      <TableRow key={node.node_key}>
-                        <TableCell className="align-top font-medium">
-                          {node.name}
-                          <div className="mt-1 font-mono text-xs text-muted-foreground">{node.node_key}</div>
-                        </TableCell>
-                        <TableCell className="align-top">
-                          {TIMING_LABELS[node.timing]}
-                          {node.delay_minutes ? <div className="text-xs text-muted-foreground">{node.delay_minutes} 分钟</div> : null}
-                          <Badge className="mt-2" variant="outline">压力：{node.pressure}</Badge>
-                        </TableCell>
-                        <TableCell className="align-top leading-6">{node.goal}</TableCell>
-                        <TableCell className="align-top text-xs leading-5 text-muted-foreground">
-                          {node.required_facts.length ? node.required_facts.join("、") : "无额外事实"}
-                        </TableCell>
-                        <TableCell className="align-top text-sm leading-6">{node.ai_guidance}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          ))}
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Card className="gap-3 py-5">
-              <CardHeader className="px-5">
-                <CardTitle className="text-base">触发条件</CardTitle>
-                <CardDescription>触发项只是 Planner 的语义证据，不做关键词匹配。</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 px-5">
-                {policy.closing.triggers.map((trigger) => (
-                  <div key={trigger.key} className="rounded-lg border p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{trigger.name}</span>
-                      <Badge variant="outline">{OWNER_LABELS[trigger.owner || ""] || trigger.owner}</Badge>
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-muted-foreground">{trigger.description}</p>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-
-            <Card className="gap-3 py-5">
-              <CardHeader className="px-5">
-                <CardTitle className="text-base">约束规则</CardTitle>
-                <CardDescription>业务可调整发送频率；发送前仍需通过系统固定边界。</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2 px-5">
-                {Object.entries(policy.closing.rules).map(([key, value]) => (
-                  <div key={key} className="flex items-center justify-between gap-4 rounded-lg border p-3 text-sm">
-                    <code className="text-xs text-muted-foreground">{key}</code>
-                    <span className="font-medium">{String(value)}</span>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-
-            <Card className="gap-3 py-5">
-              <CardHeader className="px-5">
-                <CardTitle className="text-base">失败回退</CardTitle>
-                <CardDescription>软拒绝可换角度一次；明确退出和终态立即结束。</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 px-5">
-                {policy.closing.fallbacks.map((fallback) => (
-                  <div key={fallback.customer_state} className="rounded-lg border p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <code className="text-xs">{fallback.customer_state}</code>
-                      <Badge variant="outline">{fallback.action}</Badge>
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-muted-foreground">{fallback.description}</p>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
+          <Card className="gap-4 py-5">
+            <CardHeader className="px-5">
+              <div className="flex flex-wrap items-center gap-2">
+                <CardTitle className="text-base">外部业务策略目录</CardTitle>
+                <Badge variant={policy.runtime_mode === "active" && policy.closing.enabled ? "default" : "secondary"}>
+                  {policy.runtime_mode === "active" && policy.closing.enabled ? "实时判断已启用" : "待验收 / 未启用"}
+                </Badge>
+                <Badge variant="outline">{policy.closing.catalog_source || "未配置来源"}</Badge>
+              </div>
+              <CardDescription>{policy.closing.description}</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3 px-5 md:grid-cols-3">
+              <SummaryCard label="规则与策略" value="业务平台维护" detail="本地不再保存演示序列" />
+              <SummaryCard label="本轮实时推进" value="V3 Reply 判断" detail="必须引用外部真实规则、序列和节点" />
+              <SummaryCard label="延时节点" value={policy.closing.silent_tasks_mode === "shadow" ? "仅观察" : policy.closing.silent_tasks_mode} detail="不会调用真实发送适配器" />
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="routing">
