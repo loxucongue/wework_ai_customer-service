@@ -1,21 +1,21 @@
 {
   "schema_version": "ai_sales_policy_v2",
-  "policy_version": "2026-09-04.1",
+  "policy_version": "2026-09-04.2",
   "decision_schema_version": "v3_policy_decision_v3",
   "status": "published",
   "runtime_mode": "active",
   "updated_at": "2026-09-04T00:00:00+08:00",
-  "purpose": "为 V3 Reply 提供主任务、实时意图、情绪调节和逼单决策合同。逼单规则、策略与节点全部来自外部 follow knowledge 目录。",
+  "purpose": "为 V3 Reply 提供主任务、实时意图、情绪调节和逼单决策合同。逼单规则、策略、节点和话术来自本轮配置的同一份 closing catalog。",
   "ownership": {
-    "business": "在外部业务平台维护逼单规则、策略、节点和话术类型。",
+    "business": "维护逼单规则、策略、节点和话术；业务接口未交付期间使用版本化本地目录，接口可用后切换外部目录。",
     "model": "在同一次最终 Reply 调用中判断意图、情绪、逼单状态和客户回复。",
     "code": "负责真实目录、事实、ID 校验、客户边界、安全约束、Shadow 和 BI。"
   },
   "closing": {
     "enabled": true,
-    "catalog_source": "external_follow_knowledge",
+    "catalog_source": "configured_closing_catalog",
     "silent_tasks_mode": "shadow",
-    "description": "本地不配置逼单序列；enter/advance 必须引用本轮外部真实 rule、sequence、node ID。"
+    "description": "enter/advance 必须引用本轮同一目录中的真实 rule、sequence、node ID；不得混用外部和本地来源。"
   },
   "routing": {
     "mode": "collect_all_choose_one_primary",
@@ -36,13 +36,13 @@
   },
   "intent": {
     "realtime_intents": [
-      {"key": "fact_inquiry", "name": "咨询事实", "definition": "询问价格、效果、门店、时间、流程或规则。", "usage": "优先回答；缺少权威事实时调用工具。"},
-      {"key": "blocker_expression", "name": "表达卡点", "definition": "对价格、效果、信任、距离、时间或决策成本存在阻力。", "usage": "判断新卡点、同卡点或已化解，再选择处理角度。"},
-      {"key": "transaction_progress", "name": "推进成交", "definition": "准备预约、到店、付款或确认下一步。", "usage": "在外部规则和事实允许时进入合法成交动作。"},
-      {"key": "information_submission", "name": "提交信息", "definition": "提供城市、门店、人数、姓名、电话、日期或时间。", "usage": "承接最近未完成动作，不重复询问已经提供的信息。"},
-      {"key": "defer", "name": "暂缓", "definition": "表示现在忙、改天、等待安排或暂时考虑，但没有明确退出。", "usage": "降低压力或暂停，不直接判定客户流失。"},
-      {"key": "explicit_exit", "name": "明确退出", "definition": "明确要求不要联系、停止发送或退出营销。", "usage": "触发系统停止边界。"},
-      {"key": "normal_exchange", "name": "普通交流", "definition": "确认、感谢、闲聊或表情回复。", "usage": "自然承接上下文，不机械重开旧问题。"}
+      {"key": "fact_inquiry", "name": "咨询事实", "definition": "以询问价格、效果、门店、时间、流程或规则为本轮主要任务，没有明确表示这些问题正在阻止决定。", "usage": "优先回答；缺少权威事实时调用工具。"},
+      {"key": "blocker_expression", "name": "表达卡点", "definition": "明确表示价格、效果、信任、距离、时间、健康或决策成本正在形成阻力；针对我方的投诉或强烈质疑但未要求停止联系，也归入本类并由主任务风险优先级处理。", "usage": "判断新卡点、同卡点或已化解，再选择处理角度；投诉不等于退订。"},
+      {"key": "transaction_progress", "name": "推进成交", "definition": "主动准备预约、到店、付款、报名，或确认具体日期时间和下一步。", "usage": "在目录规则、客户授权和权威事实允许时进入合法成交动作。"},
+      {"key": "information_submission", "name": "提交信息", "definition": "主要是在回答上一轮要求，提供城市、门店、人数、姓名、电话、日期或时间；若同句仍有明确问题，问题通常是主意图。", "usage": "承接最近未完成动作，不重复询问已经提供的信息。"},
+      {"key": "defer", "name": "暂缓", "definition": "表示现在忙、改天、等待安排或暂时考虑，但没有明确要求停止后续联系。", "usage": "降低压力或暂停，不直接判定客户流失，也不等于永久退出。"},
+      {"key": "explicit_exit", "name": "明确退出", "definition": "明确要求我方不要再联系、不要再发送或退出后续营销。投诉、要求解释、要求负责人或转人工本身不是退出。", "usage": "只有存在停止后续联系的明确原话时才触发系统停止边界。"},
+      {"key": "normal_exchange", "name": "普通交流", "definition": "确认、感谢、闲聊或表情回复，且没有更具体的问题、卡点、交易或退出任务。", "usage": "自然承接上下文，不机械重开旧问题。"}
     ],
     "analytics_scoring": {
       "enabled": true,
@@ -52,23 +52,25 @@
     }
   },
   "emotion": {
-    "weak_evidence": ["回复速度", "单个表情", "单条短回复", "标点数量"],
+    "weak_evidence": ["回复速度", "单个表情", "单条短回复", "标点数量", "单独一个粗口或口头禅", "对自身问题或第三方的抱怨"],
     "labels": [
-      {"key": "enthusiastic", "name": "热情", "reply_effect": "适当提高互动感，但不过度热情。", "flow_action": "keep"},
-      {"key": "curious", "name": "好奇", "reply_effect": "提高信息密度并耐心解释。", "flow_action": "keep"},
-      {"key": "neutral", "name": "中性", "reply_effect": "保持正常、友好和简洁。", "flow_action": "keep"},
-      {"key": "hesitant", "name": "犹豫", "reply_effect": "降低压力，先处理权衡因素。", "flow_action": "lower_pressure"},
-      {"key": "cold", "name": "冷淡", "reply_effect": "减少篇幅和连续追问。", "flow_action": "lower_pressure"},
-      {"key": "defensive", "name": "防备", "reply_effect": "优先真实证据，减少营销口吻。", "flow_action": "lower_pressure"},
-      {"key": "impatient", "name": "不耐烦", "reply_effect": "只回答当前问题并立即缩短表达。", "flow_action": "pause_marketing_turn"},
-      {"key": "angry", "name": "愤怒或投诉", "reply_effect": "正面承接，不继续销售。", "flow_action": "handoff_by_system_rule"}
+      {"key": "enthusiastic", "name": "热情", "definition": "客户主动表达明显认可、期待或积极参与，并愿意继续了解或行动。", "minimum_evidence": "当前原话至少包含明确正向评价、期待或主动行动信号之一。", "not_enough_evidence": "礼貌词、单个笑脸、单独的‘好’或带粗口的惊叹。", "reply_effect": "适当提高互动感，并自然推进一个低摩擦下一步。", "flow_action": "keep"},
+      {"key": "curious", "name": "好奇", "definition": "客户以了解事实、原理、效果、门店或流程为主，尚未表现明显正负情绪。", "minimum_evidence": "当前原话提出真实问题或请求进一步说明。", "not_enough_evidence": "只有问号、表情或无明确指向的短句。", "reply_effect": "先给结论，再用必要信息耐心解释。", "flow_action": "keep"},
+      {"key": "neutral", "name": "中性", "definition": "客户正常陈述、确认或交流，没有足够证据归入更强情绪。", "minimum_evidence": "缺少明确正向、犹豫、防备、不耐烦或愤怒证据时作为默认标签。", "not_enough_evidence": "不能因为短回复、回复慢、标点少或单独粗口把中性升级为负面情绪。", "reply_effect": "保持正常、友好和简洁。", "flow_action": "keep"},
+      {"key": "hesitant", "name": "犹豫", "definition": "客户仍有兴趣，但在价格、效果、时间、家人决策或行动成本之间权衡。", "minimum_evidence": "当前原话明确出现顾虑、比较、暂缓或难以决定。", "not_enough_evidence": "单独的‘嗯’‘看看’或未回答销售问题。", "reply_effect": "降低压力，先处理权衡因素；卡点解决后可继续主线。", "flow_action": "lower_pressure"},
+      {"key": "cold", "name": "冷淡", "definition": "客户参与度较低且不主动展开，但没有表达反感、拒绝或停止联系。", "minimum_evidence": "结合连续上下文存在多次极短承接、回避展开或明显低参与。", "not_enough_evidence": "单条短回复、回复慢或忙碌状态。", "reply_effect": "减少篇幅和连续追问，只交付一个有用信息或问题。", "flow_action": "lower_pressure"},
+      {"key": "defensive", "name": "防备", "definition": "客户质疑真实性、担心被骗或对营销承诺保持警惕，但仍愿意沟通。", "minimum_evidence": "当前原话对商家、效果、价格或证据提出明确质疑。", "not_enough_evidence": "普通比较、询价、追问细节，或对其他商家的负面经历。", "reply_effect": "先承认证据需求，使用真实事实或案例，减少营销口吻。", "flow_action": "lower_pressure"},
+      {"key": "impatient", "name": "不耐烦", "definition": "客户明确嫌信息过多、催促直接回答、反感重复追问，当前轮不适合追加销售内容。", "minimum_evidence": "当前原话明确针对本次沟通表达‘别绕、直接说、说过了、怎么还问’等不耐或上下文中持续催促。", "not_enough_evidence": "粗口、短句、反问、感叹号，或客户只是赶时间。", "reply_effect": "只回答当前问题并立即缩短表达，本轮不追加逼单。", "flow_action": "pause_marketing_turn", "minimum_flow_confidence": "medium", "low_confidence_flow_action": "lower_pressure"},
+      {"key": "angry", "name": "愤怒", "definition": "客户的强烈敌意或投诉明确指向我方人员、服务或品牌，继续销售会扩大冲突。", "minimum_evidence": "当前原话至少同时具备明确指向我方的强烈负面评价、指责或威胁，以及要求解释、投诉、转人工或停止当前销售之一；若只是爆粗，不能判定。", "not_enough_evidence": "单独粗口或口头禅；‘卧槽这么便宜/牛逼’等正向惊叹；抱怨自己的皮肤、时间、家人或第三方；普通质疑、讲价、软拒绝。", "reply_effect": "正面承接当前冲突并停止本轮销售；是否永久停止营销仍只由明确退订事实决定。", "flow_action": "handoff_by_system_rule", "minimum_flow_confidence": "high", "low_confidence_flow_action": "lower_pressure"}
     ]
   },
   "system_boundaries": [
     "风险、人工接管、明确退订和交易终态不能由业务配置关闭。",
-    "逼单 enter/advance 必须引用本轮外部真实 rule、sequence、node ID。",
+    "逼单 enter/advance 必须引用本轮同一 closing catalog 的真实 rule、sequence、node ID。",
     "付款卡必须有同门店、同金额的有效未付订单或本轮开单成功事实。",
-    "延时任务只允许 Shadow，且只能引用带 checksum 的外部节点。",
+    "延时任务只允许 Shadow，且只能引用带 checksum 的本轮真实目录节点。",
+    "单独爆粗、口头禅或对自身和第三方的抱怨不是愤怒、投诉或停止营销事实。",
+    "情绪只能调整本轮表达压力；永久停止营销只由明确退订或既有强制系统边界触发。",
     "不同企微账号必须使用独立的销售接触状态和幂等边界。",
     "活动、价格、门店、订单、预约和案例素材缺少真实事实时不得猜测。",
     "每轮先回答客户当前问题，再执行最多一个合法推进动作。"

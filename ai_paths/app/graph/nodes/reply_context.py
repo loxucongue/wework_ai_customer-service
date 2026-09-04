@@ -414,21 +414,6 @@ def _ai_sales_policy_for_reply(state: AgentState) -> dict[str, Any]:
     intent = raw.get("intent") if isinstance(raw.get("intent"), dict) else {}
     emotion = raw.get("emotion") if isinstance(raw.get("emotion"), dict) else {}
     closing = raw.get("closing") if isinstance(raw.get("closing"), dict) else {}
-    primary_key = str((state.get("primary_task") or {}).get("type") or "").strip()
-    intent_key = str((state.get("realtime_intent") or {}).get("type") or "").strip()
-    emotion_key = str((state.get("emotion_decision") or {}).get("label") or "").strip()
-    selected_task = next(
-        (item for item in routing.get("business_tasks") or [] if isinstance(item, dict) and item.get("key") == primary_key),
-        {},
-    )
-    selected_intent = next(
-        (item for item in intent.get("realtime_intents") or [] if isinstance(item, dict) and item.get("key") == intent_key),
-        {},
-    )
-    selected_emotion = next(
-        (item for item in emotion.get("labels") or [] if isinstance(item, dict) and item.get("key") == emotion_key),
-        {},
-    )
     return _drop_empty(
         {
             "schema_version": raw.get("schema_version"),
@@ -436,21 +421,11 @@ def _ai_sales_policy_for_reply(state: AgentState) -> dict[str, Any]:
             "checksum": raw.get("checksum"),
             "runtime_mode": raw.get("runtime_mode"),
             "silent_tasks_mode": closing.get("silent_tasks_mode"),
-            "selected_task": _drop_empty({"key": selected_task.get("key"), "goal": selected_task.get("goal")}),
-            "selected_intent": _drop_empty(
-                {
-                    "key": selected_intent.get("key"),
-                    "meaning": selected_intent.get("definition"),
-                    "usage": selected_intent.get("usage"),
-                }
-            ),
-            "selected_emotion": _drop_empty(
-                {
-                    "key": selected_emotion.get("key"),
-                    "reply_effect": selected_emotion.get("reply_effect"),
-                    "flow_action": selected_emotion.get("flow_action"),
-                }
-            ),
+            "task_priority": copy.deepcopy(routing.get("fixed_priority") or []),
+            "task_catalog": copy.deepcopy(routing.get("business_tasks") or []),
+            "intent_catalog": copy.deepcopy(intent.get("realtime_intents") or []),
+            "emotion_weak_evidence": copy.deepcopy(emotion.get("weak_evidence") or []),
+            "emotion_catalog": copy.deepcopy(emotion.get("labels") or []),
         }
     )
 

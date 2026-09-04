@@ -24,6 +24,8 @@ from app.graph.nodes.reply_generation import (  # noqa: E402
     _run_reply_model_pipeline,
 )
 from app.graph.nodes.reply_validation import _requested_store_scope_regions  # noqa: E402
+from app.graph.nodes.reply_context import _ai_sales_policy_for_reply  # noqa: E402
+from app.prompts.reply_synthesizer import _render_missing_authority_guard  # noqa: E402
 from app.chat_runtime import _record_stop_contact_fact  # noqa: E402
 from app.services.outreach.planning import _closing_shadow_terminal_reason  # noqa: E402
 from app.services.outreach.execution import TaskExecutor  # noqa: E402
@@ -170,6 +172,67 @@ def test_policy_catalog_and_runtime_contract_are_fail_closed() -> None:
     unsafe_shadow = json.loads(json.dumps(policy, ensure_ascii=False))
     unsafe_shadow["closing"]["silent_tasks_mode"] = "active"
     assert any(item["code"] == "silent_tasks_mode" for item in _audit_policy(unsafe_shadow)["issues"])
+
+
+def test_reply_receives_complete_intent_and_emotion_catalog_before_deciding() -> None:
+    context = _ai_sales_policy_for_reply(_state())
+
+    assert {item["key"] for item in context["intent_catalog"]} == {
+        "fact_inquiry",
+        "blocker_expression",
+        "transaction_progress",
+        "information_submission",
+        "defer",
+        "explicit_exit",
+        "normal_exchange",
+    }
+    emotions = {item["key"]: item for item in context["emotion_catalog"]}
+    assert len(emotions) == 8
+    assert "若只是爆粗，不能判定" in emotions["angry"]["minimum_evidence"]
+    assert emotions["angry"]["minimum_flow_confidence"] == "high"
+
+
+def test_low_confidence_angry_label_only_lowers_pressure() -> None:
+    decision = _valid_decision()
+    decision["emotion_decision"] = {
+        "label": "angry",
+        "confidence": "low",
+        "pressure": "none",
+        "evidence_refs": ["current_message"],
+        "basis": ["只有弱情绪信号"],
+    }
+
+    normalized = _normalized_policy_decision(decision, state=_state())
+
+    assert normalized["emotion_decision"]["label"] == "angry"
+    assert normalized["emotion_decision"]["flow_action"] == "lower_pressure"
+    assert "emotion_confidence_below_flow_threshold" in normalized["decision_reasons"]
+
+
+def test_valid_catalog_selection_derives_business_rule_trigger() -> None:
+    decision = _valid_decision()
+    _set_external_closing(decision, action="enter")
+    decision["closing_decision"]["trigger"] = "explicit_transaction"
+
+    normalized = _normalized_policy_decision(decision, state=_external_closing_state())
+
+    assert normalized["closing_decision"]["action"] == "enter"
+    assert normalized["closing_decision"]["node_key"] == "external:node:2011"
+    assert normalized["closing_decision"]["trigger"] == "business_rule"
+    assert "external_closing_requires_business_rule_trigger" not in normalized["decision_reasons"]
+
+
+def test_missing_payment_channel_does_not_hide_authoritative_payment_rules() -> None:
+    guard = _render_missing_authority_guard(
+        {"payment_channel_availability": {"payment_card": {"available": False}}},
+        facts={},
+        rules={"offer_facts": {"deposit_amount": 10}},
+        evidence={"tool_facts": {"customer_store_lookup": {"status": "no_match"}}},
+    )
+
+    assert "可以按上文权威规则解释预约金" in guard
+    assert "不得确认预约金金额" not in guard
+    assert "没有活动/项目权威事实" not in guard
 
 
 def test_policy_decision_normalizes_cross_field_constraints_and_refs() -> None:

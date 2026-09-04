@@ -186,8 +186,13 @@ def _normalize_emotion(raw: dict[str, Any]) -> dict[str, Any]:
         {
             "key": _identifier(item.get("key")),
             "name": _text(item.get("name")),
+            "definition": _text(item.get("definition")),
+            "minimum_evidence": _text(item.get("minimum_evidence")),
+            "not_enough_evidence": _text(item.get("not_enough_evidence")),
             "reply_effect": _text(item.get("reply_effect")),
             "flow_action": _identifier(item.get("flow_action")),
+            "minimum_flow_confidence": _identifier(item.get("minimum_flow_confidence")),
+            "low_confidence_flow_action": _identifier(item.get("low_confidence_flow_action")),
         }
         for item in _mapping_list(raw.get("labels"), "emotion.labels")
     ]
@@ -219,12 +224,12 @@ def _audit_policy(policy: dict[str, Any]) -> dict[str, Any]:
         issues.append(
             _issue("error", "silent_tasks_mode", "silent_tasks_mode must be off or shadow")
         )
-    if closing.get("catalog_source") != "external_follow_knowledge":
+    if closing.get("catalog_source") != "configured_closing_catalog":
         issues.append(
             _issue(
                 "error",
                 "closing_catalog_source",
-                "closing catalog_source must be external_follow_knowledge",
+                "closing catalog_source must be configured_closing_catalog",
             )
         )
 
@@ -262,6 +267,20 @@ def _audit_policy(policy: dict[str, Any]) -> dict[str, Any]:
                 _issue(
                     "error", "emotion_flow_action",
                     f"emotion {item.get('key') or '?'} has invalid flow_action",
+                )
+            )
+        if isinstance(item, dict) and item.get("minimum_flow_confidence") not in {None, "", "low", "medium", "high"}:
+            issues.append(
+                _issue(
+                    "error", "emotion_flow_confidence",
+                    f"emotion {item.get('key') or '?'} has invalid minimum_flow_confidence",
+                )
+            )
+        if isinstance(item, dict) and item.get("low_confidence_flow_action") not in {None, "", *ALLOWED_EMOTION_FLOW_ACTIONS}:
+            issues.append(
+                _issue(
+                    "error", "emotion_low_confidence_flow_action",
+                    f"emotion {item.get('key') or '?'} has invalid low_confidence_flow_action",
                 )
             )
     if not policy.get("system_boundaries"):

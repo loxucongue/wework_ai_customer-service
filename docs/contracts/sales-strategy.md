@@ -18,7 +18,7 @@
 - `emotion_decision.label` 描述客户发送本轮消息时的情绪，只能调整表达压力和流程动作，不能授权交易或事实承诺。
 - `closing_decision` 只允许 `none|enter|advance|pause|fallback|complete`；客户新消息必须重新判断，新卡点、暂缓、明确退订和暂停营销情绪不得机械推进旧节点。
 - 策略配置固定管理 7 类实时意图、8 类情绪、任务优先级、安全边界和 Shadow 模式；逼单规则、策略和节点不再复制进本地 policy。
-- policy 加载时必须校验决策 schema 版本、7/8 完整目录、情绪流程动作枚举、`catalog_source=external_follow_knowledge` 和 `silent_tasks_mode=off|shadow`；配置不合法时不得静默启用。
+- policy 加载时必须校验决策 schema 版本、7/8 完整目录、情绪流程动作枚举、`catalog_source=configured_closing_catalog` 和 `silent_tasks_mode=off|shadow`；本轮目录可按配置来自外部接口或版本化本地 JSON，但规则、策略、节点和话术必须同源，配置不合法时不得静默启用。
 - 主任务、主意图、情绪流程动作、逼单动作和客户状态属于运行必需字段。它们缺失、非法或与同轮客户动作自相矛盾时，只允许使用 Reply 既有的唯一一次修复机会；修复仍失败时返回非营销安全收尾并标记 `decision_status=degraded`，不得让客户请求失败。
 - 置信度、次要意图、说明和补充证据属于 BI 观测字段；缺失时只降级记账，不触发第二次模型调用。
 - 首次输出中有客户证据的明确退订、暂停营销情绪和活动卡点构成本轮修复的安全下限；修复不得将其改成普通聊天或直接推进。

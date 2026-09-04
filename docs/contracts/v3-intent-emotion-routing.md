@@ -1,8 +1,8 @@
 # V3 意图、情绪与意图路由合同
 
-- status: candidate-implemented
+- status: implemented-pending-production-validation
 - owner: reply-runtime
-- source_of_truth: `ai_sales_policy_v1.json`、V3 Semantic Router、V3 Reply 与策略 BI 代码
+- source_of_truth: `ai_sales_policy_v2.json`、V3 Semantic Router、V3 Reply 与策略 BI 代码
 
 ## 产品流程
 
@@ -21,22 +21,25 @@ Semantic Router 的 `current_intent.summary` 是检索与工具规划摘要，�
 
 | 板块 | 当前状态 | 实现机制 | 主要代码位置 |
 | --- | --- | --- | --- |
-| 意图目录 | 已实现 | 版本化 7 类：事实咨询、表达卡点、推进成交、提交信息、暂缓、明确退出、普通交流 | `ai_paths/app/policies/ai_sales_policy_v1.json`、`ai_sales_policy_service.py` |
+| 意图目录 | 已实现 | 版本化 7 类：事实咨询、表达卡点、推进成交、提交信息、暂缓、明确退出、普通交流；明确退出只认停止后续联系的原话 | `ai_paths/app/policies/ai_sales_policy_v2.json`、`ai_sales_policy_service.py` |
 | 检索意图路由 | 已实现 | DeepSeek Semantic Router 根据当前消息和历史选择卡点、事实主题、门店工具及知识候选 | `v3_semantic_router_service.py`、`prompts/v3_semantic_router.py` |
 | 最终实时意图 | 已实现，待业务金标验收 | 最终 Reply 在生成回复时同时选择一个主意图和最多 3 个次要意图，并引用真实客户消息 | `prompts/reply_synthesizer.py`、`graph/nodes/reply_nodes.py` |
-| 主任务路由 | 已实现 | 收集多信号后只选择一个 `primary_task`；风险、人工接管、明确退出和交易终态优先 | `ai_sales_policy_v1.json`、`reply_nodes.py` |
-| 情绪目录 | 已实现 | 8 类情绪映射到保持、降压、本轮暂停营销或系统转人工四种流程动作 | `ai_sales_policy_v1.json`、`ai_sales_policy_service.py` |
-| 情绪影响回复 | 已实现，待效果验收 | Reply 选择情绪；代码从目录派生 `flow_action`，限制表达压力和逼单动作 | `reply_synthesizer.py`、`reply_nodes.py` |
+| 主任务路由 | 已实现 | 收集多信号后只选择一个 `primary_task`；风险、人工接管、明确退出和交易终态优先 | `ai_sales_policy_v2.json`、`reply_nodes.py` |
+| 情绪目录 | 已实现 | 8 类情绪均有定义、最低证据和反例；粗口、短句、慢回复等弱信号不得单独升级为愤怒 | `ai_sales_policy_v2.json`、`ai_sales_policy_service.py` |
+| 情绪影响回复 | 已实现，待生产效果验收 | Reply 选择情绪和置信度；代码从目录派生 `flow_action`，低置信度愤怒只降压，不暂停营销 | `reply_synthesizer.py`、`reply_nodes.py` |
 | 跨轮变化 | 已实现 | 只读取同一销售接触边界上一条稳定事件；下一次真实客户回复回填下一意图、下一情绪和变化 | `chat_runtime.py`、`v3_strategy_analytics_repository.py` |
 | BI 查询 | 已实现 | 按意图、情绪和变化聚合，支持时间、企微、卡点、策略等筛选 | `routers/operations_admin.py`、`v3_strategy_analytics_repository.py` |
-| 生产效果证明 | 未完成 | 尚未完成 400 条业务确认金标，也不能从代码存在推断线上已启用 | `docs/current/KNOWN_ISSUES.md` |
+| 逼单协同 | 已实现 | Router 召回同一来源的规则/策略/节点，Reply 选择；代码校验真实 ID、频控和禁忌。固定 `trigger` 从有效目录选择派生，避免冗余字段误杀正确策略 | `v3_semantic_router_service.py`、`reply_nodes.py` |
+| 生产效果证明 | 未完成 | 已完成 DeepSeek 边界隔离评测，但尚未形成 400 条业务确认金标，也不能从代码存在推断线上已启用 | ignored `artifacts/`、`docs/current/KNOWN_ISSUES.md` |
 
 ## 运行合同
 
 - 一轮只有一个主任务；次要意图只用于保留多信号，不能单独触发客户动作。
 - 最终意图只能来自 7 类目录，次要意图去重且最多 3 个；有判断时应引用当前或近邻真实客户消息。
 - 最终情绪只能来自 8 类目录。情绪只调整措辞、篇幅和销售压力，不得授权门店、价格、预约、付款或效果承诺。
-- `hesitant/cold/defensive` 应降压；`impatient` 本轮暂停营销；`angry` 不继续销售并交由系统边界处理。
+- `hesitant/cold/defensive` 应降压；`impatient` 只有达到中置信度才暂停本轮追加销售；`angry` 只有达到高置信度才暂停本轮销售并交由系统边界处理，低置信度只降压。
+- 粗口必须结合指向和语义判断。正向惊叹、口头禅、抱怨自身/家人/第三方及普通讲价都不是愤怒证据。
+- 投诉、要求解释、找负责人或转人工不等于明确退出；永久停止营销仍只由明确“别联系、别发”等退订事实触发。
 - 客户每次发新消息都重新判断，上一轮意图、情绪和逼单节点只作摘要，不得机械延续。
 - 明确退出、投诉/愤怒、健康风险、人工接管和交易终态由代码强校验，不能被模型或业务配置覆盖。
 - 缺少分类等观测字段时记录 `decision_status=degraded`；策略扩展不得让正常客户回复因 BI 字段缺失而返回 5xx。
@@ -54,12 +57,11 @@ Semantic Router 的 `current_intent.summary` 是检索与工具规划摘要，�
 
 ## 已知不合理点与后续顺序
 
-1. `current_intent` 同时被用于 Router 的自由文本摘要和 Reply 的 7 类最终意图，名称容易让产品和研发误以为有两个最终意图。后续合同升级时建议将 Router 字段改名为 `retrieval_goal`，但本轮不为改名增加兼容层。
-2. 当前主线仍可能在卡点场景执行独立序列选择、话术预筛/精筛以及门店后的二次语义选择，模型调用偏多。应先以同样本 A/B 证明 Top-K 精简方案不降质，再删除调用；不能只为速度直接裁掉。
-3. 8 类情绪是强制单标签，对很短的“嗯、好、？”只能低置信度归入某类，容易产生伪精确。BI 必须同时展示置信度，不能只看标签占比；是否增加 `uncertain` 应由金标混淆矩阵决定。
-4. 情绪变化目前表示两次客户消息的分类变化，不是“客户被本轮回复改善了”的因果结论。看板文案必须使用“后续变化/相关”，不能写“策略提升”。
-5. 意图、情绪代码与 BI 已完成，但生产开关和模型准确率尚未完成业务验收。当前应称为“代码候选已完成”，不能称为“效果已上线”。
-6. policy 内仍保留 3 条早期演示逼单序列，而真实运行已有外部/本地统一逼单目录。它们属于重复配置，应在单独兼容清理中移除；本轮明确禁止它们在目录缺失时顶替，以免扩大变更面。
+1. `current_intent` 同时被用于 Router 的自由文本摘要和 Reply 的 7 类最终意图，名称容易让产品和研发误以为有两个最终意图。后续合同升级时建议将 Router 字段改名为 `retrieval_goal`，但不为改名新增兼容层。
+2. 8 类情绪是强制单标签，对很短的“嗯、好、？”只能低置信度归入某类，容易产生伪精确。BI 必须同时展示置信度；是否增加 `uncertain` 应由业务金标混淆矩阵决定。
+3. 情绪变化表示两次客户消息的分类变化，不是“客户被本轮回复改善了”的因果结论。看板只能写“后续变化/相关”。
+4. DeepSeek 对情绪、退订和 B 单结构的服从可以达到可用水平，但在项目、付款或门店权威事实完全缺失时仍可能补业务口径。运行链必须保证正常场景先提供权威事实；事实服务缺失时不得把 closing catalog 当事实来源，生产放量前仍需真实样本金标和事实缺失专项验收。
+5. 代码与 BI 已完成，独立序列模型、话术模型筛选和门店后二次销售语义判断已退出运行链；当前尚未核验生产开关和线上 release，因此只能称“代码已完成、待上线验收”。
 
 ## 验收要求
 

@@ -1087,22 +1087,35 @@ def _normalized_policy_decision(
         degrade("missing_emotion_decision")
     elif not emotion_definition:
         degrade("invalid_emotion_label")
+    emotion_confidence = checked_enum(
+        emotion_raw.get("confidence"),
+        {"high", "medium", "low"},
+        "low",
+        field="emotion_confidence",
+    )
+    configured_flow_action = str(emotion_definition.get("flow_action") or "keep")
+    minimum_flow_confidence = str(emotion_definition.get("minimum_flow_confidence") or "low")
+    confidence_rank = {"low": 1, "medium": 2, "high": 3}
+    effective_flow_action = configured_flow_action
+    if (
+        confidence_rank.get(emotion_confidence, 1)
+        < confidence_rank.get(minimum_flow_confidence, 1)
+    ):
+        effective_flow_action = str(
+            emotion_definition.get("low_confidence_flow_action") or "lower_pressure"
+        )
+        degrade("emotion_confidence_below_flow_threshold")
     emotion_decision = (
         {
             "label": emotion_label,
-            "confidence": checked_enum(
-                emotion_raw.get("confidence"),
-                {"high", "medium", "low"},
-                "low",
-                field="emotion_confidence",
-            ),
+            "confidence": emotion_confidence,
             "pressure": checked_enum(
                 emotion_raw.get("pressure"),
                 {"normal", "low", "none"},
                 "normal",
                 field="emotion_pressure",
             ),
-            "flow_action": str(emotion_definition.get("flow_action") or "keep"),
+            "flow_action": effective_flow_action,
             "evidence_refs": _valid_customer_refs(emotion_raw.get("evidence_refs"), valid_customer_refs)[:6],
             "basis": _policy_string_list(emotion_raw.get("basis"), limit=6),
         }
@@ -1111,8 +1124,8 @@ def _normalized_policy_decision(
     )
 
     closing_catalog_evidence = _closing_catalog_evidence_from_state(runtime_state)
-    external_catalog_present = bool(closing_catalog_evidence)
-    external_catalog_status = str(closing_catalog_evidence.get("status") or "")
+    closing_catalog_present = bool(closing_catalog_evidence)
+    closing_catalog_status = str(closing_catalog_evidence.get("status") or "")
     sequences = {
         str(item.get("sequence_key") or "").strip(): item
         for item in closing_catalog_evidence.get("candidate_sequences") or []
@@ -1207,14 +1220,14 @@ def _normalized_policy_decision(
         "none",
         field="closing_trigger",
     )
-    if external_catalog_present:
+    if closing_catalog_present:
         match_status = str(closing_catalog_evidence.get("match_status") or "none")
         if active_closing_action and closing_trigger != "business_rule":
-            action = "pause"
-            node_key = ""
-            constraint_reasons.append("external_closing_requires_business_rule_trigger")
-            degrade("external_closing_requires_business_rule_trigger")
-        if active_closing_action and external_catalog_status != "ok":
+            # A selected, validated catalog rule/sequence/node already proves
+            # the runtime source. Trigger is redundant provenance metadata, so
+            # normalize it instead of discarding an otherwise valid decision.
+            closing_trigger = "business_rule"
+        if active_closing_action and closing_catalog_status != "ok":
             action = "pause"
             node_key = ""
             constraint_reasons.append("closing_catalog_unavailable")
@@ -1339,7 +1352,7 @@ def _normalized_policy_decision(
         "catalog_status": (
             str(closing_catalog_evidence.get("freshness_status") or "")
             if str(closing_catalog_evidence.get("freshness_status") or "") == "stale"
-            else external_catalog_status or "unavailable"
+            else closing_catalog_status or "unavailable"
         ),
         "rule_match_status": str(closing_catalog_evidence.get("match_status") or "none"),
         "constraint_status": (
