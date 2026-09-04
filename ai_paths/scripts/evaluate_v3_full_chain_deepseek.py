@@ -378,6 +378,7 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
         "adopted_script_id": _text(knowledge.get("script_id")),
         "store_status": _text(store.get("status") or store.get("match_status")),
         "decision_status": _text(state.get("decision_status")),
+        "decision_reasons": [_text(item) for item in state.get("decision_reasons") or [] if _text(item)],
         "reply_source": _text(state.get("reply_source")),
         "failure_category": _text(failure.get("category")), "failure_code": _text(failure.get("code")),
     }
@@ -442,12 +443,14 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
     async def one(index: int, sample: dict[str, Any]) -> None:
         if fatal.is_set():
             return
-        state = build_state(sample, settings, runtime["policy"])
+        state: dict[str, Any] = {}
         try:
             async with semaphore:
                 # Per-case latency starts only after the concurrency slot is
-                # acquired. Queueing behind earlier cases is batch throughput,
-                # not end-to-end latency for this customer request.
+                # acquired. Runtime deadlines are created here as well: if the
+                # budget starts while hundreds of cases wait on the semaphore,
+                # later cases expire before their graph is ever invoked.
+                state = build_state(sample, settings, runtime["policy"])
                 started = time.perf_counter()
                 final = await asyncio.wait_for(runtime["graph"].ainvoke(state), timeout=155.0)
                 duration_ms = int((time.perf_counter() - started) * 1000)
@@ -549,6 +552,7 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
         "runtime_error_count": len(rows) - len(completed), "valid_model_reply_count": len(valid),
         "policy_core_coverage": round(len(policy) / len(completed), 4) if completed else 0,
         "degraded_count": sum(row.get("decision_status") == "degraded" for row in completed),
+        "decision_reasons": dict(Counter(reason for row in completed for reason in row.get("decision_reasons") or [])),
         "failure_codes": dict(Counter(row.get("failure_code") or "none" for row in completed)),
         "reply_sources": dict(Counter(row.get("reply_source") or "exception" for row in rows)),
         "sequence_candidate_count": sum(bool(row.get("sequence_candidates")) for row in completed),
@@ -576,7 +580,7 @@ CSV_FIELDS = [
     "primary_task", "intent", "emotion", "flow_action", "checkpoint_code", "cardpoint_state",
     "sequence_candidates", "script_candidates", "adopted_sequence_id", "adopted_script_id",
     "closing_action", "closing_sequence_key", "closing_node_key", "customer_state", "store_status",
-    "decision_status", "failure_category", "failure_code", "duration_ms", "runtime_error",
+    "decision_status", "decision_reasons", "failure_category", "failure_code", "duration_ms", "runtime_error",
     "judge_expected_intent", "judge_expected_emotion", "judge_passed", "judge_reply_accuracy",
     "judge_naturalness", "judge_mainline_progress", "judge_follow_sequence_fit", "judge_closing_fit",
     "judge_store_next_step_ok", "judge_unsupported_fact", "judge_safety_ok", "judge_reasons",
@@ -590,6 +594,7 @@ def csv_row(row: dict[str, Any]) -> dict[str, Any]:
         {
             "sequence_candidates": "；".join(row.get("sequence_candidates") or []),
             "script_candidates": "；".join(row.get("script_candidates") or []),
+            "decision_reasons": "；".join(row.get("decision_reasons") or []),
             "judge_expected_intent": judge.get("expected_intent", ""),
             "judge_expected_emotion": judge.get("expected_emotion", ""), "judge_passed": judge.get("passed", ""),
             "judge_reply_accuracy": judge.get("reply_accuracy_score", ""),
@@ -635,6 +640,7 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
         f"- P50/P95：{metrics['p50_ms']}/{metrics['p95_ms']} ms", "",
         f"- 回复来源：{json.dumps(metrics['reply_sources'], ensure_ascii=False)}",
         f"- 失败分类：{json.dumps(metrics['failure_codes'], ensure_ascii=False)}",
+        f"- 决策降级原因：{json.dumps(metrics['decision_reasons'], ensure_ascii=False)}",
         f"- 安全失败/无依据事实：{metrics['safety_failure_count']}/{metrics['unsupported_fact_count']}",
         f"- 生产写入尝试：{len(metrics['isolation']['blocked_write_attempts'])}",
         f"- 观测模型：{', '.join(metrics['model_names']) or 'trace 未记录名称'}", "",
