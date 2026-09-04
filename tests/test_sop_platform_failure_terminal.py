@@ -28,6 +28,10 @@ def test_terminal_platform_states_are_reconciled_without_retry() -> None:
     assert not _platform_task_is_already_no_send(RuntimeError("connect timeout"))
 
 
+def test_platform_queued_tasks_are_recovered_after_restart() -> None:
+    assert "platform_queued" in SopPlatformTaskService.RECOVERY_STATUSES
+
+
 class _Repository:
     def __init__(self) -> None:
         self.task_updates: list[dict[str, object]] = []
@@ -94,6 +98,12 @@ def test_downstream_409_consumes_only_platform_task_and_reports_aggregate_failur
     )
 
     assert result["status"] == "completed_without_send"
+    terminal_failure = repository.task_updates[-1]["send_payload"]["terminal_failure"]
+    assert terminal_failure["platform_consume_completed_at"]
+    assert terminal_failure["local_terminal_recorded_at"]
+    assert terminal_failure["rule_data_requested_at"]
+    assert terminal_failure["rule_data_completed_at"]
+    assert terminal_failure["local_audit_finalized_at"]
     assert platform.consume_calls == [
         {
             "task_id": "101",

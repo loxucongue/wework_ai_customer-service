@@ -279,6 +279,7 @@ def _sop_platform_decision_fallback_models(settings: Any) -> list[str]:
 
 class SopPlatformTaskService:
     RECOVERY_STATUSES = [
+        "platform_queued",
         "platform_claiming",
         "platform_judging",
         "platform_processing",
@@ -1487,16 +1488,21 @@ class SopPlatformTaskService:
             if not _platform_task_is_already_no_send(exc):
                 raise
             terminal_audit["terminal_failure"]["consume_reconciled"] = "platform_already_no_send"
+        terminal_audit["terminal_failure"]["platform_consume_completed_at"] = utc_now_iso()
         self.repository.update_sop_send_task(
             local_task_id,
             status="completed_without_send",
             send_payload=terminal_audit,
             error="",
         )
+        terminal_audit["terminal_failure"]["local_terminal_recorded_at"] = utc_now_iso()
         event_id = f"platform_sop_task:{selected_task_id}"
         self.repository.update_sop_event_status(event_id, status="platform_failure_rule_data_pending", error="")
+        terminal_audit["terminal_failure"]["rule_data_requested_at"] = utc_now_iso()
         rule_data = await self._report_terminal_rule_data(platform_task, outcome=outcome, sent=False)
+        terminal_audit["terminal_failure"]["rule_data_completed_at"] = utc_now_iso()
         terminal_audit["terminal_failure"]["rule_data"] = rule_data
+        terminal_audit["terminal_failure"]["local_audit_finalized_at"] = utc_now_iso()
         self.repository.update_sop_send_task(
             local_task_id,
             status="completed_without_send",
