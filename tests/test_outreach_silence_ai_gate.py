@@ -14,6 +14,7 @@ from app.services.outreach.execution import TaskExecutor  # noqa: E402
 from app.services.outreach.first_day import (  # noqa: E402
     FirstDayWorkflow,
     _conversation_ai_auto_reply,
+    _first_day_existing_run_retry_reason,
     _first_day_wechat_allowed,
     _timestamp_at_or_after,
 )
@@ -283,3 +284,20 @@ def test_stale_nonterminal_plan_without_executable_tasks_does_not_block_new_cycl
         wechat="SL8003",
         external_userid="external-1",
     ) == {}
+
+
+def test_platform_conversation_sync_soft_block_retries_only_once() -> None:
+    existing = {
+        "status": "blocked",
+        "reason_code": "customer_never_spoke",
+        "retry_count": 0,
+    }
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at="2026-09-05T09:42:00+00:00",
+    ) == "soft_block_retry:customer_never_spoke"
+    existing["retry_count"] = 1
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at="2026-09-05T09:42:00+00:00",
+    ) == ""

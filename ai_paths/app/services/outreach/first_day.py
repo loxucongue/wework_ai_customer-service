@@ -2854,6 +2854,7 @@ def _first_day_existing_run_retry_reason(
         status == "blocked"
         and reason_code in FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS
         and _string(latest_customer_message_at)
+        and int(existing_run.get("retry_count") or 0) < 1
     ):
         return f"soft_block_retry:{reason_code}"
     if status in {"running", "created"} and _string(existing_run.get("plan_id")):
