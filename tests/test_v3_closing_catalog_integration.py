@@ -262,6 +262,20 @@ def test_business_workbook_catalog_has_complete_rule_sequence_script_links() -> 
     )
     assert all(item["hard_fact_authority"] is False for item in catalog["scripts"])
 
+    rules_by_key = {
+        item["rule_key"]: item
+        for item in catalog["rules"]["triggers"]
+    }
+    assert rules_by_key["local:rule:deposit_policy_concern"]["judge_note"].startswith(
+        "PURPOSE=resolve_only"
+    )
+    assert rules_by_key["local:rule:visit_intent_no_prepay"]["judge_note"].startswith(
+        "PURPOSE=resolve_only"
+    )
+    assert rules_by_key["local:rule:payment_operation_blocked"]["judge_note"].startswith(
+        "PURPOSE=payment_assist"
+    )
+
     scripts_by_code = {item["script_code"]: item for item in catalog["scripts"]}
     assert "requires_authoritative_slot_facts" in scripts_by_code[
         "local_business_closing_010"
