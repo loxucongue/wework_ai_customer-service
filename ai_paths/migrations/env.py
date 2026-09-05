@@ -93,6 +93,12 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
+        # MySQL DDL is non-transactional, while the Alembic version-table
+        # update is ordinary DML.  SQLAlchemy 2.x autobegins that DML after
+        # the DDL's implicit commit; closing the connection without an
+        # explicit commit rolls the revision marker back even though the
+        # columns and indexes already exist.
+        connection.commit()
 
 
 if context.is_offline_mode():

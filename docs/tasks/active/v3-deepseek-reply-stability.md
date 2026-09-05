@@ -36,6 +36,7 @@
 - `ai_paths/app/graph/nodes/reply_generation.py`
 - `ai_paths/app/graph/nodes/reply_nodes.py`
 - `ai_paths/scripts/evaluate_v3_full_chain_deepseek.py`
+- `ai_paths/migrations/env.py`（发布现场发现的 MySQL Alembic 版本提交修复）
 - `tests/test_v3_policy_decision_contract.py` 及本任务新增评测测试
 - `docs/contracts/sales-strategy.md`、`docs/contracts/v3-intent-emotion-routing.md`
 
@@ -81,6 +82,7 @@
 - 外部历史话术存在“诋毁其他技术”“名额有限/锁技师”等缺少本轮事实的高风险表达，需业务清洗或增加发布审核后再追求更高采用率。
 - 真实样本分布不足：明确退订仅 1 条，健康/交易各 3 条，未覆盖原计划各类最低数量；当前结果不是 400 条业务金标验收。
 - 产品负责人于 2026-09-05 明确接受当前 93.33% 策略覆盖作为首版上线门槛，并要求合入 `main` 部署；剩余失败继续作为上线观察项，不通过关闭事实、安全或触达校验绕过。
+- 发布现场发现 `20260904_01` 的字段和索引已创建，但 MySQL 非事务 DDL 后 Alembic 版本 DML 未显式提交，`current` 仍停在 `20260903_02`；本任务补充连接提交并在最终 release 上重新校准版本。
 
 ## 测试结果
 
