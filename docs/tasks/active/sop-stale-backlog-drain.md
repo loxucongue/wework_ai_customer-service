@@ -22,4 +22,5 @@
 - Managed-send diagnostics: structured `managed_send_phase` records separately measure delivery preparation, outreach send HTTP, submission persistence, and delivery finalization without message content or credentials.
 - Timeout policy: both the scheduled-task validity window and the transient send retry window are 1800 seconds; quiet-hours blocking remains disabled in production.
 - Current verification: `146 passed`, including storage-level tests for atomic pre-send and no-send terminal transitions plus timing-log metadata coverage.
+- Sent-terminal integrity hotfix: a successful managed send (`sent_at` or accepted delivery response) cannot be downgraded to `completed_without_send` by later legacy/no-content reconciliation. The admin log also prefers durable send evidence over a stale contradictory status. Regression suite: `190 passed` on 2026-09-05.
 - Rollback: previous release `ai-paths-unified-20260903-8c736d48`.

@@ -4713,11 +4713,20 @@ def _platform_task_log_item(
     task_id = _task_id(platform_task) or _record_task_id(local_record)
     event_status = str(local_record.get("event_status") or "")
     task_status = str(local_record.get("task_status") or "")
+    send_response = local_record.get("send_response") if isinstance(local_record.get("send_response"), dict) else {}
+    if _admin_has_successful_send_evidence(
+        task_status=task_status,
+        sent_at=str(local_record.get("sent_at") or ""),
+        send_response=send_response,
+    ):
+        task_status = "sent"
     bucket = _platform_task_bucket(event_status=event_status, task_status=task_status, has_local=bool(local_record))
     send_payload = local_record.get("send_payload") if isinstance(local_record.get("send_payload"), dict) else {}
     decision_payload = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
     decision = str(decision_payload.get("decision") or "")
-    if not decision and task_status in {"shadow_send", "sending", "sent"}:
+    if task_status == "sent":
+        decision = "send"
+    elif not decision and task_status in {"shadow_send", "sending"}:
         decision = "send"
     if not decision and task_status in {"shadow_no_send", "completed_without_send"}:
         decision = "no_send"
@@ -4856,6 +4865,17 @@ def _platform_task_log_item(
         },
         "_sort_epoch": max(scheduled_epoch, _parse_epoch(received_at)),
     }
+
+
+def _admin_has_successful_send_evidence(
+    *, task_status: str, sent_at: str, send_response: dict[str, Any]
+) -> bool:
+    if task_status in {"sent", "sent_recovered"} or sent_at.strip():
+        return True
+    data = send_response.get("data") if isinstance(send_response.get("data"), dict) else {}
+    return str(data.get("send_status") or "") in {"accepted", "accepted_no_response"} or str(
+        data.get("delivery_status") or ""
+    ) in {"platform_accepted", "send_succeeded", "delivered"}
 
 
 def _collect_identifier_items(

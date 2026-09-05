@@ -371,11 +371,19 @@ class SopEventRepositoryMixin:
         now = utc_now_iso()
         with self.store.connect() as conn:
             current = conn.execute(
-                "SELECT send_payload_json, send_response_json FROM sop_send_tasks WHERE id=?",
+                "SELECT status, sent_at, send_payload_json, send_response_json FROM sop_send_tasks WHERE id=?",
                 (task_id,),
             ).fetchone()
             existing_payload = loads_dict(current["send_payload_json"]) if current else {}
             existing_response = loads_dict(current["send_response_json"]) if current else {}
+            if status == "completed_without_send" and _has_successful_send_evidence(
+                status=str(current["status"] or "") if current else "",
+                sent_at=str(current["sent_at"] or "") if current else "",
+                send_response=existing_response,
+            ):
+                status = "sent"
+                send_payload = existing_payload
+                send_response = existing_response
             conn.execute(
                 """
                 UPDATE sop_send_tasks
@@ -456,14 +464,31 @@ class SopEventRepositoryMixin:
         now = utc_now_iso()
         event_id = f"platform_sop_task:{task_id}"
         with self.store.connect() as conn:
-            conn.execute(
-                """
-                UPDATE sop_send_tasks
-                SET status='completed_without_send', send_payload_json=?, error='', updated_at=?
-                WHERE idempotency_key=?
-                """,
-                (dumps(send_payload), now, f"platform-sop:{task_id}"),
+            current = conn.execute(
+                """SELECT status, sent_at, send_response_json
+                   FROM sop_send_tasks WHERE idempotency_key=?""",
+                (f"platform-sop:{task_id}",),
+            ).fetchone()
+            already_sent = bool(current) and _has_successful_send_evidence(
+                status=str(current["status"] or ""),
+                sent_at=str(current["sent_at"] or ""),
+                send_response=loads_dict(current["send_response_json"]),
             )
+            if already_sent:
+                conn.execute(
+                    """UPDATE sop_send_tasks SET status='sent', error='', updated_at=?
+                       WHERE idempotency_key=?""",
+                    (now, f"platform-sop:{task_id}"),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE sop_send_tasks
+                    SET status='completed_without_send', send_payload_json=?, error='', updated_at=?
+                    WHERE idempotency_key=?
+                    """,
+                    (dumps(send_payload), now, f"platform-sop:{task_id}"),
+                )
             conn.execute(
                 """
                 UPDATE sop_events
@@ -982,6 +1007,15 @@ def _sop_payload_summary(payload: Any) -> dict[str, Any]:
         "first_external_userid": str(customer.get("external_userid") or conversation.get("external_userid") or ""),
         "first_wechat": str(conversation.get("wework_user_id") or ""),
     }
+
+
+def _has_successful_send_evidence(*, status: str, sent_at: str, send_response: dict[str, Any]) -> bool:
+    if status in {"sent", "sent_recovered"} or sent_at.strip():
+        return True
+    data = send_response.get("data") if isinstance(send_response.get("data"), dict) else {}
+    return str(data.get("send_status") or "") in {"accepted", "accepted_no_response"} or str(
+        data.get("delivery_status") or ""
+    ) in {"platform_accepted", "send_succeeded", "delivered"}
 
 
 def _identity_row(row: dict[str, Any]) -> dict[str, str]:
