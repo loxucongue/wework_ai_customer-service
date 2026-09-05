@@ -148,9 +148,9 @@ class Settings(BaseSettings):
         alias="SOP_PLATFORM_DECISION_PRIMARY_TIMEOUT_SECONDS",
     )
     sop_platform_recovery_batch_size: int = Field(default=10, alias="SOP_PLATFORM_RECOVERY_BATCH_SIZE")
-    sop_platform_max_task_age_seconds: int = Field(default=600, alias="SOP_PLATFORM_MAX_TASK_AGE_SECONDS")
+    sop_platform_max_task_age_seconds: int = Field(default=1800, alias="SOP_PLATFORM_MAX_TASK_AGE_SECONDS")
     sop_platform_send_retry_timeout_seconds: int = Field(
-        default=600,
+        default=1800,
         alias="SOP_PLATFORM_SEND_RETRY_TIMEOUT_SECONDS",
     )
     sop_platform_bulk_human_takeover_enabled: bool = Field(

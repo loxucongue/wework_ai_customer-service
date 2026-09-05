@@ -3,7 +3,7 @@
 - Type: production hotfix and controlled cleanup
 - Base SHA: `8c736d4871bb4f3e7e9be96fe7dbd96458b47a65`
 - Production baseline: `8c736d4871bb4f3e7e9be96fe7dbd96458b47a65`, clean main release
-- Goal: drain SOP tasks older than 10 minutes without sending customer messages, while preserving task-only consumption, strategy callback, and local audit.
+- Goal: drain SOP tasks older than the configured send validity window without sending customer messages, while preserving task-only consumption, strategy callback, and local audit.
 - Non-goal: change live-task ordering, merge message content, consume content msgIds, or increase customer-send concurrency.
 - Modules: SOP platform polling and terminal failure tests.
 - Contract: stale tasks consume only platform taskId as status 70, report `sop_send_failed`, and never call the customer send interface.
@@ -20,5 +20,6 @@
 - Send-path optimization: the pre-send event transition, local task lookup, and local task transition now commit atomically in one transaction. Delivery-ledger prepare/submission/finalization calls run outside the asyncio event loop; their ordering and idempotency contract are unchanged.
 - Live-task latency optimization: conversation status and history reads run concurrently; initial per-task persistence uses the database worker pool concurrently; no-send local task and event terminal states commit atomically after both external terminal calls succeed.
 - Managed-send diagnostics: structured `managed_send_phase` records separately measure delivery preparation, outreach send HTTP, submission persistence, and delivery finalization without message content or credentials.
+- Timeout policy: both the scheduled-task validity window and the transient send retry window are 1800 seconds; quiet-hours blocking remains disabled in production.
 - Current verification: `146 passed`, including storage-level tests for atomic pre-send and no-send terminal transitions plus timing-log metadata coverage.
 - Rollback: previous release `ai-paths-unified-20260903-8c736d48`.

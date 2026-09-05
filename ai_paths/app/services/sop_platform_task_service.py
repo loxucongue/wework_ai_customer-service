@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
     "sent": ("sop_sent", "SOP发送成功", "SOP消息已发送"),
     "send_failed": ("sop_send_failed", "SOP发送失败", "SOP消息发送失败"),
-    "stale_task": ("sop_send_failed", "SOP发送失败", "SOP任务超过10分钟发送时限，已消费且未发送"),
+    "stale_task": ("sop_send_failed", "SOP发送失败", "SOP任务超过30分钟发送时限，已消费且未发送"),
     "wecom_aggregate_send_failed": (
         "wecom_aggregate_send_failed",
         "发送失败｜企微聚合平台",
@@ -1521,7 +1521,7 @@ class SopPlatformTaskService:
         first_failure_at = str(previous.get("first_failure_at") or utc_now_iso())
         retry_window_seconds = max(
             0,
-            int(getattr(self.settings, "sop_platform_send_retry_timeout_seconds", 600) or 0),
+            int(getattr(self.settings, "sop_platform_send_retry_timeout_seconds", 1800) or 0),
         )
         retry_state = {
             "attempt_count": attempt_count,
@@ -3835,7 +3835,7 @@ def _task_preflight_no_send_reason(
 
 def _platform_task_is_stale(platform_task: dict[str, Any], *, settings: Any) -> bool:
     scheduled = _task_scheduled_epoch(platform_task)
-    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 600) or 0))
+    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 1800) or 0))
     return bool(scheduled and max_age and time.time() - scheduled > max_age)
 
 
@@ -5030,7 +5030,7 @@ def _delivery_retry_expired(
     first_failure_epoch = _parse_epoch(retry_state.get("first_failure_at"))
     retry_window_seconds = max(
         0,
-        int(getattr(settings, "sop_platform_send_retry_timeout_seconds", 600) or 0),
+        int(getattr(settings, "sop_platform_send_retry_timeout_seconds", 1800) or 0),
     )
     if not first_failure_epoch or not retry_window_seconds:
         return False
