@@ -137,7 +137,17 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        content = _text(raw.get("content"))
+        reply_control = raw.get("reply_control") if isinstance(raw.get("reply_control"), dict) else {}
+        merged_customer_messages = [
+            _text(item)
+            for item in reply_control.get("merged_customer_messages") or []
+            if _text(item)
+        ]
+        content = (
+            "\n".join(merged_customer_messages)
+            if str(reply_control.get("mode") or "") == "merged_latest" and merged_customer_messages
+            else _text(raw.get("content"))
+        )
         if not content or content in AUTO_MESSAGES or content.startswith("你已添加了"):
             continue
         if raw.get("file_image") or raw.get("image_urls"):
@@ -212,6 +222,7 @@ def build_settings(output_dir: Path) -> Settings:
     return Settings().model_copy(
         update={
             "service_role": "reply", "background_workers_enabled": False,
+            "trace_log_dir": output_dir / "trace",
             "sop_platform_pull_enabled": False, "service_rule_data_enabled": False,
             "aics_storage_backend": "sqlite", "db_path": output_dir / "ephemeral_state.db",
             "memory_dir": output_dir / "ephemeral_memory",
@@ -449,6 +460,7 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
         "decision_reasons": [_text(item) for item in state.get("decision_reasons") or [] if _text(item)],
         "reply_source": _text(state.get("reply_source")),
         "failure_category": _text(failure.get("category")), "failure_code": _text(failure.get("code")),
+        "failure_reason": redact(failure.get("reason") or failure.get("message") or "", 500),
     }
 
 
@@ -675,7 +687,7 @@ CSV_FIELDS = [
     "closing_rule_candidates", "closing_strategy_candidates", "closing_script_candidates",
     "closing_strategy_adopted", "closing_script_adopted",
     "closing_action", "closing_sequence_key", "closing_node_key", "customer_state", "store_status",
-    "decision_status", "decision_reasons", "failure_category", "failure_code", "duration_ms", "runtime_error",
+    "decision_status", "decision_reasons", "failure_category", "failure_code", "failure_reason", "duration_ms", "runtime_error",
     "judge_expected_intent", "judge_expected_emotion", "judge_passed", "judge_reply_accuracy",
     "judge_naturalness", "judge_mainline_progress", "judge_follow_sequence_fit", "judge_closing_fit",
     "judge_store_next_step_ok", "judge_unsupported_fact", "judge_safety_ok", "judge_reasons",
@@ -717,7 +729,7 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
     failures = [row for row in rows if row.get("runtime_error") or not bool((row.get("judge") or {}).get("passed"))]
     lines = ["# 失败与人工复核案例", "", f"共 {len(failures)} 条。", ""]
     for row in failures:
-        reason = "；".join((row.get("judge") or {}).get("reasons") or []) or row.get("failure_code") or row.get("runtime_error") or "AI 初评未通过"
+        reason = "；".join((row.get("judge") or {}).get("reasons") or []) or row.get("failure_reason") or row.get("failure_code") or row.get("runtime_error") or "AI 初评未通过"
         lines += [f"## {row.get('case_id')}｜{row.get('bucket')}", "", f"- 客户消息摘要：{row.get('customer_excerpt', '')}",
                   f"- 回复摘要：{row.get('reply_excerpt', '')}",
                   f"- 系统决策：意图 {row.get('intent', '')}；情绪 {row.get('emotion', '')}；B 单 {row.get('closing_action', '')}",
