@@ -29,6 +29,8 @@ def test_reply_does_not_ask_model_for_code_derived_observation_fields() -> None:
 
     assert "flow_action、策略/规则/节点名称和 decision_status 由代码派生，不要生成" in prompt
     assert "缺失不得改变客户回复或触发第二次业务判断" in prompt
+    assert 'secondary_tasks 若输出，必须是最多 3 个 `{"type":"任务目录真实 key","goal":"一句短目标","basis":["简短依据"]}` 对象' in prompt
+    assert "没有合法次要任务就省略" in prompt
 
 
 def test_realtime_prompt_budgets_prevent_rule_bloat_regression() -> None:

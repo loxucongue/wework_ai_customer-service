@@ -26,6 +26,13 @@
 - `closing_decision.action=pause` 可以表示“当前不进入逼单”，尚未开始任何序列时 `sequence_key=none`、`node_key` 为空是合法状态，不得按缺失序列判为结构错误。
 - 活动卡点下 `sales_judgment.posture=switch` 表示从逼单切换到解卡路径，可以采用跟进序列或卡点话术；它不等于 `closing_decision=advance`。如果模型误把该观察标签写成 `advance`，但最终 closing 已暂停、客户可见动作和结构消息均安全，不能仅凭标签丢弃整段解卡回复；明确退订或暂停营销时仍禁止 `switch/advance`。
 
+## Prompt 治理
+
+- Router 中的信任、效果、暂缓和退订例句只校准完整语义边界，不是字符串命中规则；Router 输出是召回证据，不能锚定或替代 Reply 的最终意图、情绪和逼单判断。
+- Reply Prompt 按硬边界、当前任务、本轮销售目标、候选证据、表达与输出合同分层。相同原则只保留一个权威表述；`flow_action`、业务名称和 `decision_status` 等可由目录或代码确定的字段不要求模型生成。
+- 完全没有可解析 Reply JSON 时，唯一一次 full retry 重新执行原任务；已有 JSON 时只允许 targeted repair 修结构、真实 ID 或事实冲突，必须保留未冲突的销售判断，不得成为第二个销售大脑。
+- Prompt 精简属于回复质量改动。合入前必须通过确定性边界测试和 DeepSeek 同样本对照；回复通过率、安全指标、序列/话术条件采用和延迟任一明显退化时回退该次精简，而不是继续追加例外规则。
+
 ## 业务逼单目录
 
 ```text
