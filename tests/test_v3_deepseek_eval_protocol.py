@@ -59,6 +59,10 @@ def test_metrics_use_conditional_adoption_denominator() -> None:
             "emotion": "hesitant", "closing_action": "pause", "sequence_candidates": ["价格解卡"],
             "script_candidates": ["低压解释"], "adopted_sequence_id": "seq-1",
             "adopted_script_id": "script-1", "duration_ms": 100, "judge": judged,
+            "closing_rule_candidates": ["客户已认可"],
+            "closing_strategy_candidates": ["低压收口"],
+            "closing_script_candidates": ["低压确认"],
+            "closing_strategy_adopted": True, "closing_script_adopted": True,
             "model_names": ["deepseek-chat"],
         },
         {
@@ -78,6 +82,11 @@ def test_metrics_use_conditional_adoption_denominator() -> None:
     assert metrics["adoption_eligible_count"] == 1
     assert metrics["sequence_adopted_count"] == 1
     assert metrics["script_adopted_count"] == 1
+    assert metrics["closing_rule_candidate_count"] == 1
+    assert metrics["closing_strategy_candidate_count"] == 1
+    assert metrics["closing_script_candidate_count"] == 1
+    assert metrics["closing_strategy_adopted_count"] == 1
+    assert metrics["closing_script_adopted_count"] == 1
 
 
 def test_judge_receives_actual_authority_and_tool_facts() -> None:
@@ -104,15 +113,47 @@ def test_judge_receives_actual_authority_and_tool_facts() -> None:
 def test_summary_reads_normalized_selected_script_ids() -> None:
     summary = decision_summary(
         {
+            "semantic_route": {
+                "closing_catalog_evidence": {
+                    "source": "local_closing_catalog",
+                    "status": "ok",
+                    "match_status": "matched",
+                    "selected_rules": [{"type_name": "客户主动要登记"}],
+                    "candidate_sequences": [
+                        {"sequence_key": "local:sequence:deposit", "name": "直接登记"}
+                    ],
+                }
+            },
+            "sales_recall": {
+                "candidates": [
+                    {
+                        "id": "script-3",
+                        "script_name": "直接发预约金",
+                        "sequence_links": [
+                            {
+                                "sequence_id": "local:sequence:deposit",
+                                "step_id": "local:node:deposit:step_1",
+                                "query_source": "closing_catalog_node",
+                            }
+                        ],
+                    }
+                ]
+            },
             "reply_knowledge_use": {
-                "sequence_id": "67",
+                "sequence_id": "local:sequence:deposit",
                 "selected_script_ids": ["script-3", "script-8"],
             }
         }
     )
 
-    assert summary["adopted_sequence_id"] == "67"
+    assert summary["adopted_sequence_id"] == "local:sequence:deposit"
     assert summary["adopted_script_id"] == "script-3;script-8"
+    assert summary["closing_catalog_source"] == "local_closing_catalog"
+    assert summary["closing_rule_candidates"] == ["客户主动要登记"]
+    assert summary["closing_strategy_candidates"] == ["直接登记"]
+    assert summary["closing_script_candidates"] == ["直接发预约金"]
+    assert summary["closing_strategy_adopted"] is True
+    assert summary["closing_script_adopted"] is True
 
 
 def test_full_chain_evaluation_fails_when_knowledge_token_is_missing() -> None:

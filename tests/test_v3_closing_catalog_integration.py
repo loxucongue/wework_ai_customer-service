@@ -210,7 +210,7 @@ def test_local_closing_catalog_runs_without_external_token() -> None:
     catalog = asyncio.run(client.query_closing_catalog())
     scripts = asyncio.run(
         client.query_closing_scripts(
-            checkpoint_type_id=9101,
+            checkpoint_type_id=9201,
             catalog_source="local_closing_catalog",
         )
     )
@@ -219,11 +219,79 @@ def test_local_closing_catalog_runs_without_external_token() -> None:
     assert client.closing_catalog_available is True
     assert catalog["status"] == "ok"
     assert catalog["source"] == "local_closing_catalog"
-    assert catalog["trigger_count"] == 5
-    assert catalog["sequence_count"] == 5
-    assert catalog["script_count"] == 13
-    assert scripts["total"] == 1
-    assert scripts["items"][0]["script_name"] == "认可承接"
+    assert catalog["catalog_version"] == "2026-09-05.business-workbook-real-deal-v1"
+    assert catalog["trigger_count"] == 9
+    assert catalog["sequence_count"] == 16
+    assert catalog["node_count"] == 37
+    assert catalog["script_count"] == 42
+    assert scripts["total"] == 2
+    assert all(
+        item["checkpoint_type"]["name"] == "直接回答预约方式并发卡"
+        for item in scripts["items"]
+    )
+
+
+def test_business_workbook_catalog_has_complete_rule_sequence_script_links() -> None:
+    client = FollowKnowledgeClient(
+        Settings(FOLLOW_KNOWLEDGE_ENABLED=False, AI_CLOSING_CATALOG_SOURCE="local")
+    )
+    catalog = asyncio.run(client.query_closing_catalog())
+
+    rule_keys = {
+        item["rule_key"]
+        for item in catalog["rules"]["triggers"]
+    }
+    script_type_ids = {
+        int(item["checkpoint_type"]["id"])
+        for item in catalog["scripts"]
+    }
+    node_type_ids = {
+        int(node["script_type"]["id"])
+        for sequence in catalog["sequences"]
+        for node in sequence["nodes"]
+    }
+
+    assert all(
+        set(sequence["rule_keys"]).issubset(rule_keys)
+        for sequence in catalog["sequences"]
+    )
+    assert node_type_ids == script_type_ids
+    assert all(
+        item["workbook_source_ref"].startswith("business_workbook:逼单话术!")
+        for item in catalog["scripts"]
+    )
+    assert all(item["hard_fact_authority"] is False for item in catalog["scripts"])
+
+    rules_by_key = {
+        item["rule_key"]: item
+        for item in catalog["rules"]["triggers"]
+    }
+    assert rules_by_key["local:rule:deposit_policy_concern"]["judge_note"].startswith(
+        "PURPOSE=resolve_only"
+    )
+    assert rules_by_key["local:rule:visit_intent_no_prepay"]["judge_note"].startswith(
+        "PURPOSE=resolve_only"
+    )
+    assert rules_by_key["local:rule:payment_operation_blocked"]["judge_note"].startswith(
+        "PURPOSE=payment_assist"
+    )
+    assert "仅凭客户说‘这家可以’不能证明已核验" in rules_by_key[
+        "local:rule:store_or_transport_accepted"
+    ]["judge_note"]
+
+    scripts_by_code = {item["script_code"]: item for item in catalog["scripts"]}
+    assert "requires_authoritative_slot_facts" in scripts_by_code[
+        "local_business_closing_010"
+    ]["data_quality_flags"]
+    assert "requires_authoritative_deposit_validity_fact" in scripts_by_code[
+        "local_business_closing_017"
+    ]["data_quality_flags"]
+    assert "requires_authoritative_refund_policy_fact" in scripts_by_code[
+        "local_business_closing_020"
+    ]["data_quality_flags"]
+    assert "requires_authoritative_store_fact" in scripts_by_code[
+        "local_business_closing_031"
+    ]["data_quality_flags"]
 
 
 def test_empty_external_closing_catalog_falls_back_to_local_config() -> None:
@@ -285,16 +353,16 @@ def test_local_closing_ids_and_script_type_are_valid_reply_evidence() -> None:
         catalog,
         {
             "status": "matched",
-            "selected_rule_ids": ["local:rule:recognized_pending_time"],
-            "sequence_candidate_ids": ["local:sequence:confirm_time_range"],
+            "selected_rule_ids": ["local:rule:explicit_registration_or_payment_query"],
+            "sequence_candidate_ids": ["local:sequence:direct_deposit_entry"],
         },
     )
     decision = _decision()
     decision["closing_decision"].update(
         {
-            "rule_ids": ["local:rule:recognized_pending_time"],
-            "sequence_key": "local:sequence:confirm_time_range",
-            "node_key": "local:node:acknowledge_acceptance",
+            "rule_ids": ["local:rule:explicit_registration_or_payment_query"],
+            "sequence_key": "local:sequence:direct_deposit_entry",
+            "node_key": "local:node:direct_deposit_entry:step_1",
             "satisfied_prerequisite_ids": [
                 "local:prerequisite:customer_progress_signal",
                 "local:prerequisite:no_unresolved_blocker",
@@ -305,8 +373,9 @@ def test_local_closing_ids_and_script_type_are_valid_reply_evidence() -> None:
     result = _normalized_policy_decision(decision, state=_policy_state(evidence))
 
     assert result["closing_decision"]["action"] == "enter"
-    assert result["closing_decision"]["sequence_source_id"] == "confirm_time_range"
-    assert result["closing_decision"]["script_type_id"] == 9101
+    assert result["closing_decision"]["sequence_source_id"] == "direct_deposit_entry"
+    assert result["closing_decision"]["node_name"] == "直接回答预约方式并发卡"
+    assert result["closing_decision"]["script_type_id"] == 9201
 
 
 def test_router_retrieves_local_script_from_the_same_catalog_source() -> None:
@@ -322,8 +391,8 @@ def test_router_retrieves_local_script_from_the_same_catalog_source() -> None:
                 },
                 "current_friction": {"status": "none"},
                 "closing_catalog_match": {
-                    "selected_rule_ids": ["local:rule:recognized_pending_time"],
-                    "sequence_candidate_ids": ["local:sequence:confirm_time_range"],
+                    "selected_rule_ids": ["local:rule:explicit_registration_or_payment_query"],
+                    "sequence_candidate_ids": ["local:sequence:direct_deposit_entry"],
                     "evidence_refs": ["current_message"],
                 },
                 "store_query": {"required": False},
@@ -340,7 +409,7 @@ def test_router_retrieves_local_script_from_the_same_catalog_source() -> None:
     output = asyncio.run(
         service.route(
             shared_context={
-                "current_message": {"content": "这个方案可以，周末可能有空"},
+                "current_message": {"content": "给我登记一个，预约金怎么付"},
                 "conversation": [],
             },
             sequence_result={"status": "disabled", "items": [], "total": 0},
@@ -352,11 +421,11 @@ def test_router_retrieves_local_script_from_the_same_catalog_source() -> None:
     evidence = output["semantic_route"]["closing_catalog_evidence"]
     assert evidence["source"] == "local_closing_catalog"
     assert evidence["match_status"] == "matched"
-    assert output["knowledge_evidence"]["candidate_count"] == 3
+    assert output["knowledge_evidence"]["candidate_count"] == 4
     assert {
         item["checkpoint_type"]["id"]
         for item in output["knowledge_evidence"]["candidates"]
-    } == {9101, 9102, 9103}
+    } == {9201, 9202}
     assert all(
         item["source"] == "local_closing_catalog"
         for item in output["knowledge_evidence"]["script_query_results"]
