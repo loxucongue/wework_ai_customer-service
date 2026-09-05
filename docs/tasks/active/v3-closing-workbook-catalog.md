@@ -34,6 +34,7 @@
 - `ai_paths/scripts/evaluate_v3_full_chain_deepseek.py`
 - `docs/contracts/sales-strategy.md`
 - `docs/interfaces/external.md`
+- `docs/current/KNOWN_ISSUES.md`
 - `docs/tasks/active/v3-closing-workbook-catalog.md`
 - `docs/tasks/active/INDEX.md`、完成时 `docs/tasks/history/INDEX.md`
 
@@ -55,6 +56,10 @@
 
 - 创建独立分支与 worktree。
 - 登记任务、分支、base SHA 和独占范围。
+- 将业务表编译为 9 条规则、16 套策略、37 个节点类型和 42 条话术；所有策略均能找到规则，所有节点类型均能找到话术。
+- 为金额、有效期、退款、门店、交通、时段、多人金额和支付入口等内容增加权威事实要求，目录本身不作为事实来源。
+- DeepSeek 受控 Router 场景 9/9 能召回对应规则、策略和话术；无工具门店接受表达仍可能产生候选，但最终事实校验不允许据此承诺门店。
+- DeepSeek 真实身份隔离测试 60 条：AI 初评 93.3%，无依据事实 0，安全失败 0，生产写入 0；其中 1 条实际满足目录规则，策略/话术均采用。
 
 ## 待办
 
@@ -65,7 +70,13 @@
 
 ## 测试结果
 
-- pending
+- `python -m pytest -q`：175 passed。
+- `tests/test_v3_closing_catalog_integration.py`：24 passed。
+- `tests/test_v3_deepseek_eval_protocol.py` 与目录集成合计：30 passed。
+- 8 条烟测：8/8 正常，B 单候选 1 条并采用策略/话术 1/1，无安全或事实失败。
+- 60 条真实身份全链：运行异常 0，主模型有效回复 55，策略结构覆盖 91.7%，AI 初评通过 93.3%，B 单候选/采用 1/1，无依据事实和安全失败均为 0；3 条事实校验失败与 2 条门店恢复属于既有门店/档期边界，不由本目录命中触发。
+- 9 个规则受控 Router 场景：9/9 规则命中并返回对应策略、话术候选；仅客户口述“这家可以”而无门店工具/历史交付证据时仍会误提名门店规则，列为候选层风险，不放宽最终事实校验。
+- 评测仅使用 `deepseek-v4-flash` Router、`deepseek-chat` Reply/评审；不发送、不构建生产 Repository、不写 BI/dispatch/outbox。
 
 ## 发布与回滚
 
