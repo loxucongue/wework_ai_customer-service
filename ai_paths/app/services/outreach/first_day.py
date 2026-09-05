@@ -80,7 +80,6 @@ OUTREACH_DAILY_TASK_LIMIT = 2
 FIRST_DAY_DAILY_PLAN_LIMIT = 2
 FIRST_DAY_DAILY_TASK_LIMIT = FIRST_DAY_DAILY_PLAN_LIMIT * 2
 OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
-FIRST_DAY_WINDOW_MINUTES = 24 * 60
 FIRST_DAY_SILENCE_TRIGGER_TYPE = "first_day_opened_silence"
 FIRST_DAY_SOP_PLAN_ID = "first_day_opened_silence"
 FIRST_DAY_STALE_RUNNING_RETRY_MINUTES = 15
@@ -96,6 +95,9 @@ FIRST_DAY_NON_RETRYABLE_RUN_REASONS = {
     "health_risk",
     "stop_contact",
     "manual_takeover_active",
+    "human_mode",
+    "ai_outreach_not_allowed",
+    "outbound_before_activation",
 }
 FIRST_DAY_SCENES = {
     "store_area_request",
@@ -455,6 +457,87 @@ def _first_day_wechat_allowed(wechat: str, allowlist: str | None) -> bool:
     return _string(wechat).lower() in allowed
 
 
+def _conversation_ai_auto_reply(payload: Any) -> bool | None:
+    data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+    if not isinstance(data, dict):
+        return None
+    takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
+    # Human takeover is the strongest signal. A stale generic ai_auto_reply
+    # flag must never override the platform's explicit human-mode state.
+    if takeover.get("is_human") is True or _string(takeover.get("mode")).lower() in {"human", "manual"}:
+        return False
+    candidates = [data.get("ai_auto_reply"), data.get("aiAutoReply")]
+    for key in ("conversation", "customer", "session", "takeover", "ai_outreach"):
+        nested = data.get(key) if isinstance(data.get(key), dict) else {}
+        candidates.extend((nested.get("ai_auto_reply"), nested.get("aiAutoReply"), nested.get("is_ai")))
+    for value in candidates:
+        if isinstance(value, bool):
+            return value
+        normalized = _string(value).lower()
+        if normalized in {"1", "true", "yes", "on", "ai"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "human", "manual"}:
+            return False
+    if takeover.get("is_human") is False and _string(takeover.get("mode")).lower() == "ai":
+        return True
+    return None
+
+
+async def _ai_mode_gate(system_client: Any, identity: dict[str, Any]) -> dict[str, Any]:
+    try:
+        response = await system_client.conversation_status(
+            corp_id=_string(identity.get("corp_id")),
+            customer_id=_string(identity.get("customer_id")),
+            external_userid=_string(identity.get("external_userid")),
+            user_id=_string(identity.get("user_id")),
+            wechat=_string(identity.get("wechat")),
+        )
+    except Exception as exc:
+        return {
+            "eligible": False,
+            "available": False,
+            "reason": "ai_mode_status_unavailable",
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        }
+    data = response.get("data") if isinstance(response, dict) and isinstance(response.get("data"), dict) else response
+    data = data if isinstance(data, dict) else {}
+    takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
+    outreach = data.get("ai_outreach") if isinstance(data.get("ai_outreach"), dict) else {}
+    status = {
+        "mode": _string(takeover.get("mode")),
+        "handoff_status": _string(takeover.get("handoff_status")),
+        "send_allowed": outreach.get("send_allowed") if isinstance(outreach.get("send_allowed"), bool) else None,
+    }
+    is_ai = _conversation_ai_auto_reply(response)
+    if is_ai is None:
+        return {"eligible": False, "available": False, "reason": "ai_mode_unknown", "status": status}
+    if not is_ai:
+        return {"eligible": False, "available": True, "reason": "human_mode", "status": status}
+    if outreach.get("send_allowed") is False:
+        return {
+            "eligible": False,
+            "available": True,
+            "reason": "ai_outreach_not_allowed",
+            "status": status,
+        }
+    return {"eligible": True, "available": True, "reason": "ai_mode", "status": status}
+
+
+def _timestamp_at_or_after(value: Any, lower_bound: Any) -> bool:
+    cutoff_text = _string(lower_bound)
+    if not cutoff_text:
+        return True
+    timestamp = _parse_iso(_string(value))
+    cutoff = _parse_iso(cutoff_text)
+    if timestamp is None or cutoff is None:
+        return False
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc) >= cutoff.astimezone(timezone.utc)
+
+
 def _terminal_outreach_send_failure_reason(error: str) -> str:
     normalized = _string(error).lower()
     if "invalid_outreach_identity" in normalized:
@@ -547,15 +630,6 @@ def _is_second_beijing_day(contact_started_at: str, *, now: datetime | None = No
         return False
     current = (now or datetime.now(timezone.utc)).astimezone(OUTREACH_BEIJING_TIMEZONE)
     return current.date() > started.astimezone(OUTREACH_BEIJING_TIMEZONE).date()
-
-
-def _is_within_first_day(contact_started_at: str, *, now: datetime | None = None) -> bool:
-    started = _parse_iso(_string(contact_started_at))
-    if not started:
-        return False
-    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    age_minutes = (current - started.astimezone(timezone.utc)).total_seconds() / 60
-    return 0 <= age_minutes <= FIRST_DAY_WINDOW_MINUTES
 
 
 def _add_minutes(value: str, minutes: int) -> str:
@@ -2869,8 +2943,9 @@ class FirstDayWorkflow:
         self,
         *,
         limit: int = 5,
-        silent_minutes: int = 3,
+        silent_minutes: int = 1,
         auto_activate: bool = True,
+        eligible_after: str = "",
     ) -> dict[str, Any]:
         started_at = utc_now_iso()
         stats: dict[str, Any] = {
@@ -2886,6 +2961,7 @@ class FirstDayWorkflow:
             "skip_reasons": {},
             "last_error": "",
             "results": [],
+            "eligible_after": _string(eligible_after),
         }
         scan_limit = max(200, min(2000, max(1, int(limit)) * 200))
         candidates = await asyncio.to_thread(
@@ -2895,9 +2971,9 @@ class FirstDayWorkflow:
         )
         sop_candidate_loader = getattr(self.repository, "list_first_day_sop_contact_candidates", None)
         if callable(sop_candidate_loader):
-            since = (
-                datetime.now(timezone.utc) - timedelta(minutes=FIRST_DAY_WINDOW_MINUTES)
-            ).isoformat()
+            # SOP rows are only a recent discovery supplement. Established conversations
+            # come from list_candidates and are not limited by the contact-added time.
+            since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
             sop_candidates = await asyncio.to_thread(
                 sop_candidate_loader,
                 limit=scan_limit,
@@ -2913,6 +2989,7 @@ class FirstDayWorkflow:
             rough_reason = self._rough_first_day_silence_candidate_reason(
                 candidate,
                 silent_minutes=threshold_minutes,
+                eligible_after=eligible_after,
             )
             if rough_reason:
                 return (1, 0, 0.0, _string(candidate.get("customer_id")))
@@ -2939,6 +3016,7 @@ class FirstDayWorkflow:
             rough_reason = self._rough_first_day_silence_candidate_reason(
                 candidate,
                 silent_minutes=threshold_minutes,
+                eligible_after=eligible_after,
             )
             if rough_reason:
                 result = {
@@ -2952,6 +3030,7 @@ class FirstDayWorkflow:
                         candidate,
                         silent_minutes=threshold_minutes,
                         auto_activate=auto_activate,
+                        eligible_after=eligible_after,
                     )
                 except Exception as exc:
                     result = {
@@ -2977,12 +3056,27 @@ class FirstDayWorkflow:
                 reason = _string(result.get("reason")) or "unknown"
                 skip_reasons = stats["skip_reasons"]
                 skip_reasons[reason] = int(skip_reasons.get(reason) or 0) + 1
+                # Cheap local skips must not starve newer candidates. Any other
+                # skip has crossed the platform preflight boundary and consumes
+                # the same per-scan budget as an evaluated candidate.
+                if reason not in {
+                    "incomplete_sales_contact_identity",
+                    "first_day_wechat_not_allowed",
+                    "nonterminal_plan_exists",
+                    "conversation_fingerprint_already_logged",
+                }:
+                    evaluated_budget_used += 1
         stats["last_scan_finished_at"] = utc_now_iso()
         self._monitor_status = {key: value for key, value in stats.items() if key != "results"}
         return stats
 
     @staticmethod
-    def _rough_first_day_silence_candidate_reason(candidate: dict[str, Any], *, silent_minutes: int) -> str:
+    def _rough_first_day_silence_candidate_reason(
+        candidate: dict[str, Any],
+        *,
+        silent_minutes: int,
+        eligible_after: str = "",
+    ) -> str:
         if _string(candidate.get("candidate_source")) == "sop_send_tasks":
             return ""
         if not _string(candidate.get("last_customer_message_at")):
@@ -2991,6 +3085,9 @@ class FirstDayWorkflow:
             return "not_waiting_for_customer_reply"
         if _int(candidate.get("reply_wait_minutes"), 0) < silent_minutes:
             return "reply_wait_below_threshold"
+        latest_outbound = candidate.get("latest_outbound_message_at") or candidate.get("last_staff_message_at")
+        if not _timestamp_at_or_after(latest_outbound, eligible_after):
+            return "outbound_before_activation"
         manual_takeover = _parse_iso(_string(candidate.get("last_manual_takeover_at")))
         remembered_customer = _parse_iso(_string(candidate.get("last_customer_message_at")))
         if manual_takeover and remembered_customer and manual_takeover >= remembered_customer:
@@ -3003,6 +3100,7 @@ class FirstDayWorkflow:
         *,
         silent_minutes: int,
         auto_activate: bool,
+        eligible_after: str = "",
     ) -> dict[str, Any]:
         identity = {
             "customer_id": _string(candidate.get("customer_id")),
@@ -3117,6 +3215,7 @@ class FirstDayWorkflow:
                                 "latest_customer_message_at": candidate_customer_at,
                                 "latest_staff_message_at": candidate_staff_at,
                                 "monitor_silent_minutes": silent_minutes,
+                                "eligible_after": _string(eligible_after),
                             }
                         },
                     )
@@ -3129,6 +3228,31 @@ class FirstDayWorkflow:
             async def _update_run(**changes: Any) -> None:
                 if workflow_run_id and callable(run_updater):
                     await asyncio.to_thread(run_updater, workflow_run_id, **changes)
+
+            ai_mode_gate = await _ai_mode_gate(self.planning.system_client, identity)
+            if not ai_mode_gate.get("eligible"):
+                reason = _string(ai_mode_gate.get("reason")) or "ai_mode_unknown"
+                available = bool(ai_mode_gate.get("available"))
+                await _update_run(
+                    status="blocked" if available else "failed",
+                    reason_code=reason,
+                    final_decision="no_plan" if available else "retry_pending",
+                    next_retry_at=(
+                        ""
+                        if available
+                        else (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()
+                    ),
+                    error_node="" if available else "ai_mode_status",
+                    error_type="" if available else "AIManagementStatusUnavailable",
+                    error_message="" if available else _string(ai_mode_gate.get("error")),
+                    finished_at=utc_now_iso(),
+                )
+                return {
+                    "status": "skipped" if available else "error",
+                    "customer_id": customer_id,
+                    "reason": reason,
+                    "error": "" if available else _string(ai_mode_gate.get("error")),
+                }
 
             try:
                 refreshed = await self.planning.refresh_customer_conversation(
@@ -3200,27 +3324,6 @@ class FirstDayWorkflow:
                 }
             messages = refreshed.get("messages") or []
             first_added_at = _string(refreshed.get("first_added_at"))
-            authoritative_added_at = _parse_iso(first_added_at)
-            if not authoritative_added_at:
-                await _update_run(
-                    status="blocked",
-                    reason_code="first_added_at_unavailable",
-                    final_decision="no_plan",
-                    finished_at=utc_now_iso(),
-                )
-                return {
-                    "status": "skipped",
-                    "customer_id": customer_id,
-                    "reason": "first_added_at_unavailable",
-                }
-            if not _is_within_first_day(first_added_at):
-                await _update_run(
-                    status="blocked",
-                    reason_code="not_first_day",
-                    final_decision="no_plan",
-                    finished_at=utc_now_iso(),
-                )
-                return {"status": "skipped", "customer_id": customer_id, "reason": "not_first_day"}
             conversation_id = _string(refreshed.get("conversation_id"))
             if not conversation_id:
                 await _update_run(
@@ -3312,6 +3415,14 @@ class FirstDayWorkflow:
                     finished_at=utc_now_iso(),
                 )
                 return {"status": "skipped", "customer_id": customer_id, "reason": "reply_wait_below_threshold"}
+            if not _timestamp_at_or_after(latest_staff_text, eligible_after):
+                await _update_run(
+                    status="blocked",
+                    reason_code="outbound_before_activation",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+                return {"status": "skipped", "customer_id": customer_id, "reason": "outbound_before_activation"}
             conversation_fingerprint = _conversation_fingerprint(
                 corp_id=identity["corp_id"],
                 wechat=identity["wechat"],
@@ -3422,11 +3533,12 @@ class FirstDayWorkflow:
                 },
                 "customer_context": customer_context,
                 "conversation_id": conversation_id,
+                "ai_mode_gate": ai_mode_gate,
             }
             result = await self.planning.generate_plan(
                 **identity,
                 current_stage="first_day_opened_silence",
-                business_goal="首日已开口客户在意向最高窗口沉默后，先轻触达承接最近聊天，再按状态推进效果、报价、预约金或异议处理",
+                business_goal="已开口客户在销售或 AI 回复后沉默，先轻触达承接最近聊天，再按状态推进效果、报价、预约金或异议处理",
                 sop_plan_id=FIRST_DAY_SOP_PLAN_ID,
                 source_context=source_context,
                 trigger_context={
@@ -3440,6 +3552,8 @@ class FirstDayWorkflow:
                     "latest_staff_message_at": latest_staff_text,
                     "reply_wait_minutes": wait_minutes,
                     "monitor_silent_minutes": silent_minutes,
+                    "eligible_after": _string(eligible_after),
+                    "ai_mode": "ai",
                 },
                 workflow_run_id=workflow_run_id,
             )

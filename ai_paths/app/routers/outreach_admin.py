@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import os
 import re
 from pathlib import Path
@@ -18,6 +19,7 @@ _FIRST_DAY_SETTINGS_ENV_KEYS = {
     "OUTREACH_FIRST_DAY_SILENCE_ENABLED",
     "OUTREACH_FIRST_DAY_SILENCE_MINUTES",
     "OUTREACH_FIRST_DAY_WECHAT_ALLOWLIST",
+    "OUTREACH_SILENCE_ELIGIBLE_AFTER",
 }
 
 
@@ -50,6 +52,19 @@ def _normalize_allowlist(value: Any) -> tuple[str, list[str]]:
     if len(tokens) > 200:
         raise HTTPException(status_code=400, detail="wechat allowlist supports at most 200 items")
     return ",".join(tokens), tokens
+
+
+def _normalize_eligible_after(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="eligible_after must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 def _write_settings_env(updates: dict[str, str]) -> None:
@@ -90,6 +105,8 @@ def _settings_response(settings: Settings) -> dict[str, Any]:
         "wechat_allowlist": allowlist,
         "wechat_allowlist_raw": raw_allowlist,
         "empty_allowlist_means_all_allowed": True,
+        "eligible_after": str(settings.outreach_silence_eligible_after or "").strip(),
+        "contact_age_limited": False,
     }
 
 
@@ -118,16 +135,21 @@ def create_outreach_admin_router(
         allowlist_raw, _ = _normalize_allowlist(
             payload.get("wechat_allowlist", payload.get("wechat_allowlist_raw", settings.outreach_first_day_wechat_allowlist))
         )
+        eligible_after = _normalize_eligible_after(
+            payload.get("eligible_after", settings.outreach_silence_eligible_after)
+        )
         updates = {
             "OUTREACH_FIRST_DAY_SILENCE_ENABLED": "true" if enabled else "false",
             "OUTREACH_FIRST_DAY_SILENCE_MINUTES": str(silence_minutes),
             "OUTREACH_FIRST_DAY_WECHAT_ALLOWLIST": allowlist_raw,
+            "OUTREACH_SILENCE_ELIGIBLE_AFTER": eligible_after,
         }
         await asyncio.to_thread(_write_settings_env, updates)
         os.environ.update(updates)
         object.__setattr__(settings, "outreach_first_day_silence_enabled", enabled)
         object.__setattr__(settings, "outreach_first_day_silence_minutes", silence_minutes)
         object.__setattr__(settings, "outreach_first_day_wechat_allowlist", allowlist_raw)
+        object.__setattr__(settings, "outreach_silence_eligible_after", eligible_after)
         services.outreach_service.first_day_wechat_allowlist = allowlist_raw
         return _settings_response(settings)
 

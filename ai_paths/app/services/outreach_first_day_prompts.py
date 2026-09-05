@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v12_store_sent_complete"
-FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v10_repaired_text_authority"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v12_store_sent_replan"
-FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v10_source_contract"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "opened_silence_scene_analyst_zh_v13_ai_only"
+FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "opened_silence_plan_writer_zh_v11_ai_only"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "opened_silence_contract_verifier_zh_v13_ai_only"
+FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "opened_silence_scene_schema_repair_zh_v11_ai_only"
 
 
 FIRST_DAY_SCENE_ANALYST_PROMPT = """
@@ -16,12 +16,12 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 - `trust_repair` 仅在客户消息明确体现信任顾虑，且该场景在 `available_sources_by_scene.trust_repair` 中存在预约卡点来源时允许选择。
 
 # 一、角色
-你是首日微信销售沉默跟进工作流的场景分析师。
+你是微信销售“已开口后沉默”跟进工作流的场景分析师。
 你只分析业务语义和事实证据，绝不撰写任何客户可见话术。
 
 # 二、目标
-客户在加微首日已经真实开口，并且在最近一次有效客服或 AI 回复完成后沉默至少三分钟。
-本功能的目的不是长期唤醒，也不是自由创作销售策略，而是在客户首日意向仍高时，用两次短触达把首日 SOP 流程继续往前推，并优先解决造成客户沉默的真实卡点。
+客户已经真实开口，并且在最近一次有效客服或 AI 回复完成后达到系统配置的沉默阈值；加微时间不限制。
+本功能不是无上下文群发，也不是自由创作销售策略，而是用两次短触达承接最近一次真实聊天，把尚未完成的 SOP 主线继续往前推，并优先解决造成客户沉默的真实卡点。
 你需要判断是否允许创建两步跟进计划，并锁定两个不同的销售场景。若客户有明确卡点，优先匹配预约卡点场景和话术来源；若没有明确卡点，必须按 `first_day_sop_sequence` 中最早未完成的 SOP 顺序推进。两个场景都必须自然承接真实聊天，不能重复已经交付的内容。
 
 # 三、输入合同
@@ -172,7 +172,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 
 FIRST_DAY_PLAN_WRITER_PROMPT = """
 # 一、角色
-你是首日微信沉默跟进计划的写作节点。
+你是微信销售“已开口后沉默”两步跟进计划的写作节点。
 另一个模型已经确定业务场景，你只负责为锁定场景撰写自然、真实的客户可见消息。
 
 # 二、目标
@@ -318,7 +318,7 @@ FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT = """
 - 若锁定场景没有合法来源，不得伪造来源。只有原场景分析本身违反无卡点 SOP 顺序时，才依据 `source_snapshot` 的完成矩阵修正为最早未完成 SOP 场景；不得把 `eligible` 改成 false 来逃避修复。
 
 # 一、角色
-你是首日场景分析 JSON 合同修复器，只修复结构和字段一致性，不重新分析业务，不撰写客户话术。
+你是“已开口后沉默”场景分析 JSON 合同修复器，只修复结构和字段一致性，不重新分析业务，不撰写客户话术。
 
 # 二、输入
 输入包含 `source_snapshot`、`invalid_scene_analysis` 和 `schema_error`。
@@ -341,7 +341,7 @@ FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT = """
 
 FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 # 一、角色
-你是首日两步主动触达计划的最终合同审核节点。
+你是“已开口后沉默”两步主动触达计划的最终合同审核节点。
 你只负责检查并指出违规，绝不撰写、补全或重写客户计划。通常不得重新规划业务场景；但如果锁定场景本身已经被近期客服或 AI 执行、正在等待客户回答，继续写作必然造成重复，则必须输出 `replan`，把场景选择退回场景分析节点。
 
 # 二、输入合同

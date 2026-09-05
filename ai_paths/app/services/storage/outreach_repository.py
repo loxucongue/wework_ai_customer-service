@@ -1441,6 +1441,9 @@ class OutreachRepositoryMixin:
             "customer_id=?",
             "lower(wechat)=lower(?)",
             "status IN ('draft', 'active', 'waiting', 'paused')",
+            "EXISTS (SELECT 1 FROM outreach_tasks active_task "
+            "WHERE active_task.plan_id=outreach_plans.id "
+            "AND active_task.status IN ('pending', 'checking', 'check_failed', 'sending'))",
         ]
         params: list[Any] = [customer_id, wechat]
         if corp_id:

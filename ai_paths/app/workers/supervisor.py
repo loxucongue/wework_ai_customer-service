@@ -139,6 +139,7 @@ class WorkerSupervisor:
                         limit=self.settings.outreach_plan_monitor_batch_size,
                         silent_minutes=self.settings.outreach_first_day_silence_minutes,
                         auto_activate=self.settings.outreach_plan_monitor_auto_activate,
+                        eligible_after=self.settings.outreach_silence_eligible_after,
                     )
             except asyncio.CancelledError:
                 raise

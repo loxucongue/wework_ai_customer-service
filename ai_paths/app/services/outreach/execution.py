@@ -7,6 +7,7 @@ from .first_day import (
     FIRST_DAY_SILENCE_TRIGGER_TYPE,
     OUTREACH_DAILY_TASK_LIMIT,
     OutreachMessagePolicyError,
+    _ai_mode_gate,
     _filter_recently_sent_outreach_media,
     _first_day_wechat_allowed,
     _first_day_wechat_allowlist,
@@ -237,6 +238,56 @@ class TaskExecutor:
         is_first_day_plan = execution["is_first_day_plan"]
         fresh_conversation_messages = execution["fresh_conversation_messages"]
         send_conversation_id = execution["send_conversation_id"]
+        if is_first_day_plan:
+            ai_mode_gate = await _ai_mode_gate(self.system_client, execution["identity"])
+            reason = _string(ai_mode_gate.get("reason")) or "ai_mode_unknown"
+            if not ai_mode_gate.get("eligible") and ai_mode_gate.get("available"):
+                self.repository.update_outreach_task(task_id, status="skipped", error_message=reason)
+                self.repository.skip_remaining_outreach_tasks(
+                    str(task["plan_id"]),
+                    reason=reason,
+                    exclude_task_id=task_id,
+                )
+                self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+                self.repository.add_outreach_event(
+                    plan_id=str(task["plan_id"]),
+                    task_id=task_id,
+                    customer_id=str(task["customer_id"]),
+                    event_type="task_skipped_non_ai_mode",
+                    event_summary="Outreach task cancelled because AI outreach is not authorized",
+                    payload={"reason": reason},
+                )
+                self.first_day._sync_first_day_run_for_task(
+                    plan=plan,
+                    task=task,
+                    status="cancelled",
+                    reason_code=reason,
+                    final_decision="no_send",
+                    terminal=True,
+                )
+                return {"ok": True, "status": "skipped", "reason": reason}
+            if not ai_mode_gate.get("eligible"):
+                self.repository.reschedule_outreach_task(
+                    task_id,
+                    delay_seconds=self.before_send_retry_seconds,
+                    error_message=reason,
+                )
+                self.repository.add_outreach_event(
+                    plan_id=str(task["plan_id"]),
+                    task_id=task_id,
+                    customer_id=str(task["customer_id"]),
+                    event_type="ai_mode_check_failed",
+                    event_summary="AI mode could not be confirmed before outreach send",
+                    payload={"reason": reason, "error": _string(ai_mode_gate.get("error"))},
+                )
+                self.first_day._sync_first_day_run_for_task(
+                    plan=plan,
+                    task=task,
+                    status="created",
+                    reason_code=reason,
+                    final_decision="retry_pending",
+                )
+                return {"ok": False, "status": "rescheduled", "reason": reason, "retryable": True}
         sent_today_loader = getattr(self.repository, "outreach_sent_today_count", None)
         if callable(sent_today_loader):
             sent_today_count = sent_today_loader(

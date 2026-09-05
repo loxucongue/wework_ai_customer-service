@@ -118,7 +118,9 @@
   - `GET /api/v1/platform-agent/ai-outreach/conversation/status`
   - `POST /api/v1/platform-agent/ai-outreach/send`
 - 运行边界：
-  - 真实发送必须经过发送前最新会话检查、退订/人工/已付/客户已回复等阻断。
+  - 已开口沉默计划生成前必须调用 `conversation/status`；只有明确 `takeover.mode=ai`/`ai_auto_reply=true` 且未禁止 AI 主动触达时才可继续。
+  - 每次真实发送前必须再次检查最新会话和 `conversation/status`；人工接管、状态未知、退订、已付、客户已回复等均阻断发送。
+  - `conversation/status` 不可用或字段不足时失败关闭并延后重试，不能推断为 AI 模式。
   - shadow 策略任务只记录 `shadowed`，不得调用真实发送。
 
 ## 第三方 SOP 平台
