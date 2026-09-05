@@ -31,6 +31,7 @@
 
 - `ai_paths/app/policies/ai_closing_catalog_v1.json`
 - 逼单目录加载与校验相关测试（按实际文件最小修改）
+- `ai_paths/scripts/evaluate_v3_full_chain_deepseek.py`
 - `docs/contracts/sales-strategy.md`
 - `docs/interfaces/external.md`
 - `docs/tasks/active/v3-closing-workbook-catalog.md`

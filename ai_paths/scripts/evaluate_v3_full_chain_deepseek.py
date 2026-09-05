@@ -371,9 +371,41 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
     cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
     route = state.get("semantic_route") if isinstance(state.get("semantic_route"), dict) else {}
     friction = route.get("current_friction") if isinstance(route.get("current_friction"), dict) else {}
+    closing_evidence = (
+        route.get("closing_catalog_evidence")
+        if isinstance(route.get("closing_catalog_evidence"), dict)
+        else {}
+    )
+    closing_rules = [
+        item for item in closing_evidence.get("selected_rules") or []
+        if isinstance(item, dict)
+    ]
+    closing_sequences = [
+        item for item in closing_evidence.get("candidate_sequences") or []
+        if isinstance(item, dict)
+    ]
+    closing_sequence_keys = {
+        _text(item.get("sequence_key")) for item in closing_sequences
+        if _text(item.get("sequence_key"))
+    }
     recall = state.get("sales_recall") if isinstance(state.get("sales_recall"), dict) else {}
     sequences = recall.get("sequence_candidates") or recall.get("sequences") or []
     scripts = recall.get("script_candidates") or recall.get("scripts") or recall.get("items") or recall.get("candidates") or []
+    closing_scripts = [
+        item for item in scripts
+        if isinstance(item, dict)
+        and any(
+            isinstance(link, dict)
+            and _text(link.get("query_source")) == "closing_catalog_node"
+            for link in item.get("sequence_links") or []
+        )
+    ]
+    closing_script_ids = {
+        _text(item.get(key))
+        for item in closing_scripts
+        for key in ("script_id", "id", "source_id", "script_code")
+        if _text(item.get(key))
+    }
     knowledge = state.get("reply_knowledge_use") if isinstance(state.get("reply_knowledge_use"), dict) else {}
     selected_script_ids = [
         _text(item)
@@ -393,8 +425,25 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
         "checkpoint_code": _text(friction.get("checkpoint_code") or friction.get("code")),
         "sequence_candidates": [_text(item.get("name") or item.get("sequence_name") or item.get("sequence_key") or item.get("id")) for item in sequences[:3] if isinstance(item, dict)],
         "script_candidates": [_text(item.get("script_name") or item.get("name") or item.get("script_id") or item.get("id")) for item in scripts[:6] if isinstance(item, dict)],
+        "closing_catalog_source": _text(closing_evidence.get("source")),
+        "closing_catalog_status": _text(closing_evidence.get("status")),
+        "closing_rule_match_status": _text(closing_evidence.get("match_status")),
+        "closing_rule_candidates": [
+            _text(item.get("type_name") or item.get("rule_key"))
+            for item in closing_rules[:3]
+        ],
+        "closing_strategy_candidates": [
+            _text(item.get("name") or item.get("sequence_key"))
+            for item in closing_sequences[:3]
+        ],
+        "closing_script_candidates": [
+            _text(item.get("script_name") or item.get("name") or item.get("script_id") or item.get("id"))
+            for item in closing_scripts[:6]
+        ],
         "adopted_sequence_id": _text(knowledge.get("sequence_id")),
         "adopted_script_id": ";".join(selected_script_ids),
+        "closing_strategy_adopted": _text(knowledge.get("sequence_id")) in closing_sequence_keys,
+        "closing_script_adopted": bool(set(selected_script_ids) & closing_script_ids),
         "store_status": _text(store.get("status") or store.get("match_status")),
         "decision_status": _text(state.get("decision_status")),
         "decision_reasons": [_text(item) for item in state.get("decision_reasons") or [] if _text(item)],
@@ -595,9 +644,14 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
         "reply_sources": dict(Counter(row.get("reply_source") or "exception" for row in rows)),
         "sequence_candidate_count": sum(bool(row.get("sequence_candidates")) for row in completed),
         "script_candidate_count": sum(bool(row.get("script_candidates")) for row in completed),
+        "closing_rule_candidate_count": sum(bool(row.get("closing_rule_candidates")) for row in completed),
+        "closing_strategy_candidate_count": sum(bool(row.get("closing_strategy_candidates")) for row in completed),
+        "closing_script_candidate_count": sum(bool(row.get("closing_script_candidates")) for row in completed),
         "adoption_eligible_count": len(eligible),
         "sequence_adopted_count": sum(bool(row.get("adopted_sequence_id")) for row in eligible),
         "script_adopted_count": sum(bool(row.get("adopted_script_id")) for row in eligible),
+        "closing_strategy_adopted_count": sum(bool(row.get("closing_strategy_adopted")) for row in completed),
+        "closing_script_adopted_count": sum(bool(row.get("closing_script_adopted")) for row in completed),
         "closing_enter_advance_count": sum(row.get("closing_action") in {"enter", "advance"} for row in valid),
         "judge_count": len(judged), "judge_pass_rate": round(sum(bool(row["judge"].get("passed")) for row in judged) / len(judged), 4) if judged else 0,
         "intent_accuracy_valid_policy": round(sum(row.get("intent") == row["judge"].get("expected_intent") for row in judged_policy) / max(1, len(judged_policy)), 4),
@@ -617,6 +671,9 @@ CSV_FIELDS = [
     "case_id", "identity_hash", "bucket", "customer_excerpt", "reply_excerpt", "reply_source",
     "primary_task", "intent", "emotion", "flow_action", "checkpoint_code", "cardpoint_state",
     "sequence_candidates", "script_candidates", "adopted_sequence_id", "adopted_script_id",
+    "closing_catalog_source", "closing_catalog_status", "closing_rule_match_status",
+    "closing_rule_candidates", "closing_strategy_candidates", "closing_script_candidates",
+    "closing_strategy_adopted", "closing_script_adopted",
     "closing_action", "closing_sequence_key", "closing_node_key", "customer_state", "store_status",
     "decision_status", "decision_reasons", "failure_category", "failure_code", "duration_ms", "runtime_error",
     "judge_expected_intent", "judge_expected_emotion", "judge_passed", "judge_reply_accuracy",
@@ -632,6 +689,9 @@ def csv_row(row: dict[str, Any]) -> dict[str, Any]:
         {
             "sequence_candidates": "；".join(row.get("sequence_candidates") or []),
             "script_candidates": "；".join(row.get("script_candidates") or []),
+            "closing_rule_candidates": "；".join(row.get("closing_rule_candidates") or []),
+            "closing_strategy_candidates": "；".join(row.get("closing_strategy_candidates") or []),
+            "closing_script_candidates": "；".join(row.get("closing_script_candidates") or []),
             "decision_reasons": "；".join(row.get("decision_reasons") or []),
             "judge_expected_intent": judge.get("expected_intent", ""),
             "judge_expected_emotion": judge.get("expected_emotion", ""), "judge_passed": judge.get("passed", ""),
@@ -673,7 +733,9 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
         f"- 有效策略行意图一致率：{metrics['intent_accuracy_valid_policy']:.1%}",
         f"- 有效策略行情绪一致率：{metrics['emotion_accuracy_valid_policy']:.1%}",
         f"- 序列候选/话术候选：{metrics['sequence_candidate_count']}/{metrics['script_candidate_count']}",
+        f"- B 单规则/策略/话术候选：{metrics['closing_rule_candidate_count']}/{metrics['closing_strategy_candidate_count']}/{metrics['closing_script_candidate_count']}",
         f"- 条件可采用样本：{metrics['adoption_eligible_count']}；采用序列/话术：{metrics['sequence_adopted_count']}/{metrics['script_adopted_count']}",
+        f"- B 单策略/话术实际采用：{metrics['closing_strategy_adopted_count']}/{metrics['closing_script_adopted_count']}",
         f"- B 单 enter/advance：{metrics['closing_enter_advance_count']}",
         f"- P50/P95：{metrics['p50_ms']}/{metrics['p95_ms']} ms", "",
         f"- 回复来源：{json.dumps(metrics['reply_sources'], ensure_ascii=False)}",
