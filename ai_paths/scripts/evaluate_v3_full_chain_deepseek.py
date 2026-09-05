@@ -461,7 +461,13 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
         "decision_reasons": [_text(item) for item in state.get("decision_reasons") or [] if _text(item)],
         "reply_source": _text(state.get("reply_source")),
         "failure_category": _text(failure.get("category")), "failure_code": _text(failure.get("code")),
-        "failure_reason": redact(failure.get("reason") or failure.get("message") or "", 500),
+        "failure_reason": redact(
+            failure.get("reason")
+            or failure.get("message")
+            or state.get("recovery_reason")
+            or "",
+            500,
+        ),
     }
 
 
@@ -620,6 +626,24 @@ async def judge_phase(args: argparse.Namespace, private_path: Path, rows: list[d
         for index, private in enumerate(private_rows):
             row = by_case.get(private["case_id"])
             if row is None or row.get("runtime_error"):
+                continue
+            if row.get("reply_source") not in VALID_REPLY_SOURCES or not _text(private.get("reply")):
+                row["judge"] = {
+                    "expected_intent": "",
+                    "expected_emotion": "",
+                    "pressure_direction_ok": False,
+                    "reply_accuracy_score": 0,
+                    "reply_naturalness_score": 0,
+                    "mainline_progress_score": 0,
+                    "follow_sequence_fit_score": None,
+                    "closing_fit_score": None,
+                    "store_next_step_ok": None,
+                    "stale_topic_revival": False,
+                    "unsupported_fact": False,
+                    "safety_ok": True,
+                    "passed": False,
+                    "reasons": ["运行阶段未生成有效客户回复"],
+                }
                 continue
             raw = await judge.chat_json(judge_messages(private))
             row["judge"] = normalize_judge(raw)
