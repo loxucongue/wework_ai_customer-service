@@ -69,6 +69,10 @@
 - 评测启动前强制检查 DeepSeek、Relay 和启用状态下的 Follow Knowledge 凭证，缺失即失败，不再生成伪 0 候选报告。
 - 修正 DeepSeek 评审门店事实优先级：本轮 `store_resolution_fact` 高于历史订单关联门店。
 - 使用真实客户身份和服务器只读事实完成 20 条门禁与 120 条正式隔离重测，全程未发送、未写生产库。
+- 将 Router 的信任/效果/暂缓/退订校准改为完整语义边界，明确 `current_intent` 只是检索摘要，不是最终销售意图。
+- 合并 Reply 中重复的当前消息、推进、门店和事实规则；保留退订、情绪、卡点、门店、付款和真实目录 ID 边界，补齐次要任务最小结构后静态长度由 12,514 降至 10,700 字符。
+- 将 `flow_action`、业务名称和 `decision_status` 明确为代码派生字段；模型只输出运行骨架和轻量观测，补充 BI 字段缺失不得触发第二次业务判断。
+- 增加 Prompt 职责、关键安全边界和长度预算回归测试；确认现有 full retry 与 targeted repair 已按“无 JSON 重做 / 有 JSON 只修复”分离，无需再增加恢复节点。
 
 ## 待办
 
@@ -82,11 +86,17 @@
 
 - `python -m py_compile ai_paths/scripts/evaluate_v3_full_chain_deepseek.py`：通过。
 - `python -m pytest -q tests/test_store_workflow_boundaries.py tests/test_store_matching_tool_contract.py tests/test_v3_policy_decision_contract.py tests/test_v3_closing_catalog_integration.py tests/test_v3_deepseek_eval_protocol.py`：119 passed。
+- `python -m pytest -q`：174 passed。
+- Prompt 治理定向回归（含新增预算测试）：123 passed。
 - `git diff --check`：通过。
 - 20 条最终门禁（`778252d2`）：主模型有效 20/20，policy 覆盖 100%，DeepSeek 初评 95%，候选可采用 6，序列/话术采用 2/2，无安全失败、无依据事实或生产写入。
 - 120 条正式重测（`8046ff2b`）：主模型有效 112/120，policy 覆盖 93.33%，DeepSeek 初评 94.17%，有效策略行意图/情绪一致率 98.21%/100%，候选可采用 22，序列/话术采用 10/10，P50/P95 10.676s/16.543s，无安全失败、无依据事实或生产写入。
 - 120 条失败来源：policy schema 1、门店事实恢复 1、档期事实 3、预约确认事实 1、未细分 reply contract 2；其中 3 条经安全恢复仍有正确客户可见回复，5 条无可交付回复。
 - 服务器 V3 环境为两层：基础模型配置来自 `/opt/ai-paths/.env`，Follow Knowledge 租户凭证来自 `/opt/ai-paths-v3/v3.env`；测试只加载第一层会产生无效的 0 候选报告。
+- Prompt 治理 60 条严格同样本对照：优化前后有效回复均为 58/60，policy 覆盖均为 96.67%，DeepSeek 初评均为 98.33%，安全失败和无依据事实均为 0；P50 从 9.950 秒变为 10.006 秒，P95 从 14.785 秒降至 13.905 秒。该可恢复样本交集仅剩普通交流类，不能用于证明卡点知识采用效果。
+- Prompt 治理 120 条新近多场景样本：有效回复 112/120，policy 覆盖 93.33%，DeepSeek 初评 94.17%，序列/话术候选 18/19，条件可采用 17，实际采用 8/8，安全失败和无依据事实均为 0，P50/P95 10.848s/16.222s。相对治理前一轮 120 条，整体通过率持平、条件采用率由 45.5% 变为 47.1%，但样本分布不完全相同，不作因果结论。
+- 首轮 120 条出现 13 次 `invalid_secondary_task`，根因是精简 Prompt 时遗漏了既有对象结构；补回 `type + goal + basis` 最小合同后，40 条 DeepSeek 结构探针 `degraded_count=0`、有效回复 38/40、序列/话术采用 5/5，无安全失败、无依据事实或生产写入。该探针未运行 AI 评审，不能使用报告中的 0% judge 指标评价回复质量。
+- 最终结论：Prompt 治理本身在严格同样本上未造成回复质量下降，并消除了本轮新增的次要任务结构退化；整个候选版本仍因 policy 覆盖仅 93.33%、8 条事实/交付失败和 B 单正例不足而不满足上线门槛。
 
 ## 发布与回滚
 
