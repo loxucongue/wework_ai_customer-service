@@ -3507,7 +3507,12 @@ def _reply_repair_hint(error: str) -> str:
             "若本轮主题不是预约，删除从旧历史带回的日期、时段、人数、预约金和锁名额表达，继续回答当前问题。"
         )
     if "appointment_confirmation_fact_required" in error:
-        return "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。普通预约可问“这个时间方便吗”；已有旧预约的改约场景只输出一条：“这个时间目前可以，您确认要改到这个时间吗？”。删除其他“继续核对/先按这个时间/帮您改过去/帮您留/锁定/安排/记上/预约成功”表达。"
+        return (
+            "客户自己提出下午过去、开车过去、姓名或手机号，只是到店意向和信息提交，不代表预约成立。"
+            "没有 appointment_created/confirmed 事实时，不要复述为‘好的，您下午直接来’，也不要说已留位、已安排、已登记。"
+            "改为先确认已收到到店想法和信息；若缺门店位置，只问一个城市、区县或地标，若位置已知则说明具体接待时间仍需确认。"
+            "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。"
+        )
     if "too_many_appointment_time_options" in error:
         return "档期回复最多只能给 1 个推荐时间和 1 个备选时间。请基于 recommended_slot 和 backup_slots 重写，不要列完整时间表。"
     if "unfinished_appointment_lookup_promise" in error:
