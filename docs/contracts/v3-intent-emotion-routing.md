@@ -1,6 +1,6 @@
 # V3 意图、情绪与意图路由合同
 
-- status: implemented-pending-production-validation
+- status: active-production-observation
 - owner: reply-runtime
 - source_of_truth: `ai_sales_policy_v2.json`、V3 Semantic Router、V3 Reply 与策略 BI 代码
 
@@ -23,14 +23,14 @@ Semantic Router 的 `current_intent.summary` 是检索与工具规划摘要，�
 | --- | --- | --- | --- |
 | 意图目录 | 已实现 | 版本化 7 类：事实咨询、表达卡点、推进成交、提交信息、暂缓、明确退出、普通交流；明确退出只认停止后续联系的原话 | `ai_paths/app/policies/ai_sales_policy_v2.json`、`ai_sales_policy_service.py` |
 | 检索意图路由 | 已实现 | DeepSeek Semantic Router 根据当前消息和历史选择卡点、事实主题、门店工具及知识候选 | `v3_semantic_router_service.py`、`prompts/v3_semantic_router.py` |
-| 最终实时意图 | 已实现，待业务金标验收 | 最终 Reply 在生成回复时同时选择一个主意图和最多 3 个次要意图，并引用真实客户消息 | `prompts/reply_synthesizer.py`、`graph/nodes/reply_nodes.py` |
+| 最终实时意图 | 已上线，待业务金标验收 | 最终 Reply 在生成回复时同时选择一个主意图和最多 3 个次要意图，并引用真实客户消息 | `prompts/reply_synthesizer.py`、`graph/nodes/reply_nodes.py` |
 | 主任务路由 | 已实现 | 收集多信号后只选择一个 `primary_task`；风险、人工接管、明确退出和交易终态优先 | `ai_sales_policy_v2.json`、`reply_nodes.py` |
 | 情绪目录 | 已实现 | 8 类情绪均有定义、最低证据和反例；粗口、短句、慢回复等弱信号不得单独升级为愤怒 | `ai_sales_policy_v2.json`、`ai_sales_policy_service.py` |
-| 情绪影响回复 | 已实现，待生产效果验收 | Reply 选择情绪和置信度；代码从目录派生 `flow_action`，低置信度愤怒只降压，不暂停营销 | `reply_synthesizer.py`、`reply_nodes.py` |
+| 情绪影响回复 | 已上线，持续观察 | Reply 选择情绪和置信度；代码从目录派生 `flow_action`，低置信度愤怒只降压，不暂停营销 | `reply_synthesizer.py`、`reply_nodes.py` |
 | 跨轮变化 | 已实现 | 只读取同一销售接触边界上一条稳定事件；下一次真实客户回复回填下一意图、下一情绪和变化 | `chat_runtime.py`、`v3_strategy_analytics_repository.py` |
 | BI 查询 | 已实现 | 按意图、情绪和变化聚合，支持时间、企微、卡点、策略等筛选 | `routers/operations_admin.py`、`v3_strategy_analytics_repository.py` |
 | 逼单协同 | 已实现 | Router 召回同一来源的规则/策略/节点，Reply 选择；代码校验真实 ID、频控和禁忌。固定 `trigger` 从有效目录选择派生，避免冗余字段误杀正确策略 | `v3_semantic_router_service.py`、`reply_nodes.py` |
-| 生产效果证明 | 未完成 | 已完成 DeepSeek 边界隔离评测，但尚未形成 400 条业务确认金标，也不能从代码存在推断线上已启用 | ignored `artifacts/`、`docs/current/KNOWN_ISSUES.md` |
+| 生产效果证明 | 首版已上线观察 | DeepSeek 隔离评测达到 93.33% 策略结构覆盖并由产品负责人接受为首版门槛；仍未形成 400 条业务确认金标，不能把结构覆盖解释成业务准确率 | ignored `artifacts/`、`docs/current/KNOWN_ISSUES.md` |
 
 ## 运行合同
 
@@ -62,8 +62,8 @@ Semantic Router 的 `current_intent.summary` 是检索与工具规划摘要，�
 2. 8 类情绪是强制单标签，对很短的“嗯、好、？”只能低置信度归入某类，容易产生伪精确。BI 必须同时展示置信度；是否增加 `uncertain` 应由业务金标混淆矩阵决定。
 3. 情绪变化表示两次客户消息的分类变化，不是“客户被本轮回复改善了”的因果结论。看板只能写“后续变化/相关”。
 4. DeepSeek 对情绪、退订和 B 单结构的服从可以达到可用水平，但在项目、付款或门店权威事实完全缺失时仍可能补业务口径。运行链必须保证正常场景先提供权威事实；事实服务缺失时不得把 closing catalog 当事实来源，生产放量前仍需真实样本金标和事实缺失专项验收。
-5. 代码与 BI 已完成，独立序列模型、话术模型筛选和门店后二次销售语义判断已退出运行链；当前尚未核验生产开关和线上 release，因此只能称“代码已完成、待上线验收”。
+5. 代码与 BI 已上线，独立序列模型、话术模型筛选和门店后二次销售语义判断已退出运行链；生产策略已启用，延时节点仍为 shadow。当前外部 B 单目录不可用时按显式配置使用版本化本地目录，不得把该降级来源伪装成平台数据。
 
 ## 验收要求
 
-启用生产策略前，至少用业务确认的真实匿名样本分别验证主意图准确率、情绪准确率、压力方向、退订/投诉误推进、证据引用完整率和端到端延迟。`AI_SALES_POLICY_ENABLED=false` 时不会产生最终意图/情绪决策数据，这是开关行为，不是埋点故障。
+生产策略已于 `main@91ac4016` 启用。后续仍需用业务确认的真实匿名样本分别验证主意图准确率、情绪准确率、压力方向、退订/投诉误推进、证据引用完整率和端到端延迟；未完成金标前只能称“首版上线观察”，不能宣称达到最终业务准确率。

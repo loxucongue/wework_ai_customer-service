@@ -1,6 +1,6 @@
 # AI 销售策略运行合同
 
-- status: candidate
+- status: active-production-observation
 - owner: reply-runtime
 - source_of_truth: `ai_paths/app/policies/ai_sales_policy_v2.json`、`ai_closing_catalog_v1.json`、外部 Follow Knowledge 已发布目录与当前 V3 代码
 
