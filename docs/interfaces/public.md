@@ -95,7 +95,7 @@
 - `GET /admin/outreach/first-day-runs`
 - `GET /admin/outreach/first-day-runs/{workflow_run_id}`
 
-上述 `first-day` 路径是历史兼容名称；产品页面统一称为“沉默客户唤醒”，当前运行逻辑不限制加微时间。
+上述 `first-day` 路径是历史兼容名称；产品页面统一称为“千人千面日志”，实际记录的是沉默客户唤醒，当前运行逻辑不限制加微时间。
 
 ## 健康检查
 

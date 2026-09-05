@@ -246,8 +246,8 @@ export function FirstDayOutreachLogViewer() {
         <header className="border-b border-zinc-200 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="flex items-center gap-2 text-lg font-semibold"><ListTree className="h-5 w-5" />沉默客户唤醒</div>
-              <p className="mt-1 text-xs text-zinc-500">千人千面判断、两步计划与安全阻断记录</p>
+              <div className="flex items-center gap-2 text-lg font-semibold"><ListTree className="h-5 w-5" />千人千面日志</div>
+              <p className="mt-1 text-xs text-zinc-500">沉默客户的个性化判断、两步计划与安全阻断记录</p>
             </div>
             <button type="button" title="刷新" onClick={() => {
               void loadRuns(activeCursor);
