@@ -2118,17 +2118,17 @@ def _parallel_generic_reply_repair_messages(
         else {}
     )
     required_output_contract: dict[str, Any] = {
-        "sales_judgment": {
-            "customer_friction_observation": "字符串；无当前未解顾虑时为空",
-            "primary_objective": "本轮唯一目标",
-            "posture": "answer|advance|switch|pause|close",
-        },
         "reply_messages": [
             {
                 "type": "至少一条；普通回复使用 text",
                 "content": "非空客户可见内容",
             }
         ],
+        "sales_judgment": {
+            "customer_friction_observation": "字符串；无当前未解顾虑时为空",
+            "primary_objective": "本轮唯一目标",
+            "posture": "answer|advance|switch|pause|close",
+        },
     }
     if bool(validation_context.get("policy_required")):
         required_output_contract["policy_decision"] = {
@@ -2210,7 +2210,8 @@ def _parallel_generic_reply_repair_messages(
             "content": (
                 "你是最终 Reply 的通用校验修复器，不是第二个销售大脑。"
                 "只处理 schema、结构素材、引用或确定性事实冲突。"
-                "保留所有未冲突内容，只输出完整严格 json。"
+                "保留所有未冲突内容；输出时必须先写非空 reply_messages，再写其他字段。"
+                "只输出完整严格 json。"
             ),
         },
         *evidence_messages,

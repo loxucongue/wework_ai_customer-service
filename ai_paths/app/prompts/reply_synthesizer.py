@@ -62,14 +62,14 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，也是
 
 # 六、输出合同
 只输出严格 JSON，不输出 markdown、解释或思考：
-{"sales_judgment":{"customer_friction_observation":"","primary_objective":"本轮唯一主要目标","posture":"answer|advance|switch|pause|close"},"reply_messages":[{"type":"text","content":"客户实际看到的微信消息"}]}
+{"reply_messages":[{"type":"text","content":"客户实际看到的微信消息"}],"sales_judgment":{"customer_friction_observation":"","primary_objective":"本轮唯一主要目标","posture":"answer|advance|switch|pause|close"},"policy_decision":{"primary_task":{"type":"","goal":""},"realtime_intent":{"type":"","confidence":"high|medium|low"},"emotion_decision":{"label":"","confidence":"high|medium|low","pressure":"normal|low|none"},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","sequence_key":"none","node_key":"","trigger":"none|business_rule","customer_state":"engaged|hesitant|soft_reject|not_buying_now|hard_stop|new_blocker|transaction_terminal_or_handoff|none","pressure":"normal|low|none"}}}
 
+- `reply_messages` 是第一优先级必填字段，先生成至少一条非空客户可见消息，再补销售判断和策略字段；任何场景都不得只返回内部决策而漏掉客户回复。
 - `reply_messages` 至少一条。text/image/video/human_handoff_notice 的 content 是字符串；store_address 原样复制 {"store_id":"..."}，且配一条说明位置/地址/导航的文字；payment_collection 原样复制完整对象，不能自填金额。
 - `customer_friction_observation` 只写当前有原话支持的未解顾虑；无则空。`primary_objective` 必须本轮可完成或通过一个必要回答进入真实下一步。
 - posture：answer=重点回答，advance=答后推进，switch=承接新问题/卡点，pause=本轮不营销，close=进入付款或已付登记。
 - 条件字段：实际采用素材才写 selected_content_ids；实际采用序列/步骤/话术才写 knowledge_use（最多一个主话术）；付款上下文才写 payment_assessment；只有输出 payment_collection 才写 deposit_evidence；当前健康风险/投诉退款/明确停止才写 safety_assessment；明确人数才写 party_size_assessment；权威已付且输入给出完整写入事实时才写 commit_actions（仅 add_customer_mobile/create_work_order）。
-- 输入有已启用策略时必须输出：
-  {"policy_decision":{"primary_task":{"type":"","goal":""},"realtime_intent":{"type":"","confidence":"high|medium|low"},"emotion_decision":{"label":"","confidence":"high|medium|low","pressure":"normal|low|none"},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","sequence_key":"none","node_key":"","trigger":"none|business_rule","customer_state":"engaged|hesitant|soft_reject|not_buying_now|hard_stop|new_blocker|transaction_terminal_or_handoff|none","pressure":"normal|low|none"}}}
+- 输入有已启用策略时必须保留示例中的完整 `policy_decision`；策略未启用时可以省略该对象。
 - type/label/key 来自输入目录。无逼单触发时 trigger=none、sequence_key=none、node_key=""；enter/advance/fallback 还必须给真实 rule_ids。明确退订只 close/complete/hard_stop；高置信 angry 或系统要求暂停只 pause；新卡点用 answer 或 switch 解卡，closing=pause。
 - secondary_tasks、basis、secondary_types、evidence_refs、satisfied_prerequisite_ids、blocking_taboo_ids、cardpoint_decision 是可选观测字段，缺失不得改变客户回复或触发第二次业务判断。secondary_tasks 最多 3 个真实目录对象且不重复主任务；flow_action、策略/规则/节点名称和 decision_status 由代码派生，不要生成。ref 只能复制【输出引用与结构边界】中的短 ref。
 

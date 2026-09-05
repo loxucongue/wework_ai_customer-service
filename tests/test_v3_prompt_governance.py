@@ -28,6 +28,8 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "询价、优惠、效果等新问题本身不构成续接门店的理由" in prompt
     assert "权威事实、本轮确认、当前可确认、经核验" in prompt
     assert "第一次只解释，不主动输出 payment_collection" in prompt
+    assert "任何场景都不得只返回内部决策而漏掉客户回复" in prompt
+    assert prompt.index('"reply_messages"') < prompt.index('"sales_judgment"')
 
 
 def test_reply_does_not_ask_model_for_code_derived_observation_fields() -> None:
