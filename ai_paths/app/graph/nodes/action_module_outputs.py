@@ -302,6 +302,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if resolution_status == "send_multiple"
                 else []
             )
+            if v3_mode and resolution_status == "send_multiple":
+                delivery_store_ids = delivery_store_ids[:MAX_STORE_DELIVERY_COUNT]
             lookup_missing = [str(item) for item in (value.get("missing") or []) if str(item)]
             candidate_search_complete = bool(
                 resolution_status != "search_incomplete"
@@ -624,7 +626,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if resolution_status == "send_multiple"
                 else []
             )
-            if v3_mode and not use_broad_exact_scope:
+            if v3_mode and resolution_status == "send_multiple":
                 delivery_store_ids = delivery_store_ids[:MAX_STORE_DELIVERY_COUNT]
             requested_detail_kind, requested_detail_available = _requested_store_detail_status(
                 destination_resolution,

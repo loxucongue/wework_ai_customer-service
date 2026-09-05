@@ -73,3 +73,4 @@ def test_reply_always_receives_online_project_scope_boundary() -> None:
     )
 
     assert "除皱不属于线上活动范围" in rendered
+    assert "不得确认‘那个案例是真的’" in rendered

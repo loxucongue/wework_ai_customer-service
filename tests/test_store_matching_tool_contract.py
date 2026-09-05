@@ -877,6 +877,41 @@ def test_multiple_stores_in_same_district_are_candidates_not_location_ambiguity(
     assert resolution["delivery_store_ids"] == ["101", "102"]
 
 
+def test_v3_broad_scope_caps_delivery_ids_but_keeps_all_candidates() -> None:
+    stores = [_store(str(index), f"成都门店{index}") for index in range(1, 6)]
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {
+            "source": "platform_agent.store_index",
+            "stores": stores,
+        },
+    }
+
+    lookup = asyncio.run(
+        action_nodes._customer_store_lookup(
+            {
+                "query": "成都市",
+                "customer_raw_query": "成都市有哪些门店",
+                "purpose": "store_region",
+                "expected_admin": {"province": "四川省", "city": "成都市"},
+                "use_resolver_admin_fallback": True,
+                "allow_broad_scope_delivery": True,
+                "destination_precision": "city",
+            },
+            state,
+            SimpleNamespace(settings=SimpleNamespace(geocode_workflow_id="")),
+        )
+    )
+    resolution = build_planner_fact_output(
+        {"customer_store_lookup": lookup},
+        state,
+    )["structured_facts"]["store_resolution_fact"]
+
+    assert resolution["status"] == "send_multiple"
+    assert resolution["delivery_store_ids"] == ["1", "2", "3"]
+    assert resolution["candidate_store_ids"] == ["1", "2", "3", "4", "5"]
+
+
 def test_province_scope_with_one_visible_store_emits_that_store() -> None:
     stores = [_store("101", "成都锦江店")]
     state = {

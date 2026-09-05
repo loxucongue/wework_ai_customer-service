@@ -568,6 +568,10 @@ def _render_authoritative_facts(
     if "body_area" in selected:
         _append_fact(lines, "项目范围", offer.get("scope_answer_policy"))
         _append_fact(lines, "部位价格", offer.get("body_area_price_rule"))
+        lines.append(
+            "特定广告/案例真实性：本轮没有给出对应人物或广告案例事实时，不得确认‘那个案例是真的’、"
+            "不得声称有该人的原相机记录；只回答已知项目范围，并说明无法据当前事实核实该条广告。"
+        )
     if "transport_policy" in selected:
         _append_fact(lines, "交通费用", offer.get("transport_cost_rule"))
     if "payment" in selected:

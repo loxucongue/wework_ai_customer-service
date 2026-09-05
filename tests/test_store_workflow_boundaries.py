@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.graph.nodes import action_nodes
-from app.graph.nodes.reply_generation import _low_information_input_recovery
+from app.graph.nodes.reply_generation import _low_information_input_recovery, _verified_store_delivery_failure_recovery
 from app.graph.nodes.reply_validation import (
     _validate_parallel_appointment_confirmation_facts,
     _validate_unconfirmed_store_availability_claim,
@@ -220,3 +220,44 @@ def test_low_information_input_recovery_only_handles_standalone_symbol_input() -
         }
     )
     assert not _low_information_input_recovery({"content": "多少钱", "evidence_join": {"structured_facts": {}}})
+
+
+def test_verified_store_recovery_delivers_every_canonical_store_card() -> None:
+    stores = [
+        _store(str(index), f"门店{index}", f"成都市都江堰市地址{index}")
+        for index in range(1, 6)
+    ]
+    resolution = {
+        "status": "send_multiple",
+        "resolution_status": "send_multiple",
+        "delivery_store_ids": [item["store_id"] for item in stores[:3]],
+        "visible_candidate_ids": [item["store_id"] for item in stores],
+        "candidate_store_ids": [item["store_id"] for item in stores],
+        "candidate_search_complete": True,
+        "ranking_method": "scope_match",
+        "delivery_mode": "send_all_candidates",
+    }
+    state = {
+        "normalized_content": "这个城市有哪些店",
+        "fact_envelope": {
+            "structured_facts": {
+                "store_resolution_fact": resolution,
+                "store_facts": stores,
+            }
+        },
+        "evidence_join": {
+            "shared_context": {"current_message": {"content": "这个城市有哪些店"}},
+            "normalized_tool_facts": {
+                "structured_facts": {
+                    "store_resolution_fact": resolution,
+                    "store_facts": stores,
+                }
+            },
+        },
+    }
+
+    messages = _verified_store_delivery_failure_recovery(state)
+
+    assert [item["content"]["store_id"] for item in messages if item["type"] == "store_address"] == [
+        "1", "2", "3"
+    ]

@@ -474,7 +474,7 @@ def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[st
                     "order": index + 2,
                     "content": {"store_id": str(item["content"].get("store_id") or "").strip()},
                 }
-                for index, item in enumerate(message_payloads[:3])
+                for index, item in enumerate(message_payloads)
             ],
         ]
     else:
