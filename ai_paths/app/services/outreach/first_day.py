@@ -2871,6 +2871,18 @@ def _first_day_existing_run_retry_reason(
     return ""
 
 
+def _sop_candidate_requires_platform_refresh(
+    existing_run: dict[str, Any],
+    candidate: dict[str, Any],
+) -> bool:
+    return bool(
+        existing_run
+        and _string(candidate.get("candidate_source")) == "sop_send_tasks"
+        and not _string(candidate.get("last_customer_message_at"))
+        and int(existing_run.get("retry_count") or 0) < 1
+    )
+
+
 
 
 class FirstDayWorkflow:
@@ -3161,12 +3173,7 @@ class FirstDayWorkflow:
                 existing_run,
                 latest_customer_message_at=candidate_customer_at,
             )
-            if (
-                existing_run
-                and not retry_reason
-                and _string(candidate.get("candidate_source")) == "sop_send_tasks"
-                and not candidate_customer_at
-            ):
+            if not retry_reason and _sop_candidate_requires_platform_refresh(existing_run, candidate):
                 retry_reason = "sop_candidate_requires_platform_refresh"
             if existing_run and not retry_reason:
                 return {

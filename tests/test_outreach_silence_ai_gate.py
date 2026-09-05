@@ -16,6 +16,7 @@ from app.services.outreach.first_day import (  # noqa: E402
     _conversation_ai_auto_reply,
     _first_day_existing_run_retry_reason,
     _first_day_wechat_allowed,
+    _sop_candidate_requires_platform_refresh,
     _timestamp_at_or_after,
 )
 from app.services.storage.repositories import AppRepository  # noqa: E402
@@ -301,3 +302,12 @@ def test_platform_conversation_sync_soft_block_retries_only_once() -> None:
         existing,
         latest_customer_message_at="2026-09-05T09:42:00+00:00",
     ) == ""
+
+
+def test_sop_discovery_refresh_retries_only_once() -> None:
+    candidate = {
+        "candidate_source": "sop_send_tasks",
+        "last_customer_message_at": "",
+    }
+    assert _sop_candidate_requires_platform_refresh({"retry_count": 0}, candidate) is True
+    assert _sop_candidate_requires_platform_refresh({"retry_count": 1}, candidate) is False
