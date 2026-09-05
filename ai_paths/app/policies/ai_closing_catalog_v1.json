@@ -1,171 +1,2948 @@
 {
   "schema_version": "ai_closing_catalog_v1",
-  "catalog_version": "2026-09-04.real-scenes-v1",
+  "catalog_version": "2026-09-05.business-workbook-real-deal-v1",
   "business_status": "provisional",
-  "description": "业务接口未完成期间使用的逼单规则、策略和话术目录。只提供候选，不替代 V3 Reply 的最终语义决策。",
+  "description": "业务正式导入第三方接口前使用的逼单规则、策略、节点和话术目录；来源为业务真人成交版收集表，只提供候选，不替代 V3 Reply 的最终语义决策。",
+  "source": {
+    "kind": "business_workbook",
+    "file_name": "closing_source.xlsx",
+    "sha256": "75233a060e18a1dccddd21c9b3a3d602e8addb242e09d9f24a1c12c752e67c5e",
+    "imported_date": "2026-09-05"
+  },
   "rules": {
     "triggers": [
       {
-        "rule_key": "local:rule:recognized_pending_time",
-        "source_id": "recognized_pending_time",
-        "type_name": "已认可方案但还没确定到店时间",
-        "condition": "客户明确认可项目方向、主要效果或费用说明，当前没有继续追问价格、效果、距离、安全等问题，只差确定大致到店时间。",
-        "judge_method": "AI结合上下文判断",
+        "rule_key": "local:rule:explicit_registration_or_payment_query",
+        "source_id": "explicit_registration_or_payment_query",
+        "source_ref": "business_workbook:逼单规则!A8:E8",
+        "type_name": "客户主动要登记或问怎么付",
+        "condition": "客户主动说要登记、要报名，或直接问预约金怎么付。此时不再重复效果和活动介绍，直接完成登记动作。",
+        "judge_method": "AI结合上下文和权威事实判断",
         "trigger_mode": "independent",
         "locked": false,
-        "keywords": ["可以去看看", "过几天去", "周末可能有空", "这个方案可以"],
-        "judge_note": "必须有明确认可或继续信号；主要卡点已回答；订单未支付且未预约。只有考虑一下、晚点再说而没有继续意愿时不命中。",
+        "keywords": [
+          "给我登记一个",
+          "怎么预约",
+          "10元怎么付",
+          "我现在付",
+          "把付款发我"
+        ],
+        "judge_note": "BLOCK: 客户仍在追问费用或效果；支付状态不明；客户明确不想先付；已经支付或已经登记。; PRE: 客户没有新的价格、效果、门店或退款疑问；尚未支付；当前支付入口真实可用。",
         "grouping_supported": true
       },
       {
-        "rule_key": "local:rule:store_accepted",
-        "source_id": "store_accepted",
-        "type_name": "已接受真实门店并愿意到店",
-        "condition": "系统已查到真实门店，客户明确表示该门店可以去、愿意过去了解或主动询问营业时间，当前只差确认时间或预约。",
-        "judge_method": "AI结合门店工具事实判断",
+        "rule_key": "local:rule:visit_date_provided",
+        "source_id": "visit_date_provided",
+        "source_ref": "business_workbook:逼单规则!A9:E9",
+        "type_name": "客户已给到店日期",
+        "condition": "客户已经说出明天、后天、周末或某个日期，只差上午下午或具体时间。",
+        "judge_method": "AI结合上下文和权威事实判断",
         "trigger_mode": "independent",
         "locked": false,
-        "keywords": ["这家可以", "离我不远", "我过去看看", "你们几点营业"],
-        "judge_note": "门店必须来自实时工具；客户只是问地址、仍表示太远或门店尚未核实时不命中。",
+        "keywords": [
+          "我周日有时间",
+          "明天过去",
+          "后天下午可以",
+          "月底去"
+        ],
+        "judge_note": "BLOCK: 客户只是说以后再看；日期仍不确定；出现新的效果、费用、距离或安全疑问。; PRE: 客户确实愿意到店；门店已确定或不影响当前问时间；可选时段来自真实营业或排期。",
         "grouping_supported": true
       },
       {
-        "rule_key": "local:rule:visit_time_provided",
-        "source_id": "visit_time_provided",
-        "type_name": "已明确到店日期或时段但还没预约",
-        "condition": "客户本人已经给出今天、明天、周末、某个日期或上午下午等到店时间，主要问题已解决，但系统显示预约尚未完成。",
-        "judge_method": "AI结合预约事实判断",
+        "rule_key": "local:rule:visit_intent_time_pending",
+        "source_id": "visit_intent_time_pending",
+        "source_ref": "business_workbook:逼单规则!A10:E10",
+        "type_name": "客户愿意来但暂时定不了时间",
+        "condition": "客户明确愿意到店，但因上班、带孩子、出差或行程未定，当前给不出具体日期。",
+        "judge_method": "AI结合上下文和权威事实判断",
         "trigger_mode": "independent",
         "locked": false,
-        "keywords": ["明天下午去", "周六有时间", "月底过去", "下午三点左右可以"],
-        "judge_note": "时间必须由客户本人提出；门店和营业时间真实可用；已经预约或真实档期未知时不命中。",
+        "keywords": [
+          "有空就来",
+          "下班后才有空",
+          "过几天",
+          "最近忙",
+          "时间还不确定"
+        ],
+        "judge_note": "BLOCK: 客户明确拒绝；仍有未解决卡点；不能确认活动是否可延期；连续追问过两次仍无时间。; PRE: 客户不是婉拒；项目和主要卡点已经说明；活动有效期和到店安排口径真实。",
         "grouping_supported": true
       },
       {
-        "rule_key": "local:rule:blocker_resolved_continue",
-        "source_id": "blocker_resolved_continue",
-        "type_name": "原有卡点已解决并明确愿意继续",
-        "condition": "客户此前对预约金、费用、效果或距离存在顾虑，相关问题已按真实事实解释，客户随后明确表示理解、接受、可以继续或愿意办理下一步。",
-        "judge_method": "AI结合前后轮证据判断",
+        "rule_key": "local:rule:deposit_policy_concern",
+        "source_id": "deposit_policy_concern",
+        "source_ref": "business_workbook:逼单规则!A11:E11",
+        "type_name": "客户担心预约金有效期或退款",
+        "condition": "客户仍有参加意愿，只是在确认预约多久有效、不来能不能退、到店是否抵扣。",
+        "judge_method": "AI结合上下文和权威事实判断",
         "trigger_mode": "independent",
         "locked": false,
-        "keywords": ["这样可以", "明白了", "那就预约吧", "可以继续登记", "这个门店能去"],
-        "judge_note": "必须有客户在解释后的继续信号；销售单方面认为已解决、客户沉默或出现新卡点时不命中。",
+        "keywords": [
+          "多久有效",
+          "什么时候来都可以吗",
+          "不做能退吗",
+          "到店抵扣吗"
+        ],
+        "judge_note": "BLOCK: 客户要求立即退款；客户明确不参加；退款规则无法核实；已经连续解释仍不接受。; PRE: 使用当前统一有效期、抵扣和退款口径；客户尚未支付；只回答客户正在担心的一项。",
         "grouping_supported": true
       },
       {
-        "rule_key": "local:rule:defer_with_return_intent",
-        "source_id": "defer_with_return_intent",
-        "type_name": "时间不方便但明确保留后续到店意愿",
-        "condition": "客户认可项目和到店方向，只因工作、照顾家人、出行或临时安排现在无法到店，并明确表示之后会来或同意在某个时间再联系。",
-        "judge_method": "AI结合上下文判断",
+        "rule_key": "local:rule:visit_intent_no_prepay",
+        "source_id": "visit_intent_no_prepay",
+        "source_ref": "business_workbook:逼单规则!A12:E12",
+        "type_name": "客户想来但不愿意先付",
+        "condition": "客户明确想来或想了解，但说到店再付、以前定金没退、担心网络支付或不信任先付。",
+        "judge_method": "AI结合上下文和权威事实判断",
         "trigger_mode": "independent",
         "locked": false,
-        "keywords": ["这周忙下周再约", "月底有空再过去", "过几天你再联系我", "等家里安排好就去"],
-        "judge_note": "必须有明确后续意愿或回访授权；只说忙、以后再说、考虑一下时不命中，也不能在本轮强推预约或付款。",
+        "keywords": [
+          "到店再付",
+          "不想先交",
+          "之前定金没退",
+          "网上交钱不放心"
+        ],
+        "judge_note": "BLOCK: 客户没有接受解释；要求停止；投诉退款；不得直接连续发卡或说不交就不能来。; PRE: 先识别是退款、信任还是时间顾虑；只处理这个顾虑；客户接受后才发预约金卡。",
+        "grouping_supported": true
+      },
+      {
+        "rule_key": "local:rule:visit_only_low_commitment",
+        "source_id": "visit_only_low_commitment",
+        "source_ref": "business_workbook:逼单规则!A13:E13",
+        "type_name": "客户只想先到店看看",
+        "condition": "客户愿意到店了解环境、效果或方案，但暂时没有承诺做。允许把到店了解作为低压力下一步。",
+        "judge_method": "AI结合上下文和权威事实判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": [
+          "我先去看看",
+          "先了解一下",
+          "满意再做",
+          "我不一定做"
+        ],
+        "judge_note": "BLOCK: 把了解说成已经预约；强迫先付款；客户仍有健康风险或强烈不信任。; PRE: 客户确实愿意到店；说明可以先了解且不虚构消费义务；只确认大致日期。",
+        "grouping_supported": true
+      },
+      {
+        "rule_key": "local:rule:store_or_transport_accepted",
+        "source_id": "store_or_transport_accepted",
+        "source_ref": "business_workbook:逼单规则!A14:E14",
+        "type_name": "客户已接受门店或交通方案",
+        "condition": "客户已经选定门店，或在得到真实路线、接送、营业时间后明确表示可以过去。",
+        "judge_method": "AI结合上下文和权威事实判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": [
+          "这家可以",
+          "我知道这个地方",
+          "可以接的话我来",
+          "下班过去"
+        ],
+        "judge_note": "BLOCK: 客户仍说太远；交通支持未核实；门店未选；不得淡化实际距离。; PRE: 门店和交通信息已核验；客户确认可接受；当前只差日期或时间。",
+        "grouping_supported": true
+      },
+      {
+        "rule_key": "local:rule:multi_party_registration",
+        "source_id": "multi_party_registration",
+        "source_ref": "business_workbook:逼单规则!A15:E15",
+        "type_name": "两人或多人一起报名",
+        "condition": "客户明确说两个人或带家人朋友一起参加，并主动准备登记。",
+        "judge_method": "AI结合上下文和权威事实判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": [
+          "我们两个人",
+          "带我姐一起",
+          "帮两个人留",
+          "朋友也要做"
+        ],
+        "judge_note": "BLOCK: 同行人尚未同意；人数不清楚；客户只是说以后可能介绍朋友。; PRE: 人数已确认；每个人需要的登记信息和预约金规则真实；不重复索取已给资料。",
+        "grouping_supported": true
+      },
+      {
+        "rule_key": "local:rule:payment_operation_blocked",
+        "source_id": "payment_operation_blocked",
+        "source_ref": "business_workbook:逼单规则!A16:E16",
+        "type_name": "客户愿意支付但操作受阻",
+        "condition": "客户已经决定支付，但遇到不会操作、支付提示、没有当前支付方式或支付入口打不开。",
+        "judge_method": "AI结合上下文和权威事实判断",
+        "trigger_mode": "independent",
+        "locked": false,
+        "keywords": [
+          "怎么付",
+          "不会操作",
+          "支付有风险提示",
+          "微信不能转账",
+          "密码错了"
+        ],
+        "judge_note": "BLOCK: 用人格担保压客户付款；绕过风险提示；提供未经支持的私人收款方式；未核验就说已支付。; PRE: 先解决操作问题；只提供系统真实支持的支付方式；支付结果必须再核验。",
         "grouping_supported": true
       }
     ],
     "ai_confirm": {
       "enabled": true,
-      "guidance": "关键词只作线索。必须同时核对当前客户原话、未解决卡点、订单/预约事实以及退订、投诉、健康风险和人工接管状态。"
+      "guidance": "关键词只作召回线索。必须核对当前客户原话、所选规则的 PRE/BLOCK、未解决卡点、订单/预约/支付/门店事实，以及退订、投诉、健康风险和人工接管状态。"
     },
     "constraints": {
       "max_per_day": 2,
       "min_interval_minutes": 30,
       "prerequisites": [
-        {"key": "local:prerequisite:customer_progress_signal", "text": "客户当前有明确继续、到店或允许后续联系的信号"},
-        {"key": "local:prerequisite:no_unresolved_blocker", "text": "客户当前没有仍未解决的新卡点"}
+        {
+          "key": "local:prerequisite:customer_progress_signal",
+          "text": "客户当前有明确继续、到店或允许后续联系的信号"
+        },
+        {
+          "key": "local:prerequisite:no_unresolved_blocker",
+          "text": "客户当前没有仍未解决的新卡点"
+        }
       ],
       "taboos": [
-        {"key": "local:taboo:explicit_opt_out", "text": "客户明确要求不要联系或停止发送"},
-        {"key": "local:taboo:complaint_or_anger", "text": "客户正在投诉、愤怒或要求人工处理"},
-        {"key": "local:taboo:health_risk", "text": "客户存在需要先处理的健康或安全风险"},
-        {"key": "local:taboo:transaction_terminal", "text": "客户已经支付、预约成功或进入交易终态"}
+        {
+          "key": "local:taboo:explicit_opt_out",
+          "text": "客户明确要求不要联系或停止发送"
+        },
+        {
+          "key": "local:taboo:complaint_or_anger",
+          "text": "客户正在投诉、愤怒或要求人工处理"
+        },
+        {
+          "key": "local:taboo:health_risk",
+          "text": "客户存在需要先处理的健康或安全风险"
+        },
+        {
+          "key": "local:taboo:transaction_terminal",
+          "text": "客户已经支付、预约成功或进入交易终态"
+        }
       ]
     }
   },
   "sequences": [
     {
-      "sequence_key": "local:sequence:confirm_time_range",
-      "source_id": "confirm_time_range",
-      "name": "低压确认时间范围",
-      "positioning": "客户已认可方案且没有新卡点，只差大致时间；先问工作日、周末或日期范围。",
-      "trigger_text": "已认可方案但还没确定到店时间",
+      "sequence_key": "local:sequence:direct_deposit_entry",
+      "source_id": "direct_deposit_entry",
+      "source_ref": "business_workbook:逼单策略!A6:W6",
+      "name": "直接发预约金入口",
+      "positioning": "客户已经主动要求登记或问付款方式，当前没有新的卡点。不要再重复活动介绍。",
+      "trigger_text": "客户主动要登记或问怎么付；客户已经主动要求登记或问付款方式，当前没有新的卡点。不要再重复活动介绍。",
+      "rule_keys": [
+        "local:rule:explicit_registration_or_payment_query"
+      ],
       "enabled": true,
       "nodes": [
-        {"node_key": "local:node:acknowledge_acceptance", "source_id": "acknowledge_acceptance", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8101, "name": "认可承接"}, "script_type": {"id": 9101, "name": "认可承接"}, "ai_guidance": "复述客户已经认可的内容，不重新重复整套活动介绍。"},
-        {"node_key": "local:node:ask_time_range", "source_id": "ask_time_range", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8102, "name": "时间范围确认"}, "script_type": {"id": 9102, "name": "时间范围确认"}, "ai_guidance": "一次只问工作日、周末或哪一周，降低客户回答成本。"},
-        {"node_key": "local:node:confirm_visit_intent", "source_id": "confirm_visit_intent", "sort_order": 3, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8103, "name": "到店意向确认"}, "script_type": {"id": 9103, "name": "到店意向确认"}, "ai_guidance": "客户给出大致范围后，再确认是否愿意查看真实门店时段。"}
+        {
+          "node_key": "local:node:direct_deposit_entry:step_1",
+          "source_id": "direct_deposit_entry:step_1",
+          "source_ref": "business_workbook:逼单策略!D6:G6",
+          "name": "直接回答预约方式并发卡",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8201,
+            "name": "直接回答预约方式并发卡"
+          },
+          "script_type": {
+            "id": 9201,
+            "name": "直接回答预约方式并发卡"
+          },
+          "ai_guidance": "一句说明预约金金额，随后发送真实预约金卡。"
+        },
+        {
+          "node_key": "local:node:direct_deposit_entry:step_2",
+          "source_id": "direct_deposit_entry:step_2",
+          "source_ref": "business_workbook:逼单策略!H6:K6",
+          "name": "支付后只收登记资料",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8202,
+            "name": "支付后只收登记资料"
+          },
+          "script_type": {
+            "id": 9202,
+            "name": "支付后只收登记资料"
+          },
+          "ai_guidance": "客户确认付好后，只问尚未提供的姓名或电话。"
+        }
       ]
     },
     {
-      "sequence_key": "local:sequence:store_to_appointment",
-      "source_id": "store_to_appointment",
-      "name": "门店确认后推进预约",
-      "positioning": "客户已接受工具查询出的真实门店并愿意到店，只差日期或预约。",
-      "trigger_text": "已接受真实门店并愿意到店",
+      "sequence_key": "local:sequence:fee_then_deposit",
+      "source_id": "fee_then_deposit",
+      "source_ref": "business_workbook:逼单策略!A7:W7",
+      "name": "先答费用再登记",
+      "positioning": "客户一边说要登记，一边仍在确认总价或是否另收费。先答完费用，客户认可后再发卡。",
+      "trigger_text": "客户主动要登记或问怎么付；客户一边说要登记，一边仍在确认总价或是否另收费。先答完费用，客户认可后再发卡。",
+      "rule_keys": [
+        "local:rule:explicit_registration_or_payment_query"
+      ],
       "enabled": true,
       "nodes": [
-        {"node_key": "local:node:confirm_store_choice", "source_id": "confirm_store_choice", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8104, "name": "门店选择确认"}, "script_type": {"id": 9104, "name": "门店选择确认"}, "ai_guidance": "复述客户选择的真实门店，不重复发送已确认的信息。"},
-        {"node_key": "local:node:ask_store_time_range", "source_id": "ask_store_time_range", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8102, "name": "时间范围确认"}, "script_type": {"id": 9102, "name": "时间范围确认"}, "ai_guidance": "询问工作日还是周末、上午还是下午更方便。"},
-        {"node_key": "local:node:offer_verified_slots", "source_id": "offer_verified_slots", "sort_order": 3, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8107, "name": "真实时段二选一"}, "script_type": {"id": 9107, "name": "真实时段二选一"}, "ai_guidance": "只有工具返回真实可用时段后才给两个时段。"},
-        {"node_key": "local:node:confirm_appointment_result", "source_id": "confirm_appointment_result", "sort_order": 4, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8108, "name": "预约结果确认"}, "script_type": {"id": 9108, "name": "预约结果确认"}, "ai_guidance": "预约接口返回成功后再确认，返回前不得说已经约好。"}
+        {
+          "node_key": "local:node:fee_then_deposit:step_1",
+          "source_id": "fee_then_deposit:step_1",
+          "source_ref": "business_workbook:逼单策略!D7:G7",
+          "name": "把客户问的费用说清",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8203,
+            "name": "把客户问的费用说清"
+          },
+          "script_type": {
+            "id": 9203,
+            "name": "把客户问的费用说清"
+          },
+          "ai_guidance": "只回答客户问到的费用，不重新介绍整套活动。"
+        },
+        {
+          "node_key": "local:node:fee_then_deposit:step_2",
+          "source_id": "fee_then_deposit:step_2",
+          "source_ref": "business_workbook:逼单策略!H7:K7",
+          "name": "客户认可后发预约金卡",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8204,
+            "name": "客户认可后发预约金卡"
+          },
+          "script_type": {
+            "id": 9204,
+            "name": "客户认可后发预约金卡"
+          },
+          "ai_guidance": "客户明确接受费用后再发卡。"
+        }
       ]
     },
     {
-      "sequence_key": "local:sequence:narrow_visit_slot",
-      "source_id": "narrow_visit_slot",
-      "name": "复述时间后收窄时段",
-      "positioning": "客户已主动给出日期或时间范围，系统确认尚未预约。",
-      "trigger_text": "已明确到店日期或时段但还没预约",
+      "sequence_key": "local:sequence:date_to_period",
+      "source_id": "date_to_period",
+      "source_ref": "business_workbook:逼单策略!A8:W8",
+      "name": "日期确定后问上午下午",
+      "positioning": "客户已给出哪一天，但没有给时段。",
+      "trigger_text": "客户已给到店日期；客户已给出哪一天，但没有给时段。",
+      "rule_keys": [
+        "local:rule:visit_date_provided"
+      ],
       "enabled": true,
       "nodes": [
-        {"node_key": "local:node:repeat_customer_date", "source_id": "repeat_customer_date", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8105, "name": "客户日期复述"}, "script_type": {"id": 9105, "name": "客户日期复述"}, "ai_guidance": "使用客户原话中的日期确认，不把到店意向写成预约成功。"},
-        {"node_key": "local:node:ask_day_period", "source_id": "ask_day_period", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8106, "name": "上午下午确认"}, "script_type": {"id": 9106, "name": "上午下午确认"}, "ai_guidance": "日期明确但时段较宽时，只问上午还是下午。"},
-        {"node_key": "local:node:offer_verified_slots_after_date", "source_id": "offer_verified_slots_after_date", "sort_order": 3, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8107, "name": "真实时段二选一"}, "script_type": {"id": 9107, "name": "真实时段二选一"}, "ai_guidance": "使用工具返回的真实可预约时段，不能自行编造档期。"},
-        {"node_key": "local:node:confirm_appointment_after_slot", "source_id": "confirm_appointment_after_slot", "sort_order": 4, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8108, "name": "预约结果确认"}, "script_type": {"id": 9108, "name": "预约结果确认"}, "ai_guidance": "客户选择后调用预约流程，只有成功回执才能确认。"}
+        {
+          "node_key": "local:node:date_to_period:step_1",
+          "source_id": "date_to_period:step_1",
+          "source_ref": "business_workbook:逼单策略!D8:G8",
+          "name": "顺着客户日期问时段",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8205,
+            "name": "顺着客户日期问时段"
+          },
+          "script_type": {
+            "id": 9205,
+            "name": "顺着客户日期问时段"
+          },
+          "ai_guidance": "直接用客户刚说的日期，只问上午还是下午。"
+        },
+        {
+          "node_key": "local:node:date_to_period:step_2",
+          "source_id": "date_to_period:step_2",
+          "source_ref": "business_workbook:逼单策略!H8:K8",
+          "name": "按客户时段问具体时间",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8206,
+            "name": "按客户时段问具体时间"
+          },
+          "script_type": {
+            "id": 9206,
+            "name": "按客户时段问具体时间"
+          },
+          "ai_guidance": "客户选完上午或下午后，再问大概几点。"
+        }
       ]
     },
     {
-      "sequence_key": "local:sequence:resolved_to_next_step",
-      "source_id": "resolved_to_next_step",
-      "name": "解卡确认后推进下一步",
-      "positioning": "原顾虑已解决且客户明确愿意继续，只推进一个与当前状态一致的动作。",
-      "trigger_text": "原有卡点已解决并明确愿意继续",
+      "sequence_key": "local:sequence:period_to_verified_slot",
+      "source_id": "period_to_verified_slot",
+      "source_ref": "business_workbook:逼单策略!A9:W9",
+      "name": "客户给了时段就确认一个时间",
+      "positioning": "客户已给出日期和大致时段，系统有真实可用时间。",
+      "trigger_text": "客户已给到店日期；客户已给出日期和大致时段，系统有真实可用时间。",
+      "rule_keys": [
+        "local:rule:visit_date_provided"
+      ],
       "enabled": true,
       "nodes": [
-        {"node_key": "local:node:confirm_blocker_resolved", "source_id": "confirm_blocker_resolved", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8109, "name": "卡点解决确认"}, "script_type": {"id": 9109, "name": "卡点解决确认"}, "ai_guidance": "简短确认客户最关心的问题已经说清，避免重复制造疑虑。"},
-        {"node_key": "local:node:confirm_continue_intent", "source_id": "confirm_continue_intent", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8110, "name": "继续意向确认"}, "script_type": {"id": 9110, "name": "继续意向确认"}, "ai_guidance": "先获得继续推进的明确授权，不直接默认客户同意。"},
-        {"node_key": "local:node:explain_single_next_step", "source_id": "explain_single_next_step", "sort_order": 3, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8111, "name": "唯一下一步说明"}, "script_type": {"id": 9111, "name": "唯一下一步说明"}, "ai_guidance": "客户确认继续后，只说明当前系统允许的一个下一步。"}
+        {
+          "node_key": "local:node:period_to_verified_slot:step_1",
+          "source_id": "period_to_verified_slot:step_1",
+          "source_ref": "business_workbook:逼单策略!D9:G9",
+          "name": "给一个真实时间让客户确认",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8207,
+            "name": "给一个真实时间让客户确认"
+          },
+          "script_type": {
+            "id": 9207,
+            "name": "给一个真实时间让客户确认"
+          },
+          "ai_guidance": "优先给一个最合适的真实时间，不先抛一串选项。"
+        },
+        {
+          "node_key": "local:node:period_to_verified_slot:step_2",
+          "source_id": "period_to_verified_slot:step_2",
+          "source_ref": "business_workbook:逼单策略!H9:K9",
+          "name": "客户不同意再换第二时间",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8208,
+            "name": "客户不同意再换第二时间"
+          },
+          "script_type": {
+            "id": 9208,
+            "name": "客户不同意再换第二时间"
+          },
+          "ai_guidance": "客户说不合适时再给第二个真实时间。"
+        }
       ]
     },
     {
-      "sequence_key": "local:sequence:authorized_followup_window",
-      "source_id": "authorized_followup_window",
-      "name": "约定低压回访时间",
-      "positioning": "客户现在无法到店但明确愿意之后再安排；只约定回访窗口。",
-      "trigger_text": "时间不方便但明确保留后续到店意愿",
+      "sequence_key": "local:sequence:flexible_time_then_registration",
+      "source_id": "flexible_time_then_registration",
+      "source_ref": "business_workbook:逼单策略!A10:W10",
+      "name": "先放宽到店时间再留活动",
+      "positioning": "客户明确会来，只是暂时不知道哪天。活动规则确认支持延期。",
+      "trigger_text": "客户愿意来但暂时定不了时间；客户明确会来，只是暂时不知道哪天。活动规则确认支持延期。",
+      "rule_keys": [
+        "local:rule:visit_intent_time_pending"
+      ],
       "enabled": true,
       "nodes": [
-        {"node_key": "local:node:acknowledge_time_difficulty", "source_id": "acknowledge_time_difficulty", "sort_order": 1, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8112, "name": "时间困难承接"}, "script_type": {"id": 9112, "name": "时间困难承接"}, "ai_guidance": "先尊重工作、家庭或行程安排，不连续追问具体时间。"},
-        {"node_key": "local:node:confirm_followup_window", "source_id": "confirm_followup_window", "sort_order": 2, "timing": "immediate", "timing_text": "客户回复时间", "delay": 0, "delay_unit": "分钟", "delay_minutes": 0, "action_type": {"id": 8113, "name": "回访窗口确认"}, "script_type": {"id": 9113, "name": "回访窗口确认"}, "ai_guidance": "询问在哪一周或哪一天再联系更合适，先获得客户授权。"}
+        {
+          "node_key": "local:node:flexible_time_then_registration:step_1",
+          "source_id": "flexible_time_then_registration:step_1",
+          "source_ref": "business_workbook:逼单策略!D10:G10",
+          "name": "告诉客户不用现在定日期",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8209,
+            "name": "告诉客户不用现在定日期"
+          },
+          "script_type": {
+            "id": 9209,
+            "name": "告诉客户不用现在定日期"
+          },
+          "ai_guidance": "先降低时间压力，不追问具体几点。"
+        },
+        {
+          "node_key": "local:node:flexible_time_then_registration:step_2",
+          "source_id": "flexible_time_then_registration:step_2",
+          "source_ref": "business_workbook:逼单策略!H10:K10",
+          "name": "说明可以先登记再安排",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8210,
+            "name": "说明可以先登记再安排"
+          },
+          "script_type": {
+            "id": 9210,
+            "name": "说明可以先登记再安排"
+          },
+          "ai_guidance": "用真实有效期说明先登记不影响后面选时间。"
+        },
+        {
+          "node_key": "local:node:flexible_time_then_registration:step_3",
+          "source_id": "flexible_time_then_registration:step_3",
+          "source_ref": "business_workbook:逼单策略!L10:O10",
+          "name": "客户同意后发预约金卡",
+          "sort_order": 3,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8211,
+            "name": "客户同意后发预约金卡"
+          },
+          "script_type": {
+            "id": 9211,
+            "name": "客户同意后发预约金卡"
+          },
+          "ai_guidance": "客户接受先登记后，再发卡。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:after_work_schedule",
+      "source_id": "after_work_schedule",
+      "source_ref": "business_workbook:逼单策略!A11:W11",
+      "name": "顺着下班时间安排",
+      "positioning": "客户说只有下班后或某个较宽时段方便，门店营业时间能够覆盖。",
+      "trigger_text": "客户愿意来但暂时定不了时间；客户说只有下班后或某个较宽时段方便，门店营业时间能够覆盖。",
+      "rule_keys": [
+        "local:rule:visit_intent_time_pending"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:after_work_schedule:step_1",
+          "source_id": "after_work_schedule:step_1",
+          "source_ref": "business_workbook:逼单策略!D11:G11",
+          "name": "直接回应下班后可以来",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8212,
+            "name": "直接回应下班后可以来"
+          },
+          "script_type": {
+            "id": 9212,
+            "name": "直接回应下班后可以来"
+          },
+          "ai_guidance": "先回答是否接待，不追问无关信息。"
+        },
+        {
+          "node_key": "local:node:after_work_schedule:step_2",
+          "source_id": "after_work_schedule:step_2",
+          "source_ref": "business_workbook:逼单策略!H11:K11",
+          "name": "再问大概哪一天",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8213,
+            "name": "再问大概哪一天"
+          },
+          "script_type": {
+            "id": 9213,
+            "name": "再问大概哪一天"
+          },
+          "ai_guidance": "确认可接待后，只问日期。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:validity_then_deposit",
+      "source_id": "validity_then_deposit",
+      "source_ref": "business_workbook:逼单策略!A12:W12",
+      "name": "先答有效期再发卡",
+      "positioning": "客户问预约后多久必须来，且统一规则确认不限制到店时间。",
+      "trigger_text": "客户担心预约金有效期或退款；客户问预约后多久必须来，且统一规则确认不限制到店时间。",
+      "rule_keys": [
+        "local:rule:deposit_policy_concern"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:validity_then_deposit:step_1",
+          "source_id": "validity_then_deposit:step_1",
+          "source_ref": "business_workbook:逼单策略!D12:G12",
+          "name": "直接回答预约有效期",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8214,
+            "name": "直接回答预约有效期"
+          },
+          "script_type": {
+            "id": 9214,
+            "name": "直接回答预约有效期"
+          },
+          "ai_guidance": "像真人一样直接回答，不讲制度背景。"
+        },
+        {
+          "node_key": "local:node:validity_then_deposit:step_2",
+          "source_id": "validity_then_deposit:step_2",
+          "source_ref": "business_workbook:逼单策略!H12:K12",
+          "name": "客户接受后发卡登记",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8215,
+            "name": "客户接受后发卡登记"
+          },
+          "script_type": {
+            "id": 9215,
+            "name": "客户接受后发卡登记"
+          },
+          "ai_guidance": "客户表示可以后，再发预约金卡。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:refund_offset_explain",
+      "source_id": "refund_offset_explain",
+      "source_ref": "business_workbook:逼单策略!A13:W13",
+      "name": "把抵扣退款一次说清",
+      "positioning": "客户明确问不做能不能退或到店怎么抵扣。",
+      "trigger_text": "客户担心预约金有效期或退款；客户明确问不做能不能退或到店怎么抵扣。",
+      "rule_keys": [
+        "local:rule:deposit_policy_concern"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:refund_offset_explain:step_1",
+          "source_id": "refund_offset_explain:step_1",
+          "source_ref": "business_workbook:逼单策略!D13:G13",
+          "name": "直接说抵扣和退款",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8216,
+            "name": "直接说抵扣和退款"
+          },
+          "script_type": {
+            "id": 9216,
+            "name": "直接说抵扣和退款"
+          },
+          "ai_guidance": "使用统一口径，控制在两句内。"
+        },
+        {
+          "node_key": "local:node:refund_offset_explain:step_2",
+          "source_id": "refund_offset_explain:step_2",
+          "source_ref": "business_workbook:逼单策略!H13:K13",
+          "name": "客户认可后问要不要登记",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8217,
+            "name": "客户认可后问要不要登记"
+          },
+          "script_type": {
+            "id": 9217,
+            "name": "客户认可后问要不要登记"
+          },
+          "ai_guidance": "不在解释前先发卡。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:discover_prepay_concern",
+      "source_id": "discover_prepay_concern",
+      "source_ref": "business_workbook:逼单策略!A14:W14",
+      "name": "先问清不愿先付的原因",
+      "positioning": "客户仍想来，但拒绝先付的原因还不明确。",
+      "trigger_text": "客户想来但不愿意先付；客户仍想来，但拒绝先付的原因还不明确。",
+      "rule_keys": [
+        "local:rule:visit_intent_no_prepay"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:discover_prepay_concern:step_1",
+          "source_id": "discover_prepay_concern:step_1",
+          "source_ref": "business_workbook:逼单策略!D14:G14",
+          "name": "只问一个真实顾虑",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8218,
+            "name": "只问一个真实顾虑"
+          },
+          "script_type": {
+            "id": 9218,
+            "name": "只问一个真实顾虑"
+          },
+          "ai_guidance": "简单问是担心退款、时间还是支付安全，不先辩解。"
+        },
+        {
+          "node_key": "local:node:discover_prepay_concern:step_2",
+          "source_id": "discover_prepay_concern:step_2",
+          "source_ref": "business_workbook:逼单策略!H14:K14",
+          "name": "只解决客户选中的顾虑",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8219,
+            "name": "只解决客户选中的顾虑"
+          },
+          "script_type": {
+            "id": 9219,
+            "name": "只解决客户选中的顾虑"
+          },
+          "ai_guidance": "针对客户回答解释，不把所有规则一次发完。"
+        },
+        {
+          "node_key": "local:node:discover_prepay_concern:step_3",
+          "source_id": "discover_prepay_concern:step_3",
+          "source_ref": "business_workbook:逼单策略!L14:O14",
+          "name": "客户接受后再轻推登记",
+          "sort_order": 3,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8220,
+            "name": "客户接受后再轻推登记"
+          },
+          "script_type": {
+            "id": 9220,
+            "name": "客户接受后再轻推登记"
+          },
+          "ai_guidance": "只有客户明确接受解释才重新推进。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:refund_trust_repair",
+      "source_id": "refund_trust_repair",
+      "source_ref": "business_workbook:逼单策略!A15:W15",
+      "name": "有过退款经历先处理信任",
+      "positioning": "客户明确说以前交过定金但没有退，因此不相信先付。",
+      "trigger_text": "客户想来但不愿意先付；客户明确说以前交过定金但没有退，因此不相信先付。",
+      "rule_keys": [
+        "local:rule:visit_intent_no_prepay"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:refund_trust_repair:step_1",
+          "source_id": "refund_trust_repair:step_1",
+          "source_ref": "business_workbook:逼单策略!D15:G15",
+          "name": "先接住以前没退款的担心",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8221,
+            "name": "先接住以前没退款的担心"
+          },
+          "script_type": {
+            "id": 9221,
+            "name": "先接住以前没退款的担心"
+          },
+          "ai_guidance": "承认客户担心有依据，不说您放心就完事。"
+        },
+        {
+          "node_key": "local:node:refund_trust_repair:step_2",
+          "source_id": "refund_trust_repair:step_2",
+          "source_ref": "business_workbook:逼单策略!H15:K15",
+          "name": "说清这次退款凭证和口径",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8222,
+            "name": "说清这次退款凭证和口径"
+          },
+          "script_type": {
+            "id": 9222,
+            "name": "说清这次退款凭证和口径"
+          },
+          "ai_guidance": "说明按付款记录核对，未做或不满意可退。"
+        },
+        {
+          "node_key": "local:node:refund_trust_repair:step_3",
+          "source_id": "refund_trust_repair:step_3",
+          "source_ref": "business_workbook:逼单策略!L15:O15",
+          "name": "接受后再问是否登记",
+          "sort_order": 3,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8223,
+            "name": "接受后再问是否登记"
+          },
+          "script_type": {
+            "id": 9223,
+            "name": "接受后再问是否登记"
+          },
+          "ai_guidance": "客户仍不接受时停止发卡。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:visit_first_low_pressure",
+      "source_id": "visit_first_low_pressure",
+      "source_ref": "business_workbook:逼单策略!A16:W16",
+      "name": "允许先了解再约时间",
+      "positioning": "客户只承诺先到店了解，不承诺购买。",
+      "trigger_text": "客户只想先到店看看；客户只承诺先到店了解，不承诺购买。",
+      "rule_keys": [
+        "local:rule:visit_only_low_commitment"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:visit_first_low_pressure:step_1",
+          "source_id": "visit_first_low_pressure:step_1",
+          "source_ref": "business_workbook:逼单策略!D16:G16",
+          "name": "明确可以先到店了解",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8224,
+            "name": "明确可以先到店了解"
+          },
+          "script_type": {
+            "id": 9224,
+            "name": "明确可以先到店了解"
+          },
+          "ai_guidance": "不把到店了解说成必须消费。"
+        },
+        {
+          "node_key": "local:node:visit_first_low_pressure:step_2",
+          "source_id": "visit_first_low_pressure:step_2",
+          "source_ref": "business_workbook:逼单策略!H16:K16",
+          "name": "只问哪天方便过来",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8225,
+            "name": "只问哪天方便过来"
+          },
+          "script_type": {
+            "id": 9225,
+            "name": "只问哪天方便过来"
+          },
+          "ai_guidance": "先确认日期，不直接确认预约成功。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:store_to_date",
+      "source_id": "store_to_date",
+      "source_ref": "business_workbook:逼单策略!A17:W17",
+      "name": "门店确定后直接问日期",
+      "positioning": "客户已明确哪家门店方便，当前没有其他卡点。",
+      "trigger_text": "客户已接受门店或交通方案；客户已明确哪家门店方便，当前没有其他卡点。",
+      "rule_keys": [
+        "local:rule:store_or_transport_accepted"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:store_to_date:step_1",
+          "source_id": "store_to_date:step_1",
+          "source_ref": "business_workbook:逼单策略!D17:G17",
+          "name": "确认客户选的门店",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8226,
+            "name": "确认客户选的门店"
+          },
+          "script_type": {
+            "id": 9226,
+            "name": "确认客户选的门店"
+          },
+          "ai_guidance": "一句确认，不重新发送所有门店。"
+        },
+        {
+          "node_key": "local:node:store_to_date:step_2",
+          "source_id": "store_to_date:step_2",
+          "source_ref": "business_workbook:逼单策略!H17:K17",
+          "name": "接着问哪天过来",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8227,
+            "name": "接着问哪天过来"
+          },
+          "script_type": {
+            "id": 9227,
+            "name": "接着问哪天过来"
+          },
+          "ai_guidance": "客户确认门店后直接收日期。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:transport_to_date",
+      "source_id": "transport_to_date",
+      "source_ref": "business_workbook:逼单策略!A18:W18",
+      "name": "交通解决后确认是否来",
+      "positioning": "客户原来嫌远，真实接送或路线问题已经解决。",
+      "trigger_text": "客户已接受门店或交通方案；客户原来嫌远，真实接送或路线问题已经解决。",
+      "rule_keys": [
+        "local:rule:store_or_transport_accepted"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:transport_to_date:step_1",
+          "source_id": "transport_to_date:step_1",
+          "source_ref": "business_workbook:逼单策略!D18:G18",
+          "name": "说清已核验的交通安排",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8228,
+            "name": "说清已核验的交通安排"
+          },
+          "script_type": {
+            "id": 9228,
+            "name": "说清已核验的交通安排"
+          },
+          "ai_guidance": "只说工具确认支持的路线或接送。"
+        },
+        {
+          "node_key": "local:node:transport_to_date:step_2",
+          "source_id": "transport_to_date:step_2",
+          "source_ref": "business_workbook:逼单策略!H18:K18",
+          "name": "问客户哪天方便",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8229,
+            "name": "问客户哪天方便"
+          },
+          "script_type": {
+            "id": 9229,
+            "name": "问客户哪天方便"
+          },
+          "ai_guidance": "客户接受交通方案后再问日期。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:multi_party_registration",
+      "source_id": "multi_party_registration",
+      "source_ref": "business_workbook:逼单策略!A19:W19",
+      "name": "按人数一次收齐资料",
+      "positioning": "客户明确要为两人或多人登记。",
+      "trigger_text": "两人或多人一起报名；客户明确要为两人或多人登记。",
+      "rule_keys": [
+        "local:rule:multi_party_registration"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:multi_party_registration:step_1",
+          "source_id": "multi_party_registration:step_1",
+          "source_ref": "business_workbook:逼单策略!D19:G19",
+          "name": "确认报名人数",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8230,
+            "name": "确认报名人数"
+          },
+          "script_type": {
+            "id": 9230,
+            "name": "确认报名人数"
+          },
+          "ai_guidance": "先确认到底几个人。"
+        },
+        {
+          "node_key": "local:node:multi_party_registration:step_2",
+          "source_id": "multi_party_registration:step_2",
+          "source_ref": "business_workbook:逼单策略!H19:K19",
+          "name": "按人数发对应预约入口",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8231,
+            "name": "按人数发对应预约入口"
+          },
+          "script_type": {
+            "id": 9231,
+            "name": "按人数发对应预约入口"
+          },
+          "ai_guidance": "金额和卡片数量必须与人数一致。"
+        },
+        {
+          "node_key": "local:node:multi_party_registration:step_3",
+          "source_id": "multi_party_registration:step_3",
+          "source_ref": "business_workbook:逼单策略!L19:O19",
+          "name": "一次收齐每个人资料",
+          "sort_order": 3,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8232,
+            "name": "一次收齐每个人资料"
+          },
+          "script_type": {
+            "id": 9232,
+            "name": "一次收齐每个人资料"
+          },
+          "ai_guidance": "支付后一次说明每个人需要的资料，不来回零碎索取。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:payment_help_alternative",
+      "source_id": "payment_help_alternative",
+      "source_ref": "business_workbook:逼单策略!A20:W20",
+      "name": "不会付款就给一个替代方式",
+      "positioning": "客户愿意支付，但不会操作或当前方式用不了。",
+      "trigger_text": "客户愿意支付但操作受阻；客户愿意支付，但不会操作或当前方式用不了。",
+      "rule_keys": [
+        "local:rule:payment_operation_blocked"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:payment_help_alternative:step_1",
+          "source_id": "payment_help_alternative:step_1",
+          "source_ref": "business_workbook:逼单策略!D20:G20",
+          "name": "先告诉客户点哪里付款",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8233,
+            "name": "先告诉客户点哪里付款"
+          },
+          "script_type": {
+            "id": 9233,
+            "name": "先告诉客户点哪里付款"
+          },
+          "ai_guidance": "用一句话说明当前入口怎么操作。"
+        },
+        {
+          "node_key": "local:node:payment_help_alternative:step_2",
+          "source_id": "payment_help_alternative:step_2",
+          "source_ref": "business_workbook:逼单策略!H20:K20",
+          "name": "失败后换真实可用方式",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8234,
+            "name": "失败后换真实可用方式"
+          },
+          "script_type": {
+            "id": 9234,
+            "name": "失败后换真实可用方式"
+          },
+          "ai_guidance": "只提供系统支持的一个替代方式。"
+        },
+        {
+          "node_key": "local:node:payment_help_alternative:step_3",
+          "source_id": "payment_help_alternative:step_3",
+          "source_ref": "business_workbook:逼单策略!L20:O20",
+          "name": "付款后核对再登记",
+          "sort_order": 3,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8235,
+            "name": "付款后核对再登记"
+          },
+          "script_type": {
+            "id": 9235,
+            "name": "付款后核对再登记"
+          },
+          "ai_guidance": "先核验到账，再索取缺失资料。"
+        }
+      ]
+    },
+    {
+      "sequence_key": "local:sequence:payment_risk_verification",
+      "source_id": "payment_risk_verification",
+      "source_ref": "business_workbook:逼单策略!A21:W21",
+      "name": "支付风险提示先停下来核实",
+      "positioning": "客户付款时出现风险提示，但仍愿意继续。",
+      "trigger_text": "客户愿意支付但操作受阻；客户付款时出现风险提示，但仍愿意继续。",
+      "rule_keys": [
+        "local:rule:payment_operation_blocked"
+      ],
+      "enabled": true,
+      "nodes": [
+        {
+          "node_key": "local:node:payment_risk_verification:step_1",
+          "source_id": "payment_risk_verification:step_1",
+          "source_ref": "business_workbook:逼单策略!D21:G21",
+          "name": "先暂停支付并核实入口",
+          "sort_order": 1,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8236,
+            "name": "先暂停支付并核实入口"
+          },
+          "script_type": {
+            "id": 9236,
+            "name": "先暂停支付并核实入口"
+          },
+          "ai_guidance": "不要让客户忽略风险提示，也不用实名认证做口头担保。"
+        },
+        {
+          "node_key": "local:node:payment_risk_verification:step_2",
+          "source_id": "payment_risk_verification:step_2",
+          "source_ref": "business_workbook:逼单策略!H21:K21",
+          "name": "核实后重发官方入口",
+          "sort_order": 2,
+          "timing": "immediate",
+          "timing_text": "客户回复时间",
+          "delay": 0,
+          "delay_unit": "分钟",
+          "delay_minutes": 0,
+          "action_type": {
+            "id": 8237,
+            "name": "核实后重发官方入口"
+          },
+          "script_type": {
+            "id": 9237,
+            "name": "核实后重发官方入口"
+          },
+          "ai_guidance": "确认入口正常后再发；无法确认则转人工。"
+        }
       ]
     }
   ],
   "scripts": [
-    {"id": "local_closing_001", "script_code": "local_closing_001", "source_ref": "local_closing_script:local_closing_001", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "认可承接", "body_text": "明白，您对这个方案方向是认可的。我不重复给您讲一大段，咱们只看您大概什么时候方便。", "checkpoint_type": {"id": 9101, "code": "closing_acknowledge_acceptance", "name": "认可承接"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_acknowledge_acceptance", "checkpoint_name": "认可承接", "action_code": "", "action_name": "认可承接", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_001:p1", "messages": [{"type": "text", "content": "明白，您对这个方案方向是认可的。我不重复给您讲一大段，咱们只看您大概什么时候方便。"}]}], "data_quality_flags": []},
-    {"id": "local_closing_002", "script_code": "local_closing_002", "source_ref": "local_closing_script:local_closing_002", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "时间范围确认", "body_text": "您看更可能是工作日、周末，还是要到下周以后？", "checkpoint_type": {"id": 9102, "code": "closing_time_range", "name": "时间范围确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_time_range", "checkpoint_name": "时间范围确认", "action_code": "", "action_name": "时间范围确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_002:p1", "messages": [{"type": "text", "content": "您看更可能是工作日、周末，还是要到下周以后？"}]}], "data_quality_flags": []},
-    {"id": "local_closing_003", "script_code": "local_closing_003", "source_ref": "local_closing_script:local_closing_003", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "到店意向确认", "body_text": "这个时间范围我记下了。您愿意的话，我再按真实门店安排帮您看可选时段。", "checkpoint_type": {"id": 9103, "code": "closing_visit_intent", "name": "到店意向确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_visit_intent", "checkpoint_name": "到店意向确认", "action_code": "", "action_name": "到店意向确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_003:p1", "messages": [{"type": "text", "content": "这个时间范围我记下了。您愿意的话，我再按真实门店安排帮您看可选时段。"}]}], "data_quality_flags": []},
-    {"id": "local_closing_004", "script_code": "local_closing_004", "source_ref": "local_closing_script:local_closing_004", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "门店选择确认", "body_text": "好的，您选的是[工具确认的门店名称]。这个位置您能接受的话，我们接着看您方便的日期。", "checkpoint_type": {"id": 9104, "code": "closing_store_choice", "name": "门店选择确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_store_choice", "checkpoint_name": "门店选择确认", "action_code": "", "action_name": "门店选择确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_004:p1", "messages": [{"type": "text", "content": "好的，您选的是[工具确认的门店名称]。这个位置您能接受的话，我们接着看您方便的日期。"}]}], "data_quality_flags": ["requires_authoritative_store_fact"]},
-    {"id": "local_closing_005", "script_code": "local_closing_005", "source_ref": "local_closing_script:local_closing_005", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "客户日期复述", "body_text": "您是准备[客户原话中的日期]过来，对吗？", "checkpoint_type": {"id": 9105, "code": "closing_repeat_date", "name": "客户日期复述"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_repeat_date", "checkpoint_name": "客户日期复述", "action_code": "", "action_name": "客户日期复述", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_005:p1", "messages": [{"type": "text", "content": "您是准备[客户原话中的日期]过来，对吗？"}]}], "data_quality_flags": ["requires_customer_date_evidence"]},
-    {"id": "local_closing_006", "script_code": "local_closing_006", "source_ref": "local_closing_script:local_closing_006", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "上午下午确认", "body_text": "您当天上午方便一些，还是下午方便一些？", "checkpoint_type": {"id": 9106, "code": "closing_day_period", "name": "上午下午确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_day_period", "checkpoint_name": "上午下午确认", "action_code": "", "action_name": "上午下午确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_006:p1", "messages": [{"type": "text", "content": "您当天上午方便一些，还是下午方便一些？"}]}], "data_quality_flags": []},
-    {"id": "local_closing_007", "script_code": "local_closing_007", "source_ref": "local_closing_script:local_closing_007", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "真实时段二选一", "body_text": "当天目前可选的是[真实时段A]和[真实时段B]，您选哪个更合适？", "checkpoint_type": {"id": 9107, "code": "closing_verified_slots", "name": "真实时段二选一"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_verified_slots", "checkpoint_name": "真实时段二选一", "action_code": "", "action_name": "真实时段二选一", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_007:p1", "messages": [{"type": "text", "content": "当天目前可选的是[真实时段A]和[真实时段B]，您选哪个更合适？"}]}], "data_quality_flags": ["requires_authoritative_slot_facts"]},
-    {"id": "local_closing_008", "script_code": "local_closing_008", "source_ref": "local_closing_script:local_closing_008", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "预约结果确认", "body_text": "已经为您确认好[真实门店、日期和时段]。如果安排有变化，您提前告诉我。", "checkpoint_type": {"id": 9108, "code": "closing_appointment_result", "name": "预约结果确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_appointment_result", "checkpoint_name": "预约结果确认", "action_code": "", "action_name": "预约结果确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_008:p1", "messages": [{"type": "text", "content": "已经为您确认好[真实门店、日期和时段]。如果安排有变化，您提前告诉我。"}]}], "data_quality_flags": ["requires_successful_appointment_fact"]},
-    {"id": "local_closing_009", "script_code": "local_closing_009", "source_ref": "local_closing_script:local_closing_009", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "卡点解决确认", "body_text": "刚才您担心的[具体问题]，现在还有哪一点没有说清楚吗？", "checkpoint_type": {"id": 9109, "code": "closing_blocker_check", "name": "卡点解决确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_blocker_check", "checkpoint_name": "卡点解决确认", "action_code": "", "action_name": "卡点解决确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_009:p1", "messages": [{"type": "text", "content": "刚才您担心的[具体问题]，现在还有哪一点没有说清楚吗？"}]}], "data_quality_flags": ["requires_current_blocker_context"]},
-    {"id": "local_closing_010", "script_code": "local_closing_010", "source_ref": "local_closing_script:local_closing_010", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "继续意向确认", "body_text": "如果这一点您可以接受，我们再继续看下一步；您是想先看时间，还是先了解预约方式？", "checkpoint_type": {"id": 9110, "code": "closing_continue_intent", "name": "继续意向确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_continue_intent", "checkpoint_name": "继续意向确认", "action_code": "", "action_name": "继续意向确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_010:p1", "messages": [{"type": "text", "content": "如果这一点您可以接受，我们再继续看下一步；您是想先看时间，还是先了解预约方式？"}]}], "data_quality_flags": []},
-    {"id": "local_closing_011", "script_code": "local_closing_011", "source_ref": "local_closing_script:local_closing_011", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "唯一下一步说明", "body_text": "可以，您现在只需要完成这一步：[系统返回的唯一下一步]。其他信息暂时不用重复提供。", "checkpoint_type": {"id": 9111, "code": "closing_single_next_step", "name": "唯一下一步说明"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_single_next_step", "checkpoint_name": "唯一下一步说明", "action_code": "", "action_name": "唯一下一步说明", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_011:p1", "messages": [{"type": "text", "content": "可以，您现在只需要完成这一步：[系统返回的唯一下一步]。其他信息暂时不用重复提供。"}]}], "data_quality_flags": ["requires_authoritative_next_step"]},
-    {"id": "local_closing_012", "script_code": "local_closing_012", "source_ref": "local_closing_script:local_closing_012", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "时间困难承接", "body_text": "明白，您现在确实不好安排，那咱们先不急着定具体时间。", "checkpoint_type": {"id": 9112, "code": "closing_defer_acknowledgement", "name": "时间困难承接"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_defer_acknowledgement", "checkpoint_name": "时间困难承接", "action_code": "", "action_name": "时间困难承接", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_012:p1", "messages": [{"type": "text", "content": "明白，您现在确实不好安排，那咱们先不急着定具体时间。"}]}], "data_quality_flags": []},
-    {"id": "local_closing_013", "script_code": "local_closing_013", "source_ref": "local_closing_script:local_closing_013", "authority_scope": "approved_sales_expression", "hard_fact_authority": false, "script_name": "回访窗口确认", "body_text": "您看我到[客户方便的日期或时间范围]再联系您，可以吗？", "checkpoint_type": {"id": 9113, "code": "closing_followup_window", "name": "回访窗口确认"}, "checkpoint_tag": {"id": 0, "name": ""}, "checkpoint_code": "closing_followup_window", "checkpoint_name": "回访窗口确认", "action_code": "", "action_name": "回访窗口确认", "content_type": "text", "paragraphs": [{"paragraph_no": 1, "source_ref": "local_closing_script:local_closing_013:p1", "messages": [{"type": "text", "content": "您看我到[客户方便的日期或时间范围]再联系您，可以吗？"}]}], "data_quality_flags": ["requires_customer_followup_window"]}
+    {
+      "id": "local_business_closing_001",
+      "script_code": "local_business_closing_001",
+      "source_ref": "local_closing_script:local_business_closing_001",
+      "workbook_source_ref": "business_workbook:逼单话术!A5:F5",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "直接回答预约方式并发卡｜客户直接问怎么预约或要登记",
+      "applicable_scene": "客户直接问怎么预约或要登记",
+      "expression_goal": "马上给出能执行的动作",
+      "body_text": "可以的亲，我把10元预约金发您哈，点进去付就可以。",
+      "checkpoint_type": {
+        "id": 9201,
+        "code": "closing_business_type_001",
+        "name": "直接回答预约方式并发卡"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_001",
+      "checkpoint_name": "直接回答预约方式并发卡",
+      "action_code": "",
+      "action_name": "直接回答预约方式并发卡",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_001:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "可以的亲，我把10元预约金发您哈，点进去付就可以。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_deposit_amount",
+        "requires_structured_payment_entry"
+      ]
+    },
+    {
+      "id": "local_business_closing_002",
+      "script_code": "local_business_closing_002",
+      "source_ref": "local_closing_script:local_business_closing_002",
+      "workbook_source_ref": "business_workbook:逼单话术!A6:F6",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "直接回答预约方式并发卡｜客户明确说给我登记一个",
+      "applicable_scene": "客户明确说给我登记一个",
+      "expression_goal": "不再重复介绍活动",
+      "body_text": "好呀，那我现在把预约金发您。",
+      "checkpoint_type": {
+        "id": 9201,
+        "code": "closing_business_type_001",
+        "name": "直接回答预约方式并发卡"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_001",
+      "checkpoint_name": "直接回答预约方式并发卡",
+      "action_code": "",
+      "action_name": "直接回答预约方式并发卡",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_002:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "好呀，那我现在把预约金发您。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_structured_payment_entry"
+      ]
+    },
+    {
+      "id": "local_business_closing_003",
+      "script_code": "local_business_closing_003",
+      "source_ref": "local_closing_script:local_business_closing_003",
+      "workbook_source_ref": "business_workbook:逼单话术!A7:F7",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "支付后只收登记资料｜客户已经确认付好",
+      "applicable_scene": "客户已经确认付好",
+      "expression_goal": "只收尚未提供的登记信息",
+      "body_text": "付好把名字电话发我一下哦，我给您登记。",
+      "checkpoint_type": {
+        "id": 9202,
+        "code": "closing_business_type_002",
+        "name": "支付后只收登记资料"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_002",
+      "checkpoint_name": "支付后只收登记资料",
+      "action_code": "",
+      "action_name": "支付后只收登记资料",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_003:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "付好把名字电话发我一下哦，我给您登记。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_payment_result",
+        "requires_missing_registration_fields"
+      ]
+    },
+    {
+      "id": "local_business_closing_004",
+      "script_code": "local_business_closing_004",
+      "source_ref": "local_closing_script:local_business_closing_004",
+      "workbook_source_ref": "business_workbook:逼单话术!A8:F8",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "支付后只收登记资料｜客户已经给过姓名，只缺电话",
+      "applicable_scene": "客户已经给过姓名，只缺电话",
+      "expression_goal": "避免重复问已知信息",
+      "body_text": "好的亲，再把手机号发我一下就可以了。",
+      "checkpoint_type": {
+        "id": 9202,
+        "code": "closing_business_type_002",
+        "name": "支付后只收登记资料"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_002",
+      "checkpoint_name": "支付后只收登记资料",
+      "action_code": "",
+      "action_name": "支付后只收登记资料",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_004:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "好的亲，再把手机号发我一下就可以了。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_known_registration_fields"
+      ]
+    },
+    {
+      "id": "local_business_closing_005",
+      "script_code": "local_business_closing_005",
+      "source_ref": "local_closing_script:local_business_closing_005",
+      "workbook_source_ref": "business_workbook:逼单话术!A9:F9",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "把客户问的费用说清｜客户要登记但仍问是否另收费",
+      "applicable_scene": "客户要登记但仍问是否另收费",
+      "expression_goal": "先解决费用疑问",
+      "body_text": "您问的这个活动就是[当前有效价格]，包含[客户问到的包含项]，没有再加这一项费用。",
+      "checkpoint_type": {
+        "id": 9203,
+        "code": "closing_business_type_003",
+        "name": "把客户问的费用说清"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_003",
+      "checkpoint_name": "把客户问的费用说清",
+      "action_code": "",
+      "action_name": "把客户问的费用说清",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_005:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "您问的这个活动就是[当前有效价格]，包含[客户问到的包含项]，没有再加这一项费用。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_price_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_006",
+      "script_code": "local_business_closing_006",
+      "source_ref": "local_closing_script:local_business_closing_006",
+      "workbook_source_ref": "business_workbook:逼单话术!A10:F10",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "客户认可后发预约金卡｜客户确认费用可以接受",
+      "applicable_scene": "客户确认费用可以接受",
+      "expression_goal": "顺势完成登记",
+      "body_text": "那我把10元预约金发您哈，付好我给您登记。",
+      "checkpoint_type": {
+        "id": 9204,
+        "code": "closing_business_type_004",
+        "name": "客户认可后发预约金卡"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_004",
+      "checkpoint_name": "客户认可后发预约金卡",
+      "action_code": "",
+      "action_name": "客户认可后发预约金卡",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_006:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那我把10元预约金发您哈，付好我给您登记。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_deposit_amount",
+        "requires_structured_payment_entry"
+      ]
+    },
+    {
+      "id": "local_business_closing_007",
+      "script_code": "local_business_closing_007",
+      "source_ref": "local_closing_script:local_business_closing_007",
+      "workbook_source_ref": "business_workbook:逼单话术!A11:F11",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "顺着客户日期问时段｜客户只给了日期",
+      "applicable_scene": "客户只给了日期",
+      "expression_goal": "把日期收窄到上午下午",
+      "body_text": "可以呀，那您周日上午方便还是下午方便呢？",
+      "checkpoint_type": {
+        "id": 9205,
+        "code": "closing_business_type_005",
+        "name": "顺着客户日期问时段"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_005",
+      "checkpoint_name": "顺着客户日期问时段",
+      "action_code": "",
+      "action_name": "顺着客户日期问时段",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_007:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "可以呀，那您周日上午方便还是下午方便呢？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_customer_date_evidence"
+      ]
+    },
+    {
+      "id": "local_business_closing_008",
+      "script_code": "local_business_closing_008",
+      "source_ref": "local_closing_script:local_business_closing_008",
+      "workbook_source_ref": "business_workbook:逼单话术!A12:F12",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "顺着客户日期问时段｜客户说明天过来",
+      "applicable_scene": "客户说明天过来",
+      "expression_goal": "直接承接客户日期",
+      "body_text": "好的亲，那您明天上午来还是下午来呀？",
+      "checkpoint_type": {
+        "id": 9205,
+        "code": "closing_business_type_005",
+        "name": "顺着客户日期问时段"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_005",
+      "checkpoint_name": "顺着客户日期问时段",
+      "action_code": "",
+      "action_name": "顺着客户日期问时段",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_008:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "好的亲，那您明天上午来还是下午来呀？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_customer_date_evidence"
+      ]
+    },
+    {
+      "id": "local_business_closing_009",
+      "script_code": "local_business_closing_009",
+      "source_ref": "local_closing_script:local_business_closing_009",
+      "workbook_source_ref": "business_workbook:逼单话术!A13:F13",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "按客户时段问具体时间｜客户已经选了上午或下午",
+      "applicable_scene": "客户已经选了上午或下午",
+      "expression_goal": "继续收窄到具体时间",
+      "body_text": "下午可以的，您大概几点左右到呢？",
+      "checkpoint_type": {
+        "id": 9206,
+        "code": "closing_business_type_006",
+        "name": "按客户时段问具体时间"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_006",
+      "checkpoint_name": "按客户时段问具体时间",
+      "action_code": "",
+      "action_name": "按客户时段问具体时间",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_009:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "下午可以的，您大概几点左右到呢？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_customer_day_period_evidence"
+      ]
+    },
+    {
+      "id": "local_business_closing_010",
+      "script_code": "local_business_closing_010",
+      "source_ref": "local_closing_script:local_business_closing_010",
+      "workbook_source_ref": "business_workbook:逼单话术!A14:F14",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "给一个真实时间让客户确认｜已有真实可安排时间",
+      "applicable_scene": "已有真实可安排时间",
+      "expression_goal": "降低客户选择成本",
+      "body_text": "那给您安排下午3点到，可以吗？",
+      "checkpoint_type": {
+        "id": 9207,
+        "code": "closing_business_type_007",
+        "name": "给一个真实时间让客户确认"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_007",
+      "checkpoint_name": "给一个真实时间让客户确认",
+      "action_code": "",
+      "action_name": "给一个真实时间让客户确认",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_010:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那给您安排下午3点到，可以吗？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_slot_facts"
+      ]
+    },
+    {
+      "id": "local_business_closing_011",
+      "script_code": "local_business_closing_011",
+      "source_ref": "local_closing_script:local_business_closing_011",
+      "workbook_source_ref": "business_workbook:逼单话术!A15:F15",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "客户不同意再换第二时间｜第一个时间不合适",
+      "applicable_scene": "第一个时间不合适",
+      "expression_goal": "只再提供一个真实选项",
+      "body_text": "那晚一点，4点半左右可以吗？",
+      "checkpoint_type": {
+        "id": 9208,
+        "code": "closing_business_type_008",
+        "name": "客户不同意再换第二时间"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_008",
+      "checkpoint_name": "客户不同意再换第二时间",
+      "action_code": "",
+      "action_name": "客户不同意再换第二时间",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_011:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那晚一点，4点半左右可以吗？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_slot_facts"
+      ]
+    },
+    {
+      "id": "local_business_closing_012",
+      "script_code": "local_business_closing_012",
+      "source_ref": "local_closing_script:local_business_closing_012",
+      "workbook_source_ref": "business_workbook:逼单话术!A16:F16",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "告诉客户不用现在定日期｜客户愿意来但暂时定不了时间",
+      "applicable_scene": "客户愿意来但暂时定不了时间",
+      "expression_goal": "先去掉时间压力",
+      "body_text": "没事亲，您不用现在定哪天，有空再安排就可以。",
+      "checkpoint_type": {
+        "id": 9209,
+        "code": "closing_business_type_009",
+        "name": "告诉客户不用现在定日期"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_009",
+      "checkpoint_name": "告诉客户不用现在定日期",
+      "action_code": "",
+      "action_name": "告诉客户不用现在定日期",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_012:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "没事亲，您不用现在定哪天，有空再安排就可以。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": []
+    },
+    {
+      "id": "local_business_closing_013",
+      "script_code": "local_business_closing_013",
+      "source_ref": "local_closing_script:local_business_closing_013",
+      "workbook_source_ref": "business_workbook:逼单话术!A17:F17",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "说明可以先登记再安排｜活动确认支持延期到店",
+      "applicable_scene": "活动确认支持延期到店",
+      "expression_goal": "把登记和到店时间分开",
+      "body_text": "可以先把活动登记上，后面什么时候方便什么时候来。",
+      "checkpoint_type": {
+        "id": 9210,
+        "code": "closing_business_type_010",
+        "name": "说明可以先登记再安排"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_010",
+      "checkpoint_name": "说明可以先登记再安排",
+      "action_code": "",
+      "action_name": "说明可以先登记再安排",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_013:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "可以先把活动登记上，后面什么时候方便什么时候来。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_activity_validity_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_014",
+      "script_code": "local_business_closing_014",
+      "source_ref": "local_closing_script:local_business_closing_014",
+      "workbook_source_ref": "business_workbook:逼单话术!A18:F18",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "客户同意后发预约金卡｜客户接受先登记后安排",
+      "applicable_scene": "客户接受先登记后安排",
+      "expression_goal": "完成预约金动作",
+      "body_text": "那我把10元预约金发您哈。",
+      "checkpoint_type": {
+        "id": 9211,
+        "code": "closing_business_type_011",
+        "name": "客户同意后发预约金卡"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_011",
+      "checkpoint_name": "客户同意后发预约金卡",
+      "action_code": "",
+      "action_name": "客户同意后发预约金卡",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_014:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那我把10元预约金发您哈。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_deposit_amount",
+        "requires_structured_payment_entry"
+      ]
+    },
+    {
+      "id": "local_business_closing_015",
+      "script_code": "local_business_closing_015",
+      "source_ref": "local_closing_script:local_business_closing_015",
+      "workbook_source_ref": "business_workbook:逼单话术!A19:F19",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "直接回应下班后可以来｜客户只有下班后有空",
+      "applicable_scene": "客户只有下班后有空",
+      "expression_goal": "直接回答接待时间",
+      "body_text": "下班后过来就可以哦。",
+      "checkpoint_type": {
+        "id": 9212,
+        "code": "closing_business_type_012",
+        "name": "直接回应下班后可以来"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_012",
+      "checkpoint_name": "直接回应下班后可以来",
+      "action_code": "",
+      "action_name": "直接回应下班后可以来",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_015:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "下班后过来就可以哦。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_store_hours"
+      ]
+    },
+    {
+      "id": "local_business_closing_016",
+      "script_code": "local_business_closing_016",
+      "source_ref": "local_closing_script:local_business_closing_016",
+      "workbook_source_ref": "business_workbook:逼单话术!A20:F20",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "再问大概哪一天｜下班时间可接待",
+      "applicable_scene": "下班时间可接待",
+      "expression_goal": "只确认日期",
+      "body_text": "那您大概哪天下班后方便呀？",
+      "checkpoint_type": {
+        "id": 9213,
+        "code": "closing_business_type_013",
+        "name": "再问大概哪一天"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_013",
+      "checkpoint_name": "再问大概哪一天",
+      "action_code": "",
+      "action_name": "再问大概哪一天",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_016:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那您大概哪天下班后方便呀？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_customer_after_work_availability"
+      ]
+    },
+    {
+      "id": "local_business_closing_017",
+      "script_code": "local_business_closing_017",
+      "source_ref": "local_closing_script:local_business_closing_017",
+      "workbook_source_ref": "business_workbook:逼单话术!A21:F21",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "直接回答预约有效期｜统一规则确认长期有效",
+      "applicable_scene": "统一规则确认长期有效",
+      "expression_goal": "直接解除过期担心",
+      "body_text": "没有时间限制哈亲，随时来都可以的。",
+      "checkpoint_type": {
+        "id": 9214,
+        "code": "closing_business_type_014",
+        "name": "直接回答预约有效期"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_014",
+      "checkpoint_name": "直接回答预约有效期",
+      "action_code": "",
+      "action_name": "直接回答预约有效期",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_017:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "没有时间限制哈亲，随时来都可以的。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_deposit_validity_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_018",
+      "script_code": "local_business_closing_018",
+      "source_ref": "local_closing_script:local_business_closing_018",
+      "workbook_source_ref": "business_workbook:逼单话术!A22:F22",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "直接回答预约有效期｜客户问交了以后多久来",
+      "applicable_scene": "客户问交了以后多久来",
+      "expression_goal": "用真人短句回答",
+      "body_text": "不过期的，您什么时候方便什么时候来。",
+      "checkpoint_type": {
+        "id": 9214,
+        "code": "closing_business_type_014",
+        "name": "直接回答预约有效期"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_014",
+      "checkpoint_name": "直接回答预约有效期",
+      "action_code": "",
+      "action_name": "直接回答预约有效期",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_018:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "不过期的，您什么时候方便什么时候来。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_deposit_validity_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_019",
+      "script_code": "local_business_closing_019",
+      "source_ref": "local_closing_script:local_business_closing_019",
+      "workbook_source_ref": "business_workbook:逼单话术!A23:F23",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "客户接受后发卡登记｜客户认可有效期规则",
+      "applicable_scene": "客户认可有效期规则",
+      "expression_goal": "立即承接成交动作",
+      "body_text": "那我把预约金发您，付好把名字电话发我登记哈。",
+      "checkpoint_type": {
+        "id": 9215,
+        "code": "closing_business_type_015",
+        "name": "客户接受后发卡登记"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_015",
+      "checkpoint_name": "客户接受后发卡登记",
+      "action_code": "",
+      "action_name": "客户接受后发卡登记",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_019:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那我把预约金发您，付好把名字电话发我登记哈。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_deposit_validity_fact",
+        "requires_structured_payment_entry",
+        "requires_missing_registration_fields"
+      ]
+    },
+    {
+      "id": "local_business_closing_020",
+      "script_code": "local_business_closing_020",
+      "source_ref": "local_closing_script:local_business_closing_020",
+      "workbook_source_ref": "business_workbook:逼单话术!A24:F24",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "直接说抵扣和退款｜客户问不做能不能退",
+      "applicable_scene": "客户问不做能不能退",
+      "expression_goal": "降低预约金风险",
+      "body_text": "这10元到店直接抵扣哈，没做或者不满意也可以退，最后按付款记录核对就行。",
+      "checkpoint_type": {
+        "id": 9216,
+        "code": "closing_business_type_016",
+        "name": "直接说抵扣和退款"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_016",
+      "checkpoint_name": "直接说抵扣和退款",
+      "action_code": "",
+      "action_name": "直接说抵扣和退款",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_020:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "这10元到店直接抵扣哈，没做或者不满意也可以退，最后按付款记录核对就行。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_deposit_amount",
+        "requires_authoritative_refund_policy_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_021",
+      "script_code": "local_business_closing_021",
+      "source_ref": "local_closing_script:local_business_closing_021",
+      "workbook_source_ref": "business_workbook:逼单话术!A25:F25",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "客户认可后问要不要登记｜退款规则已说明",
+      "applicable_scene": "退款规则已说明",
+      "expression_goal": "取得客户确认",
+      "body_text": "这样可以的话，我现在给您登记一个吗？",
+      "checkpoint_type": {
+        "id": 9217,
+        "code": "closing_business_type_017",
+        "name": "客户认可后问要不要登记"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_017",
+      "checkpoint_name": "客户认可后问要不要登记",
+      "action_code": "",
+      "action_name": "客户认可后问要不要登记",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_021:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "这样可以的话，我现在给您登记一个吗？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_prior_refund_explanation"
+      ]
+    },
+    {
+      "id": "local_business_closing_022",
+      "script_code": "local_business_closing_022",
+      "source_ref": "local_closing_script:local_business_closing_022",
+      "workbook_source_ref": "business_workbook:逼单话术!A26:F26",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "只问一个真实顾虑｜客户说不想先付但仍想来",
+      "applicable_scene": "客户说不想先付但仍想来",
+      "expression_goal": "找出真正阻力",
+      "body_text": "亲，您是担心后面没时间来，还是担心不做退不了呀？",
+      "checkpoint_type": {
+        "id": 9218,
+        "code": "closing_business_type_018",
+        "name": "只问一个真实顾虑"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_018",
+      "checkpoint_name": "只问一个真实顾虑",
+      "action_code": "",
+      "action_name": "只问一个真实顾虑",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_022:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "亲，您是担心后面没时间来，还是担心不做退不了呀？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": []
+    },
+    {
+      "id": "local_business_closing_023",
+      "script_code": "local_business_closing_023",
+      "source_ref": "local_closing_script:local_business_closing_023",
+      "workbook_source_ref": "business_workbook:逼单话术!A27:F27",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "只解决客户选中的顾虑｜客户担心没时间",
+      "applicable_scene": "客户担心没时间",
+      "expression_goal": "只处理时间问题",
+      "body_text": "时间不用现在定，后面方便的时候再来就可以。",
+      "checkpoint_type": {
+        "id": 9219,
+        "code": "closing_business_type_019",
+        "name": "只解决客户选中的顾虑"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_019",
+      "checkpoint_name": "只解决客户选中的顾虑",
+      "action_code": "",
+      "action_name": "只解决客户选中的顾虑",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_023:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "时间不用现在定，后面方便的时候再来就可以。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_activity_validity_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_024",
+      "script_code": "local_business_closing_024",
+      "source_ref": "local_closing_script:local_business_closing_024",
+      "workbook_source_ref": "business_workbook:逼单话术!A28:F28",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "只解决客户选中的顾虑｜客户担心退不了",
+      "applicable_scene": "客户担心退不了",
+      "expression_goal": "只处理退款问题",
+      "body_text": "没做或者不满意都可以退的，按您的付款记录核对。",
+      "checkpoint_type": {
+        "id": 9219,
+        "code": "closing_business_type_019",
+        "name": "只解决客户选中的顾虑"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_019",
+      "checkpoint_name": "只解决客户选中的顾虑",
+      "action_code": "",
+      "action_name": "只解决客户选中的顾虑",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_024:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "没做或者不满意都可以退的，按您的付款记录核对。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_refund_policy_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_025",
+      "script_code": "local_business_closing_025",
+      "source_ref": "local_closing_script:local_business_closing_025",
+      "workbook_source_ref": "business_workbook:逼单话术!A29:F29",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "客户接受后再轻推登记｜客户说这样可以",
+      "applicable_scene": "客户说这样可以",
+      "expression_goal": "重新推进但不强压",
+      "body_text": "那我把预约金发您哈，先把活动登记上。",
+      "checkpoint_type": {
+        "id": 9220,
+        "code": "closing_business_type_020",
+        "name": "客户接受后再轻推登记"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_020",
+      "checkpoint_name": "客户接受后再轻推登记",
+      "action_code": "",
+      "action_name": "客户接受后再轻推登记",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_025:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那我把预约金发您哈，先把活动登记上。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_activity_validity_fact",
+        "requires_structured_payment_entry"
+      ]
+    },
+    {
+      "id": "local_business_closing_026",
+      "script_code": "local_business_closing_026",
+      "source_ref": "local_closing_script:local_business_closing_026",
+      "workbook_source_ref": "business_workbook:逼单话术!A30:F30",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "先接住以前没退款的担心｜客户说以前定金没有退",
+      "applicable_scene": "客户说以前定金没有退",
+      "expression_goal": "承认客户不信任有原因",
+      "body_text": "那您担心是正常的，之前没退到，肯定不敢再随便付。",
+      "checkpoint_type": {
+        "id": 9221,
+        "code": "closing_business_type_021",
+        "name": "先接住以前没退款的担心"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_021",
+      "checkpoint_name": "先接住以前没退款的担心",
+      "action_code": "",
+      "action_name": "先接住以前没退款的担心",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_026:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那您担心是正常的，之前没退到，肯定不敢再随便付。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": []
+    },
+    {
+      "id": "local_business_closing_027",
+      "script_code": "local_business_closing_027",
+      "source_ref": "local_closing_script:local_business_closing_027",
+      "workbook_source_ref": "business_workbook:逼单话术!A31:F31",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "说清这次退款凭证和口径｜客户需要退款保障",
+      "applicable_scene": "客户需要退款保障",
+      "expression_goal": "用可核对事实建立信任",
+      "body_text": "这次付款记录都能核对，到店直接抵扣；没做或者不满意可以退。",
+      "checkpoint_type": {
+        "id": 9222,
+        "code": "closing_business_type_022",
+        "name": "说清这次退款凭证和口径"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_022",
+      "checkpoint_name": "说清这次退款凭证和口径",
+      "action_code": "",
+      "action_name": "说清这次退款凭证和口径",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_027:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "这次付款记录都能核对，到店直接抵扣；没做或者不满意可以退。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_refund_policy_fact",
+        "requires_payment_record_lookup"
+      ]
+    },
+    {
+      "id": "local_business_closing_028",
+      "script_code": "local_business_closing_028",
+      "source_ref": "local_closing_script:local_business_closing_028",
+      "workbook_source_ref": "business_workbook:逼单话术!A32:F32",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "接受后再问是否登记｜客户认可退款说明",
+      "applicable_scene": "客户认可退款说明",
+      "expression_goal": "让客户自己确认下一步",
+      "body_text": "您觉得这样可以的话，我再给您登记。",
+      "checkpoint_type": {
+        "id": 9223,
+        "code": "closing_business_type_023",
+        "name": "接受后再问是否登记"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_023",
+      "checkpoint_name": "接受后再问是否登记",
+      "action_code": "",
+      "action_name": "接受后再问是否登记",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_028:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "您觉得这样可以的话，我再给您登记。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_prior_refund_explanation"
+      ]
+    },
+    {
+      "id": "local_business_closing_029",
+      "script_code": "local_business_closing_029",
+      "source_ref": "local_closing_script:local_business_closing_029",
+      "workbook_source_ref": "business_workbook:逼单话术!A33:F33",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "明确可以先到店了解｜客户只想先看看",
+      "applicable_scene": "客户只想先看看",
+      "expression_goal": "降低到店压力",
+      "body_text": "可以呀，您先过来了解看看，满意再做就行。",
+      "checkpoint_type": {
+        "id": 9224,
+        "code": "closing_business_type_024",
+        "name": "明确可以先到店了解"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_024",
+      "checkpoint_name": "明确可以先到店了解",
+      "action_code": "",
+      "action_name": "明确可以先到店了解",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_029:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "可以呀，您先过来了解看看，满意再做就行。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": []
+    },
+    {
+      "id": "local_business_closing_030",
+      "script_code": "local_business_closing_030",
+      "source_ref": "local_closing_script:local_business_closing_030",
+      "workbook_source_ref": "business_workbook:逼单话术!A34:F34",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "只问哪天方便过来｜客户接受先到店了解",
+      "applicable_scene": "客户接受先到店了解",
+      "expression_goal": "获得真实日期",
+      "body_text": "那您大概哪天方便过来看看呀？",
+      "checkpoint_type": {
+        "id": 9225,
+        "code": "closing_business_type_025",
+        "name": "只问哪天方便过来"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_025",
+      "checkpoint_name": "只问哪天方便过来",
+      "action_code": "",
+      "action_name": "只问哪天方便过来",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_030:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那您大概哪天方便过来看看呀？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_customer_visit_intent"
+      ]
+    },
+    {
+      "id": "local_business_closing_031",
+      "script_code": "local_business_closing_031",
+      "source_ref": "local_closing_script:local_business_closing_031",
+      "workbook_source_ref": "business_workbook:逼单话术!A35:F35",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "确认客户选的门店｜客户已经选择门店",
+      "applicable_scene": "客户已经选择门店",
+      "expression_goal": "锁定门店，不重复发列表",
+      "body_text": "好，那就到[客户已选门店]这家哈。",
+      "checkpoint_type": {
+        "id": 9226,
+        "code": "closing_business_type_026",
+        "name": "确认客户选的门店"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_026",
+      "checkpoint_name": "确认客户选的门店",
+      "action_code": "",
+      "action_name": "确认客户选的门店",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_031:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "好，那就到[客户已选门店]这家哈。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_store_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_032",
+      "script_code": "local_business_closing_032",
+      "source_ref": "local_closing_script:local_business_closing_032",
+      "workbook_source_ref": "business_workbook:逼单话术!A36:F36",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "接着问哪天过来｜门店已确认",
+      "applicable_scene": "门店已确认",
+      "expression_goal": "推进到日期",
+      "body_text": "您大概哪天方便过来呢？",
+      "checkpoint_type": {
+        "id": 9227,
+        "code": "closing_business_type_027",
+        "name": "接着问哪天过来"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_027",
+      "checkpoint_name": "接着问哪天过来",
+      "action_code": "",
+      "action_name": "接着问哪天过来",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_032:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "您大概哪天方便过来呢？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_confirmed_store_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_033",
+      "script_code": "local_business_closing_033",
+      "source_ref": "local_closing_script:local_business_closing_033",
+      "workbook_source_ref": "business_workbook:逼单话术!A37:F37",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "说清已核验的交通安排｜路线或接送已经真实核验",
+      "applicable_scene": "路线或接送已经真实核验",
+      "expression_goal": "解决最后的交通问题",
+      "body_text": "可以的，到时候按[已核验交通安排]过来就行。",
+      "checkpoint_type": {
+        "id": 9228,
+        "code": "closing_business_type_028",
+        "name": "说清已核验的交通安排"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_028",
+      "checkpoint_name": "说清已核验的交通安排",
+      "action_code": "",
+      "action_name": "说清已核验的交通安排",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_033:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "可以的，到时候按[已核验交通安排]过来就行。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_transport_fact"
+      ]
+    },
+    {
+      "id": "local_business_closing_034",
+      "script_code": "local_business_closing_034",
+      "source_ref": "local_closing_script:local_business_closing_034",
+      "workbook_source_ref": "business_workbook:逼单话术!A38:F38",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "问客户哪天方便｜客户接受交通方案",
+      "applicable_scene": "客户接受交通方案",
+      "expression_goal": "继续收日期",
+      "body_text": "那您明天方便，还是过两天方便呀？",
+      "checkpoint_type": {
+        "id": 9229,
+        "code": "closing_business_type_029",
+        "name": "问客户哪天方便"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_029",
+      "checkpoint_name": "问客户哪天方便",
+      "action_code": "",
+      "action_name": "问客户哪天方便",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_034:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那您明天方便，还是过两天方便呀？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": []
+    },
+    {
+      "id": "local_business_closing_035",
+      "script_code": "local_business_closing_035",
+      "source_ref": "local_closing_script:local_business_closing_035",
+      "workbook_source_ref": "business_workbook:逼单话术!A39:F39",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "确认报名人数｜客户说两个人一起",
+      "applicable_scene": "客户说两个人一起",
+      "expression_goal": "避免人数和金额错误",
+      "body_text": "可以的亲，您这边一共是两个人对吧？",
+      "checkpoint_type": {
+        "id": 9230,
+        "code": "closing_business_type_030",
+        "name": "确认报名人数"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_030",
+      "checkpoint_name": "确认报名人数",
+      "action_code": "",
+      "action_name": "确认报名人数",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_035:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "可以的亲，您这边一共是两个人对吧？"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_customer_party_size"
+      ]
+    },
+    {
+      "id": "local_business_closing_036",
+      "script_code": "local_business_closing_036",
+      "source_ref": "local_closing_script:local_business_closing_036",
+      "workbook_source_ref": "business_workbook:逼单话术!A40:F40",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "按人数发对应预约入口｜人数已经确认",
+      "applicable_scene": "人数已经确认",
+      "expression_goal": "发送金额正确的入口",
+      "body_text": "那我按两个人给您发预约金哈。",
+      "checkpoint_type": {
+        "id": 9231,
+        "code": "closing_business_type_031",
+        "name": "按人数发对应预约入口"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_031",
+      "checkpoint_name": "按人数发对应预约入口",
+      "action_code": "",
+      "action_name": "按人数发对应预约入口",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_036:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "那我按两个人给您发预约金哈。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_customer_party_size",
+        "requires_authoritative_deposit_amount",
+        "requires_structured_payment_entry"
+      ]
+    },
+    {
+      "id": "local_business_closing_037",
+      "script_code": "local_business_closing_037",
+      "source_ref": "local_closing_script:local_business_closing_037",
+      "workbook_source_ref": "business_workbook:逼单话术!A41:F41",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "一次收齐每个人资料｜多人支付完成",
+      "applicable_scene": "多人支付完成",
+      "expression_goal": "一次收齐资料",
+      "body_text": "付好把两个人的名字和电话一起发我，我给您们登记。",
+      "checkpoint_type": {
+        "id": 9232,
+        "code": "closing_business_type_032",
+        "name": "一次收齐每个人资料"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_032",
+      "checkpoint_name": "一次收齐每个人资料",
+      "action_code": "",
+      "action_name": "一次收齐每个人资料",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_037:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "付好把两个人的名字和电话一起发我，我给您们登记。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_customer_party_size",
+        "requires_authoritative_payment_result",
+        "requires_missing_registration_fields"
+      ]
+    },
+    {
+      "id": "local_business_closing_038",
+      "script_code": "local_business_closing_038",
+      "source_ref": "local_closing_script:local_business_closing_038",
+      "workbook_source_ref": "business_workbook:逼单话术!A42:F42",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "先告诉客户点哪里付款｜客户问支付入口怎么操作",
+      "applicable_scene": "客户问支付入口怎么操作",
+      "expression_goal": "让客户马上会操作",
+      "body_text": "点我刚发的预约金卡，再点付款就可以了。",
+      "checkpoint_type": {
+        "id": 9233,
+        "code": "closing_business_type_033",
+        "name": "先告诉客户点哪里付款"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_033",
+      "checkpoint_name": "先告诉客户点哪里付款",
+      "action_code": "",
+      "action_name": "先告诉客户点哪里付款",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_038:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "点我刚发的预约金卡，再点付款就可以了。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_existing_structured_payment_entry"
+      ]
+    },
+    {
+      "id": "local_business_closing_039",
+      "script_code": "local_business_closing_039",
+      "source_ref": "local_closing_script:local_business_closing_039",
+      "workbook_source_ref": "business_workbook:逼单话术!A43:F43",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "失败后换真实可用方式｜当前方式操作失败且系统支持替代方式",
+      "applicable_scene": "当前方式操作失败且系统支持替代方式",
+      "expression_goal": "给一个替代办法",
+      "body_text": "这个方式不行的话，可以用[当前支持的支付方式]。",
+      "checkpoint_type": {
+        "id": 9234,
+        "code": "closing_business_type_034",
+        "name": "失败后换真实可用方式"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_034",
+      "checkpoint_name": "失败后换真实可用方式",
+      "action_code": "",
+      "action_name": "失败后换真实可用方式",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_039:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "这个方式不行的话，可以用[当前支持的支付方式]。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_authoritative_payment_channel"
+      ]
+    },
+    {
+      "id": "local_business_closing_040",
+      "script_code": "local_business_closing_040",
+      "source_ref": "local_closing_script:local_business_closing_040",
+      "workbook_source_ref": "business_workbook:逼单话术!A44:F44",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "付款后核对再登记｜客户说已经付了",
+      "applicable_scene": "客户说已经付了",
+      "expression_goal": "先确认到账，不误报",
+      "body_text": "好的亲，我先核对一下，确认后马上给您登记。",
+      "checkpoint_type": {
+        "id": 9235,
+        "code": "closing_business_type_035",
+        "name": "付款后核对再登记"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_035",
+      "checkpoint_name": "付款后核对再登记",
+      "action_code": "",
+      "action_name": "付款后核对再登记",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_040:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "好的亲，我先核对一下，确认后马上给您登记。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_payment_status_lookup"
+      ]
+    },
+    {
+      "id": "local_business_closing_041",
+      "script_code": "local_business_closing_041",
+      "source_ref": "local_closing_script:local_business_closing_041",
+      "workbook_source_ref": "business_workbook:逼单话术!A45:F45",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "先暂停支付并核实入口｜客户看到支付风险提示",
+      "applicable_scene": "客户看到支付风险提示",
+      "expression_goal": "保护客户并排查入口",
+      "body_text": "先别继续付亲，我先帮您核实一下这个入口。",
+      "checkpoint_type": {
+        "id": 9236,
+        "code": "closing_business_type_036",
+        "name": "先暂停支付并核实入口"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_036",
+      "checkpoint_name": "先暂停支付并核实入口",
+      "action_code": "",
+      "action_name": "先暂停支付并核实入口",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_041:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "先别继续付亲，我先帮您核实一下这个入口。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_payment_risk_evidence"
+      ]
+    },
+    {
+      "id": "local_business_closing_042",
+      "script_code": "local_business_closing_042",
+      "source_ref": "local_closing_script:local_business_closing_042",
+      "workbook_source_ref": "business_workbook:逼单话术!A46:F46",
+      "authority_scope": "approved_sales_expression",
+      "hard_fact_authority": false,
+      "script_name": "核实后重发官方入口｜官方入口已确认正常",
+      "applicable_scene": "官方入口已确认正常",
+      "expression_goal": "只使用确认后的入口",
+      "body_text": "刚核实好了，我重新发官方入口给您，您从这个点进去。",
+      "checkpoint_type": {
+        "id": 9237,
+        "code": "closing_business_type_037",
+        "name": "核实后重发官方入口"
+      },
+      "checkpoint_tag": {
+        "id": 0,
+        "name": ""
+      },
+      "checkpoint_code": "closing_business_type_037",
+      "checkpoint_name": "核实后重发官方入口",
+      "action_code": "",
+      "action_name": "核实后重发官方入口",
+      "content_type": "text",
+      "paragraphs": [
+        {
+          "paragraph_no": 1,
+          "source_ref": "local_closing_script:local_business_closing_042:p1",
+          "messages": [
+            {
+              "type": "text",
+              "content": "刚核实好了，我重新发官方入口给您，您从这个点进去。"
+            }
+          ]
+        }
+      ],
+      "data_quality_flags": [
+        "requires_verified_official_payment_entry",
+        "requires_structured_payment_entry"
+      ]
+    }
   ]
 }
