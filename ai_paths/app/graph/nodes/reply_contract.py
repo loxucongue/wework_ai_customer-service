@@ -1532,7 +1532,13 @@ def _store_fact_status(joined: dict[str, Any]) -> dict[str, Any]:
     }
 
 def _conversation(state: AgentState) -> list[dict[str, Any]]:
-    """Return complete prior history; the current turn lives in current_message."""
+    """Return the latest customer-visible history; current turn is separate.
+
+    Platform history can contain cancelled model drafts or repeated projections
+    of the same message. Those records are useful for audit but must not anchor
+    the customer-visible Reply. Keep at most twelve real visible messages and
+    collapse only adjacent, identical role/text pairs.
+    """
 
     turns = state.get("conversation_turns") if isinstance(state.get("conversation_turns"), list) else []
     if turns:
@@ -1542,7 +1548,8 @@ def _conversation(state: AgentState) -> list[dict[str, Any]]:
                 continue
             turn = copy.deepcopy(item)
             turn.setdefault("message_ref", f"history_{index}")
-            output.append(turn)
+            if _is_customer_visible_conversation_turn(turn):
+                output.append(turn)
     else:
         output = []
         for index, raw in enumerate(state.get("conversation_history") or [], start=1):
@@ -1553,12 +1560,56 @@ def _conversation(state: AgentState) -> list[dict[str, Any]]:
                     role = value
                     text = text[len(prefix) :].strip()
                     break
-            output.append({"message_ref": f"history_{index}", "role": role, "content": text})
+            turn = {"message_ref": f"history_{index}", "role": role, "content": text}
+            if _is_customer_visible_conversation_turn(turn):
+                output.append(turn)
+    output = _dedupe_adjacent_conversation_turns(output)
     current = str(state.get("normalized_content") or state.get("content") or "").strip()
     if current and _conversation_ends_with(output, current):
         last_role = str(output[-1].get("role") or "").strip().lower()
         if last_role in {"customer", "user"}:
             output.pop()
+    return output[-12:]
+
+
+def _is_customer_visible_conversation_turn(turn: dict[str, Any]) -> bool:
+    role = str(turn.get("role") or turn.get("direction") or "").strip().lower()
+    if role not in {"customer", "user", "assistant", "staff", "ai", "unknown"}:
+        return False
+    content = str(turn.get("content") or turn.get("text") or "").strip()
+    if not content:
+        return False
+    status = str(turn.get("delivery_status") or turn.get("status") or "").strip().lower()
+    if status in {
+        "superseded",
+        "filtered",
+        "draft",
+        "pending",
+        "cancelled",
+        "canceled",
+        "failed",
+        "send_failed",
+        "completed_without_send",
+    }:
+        return False
+    if role in {"assistant", "staff", "ai"}:
+        if turn.get("visible_to_customer") is False or turn.get("is_delivered") is False:
+            return False
+    return True
+
+
+def _dedupe_adjacent_conversation_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for turn in turns:
+        role = str(turn.get("role") or turn.get("direction") or "").strip().lower()
+        content = str(turn.get("content") or turn.get("text") or "").strip()
+        if output:
+            previous = output[-1]
+            previous_role = str(previous.get("role") or previous.get("direction") or "").strip().lower()
+            previous_content = str(previous.get("content") or previous.get("text") or "").strip()
+            if role == previous_role and content == previous_content:
+                continue
+        output.append(turn)
     return output
 
 def _authoritative_order_payment_facts(state: AgentState) -> dict[str, Any]:

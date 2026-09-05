@@ -257,9 +257,10 @@ def _message_id(request: ChatRequest, request_context: dict[str, Any]) -> str:
 
 
 def _merged_content(messages: list[str]) -> str:
-    lines = ["客户连续发送了多条未回复消息，请作为本轮当前问题整体处理，最新消息优先："]
-    lines.extend(f"{index}. {message}" for index, message in enumerate(messages, start=1))
-    return "\n".join(lines)
+    # The model should see the customer's actual consecutive messages, not an
+    # internal ticket-style instruction. Ordering and the full event array stay
+    # available through reply_control for audit and protocol interpretation.
+    return "\n".join(str(message).strip() for message in messages if str(message or "").strip())
 
 
 def _request_image_urls(request: ChatRequest) -> list[str]:

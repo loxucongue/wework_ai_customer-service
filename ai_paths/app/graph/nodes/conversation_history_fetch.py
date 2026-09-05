@@ -139,6 +139,9 @@ def platform_messages_to_turns(messages: list[dict[str, Any]], *, limit: int) ->
             "role": message_role(item),
             "content": text,
         }
+        for key in ("status", "delivery_status", "is_delivered", "visible_to_customer"):
+            if key in item and item.get(key) not in (None, ""):
+                turn[key] = item.get(key)
         if timestamp is not None:
             occurred_at = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(BEIJING_TZ)
             turn["occurred_at"] = occurred_at.isoformat(timespec="seconds")
@@ -156,7 +159,7 @@ def history_strings_to_turns(history: list[Any], *, limit: int = 50) -> list[dic
             continue
         role = "unknown"
         content = text
-        for prefix, candidate_role in (("用户:", "customer"), ("小贝:", "assistant"), ("客服:", "assistant"), ("AI回复:", "assistant")):
+        for prefix, candidate_role in (("用户:", "customer"), ("客户:", "customer"), ("小贝:", "assistant"), ("客服:", "assistant"), ("AI回复:", "assistant")):
             if text.startswith(prefix):
                 role = candidate_role
                 content = text[len(prefix) :].strip()

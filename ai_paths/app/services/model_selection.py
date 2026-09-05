@@ -70,7 +70,10 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
     for name in split_models(fallback_text):
         if name:
             models.append(name)
-    if settings.model_provider.lower() in {"relay", "openai_compatible", "openai-compatible"}:
+    # Reply is the customer-visible V3 decision tier. Its configured provider
+    # boundary must not be widened by the process-wide emergency list: doing so
+    # would silently re-enable GPT for the main reply, full retry or repair.
+    if tier != "reply" and settings.model_provider.lower() in {"relay", "openai_compatible", "openai-compatible"}:
         models.extend(split_models(settings.model_emergency_fallbacks))
     if tier == "planner" and settings.model_provider.lower() == "aliyun" and "qwen-turbo" not in models:
         models.append("qwen-turbo")

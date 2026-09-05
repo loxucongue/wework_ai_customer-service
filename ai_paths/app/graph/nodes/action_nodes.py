@@ -4616,6 +4616,7 @@ def _customer_store_scope_unavailable(state: AgentState) -> bool:
         return False
     source = str(knowledge.get("source") or "").strip()
     if source in {
+        "deferred_until_semantic_router",
         "missing_customer_store_scope",
         "platform_agent_unavailable",
         "platform_agent.store_index_error",

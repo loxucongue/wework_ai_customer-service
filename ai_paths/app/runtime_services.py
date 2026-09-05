@@ -128,8 +128,8 @@ def build_reply_services(settings: Settings) -> ReplyServices:
     semantic_fallback_client = ModelClient(
         settings.model_copy(
             update={
-                "model_fast": "gpt-5.4-mini",
-                "model_fast_fallbacks": "gpt-5.4",
+                "model_fast": "deepseek-chat",
+                "model_fast_fallbacks": "",
                 "model_emergency_fallbacks": "",
                 "model_hedge_max_parallel": 1,
             }

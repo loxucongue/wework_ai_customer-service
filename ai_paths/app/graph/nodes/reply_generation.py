@@ -677,12 +677,10 @@ async def _run_model_led_reply_pipeline(
         repair_messages = _reply_full_task_retry_messages(model_messages, primary_error)
         retry_mode = "full_task_retry"
         second_attempt_budget = repair_budget
-        second_attempt_tier = (
-            "secondary"
-            if bool(getattr(model_client, "secondary_available", False))
-            and hasattr(model_client, "chat_json_secondary")
-            else "fast"
-        )
+        # A transport/protocol retry remains on the customer-visible Reply
+        # tier. Falling through to secondary/fast would bypass the configured
+        # DeepSeek-only boundary and could launch a GPT recovery response.
+        second_attempt_tier = tier
     else:
         repair_messages = _reply_retry_messages(
             model_messages,

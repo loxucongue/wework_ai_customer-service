@@ -349,8 +349,6 @@ def create_background_context_layer(
                     request_context=scoped_request_context,
                 )
             )
-            store_context_started_at = time.monotonic()
-            store_context_deadline = store_context_started_at + BACKGROUND_STORE_CONTEXT_BUDGET_SECONDS
             customer_task = asyncio.to_thread(
                 _timed_call,
                 "order_index",
@@ -361,16 +359,7 @@ def create_background_context_layer(
                 request_context,
                 identity,
             )
-            store_task = asyncio.to_thread(
-                _timed_call,
-                "store_index",
-                _load_customer_stores,
-                customer_store_knowledge_service,
-                scoped_request_context,
-                {},
-                identity,
-            )
-            customer_result_timed, conversation_result_timed, store_result_timed, sequence_result_timed, taxonomy_result_timed, closing_catalog_result_timed = await asyncio.gather(
+            customer_result_timed, conversation_result_timed, sequence_result_timed, taxonomy_result_timed, closing_catalog_result_timed = await asyncio.gather(
                 _await_timed_background_task(
                     customer_task,
                     name="order_index",
@@ -393,17 +382,6 @@ def create_background_context_layer(
                             "used_message_count": len(state.get("conversation_history") or []),
                             "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
                         },
-                    },
-                ),
-                _await_timed_background_task(
-                    store_task,
-                    name="store_index",
-                    timeout_seconds=max(0.05, store_context_deadline - time.monotonic()),
-                    timeout_result={
-                        "source": "customer_store_knowledge_timeout",
-                        "stores": [],
-                        "appointment_extra_stores": [],
-                        "error": f"timeout_after_{BACKGROUND_STORE_CONTEXT_BUDGET_SECONDS:g}s",
                     },
                 ),
                 _await_timed_background_task(
@@ -443,7 +421,15 @@ def create_background_context_layer(
                 ),
             )
             customer_result = customer_result_timed["result"]
-            customer_store_knowledge = store_result_timed["result"]
+            # Store scope is intentionally absent until Router requests the
+            # store workflow. The read-only executor will load the authorized
+            # customer scope at that point, avoiding a store call on greetings,
+            # prices and all other unrelated turns.
+            customer_store_knowledge = {
+                "source": "deferred_until_semantic_router",
+                "stores": [],
+                "appointment_extra_stores": [],
+            }
             conversation_result = conversation_result_timed["result"] if isinstance(conversation_result_timed.get("result"), dict) else {}
             conversation_history = conversation_result.get("conversation_history")
             if not isinstance(conversation_history, list):
@@ -454,7 +440,6 @@ def create_background_context_layer(
             substeps.extend(
                 [
                     _without_result(customer_result_timed),
-                    _without_result(store_result_timed),
                     _without_result(conversation_result_timed),
                     _without_result(sequence_result_timed),
                     _without_result(taxonomy_result_timed),
@@ -462,52 +447,9 @@ def create_background_context_layer(
                 ]
             )
             customer_context = customer_result.get("customer_context", {})
-            store_context_skipped_steps: list[str] = []
-            store_index_error = str(store_result_timed.get("error") or "")
-            store_index_timed_out = "timeout_after_" in store_index_error
-            store_context_remaining = max(0.0, store_context_deadline - time.monotonic())
-            if store_index_timed_out:
-                store_context_skipped_steps.append("store_snapshot_hydrate:index_timeout")
-                extra_result = _skipped_background_result(
-                    "store_snapshot_hydrate",
-                    customer_store_knowledge,
-                    reason="store_index_timeout",
-                )
-            elif store_context_remaining <= 0.05:
-                store_context_skipped_steps.append("store_snapshot_hydrate:budget_exhausted")
-                extra_result = _skipped_background_result(
-                    "store_snapshot_hydrate",
-                    customer_store_knowledge,
-                    reason="shared_store_budget_exhausted",
-                )
-            else:
-                extra_task = asyncio.to_thread(
-                    _timed_call,
-                    "store_snapshot_hydrate",
-                    _enrich_customer_stores,
-                    customer_store_knowledge_service,
-                    customer_store_knowledge,
-                    scoped_request_context,
-                    customer_context,
-                )
-                extra_result = await _await_timed_background_task(
-                    extra_task,
-                    name="store_snapshot_hydrate",
-                    timeout_seconds=store_context_remaining,
-                    timeout_result={
-                        **customer_store_knowledge,
-                        "error": f"timeout_after_{store_context_remaining:g}s",
-                        "snapshot_refresh_error": f"timeout_after_{store_context_remaining:g}s",
-                    },
-                )
-            customer_store_knowledge = extra_result["result"]
-            substeps.append(_without_result(extra_result))
-            store_context_status = _store_context_status(
-                customer_store_knowledge_service=customer_store_knowledge_service,
-                store_index_result=store_result_timed,
-                hydrate_result=extra_result,
-            )
-            store_context_elapsed_ms = int((time.monotonic() - store_context_started_at) * 1000)
+            store_context_skipped_steps = ["store_index:deferred_until_semantic_router"]
+            store_context_status = "deferred"
+            store_context_elapsed_ms = 0
             span["entry"]["tool_calls"] = [
                 *[
                     {
