@@ -539,6 +539,11 @@ def _render_authoritative_facts(
         "complaint_refund",
         "operation_feeling",
     }
+    # Product scope is a compact, high-impact fact boundary.  It must remain
+    # visible even when Router classifies an unsupported-project question only
+    # as effect/trust; otherwise Reply can accidentally validate an ad or case
+    # for a service that the online activity does not offer.
+    selected.add("body_area")
     lines: list[str] = []
 
     public_names = "、".join(str(item) for item in offer.get("public_names") or [] if str(item or "").strip())

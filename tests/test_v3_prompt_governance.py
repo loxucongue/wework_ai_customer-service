@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ai_paths.app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT
+from ai_paths.app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT, _render_authoritative_facts
 from ai_paths.app.prompts.v3_semantic_router import V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
 
 
@@ -58,3 +58,18 @@ def test_router_keeps_price_intents_semantically_separate() -> None:
     assert "到店会不会加钱、会不会强制消费" in prompt
     assert "别家更便宜、其他家才多少钱" in prompt
     assert "不得挑一个语义相邻但不真实的标签" in prompt
+
+
+def test_reply_always_receives_online_project_scope_boundary() -> None:
+    rendered = _render_authoritative_facts(
+        {
+            "AUTHORITATIVE FACTS": {
+                "offer": {
+                    "scope_answer_policy": "除皱不属于线上活动范围",
+                }
+            }
+        },
+        topic_ids=["effect_evidence"],
+    )
+
+    assert "除皱不属于线上活动范围" in rendered

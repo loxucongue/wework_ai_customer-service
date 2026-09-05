@@ -540,6 +540,13 @@ def test_parallel_reply_repair_includes_complete_minimum_output_contract() -> No
             "policy_required": True,
             "allowed_primary_task_keys": ["answer_current_question", "normal_conversation"],
             "current_message": {"message_ref": "current_message", "content": "你好"},
+            "structured_delivery_options": {
+                "store_address": {
+                    "message_payloads": [
+                        {"type": "store_address", "content": {"store_id": "store-1"}}
+                    ]
+                }
+            },
         },
     )
 
@@ -549,6 +556,7 @@ def test_parallel_reply_repair_includes_complete_minimum_output_contract() -> No
     assert "policy_decision" in contract_text
     assert "primary_task" in contract_text
     assert "answer_current_question" in contract_text
+    assert "exact_store_delivery_contract" in contract_text
 
 
 def test_policy_safety_recovery_removes_all_sales_actions() -> None:

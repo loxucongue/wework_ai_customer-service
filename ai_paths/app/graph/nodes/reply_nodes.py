@@ -2184,6 +2184,11 @@ def _parallel_generic_reply_repair_messages(
             if isinstance(structured_delivery_options.get("payment_collection"), dict)
             else {}
         ),
+        "exact_store_delivery_contract": (
+            structured_delivery_options.get("store_address")
+            if isinstance(structured_delivery_options.get("store_address"), dict)
+            else {}
+        ),
         "valid_reference_contract": {
             "current_message": validation_context.get("current_message") or {},
             "prior_message_options": validation_context.get("prior_message_options") or [],
@@ -3470,6 +3475,11 @@ def _reply_repair_hint(error: str) -> str:
             "本轮门店工具没有确认存在可发送门店，不要用‘有的、附近有店’开头。"
             "若 store_resolution_fact 要求补位置，只自然追问一个城市、区县或附近地标；"
             "若结果为 no_match，则如实说明当前范围没有匹配结果。"
+        )
+    if "store_resolution_send_multiple_contract_violation" in error:
+        return (
+            "store_resolution_fact.status=send_multiple 时，必须按 exact_store_delivery_contract.message_payloads"
+            " 逐个原样输出全部 store_address，并配一条自然说明让客户选择；不能漏卡、重复卡、改 store_id 或只写地址文本。"
         )
     if "invalid_store_fact_integrity" in error:
         return (
