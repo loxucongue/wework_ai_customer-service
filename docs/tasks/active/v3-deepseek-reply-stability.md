@@ -4,8 +4,8 @@
 - owner: reply-runtime
 - base_branch: main
 - base_sha: `48c01bc77f2127d1b31c0b0240c965b97a1cbf4c`
-- production_verified_at: 本任务不部署，生产状态不作变更
-- production_releases: 未核验；不在本任务范围
+- production_verified_at: `2026-09-05 11:44 Asia/Shanghai`
+- production_releases: `/opt/ai-paths/releases/ai-paths-unified-20260904-61119816`，commit `6111981665171bea9630bf5892cec8c387923b65`，control/reply/worker 同 SHA 且健康
 
 ## 目标
 
@@ -16,7 +16,7 @@
 
 ## 非目标
 
-- 不部署生产，不修改消息发送、交易、订单写入或外部业务接口。
+- 不修改消息发送、交易、订单写入或外部业务接口；本次发布只切换既有 V3 服务代码和销售策略开关。
 - 不新增关键词销售规则、第二个选择模型或跨卡点 fallback。
 - 不把业务候选存在等同于必须采用。
 
@@ -26,7 +26,7 @@
 - scope: Router/Reply Prompt、策略一致性校验、失败诊断、DeepSeek 两阶段隔离评测、对应测试和合同
 - risk: Prompt 精简可能降低卡点/知识召回或销售推进；放宽冲突校验可能掩盖错误推进；评测节流会增加总耗时；评测工具误接生产写接口会造成数据污染
 - validation: 确定性回归、冻结样本 DeepSeek 修改前后对比、小批运行门、同批真实身份分层重测、零发送/零生产落库审计
-- rollback: 回退本轮 Prompt 治理提交；生产侧无需回滚，因为本任务不部署
+- rollback: 代码或语义异常时关闭 `AI_SALES_POLICY_ENABLED` 并重启 Reply；运行时异常则将 control/reply/worker 的 current 链接恢复到 `/opt/ai-paths/releases/ai-paths-unified-20260904-61119816`
 
 ## 涉及模块与文件所有权
 
@@ -80,7 +80,7 @@
 - 120 条没有出现 B 单 `enter/advance`，只能证明 none/pause 安全，不能证明实时 B 单进入与推进效果；需补业务确认的正例样本。
 - 外部历史话术存在“诋毁其他技术”“名额有限/锁技师”等缺少本轮事实的高风险表达，需业务清洗或增加发布审核后再追求更高采用率。
 - 真实样本分布不足：明确退订仅 1 条，健康/交易各 3 条，未覆盖原计划各类最低数量；当前结果不是 400 条业务金标验收。
-- 由于上线门槛未通过，本任务分支暂不合入 `main`、不部署。
+- 产品负责人于 2026-09-05 明确接受当前 93.33% 策略覆盖作为首版上线门槛，并要求合入 `main` 部署；剩余失败继续作为上线观察项，不通过关闭事实、安全或触达校验绕过。
 
 ## 测试结果
 
@@ -100,7 +100,9 @@
 
 ## 发布与回滚
 
-- 本任务不部署。仅在验收通过后合入 `main`。
+- 发布前基线：生产 release `ai-paths-unified-20260904-61119816`，commit `6111981665171bea9630bf5892cec8c387923b65`，三个后端角色健康；MySQL Alembic 为 `20260903_02`，需先备份并升级到 `20260904_01`。
+- 从 clean `main` 构建统一 release，control/reply/worker 切换到同一 SHA；启用 `AI_SALES_POLICY_ENABLED=true`，延时节点继续由 policy 固定为 shadow。
+- 发布后核验 V3 Reply、三个角色健康、策略目录读取、BI usage、worker、回调和退役 V1/V2 路由；失败按 change contract 回滚。
 
 ## 待沉淀的长期结论
 
