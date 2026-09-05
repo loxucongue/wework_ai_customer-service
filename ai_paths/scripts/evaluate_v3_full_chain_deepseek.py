@@ -68,6 +68,15 @@ BUCKET_QUOTAS = {
 VALID_REPLY_SOURCES = {"main_model", "single_targeted_repair_model", "single_full_task_retry_model"}
 
 
+def customer_reply_generated(row: dict[str, Any], reply: Any = None) -> bool:
+    source = _text(row.get("reply_source"))
+    if reply is None and "reply_excerpt" not in row:
+        visible = source in VALID_REPLY_SOURCES
+    else:
+        visible = bool(_text(reply if reply is not None else row.get("reply_excerpt")))
+    return bool(visible and source not in {"reply_failed", "exception"})
+
+
 class WriteBlockedError(RuntimeError):
     pass
 
@@ -501,6 +510,14 @@ def compact_facts(state: dict[str, Any]) -> dict[str, Any]:
         },
         "business_authority": rules.get("AUTHORITATIVE FACTS") or {},
         "normalized_tool_facts": normalized_tools,
+        "request_state": {
+            key: state.get(key)
+            for key in (
+                "confirmed_store_id", "confirmed_store_name", "store_id", "store_name",
+                "appointment_id", "appointment_time",
+            )
+            if state.get(key) not in (None, "")
+        },
     }
 
 
@@ -636,7 +653,7 @@ async def judge_phase(args: argparse.Namespace, private_path: Path, rows: list[d
             row = by_case.get(private["case_id"])
             if row is None or row.get("runtime_error"):
                 continue
-            if row.get("reply_source") not in VALID_REPLY_SOURCES or not _text(private.get("reply")):
+            if not customer_reply_generated(row, private.get("reply")):
                 row["judge"] = {
                     "expected_intent": "",
                     "expected_emotion": "",
@@ -676,14 +693,16 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
     completed = [row for row in rows if not row.get("runtime_error")]
     judged = [row for row in completed if row.get("judge")]
     policy = [row for row in completed if row.get("intent") and row.get("emotion") and row.get("closing_action")]
-    valid = [row for row in completed if row.get("reply_source") in VALID_REPLY_SOURCES]
+    valid = [row for row in completed if customer_reply_generated(row)]
+    valid_model = [row for row in completed if row.get("reply_source") in VALID_REPLY_SOURCES]
     eligible = [row for row in valid if row.get("intent") != "explicit_exit" and (row.get("sequence_candidates") or row.get("script_candidates"))]
     durations = [int(row.get("duration_ms") or 0) for row in completed]
     policy_case_ids = {row.get("case_id") for row in policy}
     judged_policy = [row for row in judged if row.get("case_id") in policy_case_ids]
     return {
         "requested_count": len(rows), "completed_count": len(completed),
-        "runtime_error_count": len(rows) - len(completed), "valid_model_reply_count": len(valid),
+        "runtime_error_count": len(rows) - len(completed),
+        "valid_customer_reply_count": len(valid), "valid_model_reply_count": len(valid_model),
         "policy_core_coverage": round(len(policy) / len(completed), 4) if completed else 0,
         "degraded_count": sum(row.get("decision_status") == "degraded" for row in completed),
         "decision_reasons": dict(Counter(reason for row in completed for reason in row.get("decision_reasons") or [])),
@@ -777,7 +796,7 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
         "# V3 全链路 DeepSeek 两阶段隔离评测", "",
         "> 运行与评审已分阶段执行；这是 DeepSeek AI 初评，不是业务确认金标。", "",
         f"- 样本：{metrics['requested_count']}；运行异常：{metrics['runtime_error_count']}",
-        f"- 主模型/单次修复有效回复：{metrics['valid_model_reply_count']}",
+        f"- 有效客户回复：{metrics['valid_customer_reply_count']}；其中主模型/单次修复：{metrics['valid_model_reply_count']}",
         f"- 完整意图+情绪+B 单覆盖率：{metrics['policy_core_coverage']:.1%}",
         f"- AI 初评通过率：{metrics['judge_pass_rate']:.1%}",
         f"- 真人表达通过率：{metrics['human_expression_pass_rate']:.1%}",

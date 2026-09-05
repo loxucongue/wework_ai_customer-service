@@ -31,6 +31,8 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "任何场景都不得只返回内部决策而漏掉客户回复" in prompt
     assert "不能自造名称" in prompt
     assert "等时间方便时再聊" in prompt
+    assert "不确认广告案例为真" in prompt
+    assert "不得说到店还能争取活动价" in prompt
     assert prompt.index('"reply_messages"') < prompt.index('"sales_judgment"')
 
 

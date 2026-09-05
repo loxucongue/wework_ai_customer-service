@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.graph.nodes import action_nodes
-from app.graph.nodes.reply_generation import _appointment_time_failure_recovery, _low_information_input_recovery
+from app.graph.nodes.reply_generation import _low_information_input_recovery
 from app.graph.nodes.reply_validation import (
     _validate_parallel_appointment_confirmation_facts,
     _validate_unconfirmed_store_availability_claim,
@@ -208,17 +208,6 @@ def test_store_card_does_not_authorize_direct_visit_wording() -> None:
             [{"type": "text", "content": "有，广州这边能直接看。"}],
             state,
         )
-
-
-def test_appointment_time_failure_recovery_asks_for_store_scope_without_promising_slot() -> None:
-    state = {"normalized_content": "下午三点可以过去", "evidence_join": {"structured_facts": {}}}
-
-    messages = _appointment_time_failure_recovery(state)
-
-    assert messages
-    content = messages[0]["content"]
-    assert "先确认门店和接待安排" in content
-    assert "可以过去" not in content
 
 
 def test_low_information_input_recovery_only_handles_standalone_symbol_input() -> None:

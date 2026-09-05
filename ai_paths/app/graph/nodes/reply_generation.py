@@ -5,7 +5,6 @@ import re
 import time
 from typing import Any, Callable
 
-from app.graph.nodes.appointment_time_utils import normalize_time_text
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.material_selection import parallel_reply_payload
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
@@ -123,19 +122,8 @@ def create_synthesize_reply_node(
                             )
                             reply_source = "verified_store_delivery_failure_recovery"
                     else:
-                        messages = _appointment_time_failure_recovery(state)
-                        if messages:
-                            warnings.append(
-                                {
-                                    "node": "synthesize_reply",
-                                    "message": "appointment_time_failure_recovery_used",
-                                    "detail": primary_error[:500],
-                                }
-                            )
-                            reply_source = "appointment_time_failure_recovery"
-                        else:
-                            messages = []
-                            reply_source = "reply_failed"
+                        messages = []
+                        reply_source = "reply_failed"
             else:
                 reason = "reply_model_unavailable"
                 errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": reason})
@@ -535,28 +523,6 @@ def _low_information_input_recovery(state: AgentState) -> list[dict[str, Any]]:
     if compact and re.search(r"[\w\u4e00-\u9fff]", compact):
         return []
     messages = [{"type": "text", "order": 1, "content": "我在的，您可以直接把想了解的问题发我。"}]
-    try:
-        validate_model_led_reply_admission(messages, state)
-    except Exception:
-        return []
-    return messages
-
-
-def _appointment_time_failure_recovery(state: AgentState) -> list[dict[str, Any]]:
-    """Recover a non-store appointment-time intent without asserting availability."""
-
-    if not state.get("evidence_join"):
-        return []
-    content = str(state.get("normalized_content") or state.get("content") or "").strip()
-    if not content or not normalize_time_text(content):
-        return []
-    messages = [
-        {
-            "type": "text",
-            "order": 1,
-            "content": "这个时间我先按您的到店意向理解，具体能不能安排还需要先确认门店和接待安排。您在哪个城市或区县？我先帮您查门店，避免白跑。",
-        }
-    ]
     try:
         validate_model_led_reply_admission(messages, state)
     except Exception:
