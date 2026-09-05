@@ -528,6 +528,25 @@ def test_parallel_reply_repair_includes_specific_fact_instruction_and_preserves_
     assert "policy_decision 不是本次错误来源时必须原样保留" in contract_text
 
 
+def test_parallel_reply_repair_includes_complete_minimum_output_contract() -> None:
+    repaired = _reply_retry_messages(
+        [{"role": "user", "content": "原始事实"}],
+        ValueError("Model JSON missing reply_messages"),
+        previous_payload={"sales_judgment": {"posture": "answer"}},
+        validation_context={
+            "schema_version": "parallel_reply_repair_context_v2",
+            "policy_required": True,
+            "current_message": {"message_ref": "current_message", "content": "你好"},
+        },
+    )
+
+    contract_text = str(repaired[-1]["content"])
+    assert "required_output_contract" in contract_text
+    assert "reply_messages" in contract_text
+    assert "policy_decision" in contract_text
+    assert "primary_task" in contract_text
+
+
 def test_policy_safety_recovery_removes_all_sales_actions() -> None:
     raw = {
         "reply_messages": [{"type": "payment_collection", "content": {"amount": 10}}],

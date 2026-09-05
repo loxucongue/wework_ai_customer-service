@@ -2117,6 +2117,37 @@ def _parallel_generic_reply_repair_messages(
         if isinstance(validation_context.get("structured_delivery_options"), dict)
         else {}
     )
+    required_output_contract: dict[str, Any] = {
+        "sales_judgment": {
+            "customer_friction_observation": "字符串；无当前未解顾虑时为空",
+            "primary_objective": "本轮唯一目标",
+            "posture": "answer|advance|switch|pause|close",
+        },
+        "reply_messages": [
+            {
+                "type": "至少一条；普通回复使用 text",
+                "content": "非空客户可见内容",
+            }
+        ],
+    }
+    if bool(validation_context.get("policy_required")):
+        required_output_contract["policy_decision"] = {
+            "primary_task": {"type": "目录合法值", "goal": "非空字符串"},
+            "realtime_intent": {"type": "目录合法值", "confidence": "high|medium|low"},
+            "emotion_decision": {
+                "label": "目录合法值",
+                "confidence": "high|medium|low",
+                "pressure": "normal|low|none",
+            },
+            "closing_decision": {
+                "action": "none|enter|advance|pause|fallback|complete",
+                "sequence_key": "none 或本轮候选真实 key",
+                "node_key": "字符串",
+                "trigger": "none|business_rule",
+                "customer_state": "目录合法值",
+                "pressure": "normal|low|none",
+            },
+        }
     repair_contract = {
         "schema_version": "parallel_reply_generic_repair_v4",
         "failure_class": _parallel_repair_failure_class(violations),
@@ -2127,6 +2158,7 @@ def _parallel_generic_reply_repair_messages(
             "保留未冲突的事实解释、客户可见内容和销售判断。"
         ),
         "targeted_repair_instructions": targeted_repair_instructions,
+        "required_output_contract": required_output_contract,
         "payment_repair_instruction": payment_repair_instruction,
         "rules": [
             "不得重新判断客户心理、成交阶段或销售节奏，不得按错误码生成新销售话术。",
@@ -2798,6 +2830,15 @@ def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
         )
     return {
         "schema_version": "parallel_reply_repair_context_v2",
+        "policy_required": str(
+            (
+                state.get("ai_sales_policy")
+                if isinstance(state.get("ai_sales_policy"), dict)
+                else {}
+            ).get("runtime_mode")
+            or "off"
+        )
+        != "off",
         "current_message": dict(shared.get("current_message") or {}),
         "prior_customer_message_refs": prior_customer_refs,
         "prior_message_options": prior_message_options,

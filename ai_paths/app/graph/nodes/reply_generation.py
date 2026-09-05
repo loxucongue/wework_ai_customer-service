@@ -151,8 +151,14 @@ def create_synthesize_reply_node(
                 *list(state.get("recovery_attempts") or []),
                 *model_recovery_attempts(model_call, node="synthesize_reply"),
             ]
+            retry_call = (
+                (model_call or {}).get("retry")
+                if isinstance((model_call or {}).get("retry"), dict)
+                else {}
+            )
             recovery_reason = str(
-                (model_call or {}).get("primary_error")
+                retry_call.get("error")
+                or (model_call or {}).get("primary_error")
                 or (model_call or {}).get("error")
                 or state.get("recovery_reason")
                 or ""
