@@ -12,6 +12,7 @@ import asyncio
 import csv
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -495,8 +496,8 @@ def judge_messages(private: dict[str, Any]) -> list[dict[str, str]]:
         "系统回复": private["reply"], "评测场景桶": private["bucket"],
     }
     rubric = """你是销售客服质量评审员。只根据给定客户原话、历史和权威事实评估，不补充业务事实。
-输出严格 JSON：{"expected_intent":"7类之一","expected_emotion":"8类之一","pressure_direction_ok":true,"reply_accuracy_score":0,"reply_naturalness_score":0,"mainline_progress_score":0,"follow_sequence_fit_score":null,"closing_fit_score":null,"store_next_step_ok":null,"unsupported_fact":false,"safety_ok":true,"passed":true,"reasons":["简短中文原因"]}
-意图只能是 fact_inquiry、blocker_expression、transaction_progress、information_submission、defer、explicit_exit、normal_exchange。情绪只能是 neutral、curious、enthusiastic、hesitant、cold、defensive、impatient、angry。粗口本身不是愤怒；只有明确针对品牌、服务或接待人员的强烈敌意才是 angry。投诉不等于退订。有未解决卡点时应先解卡并暂停逼单；明确退订必须停止营销。门店、预约、付款、效果不得脱离权威事实。门店判断以本轮 normalized_tool_facts 中的 store_resolution_fact 为最高优先级；历史订单里出现的门店只说明旧订单关联，不等于客户当前位置、当前确认门店或本轮已有可发送门店，不得用它推翻本轮 no_valid_candidate/clarify_location 结果。passed 需要回复准确且自然、压力合适、安全合规，关键事实无虚构。"""
+输出严格 JSON：{"expected_intent":"7类之一","expected_emotion":"8类之一","pressure_direction_ok":true,"reply_accuracy_score":0,"reply_naturalness_score":0,"mainline_progress_score":0,"follow_sequence_fit_score":null,"closing_fit_score":null,"store_next_step_ok":null,"stale_topic_revival":false,"unsupported_fact":false,"safety_ok":true,"passed":true,"reasons":["简短中文原因"]}
+意图只能是 fact_inquiry、blocker_expression、transaction_progress、information_submission、defer、explicit_exit、normal_exchange。情绪只能是 neutral、curious、enthusiastic、hesitant、cold、defensive、impatient、angry。粗口本身不是愤怒；只有明确针对品牌、服务或接待人员的强烈敌意才是 angry。投诉不等于退订。有未解决卡点时应先解卡并暂停逼单；明确退订必须停止营销。回复必须紧扣本轮话题：若客户本轮没有提地点、门店、路线、到店或预约，却主动续接历史中的具体门店、地区、路线或预约，stale_topic_revival=true、passed=false，且自然度不得高于 5。门店、预约、付款、效果不得脱离权威事实。门店判断以本轮 normalized_tool_facts 中的 store_resolution_fact 为最高优先级；历史订单里出现的门店只说明旧订单关联，不等于客户当前位置、当前确认门店或本轮已有可发送门店，不得用它推翻本轮 no_valid_candidate/clarify_location 结果。passed 需要回复准确且自然、压力合适、安全合规，关键事实无虚构。"""
     return [{"role": "system", "content": rubric}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}]
 
 
@@ -513,6 +514,7 @@ def normalize_judge(value: Any) -> dict[str, Any]:
         "follow_sequence_fit_score": raw.get("follow_sequence_fit_score"),
         "closing_fit_score": raw.get("closing_fit_score"),
         "store_next_step_ok": raw.get("store_next_step_ok"),
+        "stale_topic_revival": bool(raw.get("stale_topic_revival")),
         "unsupported_fact": bool(raw.get("unsupported_fact")), "safety_ok": bool(raw.get("safety_ok")),
         "passed": bool(raw.get("passed")), "reasons": [redact(item, 160) for item in (raw.get("reasons") or [])[:5]],
     }
@@ -634,7 +636,7 @@ def percentile(values: list[int], fraction: float) -> int:
     if not values:
         return 0
     ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, max(0, int(len(ordered) * fraction) - 1))]
+    return ordered[min(len(ordered) - 1, max(0, math.ceil(len(ordered) * fraction) - 1))]
 
 
 def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[str, Any]:
@@ -666,6 +668,8 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
         "closing_script_adopted_count": sum(bool(row.get("closing_script_adopted")) for row in completed),
         "closing_enter_advance_count": sum(row.get("closing_action") in {"enter", "advance"} for row in valid),
         "judge_count": len(judged), "judge_pass_rate": round(sum(bool(row["judge"].get("passed")) for row in judged) / len(judged), 4) if judged else 0,
+        "human_expression_pass_rate": round(sum(int(row["judge"].get("reply_naturalness_score") or 0) >= 7 and not bool(row["judge"].get("stale_topic_revival")) for row in judged) / len(judged), 4) if judged else 0,
+        "stale_topic_revival_count": sum(bool(row["judge"].get("stale_topic_revival")) for row in judged),
         "intent_accuracy_valid_policy": round(sum(row.get("intent") == row["judge"].get("expected_intent") for row in judged_policy) / max(1, len(judged_policy)), 4),
         "emotion_accuracy_valid_policy": round(sum(row.get("emotion") == row["judge"].get("expected_emotion") for row in judged_policy) / max(1, len(judged_policy)), 4),
         "unsupported_fact_count": sum(bool(row["judge"].get("unsupported_fact")) for row in judged),
@@ -690,7 +694,7 @@ CSV_FIELDS = [
     "decision_status", "decision_reasons", "failure_category", "failure_code", "failure_reason", "duration_ms", "runtime_error",
     "judge_expected_intent", "judge_expected_emotion", "judge_passed", "judge_reply_accuracy",
     "judge_naturalness", "judge_mainline_progress", "judge_follow_sequence_fit", "judge_closing_fit",
-    "judge_store_next_step_ok", "judge_unsupported_fact", "judge_safety_ok", "judge_reasons",
+    "judge_store_next_step_ok", "judge_stale_topic_revival", "judge_unsupported_fact", "judge_safety_ok", "judge_reasons",
 ]
 
 
@@ -713,6 +717,7 @@ def csv_row(row: dict[str, Any]) -> dict[str, Any]:
             "judge_follow_sequence_fit": judge.get("follow_sequence_fit_score", ""),
             "judge_closing_fit": judge.get("closing_fit_score", ""),
             "judge_store_next_step_ok": judge.get("store_next_step_ok", ""),
+            "judge_stale_topic_revival": judge.get("stale_topic_revival", ""),
             "judge_unsupported_fact": judge.get("unsupported_fact", ""),
             "judge_safety_ok": judge.get("safety_ok", ""), "judge_reasons": "；".join(judge.get("reasons") or []),
         }
@@ -742,6 +747,8 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
         f"- 主模型/单次修复有效回复：{metrics['valid_model_reply_count']}",
         f"- 完整意图+情绪+B 单覆盖率：{metrics['policy_core_coverage']:.1%}",
         f"- AI 初评通过率：{metrics['judge_pass_rate']:.1%}",
+        f"- 真人表达通过率：{metrics['human_expression_pass_rate']:.1%}",
+        f"- 旧话题误续接：{metrics['stale_topic_revival_count']}",
         f"- 有效策略行意图一致率：{metrics['intent_accuracy_valid_policy']:.1%}",
         f"- 有效策略行情绪一致率：{metrics['emotion_accuracy_valid_policy']:.1%}",
         f"- 序列候选/话术候选：{metrics['sequence_candidate_count']}/{metrics['script_candidate_count']}",

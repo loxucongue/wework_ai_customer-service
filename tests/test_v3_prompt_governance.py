@@ -24,6 +24,8 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "活动和预约金分开" in prompt
     assert "简单问题默认只发一条文字" in prompt
     assert "禁止客服菜单" in prompt
+    assert "历史相关性是硬门槛" in prompt
+    assert "询价、优惠、效果等新问题本身不构成续接门店的理由" in prompt
     assert "权威事实、本轮确认、当前可确认、经核验" in prompt
     assert "第一次只解释，不主动输出 payment_collection" in prompt
 
