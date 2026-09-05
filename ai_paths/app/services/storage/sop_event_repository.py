@@ -648,6 +648,86 @@ class SopEventRepositoryMixin:
             ).fetchall()
         return [self._decode_sop_send_task(dict(row)) for row in rows]
 
+    def find_latest_platform_task_for_customer_reply(
+        self,
+        *,
+        customer_id: str,
+        external_userid: str,
+        corp_id: str,
+        wechat: str,
+        replied_at: str,
+    ) -> dict[str, Any]:
+        """Find the latest real platform SOP send preceding a customer reply.
+
+        This lookup is deliberately narrower than generic SOP history: it never
+        associates shadow/no-send/failed tasks and never crosses the current
+        corp + receiving WeChat + customer boundary.
+        """
+
+        corp_key = str(corp_id or "").strip()
+        wechat_key = str(wechat or "").strip()
+        external_key = str(external_userid or "").strip()
+        customer_key = str(customer_id or "").strip()
+        reply_time = str(replied_at or "").strip()
+        if not corp_key or not wechat_key or not reply_time or not (external_key or customer_key):
+            return {}
+
+        clauses = [
+            "t.status='sent'",
+            "t.corp_id=?",
+            "LOWER(t.wechat)=LOWER(?)",
+            "t.idempotency_key LIKE 'platform-sop:%'",
+            "COALESCE(NULLIF(t.sent_at, ''), t.updated_at)<=?",
+        ]
+        params: list[Any] = [corp_key, wechat_key, reply_time]
+        if external_key:
+            clauses.append("t.external_userid=?")
+            params.append(external_key)
+        else:
+            clauses.append("t.customer_id=?")
+            params.append(customer_key)
+
+        with self.store.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT t.*, e.raw_payload_json AS source_raw_payload_json
+                FROM sop_send_tasks t
+                LEFT JOIN sop_events e ON e.event_id=t.event_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY COALESCE(NULLIF(t.sent_at, ''), t.updated_at) DESC, t.created_at DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        if row is None:
+            return {}
+
+        raw = dict(row)
+        event_payload = loads_dict(raw.pop("source_raw_payload_json", "{}"))
+        task = self._decode_sop_send_task(raw)
+        platform_task = (
+            event_payload.get("platform_task")
+            if isinstance(event_payload.get("platform_task"), dict)
+            else {}
+        )
+        platform_task_id = str(
+            platform_task.get("taskId")
+            or platform_task.get("task_id")
+            or ""
+        ).strip()
+        if not platform_task_id:
+            idempotency_key = str(task.get("idempotency_key") or "").strip()
+            if idempotency_key.startswith("platform-sop:"):
+                platform_task_id = idempotency_key.removeprefix("platform-sop:").strip()
+        if not platform_task_id:
+            return {}
+        return {
+            "task_id": platform_task_id,
+            "local_task_id": str(task.get("id") or ""),
+            "event_id": str(task.get("event_id") or ""),
+            "sent_at": str(task.get("sent_at") or task.get("updated_at") or ""),
+        }
+
     def get_sop_event_detail(self, event_id: str) -> dict[str, Any]:
         event = self.get_sop_event(event_id)
         if not event:
