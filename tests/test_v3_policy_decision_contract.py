@@ -491,6 +491,8 @@ def test_reply_failure_diagnostic_redacts_provider_and_contract_errors() -> None
         "category": "provider",
         "code": "model_timeout",
         "repair_attempted": True,
+        "primary_output_keys": [],
+        "repair_output_keys": [],
     }
     assert "secret" not in json.dumps(provider)
     assert recovered["status"] == "recovered"

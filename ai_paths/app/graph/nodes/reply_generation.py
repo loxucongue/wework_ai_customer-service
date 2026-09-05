@@ -366,6 +366,16 @@ def _reply_failure_diagnostic(model_call: dict[str, Any] | None) -> dict[str, An
         "category": category,
         "code": code,
         "repair_attempted": bool(retry),
+        "primary_output_keys": sorted(
+            str(key) for key in (model_call.get("raw_json_output") or {}).keys()
+        )
+        if isinstance(model_call.get("raw_json_output"), dict)
+        else [],
+        "repair_output_keys": sorted(
+            str(key) for key in (retry.get("raw_json_output") or {}).keys()
+        )
+        if isinstance(retry.get("raw_json_output"), dict)
+        else [],
     }
 
 

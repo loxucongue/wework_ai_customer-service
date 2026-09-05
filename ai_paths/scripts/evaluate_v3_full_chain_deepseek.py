@@ -462,10 +462,19 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
         "reply_source": _text(state.get("reply_source")),
         "failure_category": _text(failure.get("category")), "failure_code": _text(failure.get("code")),
         "failure_reason": redact(
-            failure.get("reason")
-            or failure.get("message")
-            or state.get("recovery_reason")
-            or "",
+            "；".join(
+                item
+                for item in (
+                    _text(failure.get("reason") or failure.get("message") or state.get("recovery_reason")),
+                    "primary_keys=" + ",".join(failure.get("primary_output_keys") or [])
+                    if failure.get("primary_output_keys")
+                    else "",
+                    "repair_keys=" + ",".join(failure.get("repair_output_keys") or [])
+                    if failure.get("repair_output_keys")
+                    else "",
+                )
+                if item
+            ),
             500,
         ),
     }
