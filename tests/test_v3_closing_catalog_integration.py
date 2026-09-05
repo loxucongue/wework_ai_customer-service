@@ -275,6 +275,9 @@ def test_business_workbook_catalog_has_complete_rule_sequence_script_links() -> 
     assert rules_by_key["local:rule:payment_operation_blocked"]["judge_note"].startswith(
         "PURPOSE=payment_assist"
     )
+    assert "仅凭客户说‘这家可以’不能证明已核验" in rules_by_key[
+        "local:rule:store_or_transport_accepted"
+    ]["judge_note"]
 
     scripts_by_code = {item["script_code"]: item for item in catalog["scripts"]}
     assert "requires_authoritative_slot_facts" in scripts_by_code[
