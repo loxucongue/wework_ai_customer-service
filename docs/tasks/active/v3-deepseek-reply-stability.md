@@ -3,7 +3,7 @@
 - status: active
 - owner: reply-runtime
 - base_branch: main
-- base_sha: `8f9e4dcb5fe42590da2b93b58ead2437001e5188`
+- base_sha: `48c01bc77f2127d1b31c0b0240c965b97a1cbf4c`
 - production_verified_at: 本任务不部署，生产状态不作变更
 - production_releases: 未核验；不在本任务范围
 
@@ -12,6 +12,7 @@
 - 修复 V3 最终 Reply 因策略合同过严而放大为兜底的问题。
 - 将真实样本评测改为 DeepSeek 运行阶段与 DeepSeek 评审阶段彻底分离，输出可定位的失败分类。
 - 提交后使用真实客户身份只读重测；不发送、不写生产数据。
+- 在不拆分唯一销售决策、不削弱检索和安全边界的前提下治理 Router/Reply Prompt，减少重复规则与可派生输出负担，并用同批 DeepSeek 样本证明回复效果不下降。
 
 ## 非目标
 
@@ -21,15 +22,16 @@
 
 ## Change contract
 
-- type: V3 Reply 稳定性修复与离线评测工具完善
-- scope: Reply Prompt、策略一致性校验、失败诊断、DeepSeek 两阶段隔离评测、对应测试和合同
-- risk: 放宽冲突校验可能掩盖错误推进；评测节流会增加总耗时；评测工具误接生产写接口会造成数据污染
-- validation: 确定性回归、DeepSeek 小批运行门、同批真实身份分层重测、零发送/零生产落库审计
-- rollback: 回退本任务提交；生产侧无需回滚，因为本任务不部署
+- type: V3 Reply 稳定性修复、Prompt 治理与离线评测工具完善
+- scope: Router/Reply Prompt、策略一致性校验、失败诊断、DeepSeek 两阶段隔离评测、对应测试和合同
+- risk: Prompt 精简可能降低卡点/知识召回或销售推进；放宽冲突校验可能掩盖错误推进；评测节流会增加总耗时；评测工具误接生产写接口会造成数据污染
+- validation: 确定性回归、冻结样本 DeepSeek 修改前后对比、小批运行门、同批真实身份分层重测、零发送/零生产落库审计
+- rollback: 回退本轮 Prompt 治理提交；生产侧无需回滚，因为本任务不部署
 
 ## 涉及模块与文件所有权
 
 - `ai_paths/app/prompts/reply_synthesizer.py`
+- `ai_paths/app/prompts/v3_semantic_router.py`
 - `ai_paths/app/graph/state.py`
 - `ai_paths/app/graph/nodes/reply_generation.py`
 - `ai_paths/app/graph/nodes/reply_nodes.py`
