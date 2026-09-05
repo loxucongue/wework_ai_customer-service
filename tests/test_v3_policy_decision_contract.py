@@ -538,6 +538,7 @@ def test_parallel_reply_repair_includes_complete_minimum_output_contract() -> No
         validation_context={
             "schema_version": "parallel_reply_repair_context_v2",
             "policy_required": True,
+            "allowed_primary_task_keys": ["answer_current_question", "normal_conversation"],
             "current_message": {"message_ref": "current_message", "content": "你好"},
         },
     )
@@ -547,6 +548,7 @@ def test_parallel_reply_repair_includes_complete_minimum_output_contract() -> No
     assert "reply_messages" in contract_text
     assert "policy_decision" in contract_text
     assert "primary_task" in contract_text
+    assert "answer_current_question" in contract_text
 
 
 def test_policy_safety_recovery_removes_all_sales_actions() -> None:

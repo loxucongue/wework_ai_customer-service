@@ -2132,7 +2132,10 @@ def _parallel_generic_reply_repair_messages(
     }
     if bool(validation_context.get("policy_required")):
         required_output_contract["policy_decision"] = {
-            "primary_task": {"type": "目录合法值", "goal": "非空字符串"},
+            "primary_task": {
+                "type": validation_context.get("allowed_primary_task_keys") or [],
+                "goal": "非空字符串",
+            },
             "realtime_intent": {"type": "目录合法值", "confidence": "high|medium|low"},
             "emotion_decision": {
                 "label": "目录合法值",
@@ -2840,6 +2843,23 @@ def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
             or "off"
         )
         != "off",
+        "allowed_primary_task_keys": [
+            str(item.get("key") or "").strip()
+            for collection in (
+                (
+                    state.get("ai_sales_policy")
+                    if isinstance(state.get("ai_sales_policy"), dict)
+                    else {}
+                ).get("routing", {}).get("fixed_priority", []),
+                (
+                    state.get("ai_sales_policy")
+                    if isinstance(state.get("ai_sales_policy"), dict)
+                    else {}
+                ).get("routing", {}).get("business_tasks", []),
+            )
+            for item in collection
+            if isinstance(item, dict) and str(item.get("key") or "").strip()
+        ],
         "current_message": dict(shared.get("current_message") or {}),
         "prior_customer_message_refs": prior_customer_refs,
         "prior_message_options": prior_message_options,
@@ -3445,6 +3465,12 @@ def _reply_repair_hint(error: str) -> str:
         return "没有营业时间工具事实时，不要输出具体营业时间。"
     if "store_address_fact_required" in error:
         return "没有门店详情事实时，不要输出具体地址。"
+    if "store_availability_fact_required" in error:
+        return (
+            "本轮门店工具没有确认存在可发送门店，不要用‘有的、附近有店’开头。"
+            "若 store_resolution_fact 要求补位置，只自然追问一个城市、区县或附近地标；"
+            "若结果为 no_match，则如实说明当前范围没有匹配结果。"
+        )
     if "invalid_store_fact_integrity" in error:
         return (
             "本轮候选门店的结构事实存在地区冲突，必须删除对应 store_address 卡片，不能沿用该门店。"
@@ -3475,7 +3501,11 @@ def _reply_repair_hint(error: str) -> str:
             "不要仅因 Gate 提名了门店资产就新增门店步骤。"
         )
     if "available_time_fact_required" in error:
-        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“当前淡斑效果活动价268元、绝大多数客户一次就好 + 发送 case_facts.image_url + 登记后可到门店免费检测并听取具体情况讲解”。"
+        return (
+            "没有 available_time slots 时，不要说可以约、能到店、有空档、有空位或能安排。"
+            "客户自己说没时间，只承接为‘您先忙，等时间方便时再聊’，不要把客户未来方便与门店已有档期混为一谈。"
+            "若本轮主题不是预约，删除从旧历史带回的日期、时段、人数、预约金和锁名额表达，继续回答当前问题。"
+        )
     if "appointment_confirmation_fact_required" in error:
         return "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。普通预约可问“这个时间方便吗”；已有旧预约的改约场景只输出一条：“这个时间目前可以，您确认要改到这个时间吗？”。删除其他“继续核对/先按这个时间/帮您改过去/帮您留/锁定/安排/记上/预约成功”表达。"
     if "too_many_appointment_time_options" in error:
