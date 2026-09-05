@@ -7,6 +7,8 @@ import {
   AlertCircle,
   ArrowLeft,
   Bot,
+  CalendarClock,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -20,6 +22,8 @@ import {
   Search,
   Send,
   ShieldCheck,
+  UserRoundCheck,
+  UsersRound,
 } from "lucide-react";
 
 type JsonRecord = Record<string, unknown>;
@@ -80,6 +84,8 @@ type FirstDaySettings = {
   wechat_allowlist: string[];
   wechat_allowlist_raw: string;
   empty_allowlist_means_all_allowed?: boolean;
+  eligible_after?: string;
+  contact_age_limited?: boolean;
 };
 
 const EMPTY_FILTERS: Filters = {
@@ -121,6 +127,28 @@ const SCENE_LABELS: Record<string, string> = {
   suppress: "停止触达",
 };
 
+const REASON_LABELS: Record<string, string> = {
+  human_mode: "人工接待中，已跳过",
+  ai_outreach_not_allowed: "当前会话不允许 AI 主动触达",
+  ai_mode_unknown: "无法确认 AI 接待状态",
+  ai_mode_status_unavailable: "接待状态接口暂不可用",
+  customer_never_spoke: "客户尚未真实开口",
+  customer_replied: "客户已经回复",
+  customer_deleted: "客户关系已失效",
+  manual_takeover_active: "人工已经接管",
+  stop_contact: "客户要求停止联系",
+  health_risk: "存在健康风险，停止营销",
+  order_state_changed: "订单状态已变化",
+  outbound_before_activation: "早于本次启用时间，不回放",
+  reply_wait_below_threshold: "尚未达到沉默阈值",
+  outreach_cycle_completed_without_new_customer_reply: "本轮唤醒已完成，等待客户新回复",
+  first_day_daily_plan_limit_reached: "已达到当天触达上限",
+  conversation_fingerprint_already_logged: "相同会话状态已经处理",
+  conversation_fingerprint_already_evaluated: "相同会话状态已经评估",
+  nonterminal_plan_exists: "已有进行中的唤醒计划",
+  conversation_refresh_failed: "最新聊天拉取失败",
+};
+
 export function FirstDayOutreachLogViewer() {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [items, setItems] = useState<RunSummary[]>([]);
@@ -152,14 +180,14 @@ export function FirstDayOutreachLogViewer() {
     try {
       const response = await fetch(`/api/outreach/first-day-runs?${search.toString()}`, { cache: "no-store" });
       const data = (await response.json()) as { items?: RunSummary[]; next_cursor?: string; detail?: string };
-      if (!response.ok) throw new Error(data.detail || "加载首日触达日志失败");
+      if (!response.ok) throw new Error(data.detail || "加载沉默唤醒日志失败");
       const nextItems = Array.isArray(data.items) ? data.items : [];
       setItems(nextItems);
       setNextCursor(data.next_cursor || "");
       setActiveCursor(cursor);
       setSelectedId((current) => (nextItems.some((item) => item.workflow_run_id === current) ? current : nextItems[0]?.workflow_run_id || ""));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "加载首日触达日志失败");
+      setError(cause instanceof Error ? cause.message : "加载沉默唤醒日志失败");
     } finally {
       setLoading(false);
     }
@@ -208,8 +236,8 @@ export function FirstDayOutreachLogViewer() {
         <header className="border-b border-zinc-200 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="flex items-center gap-2 text-lg font-semibold"><ListTree className="h-5 w-5" />首日千人千面日志</div>
-              <p className="mt-1 text-xs text-zinc-500">从触发判断到两步发送的完整运行记录</p>
+              <div className="flex items-center gap-2 text-lg font-semibold"><ListTree className="h-5 w-5" />沉默客户唤醒</div>
+              <p className="mt-1 text-xs text-zinc-500">千人千面判断、两步计划与安全阻断记录</p>
             </div>
             <button type="button" title="刷新" onClick={() => {
               void loadRuns(activeCursor);
@@ -224,6 +252,8 @@ export function FirstDayOutreachLogViewer() {
         </header>
 
         <FirstDaySettingsPanel />
+
+        <RunOverview items={items} loading={loading} />
 
         <section className="border-b border-zinc-200">
           <button
@@ -293,7 +323,7 @@ export function FirstDayOutreachLogViewer() {
                 <h2 className="truncate font-mono text-sm font-semibold">{selected?.workflow_run_id || "选择一条运行记录"}</h2>
                 {selected?.status ? <StatusBadge status={selected.status} /> : null}
               </div>
-              {selected ? <p className="mt-1 truncate text-xs text-zinc-500">{formatTime(selected.started_at)} · {selected.wechat || "未知接待账号"} · {selected.customer_id || selected.external_userid}</p> : null}
+              {selected ? <p className="mt-1 truncate text-xs text-zinc-500">{formatTime(selected.started_at)} · {selected.wechat || "未知接待账号"} · {reasonLabel(selected.reason_code)}</p> : null}
             </div>
             {detailLoading ? <LoaderCircle className="h-4 w-4 animate-spin text-zinc-400" /> : null}
           </div>
@@ -314,11 +344,29 @@ export function FirstDayOutreachLogViewer() {
   );
 }
 
+function RunOverview({ items, loading }: { items: RunSummary[]; loading: boolean }) {
+  const plans = items.filter((item) => Boolean(item.plan_id)).length;
+  const sent = items.filter((item) => item.first_task_status === "sent" || item.second_task_status === "sent").length;
+  const guarded = items.filter((item) => ["human_mode", "manual_takeover_active", "stop_contact", "health_risk"].includes(item.reason_code || "")).length;
+  return (
+    <section className="grid grid-cols-4 gap-px border-b border-zinc-200 bg-zinc-200" aria-label="当前页运行概览">
+      <OverviewCell label="记录" value={loading ? "…" : String(items.length)} icon={<ListTree className="h-3.5 w-3.5" />} />
+      <OverviewCell label="建计划" value={String(plans)} icon={<CalendarClock className="h-3.5 w-3.5" />} />
+      <OverviewCell label="已触达" value={String(sent)} icon={<Send className="h-3.5 w-3.5" />} />
+      <OverviewCell label="安全阻断" value={String(guarded)} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
+    </section>
+  );
+}
+
+function OverviewCell({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
+  return <div className="bg-white px-2 py-3 text-center"><div className="flex items-center justify-center gap-1 text-[11px] text-zinc-500">{icon}{label}</div><div className="mt-1 text-lg font-semibold tabular-nums">{value}</div></div>;
+}
+
 function FirstDaySettingsPanel() {
   const [expanded, setExpanded] = useState(false);
   const [settings, setSettings] = useState<FirstDaySettings | null>(null);
   const [enabled, setEnabled] = useState(false);
-  const [silenceMinutes, setSilenceMinutes] = useState("3");
+  const [silenceMinutes, setSilenceMinutes] = useState("1");
   const [allowlist, setAllowlist] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -331,13 +379,13 @@ function FirstDaySettingsPanel() {
     try {
       const response = await fetch("/api/outreach/first-day-settings", { cache: "no-store" });
       const data = (await response.json()) as FirstDaySettings & { detail?: string; error?: string };
-      if (!response.ok) throw new Error(data.detail || data.error || "加载首日千人千面配置失败");
+      if (!response.ok) throw new Error(data.detail || data.error || "加载沉默唤醒配置失败");
       setSettings(data);
       setEnabled(Boolean(data.enabled));
-      setSilenceMinutes(String(data.silence_minutes || 3));
+      setSilenceMinutes(String(data.silence_minutes || 1));
       setAllowlist(data.wechat_allowlist_raw || "");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "加载首日千人千面配置失败");
+      setError(cause instanceof Error ? cause.message : "加载沉默唤醒配置失败");
     } finally {
       setLoading(false);
     }
@@ -360,21 +408,21 @@ function FirstDaySettingsPanel() {
         }),
       });
       const data = (await response.json()) as FirstDaySettings & { detail?: string; error?: string };
-      if (!response.ok) throw new Error(data.detail || data.error || "保存首日千人千面配置失败");
+      if (!response.ok) throw new Error(data.detail || data.error || "保存沉默唤醒配置失败");
       setSettings(data);
       setEnabled(Boolean(data.enabled));
-      setSilenceMinutes(String(data.silence_minutes || 3));
+      setSilenceMinutes(String(data.silence_minutes || 1));
       setAllowlist(data.wechat_allowlist_raw || "");
-      setMessage("配置已保存并同步到运行中服务");
+      setMessage("配置已写入；后台执行进程重启后使用新值");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存首日千人千面配置失败");
+      setError(cause instanceof Error ? cause.message : "保存沉默唤醒配置失败");
     } finally {
       setSaving(false);
     }
   };
 
   const summary = settings
-    ? `${settings.enabled ? "已开启" : "已关闭"} · ${settings.wechat_allowlist?.length ? `${settings.wechat_allowlist.length} 个白名单账号` : "未限制账号"}`
+    ? `${settings.enabled ? "已开启" : "已关闭"} · ${settings.silence_minutes} 分钟 · ${settings.wechat_allowlist?.length ? `${settings.wechat_allowlist.length} 个指定账号` : "全部账号"} · 仅 AI`
     : "加载中";
 
   return (
@@ -387,7 +435,7 @@ function FirstDaySettingsPanel() {
       >
         <span className="flex min-w-0 items-center gap-2 text-xs font-semibold text-zinc-700">
           <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-          首日千人千面配置
+          唤醒规则
           <span className={settings?.enabled ? "rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700" : "rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600"}>
             {summary}
           </span>
@@ -396,10 +444,23 @@ function FirstDaySettingsPanel() {
       </button>
       {expanded ? (
         <div className="space-y-3 border-t border-zinc-100 px-4 pb-4 pt-3 text-xs">
+          {settings ? (
+            <div className="grid grid-cols-2 gap-2">
+              <RuleFact icon={<Clock3 className="h-3.5 w-3.5" />} label="沉默多久" value={`${settings.silence_minutes} 分钟`} />
+              <RuleFact icon={<UsersRound className="h-3.5 w-3.5" />} label="账号范围" value={settings.wechat_allowlist?.length ? `${settings.wechat_allowlist.length} 个指定账号` : "全部企微号"} />
+              <RuleFact icon={<UserRoundCheck className="h-3.5 w-3.5" />} label="接待状态" value="仅 AI 模式" />
+              <RuleFact icon={<CalendarClock className="h-3.5 w-3.5" />} label="加微时间" value={settings.contact_age_limited === false ? "不限" : "按配置限制"} />
+            </div>
+          ) : null}
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-900">
+            <div className="flex items-center gap-1.5 font-medium"><CheckCircle2 className="h-3.5 w-3.5" />触达前双重检查</div>
+            <p className="mt-1 leading-5 text-emerald-800">生成计划前、真正发送前都会确认仍由 AI 接待；人工、状态未知或客户已回复均不发送。</p>
+          </div>
+          {settings?.eligible_after ? <div className="rounded-md bg-zinc-100 px-3 py-2 text-zinc-600"><span className="font-medium text-zinc-800">启用水位：</span>{formatTime(settings.eligible_after)}<span className="mt-1 block text-[11px] text-zinc-500">只处理该时间之后形成的沉默，不回放历史积压。</span></div> : null}
           <label className="flex items-center justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2">
             <span>
               <span className="block font-medium text-zinc-800">启用沉默触达</span>
-              <span className="text-zinc-500">关闭时不会创建或执行首日千人千面任务</span>
+              <span className="text-zinc-500">关闭后不再创建或执行沉默唤醒任务</span>
             </span>
             <input
               type="checkbox"
@@ -420,7 +481,7 @@ function FirstDaySettingsPanel() {
             />
           </label>
           <label className="block text-zinc-600">
-            <span>企微号白名单</span>
+            <span>限定企微号（可选）</span>
             <textarea
               value={allowlist}
               onChange={(event) => setAllowlist(event.target.value)}
@@ -439,7 +500,7 @@ function FirstDaySettingsPanel() {
               disabled={saving || loading}
               className="inline-flex h-8 flex-1 items-center justify-center rounded-md bg-zinc-900 px-3 text-white disabled:opacity-50"
             >
-              {saving ? "保存中" : "保存配置"}
+              {saving ? "保存中" : "保存待生效配置"}
             </button>
             <button
               type="button"
@@ -456,12 +517,16 @@ function FirstDaySettingsPanel() {
   );
 }
 
+function RuleFact({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return <div className="rounded-md border border-zinc-200 bg-white p-2.5"><div className="flex items-center gap-1 text-[11px] text-zinc-500">{icon}{label}</div><div className="mt-1 font-semibold text-zinc-900">{value}</div></div>;
+}
+
 function RunListItem({ item, selected, onClick }: { item: RunSummary; selected: boolean; onClick: () => void }) {
   return <button type="button" onClick={onClick} className={`w-full border-b border-zinc-100 p-4 text-left transition-colors ${selected ? "bg-zinc-100" : "hover:bg-zinc-50"}`}>
     <div className="flex items-start justify-between gap-3"><span className="truncate text-sm font-medium">{item.customer_id || item.external_userid || "未知客户"}</span><StatusBadge status={item.status || "running"} /></div>
-    <div className="mt-2 flex items-center gap-1.5 text-xs text-zinc-600"><span>{sceneLabel(item.first_scene)}</span><ChevronRight className="h-3 w-3" /><span>{sceneLabel(item.second_scene)}</span></div>
+    {item.first_scene || item.second_scene ? <div className="mt-2 flex items-center gap-1.5 text-xs text-zinc-600"><span>{sceneLabel(item.first_scene)}</span><ChevronRight className="h-3 w-3" /><span>{sceneLabel(item.second_scene)}</span></div> : <div className="mt-2 text-xs font-medium text-amber-700">{reasonLabel(item.reason_code)}</div>}
     <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-500"><span>任务 1：{taskLabel(item.first_task_status)}</span><span>任务 2：{taskLabel(item.second_task_status)}</span><span>{item.model_attempt_count || 0} 次模型调用</span><span>{item.retry_count || 0} 次重试 · {formatDuration(item.duration_ms)}</span></div>
-    <div className="mt-2 flex items-center justify-between gap-2 text-xs text-zinc-400"><span className="truncate font-mono">{item.reason_code || "-"}</span><span className="shrink-0">{formatTime(item.started_at)}</span></div>
+    <div className="mt-2 flex items-center justify-between gap-2 text-xs text-zinc-400"><span className="truncate">{item.wechat || "未知接待账号"}</span><span className="shrink-0">{formatTime(item.started_at)}</span></div>
   </button>;
 }
 
@@ -479,16 +544,16 @@ function SummaryTab({ detail }: { detail: RunDetail }) {
   const secondTask = (detail.tasks || []).find((task) => Number(task.step_index) === 2);
   return <div className="space-y-6">
     <section className="grid gap-px overflow-hidden rounded-md border border-zinc-200 bg-zinc-200 sm:grid-cols-2 xl:grid-cols-4">
-      <SummaryFact label="为什么触发" value={String((detail.input_snapshot?.trigger_context as JsonRecord | undefined)?.trigger_type || detail.reason_code || "无记录")} />
-      <SummaryFact label="场景选择" value={`${sceneLabel(detail.first_scene)} → ${sceneLabel(detail.second_scene)}`} />
+      <SummaryFact label="本次结论" value={reasonLabel(detail.reason_code) || detail.final_decision || "等待判断"} />
+      <SummaryFact label="场景选择" value={detail.first_scene || detail.second_scene ? `${sceneLabel(detail.first_scene)} → ${sceneLabel(detail.second_scene)}` : "未进入内容生成"} />
       <SummaryFact label="实际发送" value={sentMessages.length ? `${sentMessages.length} 条结构消息` : "尚未发送"} />
-      <SummaryFact label="第二步结论" value={secondTask ? `${taskLabel(String(secondTask.status || ""))}${secondTask.error_message ? `：${secondTask.error_message}` : ""}` : detail.final_decision || "未创建"} />
+      <SummaryFact label="第二步结论" value={secondTask ? `${taskLabel(String(secondTask.status || ""))}${secondTask.error_message ? `：${secondTask.error_message}` : ""}` : decisionLabel(detail.final_decision)} />
     </section>
     <section>
       <SectionTitle icon={<Clock3 className="h-4 w-4" />} title="运行指标" />
       <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
         <Metric label="状态" value={STATUS_LABELS[detail.status || ""] || detail.status || "-"} />
-        <Metric label="原因码" value={detail.reason_code || "-"} mono />
+        <Metric label="处理原因" value={reasonLabel(detail.reason_code)} />
         <Metric label="模型尝试" value={`${detail.model_attempt_count || 0} 次`} />
         <Metric label="重试" value={`${detail.retry_count || 0} 次`} />
         <Metric label="总耗时" value={formatDuration(detail.duration_ms)} />
@@ -521,7 +586,7 @@ function ModelTab({ detail }: { detail: RunDetail }) {
 
 function TimelineTab({ detail }: { detail: RunDetail }) {
   const entries = [
-    { at: detail.started_at, type: "workflow_started", summary: "首日千人千面工作流开始", payload: {} },
+    { at: detail.started_at, type: "workflow_started", summary: "沉默客户唤醒判断开始", payload: {} },
     ...(detail.events || []).map((event) => ({ at: String(event.created_at || ""), type: String(event.event_type || "event"), summary: String(event.event_summary || ""), payload: event.payload || {} })),
     ...((detail.tasks || []).map((task) => ({ at: String(task.sent_at || task.updated_at || task.scheduled_at || ""), type: `task_${String(task.status || "unknown")}`, summary: `第 ${String(task.step_index || "-")} 步：${taskLabel(String(task.status || ""))}`, payload: task }))),
   ].filter((entry) => entry.at).sort((a, b) => String(a.at).localeCompare(String(b.at)));
@@ -558,9 +623,11 @@ function EmptyState({ icon, text }: { icon: ReactNode; text: string }) { return 
 
 function sceneAnalysis(detail: RunDetail): unknown { const workflow = detail.workflow || {}; return workflow.scene_analysis || (workflow.scene_analyst as JsonRecord | undefined)?.output || {}; }
 function sceneLabel(value: unknown): string { const key = String(value || ""); return SCENE_LABELS[key] || key || "未选择"; }
+function reasonLabel(value?: string): string { const key = String(value || ""); return REASON_LABELS[key] || key || "无阻断，继续处理"; }
+function decisionLabel(value?: string): string { return ({ no_plan: "未创建计划", wait_for_silence: "等待达到沉默阈值", retry_pending: "等待重试", no_send: "不发送", completed: "已完成" } as Record<string, string>)[value || ""] || value || "未创建"; }
 function taskLabel(value?: string): string { return ({ pending: "待执行", checking: "检查中", sending: "发送中", sent: "已发送", skipped: "已取消", failed: "失败", check_failed: "检查失败" } as Record<string, string>)[value || ""] || value || "未创建"; }
 function nodeLabel(value: string): string { return ({ scene_analyst: "场景分析", scene_analyst_schema_repair: "场景 Schema 修复", plan_writer: "计划写作", contract_verifier: "合同审核", contract_verifier_schema_repair: "审核 Schema 修复", plan_writer_repair: "受限写作修复" } as Record<string, string>)[value] || value; }
-function eventLabel(value: string): string { return ({ workflow_started: "工作流启动", plan_created: "计划创建", plan_auto_approved: "计划进入发送队列", task_sent: "任务发送", task_skipped_customer_replied: "客户回复，取消任务", task_failed: "任务失败", plan_cycle_completed: "两步计划完成" } as Record<string, string>)[value] || value; }
+function eventLabel(value: string): string { return ({ workflow_started: "唤醒判断启动", plan_created: "计划创建", plan_auto_approved: "计划进入发送队列", task_sent: "任务发送", task_skipped_customer_replied: "客户回复，取消任务", task_skipped_non_ai_mode: "转为人工接待，取消任务", ai_mode_check_failed: "AI 接待状态确认失败", task_failed: "任务失败", plan_cycle_completed: "两步计划完成" } as Record<string, string>)[value] || value; }
 function taskScene(task: JsonRecord): unknown { const metadata = Array.isArray(task.content_source_metadata) ? task.content_source_metadata : []; return (metadata.find((item) => item && typeof item === "object" && "scene" in item) as JsonRecord | undefined)?.scene || ""; }
 function messageText(message: JsonRecord): string { const value = message.content ?? message.text ?? message.reply_messages ?? ""; return typeof value === "string" ? value : pretty(value); }
 function formatDuration(value?: number): string { if (!value) return "-"; return value < 1000 ? `${value} ms` : `${(value / 1000).toFixed(1)} s`; }

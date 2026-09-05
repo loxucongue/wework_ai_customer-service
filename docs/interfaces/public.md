@@ -77,7 +77,7 @@
 - `GET /admin/ai-sales-policy`
 - `GET /admin/ai-sales-strategy-catalog`
 
-`precision-qa-playbook` 和 `sop-objection-materials` 的独立管理页面已经退役，但接口及底层服务仍保留：自动回复、首日触达或 SOP 运行链仍可能读取这些配置，不能按“页面未使用”推断运行能力无用。
+`precision-qa-playbook` 和 `sop-objection-materials` 的独立管理页面已经退役，但接口及底层服务仍保留：自动回复、沉默客户唤醒或 SOP 运行链仍可能读取这些配置，不能按“页面未使用”推断运行能力无用。
 
 ### SOP 与 outreach
 
@@ -94,6 +94,8 @@
 - `PUT /admin/outreach/first-day-settings`
 - `GET /admin/outreach/first-day-runs`
 - `GET /admin/outreach/first-day-runs/{workflow_run_id}`
+
+上述 `first-day` 路径是历史兼容名称；产品页面统一称为“沉默客户唤醒”，当前运行逻辑不限制加微时间。
 
 ## 健康检查
 

@@ -90,7 +90,7 @@ export function OperationsDashboard() {
       <section className="flex flex-col justify-between gap-4 border-b border-zinc-200 pb-5 xl:flex-row xl:items-end">
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold"><Activity className="size-4" />实时运行态势</div>
-          <p className="mt-1 text-sm text-zinc-500">AI 回复、第三方 SOP 与首日千人千面链路，每 60 秒刷新。</p>
+          <p className="mt-1 text-sm text-zinc-500">AI 回复、第三方 SOP 与沉默客户唤醒链路，每 60 秒刷新。</p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           <div className="flex rounded-md border bg-white p-1">
@@ -139,7 +139,7 @@ export function OperationsDashboard() {
         <Metric label="AI 回复调用" value={data?.ai_reply.calls} detail={`成功率 ${percent(data?.ai_reply.success_rate)}`} icon={Bot} />
         <Metric label="AI 超时 / 失败" value={`${format(data?.ai_reply.timeout)} / ${format(data?.ai_reply.failed)}`} detail={`P90 ${duration(data?.ai_reply.p90_ms)}`} icon={AlertTriangle} tone="danger" />
         <Metric label="第三方 SOP 已发送" value={data?.platform_sop.sent} detail={`${format(data?.platform_sop.no_send)} 条模型判断不发`} icon={Send} />
-        <Metric label="首日计划触发" value={data?.first_day_outreach.triggers} detail={`${format(data?.first_day_outreach.plans_created)} 个计划已创建`} icon={Sparkles} />
+        <Metric label="沉默唤醒判断" value={data?.first_day_outreach.triggers} detail={`${format(data?.first_day_outreach.plans_created)} 个计划已创建`} icon={Sparkles} />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
@@ -154,7 +154,7 @@ export function OperationsDashboard() {
                 <Legend />
                 <Line type="monotone" dataKey="ai" name="AI 回复" stroke="#18181b" strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="sop" name="第三方 SOP" stroke="#0f766e" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="outreach" name="首日千人千面" stroke="#b45309" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="outreach" name="沉默客户唤醒" stroke="#b45309" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -164,7 +164,7 @@ export function OperationsDashboard() {
           <div className="divide-y">
             <Freshness label="AI 回复" value={data?.freshness.latest_ai_reply_at} />
             <Freshness label="第三方 SOP" value={data?.freshness.latest_platform_sop_at} />
-            <Freshness label="首日千人千面" value={data?.freshness.latest_first_day_outreach_at} />
+            <Freshness label="沉默客户唤醒" value={data?.freshness.latest_first_day_outreach_at} />
           </div>
         </Panel>
       </div>
@@ -184,7 +184,7 @@ export function OperationsDashboard() {
           ]} />
           <Breakdown title="状态分布" items={data?.platform_sop.status_breakdown || []} />
         </Panel>
-        <Panel title="首日千人千面" subtitle="触发、建计划和两步发送">
+        <Panel title="沉默客户唤醒" subtitle="AI 模式下的沉默判断、建计划和两步发送">
           <StatRows rows={[
             ["第一步已发", format(data?.first_day_outreach.first_sent)], ["第二步已发", format(data?.first_day_outreach.second_sent)],
             ["客户回复取消", format(data?.first_day_outreach.second_cancelled_customer_reply)], ["P90", duration(data?.first_day_outreach.p90_ms)],
