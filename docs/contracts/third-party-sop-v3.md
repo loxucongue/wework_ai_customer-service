@@ -60,6 +60,8 @@
 
 当权威会话事实确认客户未开口时，SOP 内容直接发送，不调用模型决定是否发送。会话拉取失败或客户消息时间不可靠时不得把客户当作未开口。
 
+客户真实回复需要回写策略数据时，只能在同一 `corp_id + wechat + external_userid/customer_id` 边界内，关联回复时间之前最近一条真实 `status=sent` 平台 SOP 任务。Shadow、未发送、失败和 `completed_without_send` 均不得关联；无匹配任务属于正常 `skipped`，不记录告警。平台任务 ID 从平台事件或 `platform-sop:<task_id>` 幂等键解析，重复回复回写仍须幂等。
+
 ## 日志审计
 
 管理页日志版本为 `sop_platform_run_view_v3`，历史 V2 只做展示兼容。任务审计必须区分模型决策、提交发送、真实送达、消费回传和策略数据回传，并保留完整业务 JSON；不得记录 token、鉴权头或密钥。

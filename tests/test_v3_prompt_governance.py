@@ -74,3 +74,9 @@ def test_reply_always_receives_online_project_scope_boundary() -> None:
 
     assert "除皱不属于线上活动范围" in rendered
     assert "不得确认‘那个案例是真的’" in rendered
+
+
+def test_reply_prompt_handles_generic_store_distrust_before_store_lookup() -> None:
+    assert "有的店是骗子/不靠谱" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要立刻把话题改成查附近门店" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "候选话术出现这些内容也必须丢弃" in PARALLEL_REPLY_SYSTEM_PROMPT

@@ -32,6 +32,8 @@ Semantic Router 的 `current_intent.summary` 是检索与工具规划摘要，�
 | 逼单协同 | 已实现 | Router 召回同一来源的规则/策略/节点，Reply 选择；代码校验真实 ID、频控和禁忌。固定 `trigger` 从有效目录选择派生，避免冗余字段误杀正确策略 | `v3_semantic_router_service.py`、`reply_nodes.py` |
 | 生产效果证明 | 首版已上线观察 | DeepSeek 隔离评测达到 93.33% 策略结构覆盖并由产品负责人接受为首版门槛；仍未形成 400 条业务确认金标，不能把结构覆盖解释成业务准确率 | ignored `artifacts/`、`docs/current/KNOWN_ISSUES.md` |
 
+当前生产文本模型合同是 Router 使用 `deepseek-v4-flash`，最终回复、结构修复和完整重试使用 `deepseek-chat`，Reply 不启用 GPT 竞速或故障接管。模型轨迹若出现 `gpt-*`，视为配置错误而不是允许的降级。
+
 ## 运行合同
 
 - 一轮只有一个主任务；次要意图只用于保留多信号，不能单独触发客户动作。

@@ -68,6 +68,8 @@ input / background context
 
 Semantic Router 只提供分类、检索查询和只读工具需求，不决定客户可见销售动作。代码从外部已发布跟进/话术/逼单目录做稳定、可审计的候选裁剪；门店事实补齐后不再重跑销售语义。Reply 是唯一销售语义与客户可见动作决策节点；代码负责权威事实、工具、schema、幂等、交易边界、安全和发送结果。
 
+文本链当前固定由 `deepseek-v4-flash` 承担 Semantic Router、`deepseek-chat` 承担最终 Reply 及其唯一一次结构修复/完整重试；Reply tier 不继承全局 GPT 应急候选。连续客户消息按原始顺序作为本轮正文输入，内部合并说明只留审计；最终 Reply 只读取最近 12 条真实客户可见消息，排除未交付草稿、覆盖请求和内部 trace。门店目录只在 Router 明确要求门店事实后加载；V3 同一轮最多交付 3 张门店卡，完整候选仍保留在事实审计中。
+
 当前部署只有一个业务知识租户，所有 `slXXXX` 企微号共用实例级 Follow Knowledge 凭证与业务知识缓存。共享知识不改变客户数据边界：记忆、策略状态、发送频次和订单仍按 `corp_id + wechat + external_userid/customer_id` 隔离。
 
 ## Outreach
