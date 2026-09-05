@@ -1,11 +1,11 @@
 # V3 DeepSeek Reply 稳定性与隔离重测
 
-- status: active
+- status: completed
 - owner: reply-runtime
 - base_branch: main
 - base_sha: `48c01bc77f2127d1b31c0b0240c965b97a1cbf4c`
-- production_verified_at: `2026-09-05 11:44 Asia/Shanghai`
-- production_releases: `/opt/ai-paths/releases/ai-paths-unified-20260904-61119816`，commit `6111981665171bea9630bf5892cec8c387923b65`，control/reply/worker 同 SHA 且健康
+- production_verified_at: `2026-09-05 12:01 Asia/Shanghai`
+- production_releases: `/opt/ai-paths/releases/ai-paths-unified-20260905-91ac4016`，commit `91ac4016209d1f095866fd4be54636bc9a2963ed`，control/reply/worker 同 SHA 且健康
 
 ## 目标
 
@@ -99,12 +99,18 @@
 - Prompt 治理 120 条新近多场景样本：有效回复 112/120，policy 覆盖 93.33%，DeepSeek 初评 94.17%，序列/话术候选 18/19，条件可采用 17，实际采用 8/8，安全失败和无依据事实均为 0，P50/P95 10.848s/16.222s。相对治理前一轮 120 条，整体通过率持平、条件采用率由 45.5% 变为 47.1%，但样本分布不完全相同，不作因果结论。
 - 首轮 120 条出现 13 次 `invalid_secondary_task`，根因是精简 Prompt 时遗漏了既有对象结构；补回 `type + goal + basis` 最小合同后，40 条 DeepSeek 结构探针 `degraded_count=0`、有效回复 38/40、序列/话术采用 5/5，无安全失败、无依据事实或生产写入。该探针未运行 AI 评审，不能使用报告中的 0% judge 指标评价回复质量。
 - 最终结论：Prompt 治理本身在严格同样本上未造成回复质量下降，并消除了本轮新增的次要任务结构退化；整个候选版本仍因 policy 覆盖仅 93.33%、8 条事实/交付失败和 B 单正例不足而不满足上线门槛。
+- 发布前最终回归：174 passed；release manifest 为 `dirty=false`，配置哈希与上一生产版本一致。
+- 生产全库备份：20 张 AICS 表、839,190 行，压缩 SQL 备份 339,406,035 bytes，SHA256 `caf1e9ff249154200f5b0cf5171651ad1c7cfa72baa7a4fa622b54c4a865676b`，保存在服务器受限备份目录。
+- MySQL 迁移已到 `20260904_01 (head)`；现场发现并修复 Alembic 非事务 DDL 后版本行未显式提交的问题。
+- 发布后 control/reply/worker 健康均为 `ok`，统一 commit `91ac4016209d1f095866fd4be54636bc9a2963ed`、`dirty=false`；V3 配置角色为 `reply`，策略模式 `active`，延时节点保持 `shadow`。
+- V3 首次规范 unit 启动时因共享 `SOP_PLATFORM_PULL_ENABLED=true` 出现 11 次重启；在 V3 专属环境显式覆盖为 `false` 后稳定，11:59:10 之后无 warning/error。旧 V1/V2 回复入口继续返回 410，V3 空参数鉴权请求返回预期 400，BI summary 返回 200。
+- 发布时外部 B 单目录未返回可用目录，`external_then_local` 按合同使用版本化本地目录：3 条规则、5 条策略；该降级来源已明确标记为 `local_closing_catalog`。
 
 ## 发布与回滚
 
-- 发布前基线：生产 release `ai-paths-unified-20260904-61119816`，commit `6111981665171bea9630bf5892cec8c387923b65`，三个后端角色健康；MySQL Alembic 为 `20260903_02`，需先备份并升级到 `20260904_01`。
-- 从 clean `main` 构建统一 release，control/reply/worker 切换到同一 SHA；启用 `AI_SALES_POLICY_ENABLED=true`，延时节点继续由 policy 固定为 shadow。
-- 发布后核验 V3 Reply、三个角色健康、策略目录读取、BI usage、worker、回调和退役 V1/V2 路由；失败按 change contract 回滚。
+- 已从 clean `main@91ac4016209d1f095866fd4be54636bc9a2963ed` 构建并部署统一 release；control/reply/worker 使用同一 SHA。
+- 已启用 `AI_SALES_POLICY_ENABLED=true`；延时节点保持 shadow，真实自动发送未启用。
+- 回滚点保留为 `/opt/ai-paths/releases/ai-paths-unified-20260904-61119816`；数据库新增可空 BI 字段可在代码回滚时保留。
 
 ## 待沉淀的长期结论
 
