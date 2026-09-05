@@ -260,3 +260,4 @@ def test_admin_log_prefers_send_evidence_over_stale_no_send_status() -> None:
     assert item["task_status"] == "sent"
     assert item["decision"] == "send"
     assert item["bucket"] == "sent"
+    assert item["decision_reason"] == "successful_send_evidence"

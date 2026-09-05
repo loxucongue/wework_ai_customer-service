@@ -4714,11 +4714,12 @@ def _platform_task_log_item(
     event_status = str(local_record.get("event_status") or "")
     task_status = str(local_record.get("task_status") or "")
     send_response = local_record.get("send_response") if isinstance(local_record.get("send_response"), dict) else {}
-    if _admin_has_successful_send_evidence(
+    has_successful_send_evidence = _admin_has_successful_send_evidence(
         task_status=task_status,
         sent_at=str(local_record.get("sent_at") or ""),
         send_response=send_response,
-    ):
+    )
+    if has_successful_send_evidence:
         task_status = "sent"
     bucket = _platform_task_bucket(event_status=event_status, task_status=task_status, has_local=bool(local_record))
     send_payload = local_record.get("send_payload") if isinstance(local_record.get("send_payload"), dict) else {}
@@ -4804,7 +4805,11 @@ def _platform_task_log_item(
         "event_status": event_status,
         "task_status": task_status,
         "decision": decision,
-        "decision_reason": str(decision_payload.get("reason") or ""),
+        "decision_reason": (
+            "successful_send_evidence"
+            if has_successful_send_evidence
+            else str(decision_payload.get("reason") or "")
+        ),
         "error": str(local_record.get("task_error") or local_record.get("event_error") or ""),
         "customer_id": identity["customer_id"],
         "external_userid": identity["external_userid"],
