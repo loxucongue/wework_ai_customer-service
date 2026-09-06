@@ -1,8 +1,49 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from app.services.run_observability_summary import build_run_observability, trace_wall_duration_ms
+
+
+_INTENT_LABELS = {
+    "fact_inquiry": "咨询事实",
+    "blocker_expression": "表达卡点",
+    "transaction_progress": "推进成交",
+    "information_submission": "提交信息",
+    "defer": "暂缓",
+    "explicit_exit": "明确退出",
+    "normal_exchange": "普通交流",
+}
+_EMOTION_LABELS = {
+    "enthusiastic": "热情",
+    "curious": "好奇",
+    "neutral": "中性",
+    "hesitant": "犹豫",
+    "cold": "冷淡",
+    "defensive": "防备",
+    "impatient": "不耐烦",
+    "angry": "愤怒",
+}
+_TASK_LABELS = {
+    "answer_current_question": "回答当前问题",
+    "resolve_blocker": "处理当前卡点",
+    "transaction_progression": "执行成交动作",
+    "closing_progression": "推进逼单策略",
+    "normal_conversation": "普通交流",
+    "risk": "风险处理",
+    "human_takeover": "人工接管",
+    "hard_stop": "停止营销",
+    "transaction_terminal": "交易完成承接",
+}
+_CLOSING_LABELS = {
+    "none": "未进入",
+    "enter": "进入逼单",
+    "advance": "推进逼单",
+    "pause": "暂停逼单",
+    "fallback": "降级承接",
+    "complete": "结束逼单",
+}
 
 
 def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
@@ -20,6 +61,7 @@ def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
         return {}
 
     route = _dict(state.get("semantic_route"))
+    retrieval_goal = _dict(route.get("current_intent"))
     checkpoint = _dict(route.get("checkpoint"))
     sequence_match = _dict(route.get("sequence_match"))
     store_query = _dict(route.get("store_query"))
@@ -30,6 +72,7 @@ def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
     message_refs = _message_ref_map(state)
     conversation = _conversation_view(state)
     store_summary = _store_summary(state, store_query=store_query)
+    compact_model_usage = _compact_model_usage(state.get("trace"))
 
     matched_sequences = _matched_sequences(
         recall,
@@ -75,6 +118,13 @@ def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
             "conversation": conversation,
         },
         "checkpoint_decision": {
+            "retrieval_goal": {
+                "summary": _text(retrieval_goal.get("summary")),
+                "evidence": [
+                    {"ref": ref, "quote": message_refs.get(ref, "")}
+                    for ref in _string_list(retrieval_goal.get("evidence_refs"))
+                ],
+            },
             "classification_status": _text(route.get("classification_status")),
             "primary": {
                 "type_id": _integer(checkpoint.get("primary_type_id")),
@@ -164,6 +214,7 @@ def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
             ),
         },
         "delivery": _initial_delivery_summary(state),
+        "model_usage": compact_model_usage,
         "strategy_callback": _dict(state.get("strategy_data_callback")),
         "timing": _timing_summary(state.get("trace")),
         "failures": {
@@ -212,6 +263,433 @@ def enrich_v3_run_observability(
             ],
         }
     output_snapshot["observability_v3"] = observability
+
+
+def enrich_admin_observability_v3(
+    view: dict[str, Any],
+    detail: dict[str, Any],
+    *,
+    trace_retention_days: int = 14,
+) -> dict[str, Any]:
+    """Add a product-readable V3 decision and workflow view to run observability."""
+
+    run = _dict(detail.get("run"))
+    output = _dict(run.get("output_snapshot"))
+    stored = _dict(output.get("observability_v3"))
+    usage = _dict(detail.get("strategy_usage_event"))
+    nodes = _dict_list(view.get("nodes"))
+    intent = _dict(output.get("realtime_intent"))
+    emotion = _dict(output.get("emotion_decision"))
+    closing = _dict(output.get("closing_decision"))
+    cardpoint = _dict(output.get("cardpoint_decision"))
+    primary_task = _dict(output.get("primary_task"))
+    reference_map = _stored_reference_map(stored)
+    compact_model_usage = _dict_list(stored.get("model_usage"))
+    token_usage = _dict(run.get("token_usage"))
+
+    intent_code = _text(intent.get("type") or usage.get("intent_code"))
+    emotion_code = _text(emotion.get("label") or usage.get("emotion_before"))
+    closing_action = _text(closing.get("action") or usage.get("closing_action") or "none")
+    knowledge = _dict(stored.get("knowledge_match"))
+    checkpoint = _dict(stored.get("checkpoint_decision"))
+    trace_status = _trace_availability(run, nodes, trace_retention_days=trace_retention_days)
+
+    view["contract_version"] = "run_observability_v2"
+    summary = _dict(view.get("summary"))
+    if compact_model_usage:
+        summary["model_names"] = list(
+            dict.fromkeys(
+                _text(item.get("model"))
+                for item in compact_model_usage
+                if _text(item.get("model"))
+            )
+        )
+        summary["model_call_count"] = len(compact_model_usage)
+        summary["model_retry_count"] = sum(
+            max(0, _integer(item.get("attempts")) - 1) for item in compact_model_usage
+        )
+        summary["model_fallback_count"] = sum(
+            1 for item in compact_model_usage if bool(item.get("fallback_used"))
+        )
+    if not _integer(summary.get("total_tokens")):
+        summary["total_tokens"] = _integer(token_usage.get("total_tokens"))
+    view["summary"] = summary
+    view["decision_summary"] = {
+        "available": bool(intent or emotion or closing or usage),
+        "decision_status": _text(output.get("decision_status") or usage.get("decision_status")),
+        "decision_reasons": _string_list(output.get("decision_reasons") or usage.get("decision_reasons")),
+        "primary_task": {
+            "code": _text(primary_task.get("type")),
+            "name": _TASK_LABELS.get(_text(primary_task.get("type")), _text(primary_task.get("type"))),
+            "goal": _text(primary_task.get("goal")),
+            "basis": _string_list(primary_task.get("basis")),
+        },
+        "intent": {
+            "code": intent_code,
+            "name": _INTENT_LABELS.get(intent_code, intent_code),
+            "confidence": _text(intent.get("confidence") or usage.get("intent_confidence")),
+            "secondary_codes": _string_list(intent.get("secondary_types") or usage.get("intent_secondary"))[:3],
+            "secondary_names": [
+                _INTENT_LABELS.get(item, item)
+                for item in _string_list(intent.get("secondary_types") or usage.get("intent_secondary"))[:3]
+            ],
+            "evidence": _decision_evidence(intent, reference_map),
+            "basis": _string_list(intent.get("basis")),
+        },
+        "emotion": {
+            "code": emotion_code,
+            "name": _EMOTION_LABELS.get(emotion_code, emotion_code),
+            "confidence": _text(emotion.get("confidence") or usage.get("emotion_confidence")),
+            "pressure": _text(emotion.get("pressure") or usage.get("emotion_pressure")),
+            "flow_action": _text(emotion.get("flow_action") or usage.get("emotion_flow_action")),
+            "evidence": _decision_evidence(emotion, reference_map),
+            "basis": _string_list(emotion.get("basis")),
+        },
+        "closing": {
+            "action": closing_action,
+            "action_name": _CLOSING_LABELS.get(closing_action, closing_action),
+            "customer_state": _text(closing.get("customer_state") or usage.get("closing_customer_state")),
+            "pressure": _text(closing.get("pressure") or usage.get("closing_pressure")),
+            "trigger": _text(closing.get("trigger") or usage.get("closing_trigger")),
+            "rule_id": _text(usage.get("closing_primary_rule_id") or _first(closing.get("rule_ids"))),
+            "rule_name": _text(closing.get("primary_rule_name") or usage.get("closing_primary_rule_name")),
+            "sequence_key": _text(closing.get("sequence_key") or usage.get("closing_strategy_code")),
+            "sequence_name": _text(closing.get("sequence_name") or usage.get("closing_sequence_name")),
+            "node_key": _text(closing.get("node_key") or usage.get("closing_node_key")),
+            "node_name": _text(closing.get("node_name") or usage.get("closing_node_name")),
+            "rule_match_status": _text(closing.get("rule_match_status") or usage.get("closing_rule_match_status")),
+            "constraint_status": _text(closing.get("constraint_status") or usage.get("closing_constraint_status")),
+            "constraint_reasons": _string_list(
+                closing.get("constraint_reasons") or usage.get("closing_constraint_reasons")
+            ),
+            "evidence": _decision_evidence(closing, reference_map),
+            "basis": _string_list(closing.get("basis")),
+        },
+    }
+    view["checkpoint_summary"] = {
+        "router": checkpoint,
+        "final": {
+            "available": bool(cardpoint),
+            "category_key": _text(cardpoint.get("category_key") or usage.get("cardpoint_category_key")),
+            "scenario": _text(cardpoint.get("scenario_query")),
+            "state": _text(cardpoint.get("state") or usage.get("cardpoint_state")),
+            "confidence": _text(cardpoint.get("confidence")),
+            "tactic_tags": _string_list(cardpoint.get("tactic_tags")),
+            "evidence": _decision_evidence(cardpoint, reference_map),
+            "basis": _string_list(cardpoint.get("basis")),
+        },
+    }
+    view["knowledge_match"] = {
+        **knowledge,
+        "available": bool(knowledge),
+        "adoption_explanation": _knowledge_adoption_explanation(knowledge, checkpoint),
+    }
+    view["store_workflow"] = _dict(stored.get("store_workflow"))
+    view["workflow_nodes"] = _workflow_nodes(
+        run=run,
+        nodes=nodes,
+        stored=stored,
+        decision_status=_text(view["decision_summary"].get("decision_status")),
+        trace_status=trace_status,
+        delivery=_dict(view.get("delivery")),
+    )
+    view["data_availability"] = {
+        "business_summary": "available" if stored or view["decision_summary"]["available"] else "not_recorded",
+        "strategy_usage_event": "available" if usage else "not_recorded",
+        "node_traces": trace_status,
+        "raw_detail": "available" if nodes else trace_status,
+        "trace_retention_days": max(1, int(trace_retention_days or 14)),
+        "snapshot_compacted": True,
+        "notice": "节点输入输出来自现有留存，已脱敏且可能截断；历史缺失不代表业务结果为零。",
+    }
+    return view
+
+
+def compact_admin_run_detail(run: dict[str, Any]) -> dict[str, Any]:
+    """Return the fields required by the default log UI without raw history/debug payloads."""
+
+    input_snapshot = _dict(run.get("input_snapshot"))
+    request_context = _dict(input_snapshot.get("request_context"))
+    output_snapshot = _dict(run.get("output_snapshot"))
+    return {
+        key: value
+        for key, value in {
+            **run,
+            "input_snapshot": {
+                "content": _text(input_snapshot.get("content")),
+                "customer_id": _text(input_snapshot.get("customer_id")),
+                "corp_id": _text(input_snapshot.get("corp_id")),
+                "wechat": _text(input_snapshot.get("wechat")),
+                "external_userid": _text(input_snapshot.get("external_userid")),
+                "request_context": {
+                    key: request_context.get(key)
+                    for key in (
+                        "interface_version",
+                        "api_version",
+                        "reply_chain_mode",
+                        "msgtype",
+                        "message_type",
+                    )
+                    if request_context.get(key) not in (None, "")
+                },
+            },
+            "output_snapshot": {
+                key: output_snapshot.get(key)
+                for key in (
+                    "reply_messages",
+                    "interface_version",
+                    "reply_chain_mode",
+                    "runtime_status",
+                    "runtime_phase",
+                    "runtime_started_at",
+                    "runtime_finished_at",
+                )
+                if output_snapshot.get(key) not in (None, "")
+            },
+        }.items()
+        if key not in {"raw_log", "node_traces", "strategy_usage_event"}
+    }
+
+
+def _stored_reference_map(stored: dict[str, Any]) -> dict[str, str]:
+    customer_input = _dict(stored.get("customer_input"))
+    output = {"current_message": _text(customer_input.get("content"))}
+    for item in _dict_list(customer_input.get("conversation")):
+        ref = _text(item.get("message_ref"))
+        if ref:
+            output[ref] = _text(item.get("content"))
+    return output
+
+
+def _decision_evidence(value: dict[str, Any], reference_map: dict[str, str]) -> list[dict[str, str]]:
+    return [
+        {"ref": ref, "quote": reference_map.get(ref, "")}
+        for ref in _string_list(value.get("evidence_refs"))
+    ]
+
+
+def _knowledge_adoption_explanation(
+    knowledge: dict[str, Any], checkpoint: dict[str, Any]
+) -> dict[str, str]:
+    if not knowledge:
+        return {"sequence": "historical_not_recorded", "script": "historical_not_recorded"}
+    adopted = _dict(knowledge.get("adopted"))
+    execution = _dict(knowledge.get("execution"))
+    selector = _dict(knowledge.get("selector"))
+    primary = _dict(checkpoint.get("primary"))
+    matched_sequences = _dict_list(knowledge.get("matched_sequences"))
+    scripts = _dict_list(knowledge.get("script_candidates"))
+    knowledge_status = _text(execution.get("knowledge_status")).lower()
+    selector_status = _text(selector.get("status")).lower()
+
+    if adopted.get("sequence_id"):
+        sequence_reason = "adopted"
+    elif matched_sequences:
+        sequence_reason = "reply_not_adopted"
+    elif not primary.get("code") and _text(checkpoint.get("classification_status")) in {"", "none"}:
+        sequence_reason = "no_checkpoint"
+    elif any(token in knowledge_status for token in ("error", "unavailable", "stale")):
+        sequence_reason = "directory_unavailable"
+    else:
+        sequence_reason = "no_sequence_candidate"
+
+    if adopted.get("script_ids"):
+        script_reason = "adopted"
+    elif scripts:
+        script_reason = "reply_not_adopted"
+    elif selector_status in {"empty", "error"}:
+        script_reason = f"selector_{selector_status}"
+    elif not execution.get("script_lookup_invoked"):
+        script_reason = "script_lookup_not_run"
+    elif any(token in knowledge_status for token in ("error", "unavailable", "stale")):
+        script_reason = "directory_unavailable"
+    else:
+        script_reason = "no_script_candidate"
+    return {"sequence": sequence_reason, "script": script_reason}
+
+
+def _trace_availability(
+    run: dict[str, Any], nodes: list[dict[str, Any]], *, trace_retention_days: int
+) -> str:
+    if nodes:
+        return "available"
+    if _text(run.get("runtime_status")) == "running":
+        return "pending"
+    created_at = _parse_datetime(run.get("created_at"))
+    if created_at is not None:
+        age_days = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds() / 86400
+        if age_days > max(1, int(trace_retention_days or 14)):
+            return "expired"
+    return "not_recorded"
+
+
+def _workflow_nodes(
+    *,
+    run: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    stored: dict[str, Any],
+    decision_status: str,
+    trace_status: str,
+    delivery: dict[str, Any],
+) -> list[dict[str, Any]]:
+    definitions = (
+        ("input", "接收与整理消息", "整理当前消息和客户身份", ("layer_1_input_normalization",)),
+        ("context", "加载上下文与事实", "加载近聊、客户、订单等权威上下文", ("layer_2_background_context", "authoritative_context")),
+        ("router", "Semantic Router", "识别检索目标、卡点和工具需求", ("semantic_evidence",)),
+        ("facts", "只读事实查询", "按需查询门店、订单等事实", ("readonly_facts", "semantic_evidence_after_facts")),
+        ("knowledge", "序列与话术召回", "整理跟进序列和卡点话术候选", ("material_selection",)),
+        ("reply", "V3 Reply 最终决策", "输出最终意图、情绪、逼单和客户回复", ("reply_decision",)),
+        ("validation", "事实与安全校验", "校验结构、事实、权限和销售安全边界", ("reply_decision",)),
+        ("commit", "提交与记录", "执行合法交易动作并记录运行结果", ("prepare_transaction", "transaction_actions", "commit_result")),
+    )
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        by_name.setdefault(_text(node.get("node_name")), []).append(node)
+    failed_seen = False
+    output: list[dict[str, Any]] = []
+    for key, label, purpose, names in definitions:
+        matches = [item for name in names for item in by_name.get(name, [])]
+        if key == "validation" and decision_status:
+            status = "warning" if decision_status == "degraded" else "success"
+            summary = "策略结构有降级修正" if status == "warning" else "策略结构和安全校验完成"
+        elif matches:
+            status = _aggregate_node_status(matches)
+            summary = "；".join(
+                _text(line)
+                for item in matches
+                for line in (item.get("summary") or [])[:1]
+                if _text(line)
+            )[:300]
+        elif _text(run.get("runtime_status")) == "running":
+            status = "pending"
+            summary = "请求处理中，完成后提供准确节点轨迹"
+        elif trace_status == "expired":
+            status = "expired"
+            summary = "节点轨迹已超过保留期"
+        elif failed_seen:
+            status = "not_reached"
+            summary = "上游失败，本阶段未到达"
+        else:
+            status = "not_recorded"
+            summary = "本次历史记录未保存该节点轨迹"
+        failed_seen = failed_seen or status == "failed"
+        output.append(
+            {
+                "key": key,
+                "label": label,
+                "purpose": purpose,
+                "status": status,
+                "summary": summary,
+                "node_ids": [_text(item.get("id")) for item in matches if _text(item.get("id"))],
+                "node_names": [_text(item.get("node_name")) for item in matches if _text(item.get("node_name"))],
+                "duration_ms": sum(_integer(item.get("duration_ms")) for item in matches),
+            }
+        )
+    delivery_status = _text(delivery.get("status") or _dict(stored.get("delivery")).get("status"))
+    output.append(
+        {
+            "key": "delivery",
+            "label": "发送与平台回执",
+            "purpose": "区分生成、平台接受和确认送达",
+            "status": _delivery_workflow_status(delivery_status),
+            "summary": delivery_status or "未记录异步发送回执",
+            "node_ids": [],
+            "node_names": [],
+            "duration_ms": 0,
+        }
+    )
+    return output
+
+
+def _aggregate_node_status(nodes: list[dict[str, Any]]) -> str:
+    statuses = {_text(item.get("status")) for item in nodes}
+    for status in ("failed", "warning", "pending", "skipped"):
+        if status in statuses:
+            return status
+    return "success"
+
+
+def _delivery_workflow_status(status: str) -> str:
+    if status in {"send_failed", "delivery_failed", "partial_failed"}:
+        return "failed"
+    if status in {"pending", "platform_accepted", "delivery_pending", "sending"}:
+        return "pending"
+    if status in {"not_recorded", "", "direct_response_returned"}:
+        return "skipped" if status == "not_recorded" else "success"
+    return "success"
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _first(value: Any) -> Any:
+    return value[0] if isinstance(value, list) and value else ""
+
+
+def _compact_model_usage(value: Any) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+
+    def collect(call: Any, *, node_name: str) -> None:
+        if not isinstance(call, dict):
+            return
+        usage = _dict(call.get("usage"))
+        model_input = _dict(call.get("input"))
+        name = _text(call.get("name"))
+        looks_like_model = bool(usage) or "raw_json_output" in call or any(
+            token in name.lower()
+            for token in ("model", "router", "reply", "vision", "gate")
+        )
+        if looks_like_model:
+            model = _text(
+                usage.get("winner_model")
+                or usage.get("model")
+                or model_input.get("model")
+            )
+            configured_model = _text(
+                usage.get("configured_model") or model_input.get("configured_model")
+            )
+            output.append(
+                {
+                    "node": node_name,
+                    "name": name or "model_call",
+                    "provider": _text(usage.get("provider")),
+                    "model": model,
+                    "configured_model": configured_model,
+                    "total_tokens": _integer(usage.get("total_tokens")),
+                    "duration_ms": _integer(
+                        usage.get("overall_duration_ms")
+                        or usage.get("duration_ms")
+                        or call.get("duration_ms")
+                    ),
+                    "attempts": max(
+                        1,
+                        _integer(usage.get("attempts") or usage.get("request_attempt") or 1),
+                    ),
+                    "fallback_used": bool(
+                        configured_model and model and configured_model != model
+                    ),
+                }
+            )
+        for nested in call.get("nested_calls") or []:
+            collect(nested, node_name=node_name)
+        for key in ("retry", "recovery"):
+            collect(call.get(key), node_name=node_name)
+
+    for trace in value if isinstance(value, list) else []:
+        if not isinstance(trace, dict):
+            continue
+        node_name = _text(trace.get("node") or trace.get("node_name"))
+        for call in trace.get("tool_calls") or []:
+            collect(call, node_name=node_name)
+    return output[:24]
 
 
 def _matched_sequences(

@@ -6,6 +6,7 @@
 | --- | --- | --- | --- |
 | 2026-09-06 | `v3-sequence-script-exhaustive-eval` | `2793ccd9` | Top-6 内同动作/标签候选上限调整为 3 并补充较长回复最多两条自然微信的表达合同；第三方 92/92 条序列均有同类型话术并通过 DeepSeek 语义适配，120 条真实身份隔离评测 AI 初评 99.2%、真人表达 97.5%、序列/话术采用 14/14、P95 13.60 秒，安全失败和生产写入均为 0。 |
 | 2026-09-06 | `v3-script-retrieval-adaptive` | `81ba9e31` | 普通卡点话术以第三方卡点类型为硬边界，tag/action 改为排序证据并限制为最多 6 个多样候选；序列与话术双轨采用、真实 ID 来源记录及忙碌场景沟通许可边界完成，14/14 类型目录覆盖、204 条回归和 20 条 DeepSeek 真实身份隔离评测通过。 |
+| 2026-09-06 | `v3-run-log-ux` | `7ba2ec5c` | AI 回复日志改为业务判断优先：分开显示 Reply 最终意图/情绪/卡点/逼单与 Router 检索判断，贯通候选、采用、发送及九阶段执行链；节点原始输入输出改为按需脱敏读取，历史缺失不再展示为零。后端相关回归 30/30、前端类型/Lint/生产构建及桌面/移动端浏览器检查通过。 |
 | 2026-09-02 | `runtime-factories` | `5c81f302` | Reply、Control、Worker 改为直接服务工厂；见 [运行边界](../../contracts/RUNTIME_BOUNDARIES.md)。 |
 | 2026-09-02 | `v3-sales-strategy-flow` | `fc52a70f` | V3 跟进策略/卡点话术接入提示词优化、follow-knowledge 本地同步、真实样本评测、BI usage/outcome 埋点和只读分析接口；原始客户记录和评测输出仅保存在 ignored artifacts。 |
 | 2026-09-02 | `store-workflow-accuracy` | `8ed24b85` | V3 门店匹配工作流收敛区县/POI 候选、降低片段 geocode 误冲突、城市无本地店不再直接退到省级列表；严格矩阵 31/31 通过，报告在 ignored artifacts。 |

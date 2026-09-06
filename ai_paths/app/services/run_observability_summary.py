@@ -135,6 +135,29 @@ def build_run_observability(
     }
 
 
+def build_node_observability(trace: dict[str, Any]) -> dict[str, Any]:
+    """Build the readable header for one persisted node trace."""
+
+    return _node_view(trace, 0)
+
+
+def sanitize_debug_payload(value: Any) -> Any:
+    """Mask credentials while preserving the persisted diagnostic shape."""
+
+    blocked_tokens = ("token", "secret", "password", "authorization", "api_key", "apikey")
+    if isinstance(value, list):
+        return [sanitize_debug_payload(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    output: dict[str, Any] = {}
+    for key, item in value.items():
+        if any(token in str(key).lower() for token in blocked_tokens):
+            output[key] = "[已隐藏]"
+        else:
+            output[key] = sanitize_debug_payload(item)
+    return output
+
+
 def trace_wall_duration_ms(traces: Iterable[dict[str, Any]]) -> int:
     starts: list[datetime] = []
     finishes: list[datetime] = []

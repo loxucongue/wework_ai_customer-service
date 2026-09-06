@@ -1,1269 +1,618 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   AlertCircle,
+  ArrowRight,
   Bot,
+  Check,
   CheckCircle2,
-  ChevronRight,
   CircleDashed,
-  Database,
-  ExternalLink,
-  Image as ImageIcon,
-  Layers3,
-  MapPin,
+  Filter,
   MessageSquareText,
   RefreshCw,
   Search,
   Send,
-  ShieldCheck,
+  Sparkles,
+  Target,
   TriangleAlert,
-  WalletCards,
-  Wrench,
   XCircle,
 } from "lucide-react";
 
-type JsonValue = unknown;
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
-type RunItem = {
-  request_id: string;
-  interface_version?: string;
-  conversation_id?: string;
-  customer_id?: string;
-  input_snapshot?: Record<string, JsonValue>;
-  output_snapshot?: Record<string, JsonValue>;
-  intents?: JsonValue[];
-  tags?: string[];
-  duration_ms?: number;
-  token_usage?: Record<string, JsonValue>;
-  error?: string;
-  created_at?: string;
-  started_at?: string;
-  finished_at?: string;
-  runtime_status?: string;
-  runtime_phase?: string;
-};
-
-type NodeTrace = {
-  id?: string;
-  node_name?: string;
-  node?: string;
-  input_snapshot?: Record<string, JsonValue>;
-  output_snapshot?: Record<string, JsonValue>;
-  tool_calls?: JsonValue[];
-  duration_ms?: number;
-  error?: string;
-  created_at?: string;
-};
-
-type ImportantField = {
-  key: string;
-  label: string;
-  value: JsonValue;
-};
-
-type ObservableModelCall = {
-  id: string;
-  node_name: string;
-  name: string;
-  tier: string;
-  model: string;
-  configured_model: string;
-  duration_ms: number;
-  total_tokens: number;
-  attempts: number;
-  hedge_started: boolean;
-  fallback_used: boolean;
-  timeout_stage: string;
-  error: string;
-  prompt_messages: Array<{ role: string; chars: number; preview: string }>;
-};
-
-type ObservableToolCall = {
-  name: string;
-  status: string;
-  duration_ms: number;
-  input_summary: JsonValue;
-  output_summary: JsonValue;
-  error: string;
-};
-
-type ObservableNode = {
-  id: string;
-  sequence: number;
-  node_name: string;
-  node_kind: string;
-  display_name: string;
-  status: string;
-  duration_ms: number;
-  started_at: string;
-  finished_at: string;
-  parallel_group: string;
-  summary: string[];
-  important_inputs: ImportantField[];
-  important_outputs: ImportantField[];
-  model_calls: ObservableModelCall[];
-  tool_calls: ObservableToolCall[];
-  warnings: string[];
-  errors: string[];
-};
-
-type NodePresentation = {
-  phase: "understand" | "facts" | "reply" | "commit";
-  phaseLabel: string;
-  title: string;
-  purpose: string;
-};
-
-type DeliveryItem = {
-  message_index: number;
-  message_type: string;
-  status: string;
-  platform_message_id: string;
-  error_code: string;
-  error_message: string;
-  sent_at: string;
-};
-
-type DeliveryDispatch = {
-  dispatch_id: string;
-  source_channel: string;
-  source_kind: string;
-  status: string;
-  expected_count: number;
-  succeeded_count: number;
-  failed_count: number;
-  platform_request_id: string;
-  system_msgid: string;
-  error_code: string;
-  error_message: string;
-  submitted_at: string;
-  confirmed_at: string;
-  last_callback_at: string;
-  items: DeliveryItem[];
-};
-
-type ObservabilityView = {
-  contract_version: string;
-  summary: {
-    status: string;
-    request_id: string;
-    created_at: string;
-    interface_version: string;
-    reply_chain_mode: string;
-    message_type: string;
-    customer_message: string;
-    wall_duration_ms: number;
-    recorded_duration_ms: number;
-    slowest_node: { node_name: string; display_name: string; duration_ms: number };
-    model_call_count: number;
-    model_retry_count: number;
-    model_fallback_count: number;
-    total_tokens: number;
-    fallback_detected: boolean;
-    error_count: number;
-    warning_count: number;
-    errors: JsonValue[];
-    warnings: JsonValue[];
-    final_messages: JsonValue[];
-    http_response_messages: JsonValue[];
-    async_final_messages: JsonValue[];
-  };
-  nodes: ObservableNode[];
-  delivery: {
-    status: string;
-    expected_count: number;
-    succeeded_count: number;
-    failed_count: number;
-    dispatches: DeliveryDispatch[];
-  };
-  debug: { snapshot_is_compacted: boolean; snapshot_label: string };
-};
-
-type RunDetail = {
-  run?: RunItem;
-  node_traces?: NodeTrace[];
-  raw_log?: JsonValue;
-  message_dispatches?: JsonValue[];
-  observability_view?: ObservabilityView;
-};
-
-type Filters = {
-  request_id: string;
-  limit: string;
-  customer_id: string;
-  conversation_id: string;
-  has_error: string;
-};
-
-type RawModelCall = {
-  id: string;
-  node: string;
-  name: string;
-  tier: string;
-  model: string;
-  durationMs: number | null;
-  totalTokens: number;
-  input: JsonValue;
-  output: JsonValue;
-  usage: JsonValue;
-  error: string;
-  hedgeStarted: boolean;
-  attempts: number;
-  timeoutStage: string;
-};
+import {
+  EMOTION_LABELS,
+  INTENT_LABELS,
+  STATUS_META,
+  type CheckpointSummary,
+  type Evidence,
+  type Filters,
+  type JsonValue,
+  type KnowledgeMatch,
+  type ObservableNode,
+  type ObservabilityView,
+  type RunDetail,
+  type RunItem,
+  contentString,
+  formatDuration,
+  formatTime,
+  isRecord,
+  isRunning,
+  replyMessages,
+  runContent,
+  runReply,
+  runtimePhaseLabel,
+  stringField,
+} from "./run-log-model";
+import { RunNodeDetailSheet } from "./run-node-detail-sheet";
 
 const DEFAULT_FILTERS: Filters = {
   request_id: "",
   limit: "50",
   customer_id: "",
   conversation_id: "",
-  has_error: "",
+  started_from: "",
+  started_to: "",
+  wechat: "",
+  run_status: "",
+  intent_code: "",
+  emotion_code: "",
+  checkpoint_code: "",
+  decision_status: "",
+  sequence_matched: "",
+  sequence_adopted: "",
+  script_adopted: "",
+  node_failed: "",
 };
 
-const STATUS_META: Record<string, { label: string; className: string }> = {
-  delivered: { label: "已确认送达", className: "bg-emerald-100 text-emerald-800" },
-  success: { label: "处理成功", className: "bg-emerald-100 text-emerald-800" },
-  warning: { label: "成功但有警告", className: "bg-amber-100 text-amber-800" },
-  fallback: { label: "异常兜底", className: "bg-amber-100 text-amber-900" },
-  delivery_pending: { label: "等待发送回调", className: "bg-blue-100 text-blue-800" },
-  pending: { label: "等待回调", className: "bg-blue-100 text-blue-800" },
-  partial_failed: { label: "部分发送失败", className: "bg-red-100 text-red-800" },
-  delivery_failed: { label: "发送失败", className: "bg-red-100 text-red-800" },
-  failed: { label: "请求失败", className: "bg-red-100 text-red-800" },
-  skipped: { label: "已跳过", className: "bg-slate-200 text-slate-700" },
-  not_recorded: { label: "未记录发送回调", className: "bg-slate-200 text-slate-700" },
-  send_succeeded: { label: "发送成功", className: "bg-emerald-100 text-emerald-800" },
-  send_failed: { label: "发送失败", className: "bg-red-100 text-red-800" },
-  platform_accepted: { label: "平台已接受", className: "bg-blue-100 text-blue-800" },
+const ADOPTION_REASON: Record<string, string> = {
+  adopted: "Reply 已采用",
+  reply_not_adopted: "查询有结果，但 Reply 本轮未采用",
+  no_checkpoint: "本轮未识别到需要处理的卡点",
+  directory_unavailable: "知识目录当时不可用",
+  no_sequence_candidate: "已查询，但没有可用序列候选",
+  selector_empty: "话术选择器返回为空",
+  selector_error: "话术选择器运行异常",
+  script_lookup_not_run: "本轮未发起话术查询",
+  no_script_candidate: "已查询，但没有可用话术候选",
+  historical_not_recorded: "历史日志未保存该字段，不能视为数量为 0",
 };
-
-const PHASE_META: Record<NodePresentation["phase"], { label: string; description: string }> = {
-  understand: { label: "理解请求", description: "整理客户消息并识别本轮需要处理的事情" },
-  facts: { label: "查询事实", description: "补齐门店、订单、素材等可核验信息" },
-  reply: { label: "生成回复", description: "结合上下文与事实生成客户可见内容" },
-  commit: { label: "校验与提交", description: "检查结构和事实，记录发送及后续动作" },
-};
-
-function nodePresentation(node: ObservableNode): NodePresentation {
-  const key = `${node.node_name} ${node.display_name}`.toLowerCase();
-
-  if (/platform_protocol_filter|auto_message|protocol_filter/.test(key)) {
-    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "识别是否需要 AI 处理", purpose: "识别平台自动消息等无需回复的请求，避免重复或错误发送。" };
-  }
-  if (/human_takeover|takeover_guard/.test(key)) {
-    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "检查是否已转人工", purpose: "确认当前会话是否仍由 AI 托管；已转人工时不再自动回复。" };
-  }
-  if (/input_normal|preprocess|message_preprocess/.test(key)) {
-    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "接收并整理请求", purpose: "读取客户当前消息，统一消息格式和基础身份信息。" };
-  }
-  if (/background|shared_context|context_assembl|context/.test(key)) {
-    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "补齐客户上下文", purpose: "汇总聊天记录、订单、支付、素材和客户可见门店等已知信息。" };
-  }
-  if (/semantic_route|content_gate|route|gate/.test(key)) {
-    return { phase: "understand", phaseLabel: PHASE_META.understand.label, title: "判断本轮需要什么", purpose: "识别当前问题，并确定是否需要话术素材或实时事实。" };
-  }
-  if (/execute_action|tool|store_workflow|knowledge|search|lookup|geocode|distance/.test(key)) {
-    return { phase: "facts", phaseLabel: PHASE_META.facts.label, title: "查询业务事实", purpose: "调用只读工具查询本轮回复需要的真实信息。" };
-  }
-  if (/join|evidence/.test(key)) {
-    return { phase: "facts", phaseLabel: PHASE_META.facts.label, title: "汇总可用证据", purpose: "把上下文、素材候选和工具结果合并为一份可引用事实。" };
-  }
-  if (/synthesize|reply|response/.test(key) && !/audit|valid|repair/.test(key)) {
-    return { phase: "reply", phaseLabel: PHASE_META.reply.label, title: "生成客户回复", purpose: "由回复模型决定回答内容、销售动作和需要发送的素材。" };
-  }
-  if (/audit|valid|repair|guard|check/.test(key)) {
-    return { phase: "commit", phaseLabel: PHASE_META.commit.label, title: "检查回复", purpose: "检查消息结构、事实来源和外部动作是否符合硬边界。" };
-  }
-  if (/commit|persist|authoritative|send_record|memory/.test(key)) {
-    return { phase: "commit", phaseLabel: PHASE_META.commit.label, title: "记录结果与后续动作", purpose: "在回复通过检查后记录发送结果，并执行允许的后续写入。" };
-  }
-  return { phase: "commit", phaseLabel: PHASE_META.commit.label, title: "完成链路处理", purpose: "执行该轮回复链路中的辅助处理。" };
-}
-
-function nodeStatusText(node: ObservableNode) {
-  if (node.status === "failed") return "失败";
-  if (node.status === "warning" || node.warnings.length) return "有警告";
-  if (node.status === "pending") return "处理中";
-  if (node.status === "skipped") return "已跳过";
-  return "完成";
-}
 
 export function RunLogViewer() {
+  const [draftFilters, setDraftFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [selectedNode, setSelectedNode] = useState<ObservableNode | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
-  const [nowMs, setNowMs] = useState(() => Date.now());
-
-  const selectedRun = useMemo(
-    () => detail?.run || runs.find((item) => item.request_id === selectedId) || null,
-    [detail, runs, selectedId]
-  );
 
   const loadRuns = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError("");
-    const directRequestId = filters.request_id.trim();
-    const search = new URLSearchParams();
-    for (const [key, value] of Object.entries(filters)) {
-      if (value && key !== "request_id") search.set(key, value);
-    }
     try {
-      if (directRequestId) {
-        const response = await fetch(`/api/logs/runs?request_id=${encodeURIComponent(directRequestId)}`, { cache: "no-store" });
-        const data = await readJsonResponse(response, "按请求 ID 查询失败");
-        if (!response.ok) throw new Error(errorMessage(data, "按请求 ID 查询失败"));
-        const directRun = isRecord(data.run) ? (data.run as RunItem) : null;
-        if (!directRun?.request_id) throw new Error(`没有找到请求 ${directRequestId}`);
-        setRuns([directRun]);
-        setSelectedId(directRun.request_id);
-        setDetail(data as RunDetail);
+      if (filters.request_id.trim()) {
+        const payload = await getJson<RunDetail>(
+          `/api/logs/runs?request_id=${encodeURIComponent(filters.request_id.trim())}`,
+          "按请求 ID 查询失败",
+        );
+        if (!payload.run?.request_id) throw new Error(`没有找到请求 ${filters.request_id.trim()}`);
+        setRuns([payload.run]);
+        setSelectedId(payload.run.request_id);
+        setDetail(payload);
         return;
       }
-      const response = await fetch(`/api/logs/runs?${search.toString()}`, { cache: "no-store" });
-      const data = await readJsonResponse(response, "加载日志失败");
-      if (!response.ok) throw new Error(errorMessage(data, "加载日志失败"));
-      const items = Array.isArray(data?.items) ? (data.items as RunItem[]) : [];
+      const search = new URLSearchParams();
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value && key !== "request_id") search.set(key, value);
+      });
+      const payload = await getJson<{ items?: RunItem[] }>(`/api/logs/runs?${search.toString()}`, "加载日志失败");
+      const items = Array.isArray(payload.items) ? payload.items : [];
       setRuns(items);
-      setSelectedId((current) => current || items[0]?.request_id || "");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载日志失败");
+      setSelectedId((current) => items.some((item) => item.request_id === current) ? current : items[0]?.request_id || "");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "加载日志失败");
     } finally {
       if (!silent) setLoading(false);
     }
   }, [filters]);
 
-  const loadDetail = useCallback(async (requestId: string) => {
+  const loadDetail = useCallback(async (requestId: string, silent = false) => {
     if (!requestId) return;
-    setDetailLoading(true);
-    setError("");
+    if (!silent) setDetailLoading(true);
     try {
-      const response = await fetch(`/api/logs/runs?request_id=${encodeURIComponent(requestId)}`, {
-        cache: "no-store",
-      });
-      const data = await readJsonResponse(response, "加载详情失败");
-      if (!response.ok) throw new Error(errorMessage(data, "加载详情失败"));
-      setDetail(data as RunDetail);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载详情失败");
+      const payload = await getJson<RunDetail>(
+        `/api/logs/runs?request_id=${encodeURIComponent(requestId)}`,
+        "加载日志详情失败",
+      );
+      setDetail(payload);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "加载日志详情失败");
     } finally {
-      setDetailLoading(false);
+      if (!silent) setDetailLoading(false);
     }
   }, []);
 
+  useEffect(() => { void loadRuns(); }, [loadRuns]);
   useEffect(() => {
-    void loadRuns();
-  }, [loadRuns]);
-
+    if (selectedId && detail?.run?.request_id !== selectedId) void loadDetail(selectedId);
+  }, [detail?.run?.request_id, loadDetail, selectedId]);
+  useEffect(() => { setSelectedNode(null); }, [selectedId]);
   useEffect(() => {
-    if (selectedId) void loadDetail(selectedId);
-  }, [loadDetail, selectedId]);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      setNowMs(Date.now());
+    const timer = window.setInterval(() => {
       void loadRuns(true);
-      if (selectedId && runs.some((run) => run.request_id === selectedId && isRunning(run))) {
-        void loadDetail(selectedId);
-      }
-    }, 2000);
-    return () => window.clearInterval(interval);
+      const selected = runs.find((item) => item.request_id === selectedId);
+      if (selected && isRunning(selected)) void loadDetail(selectedId, true);
+    }, 5000);
+    return () => window.clearInterval(timer);
   }, [loadDetail, loadRuns, runs, selectedId]);
 
+  const applyFilters = () => setFilters({ ...draftFilters });
+  const clearFilters = () => {
+    setDraftFilters(DEFAULT_FILTERS);
+    setFilters(DEFAULT_FILTERS);
+  };
+  const selectedRun = detail?.run?.request_id === selectedId
+    ? detail.run
+    : runs.find((item) => item.request_id === selectedId);
+  const selectedDetail = detail?.run?.request_id === selectedId ? detail : null;
+
   return (
-    <main className="flex h-screen flex-col bg-slate-50 text-slate-950 lg:flex-row">
-      <aside className="flex max-h-[46vh] w-full min-w-0 flex-col border-b bg-white lg:max-h-none lg:w-[370px] lg:min-w-[330px] lg:border-b-0 lg:border-r">
-        <header className="border-b px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <h1 className="flex items-center gap-2 text-lg font-semibold">
-              <Database className="h-5 w-5" />
-              AI 回复运行日志
-            </h1>
-            <button
-              type="button"
-              onClick={() => void loadRuns()}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-slate-950 text-white disabled:opacity-60"
-              title="刷新"
-              disabled={loading}
-            >
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            </button>
-          </div>
-          <p className="mt-1 text-xs text-slate-500">节点事实、处理结果、耗时与最终发送状态</p>
-        </header>
-
-        <section className="border-b px-4 py-3">
-          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-            <div className="col-span-2">
-              <FilterInput label="请求 ID" value={filters.request_id} onChange={(value) => setFilters((prev) => ({ ...prev, request_id: value }))} />
+    <div className="flex h-[calc(100vh-3.5rem)] min-h-[640px] flex-col overflow-hidden bg-[#f6f7f8] xl:flex-row">
+      <aside className="flex max-h-[44vh] w-full shrink-0 flex-col border-b border-zinc-200 bg-white xl:max-h-none xl:w-[360px] xl:border-b-0 xl:border-r">
+        <div className="border-b border-zinc-200 px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <div className="text-sm font-semibold">回复记录</div>
+              <div className="mt-0.5 text-xs text-zinc-500">先看业务判断，再下钻节点原始记录</div>
             </div>
-            <FilterInput label="客户 ID" value={filters.customer_id} onChange={(value) => setFilters((prev) => ({ ...prev, customer_id: value }))} />
-            <FilterInput label="会话 ID" value={filters.conversation_id} onChange={(value) => setFilters((prev) => ({ ...prev, conversation_id: value }))} />
-            <FilterInput label="数量" value={filters.limit} onChange={(value) => setFilters((prev) => ({ ...prev, limit: value }))} />
-            <label className="text-xs font-medium text-slate-600">
-              运行错误
-              <select
-                value={filters.has_error}
-                onChange={(event) => setFilters((prev) => ({ ...prev, has_error: event.target.value }))}
-                className="mt-1 h-8 w-full rounded-md border px-2 text-sm"
-              >
-                <option value="">全部</option>
-                <option value="true">只看错误</option>
-                <option value="false">只看正常</option>
-              </select>
-            </label>
-          </div>
-          <button
-            type="button"
-            onClick={() => void loadRuns()}
-            className="mt-2 inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border px-3 text-sm hover:bg-slate-50"
-          >
-            <Search className="h-4 w-4" />
-            查询
-          </button>
-          {error ? (
-            <div className="mt-3 flex gap-2 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              {error}
+            <div className="flex gap-1">
+              <Button variant={filtersOpen ? "secondary" : "ghost"} size="icon-sm" onClick={() => setFiltersOpen((value) => !value)} title="筛选">
+                <Filter className="size-4" />
+              </Button>
+              <Button variant="ghost" size="icon-sm" onClick={() => void loadRuns()} disabled={loading} title="刷新">
+                <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
+              </Button>
             </div>
-          ) : null}
-        </section>
+          </div>
+          <form className="mt-3 flex gap-2" onSubmit={(event) => { event.preventDefault(); applyFilters(); }}>
+            <div className="relative min-w-0 flex-1">
+              <Search className="absolute left-2.5 top-2.5 size-4 text-zinc-400" />
+              <Input
+                value={draftFilters.request_id}
+                onChange={(event) => setDraftFilters((current) => ({ ...current, request_id: event.target.value }))}
+                placeholder="输入请求 ID 精确查询"
+                className="h-9 pl-8 text-sm"
+              />
+            </div>
+            <Button type="submit" size="sm">查询</Button>
+          </form>
+        </div>
 
-        <section className="min-h-0 flex-1 overflow-y-auto">
+        {filtersOpen ? (
+          <FilterPanel filters={draftFilters} onChange={setDraftFilters} onApply={applyFilters} onClear={clearFilters} />
+        ) : null}
+        {error ? (
+          <div className="mx-3 mt-3 flex gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs leading-relaxed text-red-700">
+            <AlertCircle className="mt-0.5 size-4 shrink-0" />{error}
+          </div>
+        ) : null}
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {runs.map((run) => (
-            <RunListItem key={run.request_id} run={run} selected={selectedId === run.request_id} onSelect={setSelectedId} nowMs={nowMs} />
+            <RunListItem key={run.request_id} run={run} selected={run.request_id === selectedId} onSelect={setSelectedId} />
           ))}
-          {!loading && runs.length === 0 ? <div className="p-6 text-sm text-slate-500">暂无运行日志。</div> : null}
-        </section>
+          {!loading && runs.length === 0 ? (
+            <div className="p-8 text-center text-sm text-zinc-400">没有符合条件的回复记录</div>
+          ) : null}
+        </div>
       </aside>
 
-      <section className="min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-5 xl:p-6">
+      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         {selectedRun ? (
-          <RunDetailPanel run={selectedRun} detail={detail} loading={detailLoading} nowMs={nowMs} />
+          <RunDetailPanel run={selectedRun} detail={selectedDetail} loading={detailLoading} onOpenNode={setSelectedNode} />
         ) : (
-          <div className="border bg-white p-8 text-sm text-slate-500">请选择一条运行日志。</div>
+          <div className="flex h-full items-center justify-center p-8 text-sm text-zinc-400">请从左侧选择一条回复记录</div>
         )}
-      </section>
-    </main>
+      </main>
+
+      <RunNodeDetailSheet requestId={selectedId} node={selectedNode} onOpenChange={(open) => { if (!open) setSelectedNode(null); }} />
+    </div>
   );
 }
 
-function FilterInput({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function FilterPanel({ filters, onChange, onApply, onClear }: {
+  filters: Filters;
+  onChange: (filters: Filters) => void;
+  onApply: () => void;
+  onClear: () => void;
+}) {
+  const update = (key: keyof Filters, value: string) => onChange({ ...filters, [key]: value });
   return (
-    <label className="text-xs font-medium text-slate-600">
-      {label}
-      <input value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 h-8 w-full rounded-md border px-2 text-sm" />
-    </label>
-  );
-}
-
-function RunListItem({ run, selected, onSelect, nowMs }: { run: RunItem; selected: boolean; onSelect: (id: string) => void; nowMs: number }) {
-  const context = isRecord(run.input_snapshot?.request_context) ? run.input_snapshot?.request_context : {};
-  const version = stringField(run.interface_version) || stringField(context?.interface_version) || stringField(context?.api_version) || "v1";
-  const versionClassName =
-    version.toLowerCase() === "v3"
-      ? "bg-blue-100 text-blue-700"
-      : version.toLowerCase() === "v2"
-        ? "bg-emerald-100 text-emerald-700"
-        : "bg-slate-200 text-slate-700";
-  return (
-    <button
-      type="button"
-      onClick={() => onSelect(run.request_id)}
-      className={`w-full border-b p-4 text-left hover:bg-slate-50 ${selected ? "bg-slate-100" : "bg-white"}`}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <span className="truncate font-mono text-xs text-slate-500">{run.request_id}</span>
-        <span className="shrink-0 text-xs text-slate-500">{formatTime(run.created_at)}</span>
+    <div className="max-h-[52vh] overflow-y-auto border-b border-zinc-200 bg-zinc-50/70 p-3">
+      <div className="grid grid-cols-2 gap-2">
+        <FilterField label="开始时间"><Input type="datetime-local" value={filters.started_from} onChange={(event) => update("started_from", event.target.value)} /></FilterField>
+        <FilterField label="结束时间"><Input type="datetime-local" value={filters.started_to} onChange={(event) => update("started_to", event.target.value)} /></FilterField>
+        <FilterField label="企微号"><Input value={filters.wechat} onChange={(event) => update("wechat", event.target.value)} placeholder="如 sl8003" /></FilterField>
+        <FilterField label="显示数量"><Input value={filters.limit} onChange={(event) => update("limit", event.target.value)} inputMode="numeric" /></FilterField>
+        <FilterField label="客户 ID"><Input value={filters.customer_id} onChange={(event) => update("customer_id", event.target.value)} /></FilterField>
+        <FilterField label="会话 ID"><Input value={filters.conversation_id} onChange={(event) => update("conversation_id", event.target.value)} /></FilterField>
+        <FilterField label="请求状态"><Select value={filters.run_status} onChange={(value) => update("run_status", value)} options={[["", "全部"], ["success", "正常"], ["degraded", "降级"], ["fallback", "兜底"], ["failed", "失败"], ["delivery_failed", "发送异常"]]} /></FilterField>
+        <FilterField label="决策状态"><Select value={filters.decision_status} onChange={(value) => update("decision_status", value)} options={[["", "全部"], ["valid", "正常"], ["degraded", "降级"]]} /></FilterField>
+        <FilterField label="最终意图"><Select value={filters.intent_code} onChange={(value) => update("intent_code", value)} options={[["", "全部"], ...Object.entries(INTENT_LABELS)]} /></FilterField>
+        <FilterField label="客户情绪"><Select value={filters.emotion_code} onChange={(value) => update("emotion_code", value)} options={[["", "全部"], ...Object.entries(EMOTION_LABELS)]} /></FilterField>
+        <FilterField label="卡点编码"><Input value={filters.checkpoint_code} onChange={(event) => update("checkpoint_code", event.target.value)} placeholder="精确匹配" /></FilterField>
+        <FilterField label="节点失败"><Select value={filters.node_failed} onChange={(value) => update("node_failed", value)} options={[["", "全部"], ["true", "有失败"], ["false", "无失败"]]} /></FilterField>
+        <FilterField label="匹配到序列"><YesNoSelect value={filters.sequence_matched} onChange={(value) => update("sequence_matched", value)} /></FilterField>
+        <FilterField label="采用序列"><YesNoSelect value={filters.sequence_adopted} onChange={(value) => update("sequence_adopted", value)} /></FilterField>
+        <FilterField label="采用话术"><YesNoSelect value={filters.script_adopted} onChange={(value) => update("script_adopted", value)} /></FilterField>
       </div>
-      <div className="mt-2 line-clamp-2 text-sm font-medium">{contentSnippet(run)}</div>
-      {replySnippet(run) ? <div className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-500">{replySnippet(run)}</div> : null}
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <span className={`rounded px-1.5 py-0.5 text-xs ${versionClassName}`}>{version}</span>
-        <RuntimeStatusBadge run={run} />
-        <span className="text-xs text-slate-500">{isRunning(run) ? `已耗时 ${formatDuration(runDurationMs(run, nowMs))}` : `总耗时 ${formatDuration(run.duration_ms)}`}</span>
-        {run.error ? <StatusBadge status="failed" compact /> : null}
+      <div className="mt-3 flex gap-2">
+        <Button size="sm" className="flex-1" onClick={onApply}>应用筛选</Button>
+        <Button size="sm" variant="outline" onClick={onClear}>清空</Button>
+      </div>
+    </div>
+  );
+}
+
+function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
+  return <label className="space-y-1 text-[11px] font-medium text-zinc-500"><span>{label}</span>{children}</label>;
+}
+
+function Select({ value, onChange, options }: { value: string; onChange: (value: string) => void; options: string[][] }) {
+  return (
+    <select value={value} onChange={(event) => onChange(event.target.value)} className="h-9 w-full rounded-md border border-input bg-white px-2 text-xs outline-none focus:ring-2 focus:ring-ring/50">
+      {options.map(([key, label]) => <option key={key || "all"} value={key}>{label}</option>)}
+    </select>
+  );
+}
+
+function YesNoSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return <Select value={value} onChange={onChange} options={[["", "全部"], ["true", "是"], ["false", "否"]]} />;
+}
+
+function RunListItem({ run, selected, onSelect }: { run: RunItem; selected: boolean; onSelect: (id: string) => void }) {
+  const summary = run.business_summary || {};
+  const status = runStatus(run);
+  const reply = runReply(run);
+  return (
+    <button type="button" onClick={() => onSelect(run.request_id)} className={`w-full border-b border-zinc-100 px-4 py-3 text-left transition-colors ${selected ? "bg-blue-50/80 shadow-[inset_3px_0_0_#2563eb]" : "bg-white hover:bg-zinc-50"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="line-clamp-2 text-sm font-medium leading-relaxed text-zinc-900">{runContent(run)}</div>
+        <StatusPill status={status} />
+      </div>
+      {reply ? <div className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-zinc-500">AI：{reply}</div> : null}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <SmallTag>{INTENT_LABELS[summary.intent_code || ""] || summary.intent_code || "意图未记录"}</SmallTag>
+        <SmallTag>{EMOTION_LABELS[summary.emotion_code || ""] || summary.emotion_code || "情绪未记录"}</SmallTag>
+        {summary.checkpoint_code ? <SmallTag tone="amber">卡点 {summary.checkpoint_name || summary.checkpoint_code}</SmallTag> : null}
+        {summary.sequence_adopted ? <SmallTag tone="green">已采用序列</SmallTag> : null}
+        {summary.script_adopted ? <SmallTag tone="green">已采用话术</SmallTag> : null}
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-zinc-400">
+        <span className="truncate font-mono">{run.request_id}</span>
+        <span className="shrink-0">{formatTime(run.created_at)}</span>
       </div>
     </button>
   );
 }
 
-function RunDetailPanel({ run, detail, loading, nowMs }: { run: RunItem; detail: RunDetail | null; loading: boolean; nowMs: number }) {
-  const observability = detail?.observability_view || legacyObservability(run, detail?.node_traces || []);
-  const nodes = observability.nodes;
-  const [selectedNodeId, setSelectedNodeId] = useState("");
-
-  useEffect(() => {
-    if (!nodes.length) {
-      setSelectedNodeId("");
-      return;
-    }
-    setSelectedNodeId((current) => (nodes.some((node) => node.id === current) ? current : nodes[0].id));
-  }, [nodes]);
-
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId) || nodes[0];
-  const selectedTrace = findTraceForNode(detail?.node_traces || [], selectedNode);
-  const rawModelCalls = useMemo(() => collectRawModelCalls(detail?.node_traces || []), [detail?.node_traces]);
+function RunDetailPanel({ run, detail, loading, onOpenNode }: {
+  run: RunItem;
+  detail: RunDetail | null;
+  loading: boolean;
+  onOpenNode: (node: ObservableNode) => void;
+}) {
+  const view = detail?.observability_view;
+  const summary = view?.summary;
+  const decision = view?.decision_summary;
+  const checkpoint = view?.checkpoint_summary;
+  const knowledge = view?.knowledge_match;
+  const customerMessage = summary?.customer_message || runContent(run);
+  const finalMessages = summary?.final_messages?.length ? summary.final_messages : replyMessages(run.output_snapshot);
+  const finalReply = finalMessages.map((item) => contentString(isRecord(item) ? item.content : item)).filter(Boolean);
+  const alerts = collectAlerts(run, view);
 
   return (
-    <div className="space-y-5">
-      <Overview run={run} view={observability} loading={loading} nowMs={nowMs} />
-
-      <section className="border bg-white">
-        <div className="border-b px-5 py-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h3 className="font-semibold">本轮处理过程</h3>
-              <p className="mt-1 text-sm text-slate-500">按业务阶段查看系统做了什么、得到了什么，以及哪里出现异常。</p>
-            </div>
-            <span className="text-sm text-slate-500">{loading ? "加载中..." : `${nodes.length} 个步骤`}</span>
-          </div>
-        </div>
-        <div className="grid min-h-[520px] lg:grid-cols-[390px_minmax(0,1fr)]">
-          <ExecutionTimeline nodes={nodes} selectedId={selectedNode?.id || ""} onSelect={setSelectedNodeId} />
-          {selectedNode ? (
-            <NodeInspector node={selectedNode} trace={selectedTrace} />
-          ) : (
-            <div className="p-6 text-sm text-slate-500">没有记录到节点轨迹。</div>
-          )}
-        </div>
-      </section>
-
-      <DeliveryPanel delivery={observability.delivery} />
-      <ModelCallPanel calls={rawModelCalls} />
-
-      <section className="border bg-white p-5">
-        <details>
-          <summary className="cursor-pointer text-sm font-semibold">开发者详情：调试快照（可能截断）</summary>
-          <p className="mt-2 text-xs text-slate-500">该内容经过长度和字段数量压缩，不代表平台请求或模型上下文的无损原文。</p>
-          <div className="mt-3 grid gap-3 xl:grid-cols-2">
-            <Snapshot title="运行调试快照" value={detail?.raw_log || {}} tall />
-            <Snapshot title="数据库节点轨迹" value={detail?.node_traces || []} tall />
-          </div>
-        </details>
-      </section>
-    </div>
-  );
-}
-
-function Overview({ run, view, loading, nowMs }: { run: RunItem; view: ObservabilityView; loading: boolean; nowMs: number }) {
-  const summary = view.summary;
-  return (
-    <section className="border bg-white">
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b px-5 py-4">
-        <div>
+    <div className="mx-auto max-w-[1440px] space-y-5 p-4 sm:p-6">
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-mono text-sm font-semibold">{run.request_id}</h2>
-            {isRunning(run) ? <RuntimeStatusBadge run={run} /> : <StatusBadge status={summary.status} />}
-            <span className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">{summary.interface_version || "v1"}</span>
+            <h2 className="text-lg font-semibold">本轮回复判断</h2>
+            <StatusPill status={runStatus(run, view)} />
+            {decision?.decision_status === "degraded" ? <StatusPill status="degraded" /> : null}
           </div>
-          <p className="mt-2 text-sm text-slate-500">
-            客户 {run.customer_id || "-"} · 会话 {run.conversation_id || "-"} · {formatTime(run.created_at)}
-          </p>
-        </div>
-        {loading ? <RefreshCw className="h-4 w-4 animate-spin text-slate-400" /> : null}
-      </div>
-
-      <div className="grid border-b sm:grid-cols-3 xl:grid-cols-6">
-        <Metric label={isRunning(run) ? "当前耗时" : "整轮耗时"} value={formatDuration(isRunning(run) ? runDurationMs(run, nowMs) : summary.wall_duration_ms)} detail="按墙钟时间" />
-        <Metric label="最慢节点" value={formatDuration(summary.slowest_node?.duration_ms)} detail={summary.slowest_node?.node_name || "-"} />
-        <Metric label="模型调用" value={`${summary.model_call_count} 次`} detail={`重试 ${summary.model_retry_count} / fallback ${summary.model_fallback_count}`} />
-        <Metric label="Token" value={String(summary.total_tokens || 0)} detail="本轮模型合计" />
-        <Metric label="警告" value={String(summary.warning_count || 0)} detail={summary.fallback_detected ? "命中异常兜底" : "节点与模型"} />
-        <Metric label="发送结果" value={statusLabel(view.delivery.status)} detail={`${view.delivery.succeeded_count}/${view.delivery.expected_count || 0} 成功`} />
-      </div>
-
-      <div className="grid gap-0 xl:grid-cols-[minmax(280px,0.8fr)_minmax(420px,1.2fr)]">
-        <div className="border-b p-5 xl:border-b-0 xl:border-r">
-          <div className="mb-3 text-xs font-semibold uppercase text-slate-500">客户当前消息</div>
-          <div className="rounded-md bg-slate-100 px-4 py-3 text-sm leading-relaxed">{summary.customer_message || "无文本内容"}</div>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
-            <span>类型：{summary.message_type || "text"}</span>
-            {summary.reply_chain_mode ? <span>链路：{summary.reply_chain_mode}</span> : null}
-          </div>
-          {summary.errors.length ? <IssueList title="运行错误" values={summary.errors} tone="error" /> : null}
-          {summary.warnings.length ? <IssueList title="运行警告" values={summary.warnings} tone="warning" /> : null}
-        </div>
-        <div className="p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-xs font-semibold uppercase text-slate-500">客户最终收到</div>
-            <StatusBadge status={view.delivery.status} compact />
-          </div>
-          <ReplyMessages messages={summary.final_messages} />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return (
-    <div className="border-b px-4 py-3 last:border-b-0 sm:border-r xl:border-b-0">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className="mt-1 truncate text-base font-semibold">{value}</div>
-      <div className="mt-0.5 truncate text-xs text-slate-400" title={detail}>{detail}</div>
-    </div>
-  );
-}
-
-function ExecutionTimeline({ nodes, selectedId, onSelect }: { nodes: ObservableNode[]; selectedId: string; onSelect: (id: string) => void }) {
-  const grouped = nodes.reduce<Array<{ phase: NodePresentation["phase"]; nodes: ObservableNode[] }>>((groups, node) => {
-    const phase = nodePresentation(node).phase;
-    const current = groups[groups.length - 1];
-    if (current?.phase === phase) current.nodes.push(node);
-    else groups.push({ phase, nodes: [node] });
-    return groups;
-  }, []);
-
-  return (
-    <div className="border-b bg-slate-50 p-4 lg:border-b-0 lg:border-r">
-      <div className="space-y-5">
-        {grouped.map((group) => (
-          <div key={`${group.phase}-${group.nodes[0]?.id}`}>
-            <div className="mb-2 px-2">
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <PhaseIcon phase={group.phase} />
-                {PHASE_META[group.phase].label}
-              </div>
-              <div className="mt-1 pl-6 text-xs leading-relaxed text-slate-500">{PHASE_META[group.phase].description}</div>
-            </div>
-            <div className="space-y-1">
-              {group.nodes.map((node) => {
-                const presentation = nodePresentation(node);
-                return (
-                  <button
-                    key={node.id}
-                    type="button"
-                    onClick={() => onSelect(node.id)}
-                    className={`grid w-full grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-2 rounded-md px-3 py-3 text-left ${
-                      selectedId === node.id ? "bg-white shadow-sm ring-1 ring-slate-200" : "hover:bg-white"
-                    }`}
-                  >
-                    <NodeStatusIcon status={node.status} />
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium text-slate-900">{presentation.title}</span>
-                      <span className="mt-1 block line-clamp-2 text-xs leading-relaxed text-slate-500">{node.summary?.[0] || presentation.purpose}</span>
-                      <span className="mt-1.5 flex flex-wrap gap-2 text-[11px] text-slate-400">
-                        <span>{nodeStatusText(node)}</span>
-                        {node.model_calls.length ? <span>模型 {node.model_calls.length} 次</span> : null}
-                        {node.tool_calls.length ? <span>工具 {node.tool_calls.length} 次</span> : null}
-                      </span>
-                    </span>
-                    <span className="flex items-center gap-1 text-xs text-slate-500">
-                      {formatDuration(node.duration_ms)}
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function NodeInspector({ node, trace }: { node: ObservableNode; trace?: NodeTrace }) {
-  const presentation = nodePresentation(node);
-  return (
-    <div className="min-w-0 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
-        <div>
-          <div className="mb-2 text-xs font-medium text-blue-700">{presentation.phaseLabel}</div>
-          <div className="flex items-center gap-2">
-            <NodeStatusIcon status={node.status} />
-            <h4 className="text-lg font-semibold">{presentation.title}</h4>
-          </div>
-          <p className="mt-2 text-sm leading-relaxed text-slate-600">{presentation.purpose}</p>
-        </div>
-        <div className="text-right text-sm text-slate-500">
-          <div className="font-medium text-slate-700">{nodeStatusText(node)} · {formatDuration(node.duration_ms)}</div>
-          <div className="mt-1 text-xs">{formatTime(node.started_at)}</div>
-        </div>
-      </div>
-
-      <div className="py-4">
-        <SectionTitle title="处理结果" />
-        {(node.summary || []).length ? (
-          <ul className="space-y-2 text-sm leading-relaxed text-slate-800">
-            {(node.summary || []).map((line, index) => <li key={index} className="rounded-md bg-slate-50 px-3 py-2">{line}</li>)}
-          </ul>
-        ) : <div className="text-sm text-slate-400">该步骤已完成，但没有额外结果摘要。</div>}
-      </div>
-
-      <div className="grid gap-5 border-t py-4 xl:grid-cols-2">
-        <FieldList title="使用的信息" values={node.important_inputs} empty="没有需要额外展示的输入信息" />
-        <FieldList title="得到的信息" values={node.important_outputs} empty="没有需要额外展示的输出信息" />
-      </div>
-
-      {node.model_calls.length ? (
-        <div className="border-t py-4">
-          <SectionTitle title={`模型处理（${node.model_calls.length} 次）`} icon={<Bot className="h-4 w-4" />} />
-          <div className="space-y-2">
-            {node.model_calls.map((call) => <ModelSummary key={call.id} call={call} />)}
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+            <span className="font-mono">{run.request_id}</span>
+            <span>企微 {run.business_summary?.wechat || "未记录"}</span>
+            <span>{formatTime(run.created_at)}</span>
           </div>
         </div>
+        <div className="flex flex-wrap gap-2 text-xs text-zinc-500">
+          <Metric label="总耗时" value={formatDuration(summary?.wall_duration_ms || run.duration_ms)} />
+          <Metric label="模型调用" value={`${summary?.model_call_count ?? "-"} 次`} />
+          <Metric label="Token" value={summary?.total_tokens ? String(summary.total_tokens) : "未记录"} />
+          <Metric label="实际模型" value={modelsUsed(view)} />
+        </div>
+      </header>
+
+      {loading ? <div className="h-1 overflow-hidden rounded-full bg-blue-100"><div className="h-full w-1/3 animate-pulse rounded-full bg-blue-500" /></div> : null}
+      {isRunning(run) ? (
+        <Notice tone="blue" title={runtimePhaseLabel(run.runtime_phase)} text="运行中只展示主链阶段；请求完成后才提供准确的逐节点输入与输出。" />
       ) : null}
+      {alerts.map((alert, index) => <Notice key={index} tone={alert.tone} title={alert.title} text={alert.text} />)}
 
-      {node.tool_calls.length ? (
-        <div className="border-t py-4">
-          <SectionTitle title={`事实查询（${node.tool_calls.length} 次）`} icon={<Wrench className="h-4 w-4" />} />
-          <div className="space-y-2">
-            {node.tool_calls.map((call, index) => <ToolSummary key={`${call.name}-${index}`} call={call} />)}
-          </div>
-        </div>
-      ) : null}
+      <section className="grid gap-4 lg:grid-cols-2">
+        <ConversationCard label="客户当前原话" icon={<MessageSquareText className="size-4 text-blue-600" />} lines={[customerMessage]} />
+        <ConversationCard label="AI 最终客户可见回复" icon={<Bot className="size-4 text-emerald-600" />} lines={finalReply} empty="尚未生成或历史未记录最终回复" />
+      </section>
 
-      {node.errors.length ? <IssueList title="节点错误" values={node.errors} tone="error" /> : null}
-      {node.warnings.length ? <IssueList title="节点警告与恢复" values={node.warnings} tone="warning" /> : null}
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <DecisionCard icon={<Target className="size-4 text-blue-600" />} title="最终意图" value={decision?.intent?.name || "未记录"} meta={`${confidenceLabel(decision?.intent?.confidence)}${decision?.intent?.secondary_names?.length ? ` · 次要：${decision.intent.secondary_names.join("、")}` : ""}`} evidence={decision?.intent?.evidence} />
+        <DecisionCard icon={<Sparkles className="size-4 text-violet-600" />} title="客户情绪" value={decision?.emotion?.name || "未记录"} meta={[confidenceLabel(decision?.emotion?.confidence), decision?.emotion?.pressure ? `表达压力 ${pressureLabel(decision.emotion.pressure)}` : "", flowActionLabel(decision?.emotion?.flow_action)].filter(Boolean).join(" · ")} evidence={decision?.emotion?.evidence} />
+        <DecisionCard icon={<TriangleAlert className="size-4 text-amber-600" />} title="卡点判断" value={checkpointTitle(checkpoint?.final, checkpoint?.router)} meta={checkpoint?.final?.available ? "Reply 最终判断" : checkpoint?.router?.primary?.code ? "仅 Router 检索判断" : "本轮无明确卡点或未记录"} evidence={checkpoint?.final?.evidence?.length ? checkpoint.final.evidence : checkpoint?.router?.evidence} />
+        <DecisionCard icon={<Send className="size-4 text-emerald-600" />} title="逼单动作" value={decision?.closing?.action_name || "未记录"} meta={[decision?.closing?.sequence_name || decision?.closing?.sequence_key, decision?.closing?.node_name || decision?.closing?.node_key, customerStateLabel(decision?.closing?.customer_state), decision?.closing?.pressure ? `表达压力 ${pressureLabel(decision.closing.pressure)}` : ""].filter(Boolean).join(" · ")} evidence={decision?.closing?.evidence} />
+      </section>
 
-      <details className="mt-4 border-t pt-4">
-        <summary className="cursor-pointer text-sm font-medium text-slate-600">技术详情与原始数据</summary>
-        <div className="mt-3 rounded-md bg-slate-50 px-3 py-2 font-mono text-xs text-slate-500">内部节点：{node.node_name}</div>
-        <div className="mt-3 grid gap-3 xl:grid-cols-3">
-          <Snapshot title="输入快照" value={trace?.input_snapshot || {}} />
-          <Snapshot title="调用快照" value={trace?.tool_calls || []} />
-          <Snapshot title="输出快照" value={trace?.output_snapshot || {}} />
-        </div>
-      </details>
+      <StrategySection knowledge={knowledge} checkpoint={checkpoint} deliveryStatus={view?.delivery?.status} />
+      <WorkflowSection view={view} onOpenNode={onOpenNode} />
+      <DeliverySection view={view} />
     </div>
   );
 }
 
-function PhaseIcon({ phase }: { phase: NodePresentation["phase"] }) {
-  if (phase === "facts") return <Database className="h-4 w-4 text-emerald-600" />;
-  if (phase === "reply") return <MessageSquareText className="h-4 w-4 text-blue-600" />;
-  if (phase === "commit") return <ShieldCheck className="h-4 w-4 text-violet-600" />;
-  return <Layers3 className="h-4 w-4 text-slate-600" />;
-}
-
-function SectionTitle({ title, icon }: { title: string; icon?: React.ReactNode }) {
-  return <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">{icon}{title}</div>;
-}
-
-function FieldList({ title, values, empty }: { title: string; values: ImportantField[]; empty: string }) {
+function StrategySection({ knowledge, checkpoint, deliveryStatus }: {
+  knowledge?: KnowledgeMatch;
+  checkpoint?: ObservabilityView["checkpoint_summary"];
+  deliveryStatus?: string;
+}) {
+  const sequences = knowledge?.matched_sequences || [];
+  const scripts = knowledge?.script_candidates || [];
+  const availability = knowledge?.available;
+  const router = checkpoint?.router;
   return (
-    <div>
-      <SectionTitle title={title} />
-      {values.length ? (
-        <dl className="space-y-2">
-          {values.map((item) => (
-            <div key={item.key} className="grid grid-cols-[110px_minmax(0,1fr)] gap-3 text-sm">
-              <dt className="text-slate-500">{item.label}</dt>
-              <dd className="min-w-0 whitespace-pre-wrap break-words text-slate-800">{displayValue(item.value)}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : <div className="text-sm text-slate-400">{empty}</div>}
-    </div>
-  );
-}
-
-function ModelSummary({ call }: { call: ObservableModelCall }) {
-  return (
-    <details className="rounded-md border bg-slate-50">
-      <summary className="cursor-pointer px-3 py-2 text-sm">
-        <span className="font-medium">{call.name}</span>
-        <span className="ml-2 text-slate-500">{call.model || "未记录模型"}</span>
-        <span className="ml-3 text-slate-500">{formatDuration(call.duration_ms)}</span>
-        {call.attempts > 1 ? <span className="ml-2 text-amber-700">重试 {call.attempts}</span> : null}
-        {call.fallback_used || call.hedge_started ? <span className="ml-2 text-amber-700">fallback</span> : null}
-        {call.error ? <span className="ml-2 text-red-700">失败</span> : null}
-      </summary>
-      <div className="border-t px-3 py-3 text-xs text-slate-600">
-        <div className="mb-2 flex flex-wrap gap-4">
-          <span>Token：{call.total_tokens || 0}</span>
-          <span>层级：{call.tier || "-"}</span>
-          <span>Prompt：{call.prompt_messages.reduce((sum, item) => sum + item.chars, 0)} 字符</span>
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <SectionHeader title="策略与话术匹配" subtitle="候选、最终采用、实际发送是三个不同阶段" />
+      <div className="border-t border-zinc-100 p-4 sm:p-5">
+        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-stretch">
+          <FlowCard title="1. 识别卡点" value={router?.primary?.name || router?.primary?.code || "未识别或未记录"} detail={router?.reason || router?.retrieval_goal?.summary} />
+          <FlowArrow />
+          <FlowCard title="2. 候选序列" value={availability === false ? "历史未记录" : `${sequences.length} 条`} detail={reasonText(knowledge?.adoption_explanation?.sequence)} />
+          <FlowArrow />
+          <FlowCard title="3. 候选话术" value={availability === false ? "历史未记录" : `${knowledge?.script_candidate_count ?? scripts.length} 条`} detail={reasonText(knowledge?.adoption_explanation?.script)} />
+          <FlowArrow />
+          <FlowCard title="4. 最终采用" value={knowledge?.adopted?.sequence_name || knowledge?.adopted?.sequence_id || "未采用序列"} detail={knowledge?.adopted?.script_ids?.length ? `采用 ${knowledge.adopted.script_ids.length} 条话术` : "未采用话术"} tone={knowledge?.adopted?.sequence_id || knowledge?.adopted?.script_ids?.length ? "green" : "neutral"} />
+          <FlowArrow />
+          <FlowCard title="5. 实际发送" value={deliveryText(deliveryStatus)} detail={knowledge?.delivered_content_ids?.length ? `${knowledge.delivered_content_ids.length} 个知识内容已交付` : "没有已交付知识 ID 或未记录"} tone={deliveryStatus === "delivered" || deliveryStatus === "send_succeeded" ? "green" : "neutral"} />
         </div>
-        <div className="space-y-2">
-          {call.prompt_messages.map((message, index) => (
-            <div key={index} className="grid grid-cols-[76px_64px_minmax(0,1fr)] gap-2 rounded bg-white px-2 py-2">
-              <span className="font-medium">{message.role}</span>
-              <span>{message.chars} 字符</span>
-              <span className="truncate" title={message.preview}>{message.preview}</span>
-            </div>
-          ))}
-        </div>
-        {call.timeout_stage ? <div className="mt-2 text-red-700">超时阶段：{call.timeout_stage}</div> : null}
-        {call.error ? <div className="mt-2 text-red-700">{call.error}</div> : null}
-      </div>
-    </details>
-  );
-}
 
-function ToolSummary({ call }: { call: ObservableToolCall }) {
-  return (
-    <details className="rounded-md border bg-slate-50">
-      <summary className="cursor-pointer px-3 py-2 text-sm">
-        <span className="font-medium">{call.name}</span>
-        <span className="ml-3 text-slate-500">{formatDuration(call.duration_ms)}</span>
-        <span className={`ml-2 ${call.status === "failed" ? "text-red-700" : "text-emerald-700"}`}>
-          {call.status === "failed" ? "失败" : "成功"}
-        </span>
-      </summary>
-      <div className="grid gap-3 border-t p-3 xl:grid-cols-2">
-        <ReadableObject title="参数（已脱敏）" value={call.input_summary} />
-        <ReadableObject title="结果摘要" value={call.output_summary} />
-      </div>
-      {call.error ? <div className="border-t px-3 py-2 text-xs text-red-700">{call.error}</div> : null}
-    </details>
-  );
-}
-
-function DeliveryPanel({ delivery }: { delivery: ObservabilityView["delivery"] }) {
-  return (
-    <section className="border bg-white p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="flex items-center gap-2 font-semibold"><Send className="h-4 w-4" />消息发送与平台回调</h3>
-          <p className="mt-1 text-sm text-slate-500">区分“模型已生成”“平台已接受”和“客户消息已确认送达”。</p>
-        </div>
-        <StatusBadge status={delivery.status} />
-      </div>
-      {delivery.dispatches.length ? (
-        <div className="mt-4 divide-y border">
-          {delivery.dispatches.map((dispatch) => (
-            <div key={dispatch.dispatch_id} className="p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate font-mono text-xs text-slate-500">{dispatch.dispatch_id}</div>
-                  <div className="mt-1 text-sm">{dispatch.source_channel} · {dispatch.source_kind}</div>
-                </div>
-                <StatusBadge status={dispatch.status} compact />
-              </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-3 text-sm">
-                <div>应发 <strong>{dispatch.expected_count}</strong></div>
-                <div className="text-emerald-700">成功 <strong>{dispatch.succeeded_count}</strong></div>
-                <div className="text-red-700">失败 <strong>{dispatch.failed_count}</strong></div>
-              </div>
+        {!availability ? (
+          <Notice tone="gray" title="历史数据未完整留存" text="这个请求没有保存完整候选资料，页面不会把字段缺失显示成候选数为 0，也不会用当前知识库反推当时结果。" />
+        ) : (
+          <div className="grid gap-5 xl:grid-cols-2">
+            <div>
+              <Subheading title="候选跟进序列" count={sequences.length} />
               <div className="mt-3 space-y-2">
-                {dispatch.items.map((item) => (
-                  <div key={`${dispatch.dispatch_id}-${item.message_index}`} className="grid grid-cols-[32px_100px_minmax(0,1fr)_auto] gap-2 rounded bg-slate-50 px-3 py-2 text-xs">
-                    <span>#{item.message_index + 1}</span>
-                    <span>{item.message_type}</span>
-                    <span className={item.error_message ? "text-red-700" : "text-slate-500"}>{item.error_message || item.platform_message_id || "等待平台消息 ID"}</span>
-                    <StatusBadge status={item.status} compact />
+                {sequences.map((sequence, index) => (
+                  <div key={`${sequence.sequence_id}-${index}`} className={`rounded-lg border p-3 ${sequence.adopted ? "border-emerald-300 bg-emerald-50/60" : "border-zinc-200"}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div><div className="text-sm font-medium">{sequence.sequence_name || sequence.sequence_id || `候选 ${index + 1}`}</div><div className="mt-0.5 text-xs text-zinc-500">{sequence.selection_reason || sequence.checkpoint_name || sequence.checkpoint_code || "未记录命中理由"}</div></div>
+                      {sequence.adopted ? <AdoptedBadge /> : <span className="text-xs text-zinc-400">候选 #{sequence.rank || index + 1}</span>}
+                    </div>
+                    {sequence.steps?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{sequence.steps.map((step) => <SmallTag key={step.step_id || `${step.sort_order}`} tone={step.adopted ? "green" : "gray"}>{step.action_name || step.action_code || `步骤 ${step.sort_order}`}</SmallTag>)}</div> : null}
                   </div>
                 ))}
+                {!sequences.length ? <EmptyState text={reasonText(knowledge?.adoption_explanation?.sequence)} /> : null}
               </div>
-              {dispatch.error_message ? <div className="mt-3 text-sm text-red-700">{dispatch.error_code} {dispatch.error_message}</div> : null}
-              <div className="mt-3 text-xs text-slate-400">提交 {formatTime(dispatch.submitted_at)} · 回调 {formatTime(dispatch.last_callback_at)}</div>
+            </div>
+            <div>
+              <Subheading title="候选卡点话术" count={scripts.length} />
+              <div className="mt-3 space-y-2">
+                {scripts.map((script, index) => (
+                  <div key={`${script.script_id}-${index}`} className={`rounded-lg border p-3 ${script.adopted ? "border-emerald-300 bg-emerald-50/60" : "border-zinc-200"}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div><div className="text-sm font-medium">{script.script_name || script.script_code || `候选话术 ${index + 1}`}</div><div className="mt-0.5 text-xs text-zinc-500">{[script.checkpoint_type_name, script.checkpoint_tag_name, script.action_name || script.action_code].filter(Boolean).join(" · ") || "标签未记录"}</div></div>
+                      <div className="flex gap-1">{script.adopted ? <AdoptedBadge /> : null}{script.delivered ? <SmallTag tone="blue">已发送</SmallTag> : null}</div>
+                    </div>
+                    <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-zinc-600">{script.text_preview || "历史记录未保存正文预览"}</p>
+                  </div>
+                ))}
+                {!scripts.length ? <EmptyState text={reasonText(knowledge?.adoption_explanation?.script)} /> : null}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function WorkflowSection({ view, onOpenNode }: { view?: ObservabilityView; onOpenNode: (node: ObservableNode) => void }) {
+  const stages = view?.workflow_nodes || [];
+  const nodes = view?.nodes || [];
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <SectionHeader title="执行链路" subtitle="先看业务阶段；点击真实内部节点查看当时输入、输出、模型和工具" />
+      <div className="border-t border-zinc-100 p-4 sm:p-5">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          {stages.map((stage, index) => (
+            <div key={stage.key} className={`relative rounded-lg border p-3 ${stageTone(stage.status)}`}>
+              <div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold">{index + 1}. {stage.label}</span><StatusDot status={stage.status} /></div>
+              <div className="mt-1 text-[11px] leading-relaxed text-zinc-500">{stage.summary || stage.purpose}</div>
+              {stage.duration_ms ? <div className="mt-2 text-[11px] text-zinc-400">{formatDuration(stage.duration_ms)}</div> : null}
             </div>
           ))}
         </div>
-      ) : (
-        <div className="mt-4 border border-dashed p-4 text-sm text-slate-500">这条请求没有关联到消息派发记录。旧日志或同步返回场景可能没有回调数据。</div>
-      )}
+        <div className="mt-5">
+          <Subheading title="真实内部节点" count={nodes.length} />
+          {nodes.length ? (
+            <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {nodes.map((node) => (
+                <button key={node.id} type="button" onClick={() => onOpenNode(node)} className="group rounded-lg border border-zinc-200 p-3 text-left transition hover:border-blue-300 hover:bg-blue-50/40">
+                  <div className="flex items-center justify-between gap-3"><div className="truncate text-sm font-medium">{node.display_name}</div><div className="flex items-center gap-2"><span className="text-xs text-zinc-400">{formatDuration(node.duration_ms)}</span><ArrowRight className="size-3.5 text-zinc-400 group-hover:text-blue-600" /></div></div>
+                  <div className="mt-1 line-clamp-2 text-xs leading-relaxed text-zinc-500">{node.summary?.[0] || node.node_name}</div>
+                  <div className="mt-2 flex gap-1.5"><StatusPill status={node.status} />{node.model_calls?.length ? <SmallTag>{node.model_calls.length} 次模型</SmallTag> : null}{node.tool_calls?.length ? <SmallTag>{node.tool_calls.length} 次工具</SmallTag> : null}</div>
+                </button>
+              ))}
+            </div>
+          ) : <EmptyState text={view?.data_availability?.node_traces === "expired" ? `节点轨迹已超过 ${view.data_availability.trace_retention_days || 14} 天保留期；业务摘要仍可查看。` : "本次历史记录未保存节点轨迹，或请求仍在处理中。"} />}
+        </div>
+      </div>
     </section>
   );
 }
 
-function ModelCallPanel({ calls }: { calls: RawModelCall[] }) {
+function DeliverySection({ view }: { view?: ObservabilityView }) {
+  const delivery = view?.delivery;
+  const store = view?.store_workflow;
+  if (!delivery && !store) return null;
   return (
-    <section className="border bg-white p-5">
-      <details>
-        <summary className="cursor-pointer font-semibold">全部模型调用与 Prompt 调试（{calls.length}）</summary>
-        <p className="mt-2 text-sm text-slate-500">默认不展开完整 Prompt。这里可能包含客户历史，仅供开发排障。</p>
-        <div className="mt-4 space-y-3">
-          {calls.map((call, index) => (
-            <details key={call.id} className="border">
-              <summary className="cursor-pointer bg-slate-50 px-3 py-2 text-sm">
-                {index + 1}. {call.node} / {call.name}
-                <span className="ml-3 text-slate-500">{call.model || "-"}</span>
-                <span className="ml-3 text-slate-500">{formatDuration(call.durationMs)}</span>
-                {call.attempts > 1 ? <span className="ml-3 text-amber-700">尝试 {call.attempts}</span> : null}
-                {call.error ? <span className="ml-3 text-red-700">error</span> : null}
-              </summary>
-              <div className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(240px,0.7fr)]">
-                <PromptMessages value={call.input} />
-                <Snapshot title="模型原始输出" value={call.output} tall />
-                <Snapshot title="Usage / error" value={{ usage: call.usage, error: call.error }} tall />
-              </div>
-            </details>
-          ))}
-          {!calls.length ? <div className="text-sm text-slate-500">没有记录到模型调用。</div> : null}
+    <section className="grid gap-4 lg:grid-cols-2">
+      <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">发送与平台回执</h3><StatusPill status={delivery?.status || "not_recorded"} /></div>
+        <div className="mt-3 grid grid-cols-3 gap-2 text-center"><Metric label="预期发送" value={String(delivery?.expected_count ?? "-")} /><Metric label="成功" value={String(delivery?.succeeded_count ?? "-")} /><Metric label="失败" value={String(delivery?.failed_count ?? "-")} /></div>
+        <p className="mt-3 text-xs leading-relaxed text-zinc-500">“最终采用”只表示 Reply 选择了资料；只有这里显示平台接受或送达，才代表实际触达客户。</p>
+      </div>
+      {store && Object.keys(store).length ? (
+        <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">门店事实工作流</h3><SmallTag tone={store.called ? "blue" : "gray"}>{store.called ? "已调用" : "未调用"}</SmallTag></div>
+          <div className="mt-3 grid grid-cols-2 gap-3 text-xs"><SummaryPair label="查询状态" value={stringField(store.status) || (store.called ? "已调用" : "未查询")} /><SummaryPair label="查询地点" value={stringField(store.query) || (store.called ? "未记录" : "未查询")} /><SummaryPair label="匹配门店" value={store.called ? String(Array.isArray(store.candidates) ? store.candidates.length : "未记录") : "未查询"} /><SummaryPair label="下一步" value={stringField(store.next_action) || (store.called ? "未记录" : "无需门店处理")} /></div>
         </div>
-      </details>
+      ) : null}
     </section>
   );
 }
 
-function ReplyMessages({ messages }: { messages: JsonValue[] }) {
-  if (!messages.length) return <div className="border border-dashed p-4 text-sm text-red-700">没有客户可见回复。</div>;
+function DecisionCard({ icon, title, value, meta, evidence }: { icon: React.ReactNode; title: string; value: string; meta?: string; evidence?: Evidence[] }) {
+  const quote = evidence?.find((item) => item.quote)?.quote;
   return (
-    <div className="space-y-2">
-      {messages.map((message, index) => <ReplyMessage key={index} value={message} index={index} />)}
+    <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-2 text-xs font-medium text-zinc-500">{icon}{title}</div>
+      <div className="mt-2 text-base font-semibold text-zinc-900">{value}</div>
+      <div className="mt-1 min-h-8 text-xs leading-relaxed text-zinc-500">{meta || "没有更多信息"}</div>
+      {quote ? <div className="mt-2 line-clamp-2 rounded bg-zinc-50 px-2 py-1.5 text-[11px] leading-relaxed text-zinc-600">证据：“{quote}”</div> : null}
     </div>
   );
 }
 
-function ReplyMessage({ value, index }: { value: JsonValue; index: number }) {
-  const record = isRecord(value) ? value : {};
-  const type = stringField(record.type) || "text";
-  const content = record.content;
-  if (type === "image") {
-    const url = contentString(content, "url");
-    return (
-      <div className="flex items-start gap-3 rounded-md border p-3">
-        <ImageIcon className="mt-1 h-4 w-4 text-blue-600" />
-        <div className="min-w-0">
-          <div className="text-xs text-slate-500">#{index + 1} 图片</div>
-          {url ? <img src={url} alt="回复图片" className="mt-2 max-h-52 max-w-full object-contain" /> : <div className="mt-1 text-sm">未记录图片地址</div>}
-        </div>
-      </div>
-    );
-  }
-  if (type === "store_address") {
-    return <StructuredMessage icon={<MapPin className="h-4 w-4" />} label="门店卡" value={`门店 ID：${contentString(content, "store_id") || contentString(content) || "-"}`} />;
-  }
-  if (type === "payment_collection") {
-    const amount = isRecord(content) ? stringField(content.amount) : "";
-    return <StructuredMessage icon={<WalletCards className="h-4 w-4" />} label="预约金卡" value={`金额：${amount || "10"} 元`} />;
-  }
-  if (type === "video") {
-    const url = contentString(content, "url");
-    return <StructuredMessage icon={<ExternalLink className="h-4 w-4" />} label="视频" value={url || "未记录视频地址"} />;
-  }
+function ConversationCard({ label, icon, lines, empty = "没有文本" }: { label: string; icon: React.ReactNode; lines: string[]; empty?: string }) {
   return (
-    <div className="rounded-md bg-blue-50 px-4 py-3 text-sm leading-relaxed text-slate-900">
-      <div className="mb-1 text-[11px] text-blue-600">#{index + 1} 文本</div>
-      <div className="whitespace-pre-wrap">{contentString(content) || displayValue(content) || "空文本"}</div>
-    </div>
-  );
-}
-
-function StructuredMessage({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return (
-    <div className="flex items-center gap-3 rounded-md border bg-emerald-50 px-4 py-3 text-sm">
-      <span className="text-emerald-700">{icon}</span>
-      <div><div className="text-xs font-medium text-emerald-800">{label}</div><div className="mt-0.5">{value}</div></div>
-    </div>
-  );
-}
-
-function StatusBadge({ status, compact = false }: { status: string; compact?: boolean }) {
-  const meta = STATUS_META[status] || { label: status || "未知", className: "bg-slate-200 text-slate-700" };
-  return <span className={`inline-flex items-center rounded px-2 py-1 font-medium ${compact ? "text-[11px]" : "text-xs"} ${meta.className}`}>{meta.label}</span>;
-}
-
-function NodeStatusIcon({ status }: { status: string }) {
-  if (status === "failed") return <XCircle className="h-4 w-4 text-red-600" />;
-  if (status === "warning") return <TriangleAlert className="h-4 w-4 text-amber-600" />;
-  if (status === "pending") return <CircleDashed className="h-4 w-4 text-blue-600" />;
-  if (status === "skipped") return <CircleDashed className="h-4 w-4 text-slate-400" />;
-  return <CheckCircle2 className="h-4 w-4 text-emerald-600" />;
-}
-
-function IssueList({ title, values, tone }: { title: string; values: JsonValue[]; tone: "error" | "warning" }) {
-  const className = tone === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-amber-200 bg-amber-50 text-amber-900";
-  return (
-    <div className={`mt-4 rounded-md border p-3 text-sm ${className}`}>
-      <div className="mb-1 font-medium">{title}</div>
-      {values.map((value, index) => <div key={index} className="break-words text-xs leading-relaxed">{displayValue(value)}</div>)}
-    </div>
-  );
-}
-
-function ReadableObject({ title, value }: { title: string; value: JsonValue }) {
-  if (isRecord(value)) {
-    return (
-      <div>
-        <div className="mb-2 text-xs font-medium text-slate-500">{title}</div>
-        <dl className="space-y-1.5 text-xs">
-          {Object.entries(value).map(([key, item]) => <div key={key} className="grid grid-cols-[110px_minmax(0,1fr)] gap-2"><dt className="text-slate-500">{key}</dt><dd className="break-words">{displayValue(item)}</dd></div>)}
-        </dl>
-      </div>
-    );
-  }
-  return <div><div className="mb-2 text-xs font-medium text-slate-500">{title}</div><div className="text-xs">{displayValue(value)}</div></div>;
-}
-
-function Snapshot({ title, value, tall = false }: { title: string; value: JsonValue; tall?: boolean }) {
-  return (
-    <div className="min-w-0 rounded-md border">
-      <div className="border-b bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">{title}</div>
-      <pre className={`overflow-auto whitespace-pre-wrap break-words p-3 text-xs leading-relaxed text-slate-700 ${tall ? "max-h-[620px]" : "max-h-80"}`}>{formatJson(value)}</pre>
-    </div>
-  );
-}
-
-function PromptMessages({ value }: { value: JsonValue }) {
-  const messages = Array.isArray(value) ? value : [];
-  if (!messages.length) return <Snapshot title="输入 messages / prompt" value={value} tall />;
-  return (
-    <div className="min-w-0 rounded-md border">
-      <div className="flex items-center justify-between border-b bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600"><span>输入 messages / prompt</span><span>{messages.length} 条</span></div>
-      <div className="max-h-[620px] space-y-2 overflow-auto p-3">
-        {messages.map((message, index) => {
-          const record = isRecord(message) ? message : {};
-          const role = stringField(record.role) || "unknown";
-          const content = record.content ?? message;
-          return (
-            <details key={index} className="border">
-              <summary className="cursor-pointer bg-white px-3 py-2 text-xs"><span className="font-semibold">#{index + 1} {role}</span><span className="ml-3 text-slate-500">{contentLength(content)} 字符</span></summary>
-              <pre className="max-h-[500px] overflow-auto whitespace-pre-wrap break-words border-t bg-slate-50 p-3 text-xs leading-relaxed">{typeof content === "string" ? content : formatJson(content)}</pre>
-            </details>
-          );
-        })}
+    <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-2 text-xs font-medium text-zinc-500">{icon}{label}</div>
+      <div className="mt-3 space-y-2">
+        {lines.length ? lines.map((line, index) => <div key={index} className={`rounded-lg px-3 py-2.5 text-sm leading-relaxed ${label.startsWith("AI") ? "bg-emerald-50 text-emerald-950" : "bg-blue-50 text-blue-950"}`}>{line}</div>) : <div className="text-sm text-zinc-400">{empty}</div>}
       </div>
     </div>
   );
 }
 
-function legacyObservability(run: RunItem, traces: NodeTrace[]): ObservabilityView {
-  const messages = replyMessagesForDisplay(run.output_snapshot) || [];
-  const nodes = traces.map((trace, index): ObservableNode => ({
-    id: trace.id || `legacy-${index + 1}`,
-    sequence: index + 1,
-    node_name: trace.node_name || trace.node || "unknown",
-    node_kind: "other",
-    display_name: trace.node_name || trace.node || "unknown",
-    status: trace.error ? "failed" : "success",
-    duration_ms: trace.duration_ms || 0,
-    started_at: trace.created_at || "",
-    finished_at: "",
-    parallel_group: "",
-    summary: [trace.error ? `节点失败：${trace.error}` : "节点已完成"],
-    important_inputs: [],
-    important_outputs: [],
-    model_calls: [],
-    tool_calls: [],
-    warnings: [],
-    errors: trace.error ? [trace.error] : [],
-  }));
-  const context = isRecord(run.input_snapshot?.request_context) ? run.input_snapshot?.request_context : {};
-  return {
-    contract_version: "legacy_frontend_fallback",
-    summary: {
-      status: run.error ? "failed" : "success",
-      request_id: run.request_id,
-      created_at: run.created_at || "",
-      interface_version: stringField(context?.interface_version) || "v1",
-      reply_chain_mode: stringField(context?.reply_chain_mode),
-      message_type: stringField(context?.msgtype) || "text",
-      customer_message: contentSnippet(run),
-      wall_duration_ms: run.duration_ms || 0,
-      recorded_duration_ms: run.duration_ms || 0,
-      slowest_node: { node_name: "", display_name: "", duration_ms: 0 },
-      model_call_count: collectRawModelCalls(traces).length,
-      model_retry_count: 0,
-      model_fallback_count: 0,
-      total_tokens: numberField(run.token_usage?.total_tokens) || 0,
-      fallback_detected: false,
-      error_count: run.error ? 1 : 0,
-      warning_count: 0,
-      errors: run.error ? [run.error] : [],
-      warnings: [],
-      final_messages: messages,
-      http_response_messages: messages,
-      async_final_messages: [],
-    },
-    nodes,
-    delivery: { status: "not_recorded", expected_count: 0, succeeded_count: 0, failed_count: 0, dispatches: [] },
-    debug: { snapshot_is_compacted: true, snapshot_label: "调试快照（可能截断）" },
-  };
+function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
+  return <div className="flex flex-wrap items-end justify-between gap-2 px-4 py-3 sm:px-5"><h3 className="text-sm font-semibold">{title}</h3><p className="text-xs text-zinc-500">{subtitle}</p></div>;
 }
 
-function findTraceForNode(traces: NodeTrace[], node?: ObservableNode) {
-  if (!node) return undefined;
-  return traces.find((trace) => trace.id === node.id) || traces[node.sequence - 1] || traces.find((trace) => (trace.node_name || trace.node) === node.node_name);
+function FlowCard({ title, value, detail, tone = "blue" }: { title: string; value: string; detail?: string; tone?: "blue" | "green" | "neutral" }) {
+  const colors = tone === "green" ? "border-emerald-200 bg-emerald-50/60" : tone === "neutral" ? "border-zinc-200 bg-zinc-50" : "border-blue-200 bg-blue-50/50";
+  return <div className={`min-w-0 flex-1 rounded-lg border p-3 ${colors}`}><div className="text-[11px] font-medium text-zinc-500">{title}</div><div className="mt-1 truncate text-sm font-semibold">{value}</div><div className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-zinc-500">{detail || "未记录说明"}</div></div>;
 }
 
-function collectRawModelCalls(traces: NodeTrace[]) {
-  const output: RawModelCall[] = [];
-  traces.forEach((trace, traceIndex) => {
-    const node = trace.node_name || trace.node || "unknown";
-    const calls = Array.isArray(trace.tool_calls) ? trace.tool_calls : [];
-    calls.forEach((call, callIndex) => collectRawModelCallValue(call, { node, idPrefix: `${traceIndex}-${callIndex}`, output }));
-  });
-  return output;
+function FlowArrow() { return <div className="hidden items-center text-zinc-300 lg:flex"><ArrowRight className="size-4" /></div>; }
+function Subheading({ title, count }: { title: string; count: number }) { return <div className="flex items-center justify-between text-sm font-semibold"><span>{title}</span><span className="text-xs font-normal text-zinc-400">{count} 条已留存</span></div>; }
+function AdoptedBadge() { return <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700"><Check className="size-3" />最终采用</span>; }
+function SmallTag({ children, tone = "gray" }: { children: React.ReactNode; tone?: "gray" | "blue" | "green" | "amber" }) {
+  const classes = { gray: "bg-zinc-100 text-zinc-600", blue: "bg-blue-100 text-blue-700", green: "bg-emerald-100 text-emerald-700", amber: "bg-amber-100 text-amber-800" }[tone];
+  return <span className={`rounded px-1.5 py-0.5 text-[11px] ${classes}`}>{children}</span>;
+}
+function StatusPill({ status }: { status: string }) {
+  const meta = STATUS_META[status] || { label: status || "未记录", className: "bg-zinc-100 text-zinc-600 ring-zinc-200" };
+  return <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${meta.className}`}>{meta.label}</span>;
+}
+function StatusDot({ status }: { status: string }) {
+  if (status === "failed" || status === "not_reached") return <XCircle className="size-4 text-red-500" />;
+  if (status === "warning") return <TriangleAlert className="size-4 text-amber-500" />;
+  if (status === "pending" || status === "running") return <CircleDashed className="size-4 animate-pulse text-blue-500" />;
+  if (status === "success" || status === "completed") return <CheckCircle2 className="size-4 text-emerald-500" />;
+  return <CircleDashed className="size-4 text-zinc-400" />;
+}
+function Metric({ label, value }: { label: string; value: string }) { return <div className="min-w-20 rounded-lg border border-zinc-200 bg-white px-3 py-2"><div className="text-[10px] text-zinc-400">{label}</div><div className="mt-0.5 truncate text-xs font-medium text-zinc-700">{value}</div></div>; }
+function SummaryPair({ label, value }: { label: string; value: string }) { return <div><div className="text-zinc-400">{label}</div><div className="mt-1 break-words font-medium text-zinc-700">{value}</div></div>; }
+function EmptyState({ text }: { text: string }) { return <div className="mt-3 rounded-lg border border-dashed border-zinc-200 bg-zinc-50 p-4 text-center text-xs leading-relaxed text-zinc-500">{text}</div>; }
+
+function Notice({ tone, title, text }: { tone: "red" | "amber" | "blue" | "gray"; title: string; text: string }) {
+  const classes = { red: "border-red-200 bg-red-50 text-red-800", amber: "border-amber-200 bg-amber-50 text-amber-900", blue: "border-blue-200 bg-blue-50 text-blue-800", gray: "border-zinc-200 bg-zinc-50 text-zinc-700" }[tone];
+  return <div className={`flex gap-3 rounded-lg border p-3 text-xs leading-relaxed ${classes}`}><AlertCircle className="mt-0.5 size-4 shrink-0" /><div><div className="font-semibold">{title}</div><div className="mt-0.5">{text}</div></div></div>;
 }
 
-function collectRawModelCallValue(value: JsonValue, context: { node: string; idPrefix: string; output: RawModelCall[] }) {
-  if (!isRecord(value)) return;
-  if (isModelCall(value)) context.output.push(toRawModelCall(value, context.node, context.idPrefix));
-  const nested = value.nested_calls;
-  if (Array.isArray(nested)) nested.forEach((item, index) => collectRawModelCallValue(item, { node: context.node, idPrefix: `${context.idPrefix}-nested-${index}`, output: context.output }));
-  if (isRecord(value.retry)) context.output.push(toRawModelCall(value.retry, context.node, `${context.idPrefix}-retry`, `${stringField(value.name) || "model"}_retry`));
-  if (isRecord(value.recovery)) context.output.push(toRawModelCall(value.recovery, context.node, `${context.idPrefix}-recovery`, `${stringField(value.name) || "model"}_recovery`));
+function collectAlerts(run: RunItem, view?: ObservabilityView) {
+  const alerts: Array<{ tone: "red" | "amber"; title: string; text: string }> = [];
+  if (run.error) alerts.push({ tone: "red", title: "请求执行失败", text: run.error });
+  if (view?.summary?.fallback_detected) alerts.push({ tone: "amber", title: "本轮触发了兜底", text: "最终回复可能不是模型正常业务决策，请结合失败节点查看原因。" });
+  if (view?.decision_summary?.decision_status === "degraded") alerts.push({ tone: "amber", title: "策略判断已降级", text: view.decision_summary.decision_reasons?.join("；") || "部分策略字段无效或缺失，但客户回复链路继续完成。" });
+  const delivery = view?.delivery?.status || "";
+  if (["send_failed", "delivery_failed", "partial_failed"].includes(delivery)) alerts.push({ tone: "red", title: "发送或送达异常", text: `平台状态：${delivery}` });
+  return alerts;
 }
 
-function isModelCall(value: Record<string, JsonValue>) {
-  const name = stringField(value.name).toLowerCase();
-  return isRecord(value.usage) || value.raw_json_output !== undefined || /model|planner|reply_synthesizer|profile_analyzer|vision|gate/.test(name);
+function runStatus(run: RunItem, view?: ObservabilityView) {
+  if (isRunning(run)) return "running";
+  if (run.error) return "failed";
+  const delivery = view?.delivery?.status || run.business_summary?.delivery_status || "";
+  if (["send_failed", "delivery_failed", "partial_failed"].includes(delivery)) return "delivery_failed";
+  if (view?.summary?.fallback_detected || run.business_summary?.fallback_used) return "fallback";
+  if (view?.decision_summary?.decision_status === "degraded" || run.business_summary?.decision_status === "degraded") return "degraded";
+  return "success";
 }
 
-function toRawModelCall(value: Record<string, JsonValue>, node: string, id: string, fallbackName = ""): RawModelCall {
-  const usage = isRecord(value.usage) ? value.usage : {};
-  const inputRecord = isRecord(value.input) ? value.input : {};
-  const input = inputRecord.messages !== undefined ? inputRecord.messages : value.input || {};
-  return {
-    id,
-    node,
-    name: stringField(value.name) || fallbackName || "model_call",
-    tier: stringField(usage.tier) || stringField(inputRecord.tier),
-    model: stringField(usage.winner_model) || stringField(usage.model),
-    durationMs: numberField(usage.overall_duration_ms) ?? numberField(usage.duration_ms) ?? numberField(value.duration_ms),
-    totalTokens: numberField(usage.total_tokens) ?? 0,
-    input,
-    output: value.raw_json_output !== undefined ? value.raw_json_output : value.output || {},
-    usage,
-    error: stringField(value.error),
-    hedgeStarted: Boolean(usage.hedge_started),
-    attempts: numberField(usage.attempts) ?? numberField(usage.request_attempt) ?? 0,
-    timeoutStage: stringField(usage.timeout_stage),
-  };
+function modelsUsed(view?: ObservabilityView) {
+  if (view?.summary?.model_names?.length) return view.summary.model_names.join("、");
+  const models = new Set<string>();
+  view?.nodes?.forEach((node) => node.model_calls?.forEach((call) => { if (call.model) models.add(call.model); }));
+  return models.size ? Array.from(models).join("、") : "未记录";
 }
 
-function contentSnippet(run: RunItem) {
-  return stringField(run.input_snapshot?.content) || stringField(run.input_snapshot?.current_message) || "无文本输入";
+function checkpointTitle(final?: CheckpointSummary["final"], router?: CheckpointSummary["router"]) {
+  if (final?.available) return final.scenario || final.category_key || final.state || "存在卡点";
+  return router?.primary?.name || router?.primary?.code || "无明确卡点";
 }
 
-function replySnippet(run: RunItem) {
-  const messages = replyMessagesForDisplay(run.output_snapshot);
-  if (!Array.isArray(messages)) return "";
-  return messages.map((item) => contentString(isRecord(item) ? item.content : "")).filter(Boolean).join(" / ");
+function confidenceLabel(value?: string) {
+  const labels: Record<string, string> = { high: "高置信", medium: "中置信", low: "低置信" };
+  return value ? labels[value] || `置信度 ${value}` : "置信度未记录";
+}
+function pressureLabel(value?: string) {
+  return ({ normal: "正常", low: "低压", none: "不推进" } as Record<string, string>)[value || ""] || value || "未记录";
+}
+function flowActionLabel(value?: string) {
+  return ({ keep: "保持当前节奏", lower_pressure: "降低推进压力", pause_marketing_turn: "本轮停止追加营销", handoff_by_system_rule: "转人工规则处理" } as Record<string, string>)[value || ""] || value || "";
+}
+function customerStateLabel(value?: string) {
+  return ({ engaged: "客户愿意继续", hesitant: "客户仍在犹豫", soft_reject: "软拒绝", not_buying_now: "当前暂不购买", hard_stop: "明确停止联系", new_blocker: "出现新卡点", transaction_terminal_or_handoff: "交易终态或人工接管", none: "无明确阶段" } as Record<string, string>)[value || ""] || value || "";
+}
+function reasonText(value?: string) { return value ? ADOPTION_REASON[value] || value : "历史未记录原因"; }
+function deliveryText(status?: string) {
+  const labels: Record<string, string> = { delivered: "已确认送达", send_succeeded: "发送成功", platform_accepted: "平台已接受", delivery_pending: "等待回执", direct_response_returned: "接口已返回", send_failed: "发送失败", delivery_failed: "送达失败", partial_failed: "部分失败", not_recorded: "未记录发送" };
+  return labels[status || ""] || status || "未记录发送";
+}
+function stageTone(status: string) {
+  if (status === "failed" || status === "not_reached") return "border-red-200 bg-red-50/40";
+  if (status === "warning") return "border-amber-200 bg-amber-50/50";
+  if (status === "pending") return "border-blue-200 bg-blue-50/50";
+  if (status === "success") return "border-emerald-200 bg-emerald-50/40";
+  return "border-zinc-200 bg-zinc-50";
 }
 
-function replyMessagesForDisplay(record?: Record<string, JsonValue>) {
-  if (!record) return null;
-  for (const path of [
-    ["reply_control", "async_final", "reply_messages"],
-    ["async_final_reply", "reply_messages"],
-    ["http_response_reply_messages"],
-    ["http_response_body", "reply_messages"],
-    ["reply_messages"],
-  ]) {
-    const value = pathValue(record, path);
-    if (Array.isArray(value)) return value;
-  }
-  return null;
-}
-
-function pathValue(value: JsonValue, path: string[]) {
-  let current: JsonValue = value;
-  for (const key of path) {
-    if (!isRecord(current)) return undefined;
-    current = current[key];
-  }
-  return current;
-}
-
-function statusLabel(status: string) {
-  return STATUS_META[status]?.label || status || "未知";
-}
-
-function RuntimeStatusBadge({ run }: { run: RunItem }) {
-  const status = String(run.runtime_status || "completed");
-  if (status === "running") {
-    return <span className="rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-700">运行中 · {phaseLabel(run.runtime_phase)}</span>;
-  }
-  if (status === "interrupted") {
-    return <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">已中断</span>;
-  }
-  if (status === "completed_with_errors") {
-    return <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-700">已完成 · 有错误</span>;
-  }
-  return <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-700">已完成</span>;
-}
-
-function isRunning(run: RunItem) {
-  return run.runtime_status === "running";
-}
-
-function runDurationMs(run: RunItem, nowMs: number) {
-  const start = new Date(run.started_at || run.created_at || "").getTime();
-  return Number.isFinite(start) ? Math.max(0, nowMs - start) : Number(run.duration_ms || 0);
-}
-
-function phaseLabel(phase?: string) {
-  const labels: Record<string, string> = {
-    request_received: "请求已接收",
-    sop_gate: "SOP Gate",
-    planner: "Planner",
-    reply: "Reply",
-    full: "AI 全链路",
-    commit: "提交结果",
-  };
-  return labels[String(phase || "")] || String(phase || "处理中");
-}
-
-function formatDuration(value?: number | null) {
-  if (value === null || value === undefined) return "-";
-  if (value < 1000) return `${value}ms`;
-  return `${(value / 1000).toFixed(value >= 10000 ? 1 : 2)}s`;
-}
-
-function formatTime(value?: string) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("zh-CN", { hour12: false });
-}
-
-function displayValue(value: JsonValue): string {
-  if (value === null || value === undefined) return "-";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
-}
-
-function formatJson(value: JsonValue) {
-  if (value === undefined) return "";
-  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
-}
-
-function contentString(value: JsonValue, preferred = "text"): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (isRecord(value)) {
-    return stringField(value[preferred]) || stringField(value.text) || stringField(value.url) || stringField(value.store_id) || stringField(value.id);
-  }
-  return "";
-}
-
-function contentLength(value: JsonValue) {
-  if (typeof value === "string") return value.length;
-  try { return JSON.stringify(value).length; } catch { return 0; }
-}
-
-async function readJsonResponse(response: Response, fallbackMessage: string) {
+async function getJson<T>(url: string, fallback: string): Promise<T> {
+  const response = await fetch(url, { cache: "no-store" });
   const text = await response.text();
-  if (!text) return {} as Record<string, JsonValue>;
-  try { return JSON.parse(text) as Record<string, JsonValue>; }
-  catch {
-    const preview = text.replace(/\s+/g, " ").slice(0, 180);
-    throw new Error(`${fallbackMessage}：接口返回了非 JSON 响应（${response.status}）${preview ? `：${preview}` : ""}`);
+  let payload: JsonValue = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch { throw new Error(fallback); }
+  if (!response.ok) {
+    const record = isRecord(payload) ? payload : {};
+    throw new Error(stringField(record.error) || stringField(record.detail) || fallback);
   }
-}
-
-function errorMessage(data: Record<string, JsonValue>, fallback: string) {
-  return typeof data.error === "string" && data.error ? data.error : fallback;
-}
-
-function isRecord(value: JsonValue): value is Record<string, JsonValue> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringField(value: JsonValue) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return "";
-}
-
-function numberField(value: JsonValue) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
+  return payload as T;
 }
