@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
     }),
   );
 
-  await load(coreViews);
+  await Promise.all([load(coreViews), load(decisionViews)]);
 
   if (!data.summary) {
     return jsonResponse(
@@ -51,7 +51,6 @@ export async function GET(request: NextRequest) {
   }
   const summary = data.summary as Record<string, unknown>;
   const salesDecision = "decision_coverage_rate" in summary || "decision_eligible_count" in summary;
-  if (salesDecision) await load(decisionViews);
 
   return jsonResponse({
     generated_at: new Date().toISOString(),
