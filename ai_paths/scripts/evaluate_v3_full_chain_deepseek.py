@@ -57,6 +57,7 @@ from app.services.storage.serialization import loads_dict  # noqa: E402
 from app.services.workflow_compat import workflow_response_from_chat  # noqa: E402
 from scripts.v3_lifecycle_eval.protocol import (  # noqa: E402
     customer_visible_text,
+    expected_contract,
     hard_assertions,
     merge_ai_judge,
     normalize_visible_messages,
@@ -149,7 +150,13 @@ def sample_bucket(content: str) -> str:
         ("complaint", ("投诉", "负责人", "骗", "垃圾服务", "态度太差", "答非所问", "坑人")),
         ("profanity", ("他妈", "卧槽", "我靠", "傻逼", "滚", "妈的", "牛逼")),
         ("defer", ("晚点", "改天", "考虑一下", "以后再说", "暂时不", "现在忙", "上班", "开车", "没空")),
-        ("store", ("门店", "地址", "附近", "离我", "多远", "哪个店", "怎么走", "定位", "地铁")),
+        (
+            "store",
+            (
+                "门店", "地址", "附近", "离我", "多远", "哪个店", "怎么走", "定位", "地铁",
+                "停车", "停车场", "营业时间", "几点开门", "几点关门", "几楼", "楼层", "导航",
+            ),
+        ),
         ("transaction", ("预约金", "怎么付", "付款", "支付", "报名", "预约", "下单", "转账", "缴费")),
         ("price", ("多少钱", "价格", "太贵", "便宜", "费用", "收费", "优惠")),
         ("trust_effect", ("效果", "没用", "不信", "假的", "骗人", "案例", "反弹", "靠谱吗")),
@@ -232,6 +239,24 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
                         "reply_messages": row.get("source_reply_messages"),
                     }
                 )
+    for row in rows:
+        contract = expected_contract(
+            sample=row,
+            facts={},
+            prior_deliveries=list(row.get("prior_deliveries") or []),
+        )
+        tags: list[str] = []
+        if contract.get("prior_store_card_ids"):
+            tags.append("prior_store_card")
+        if contract.get("current_is_store_detail_question"):
+            tags.append("store_detail")
+        if contract.get("current_requests_address_or_navigation"):
+            tags.append("store_address_rerequest")
+        if contract.get("prior_store_card_ids") and contract.get("current_is_store_detail_question"):
+            tags.append("store_detail_after_card")
+        if row.get("appointment_id") or row.get("appointment_time"):
+            tags.append("appointment_present")
+        row["state_tags"] = tags
     return rows
 
 
@@ -247,7 +272,9 @@ def choose_samples(candidates: list[dict[str, Any]], limit: int) -> tuple[list[d
     per_identity: Counter[str] = Counter()
 
     def take(bucket: str, count: int) -> None:
-        current = 0
+        current = sum(row.get("bucket") == bucket for row in selected)
+        if current >= count:
+            return
         for row in groups.get(bucket, []):
             if row["source_path"] in used or per_identity[row["identity_hash"]] >= 3:
                 continue
@@ -258,7 +285,27 @@ def choose_samples(candidates: list[dict[str, Any]], limit: int) -> tuple[list[d
             if current >= count:
                 return
 
+    def take_state(tag: str, count: int) -> None:
+        current = 0
+        tagged = [row for row in candidates if tag in (row.get("state_tags") or [])]
+        rng.shuffle(tagged)
+        for row in tagged:
+            if row["source_path"] in used or per_identity[row["identity_hash"]] >= 3:
+                continue
+            selected.append(row)
+            used.add(row["source_path"])
+            per_identity[row["identity_hash"]] += 1
+            current += 1
+            if current >= count:
+                return
+
     scale = min(1.0, limit / 400.0)
+    for tag, quota in (
+        ("store_detail_after_card", 24),
+        ("store_address_rerequest", 16),
+        ("appointment_present", 12),
+    ):
+        take_state(tag, max(1, round(quota * scale)))
     for bucket, quota in BUCKET_QUOTAS.items():
         take(bucket, max(1, round(quota * scale)))
     remainder = [row for row in candidates if row["source_path"] not in used]
@@ -1104,7 +1151,11 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
             if isinstance(row, dict):
                 handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
     audit["ephemeral_rows"] = dict(audit["ephemeral_rows"])
-    return clean_rows, {"distribution": distribution, "audit": audit}
+    return clean_rows, {
+        "distribution": distribution,
+        "state_distribution": dict(Counter(tag for sample in samples for tag in sample.get("state_tags") or [])),
+        "audit": audit,
+    }
 
 
 async def judge_phase(args: argparse.Namespace, private_path: Path, rows: list[dict[str, Any]]) -> None:
@@ -1215,6 +1266,7 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
         "post_graph_p50_ms": int(statistics.median(post_graph_durations)) if post_graph_durations else 0,
         "post_graph_p95_ms": percentile(post_graph_durations, 0.95),
         "sample_distribution": context.get("distribution") or {},
+        "sample_state_distribution": context.get("state_distribution") or {},
         "model_names": sorted({name for row in completed for name in row.get("model_names") or []}),
         "isolation": {
             "commit_graph_constructed": False,
@@ -1325,6 +1377,8 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
         f"- 安全失败/无依据事实：{metrics['safety_failure_count']}/{metrics['unsupported_fact_count']}",
         f"- 生产写入尝试：{len(metrics['isolation']['blocked_write_attempts'])}",
         f"- 观测模型：{', '.join(metrics['model_names']) or 'trace 未记录名称'}", "",
+        f"- 消息场景分布：{json.dumps(metrics['sample_distribution'], ensure_ascii=False)}",
+        f"- 生命周期状态覆盖：{json.dumps(metrics['sample_state_distribution'], ensure_ascii=False)}", "",
         "逐条数据见 `report.csv`，需复核案例见 `failures.md`。",
     ]
     (output / "report.md").write_text("\n".join(report) + "\n", encoding="utf-8")

@@ -16,6 +16,7 @@ from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
     compact_facts,
     decision_summary,
     judge_messages,
+    sample_bucket,
     validate_evaluation_settings,
 )
 from scripts.v3_lifecycle_eval.protocol import (  # noqa: E402
@@ -50,6 +51,12 @@ def test_stratified_samples_are_deterministic_and_interleaved() -> None:
     assert len(first) == 120
     assert sum(distribution.values()) == 120
     assert len({row["bucket"] for row in first[:20]}) > 1
+
+
+def test_store_detail_questions_are_sampled_as_store_scenarios() -> None:
+    assert sample_bucket("可以停车吗") == "store"
+    assert sample_bucket("你们几点关门") == "store"
+    assert sample_bucket("地址再发一下，我要导航") == "store"
 
 
 def test_metrics_use_conditional_adoption_denominator() -> None:
