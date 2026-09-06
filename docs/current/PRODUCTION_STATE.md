@@ -53,5 +53,6 @@
 - Reply 进程实际环境为 `MODEL_REPLY=deepseek-chat`；共享基础环境中的其他角色模型值不代表 Reply 实际模型。
 - Nginx 配置检查通过，四个 service 均 `NRestarts=0`。
 - MySQL/RDS 在发布前后均有间歇性连接超时；当前三个角色健康、SOP 队列和 pending 为 0，但该外部连接风险需继续处理，详见 `KNOWN_ISSUES.md`。
+- 生产根分区使用率为 91%；本次没有在缺少归档副本时删除旧 release，后续需按保留规范归档清理，同时保留当前与已验证回滚版本。
 
 每次发布任务都必须重新记录 main SHA、三个角色 release/健康、数据库、worker/outbox、Nginx 和回滚点。超过核验时间后，本页只能作为线索，不能替代现场事实。
