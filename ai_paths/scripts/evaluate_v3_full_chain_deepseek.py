@@ -52,6 +52,7 @@ from app.services.store_service import StoreService  # noqa: E402
 from app.services.store_snapshot_service import StoreSnapshotService  # noqa: E402
 from app.services.trace_logger import TraceLogger  # noqa: E402
 from app.services.v3_semantic_router_service import V3SemanticRouterService  # noqa: E402
+from app.services.v3_sop_execution_service import is_platform_auto_opening_message  # noqa: E402
 from app.services.storage import AppRepository, SQLiteStore, build_store  # noqa: E402
 from app.services.storage.serialization import loads_dict  # noqa: E402
 from app.services.workflow_compat import workflow_response_from_chat  # noqa: E402
@@ -194,7 +195,12 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
             if str(reply_control.get("mode") or "") == "merged_latest" and merged_customer_messages
             else _text(raw.get("content"))
         )
-        if not content or content in AUTO_MESSAGES or content.startswith("你已添加了"):
+        if (
+            not content
+            or content in AUTO_MESSAGES
+            or content.startswith("你已添加了")
+            or is_platform_auto_opening_message(content)
+        ):
             continue
         if raw.get("file_image") or raw.get("image_urls"):
             continue

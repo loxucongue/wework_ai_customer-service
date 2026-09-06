@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
     compact_facts,
     decision_summary,
     judge_messages,
+    load_candidates,
     refresh_state_tags,
     sample_bucket,
     validate_evaluation_settings,
@@ -80,6 +82,38 @@ def test_state_stratification_uses_prior_structured_memory() -> None:
 
     assert "prior_store_card" in rows[0]["state_tags"]
     assert "store_detail_after_card" in rows[0]["state_tags"]
+
+
+def test_candidate_loader_excludes_platform_auto_opening_variant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common = {
+        "corp_id": "corp",
+        "wechat": "sl8003",
+        "external_userid": "external",
+        "customer_id": "customer",
+        "reply_source": "main_model",
+    }
+    (tmp_path / "auto.json").write_text(
+        json.dumps(
+            {**common, "request_id": "auto", "content": "我已经添加了你，现在我们可以开始聊天了。"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "customer.json").write_text(
+        json.dumps(
+            {**common, "request_id": "customer", "content": "你好，想了解一下"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(load_candidates.__globals__, "RUNS_ROOT", tmp_path)
+
+    rows = load_candidates(7)
+
+    assert [row["source_request_id"] for row in rows] == ["customer"]
 
 
 def test_metrics_use_conditional_adoption_denominator() -> None:
