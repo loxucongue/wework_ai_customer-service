@@ -470,6 +470,15 @@ function WorkflowSection({ view, onOpenNode }: { view?: ObservabilityView; onOpe
 function DeliverySection({ view }: { view?: ObservabilityView }) {
   const delivery = view?.delivery;
   const store = view?.store_workflow;
+  const recommendationRecord = store && isRecord(store.latest_recommendation) ? store.latest_recommendation : undefined;
+  const recommendation = recommendationRecord && (
+    stringField(recommendationRecord.query)
+    || stringField(recommendationRecord.city)
+    || (Array.isArray(recommendationRecord.store_ids) && recommendationRecord.store_ids.length > 0)
+    || recommendationRecord.recommendation_final_for_destination !== null
+      && recommendationRecord.recommendation_final_for_destination !== undefined
+  ) ? recommendationRecord : undefined;
+  const latestDelivery = store && isRecord(store.latest_delivery) ? store.latest_delivery : undefined;
   if (!delivery && !store) return null;
   return (
     <section className="grid gap-4 lg:grid-cols-2">
@@ -481,7 +490,21 @@ function DeliverySection({ view }: { view?: ObservabilityView }) {
       {store && Object.keys(store).length ? (
         <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">门店事实工作流</h3><SmallTag tone={store.called ? "blue" : "gray"}>{store.called ? "已调用" : "未调用"}</SmallTag></div>
-          <div className="mt-3 grid grid-cols-2 gap-3 text-xs"><SummaryPair label="查询状态" value={stringField(store.status) || (store.called ? "已调用" : "未查询")} /><SummaryPair label="查询地点" value={stringField(store.query) || (store.called ? "未记录" : "未查询")} /><SummaryPair label="匹配门店" value={store.called ? String(Array.isArray(store.candidates) ? store.candidates.length : "未记录") : "未查询"} /><SummaryPair label="下一步" value={stringField(store.next_action) || (store.called ? "未记录" : "无需门店处理")} /></div>
+          <div className="mt-3 grid grid-cols-2 gap-3 text-xs"><SummaryPair label="查询状态" value={stringField(store.status) || (store.called ? "已调用" : "未查询")} /><SummaryPair label="查询地点" value={stringField(store.destination) || stringField(store.query) || (store.called ? "未记录" : "未查询")} /><SummaryPair label="匹配门店" value={store.called ? String(Array.isArray(store.stores) ? store.stores.length : "未记录") : "未查询"} /><SummaryPair label="下一步" value={stringField(store.next_action) || (store.called ? "未记录" : "无需门店处理")} /></div>
+          {recommendation ? (
+            <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+              <div className="text-xs font-medium text-blue-900">跨轮门店推荐依据</div>
+              <div className="mt-2 grid grid-cols-2 gap-3 text-xs">
+                <SummaryPair label="原查询范围" value={stringField(recommendation.query) || "未记录"} />
+                <SummaryPair label="城市 / 区县" value={[stringField(recommendation.city), stringField(recommendation.district)].filter(Boolean).join(" / ") || "未记录"} />
+                <SummaryPair label="查询是否完成" value={booleanStatus(recommendation.candidate_search_complete)} />
+                <SummaryPair label="当前范围最终推荐" value={booleanStatus(recommendation.recommendation_final_for_destination)} />
+                <SummaryPair label="继续细化是否有用" value={recommendation.same_city_refinement_useful === false ? "无用，应处理距离卡点" : booleanStatus(recommendation.same_city_refinement_useful)} />
+                <SummaryPair label="是否切换新城市" value={store.new_city_detected === true ? "是" : store.new_city_detected === false ? "否" : "本轮未发生新城市查询"} />
+              </div>
+              {latestDelivery ? <p className="mt-2 text-[11px] leading-relaxed text-blue-700">最近实际发送门店：{Array.isArray(latestDelivery.store_ids) ? latestDelivery.store_ids.join("、") : "未记录"}。推荐依据和最近发送记录分开保存。</p> : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </section>
@@ -540,6 +563,7 @@ function StatusDot({ status }: { status: string }) {
 }
 function Metric({ label, value }: { label: string; value: string }) { return <div className="min-w-20 rounded-lg border border-zinc-200 bg-white px-3 py-2"><div className="text-[10px] text-zinc-400">{label}</div><div className="mt-0.5 truncate text-xs font-medium text-zinc-700">{value}</div></div>; }
 function SummaryPair({ label, value }: { label: string; value: string }) { return <div><div className="text-zinc-400">{label}</div><div className="mt-1 break-words font-medium text-zinc-700">{value}</div></div>; }
+function booleanStatus(value: JsonValue) { return value === true ? "是" : value === false ? "否" : "未记录"; }
 function EmptyState({ text }: { text: string }) { return <div className="mt-3 rounded-lg border border-dashed border-zinc-200 bg-zinc-50 p-4 text-center text-xs leading-relaxed text-zinc-500">{text}</div>; }
 
 function Notice({ tone, title, text }: { tone: "red" | "amber" | "blue" | "gray"; title: string; text: string }) {

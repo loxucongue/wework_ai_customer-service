@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.services.run_observability_summary import build_run_observability, trace_wall_duration_ms
 
 
@@ -838,6 +839,18 @@ def _store_summary(state: dict[str, Any], *, store_query: dict[str, Any]) -> dic
         or structured.get("store_facts")
     )
     delivery_store_ids = _string_list(fact.get("delivery_store_ids"))
+    sent_summary = sent_message_summary_for_model(state)
+    latest_delivery = _dict(sent_summary.get("store_address_delivery"))
+    latest_recommendation = _dict(sent_summary.get("latest_store_recommendation"))
+    recommendation_evidence = _dict(latest_recommendation.get("store_search_evidence"))
+    recommendation_final = _historical_store_recommendation_final(recommendation_evidence)
+    historical_city = _text(recommendation_evidence.get("city"))
+    current_city = _text(fact.get("city"))
+    new_city_detected = (
+        current_city != historical_city
+        if current_city and historical_city
+        else None
+    )
     if delivery_store_ids:
         by_id = {
             _text(store.get("store_id") or store.get("id")): store
@@ -866,6 +879,34 @@ def _store_summary(state: dict[str, Any], *, store_query: dict[str, Any]) -> dic
         "candidate_count": int(
             fact.get("candidate_count") or len(candidate_stores)
         ),
+        "latest_delivery": {
+            "store_ids": _string_list(latest_delivery.get("latest_batch_store_ids")),
+            "last_sent_at": _text(latest_delivery.get("last_sent_at")),
+            "request_id": _text(latest_delivery.get("request_id")),
+        },
+        "latest_recommendation": {
+            "query": _text(
+                recommendation_evidence.get("normalized_query")
+                or recommendation_evidence.get("raw_place")
+            ),
+            "city": historical_city,
+            "district": _text(recommendation_evidence.get("district")),
+            "resolved_admin_level": _text(recommendation_evidence.get("resolved_admin_level")),
+            "store_ids": _string_list(latest_recommendation.get("latest_batch_store_ids")),
+            "candidate_search_complete": recommendation_evidence.get("candidate_search_complete")
+            if "candidate_search_complete" in recommendation_evidence
+            else None,
+            "recommendation_final_for_destination": recommendation_final,
+            "clarification_would_change_result": _historical_store_clarification_changes_result(
+                recommendation_evidence
+            ),
+            "ranking_method": _text(recommendation_evidence.get("ranking_method")),
+            "distance_ranking_available": recommendation_evidence.get("distance_ranking_available")
+            if "distance_ranking_available" in recommendation_evidence
+            else None,
+            "same_city_refinement_useful": False if recommendation_final else None,
+        },
+        "new_city_detected": new_city_detected,
         "stores": [
             {
                 "store_id": _text(store.get("store_id") or store.get("id")),
@@ -877,6 +918,24 @@ def _store_summary(state: dict[str, Any], *, store_query: dict[str, Any]) -> dic
         ],
         "error": _text(fact.get("error")),
     }
+
+
+def _historical_store_recommendation_final(evidence: dict[str, Any]) -> bool | None:
+    if "recommendation_final_for_destination" in evidence:
+        return evidence.get("recommendation_final_for_destination") is True
+    if evidence.get("candidate_search_complete") is True and (
+        evidence.get("recommended_store_id") or evidence.get("delivery_store_ids")
+    ):
+        return True
+    return None
+
+
+def _historical_store_clarification_changes_result(evidence: dict[str, Any]) -> bool | None:
+    if "clarification_would_change_result" in evidence:
+        return evidence.get("clarification_would_change_result") is True
+    if _historical_store_recommendation_final(evidence) is True:
+        return False
+    return None
 
 
 def _initial_delivery_summary(state: dict[str, Any]) -> dict[str, Any]:
