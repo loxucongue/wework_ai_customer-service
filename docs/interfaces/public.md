@@ -5,6 +5,7 @@
 ## 产品回复接口
 
 - 唯一产品入口：`POST /api/ai/reply/workflow-compatible-v3`
+- Reply 角色内部 FastAPI 路径：`POST /reply/workflow-compatible-v3`；公网 `/api/ai/...` 由 Nginx 转发，调用方不得绕过公网鉴权和路由合同。
 - 代码路由：`ai_paths/app/routers/reply.py`
 - 鉴权：
   - `Authorization: Bearer <AI_PATHS_API_KEY 或 AI_EXTERNAL_API_KEY>`
@@ -14,6 +15,7 @@
   - V3 是唯一客户回复产品接口。
   - V1/V2 回复路由不得重新注册。
   - 真实发送客户消息必须受发送链路和回调合同约束。
+  - 接口端到端耗时从请求接收计算到 HTTP 响应完成，包含模型图之后的 run、历史、BI、outbox 和响应组装；不能用模型图耗时代替。
 
 ## 消息送达回调
 
@@ -46,6 +48,8 @@
 - `GET /admin/runs/{request_id}`
 - `GET /admin/runs/{request_id}/nodes/{node_id}`
 - `GET /admin/operations-dashboard`
+
+管理页面：`/logs`。页面默认展示业务摘要和执行阶段，节点输入、输出、模型、工具与脱敏原始记录只在点击节点后读取。
 
 运行日志接口口径：
 
@@ -105,6 +109,9 @@
 - `GET /admin/outreach/first-day-runs/{workflow_run_id}`
 
 上述 `first-day` 路径是历史兼容名称；产品页面统一称为“千人千面日志”，实际记录的是沉默客户唤醒，当前运行逻辑不限制加微时间。
+
+- `GET /admin/outreach/first-day-settings` 返回的关键运行信息包括启用状态、沉默分钟数、企微范围和启用水位。
+- 修改设置会影响主动触达候选范围，属于有运行副作用的管理操作；全账号空白名单不等于跳过 AI/人工、安全、退订、订单和最新消息门禁。
 
 ## 健康检查
 

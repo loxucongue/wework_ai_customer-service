@@ -2,7 +2,7 @@
 
 - status: current
 - owner: backend/platform
-- last_verified: 2026-09-01 Asia/Shanghai
+- last_verified: 2026-09-06 Asia/Shanghai at `main@007bf2c8`
 - source_of_truth: 当前 FastAPI route 表与版本化 Nginx 配置；生产 systemd 仍需发布前现场核验
 
 ## 产品接口

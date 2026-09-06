@@ -30,7 +30,7 @@ Semantic Router 的 `current_intent.summary` 是检索与工具规划摘要，�
 | 跨轮变化 | 已实现 | 只读取同一销售接触边界上一条稳定事件；下一次真实客户回复回填下一意图、下一情绪和变化 | `chat_runtime.py`、`v3_strategy_analytics_repository.py` |
 | BI 查询 | 已实现 | 按意图、情绪和变化聚合，支持时间、企微、卡点、策略等筛选 | `routers/operations_admin.py`、`v3_strategy_analytics_repository.py` |
 | 逼单协同 | 已实现 | Router 召回同一来源的规则/策略/节点，Reply 选择；代码校验真实 ID、频控和禁忌。固定 `trigger` 从有效目录选择派生，避免冗余字段误杀正确策略 | `v3_semantic_router_service.py`、`reply_nodes.py` |
-| 生产效果证明 | 首版已上线观察 | DeepSeek 隔离评测达到 93.33% 策略结构覆盖并由产品负责人接受为首版门槛；仍未形成 400 条业务确认金标，不能把结构覆盖解释成业务准确率 | ignored `artifacts/`、`docs/current/KNOWN_ISSUES.md` |
+| 生产效果证明 | 首版已上线观察 | DeepSeek 模型图隔离评测达到 93.33% 策略结构覆盖并由产品负责人接受为首版门槛；仍未形成 400 条业务确认金标，也未由该评测覆盖完整生产生命周期 | ignored `artifacts/`、`docs/current/KNOWN_ISSUES.md` |
 
 当前生产文本模型合同是 Router 使用 `deepseek-v4-flash`，最终回复、结构修复和完整重试使用 `deepseek-chat`，Reply 不启用 GPT 竞速或故障接管。模型轨迹若出现 `gpt-*`，视为配置错误而不是允许的降级。
 
@@ -68,4 +68,4 @@ Semantic Router 的 `current_intent.summary` 是检索与工具规划摘要，�
 
 ## 验收要求
 
-生产策略已于 `main@91ac4016` 启用。后续仍需用业务确认的真实匿名样本分别验证主意图准确率、情绪准确率、压力方向、退订/投诉误推进、证据引用完整率和端到端延迟；未完成金标前只能称“首版上线观察”，不能宣称达到最终业务准确率。
+生产策略最初于 `main@91ac4016` 启用，当前代码基线已演进到 `main@007bf2c8`。后续仍需用业务确认的真实匿名样本分别验证主意图准确率、情绪准确率、压力方向、退订/投诉误推进和证据引用完整率，并按 [V3 Reply 质量与全链路评测规范](../standards/V3_REPLY_EVALUATION.md) 验证结构化消息、持久化尾部和 HTTP 端到端延迟；未完成金标前只能称“首版上线观察”。
