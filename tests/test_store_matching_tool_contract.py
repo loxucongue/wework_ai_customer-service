@@ -835,6 +835,44 @@ def test_combined_store_detail_request_requires_model_to_ground_historical_store
     assert resolution["destination_query"] == "深圳龙华店 深圳市龙华区民治街道星河WORLD"
 
 
+def test_degraded_parsing_preserves_parking_detail_and_store_detail_purpose() -> None:
+    state = {
+        "shared_context": {
+            "current_message": {"content": "可以停车吗"},
+            "conversation": [
+                {
+                    "message_ref": "conv_001",
+                    "role": "assistant",
+                    "content": "小贝: 门店位置：武汉江夏店 湖北省武汉市江夏区文化大道侨亚国际广场",
+                }
+            ],
+        }
+    }
+
+    resolution = asyncio.run(
+        resolve_active_store_destination(
+            model_client=None,
+            state=state,
+            tool={"query": "可以停车吗", "purpose": "store_detail"},
+        )
+    )
+
+    assert resolution["resolver_status"] == "model_unavailable"
+    assert resolution["request_kind"] == "store_detail"
+    assert resolution["detail_kind"] == "parking"
+    assert resolution["destination_source"] == "recent_assistant_store_reference"
+
+    lookup = _lookup_result([_store("101", "武汉江夏店")])
+    lookup["destination_resolution"] = resolution
+    output = build_planner_fact_output(
+        {"customer_store_lookup": lookup},
+        _state_with_previous_delivery(["101"]),
+    )
+    store_resolution = output["structured_facts"]["store_resolution_fact"]
+    assert store_resolution["status"] == "reuse_confirmed_store"
+    assert store_resolution["delivery_store_ids"] == []
+
+
 def test_store_detail_hint_with_named_location_is_not_treated_as_generic() -> None:
     assert _is_generic_store_detail_hint("地图和营业时间发我")
     assert not _is_generic_store_detail_hint("深圳南山店地图和营业时间发我")

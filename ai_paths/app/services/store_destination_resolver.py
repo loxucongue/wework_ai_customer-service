@@ -286,14 +286,17 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
         if reason != "recent_assistant_store_reference_fallback"
         else str(recent_assistant_reference.get("query") or "").strip()
     )
+    detail_kind = _fallback_store_detail_kind(str(current.get("content") or ""))
+    purpose = str(tool.get("purpose") or "").strip()
+    request_kind = "store_detail" if purpose == "store_detail" or detail_kind != "none" else "match_location"
     return {
-        "request_kind": "match_location",
+        "request_kind": request_kind,
         "destination_query": destination,
         "destination_precision": precision,
         "administrative_context": {},
         "destination_subject": "unknown",
         "named_store": "",
-        "detail_kind": "none",
+        "detail_kind": detail_kind,
         "evidence_refs": [
             ref
             for ref in ("current_message", recent_assistant_reference.get("message_ref", ""))
@@ -307,6 +310,27 @@ def _fallback_resolution(payload: dict[str, Any], tool: dict[str, Any]) -> dict[
         "destination_source": destination_source,
         "source_query": source_query or str(destination).strip(),
     }
+
+
+def _fallback_store_detail_kind(content: str) -> str:
+    """Preserve an explicit fact-detail request when model parsing degrades.
+
+    This is a fact-tool fallback, not a sales-intent classifier. It only maps
+    concrete store fields already represented by the resolver schema.
+    """
+
+    text = re.sub(r"\s+", "", str(content or "")).lower()
+    if any(marker in text for marker in ("停车", "车位")):
+        return "parking"
+    if any(marker in text for marker in ("营业时间", "几点开门", "几点关门", "几点下班", "几点营业")):
+        return "hours"
+    if any(marker in text for marker in ("导航", "地图", "路线", "怎么走", "怎么过去", "怎么去")):
+        return "navigation"
+    if any(marker in text for marker in ("几楼", "楼层", "房间", "电梯", "怎么上去", "前台")):
+        return "arrival_guidance"
+    if any(marker in text for marker in ("地址", "位置", "在哪")):
+        return "address"
+    return "none"
 
 
 def _structured_current_location_query(content: str) -> str:
@@ -385,7 +409,11 @@ def _is_generic_store_detail_hint(value: str) -> bool:
         "",
         text,
     )
-    remainder = re.sub(r"(和|及|以及|还有|都|也|呢|吗|嘛|么|一下|看看|查下|查一下)", "", remainder)
+    remainder = re.sub(
+        r"(和|及|以及|还有|都|也|呢|吗|嘛|么|一下|看看|查下|查一下|可以|能不能|能|是否|方便不方便|方便)",
+        "",
+        remainder,
+    )
     remainder = re.sub(r"[?？。！!,，、；;：:\-_/\\()\[\]{}]+", "", remainder)
     return not remainder
 

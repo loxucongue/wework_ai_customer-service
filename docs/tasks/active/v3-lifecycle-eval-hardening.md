@@ -32,8 +32,10 @@
 
 - 独占：`ai_paths/scripts/evaluate_v3_full_chain_deepseek.py`
 - 独占：`ai_paths/scripts/v3_lifecycle_eval/`
+- 独占：`ai_paths/app/services/store_destination_resolver.py`
 - 独占：`tests/test_v3_deepseek_eval_protocol.py`
 - 独占：`tests/test_v3_lifecycle_eval.py`
+- 独占：`tests/test_store_matching_tool_contract.py`
 - 独占：`docs/standards/V3_REPLY_EVALUATION.md`
 - 独占：`docs/current/DEVELOPMENT_STATUS.md`
 - 独占：本任务文档、活跃任务索引和历史摘要
@@ -61,6 +63,7 @@
 - 阻断 7 个外部交易写方法；生产源只允许固定只读查询，并支持测试后反查生产落库。
 - 新增重复门店卡、预约目标缺失和明确退订误推进硬断言；硬失败可覆盖 AI 误通过。
 - 已通过 13 条评测协议测试和 155 条相关回归测试。
+- 定向复现确认：目的地解析模型漏掉停车详情后，回退合同把请求错误降成 `match_location + detail_kind=none`，导致已发门店卡被再次物化，且 Reply 未收到预约收口合同。
 
 ## 待办
 
@@ -71,4 +74,3 @@
 ## 发布与回滚
 
 - 评测工具不部署为生产服务；如发现生产运行时缺陷，另按发布合同决定代码修复和部署。
-
