@@ -877,7 +877,7 @@ def test_multiple_stores_in_same_district_are_candidates_not_location_ambiguity(
     assert resolution["delivery_store_ids"] == ["101", "102"]
 
 
-def test_v3_broad_scope_caps_delivery_ids_but_keeps_all_candidates() -> None:
+def test_v3_broad_scope_delivers_every_candidate_when_card_batch_is_manageable() -> None:
     stores = [_store(str(index), f"成都门店{index}") for index in range(1, 6)]
     state = {
         "request_context": {"interface_version": "v3"},
@@ -908,7 +908,7 @@ def test_v3_broad_scope_caps_delivery_ids_but_keeps_all_candidates() -> None:
     )["structured_facts"]["store_resolution_fact"]
 
     assert resolution["status"] == "send_multiple"
-    assert resolution["delivery_store_ids"] == ["1", "2", "3"]
+    assert resolution["delivery_store_ids"] == ["1", "2", "3", "4", "5"]
     assert resolution["candidate_store_ids"] == ["1", "2", "3", "4", "5"]
 
 
@@ -1024,6 +1024,212 @@ def test_beijing_is_treated_as_city_scope() -> None:
     assert resolution["delivery_store_ids"] == ["801", "802"]
 
 
+@pytest.mark.parametrize(
+    "customer_text",
+    [
+        "长沙",
+        "长沙有门店吗？",
+        "长沙市有哪些门店",
+        "帮我看看长沙这边的店",
+    ],
+)
+def test_validated_model_city_scope_beats_same_root_county_geocode(customer_text: str) -> None:
+    stores = _changsha_scope_stores()
+    state = {
+        "content": customer_text,
+        "normalized_content": customer_text,
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {
+            "source": "platform_agent.store_index+store_snapshot",
+            "stores": stores,
+        },
+    }
+    model = _FakeDestinationModel(
+        _destination_model_output(
+            request_kind="list",
+            destination_query="长沙",
+            destination_precision="city",
+            administrative_context={"province": "湖南省", "city": "长沙市"},
+        )
+    )
+
+    result = asyncio.run(
+        action_nodes._resolve_customer_store_workflow(
+            {
+                "arguments": {
+                    "purpose": "store_search",
+                    "use_resolver_admin_fallback": True,
+                    "allow_broad_scope_delivery": True,
+                }
+            },
+            state,
+            _FakeGeocodeClient(
+                {
+                    "province": "湖南省",
+                    "city": "长沙市",
+                    "district": "长沙县",
+                    "formatted_address": "湖南省长沙市长沙县开元东路世景国际广场B座",
+                    "location": "113.098605,28.245033",
+                }
+            ),
+            model_client=model,
+        )
+    )
+
+    lookup = result["customer_store_lookup"]
+    assert lookup["source"] == "customer_scope_model_admin"
+    assert lookup["resolved_admin_level"] == "city"
+    assert lookup["query"] == "长沙"
+    assert [item["store_id"] for item in lookup["stores"]] == ["160", "179", "546", "552"]
+    assert result["status"] == "send_multiple"
+    assert result["candidate_store_ids"] == ["160", "179", "546", "552"]
+    assert result["delivery_store_ids"] == ["160", "179", "546", "552"]
+
+
+def test_city_precision_discards_model_lower_admin_field() -> None:
+    stores = _changsha_scope_stores()
+    state = {
+        "content": "长沙有门店吗",
+        "normalized_content": "长沙有门店吗",
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {"source": "test", "stores": stores},
+    }
+    model = _FakeDestinationModel(
+        _destination_model_output(
+            request_kind="list",
+            destination_query="长沙",
+            destination_precision="city",
+            administrative_context={
+                "province": "湖南省",
+                "city": "长沙市",
+                "district": "长沙县",
+            },
+        )
+    )
+
+    result = asyncio.run(
+        action_nodes._resolve_customer_store_workflow(
+            {
+                "arguments": {
+                    "purpose": "store_search",
+                    "use_resolver_admin_fallback": True,
+                    "allow_broad_scope_delivery": True,
+                }
+            },
+            state,
+            _FakeGeocodeClient(
+                {
+                    "province": "湖南省",
+                    "city": "长沙市",
+                    "district": "长沙县",
+                    "formatted_address": "湖南省长沙市长沙县",
+                    "location": "113.098605,28.245033",
+                }
+            ),
+            model_client=model,
+        )
+    )
+
+    lookup = result["customer_store_lookup"]
+    assert lookup["resolved_admin_level"] == "city"
+    assert [item["store_id"] for item in lookup["stores"]] == ["160", "179", "546", "552"]
+
+
+def test_validated_model_district_scope_keeps_same_root_county_precise() -> None:
+    stores = _changsha_scope_stores()
+    state = {
+        "content": "长沙县有门店吗",
+        "normalized_content": "长沙县有门店吗",
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {"source": "test", "stores": stores},
+    }
+    model = _FakeDestinationModel(
+        _destination_model_output(
+            request_kind="list",
+            destination_query="长沙县",
+            destination_precision="district",
+            administrative_context={
+                "province": "湖南省",
+                "city": "长沙市",
+                "district": "长沙县",
+            },
+        )
+    )
+
+    result = asyncio.run(
+        action_nodes._resolve_customer_store_workflow(
+            {
+                "arguments": {
+                    "purpose": "store_search",
+                    "use_resolver_admin_fallback": True,
+                    "allow_broad_scope_delivery": True,
+                }
+            },
+            state,
+            _FakeGeocodeClient(
+                {
+                    "province": "湖南省",
+                    "city": "长沙市",
+                    "district": "长沙县",
+                    "formatted_address": "湖南省长沙市长沙县",
+                    "location": "113.098605,28.245033",
+                }
+            ),
+            model_client=model,
+        )
+    )
+
+    lookup = result["customer_store_lookup"]
+    assert lookup["resolved_admin_level"] == "district"
+    assert [item["store_id"] for item in lookup["stores"]] == ["552"]
+    assert result["status"] == "send_single"
+    assert result["delivery_store_ids"] == ["552"]
+
+
+def test_named_store_query_is_not_widened_to_model_city_scope() -> None:
+    stores = _changsha_scope_stores()
+    state = {
+        "content": "长沙星沙二店地址发我",
+        "normalized_content": "长沙星沙二店地址发我",
+        "request_context": {"interface_version": "v3"},
+        "customer_store_knowledge": {"source": "test", "stores": stores},
+    }
+    model = _FakeDestinationModel(
+        {
+            **_destination_model_output(
+                request_kind="store_detail",
+                destination_query="长沙",
+                destination_precision="city",
+                administrative_context={"province": "湖南省", "city": "长沙市"},
+            ),
+            "named_store": "长沙星沙二店",
+            "detail_kind": "address",
+        }
+    )
+
+    result = asyncio.run(
+        action_nodes._resolve_customer_store_workflow(
+            {"arguments": {"purpose": "store_detail"}},
+            state,
+            _FakeGeocodeClient(
+                {
+                    "province": "湖南省",
+                    "city": "长沙市",
+                    "district": "长沙县",
+                    "formatted_address": "湖南省长沙市长沙县开元东路世景国际广场B座",
+                    "location": "113.098605,28.245033",
+                }
+            ),
+            model_client=model,
+        )
+    )
+
+    lookup = result["customer_store_lookup"]
+    assert lookup["query"] == "长沙星沙二店"
+    assert [item["store_id"] for item in lookup["stores"]] == ["552"]
+    assert result["delivery_store_ids"] == ["552"]
+
+
 def test_unavailable_customer_scope_never_falls_back_to_global_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1065,6 +1271,65 @@ def test_unavailable_customer_scope_never_falls_back_to_global_snapshot(
     assert resolution["status"] == "search_incomplete"
     assert resolution["candidate_search_complete"] is False
     assert resolution["delivery_store_ids"] == []
+
+
+def _destination_model_output(
+    *,
+    request_kind: str,
+    destination_query: str,
+    destination_precision: str,
+    administrative_context: dict[str, str],
+) -> dict[str, object]:
+    return {
+        "request_kind": request_kind,
+        "destination_query": destination_query,
+        "destination_precision": destination_precision,
+        "administrative_context": administrative_context,
+        "poi_query": "",
+        "destination_subject": "customer",
+        "named_store": "",
+        "detail_kind": "none",
+        "candidate_interpretations": [],
+        "evidence_refs": ["current_message"],
+        "superseded_location_refs": [],
+        "confidence": "high",
+        "needs_clarification": False,
+        "geocode_before_clarification": True,
+        "reason": "当前客户消息明确提供地点",
+    }
+
+
+def _changsha_scope_stores() -> list[dict[str, object]]:
+    return [
+        {
+            **_store("160", "长沙岳麓店"),
+            "province": "湖南省",
+            "city": "长沙市",
+            "district": "岳麓区",
+            "store_address": "长沙市岳麓区玉兰路433号长沙西中心T1写字楼",
+        },
+        {
+            **_store("179", "长沙雨花店"),
+            "province": "湖南省",
+            "city": "长沙市",
+            "district": "雨花区",
+            "store_address": "湖南省长沙市雨花区湘府中路18号德思勤城市广场B5栋",
+        },
+        {
+            **_store("546", "长沙望城二店"),
+            "province": "湖南省",
+            "city": "长沙市",
+            "district": "望城区",
+            "store_address": "长沙市望城湘江天地商业43#润和天悦广场",
+        },
+        {
+            **_store("552", "长沙星沙二店"),
+            "province": "湖南省",
+            "city": "长沙市",
+            "district": "长沙县",
+            "store_address": "湖南省长沙市长沙县开元东路世景国际广场B座",
+        },
+    ]
 
 
 def test_explicit_customer_store_address_beats_conflicting_geocode() -> None:

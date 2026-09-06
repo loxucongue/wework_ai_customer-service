@@ -14,6 +14,7 @@ from app.services.store_resolution import legacy_delivery_mode
 
 
 MAX_STORE_DELIVERY_COUNT = 3
+MAX_BROAD_SCOPE_CARD_COUNT = 6
 
 
 def _is_v3_state(state: AgentState) -> bool:
@@ -258,7 +259,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             if stores:
                 structured_facts["store_facts"] = [
                     _store_fact_from_lookup_item(item, state=state)
-                    for item in authorized_stores[:5]
+                    for item in authorized_stores[:MAX_BROAD_SCOPE_CARD_COUNT]
                     if isinstance(item, dict)
                 ]
                 names = [item["name"] for item in structured_facts["store_facts"][:3] if item.get("name")]
@@ -291,8 +292,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 for item in authorized_stores
                 if str(item.get("store_id") or item.get("id") or "")
             ]
+            text_store_list_delivery = bool(
+                v3_mode
+                and resolution_status == "send_multiple"
+                and value.get("allow_broad_scope_delivery")
+                and len(candidate_store_ids) > MAX_BROAD_SCOPE_CARD_COUNT
+            )
             delivery_store_ids = (
-                [recommended_store_id]
+                []
+                if text_store_list_delivery
+                else [recommended_store_id]
                 if resolution_status == "send_single" and recommended_store_id
                 else candidate_store_ids
                 if resolution_status == "send_multiple" and bool(value.get("allow_broad_scope_delivery"))
@@ -302,7 +311,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if resolution_status == "send_multiple"
                 else []
             )
-            if v3_mode and resolution_status == "send_multiple":
+            if (
+                v3_mode
+                and resolution_status == "send_multiple"
+                and not bool(value.get("allow_broad_scope_delivery"))
+            ):
                 delivery_store_ids = delivery_store_ids[:MAX_STORE_DELIVERY_COUNT]
             lookup_missing = [str(item) for item in (value.get("missing") or []) if str(item)]
             candidate_search_complete = bool(
@@ -364,13 +377,22 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     ),
                     "recommended_store_id": recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
+                    "text_store_summaries": (
+                        _store_text_summaries(authorized_stores, state=state)
+                        if text_store_list_delivery
+                        else []
+                    ),
                     "requested_detail_kind": requested_detail_kind,
                     "requested_detail_available": requested_detail_available,
                     "allow_broad_scope_delivery": bool(value.get("allow_broad_scope_delivery")),
                     "ranking_method": "scope_match",
                     "customer_claim_level": "candidate_list",
                     "reason": f"{resolution_status}_scope_resolution",
-                    "delivery_mode": legacy_delivery_mode(resolution_status),
+                    "delivery_mode": (
+                        "text_store_list"
+                        if text_store_list_delivery
+                        else legacy_delivery_mode(resolution_status)
+                    ),
                 }
             )
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
@@ -535,7 +557,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     exact_fact_by_id[store_id]
                     for store_id in ordered_exact_ids
                     if store_id in exact_fact_by_id
-                ][: MAX_STORE_DELIVERY_COUNT if v3_mode else 5]
+                ][: MAX_BROAD_SCOPE_CARD_COUNT if v3_mode else 5]
                 authorized_comparable_stores = [
                     item
                     for item in authorized_comparable_stores
@@ -613,8 +635,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             )
             if len(precise_ranked_ids) > 1:
                 resolution_status = "send_multiple"
+            text_store_list_delivery = bool(
+                v3_mode
+                and resolution_status == "send_multiple"
+                and use_broad_exact_scope
+                and len(candidate_store_ids) > MAX_BROAD_SCOPE_CARD_COUNT
+            )
             delivery_store_ids = (
-                [ranked_recommended_store_id]
+                []
+                if text_store_list_delivery
+                else [ranked_recommended_store_id]
                 if resolution_status == "send_single" and ranked_recommended_store_id
                 else precise_ranked_ids
                 if precise_ranked_ids
@@ -626,7 +656,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if resolution_status == "send_multiple"
                 else []
             )
-            if v3_mode and resolution_status == "send_multiple":
+            if v3_mode and resolution_status == "send_multiple" and not use_broad_exact_scope:
                 delivery_store_ids = delivery_store_ids[:MAX_STORE_DELIVERY_COUNT]
             requested_detail_kind, requested_detail_available = _requested_store_detail_status(
                 destination_resolution,
@@ -720,6 +750,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "cross_district_recommendation": cross_district_recommendation,
                     "recommended_store_id": ranked_recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
+                    "text_store_summaries": (
+                        _store_text_summaries(authorized_comparable_stores, state=state)
+                        if text_store_list_delivery
+                        else []
+                    ),
                     "requested_detail_kind": requested_detail_kind,
                     "requested_detail_available": requested_detail_available,
                     "ranking_method": (
@@ -763,7 +798,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                         if candidate_stores
                         else "no_authorized_candidate_stores"
                     ),
-                    "delivery_mode": legacy_delivery_mode(resolution_status),
+                    "delivery_mode": (
+                        "text_store_list"
+                        if text_store_list_delivery
+                        else legacy_delivery_mode(resolution_status)
+                    ),
                 }
             )
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
@@ -1027,6 +1066,31 @@ def _store_fact_from_lookup_item(item: dict[str, Any], *, state: AgentState | di
         "store_fact_integrity_warnings": list(item.get("store_fact_integrity_warnings") or []),
         "scope_authorized": scope_authorized,
     }
+
+
+def _store_text_summaries(
+    items: list[dict[str, Any]],
+    *,
+    state: AgentState | dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    summaries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        fact = _store_fact_from_lookup_item(item, state=state)
+        store_id = str(fact.get("store_id") or "").strip()
+        if not store_id or store_id in seen or not bool(fact.get("scope_authorized")):
+            continue
+        summaries.append(
+            {
+                key: str(fact.get(key) or "").strip()
+                for key in ("store_id", "store_name", "province", "city", "district")
+                if str(fact.get(key) or "").strip()
+            }
+        )
+        seen.add(store_id)
+    return summaries
 
 
 def _requested_store_detail_status(

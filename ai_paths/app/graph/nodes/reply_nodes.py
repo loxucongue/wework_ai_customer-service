@@ -3481,6 +3481,12 @@ def _reply_repair_hint(error: str) -> str:
             "store_resolution_fact.status=send_multiple 时，必须按 exact_store_delivery_contract.message_payloads"
             " 逐个原样输出全部 store_address，并配一条自然说明让客户选择；不能漏卡、重复卡、改 store_id 或只写地址文本。"
         )
+    if "store_cards_not_allowed_for_text_store_list" in error or "invalid_text_store_list_contract" in error:
+        return (
+            "本轮门店候选较多，delivery_mode=text_store_list。删除所有 store_address，"
+            "只用一至两条自然文字，按 text_store_summaries 完整列出门店名称和所在区县，"
+            "不要遗漏、不要写门店ID或具体地址，最后可以问客户想看哪一家详情。"
+        )
     if "invalid_store_fact_integrity" in error:
         return (
             "本轮候选门店的结构事实存在地区冲突，必须删除对应 store_address 卡片，不能沿用该门店。"

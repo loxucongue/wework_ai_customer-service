@@ -1179,6 +1179,16 @@ def _render_tool_facts(
                     reference_aliases,
                 )
         lines.append("门店决议：" + "；".join(_flatten_pairs(compact_resolution)))
+        if str(resolution.get("delivery_mode") or "").strip() == "text_store_list":
+            summaries = [
+                item
+                for item in resolution.get("text_store_summaries") or []
+                if isinstance(item, dict)
+            ]
+            lines.append(
+                "门店文字清单事实（按顺序完整列出名称和区县，不输出门店卡、地址或门店ID）："
+                + json_dumps(summaries)
+            )
     stores = [item for item in structured.get("store_facts") or [] if isinstance(item, dict)]
     if final_store_ids:
         store_by_id = {
@@ -1247,6 +1257,7 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
     if not isinstance(resolution, dict) or not resolution:
         return ""
     status = str(resolution.get("status") or "").strip()
+    delivery_mode = str(resolution.get("delivery_mode") or "").strip()
     complete = bool(resolution.get("candidate_search_complete"))
     if status == "search_incomplete":
         return (
@@ -1263,6 +1274,19 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
             "不得输出 store_address，不得挑选其他城市门店，不得回复为空。"
         )
     if status in {"send_single", "send_multiple", "reuse_confirmed_store"}:
+        if status == "send_multiple" and delivery_mode == "text_store_list":
+            summaries = [
+                item
+                for item in resolution.get("text_store_summaries") or []
+                if isinstance(item, dict)
+            ]
+            return (
+                "门店最终结论：候选范围已经完整，共"
+                f"{len(summaries)}家；候选较多，本轮只用一至两条 text，"
+                "按 text_store_summaries 的顺序完整列出所有门店名称和所在区县，"
+                "不要遗漏、不要自行筛选、不要输出 store_address、具体地址或门店ID；"
+                "末尾可以询问客户希望查看哪一家详情。"
+            )
         is_reuse = status == "reuse_confirmed_store"
         id_source = (
             resolution.get("already_delivered_store_ids")

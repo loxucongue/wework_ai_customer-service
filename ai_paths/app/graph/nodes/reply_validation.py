@@ -1208,6 +1208,14 @@ def _validate_store_address_message_facts(
 
 
 def _validate_store_delivery_text_matches_cards(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("delivery_mode") or "").strip() == "text_store_list":
+        return
     if _emitted_store_address_ids(messages):
         return
     text = _combined_text(messages)
@@ -1276,6 +1284,13 @@ def _validate_store_resolution_contract(messages: list[dict[str, Any]], state: d
         for item in resolution.get("delivery_store_ids") or []
         if str(item or "").strip()
     }
+    delivery_mode = str(resolution.get("delivery_mode") or "").strip()
+    if delivery_mode == "text_store_list":
+        if status != "send_multiple" or delivery_ids:
+            raise ValueError("invalid_text_store_list_contract")
+        if emitted:
+            raise ValueError("store_cards_not_allowed_for_text_store_list")
+        return
     if status in {
         "need_location",
         "need_location_confirmation",

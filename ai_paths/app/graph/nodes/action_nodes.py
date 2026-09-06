@@ -1448,7 +1448,11 @@ async def _resolve_customer_store_workflow(
             "destination_resolution": destination,
             "customer_store_lookup": lookup,
         }, state)
-    query = str(destination.get("destination_query") or destination.get("named_store") or "").strip()
+    named_store = str(destination.get("named_store") or "").strip()
+    # A validated named-store reference is more specific than the surrounding
+    # destination.  Keep the canonical store name as the lookup subject while
+    # retaining source_query separately as the customer-evidence text.
+    query = str(named_store or destination.get("destination_query") or "").strip()
     if not query or (
         bool(destination.get("needs_clarification"))
         and not bool(destination.get("geocode_before_clarification", True))
@@ -1479,8 +1483,12 @@ async def _resolve_customer_store_workflow(
         "request_kind": str(destination.get("request_kind") or "match_location"),
         "destination_precision": str(destination.get("destination_precision") or "unknown"),
         "destination_needs_clarification": bool(destination.get("needs_clarification")),
+        "destination_confidence": str(destination.get("confidence") or "").strip(),
         "evidence_refs": list(destination.get("evidence_refs") or []),
-        "expected_admin": dict(destination.get("administrative_context") or {}),
+        "expected_admin": _destination_admin_scope(destination),
+        "named_store": named_store,
+        "semantic_destination_validated": str(destination.get("resolver_status") or "")
+        in {"ok", "ok_fallback_model"},
         "poi_query": str(destination.get("poi_query") or "").strip(),
         "location_candidates": [
             {
@@ -1677,16 +1685,25 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     )
     purpose = str(tool.get("purpose") or "").strip()
     request_kind = str(tool.get("request_kind") or "").strip()
+    named_store = str(tool.get("named_store") or "").strip()
+    semantic_destination_validated = bool(tool.get("semantic_destination_validated"))
     raw_scope_stores = _customer_scope_stores(state)
     stores, invalid_scope_stores = filter_valid_store_facts(
         raw_scope_stores,
         known_stores=[*_snapshot_store_values(), *raw_scope_stores],
     )
-    expected_admin = _merged_expected_admin(tool, query=query, stores=stores)
-    query_explicit_text_candidates = _explicit_store_text_candidates(
-        query,
-        stores,
-        purpose,
+    expected_admin = (
+        _normalized_expected_admin(tool.get("expected_admin"))
+        if semantic_destination_validated
+        else _merged_expected_admin(tool, query=query, stores=stores)
+    )
+    # Once the semantic resolver has classified an administrative query, a
+    # normalized place string (for example "长沙") must not be reinterpreted as
+    # an explicit store/address match merely because one store contains it.
+    query_explicit_text_candidates = (
+        _explicit_store_text_candidates(query, stores, purpose)
+        if not semantic_destination_validated or named_store
+        else []
     )
     raw_explicit_text_candidates = _explicit_store_text_candidates(
         raw_query,
@@ -1735,10 +1752,42 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "missing": ["store_scope_unavailable"],
         }
 
+    if semantic_destination_validated and named_store and query_explicit_text_candidates:
+        return _validated_named_store_lookup_result(
+            raw_query=raw_query,
+            query=query,
+            purpose=purpose,
+            expected_admin=expected_admin,
+            candidates=query_explicit_text_candidates,
+            state=state,
+            stores=stores,
+            invalid_scope_stores=invalid_scope_stores,
+        )
+
     destination_precision = str(tool.get("destination_precision") or "unknown").strip()
+    required_admin_field = {
+        "province": "province",
+        "city": "city",
+        "district": "district",
+    }.get(destination_precision, "")
+    model_admin_scope_is_usable = bool(
+        semantic_destination_validated
+        and not bool(tool.get("destination_needs_clarification"))
+        and list(tool.get("evidence_refs") or [])
+        and str(tool.get("destination_confidence") or "").strip() in {"high", "medium"}
+        and required_admin_field
+        and str(expected_admin.get(required_admin_field) or "").strip()
+    )
+    admin_scope_is_grounded = (
+        model_admin_scope_is_usable
+        if semantic_destination_validated
+        else _resolver_admin_is_grounded_in_query(query, expected_admin)
+    )
     if (
         destination_precision in {"province", "city", "district"}
-        and _resolver_admin_is_grounded_in_query(query, expected_admin)
+        and not named_store
+        and request_kind not in {"store_detail", "reuse_store"}
+        and admin_scope_is_grounded
     ):
         admin_result = _administrative_scope_lookup_result(
             raw_query=raw_query,
@@ -2158,7 +2207,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             expected_admin,
         ):
             text_candidates = [raw_explicit_text_candidate]
-            text_match_query = raw_query
+            text_match_query = query if semantic_destination_validated and named_store else raw_query
     visible_region_expected_admin = {**geocode, **expected_admin}
     if _recent_assistant_requested_customer_location(state):
         short_region_core = _unanchored_place_core(_compact_text(resolved_query))
@@ -2180,8 +2229,17 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         stores,
         expected_admin=visible_region_expected_admin,
     )
-    exact_store_reference = any(_store_has_explicit_text_reference(text_match_query, item) for item in text_candidates)
+    explicit_reference_query = (
+        raw_query
+        if semantic_destination_validated and raw_query
+        else text_match_query
+    )
+    exact_store_reference = any(
+        _store_has_explicit_text_reference(explicit_reference_query, item)
+        for item in text_candidates
+    )
     if len(text_candidates) == 1 and exact_store_reference:
+        matched_query = query if semantic_destination_validated and named_store else text_match_query
         normalized, invalid_candidates = filter_valid_store_facts(
             text_candidates,
             known_stores=[*_snapshot_store_values(), *stores, *text_candidates],
@@ -2196,9 +2254,9 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             location_evidence = build_location_evidence(
                 state,
                 raw_text=raw_query,
-                query=text_match_query,
+                query=matched_query,
                 geocode={
-                    "formatted_address": str(normalized[0].get("address") or text_match_query),
+                    "formatted_address": str(normalized[0].get("address") or matched_query),
                     **store_region,
                 },
                 confirmed_by_customer=True,
@@ -2214,7 +2272,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             )
             scope_fields = _store_lookup_scope_fields(
                 {
-                    "query": resolved_query,
+                    "query": matched_query,
                     "geocode": {
                         "formatted_address": str(normalized[0].get("address") or resolved_query),
                         **store_region,
@@ -2225,7 +2283,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             return {
                 "status": "ok",
                 "raw_query": raw_query,
-                "query": text_match_query,
+                "query": matched_query,
                 "purpose": purpose,
                 "source": "customer_scope_exact_text_reference",
                 "allow_broad_scope_delivery": False,
@@ -2825,11 +2883,13 @@ def _resolver_admin_is_grounded_in_query(query: str, expected_admin: dict[str, A
         return True
     for field in ("district", "city", "province"):
         value = str(normalized.get(field) or "").strip()
+        parent_province = str(normalized.get("province") or "") if field != "province" else ""
+        parent_city = str(normalized.get("city") or "") if field == "district" else ""
         if value and _admin_name_mentioned_in_query(
             query,
             value,
-            parent_province=str(normalized.get("province") or ""),
-            parent_city=str(normalized.get("city") or ""),
+            parent_province=parent_province,
+            parent_city=parent_city,
         ):
             return True
     county_level_city = str((expected_admin or {}).get("county_level_city") or "").strip()
@@ -2901,6 +2961,78 @@ def _administrative_scope_lookup_result(
         "location_evidence": location_evidence,
         **scope_fields,
         "stores": normalized,
+        "candidate_stores": normalized,
+        "candidate_store_count": len(normalized),
+        "filtered_invalid_stores": [*invalid_scope_stores, *invalid_candidates],
+        "tool_errors": [],
+        "missing": [] if normalized else ["matched_customer_scope_store"],
+    }
+
+
+def _validated_named_store_lookup_result(
+    *,
+    raw_query: str,
+    query: str,
+    purpose: str,
+    expected_admin: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    state: AgentState,
+    stores: list[dict[str, Any]],
+    invalid_scope_stores: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return every authorized store matching a model-grounded store name.
+
+    A map provider may resolve a duplicated or place-like store name to one
+    arbitrary POI or same-root district.  The canonical model subject plus the
+    structured administrative scope is the stronger selector here; duplicate
+    authorized records intentionally remain duplicate candidates.
+    """
+
+    normalized, invalid_candidates = filter_valid_store_facts(
+        candidates,
+        known_stores=[*_snapshot_store_values(), *stores, *candidates],
+    )
+    normalized = [_store_lookup_item(store) for store in normalized]
+    region = _normalized_expected_admin(expected_admin)
+    if region:
+        region["resolved_admin_level"] = (
+            "district" if region.get("district") else "city" if region.get("city") else "province"
+        )
+    location_evidence = build_location_evidence(
+        state,
+        raw_text=raw_query,
+        query=query,
+        geocode={"formatted_address": query, **region},
+        confirmed_by_customer=True,
+    )
+    location_evidence.update(
+        {
+            **region,
+            "confirmation_status": "confirmed",
+            "confirmation_mode": "model_grounded_named_store",
+            "confirmation_required_before_match": False,
+            "confidence": "high",
+        }
+    )
+    scope_fields = _store_lookup_scope_fields(
+        {"query": query, "geocode": region, "candidate_stores": normalized}
+    )
+    return {
+        "status": "ok" if normalized else "no_match",
+        "raw_query": raw_query,
+        "query": query,
+        "purpose": purpose,
+        "source": "customer_scope_model_named_store",
+        "allow_broad_scope_delivery": False,
+        "geocode": {"formatted_address": query, **region},
+        "trusted_origin": {
+            "available": False,
+            "source": "customer_model_grounded_named_store",
+            "supports_distance_ranking": False,
+        },
+        "location_evidence": location_evidence,
+        **scope_fields,
+        "stores": normalized[:12],
         "candidate_stores": normalized,
         "candidate_store_count": len(normalized),
         "filtered_invalid_stores": [*invalid_scope_stores, *invalid_candidates],
@@ -5051,6 +5183,30 @@ def _normalized_expected_admin(value: Any) -> dict[str, str]:
     if district.endswith(("镇", "乡", "街道")):
         normalized.pop("district", None)
     return normalized
+
+
+def _destination_admin_scope(destination: dict[str, Any]) -> dict[str, str]:
+    """Keep only administrative levels justified by the model precision.
+
+    Models sometimes populate a lower-level field while still classifying the
+    destination as a city or province.  The declared precision is the semantic
+    contract; lower fields must not silently narrow the authorized store scope.
+    """
+
+    normalized = _normalized_expected_admin(destination.get("administrative_context"))
+    precision = str(destination.get("destination_precision") or "unknown").strip()
+    allowed_fields = {
+        "province": ("province",),
+        "city": ("province", "city"),
+        "district": ("province", "city", "district"),
+    }.get(precision)
+    if allowed_fields is None:
+        return normalized
+    return {
+        field: normalized[field]
+        for field in allowed_fields
+        if str(normalized.get(field) or "").strip()
+    }
 
 
 def _geocode_matches_expected_admin(
