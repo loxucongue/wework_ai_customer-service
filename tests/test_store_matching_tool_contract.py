@@ -541,7 +541,7 @@ def _lookup_result(stores: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
-def test_lookup_returns_single_store_again_when_same_card_was_previously_sent() -> None:
+def test_lookup_reuses_single_store_when_same_card_was_previously_sent() -> None:
     store = _store("101", "成都锦江店")
 
     output = build_planner_fact_output(
@@ -550,9 +550,9 @@ def test_lookup_returns_single_store_again_when_same_card_was_previously_sent() 
     )
 
     resolution = output["structured_facts"]["store_resolution_fact"]
-    assert resolution["status"] == "send_single"
-    assert resolution["delivery_store_ids"] == ["101"]
-    assert "already_delivered_store_ids" not in resolution
+    assert resolution["status"] == "reuse_confirmed_store"
+    assert resolution["delivery_store_ids"] == []
+    assert resolution["already_delivered_store_ids"] == ["101"]
 
 
 def test_non_address_store_detail_reuses_previously_sent_card_without_resending() -> None:
@@ -596,7 +596,7 @@ def test_explicit_address_store_detail_can_resend_previously_sent_card() -> None
     assert "already_delivered_store_ids" not in resolution
 
 
-def test_lookup_returns_multiple_stores_again_when_same_cards_were_previously_sent() -> None:
+def test_lookup_reuses_multiple_stores_when_same_cards_were_previously_sent() -> None:
     stores = [_store("101", "成都锦江一店"), _store("102", "成都锦江二店")]
 
     output = build_planner_fact_output(
@@ -605,12 +605,12 @@ def test_lookup_returns_multiple_stores_again_when_same_cards_were_previously_se
     )
 
     resolution = output["structured_facts"]["store_resolution_fact"]
-    assert resolution["status"] == "send_multiple"
-    assert resolution["delivery_store_ids"] == ["101", "102"]
-    assert "already_delivered_store_ids" not in resolution
+    assert resolution["status"] == "reuse_confirmed_store"
+    assert resolution["delivery_store_ids"] == []
+    assert resolution["already_delivered_store_ids"] == ["101", "102"]
 
 
-def test_distance_ranking_returns_store_again_when_same_card_was_previously_sent() -> None:
+def test_same_city_distance_ranking_reuses_previously_sent_store_card() -> None:
     store = _store("101", "成都锦江店")
     destination = _lookup_result([store])["destination_resolution"]
 
@@ -639,10 +639,10 @@ def test_distance_ranking_returns_store_again_when_same_card_was_previously_sent
     )
 
     resolution = output["structured_facts"]["store_resolution_fact"]
-    assert resolution["status"] == "send_single"
-    assert resolution["delivery_store_ids"] == ["101"]
+    assert resolution["status"] == "reuse_confirmed_store"
+    assert resolution["delivery_store_ids"] == []
+    assert resolution["already_delivered_store_ids"] == ["101"]
     assert resolution["ranking_method"] == "haversine"
-    assert "already_delivered_store_ids" not in resolution
 
 
 def test_full_admin_address_disambiguates_shared_address_tail(monkeypatch: pytest.MonkeyPatch) -> None:

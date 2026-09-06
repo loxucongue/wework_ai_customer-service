@@ -9,6 +9,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.chat_runtime import _store_search_evidence_from_state  # noqa: E402
+from app.graph.nodes.action_module_outputs import (  # noqa: E402
+    _reuse_already_delivered_store_delivery,
+)
 from app.graph.nodes.current_turn_context import build_current_turn_context  # noqa: E402
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission  # noqa: E402
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model  # noqa: E402
@@ -236,3 +239,120 @@ def test_model_led_admission_rejects_unexecuted_slot_reservation_claim() -> None
             [{"type": "text", "content": "您方便的时候再来，我帮您把活动名额留着。"}],
             state,
         )
+
+
+def test_same_city_store_list_does_not_resend_an_already_delivered_card() -> None:
+    resolution = {
+        "status": "send_single",
+        "outcome": "resolved",
+        "city": "长沙市",
+        "delivery_store_ids": ["160"],
+        "delivery_mode": "store_cards",
+        "destination_resolution": {
+            "request_kind": "list",
+            "administrative_context": {"city": "长沙市"},
+        },
+    }
+
+    reused = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert reused["status"] == "reuse_confirmed_store"
+    assert reused["delivery_store_ids"] == []
+    assert reused["already_delivered_store_ids"] == ["160"]
+    assert reused["reason"] == "already_delivered_store_same_destination:list"
+
+
+def test_same_city_store_list_filters_only_previously_delivered_cards() -> None:
+    resolution = {
+        "status": "send_multiple",
+        "outcome": "resolved",
+        "city": "长沙市",
+        "delivery_store_ids": ["160", "324", "448"],
+        "delivery_mode": "send_all_candidates",
+        "destination_resolution": {
+            "request_kind": "list",
+            "administrative_context": {"city": "长沙市"},
+        },
+    }
+
+    filtered = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+        available_stores=[
+            {
+                "store_id": store_id,
+                "store_name": name,
+                "store_address": f"长沙市{district}{name}地址",
+                "province": "湖南省",
+                "city": "长沙市",
+                "district": district,
+                "store_fact_integrity": "valid",
+            }
+            for store_id, name, district in (
+                ("160", "长沙岳麓店", "岳麓区"),
+                ("324", "长沙雨花店", "雨花区"),
+                ("448", "长沙望城店", "望城区"),
+            )
+        ],
+    )
+
+    assert filtered["status"] == "send_multiple"
+    assert filtered["delivery_store_ids"] == []
+    assert filtered["already_delivered_store_ids"] == ["160"]
+    assert filtered["delivery_mode"] == "text_store_list"
+    assert len(filtered["text_store_summaries"]) == 3
+    assert filtered["reason"] == "already_delivered_store_cards_replaced_with_text_list"
+
+
+def test_new_city_is_allowed_even_if_a_store_id_was_delivered_before() -> None:
+    resolution = {
+        "status": "send_single",
+        "city": "武汉市",
+        "delivery_store_ids": ["160"],
+        "destination_resolution": {
+            "request_kind": "match_location",
+            "administrative_context": {"city": "武汉市"},
+        },
+    }
+
+    unchanged = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert unchanged == resolution
+
+
+def test_explicit_address_request_can_repeat_an_already_delivered_card() -> None:
+    resolution = {
+        "status": "send_single",
+        "city": "长沙市",
+        "delivery_store_ids": ["160"],
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "address",
+            "administrative_context": {"city": "长沙市"},
+        },
+    }
+
+    unchanged = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert unchanged == resolution

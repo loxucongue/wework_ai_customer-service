@@ -112,16 +112,75 @@ def _destination_fingerprint(
     return "|".join(item for item in parts if item)
 
 
-def _reuse_non_address_store_detail_delivery(
+def _store_resolution_city(resolution: dict[str, Any]) -> str:
+    destination = (
+        resolution.get("destination_resolution")
+        if isinstance(resolution.get("destination_resolution"), dict)
+        else {}
+    )
+    administrative = (
+        destination.get("administrative_context")
+        if isinstance(destination.get("administrative_context"), dict)
+        else {}
+    )
+    return str(
+        resolution.get("city")
+        or destination.get("city")
+        or administrative.get("city")
+        or ""
+    ).strip()
+
+
+def _latest_recommendation_city(sent_summary: dict[str, Any]) -> str:
+    recommendation = (
+        sent_summary.get("latest_store_recommendation")
+        if isinstance(sent_summary.get("latest_store_recommendation"), dict)
+        else {}
+    )
+    evidence = (
+        recommendation.get("store_search_evidence")
+        if isinstance(recommendation.get("store_search_evidence"), dict)
+        else {}
+    )
+    return _store_resolution_city(evidence)
+
+
+def _latest_recommendation_is_final(sent_summary: dict[str, Any]) -> bool:
+    recommendation = (
+        sent_summary.get("latest_store_recommendation")
+        if isinstance(sent_summary.get("latest_store_recommendation"), dict)
+        else {}
+    )
+    evidence = (
+        recommendation.get("store_search_evidence")
+        if isinstance(recommendation.get("store_search_evidence"), dict)
+        else {}
+    )
+    if evidence.get("recommendation_final_for_destination") is not None:
+        return evidence.get("recommendation_final_for_destination") is True
+    return bool(
+        evidence.get("candidate_search_complete")
+        and (
+            evidence.get("recommended_store_id")
+            or evidence.get("delivery_store_ids")
+            or recommendation.get("latest_batch_store_ids")
+        )
+    )
+
+
+def _reuse_already_delivered_store_delivery(
     state: AgentState,
     resolution: dict[str, Any],
+    *,
+    available_stores: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Do not resend an already delivered card for a non-address detail.
+    """Do not resend an already delivered card without a new destination.
 
-    The destination resolver owns the semantic distinction between parking,
-    hours, arrival guidance, address and navigation.  Code only applies the
-    resulting delivery-idempotency boundary; it does not infer intent from
-    customer keywords.
+    The destination resolver owns request semantics and destination parsing.
+    Code only applies delivery idempotency to its structured result: explicit
+    address/navigation requests may repeat a card, and a structurally different
+    city may produce a new recommendation.  Other requests reuse already sent
+    cards instead of sending the same store IDs again.
     """
 
     if not _is_v3_state(state) or str(resolution.get("status") or "") not in {
@@ -134,12 +193,11 @@ def _reuse_non_address_store_detail_delivery(
         if isinstance(resolution.get("destination_resolution"), dict)
         else {}
     )
-    if str(destination.get("request_kind") or "").strip() != "store_detail":
-        return resolution
+    request_kind = str(destination.get("request_kind") or "").strip()
     detail_kind = str(
         resolution.get("requested_detail_kind") or destination.get("detail_kind") or ""
     ).strip()
-    if detail_kind in {"address", "navigation"}:
+    if request_kind == "store_detail" and detail_kind in {"address", "navigation"}:
         return resolution
     delivery_ids = [
         str(item or "").strip()
@@ -148,23 +206,70 @@ def _reuse_non_address_store_detail_delivery(
     ]
     if not delivery_ids:
         return resolution
+    sent_summary = sent_message_summary_for_model(state)
     sent_ids = {
         str(item or "").strip()
-        for item in sent_message_summary_for_model(state).get(
-            "store_address_sent_by_store_id", []
-        )
+        for item in sent_summary.get("store_address_sent_by_store_id", [])
         if str(item or "").strip()
     }
-    if not set(delivery_ids).issubset(sent_ids):
+    repeated_ids = [store_id for store_id in delivery_ids if store_id in sent_ids]
+    if not repeated_ids:
         return resolution
+    current_city = _store_resolution_city(resolution)
+    previous_city = _latest_recommendation_city(sent_summary)
+    if current_city and previous_city and current_city != previous_city:
+        return resolution
+    if (
+        request_kind in {"match_location", "nearest", "compare"}
+        and current_city
+        and current_city == previous_city
+        and _latest_recommendation_is_final(sent_summary)
+    ):
+        return {
+            **resolution,
+            "status": "reuse_confirmed_store",
+            "outcome": "resolved",
+            "delivery_store_ids": [],
+            "already_delivered_store_ids": repeated_ids,
+            "delivery_mode": "none",
+            "reason": f"already_delivered_store_terminal_destination:{request_kind}",
+        }
+    remaining_ids = [store_id for store_id in delivery_ids if store_id not in sent_ids]
+    if remaining_ids:
+        if request_kind == "list":
+            summaries = _store_text_summaries(available_stores or [], state=state)
+            if summaries:
+                return {
+                    **resolution,
+                    "status": "send_multiple",
+                    "delivery_store_ids": [],
+                    "already_delivered_store_ids": repeated_ids,
+                    "delivery_mode": "text_store_list",
+                    "text_store_summaries": summaries,
+                    "reason": "already_delivered_store_cards_replaced_with_text_list",
+                }
+        next_status = "send_single" if len(remaining_ids) == 1 else "send_multiple"
+        return {
+            **resolution,
+            "status": next_status,
+            "delivery_store_ids": remaining_ids,
+            "already_delivered_store_ids": repeated_ids,
+            "delivery_mode": legacy_delivery_mode(next_status),
+            "reason": f"already_delivered_store_ids_filtered:{request_kind or 'unspecified'}",
+        }
+    reason_suffix = (
+        f"non_address_detail:{detail_kind or 'other'}"
+        if request_kind == "store_detail"
+        else f"same_destination:{request_kind or 'unspecified'}"
+    )
     return {
         **resolution,
         "status": "reuse_confirmed_store",
         "outcome": "resolved",
         "delivery_store_ids": [],
-        "already_delivered_store_ids": delivery_ids,
+        "already_delivered_store_ids": repeated_ids,
         "delivery_mode": "none",
-        "reason": f"already_delivered_store_non_address_detail:{detail_kind or 'other'}",
+        "reason": f"already_delivered_store_{reason_suffix}",
     }
 
 
@@ -455,9 +560,10 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
             store_resolution_fact["visible_candidate_ids"] = candidate_store_ids
             store_resolution_fact["delivery_store_ids"] = delivery_store_ids
-            store_resolution_fact = _reuse_non_address_store_detail_delivery(
+            store_resolution_fact = _reuse_already_delivered_store_delivery(
                 state,
                 store_resolution_fact,
+                available_stores=authorized_stores,
             )
             structured_facts["store_resolution_fact"] = store_resolution_fact
             missing_slots.extend(lookup_missing[:4])
@@ -869,9 +975,10 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
             store_resolution_fact["visible_candidate_ids"] = candidate_store_ids
             store_resolution_fact["delivery_store_ids"] = delivery_store_ids
-            store_resolution_fact = _reuse_non_address_store_detail_delivery(
+            store_resolution_fact = _reuse_already_delivered_store_delivery(
                 state,
                 store_resolution_fact,
+                available_stores=authorized_comparable_stores,
             )
             structured_facts["store_resolution_fact"] = store_resolution_fact
             facts.append(
