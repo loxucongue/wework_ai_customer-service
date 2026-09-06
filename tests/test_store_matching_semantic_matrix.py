@@ -17,6 +17,26 @@ from app.graph.nodes.reply_validation import _validate_store_resolution_contract
 from app.prompts.reply_synthesizer import _render_store_resolution_conclusion, _render_tool_facts
 
 
+def test_reused_store_detail_prompt_requires_one_related_next_step() -> None:
+    conclusion = _render_store_resolution_conclusion(
+        {
+            "status": "reuse_confirmed_store",
+            "scope_match_level": "district",
+            "exact_scope_has_store": True,
+            "already_delivered_store_ids": ["160"],
+            "destination_resolution": {
+                "request_kind": "store_detail",
+                "detail_kind": "parking",
+            },
+        }
+    )
+
+    assert "不得重复发送 store_address" in conclusion
+    assert "不得在 text 中复述此前已经交付的完整地址或导航" in conclusion
+    assert "回答详情＋一个到店问题" in conclusion
+    assert "closing_action=none" in conclusion
+
+
 def _store(
     store_id: str,
     name: str,

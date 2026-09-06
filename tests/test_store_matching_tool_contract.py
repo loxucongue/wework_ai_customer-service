@@ -555,6 +555,47 @@ def test_lookup_returns_single_store_again_when_same_card_was_previously_sent() 
     assert "already_delivered_store_ids" not in resolution
 
 
+def test_non_address_store_detail_reuses_previously_sent_card_without_resending() -> None:
+    store = _store("101", "成都锦江店")
+    lookup = _lookup_result([store])
+    lookup["destination_resolution"] = {
+        **lookup["destination_resolution"],
+        "request_kind": "store_detail",
+        "detail_kind": "parking",
+    }
+
+    output = build_planner_fact_output(
+        {"customer_store_lookup": lookup},
+        _state_with_previous_delivery(["101"]),
+    )
+
+    resolution = output["structured_facts"]["store_resolution_fact"]
+    assert resolution["status"] == "reuse_confirmed_store"
+    assert resolution["delivery_store_ids"] == []
+    assert resolution["already_delivered_store_ids"] == ["101"]
+    assert resolution["reason"] == "already_delivered_store_non_address_detail:parking"
+
+
+def test_explicit_address_store_detail_can_resend_previously_sent_card() -> None:
+    store = _store("101", "成都锦江店")
+    lookup = _lookup_result([store])
+    lookup["destination_resolution"] = {
+        **lookup["destination_resolution"],
+        "request_kind": "store_detail",
+        "detail_kind": "address",
+    }
+
+    output = build_planner_fact_output(
+        {"customer_store_lookup": lookup},
+        _state_with_previous_delivery(["101"]),
+    )
+
+    resolution = output["structured_facts"]["store_resolution_fact"]
+    assert resolution["status"] == "send_single"
+    assert resolution["delivery_store_ids"] == ["101"]
+    assert "already_delivered_store_ids" not in resolution
+
+
 def test_lookup_returns_multiple_stores_again_when_same_cards_were_previously_sent() -> None:
     stores = [_store("101", "成都锦江一店"), _store("102", "成都锦江二店")]
 
