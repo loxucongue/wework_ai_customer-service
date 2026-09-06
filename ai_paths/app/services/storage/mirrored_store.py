@@ -51,6 +51,9 @@ class MirroredStore:
     def json_text(self, column: str, path: str) -> str:
         return self.primary.json_text(column, path)
 
+    def source_table(self, name: str) -> str:
+        return self.primary.source_table(name)
+
     @contextmanager
     def connect(self) -> Iterator[MirroredConnection]:
         primary_context = self.primary.connect()
@@ -79,4 +82,3 @@ class MirroredStore:
     def close(self) -> None:
         self.primary.close()
         self.mirror.close()
-

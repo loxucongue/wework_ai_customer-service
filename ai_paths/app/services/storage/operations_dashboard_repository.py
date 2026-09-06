@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from math import ceil
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -28,6 +28,10 @@ class OperationsDashboardRepositoryMixin:
         trace_clauses = ["r.created_at>=?", "r.created_at<=?"]
         run_params: list[Any] = [start_iso, end_iso]
         trace_params: list[Any] = [start_iso, end_iso]
+        production_run = f"LOWER(COALESCE({self.store.json_text('input_snapshot', '$.request_context.test_isolated')}, 'false')) NOT IN ('true','1')"
+        production_trace = f"LOWER(COALESCE({self.store.json_text('r.input_snapshot', '$.request_context.test_isolated')}, 'false')) NOT IN ('true','1')"
+        run_clauses.append(production_run)
+        trace_clauses.append(production_trace)
         if corp_id:
             run_clauses.append(f"{self.store.json_text('input_snapshot', '$.corp_id')}=?")
             trace_clauses.append(f"{self.store.json_text('r.input_snapshot', '$.corp_id')}=?")
@@ -76,7 +80,8 @@ class OperationsDashboardRepositoryMixin:
                 SELECT e.event_id, e.status AS event_status, e.error AS event_error,
                        e.retry_count, e.received_at, e.updated_at,
                        t.id AS task_id, t.status AS task_status, t.error AS task_error,
-                       t.send_payload_json, t.created_at AS task_created_at, t.sent_at
+                       t.send_payload_json, t.send_response_json,
+                       t.created_at AS task_created_at, t.sent_at
                 FROM sop_events e
                 LEFT JOIN sop_send_tasks t ON t.event_id=e.event_id
                 WHERE {' AND '.join(sop_clauses)}
@@ -94,29 +99,47 @@ class OperationsDashboardRepositoryMixin:
                 """,
                 contact_params,
             ).fetchall())
+            relation_table = self.store.source_table("customer_member_relations")
+            archive_messages_table = self.store.source_table("archive_messages")
+            local_start = start.astimezone(_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S.%f")
+            local_end = end.astimezone(_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S.%f")
+            relation_clauses = ["r.member_friend_added_at>=?", "r.member_friend_added_at<=?"]
+            relation_params: list[Any] = [local_start, local_end]
+            if corp_id:
+                relation_clauses.append("r.enterprise_id=?")
+                relation_params.append(corp_id)
+            if wechat:
+                relation_clauses.append("r.wework_user_id=?")
+                relation_params.append(wechat)
             new_contact_rows = _dict_rows(conn.execute(
                 f"""
-                SELECT customer_id, external_userid, corp_id, wechat
-                FROM conversations
-                WHERE {' AND '.join(contact_clauses).replace('started_at', 'created_at')}
+                SELECT DISTINCT r.enterprise_id AS corp_id, r.wework_user_id AS wechat,
+                       r.external_userid
+                FROM {relation_table} r
+                WHERE {' AND '.join(relation_clauses)}
                 """,
-                contact_params,
+                relation_params,
             ).fetchall())
             opened_contact_rows = _dict_rows(conn.execute(
                 f"""
-                SELECT c.customer_id, c.external_userid, c.corp_id, c.wechat
-                FROM messages m
-                JOIN conversations c ON c.id=m.conversation_id
-                WHERE m.role='user' AND {' AND '.join(contact_clauses).replace('started_at', 'm.created_at')}
+                SELECT DISTINCT r.enterprise_id AS corp_id, r.wework_user_id AS wechat,
+                       r.external_userid
+                FROM {relation_table} r
+                INNER JOIN {archive_messages_table} m ON m.conversation_id=r.conversation_id
+                WHERE {' AND '.join(relation_clauses)}
+                  AND m.direction='incoming'
+                  AND m.timestamp>=r.member_friend_added_at
+                  AND m.timestamp>=? AND m.timestamp<=?
+                  AND TRIM(COALESCE(m.content,''))!='我已经添加了你，现在我们可以开始聊天了。'
                 """,
-                contact_params,
+                [*relation_params, local_start, local_end],
             ).fetchall())
             plan_ids = [str(row.get("plan_id") or "") for row in outreach_rows if row.get("plan_id")]
             task_rows: list[dict[str, Any]] = []
             if plan_ids:
                 placeholders = ",".join("?" for _ in plan_ids)
                 task_rows = _dict_rows(conn.execute(
-                    f"SELECT plan_id, step_index, status, sent_at, error_message FROM outreach_tasks WHERE plan_id IN ({placeholders})",
+                    f"SELECT id, plan_id, step_index, status, sent_at, send_status, system_msgid, error_message FROM outreach_tasks WHERE plan_id IN ({placeholders})",
                     plan_ids,
                 ).fetchall())
 
@@ -142,9 +165,10 @@ class OperationsDashboardRepositoryMixin:
 
 
 def _contact_metrics(new_rows: list[dict[str, Any]], opened_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    new_keys = _contact_keys(new_rows)
     return {
-        "new_contacts": len(_contact_keys(new_rows)),
-        "opened_contacts": len(_contact_keys(opened_rows)),
+        "new_contacts": len(new_keys),
+        "opened_contacts": len(_contact_keys(opened_rows) & new_keys),
     }
 
 
@@ -223,26 +247,40 @@ def _platform_sop_metrics(rows: list[dict[str, Any]], bucket: str) -> dict[str, 
             tasks[str(row["task_id"])] = row
     task_values = list(tasks.values())
     statuses = Counter(str(row.get("task_status") or "no_task") for row in task_values)
-    sent = sum(status in {"sent", "shadow_send"} for status in statuses.elements())
-    no_send = sum(status in {"completed_without_send", "shadow_no_send"} for status in statuses.elements())
-    failed = sum(
-        str(row.get("event_status") or "") == "platform_failed"
+    sent_rows = [row for row in task_values if _is_confirmed_sop_send(row)]
+    sent = len(sent_rows)
+    no_send = sum(status == "completed_without_send" for status in statuses.elements())
+    failed_event_ids = {
+        str(row.get("event_id") or "")
+        for row in rows
+        if str(row.get("event_status") or "") == "platform_failed"
         or str(row.get("task_status") or "") == "failed"
-        for row in task_values
-    )
+    }
+    failed = len(failed_event_ids)
     reasons = Counter()
     for row in task_values:
+        if str(row.get("task_status") or "") not in {"completed_without_send", "failed"}:
+            continue
         payload = loads_dict(row.get("send_payload_json"))
-        decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else payload
-        reason = str(decision.get("reason_code") or decision.get("reason") or "").strip()
+        reason = _sop_reason(payload, str(row.get("task_error") or row.get("event_error") or ""))
         if reason:
             reasons[reason] += 1
     latencies = []
-    for row in task_values:
+    for row in sent_rows:
         start = _parse_time(str(row.get("task_created_at") or ""))
         finish = _parse_time(str(row.get("sent_at") or ""))
         if start and finish and finish >= start:
             latencies.append(int((finish - start).total_seconds() * 1000))
+    terminal_total = sent + no_send + failed
+    trend_events = [
+        {
+            **row,
+            "failed_marker": str(row.get("event_error") or "failed")
+            if str(row.get("event_status") or "") == "platform_failed"
+            else "",
+        }
+        for row in events.values()
+    ]
     return {
         "events": len(events),
         "tasks": len(task_values),
@@ -250,12 +288,37 @@ def _platform_sop_metrics(rows: list[dict[str, Any]], bucket: str) -> dict[str, 
         "no_send": no_send,
         "failed": failed,
         "retry_count": sum(int(row.get("retry_count") or 0) for row in events.values()),
-        "send_rate": _rate(sent, len(task_values)),
+        "send_rate": _rate(sent, terminal_total),
         "avg_dispatch_ms": _average(latencies) if latencies else None,
         "status_breakdown": _counter_items(statuses),
         "reason_breakdown": _counter_items(reasons),
-        "trend": _trend(list(events.values()), bucket, time_field="received_at", failure_field="event_error"),
+        "trend": _trend(trend_events, bucket, time_field="received_at", failure_field="failed_marker"),
     }
+
+
+def _is_confirmed_sop_send(row: dict[str, Any]) -> bool:
+    if str(row.get("task_status") or "") != "sent" or not str(row.get("sent_at") or "").strip():
+        return False
+    response = loads_dict(row.get("send_response_json"))
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    return (
+        str(data.get("send_status") or "").lower() == "accepted"
+        and bool(data.get("system_msgid") or data.get("system_msgids"))
+    )
+
+
+def _sop_reason(payload: dict[str, Any], error: str) -> str:
+    decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+    candidates = [
+        payload.get("reason_code"), payload.get("reason"), payload.get("terminal_reason"),
+        decision.get("reason_code"), decision.get("reason"), decision.get("decision_source"),
+    ]
+    evaluations = decision.get("evaluations") if isinstance(decision.get("evaluations"), list) else []
+    for evaluation in evaluations:
+        if isinstance(evaluation, dict):
+            candidates.extend((evaluation.get("reason_code"), evaluation.get("reason")))
+    candidates.append(error)
+    return next((str(value).strip() for value in candidates if str(value or "").strip()), "")
 
 
 def _first_day_metrics(
@@ -265,36 +328,45 @@ def _first_day_metrics(
 ) -> dict[str, Any]:
     statuses = Counter(str(row.get("status") or "unknown") for row in rows)
     reasons = Counter(str(row.get("reason_code") or "") for row in rows if row.get("reason_code"))
-    first_sent = sum(int(row.get("step_index") or 0) == 1 and row.get("status") == "sent" for row in task_rows)
-    second_sent = sum(int(row.get("step_index") or 0) == 2 and row.get("status") == "sent" for row in task_rows)
+    first_sent = sum(int(row.get("step_index") or 0) == 1 and _is_confirmed_outreach_send(row) for row in task_rows)
+    second_sent = sum(int(row.get("step_index") or 0) == 2 and _is_confirmed_outreach_send(row) for row in task_rows)
     second_cancelled = sum(
         int(row.get("step_index") or 0) == 2
         and row.get("status") in {"cancelled", "skipped"}
         and "customer" in str(row.get("error_message") or "").lower()
         for row in task_rows
     )
-    durations = [int(row.get("duration_ms") or 0) for row in rows]
-    failed = sum(
-        bool(str(row.get("error_message") or "").strip())
-        or str(row.get("status") or "").lower() == "failed"
+    durations = [int(row.get("duration_ms") or 0) for row in rows if int(row.get("duration_ms") or 0) > 0]
+    failed = sum(str(row.get("status") or "").lower() == "failed" for row in rows)
+    trend_rows = [
+        {**row, "failed_marker": "failed" if str(row.get("status") or "").lower() == "failed" else ""}
         for row in rows
-    )
+    ]
     return {
         "triggers": len(rows),
-        "plans_created": sum(bool(str(row.get("plan_id") or "").strip()) for row in rows),
+        "plans_created": len({str(row.get("plan_id")).strip() for row in rows if str(row.get("plan_id") or "").strip()}),
         "blocked": sum(str(row.get("status") or "").lower() == "blocked" for row in rows),
         "failed": failed,
         "first_sent": first_sent,
         "second_sent": second_sent,
         "second_cancelled_customer_reply": second_cancelled,
         "model_attempts": sum(int(row.get("model_attempt_count") or 0) for row in rows),
-        "retry_count": sum(int(row.get("retry_count") or 0) for row in rows),
-        "avg_ms": _average(durations),
-        "p90_ms": _percentile(durations, 90),
+        "retry_count": sum(int(row.get("retry_count") or 0) > 0 for row in rows),
+        "retry_attempts": sum(int(row.get("retry_count") or 0) for row in rows),
+        "avg_ms": _average(durations) if durations else 0,
+        "p90_ms": _percentile(durations, 90) if durations else 0,
         "status_breakdown": _counter_items(statuses),
         "reason_breakdown": _counter_items(reasons),
-        "trend": _trend(rows, bucket, time_field="started_at", failure_field="error_message", duration_field="duration_ms"),
+        "trend": _trend(trend_rows, bucket, time_field="started_at", failure_field="failed_marker", duration_field="duration_ms"),
     }
+
+
+def _is_confirmed_outreach_send(row: dict[str, Any]) -> bool:
+    return (
+        str(row.get("status") or "") == "sent"
+        and bool(str(row.get("sent_at") or "").strip())
+        and bool(str(row.get("system_msgid") or "").strip() or str(row.get("send_status") or "").strip())
+    )
 
 
 def _trend(
@@ -316,7 +388,11 @@ def _trend(
     result = []
     for key in sorted(grouped):
         values = grouped[key]
-        durations = [int(row.get(duration_field) or 0) for row in values] if duration_field else []
+        durations = [
+            int(row.get(duration_field) or 0)
+            for row in values
+            if duration_field and int(row.get(duration_field) or 0) > 0
+        ]
         result.append(
             {
                 "bucket": key,
@@ -329,7 +405,7 @@ def _trend(
     return result
 
 
-def _parse_time(value: str) -> datetime | None:
+def _parse_time(value: str, *, default_tz: ZoneInfo | timezone = UTC) -> datetime | None:
     text = str(value or "").strip()
     if not text:
         return None
@@ -337,7 +413,7 @@ def _parse_time(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    return parsed.replace(tzinfo=default_tz).astimezone(UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def _is_timeout(value: Any) -> bool:

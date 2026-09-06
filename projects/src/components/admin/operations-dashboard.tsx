@@ -34,7 +34,7 @@ type DashboardData = {
   };
   first_day_outreach: {
     triggers: number; plans_created: number; blocked: number; failed: number; first_sent: number;
-    second_sent: number; second_cancelled_customer_reply: number; model_attempts: number; retry_count: number;
+    second_sent: number; second_cancelled_customer_reply: number; model_attempts: number; retry_count: number; retry_attempts: number;
     avg_ms: number; p90_ms: number; trend: TrendPoint[]; status_breakdown: CountItem[]; reason_breakdown: CountItem[];
   };
   freshness: { latest_ai_reply_at: string; latest_platform_sop_at: string; latest_first_day_outreach_at: string };
@@ -135,10 +135,10 @@ export function OperationsDashboard() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         <Metric label="新加微人数" value={data?.contacts.new_contacts} detail="按当前日期范围去重" icon={UserPlus} />
-        <Metric label="开口数量" value={data?.contacts.opened_contacts} detail="客户真实消息去重" icon={MessageCircle} />
+        <Metric label="开口数量" value={data?.contacts.opened_contacts} detail="本期新客发送真实消息后去重" icon={MessageCircle} />
         <Metric label="AI 回复调用" value={data?.ai_reply.calls} detail={`成功率 ${percent(data?.ai_reply.success_rate)}`} icon={Bot} />
         <Metric label="AI 超时 / 失败" value={`${format(data?.ai_reply.timeout)} / ${format(data?.ai_reply.failed)}`} detail={`P90 ${duration(data?.ai_reply.p90_ms)}`} icon={AlertTriangle} tone="danger" />
-        <Metric label="第三方 SOP 已发送" value={data?.platform_sop.sent} detail={`${format(data?.platform_sop.no_send)} 条模型判断不发`} icon={Send} />
+        <Metric label="第三方 SOP 已发送" value={data?.platform_sop.sent} detail={`${format(data?.platform_sop.no_send)} 条无需发送`} icon={Send} />
         <Metric label="沉默唤醒判断" value={data?.first_day_outreach.triggers} detail={`${format(data?.first_day_outreach.plans_created)} 个计划已创建`} icon={Sparkles} />
       </div>
 
@@ -183,6 +183,7 @@ export function OperationsDashboard() {
             ["失败", format(data?.platform_sop.failed)], ["重试", format(data?.platform_sop.retry_count)],
           ]} />
           <Breakdown title="状态分布" items={data?.platform_sop.status_breakdown || []} />
+          <Breakdown title="无需发送 / 失败原因" items={data?.platform_sop.reason_breakdown || []} />
         </Panel>
         <Panel title="沉默客户唤醒" subtitle="AI 模式下的沉默判断、建计划和两步发送">
           <StatRows rows={[

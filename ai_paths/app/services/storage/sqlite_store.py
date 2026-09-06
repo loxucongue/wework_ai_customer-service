@@ -37,6 +37,16 @@ class SQLiteStore:
         return f"json_extract({column}, '{path}')"
 
     @staticmethod
+    def source_table(name: str) -> str:
+        tables = {
+            "customer_member_relations": "bi_customer_member_relations",
+            "archive_messages": "bi_archive_messages",
+        }
+        if name not in tables:
+            raise ValueError(f"Unsupported source table: {name}")
+        return tables[name]
+
+    @staticmethod
     def close() -> None:
         return None
 

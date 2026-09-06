@@ -247,10 +247,22 @@ class MySQLStore:
 
     def prepare_sql(self, sql: str) -> str:
         prepared = map_logical_tables(sql, prefix=self.table_prefix)
+        prepared = prepared.replace("__source_customer_member_relations__", "customer_member_relations")
+        prepared = prepared.replace("__source_archive_messages__", "messages")
         prepared = _translate_mysql_upsert(prepared)
         prepared = _replace_qmark_placeholders(prepared)
         _runtime_sql_guard(prepared, prefix=self.table_prefix)
         return prepared
+
+    @staticmethod
+    def source_table(name: str) -> str:
+        tables = {
+            "customer_member_relations": "__source_customer_member_relations__",
+            "archive_messages": "__source_archive_messages__",
+        }
+        if name not in tables:
+            raise ValueError(f"Unsupported source table: {name}")
+        return tables[name]
 
     def json_text(self, column: str, path: str) -> str:
         return f"JSON_UNQUOTE(JSON_EXTRACT({column}, '{path}'))"
