@@ -1114,9 +1114,57 @@ def test_script_pool_ranking_is_diverse_and_bounded() -> None:
         max_groups=6,
     )
 
-    assert len(selected) == 5
-    assert sum(item["action_code"] == "act004" for item in selected) == 2
+    assert len(selected) == 6
+    assert sum(item["action_code"] == "act004" for item in selected) == 3
     assert {item["action_code"] for item in selected} == {"act004", "act010", "act015"}
+
+
+def test_script_pool_keeps_three_strong_same_tag_variants_within_top_six() -> None:
+    candidates = [
+        {
+            "script_code": f"same-tag-{index}",
+            "script_name": name,
+            "body_text": body,
+            "checkpoint_type": {"id": 3, "name": "健康限制"},
+            "checkpoint_tag": {"id": 293, "name": "高血压，没降下来，不敢来门店做"},
+            "action_code": "act004",
+            "action_name": "信任背书",
+            "retrieval_match_scope": "checkpoint_type_semantic",
+            "paragraphs": [],
+        }
+        for index, (name, body) in enumerate(
+            [
+                ("先关心身体", "先把血压稳定下来，身体安全更重要。"),
+                ("说明暂缓原因", "血压没有控制好时先不操作。"),
+                ("恢复后再评估", "等血压稳定后再由老师评估是否适合。"),
+            ],
+            start=1,
+        )
+    ]
+    candidates.extend(
+        {
+            "script_code": f"other-{index}",
+            "script_name": "其他健康限制",
+            "body_text": f"其他场景参考{index}",
+            "checkpoint_type": {"id": 3, "name": "健康限制"},
+            "checkpoint_tag": {"id": 290 + index, "name": f"其他场景{index}"},
+            "action_code": "act007",
+            "action_name": "到店指引",
+            "retrieval_match_scope": "checkpoint_type_semantic",
+            "paragraphs": [],
+        }
+        for index in range(1, 5)
+    )
+
+    selected = _rank_script_groups(
+        candidates,
+        query_text="高血压还没降下来，不敢去门店",
+        max_groups=6,
+    )
+
+    selected_ids = {item["script_code"] for item in selected}
+    assert {"same-tag-1", "same-tag-2", "same-tag-3"} <= selected_ids
+    assert len(selected) == 6
 
 
 def test_closing_script_type_never_relaxes() -> None:

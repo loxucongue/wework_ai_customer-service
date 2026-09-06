@@ -23,6 +23,9 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "门店查询只证明位置需求和本轮返回的公开门店事实" in prompt
     assert "活动和预约金分开" in prompt
     assert "简单问题默认只发一条文字" in prompt
+    assert "回答较长时最多拆成两条自然微信" in prompt
+    assert "不要把一个完整句子从中间硬切开" in prompt
+    assert "前后两条各有作用的短微信" in prompt
     assert "禁止客服菜单" in prompt
     assert "历史相关性是硬门槛" in prompt
     assert "询价、优惠、效果等新问题本身不构成续接门店的理由" in prompt

@@ -23,6 +23,7 @@ MAX_SEQUENCE_STEPS_TOTAL = 4
 MAX_STEPS_PER_SEQUENCE = 4
 MAX_PARAGRAPH_GROUPS = 6
 MAX_SCRIPT_REFERENCE_CHARS = 6000
+MAX_SCRIPT_GROUPS_PER_ACTION_OR_TAG = 3
 
 
 class V3SemanticRouterService:
@@ -2256,9 +2257,17 @@ def _rank_script_groups(
         tag_id = int(item.get("tag_id") or 0)
         if is_closing and has_ordinary_candidates and closing_count >= 2:
             continue
-        if not is_closing and action_code and action_counts.get(action_code, 0) >= 2:
+        if (
+            not is_closing
+            and action_code
+            and action_counts.get(action_code, 0) >= MAX_SCRIPT_GROUPS_PER_ACTION_OR_TAG
+        ):
             continue
-        if not is_closing and tag_id > 0 and tag_counts.get(tag_id, 0) >= 2:
+        if (
+            not is_closing
+            and tag_id > 0
+            and tag_counts.get(tag_id, 0) >= MAX_SCRIPT_GROUPS_PER_ACTION_OR_TAG
+        ):
             continue
         fingerprint = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(item.get("text") or "").lower())
         if fingerprint and fingerprint in seen_text:
