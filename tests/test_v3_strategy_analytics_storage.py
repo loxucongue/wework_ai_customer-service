@@ -225,6 +225,9 @@ def test_summary_counts_adaptive_same_type_retrieval(tmp_path: Path) -> None:
     summary = repository.v3_strategy_analytics_summary()
     assert summary["usage_count"] == 1
     assert summary["retrieval_relaxed_count"] == 1
+    assert summary["customer_replied_24h_rate"] is None
+    assert summary["delivery_success_rate"] is None
+    assert summary["delivery_unknown_count"] == 0
 
 
 def test_usage_replay_preserves_original_event_and_delivery_fields(tmp_path: Path) -> None:
@@ -901,7 +904,8 @@ def test_by_closing_uses_closing_action_adoption_without_changing_global_adoptio
 
     summary = repository.v3_strategy_analytics_summary()
     assert summary["adopted_count"] == 1
-    assert summary["adoption_rate"] == 0.5
+    assert summary["adoption_eligible_count"] == 1
+    assert summary["adoption_rate"] == 1.0
     intent_items = repository.v3_strategy_analytics_by_dimension(dimension="intent")["items"]
     assert sum(item["adopted_count"] for item in intent_items) == 1
 

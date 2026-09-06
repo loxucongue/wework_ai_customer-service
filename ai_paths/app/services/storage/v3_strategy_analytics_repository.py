@@ -406,16 +406,23 @@ class V3StrategyAnalyticsRepositoryMixin:
                 SELECT
                     COUNT(*) AS usage_count,
                     SUM(CASE WHEN u.adopted=1 THEN 1 ELSE 0 END) AS adopted_count,
+                    SUM(CASE WHEN u.adopted=1 OR u.candidate_count>0
+                                  OR u.sequence_candidate_count>0 OR u.script_candidate_count>0
+                             THEN 1 ELSE 0 END) AS adoption_eligible_count,
                     SUM(CASE WHEN u.dispatch_id<>'' THEN 1 ELSE 0 END) AS dispatch_count,
                     SUM(CASE WHEN u.delivery_status=? THEN 1 ELSE 0 END) AS delivery_success_count,
-                    SUM(CASE WHEN COALESCE(o.customer_replied_24h, 0)=1 THEN 1 ELSE 0 END) AS replied_24h_count,
-                    SUM(CASE WHEN COALESCE(o.paid_after_72h, 0)=1 THEN 1 ELSE 0 END) AS paid_72h_count,
-                    SUM(CASE WHEN COALESCE(o.scheduled_after_7d, 0)=1 THEN 1 ELSE 0 END) AS scheduled_7d_count,
+                    SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown'
+                                  AND COALESCE(o.customer_replied_24h, 0)=1 THEN 1 ELSE 0 END) AS replied_24h_count,
+                    SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown'
+                                  AND COALESCE(o.paid_after_72h, 0)=1 THEN 1 ELSE 0 END) AS paid_72h_count,
+                    SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown'
+                                  AND COALESCE(o.scheduled_after_7d, 0)=1 THEN 1 ELSE 0 END) AS scheduled_7d_count,
                     SUM(CASE WHEN u.decision_status IN ('ok', 'degraded') THEN 1 ELSE 0 END) AS decision_coverage_count,
                     SUM(CASE WHEN u.policy_version<>'' AND u.decision_status NOT IN ('not_enabled', 'system_guard', 'skipped') THEN 1 ELSE 0 END) AS decision_eligible_count,
                     SUM(CASE WHEN u.decision_status='degraded' THEN 1 ELSE 0 END) AS decision_degraded_count,
                     SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown' THEN 1 ELSE 0 END) AS delivered_attribution_count,
-                    SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')='unknown' THEN 1 ELSE 0 END) AS delivery_unknown_count,
+                    SUM(CASE WHEN u.dispatch_id<>'' AND COALESCE(o.attribution_anchor_source, 'unknown')='unknown'
+                             THEN 1 ELSE 0 END) AS delivery_unknown_count,
                     SUM(CASE WHEN o.order_query_status IN ('ok', 'success', 'backfill_current_only', 'insufficient_baseline') THEN 1 ELSE 0 END) AS order_query_success_count,
                     SUM(CASE WHEN o.order_query_status<>'' THEN 1 ELSE 0 END) AS order_query_attempt_count,
                     SUM(CASE WHEN COALESCE(o.order_source, '')<>'' AND (
@@ -514,7 +521,25 @@ class V3StrategyAnalyticsRepositoryMixin:
             if dimension in {"closing", "closing_rule"}
             else "SUM(CASE WHEN u.adopted=1 THEN 1 ELSE 0 END)"
         )
+        adoption_eligible_sql = (
+            "COUNT(*)"
+            if dimension in {"closing", "closing_rule"}
+            else "SUM(CASE WHEN u.adopted=1 OR u.candidate_count>0 "
+                 "OR u.sequence_candidate_count>0 OR u.script_candidate_count>0 THEN 1 ELSE 0 END)"
+        )
         where_sql, params = _analytics_filters(filters)
+        non_empty_columns = {
+            "checkpoint": "u.checkpoint_code",
+            "sequence": "u.sequence_id",
+            "script": "u.script_id",
+            "intent": "u.intent_code",
+            "emotion": "u.emotion_before",
+            "closing": "u.closing_action",
+            "closing_rule": "u.closing_primary_rule_id",
+        }
+        non_empty_column = non_empty_columns.get(dimension)
+        if non_empty_column:
+            where_sql = f"{where_sql} AND {non_empty_column}<>''"
         if dimension == "transitions":
             transition_clause = (
                 "COALESCE(o.next_usage_event_id, '')<>'' AND "
@@ -534,16 +559,21 @@ class V3StrategyAnalyticsRepositoryMixin:
                     {select_keys},
                     COUNT(*) AS usage_count,
                     {adopted_count_sql} AS adopted_count,
+                    {adoption_eligible_sql} AS adoption_eligible_count,
                     SUM(CASE WHEN u.dispatch_id<>'' THEN 1 ELSE 0 END) AS dispatch_count,
                     SUM(CASE WHEN u.delivery_status=? THEN 1 ELSE 0 END) AS delivery_success_count,
-                    SUM(CASE WHEN COALESCE(o.customer_replied_24h, 0)=1 THEN 1 ELSE 0 END) AS replied_24h_count,
-                    SUM(CASE WHEN COALESCE(o.paid_after_72h, 0)=1 THEN 1 ELSE 0 END) AS paid_72h_count,
-                    SUM(CASE WHEN COALESCE(o.scheduled_after_7d, 0)=1 THEN 1 ELSE 0 END) AS scheduled_7d_count,
+                    SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown'
+                                  AND COALESCE(o.customer_replied_24h, 0)=1 THEN 1 ELSE 0 END) AS replied_24h_count,
+                    SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown'
+                                  AND COALESCE(o.paid_after_72h, 0)=1 THEN 1 ELSE 0 END) AS paid_72h_count,
+                    SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown'
+                                  AND COALESCE(o.scheduled_after_7d, 0)=1 THEN 1 ELSE 0 END) AS scheduled_7d_count,
                     SUM(CASE WHEN u.decision_status IN ('ok', 'degraded') THEN 1 ELSE 0 END) AS decision_coverage_count,
                     SUM(CASE WHEN u.policy_version<>'' AND u.decision_status NOT IN ('not_enabled', 'system_guard', 'skipped') THEN 1 ELSE 0 END) AS decision_eligible_count,
                     SUM(CASE WHEN u.decision_status='degraded' THEN 1 ELSE 0 END) AS decision_degraded_count,
                     SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown' THEN 1 ELSE 0 END) AS delivered_attribution_count,
-                    SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')='unknown' THEN 1 ELSE 0 END) AS delivery_unknown_count,
+                    SUM(CASE WHEN u.dispatch_id<>'' AND COALESCE(o.attribution_anchor_source, 'unknown')='unknown'
+                             THEN 1 ELSE 0 END) AS delivery_unknown_count,
                     SUM(CASE WHEN o.order_query_status IN ('ok', 'success', 'backfill_current_only', 'insufficient_baseline') THEN 1 ELSE 0 END) AS order_query_success_count,
                     SUM(CASE WHEN o.order_query_status<>'' THEN 1 ELSE 0 END) AS order_query_attempt_count,
                     SUM(CASE WHEN COALESCE(o.order_source, '')<>'' AND (
@@ -1334,6 +1364,7 @@ def _customer_turn_eligible(state: dict[str, Any]) -> bool:
 def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
     usage_count = _int(row.get("usage_count"))
     adopted_count = _int(row.get("adopted_count"))
+    adoption_eligible_count = _int(row.get("adoption_eligible_count"))
     dispatch_count = _int(row.get("dispatch_count"))
     delivery_success_count = _int(row.get("delivery_success_count"))
     delivered_attribution_count = _int(row.get("delivered_attribution_count"))
@@ -1343,7 +1374,7 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
     order_query_attempt_count = _int(row.get("order_query_attempt_count"))
     return {
         **{key: value for key, value in row.items() if key not in {
-            "usage_count", "adopted_count", "dispatch_count", "delivery_success_count",
+            "usage_count", "adopted_count", "adoption_eligible_count", "dispatch_count", "delivery_success_count",
             "replied_24h_count", "paid_72h_count", "scheduled_7d_count",
             "decision_coverage_count", "decision_eligible_count", "decision_degraded_count",
             "delivered_attribution_count", "delivery_unknown_count",
@@ -1360,16 +1391,17 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
         }},
         "usage_count": usage_count,
         "adopted_count": adopted_count,
-        "adoption_rate": _rate(adopted_count, usage_count),
+        "adoption_eligible_count": adoption_eligible_count,
+        "adoption_rate": _optional_rate(adopted_count, adoption_eligible_count),
         "dispatch_count": dispatch_count,
         "delivery_success_count": delivery_success_count,
-        "delivery_success_rate": _rate(delivery_success_count, dispatch_count),
+        "delivery_success_rate": _optional_rate(delivery_success_count, dispatch_count),
         "customer_replied_24h_count": _int(row.get("replied_24h_count")),
-        "customer_replied_24h_rate": _rate(_int(row.get("replied_24h_count")), delivered_attribution_count),
+        "customer_replied_24h_rate": _optional_rate(_int(row.get("replied_24h_count")), delivered_attribution_count),
         "paid_72h_count": _int(row.get("paid_72h_count")),
-        "paid_72h_rate": _rate(_int(row.get("paid_72h_count")), _int(row.get("order_outcome_eligible_count"))),
+        "paid_72h_rate": _optional_rate(_int(row.get("paid_72h_count")), _int(row.get("order_outcome_eligible_count"))),
         "scheduled_7d_count": _int(row.get("scheduled_7d_count")),
-        "scheduled_7d_rate": _rate(_int(row.get("scheduled_7d_count")), _int(row.get("order_7d_eligible_count"))),
+        "scheduled_7d_rate": _optional_rate(_int(row.get("scheduled_7d_count")), _int(row.get("order_7d_eligible_count"))),
         "decision_coverage_count": decision_coverage_count,
         "decision_eligible_count": decision_eligible_count,
         "decision_coverage_rate": _rate(decision_coverage_count, decision_eligible_count),
@@ -1591,6 +1623,12 @@ def _limit(value: Any, *, default: int, maximum: int) -> int:
 def _rate(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
+    return round(float(numerator) / float(denominator), 4)
+
+
+def _optional_rate(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
     return round(float(numerator) / float(denominator), 4)
 
 

@@ -39,16 +39,17 @@ import { cn } from "@/lib/utils";
 type MetricSet = {
   usage_count?: number;
   adopted_count?: number;
-  adoption_rate?: number;
+  adoption_eligible_count?: number;
+  adoption_rate?: number | null;
   dispatch_count?: number;
   delivery_success_count?: number;
-  delivery_success_rate?: number;
+  delivery_success_rate?: number | null;
   customer_replied_24h_count?: number;
-  customer_replied_24h_rate?: number;
+  customer_replied_24h_rate?: number | null;
   paid_72h_count?: number;
-  paid_72h_rate?: number;
+  paid_72h_rate?: number | null;
   scheduled_7d_count?: number;
-  scheduled_7d_rate?: number;
+  scheduled_7d_rate?: number | null;
   decision_coverage_count?: number;
   decision_eligible_count?: number;
   decision_coverage_rate?: number;
@@ -56,6 +57,9 @@ type MetricSet = {
   decision_degraded_rate?: number;
   delivery_unknown_count?: number;
   delivery_unknown_rate?: number;
+  delivered_attribution_count?: number;
+  order_outcome_eligible_count?: number;
+  order_7d_eligible_count?: number;
   order_query_success_rate?: number;
   order_attribution_complete_rate?: number;
   hard_stop_wrong_advance_count?: number;
@@ -246,11 +250,11 @@ export function SalesStrategyDashboard() {
         )}
 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-          <MetricCard label="策略记录" value={number(summary.usage_count)} detail="真实 V3 客户轮次" icon={Target} />
-          <MetricCard label="Reply 采用率" value={percent(summary.adoption_rate)} detail={`${number(summary.adopted_count)} 次实际采用`} icon={Sparkles} tone="emerald" />
-          <MetricCard label="24h 开口率" value={percent(summary.customer_replied_24h_rate)} detail={`${number(summary.customer_replied_24h_count)} 位客户开口`} icon={MessageCircleMore} tone="blue" />
-          <MetricCard label="72h 支付率" value={percent(summary.paid_72h_rate)} detail={`${number(summary.paid_72h_count)} 笔状态转为已支付`} icon={TrendingUp} tone="violet" />
-          <MetricCard label="7d 排客率" value={percent(summary.scheduled_7d_rate)} detail={`${number(summary.scheduled_7d_count)} 笔进入排客`} icon={CheckCircle2} tone="amber" />
+          <MetricCard label="有效客户轮次" value={number(summary.usage_count)} detail={`${number(summary.decision_eligible_count)} 次进入策略决策`} icon={Target} />
+          <MetricCard label="Reply 采用率" value={percent(summary.adoption_rate)} detail={`${number(summary.adopted_count)} / ${number(summary.adoption_eligible_count)} 次候选采用`} icon={Sparkles} tone="emerald" />
+          <MetricCard label="24h 后续开口率" value={percent(summary.customer_replied_24h_rate)} detail={`${number(summary.customer_replied_24h_count)} / ${number(summary.delivered_attribution_count)} 次可归因记录`} icon={MessageCircleMore} tone="blue" />
+          <MetricCard label="72h 支付率" value={percent(summary.paid_72h_rate)} detail={`${number(summary.paid_72h_count)} / ${number(summary.order_outcome_eligible_count)} 次到期记录`} icon={TrendingUp} tone="violet" />
+          <MetricCard label="7d 排客率" value={percent(summary.scheduled_7d_rate)} detail={`${number(summary.scheduled_7d_count)} / ${number(summary.order_7d_eligible_count)} 次到期记录`} icon={CheckCircle2} tone="amber" />
           {salesDecision ? (
             <MetricCard label="决策覆盖率" value={percent(summary.decision_coverage_rate)} detail={`${number(summary.decision_degraded_count)} 次降级`} icon={ShieldCheck} tone="slate" />
           ) : (
@@ -409,10 +413,10 @@ function ResultBars({ summary }: { summary: MetricSet }) {
   const values = [
     { name: "策略记录", value: summary.usage_count || 0 },
     { name: "Reply 采用", value: summary.adopted_count || 0 },
-    { name: "发送成功", value: summary.delivery_success_count || 0 },
-    { name: "24h 开口", value: summary.customer_replied_24h_count || 0 },
-    { name: "72h 支付", value: summary.paid_72h_count || 0 },
-    { name: "7d 排客", value: summary.scheduled_7d_count || 0 },
+    ...(summary.dispatch_count ? [{ name: "发送成功", value: summary.delivery_success_count || 0 }] : []),
+    ...(summary.delivered_attribution_count ? [{ name: "24h 开口", value: summary.customer_replied_24h_count || 0 }] : []),
+    ...(summary.order_outcome_eligible_count ? [{ name: "72h 支付", value: summary.paid_72h_count || 0 }] : []),
+    ...(summary.order_7d_eligible_count ? [{ name: "7d 排客", value: summary.scheduled_7d_count || 0 }] : []),
   ];
   return (
     <div className="h-64">
@@ -634,5 +638,5 @@ function dateInput(value: Date) {
 }
 
 function number(value?: number) { return value === undefined || value === null ? "—" : new Intl.NumberFormat("zh-CN").format(value); }
-function percent(value?: number) { return value === undefined || value === null ? "—" : `${(value * 100).toFixed(1)}%`; }
+function percent(value?: number | null) { return value === undefined || value === null ? "—" : `${(value * 100).toFixed(1)}%`; }
 function dateTime(value?: string) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "暂无"; }

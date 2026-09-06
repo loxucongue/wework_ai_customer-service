@@ -82,7 +82,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/admin/v3-strategy-analytics/summary", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_summary(
+    def v3_strategy_analytics_summary(
         started_from: str = "",
         started_to: str = "",
         corp_id: str = "",
@@ -116,7 +116,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/by-checkpoint", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_by_checkpoint(
+    def v3_strategy_analytics_by_checkpoint(
         started_from: str = "",
         started_to: str = "",
         corp_id: str = "",
@@ -153,7 +153,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/by-sequence", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_by_sequence(
+    def v3_strategy_analytics_by_sequence(
         started_from: str = "",
         started_to: str = "",
         corp_id: str = "",
@@ -190,7 +190,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/by-script", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_by_script(
+    def v3_strategy_analytics_by_script(
         started_from: str = "",
         started_to: str = "",
         corp_id: str = "",
@@ -227,7 +227,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/failures", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_failures(
+    def v3_strategy_analytics_failures(
         started_from: str = "",
         started_to: str = "",
         corp_id: str = "",
@@ -303,7 +303,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/by-intent", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_by_intent(
+    def v3_strategy_analytics_by_intent(
         started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",
         checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
         action_code: str = "", fallback_used: bool | None = None,
@@ -320,7 +320,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/by-emotion", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_by_emotion(
+    def v3_strategy_analytics_by_emotion(
         started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",
         checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
         action_code: str = "", fallback_used: bool | None = None,
@@ -337,7 +337,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/by-closing", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_by_closing(
+    def v3_strategy_analytics_by_closing(
         started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",
         checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
         action_code: str = "", fallback_used: bool | None = None,
@@ -355,7 +355,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/by-closing-rule", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_by_closing_rule(
+    def v3_strategy_analytics_by_closing_rule(
         started_from: str = "",
         started_to: str = "",
         corp_id: str = "",
@@ -386,7 +386,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
 
     @router.get("/admin/v3-strategy-analytics/transitions", dependencies=[Depends(require_api_key)])
-    async def v3_strategy_analytics_transitions(
+    def v3_strategy_analytics_transitions(
         started_from: str = "", started_to: str = "", corp_id: str = "", wechat: str = "",
         checkpoint_code: str = "", sequence_id: str = "", script_id: str = "",
         action_code: str = "", fallback_used: bool | None = None,
