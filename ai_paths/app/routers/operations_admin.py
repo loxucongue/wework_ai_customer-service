@@ -7,7 +7,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.config import Settings
 from app.runtime_services import ControlServices
-from app.services.run_observability_summary import build_run_observability
+from app.services.run_observability import compact_admin_run_detail, enrich_admin_observability_v3
+from app.services.run_observability_summary import (
+    build_node_observability,
+    build_run_observability,
+    sanitize_debug_payload,
+)
 
 from .security import api_key_dependency
 
@@ -409,18 +414,44 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         )
         return {**result, "order_provider": provider.runtime_status()}
 
+    @router.get("/admin/runs/{request_id}/nodes/{node_id}", dependencies=[Depends(require_api_key)])
+    async def run_node_detail(request_id: str, node_id: str) -> dict[str, Any]:
+        trace = repository.get_run_node_trace(request_id=request_id, node_id=node_id)
+        if not trace:
+            raise HTTPException(status_code=404, detail="Run node trace not found or expired")
+        return {
+            "node": build_node_observability(trace),
+            "trace": sanitize_debug_payload(trace),
+            "data_availability": {
+                "status": "available",
+                "snapshot_compacted": True,
+                "notice": "节点输入输出来自现有留存，已脱敏且可能截断。",
+            },
+        }
+
     @router.get("/admin/runs/{request_id}", dependencies=[Depends(require_api_key)])
-    async def run_detail(request_id: str) -> dict[str, Any]:
-        detail = repository.get_run(request_id)
-        raw_log = services.trace_logger.read_run(request_id)
+    async def run_detail(request_id: str, include_debug: bool = True) -> dict[str, Any]:
+        detail = repository.get_run(request_id, include_debug=include_debug)
+        if not detail.get("run"):
+            raise HTTPException(status_code=404, detail="Run not found")
+        raw_log = services.trace_logger.read_run(request_id) if include_debug else {}
         dispatches = repository.list_message_dispatches_for_request(request_id)
-        detail["raw_log"] = raw_log
-        detail["message_dispatches"] = dispatches
-        detail["observability_view"] = build_run_observability(
+        view = build_run_observability(
             detail,
             raw_log=raw_log,
             dispatches=dispatches,
         )
+        detail["observability_view"] = enrich_admin_observability_v3(
+            view,
+            detail,
+            trace_retention_days=settings.aics_trace_retention_days,
+        )
+        if include_debug:
+            detail["raw_log"] = raw_log
+            detail["message_dispatches"] = dispatches
+        else:
+            detail["run"] = compact_admin_run_detail(detail["run"])
+            detail["node_traces"] = []
         return detail
 
     @router.get("/admin/runs", dependencies=[Depends(require_api_key)])
@@ -429,6 +460,18 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         customer_id: str = "",
         conversation_id: str = "",
         has_error: bool | None = None,
+        started_from: str = "",
+        started_to: str = "",
+        wechat: str = "",
+        run_status: str = "",
+        intent_code: str = "",
+        emotion_code: str = "",
+        checkpoint_code: str = "",
+        decision_status: str = "",
+        sequence_matched: bool | None = None,
+        sequence_adopted: bool | None = None,
+        script_adopted: bool | None = None,
+        node_failed: bool | None = None,
     ) -> dict[str, Any]:
         return {
             "items": repository.list_runs(
@@ -436,6 +479,18 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
                 customer_id=customer_id,
                 conversation_id=conversation_id,
                 has_error=has_error,
+                started_from=started_from,
+                started_to=started_to,
+                wechat=wechat,
+                run_status=run_status,
+                intent_code=intent_code,
+                emotion_code=emotion_code,
+                checkpoint_code=checkpoint_code,
+                decision_status=decision_status,
+                sequence_matched=sequence_matched,
+                sequence_adopted=sequence_adopted,
+                script_adopted=script_adopted,
+                node_failed=node_failed,
             )
         }
 

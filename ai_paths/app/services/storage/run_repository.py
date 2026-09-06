@@ -10,6 +10,7 @@ from app.services.storage.serialization import (
     decode_trace,
     dumps,
     loads_dict,
+    loads_list,
     tags_from_state,
     utc_now_iso,
 )
@@ -146,6 +147,8 @@ class RunRepositoryMixin:
             "postprocess_changed": bool(final_state.get("postprocess_changed")),
             "postprocess_reasons": final_state.get("postprocess_reasons", []),
             "warnings": final_state.get("warnings", []),
+            "decision_status": final_state.get("decision_status", ""),
+            "decision_reasons": final_state.get("decision_reasons", []),
             "primary_task": final_state.get("primary_task", {}),
             "secondary_tasks": final_state.get("secondary_tasks", []),
             "realtime_intent": final_state.get("realtime_intent", {}),
@@ -265,29 +268,104 @@ class RunRepositoryMixin:
         customer_id: str = "",
         conversation_id: str = "",
         has_error: bool | None = None,
+        started_from: str = "",
+        started_to: str = "",
+        wechat: str = "",
+        run_status: str = "",
+        intent_code: str = "",
+        emotion_code: str = "",
+        checkpoint_code: str = "",
+        decision_status: str = "",
+        sequence_matched: bool | None = None,
+        sequence_adopted: bool | None = None,
+        script_adopted: bool | None = None,
+        node_failed: bool | None = None,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         if customer_id:
-            clauses.append("customer_id=?")
+            clauses.append("r.customer_id=?")
             params.append(customer_id)
         if conversation_id:
-            clauses.append("conversation_id=?")
+            clauses.append("r.conversation_id=?")
             params.append(conversation_id)
         if has_error is True:
-            clauses.append("error<>''")
+            clauses.append("r.error<>''")
         elif has_error is False:
-            clauses.append("error=''")
+            clauses.append("r.error=''")
+        if started_from:
+            clauses.append("r.created_at>=?")
+            params.append(started_from)
+        if started_to:
+            clauses.append("r.created_at<=?")
+            params.append(started_to)
+        if wechat:
+            clauses.append("c.wechat=?")
+            params.append(wechat)
+        if intent_code:
+            clauses.append("u.intent_code=?")
+            params.append(intent_code)
+        if emotion_code:
+            clauses.append("u.emotion_before=?")
+            params.append(emotion_code)
+        if checkpoint_code:
+            clauses.append("u.checkpoint_code=?")
+            params.append(checkpoint_code)
+        if decision_status:
+            clauses.append("u.decision_status=?")
+            params.append(decision_status)
+        if sequence_matched is not None:
+            clauses.append("u.id IS NOT NULL AND u.sequence_candidate_count" + (">0" if sequence_matched else "=0"))
+        if sequence_adopted is not None:
+            clauses.append("u.id IS NOT NULL AND u.sequence_id" + ("<>''" if sequence_adopted else "=''"))
+        if script_adopted is not None:
+            clauses.append("u.id IS NOT NULL AND u.script_id" + ("<>''" if script_adopted else "=''"))
+        if node_failed is not None:
+            existence = "EXISTS" if node_failed else "NOT EXISTS"
+            clauses.append(
+                f"{existence} (SELECT 1 FROM node_traces nt WHERE nt.request_id=r.request_id AND nt.error<>'')"
+            )
+        normalized_status = str(run_status or "").strip().lower()
+        if normalized_status == "failed":
+            clauses.append("r.error<>''")
+        elif normalized_status == "degraded":
+            clauses.append("u.decision_status='degraded'")
+        elif normalized_status == "fallback":
+            clauses.append("u.fallback_used=1")
+        elif normalized_status == "delivery_failed":
+            clauses.append("u.delivery_status IN ('send_failed','partial_failed','delivery_failed')")
+        elif normalized_status == "success":
+            clauses.extend(
+                [
+                    "r.error=''",
+                    "COALESCE(u.decision_status,'')<>'degraded'",
+                    "COALESCE(u.fallback_used,0)=0",
+                    "COALESCE(u.delivery_status,'') NOT IN ('send_failed','partial_failed','delivery_failed')",
+                ]
+            )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(max(1, min(limit, 200)))
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT request_id, conversation_id, customer_id, input_snapshot, output_snapshot,
-                       intents, tags, duration_ms, token_usage, error, created_at
-                FROM runs
+                SELECT r.request_id, r.conversation_id, r.customer_id, r.input_snapshot, r.output_snapshot,
+                       r.intents, r.tags, r.duration_ms, r.token_usage, r.error, r.created_at,
+                       COALESCE(c.wechat, '') AS contact_wechat,
+                       u.intent_code AS usage_intent_code,
+                       u.emotion_before AS usage_emotion_code,
+                       u.checkpoint_code AS usage_checkpoint_code,
+                       u.checkpoint_name AS usage_checkpoint_name,
+                       u.sequence_candidate_count AS usage_sequence_candidate_count,
+                       u.sequence_id AS usage_sequence_id,
+                       u.script_id AS usage_script_id,
+                       u.decision_status AS usage_decision_status,
+                       u.fallback_used AS usage_fallback_used,
+                       u.delivery_status AS usage_delivery_status
+                FROM runs r
+                LEFT JOIN conversations c ON c.id=r.conversation_id
+                LEFT JOIN v3_strategy_usage_events u ON u.request_id=r.request_id
                 {where}
-                ORDER BY created_at DESC
+                ORDER BY r.created_at DESC
                 LIMIT ?
                 """,
                 params,
@@ -296,6 +374,7 @@ class RunRepositoryMixin:
 
     def get_run(self, request_id: str, *, include_debug: bool = True) -> dict[str, Any]:
         dispatch_id = ""
+        usage_event: dict[str, Any] = {}
         with self.store.connect() as conn:
             run = conn.execute("SELECT * FROM runs WHERE request_id=?", (request_id,)).fetchone()
             traces = (
@@ -304,7 +383,15 @@ class RunRepositoryMixin:
                     (request_id,),
                 ).fetchall()
                 if include_debug
-                else []
+                else conn.execute(
+                    """
+                    SELECT id, request_id, node_name, '{}' AS input_snapshot,
+                           '{}' AS output_snapshot, '[]' AS tool_calls,
+                           duration_ms, error, created_at
+                    FROM node_traces WHERE request_id=? ORDER BY created_at ASC
+                    """,
+                    (request_id,),
+                ).fetchall()
             )
             decoded_run = decode_run(dict(run)) if run else {}
             output_snapshot = (
@@ -318,7 +405,7 @@ class RunRepositoryMixin:
                 else {}
             )
             outbox_id = str(callback.get("outbox_id") or "").strip()
-            if outbox_id:
+            if outbox_id and include_debug:
                 callback_row = conn.execute(
                     """
                     SELECT status, retry_count, error, payload_json, response_json,
@@ -352,12 +439,57 @@ class RunRepositoryMixin:
                 (request_id,),
             ).fetchone()
             dispatch_id = str(dispatch_row["id"] or "") if dispatch_row else ""
+            usage_row = conn.execute(
+                """
+                SELECT request_id, intent_code, intent_confidence, intent_secondary_json,
+                       emotion_before, emotion_confidence, emotion_pressure, emotion_flow_action,
+                       checkpoint_type_id, checkpoint_code, checkpoint_name, checkpoint_tag_id,
+                       checkpoint_tag_name, friction_status, sequence_id, sequence_name,
+                       sequence_step_id, script_id, script_code, script_name, action_code, action_name,
+                       sequence_candidate_count, script_candidate_count, adopted, selector_status,
+                       retrieval_mode, fallback_used, decision_status, decision_reasons_json,
+                       cardpoint_category_key, cardpoint_state,
+                       closing_action, closing_strategy_code, closing_node_key, closing_trigger,
+                       closing_customer_state, closing_pressure, closing_primary_rule_id,
+                       closing_primary_rule_name, closing_sequence_name, closing_node_name,
+                       closing_rule_match_status, closing_constraint_status,
+                       closing_constraint_reasons_json, delivery_status, delivered_at, failed_reason
+                FROM v3_strategy_usage_events WHERE request_id=? LIMIT 1
+                """,
+                (request_id,),
+            ).fetchone()
+            if usage_row:
+                usage_event = _decode_usage_event(dict(usage_row))
         dispatch = self.get_message_dispatch(dispatch_id) if dispatch_id else {}
         enrich_v3_run_observability(output_snapshot, dispatch=dispatch)
+        summary_source = {
+            **decoded_run,
+            "contact_wechat": str(_dict_value(decoded_run, "input_snapshot").get("wechat") or ""),
+            "usage_intent_code": usage_event.get("intent_code") if usage_event else None,
+            "usage_emotion_code": usage_event.get("emotion_before") if usage_event else None,
+            "usage_checkpoint_code": usage_event.get("checkpoint_code") if usage_event else None,
+            "usage_checkpoint_name": usage_event.get("checkpoint_name") if usage_event else None,
+            "usage_sequence_candidate_count": usage_event.get("sequence_candidate_count") if usage_event else None,
+            "usage_sequence_id": usage_event.get("sequence_id") if usage_event else None,
+            "usage_script_id": usage_event.get("script_id") if usage_event else None,
+            "usage_decision_status": usage_event.get("decision_status") if usage_event else None,
+            "usage_fallback_used": usage_event.get("fallback_used") if usage_event else None,
+            "usage_delivery_status": usage_event.get("delivery_status") if usage_event else None,
+        }
+        decoded_run["business_summary"] = _business_summary_for_run(summary_source)
         return {
             "run": decoded_run,
             "node_traces": [decode_trace(dict(row)) for row in traces],
+            "strategy_usage_event": usage_event,
         }
+
+    def get_run_node_trace(self, *, request_id: str, node_id: str) -> dict[str, Any]:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM node_traces WHERE request_id=? AND id=? LIMIT 1",
+                (request_id, node_id),
+            ).fetchone()
+        return decode_trace(dict(row)) if row else {}
 
     def prune_runtime_history(self, *, trace_days: int, run_days: int) -> dict[str, int]:
         now = datetime.now(timezone.utc)
@@ -438,14 +570,73 @@ def _compact_order_state_snapshot(final_state: dict[str, Any]) -> dict[str, Any]
 def _run_list_view(run: dict[str, Any]) -> dict[str, Any]:
     """Keep list responses small; full business detail is loaded per run."""
 
-    output = run.get("output_snapshot")
-    if not isinstance(output, dict) or "observability_v3" not in output:
-        return run
     run = dict(run)
-    output = dict(output)
-    output.pop("observability_v3", None)
-    run["output_snapshot"] = output
+    run["business_summary"] = _business_summary_for_run(run)
+    output = run.get("output_snapshot")
+    if isinstance(output, dict) and "observability_v3" in output:
+        output = dict(output)
+        output.pop("observability_v3", None)
+        run["output_snapshot"] = output
+    for key in list(run):
+        if key.startswith("usage_") or key == "contact_wechat":
+            run.pop(key, None)
     return run
+
+
+def _business_summary_for_run(run: dict[str, Any]) -> dict[str, Any]:
+    output = run.get("output_snapshot") if isinstance(run.get("output_snapshot"), dict) else {}
+    observability = output.get("observability_v3") if isinstance(output.get("observability_v3"), dict) else {}
+    checkpoint = observability.get("checkpoint_decision") if isinstance(observability.get("checkpoint_decision"), dict) else {}
+    primary_checkpoint = checkpoint.get("primary") if isinstance(checkpoint.get("primary"), dict) else {}
+    knowledge = observability.get("knowledge_match") if isinstance(observability.get("knowledge_match"), dict) else {}
+    adopted = knowledge.get("adopted") if isinstance(knowledge.get("adopted"), dict) else {}
+    intent = output.get("realtime_intent") if isinstance(output.get("realtime_intent"), dict) else {}
+    emotion = output.get("emotion_decision") if isinstance(output.get("emotion_decision"), dict) else {}
+    input_snapshot = run.get("input_snapshot") if isinstance(run.get("input_snapshot"), dict) else {}
+    usage_present = any(run.get(key) is not None for key in ("usage_intent_code", "usage_decision_status"))
+    sequence_candidates = knowledge.get("matched_sequences") if isinstance(knowledge.get("matched_sequences"), list) else []
+    return {
+        "wechat": str(run.get("contact_wechat") or input_snapshot.get("wechat") or ""),
+        "intent_code": str(run.get("usage_intent_code") or intent.get("type") or ""),
+        "emotion_code": str(run.get("usage_emotion_code") or emotion.get("label") or ""),
+        "checkpoint_code": str(run.get("usage_checkpoint_code") or primary_checkpoint.get("code") or ""),
+        "checkpoint_name": str(run.get("usage_checkpoint_name") or primary_checkpoint.get("name") or ""),
+        "sequence_matched": (
+            bool(int(run.get("usage_sequence_candidate_count") or 0))
+            if usage_present
+            else bool(sequence_candidates)
+        ),
+        "sequence_adopted": bool(run.get("usage_sequence_id") or adopted.get("sequence_id")),
+        "script_adopted": bool(run.get("usage_script_id") or adopted.get("script_ids")),
+        "decision_status": str(run.get("usage_decision_status") or output.get("decision_status") or ""),
+        "fallback_used": bool(
+            run.get("usage_fallback_used")
+            or (
+                observability.get("overview", {}).get("fallback_used")
+                if isinstance(observability.get("overview"), dict)
+                else False
+            )
+        ),
+        "delivery_status": str(run.get("usage_delivery_status") or ""),
+        "usage_event_recorded": usage_present,
+    }
+
+
+def _decode_usage_event(row: dict[str, Any]) -> dict[str, Any]:
+    for key in (
+        "intent_secondary_json",
+        "decision_reasons_json",
+        "closing_constraint_reasons_json",
+    ):
+        row[key.removesuffix("_json")] = loads_list(row.pop(key, None))
+    row["adopted"] = bool(row.get("adopted"))
+    row["fallback_used"] = bool(row.get("fallback_used"))
+    return row
+
+
+def _dict_value(value: dict[str, Any], key: str) -> dict[str, Any]:
+    item = value.get(key)
+    return item if isinstance(item, dict) else {}
 
 
 def _reply_messages_from_http_response(response_body: dict[str, Any]) -> list[Any]:
