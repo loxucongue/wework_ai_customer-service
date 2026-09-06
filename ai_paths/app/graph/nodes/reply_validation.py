@@ -1290,6 +1290,25 @@ def _validate_store_resolution_contract(messages: list[dict[str, Any]], state: d
             raise ValueError("invalid_text_store_list_contract")
         if emitted:
             raise ValueError("store_cards_not_allowed_for_text_store_list")
+        summaries = [
+            item
+            for item in resolution.get("text_store_summaries") or []
+            if isinstance(item, dict)
+        ]
+        visible_text = re.sub(r"\s+", "", _combined_text(messages))
+        if not summaries or not visible_text:
+            raise ValueError("incomplete_text_store_list_contract")
+        for summary in summaries:
+            store_name = re.sub(
+                r"\s+",
+                "",
+                str(summary.get("store_name") or summary.get("name") or "").strip(),
+            )
+            district = re.sub(r"\s+", "", str(summary.get("district") or "").strip())
+            if not store_name or store_name not in visible_text:
+                raise ValueError("incomplete_text_store_list_contract")
+            if district and district not in visible_text:
+                raise ValueError("incomplete_text_store_list_contract")
         return
     if status in {
         "need_location",

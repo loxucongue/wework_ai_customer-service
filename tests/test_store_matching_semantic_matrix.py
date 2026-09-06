@@ -706,6 +706,31 @@ def test_text_store_list_prompt_and_validation_forbid_store_cards() -> None:
         ],
         state,
     )
+    with pytest.raises(ValueError, match="incomplete_text_store_list_contract"):
+        _validate_store_resolution_contract(
+            [
+                {
+                    "type": "text",
+                    "content": "、".join(
+                        f"长沙门店{index}（测试区{index}）" for index in range(1, 7)
+                    ),
+                }
+            ],
+            state,
+        )
+    with pytest.raises(ValueError, match="incomplete_text_store_list_contract"):
+        _validate_store_resolution_contract(
+            [
+                {
+                    "type": "text",
+                    "content": "、".join(
+                        f"长沙门店{index}（测试区{index if index != 7 else 6}）"
+                        for index in range(1, 8)
+                    ),
+                }
+            ],
+            state,
+        )
     with pytest.raises(ValueError, match="store_cards_not_allowed_for_text_store_list"):
         _validate_store_resolution_contract(
             [
