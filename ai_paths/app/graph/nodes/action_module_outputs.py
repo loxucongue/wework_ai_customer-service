@@ -183,6 +183,73 @@ def _latest_recommendation_store_ids(sent_summary: dict[str, Any]) -> list[str]:
     )
 
 
+def _assistant_history_text(item: Any) -> tuple[str, str]:
+    """Return customer-visible assistant text and an optional structured store id."""
+
+    if isinstance(item, dict):
+        role = str(item.get("role") or item.get("speaker") or "").strip().lower()
+        if role not in {"assistant", "ai", "agent", "xiaobei", "小贝"}:
+            return "", ""
+        message_type = str(item.get("type") or item.get("msgtype") or "").strip().lower()
+        content = item.get("content")
+        if message_type == "store_address" and isinstance(content, dict):
+            return "", str(content.get("store_id") or content.get("id") or "").strip()
+        if isinstance(content, dict):
+            content = content.get("text") or content.get("content") or ""
+        return str(content or "").strip(), ""
+    text = str(item or "").strip()
+    if not text or ":" not in text:
+        return "", ""
+    prefix, content = text.split(":", 1)
+    if prefix.strip().lower() not in {"assistant", "ai", "agent", "xiaobei", "小贝"}:
+        return "", ""
+    return content.strip(), ""
+
+
+def _store_ids_from_visible_delivery_history(
+    state: AgentState,
+    available_stores: list[dict[str, Any]],
+) -> set[str]:
+    """Recover legacy delivery evidence from exact customer-visible card text.
+
+    Older platform history can retain the rendered store card while lacking a
+    corresponding structured ``store_address_sent`` event.  Exact store ids or
+    an exact store name plus address are delivery evidence, not sales-semantic
+    inference, and are safe to use for idempotency.
+    """
+
+    assistant_texts: list[str] = []
+    structured_ids: set[str] = set()
+    for item in state.get("conversation_history") or []:
+        text, store_id = _assistant_history_text(item)
+        if text:
+            assistant_texts.append(re.sub(r"\s+", "", text))
+        if store_id:
+            structured_ids.add(store_id)
+    if not assistant_texts:
+        return structured_ids
+
+    for store in available_stores:
+        if not isinstance(store, dict):
+            continue
+        store_id = str(store.get("store_id") or store.get("id") or "").strip()
+        name = re.sub(r"\s+", "", str(store.get("store_name") or store.get("name") or ""))
+        address = re.sub(
+            r"\s+",
+            "",
+            str(store.get("store_address") or store.get("address") or ""),
+        )
+        if not store_id or not name:
+            continue
+        card_marker = f"门店位置：{name}"
+        if any(
+            card_marker in text or (len(address) >= 8 and name in text and address in text)
+            for text in assistant_texts
+        ):
+            structured_ids.add(store_id)
+    return structured_ids
+
+
 def _reuse_already_delivered_store_delivery(
     state: AgentState,
     resolution: dict[str, Any],
@@ -227,9 +294,18 @@ def _reuse_already_delivered_store_delivery(
         for item in sent_summary.get("store_address_sent_by_store_id", [])
         if str(item or "").strip()
     }
+    visible_delivery_ids = _store_ids_from_visible_delivery_history(
+        state,
+        available_stores or [],
+    )
+    sent_ids.update(visible_delivery_ids)
+    repeated_ids = [store_id for store_id in delivery_ids if store_id in sent_ids]
+    visibly_repeated_ids = [
+        store_id for store_id in delivery_ids if store_id in visible_delivery_ids
+    ]
     current_city = _store_resolution_city(resolution)
     previous_city = _latest_recommendation_city(sent_summary)
-    if current_city and previous_city and current_city != previous_city:
+    if current_city and previous_city and current_city != previous_city and not visibly_repeated_ids:
         return resolution
     if (
         request_kind in {"match_location", "nearest", "compare"}
@@ -247,7 +323,6 @@ def _reuse_already_delivered_store_delivery(
             "delivery_mode": "none",
             "reason": f"already_delivered_store_terminal_destination:{request_kind}",
         }
-    repeated_ids = [store_id for store_id in delivery_ids if store_id in sent_ids]
     if not repeated_ids:
         return resolution
     remaining_ids = [store_id for store_id in delivery_ids if store_id not in sent_ids]

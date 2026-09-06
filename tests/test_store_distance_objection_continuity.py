@@ -268,6 +268,79 @@ def test_same_city_store_list_does_not_resend_an_already_delivered_card() -> Non
     assert reused["reason"] == "already_delivered_store_same_destination:list"
 
 
+def test_legacy_visible_store_card_prevents_parking_detail_resend_without_event() -> None:
+    store = {
+        "store_id": "218",
+        "store_name": "武汉江夏店",
+        "store_address": "湖北省武汉市江夏区文化大道侨亚国际广场",
+    }
+    resolution = {
+        "status": "send_single",
+        "outcome": "resolved",
+        "city": "武汉市",
+        "delivery_store_ids": ["218"],
+        "delivery_mode": "send_recommended",
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "parking",
+            "administrative_context": {"city": "武汉市"},
+        },
+    }
+
+    reused = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            # A stale recommendation from another city must not override exact
+            # proof that this current store card was already shown.
+            "history_events": _history_events(),
+            "conversation_history": [
+                "用户: 我在武汉",
+                "小贝: 门店位置：武汉江夏店\n湖北省武汉市江夏区文化大道侨亚国际广场",
+            ],
+        },
+        resolution,
+        available_stores=[store],
+    )
+
+    assert reused["status"] == "reuse_confirmed_store"
+    assert reused["delivery_store_ids"] == []
+    assert reused["already_delivered_store_ids"] == ["218"]
+    assert reused["reason"] == "already_delivered_store_non_address_detail:parking"
+
+
+def test_customer_mention_of_store_name_and_address_is_not_delivery_evidence() -> None:
+    store = {
+        "store_id": "218",
+        "store_name": "武汉江夏店",
+        "store_address": "湖北省武汉市江夏区文化大道侨亚国际广场",
+    }
+    resolution = {
+        "status": "send_single",
+        "outcome": "resolved",
+        "city": "武汉市",
+        "delivery_store_ids": ["218"],
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "parking",
+            "administrative_context": {"city": "武汉市"},
+        },
+    }
+
+    unchanged = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": [],
+            "conversation_history": [
+                "用户: 武汉江夏店，湖北省武汉市江夏区文化大道侨亚国际广场，可以停车吗",
+            ],
+        },
+        resolution,
+        available_stores=[store],
+    )
+
+    assert unchanged == resolution
+
+
 def test_same_city_store_list_filters_only_previously_delivered_cards() -> None:
     resolution = {
         "status": "send_multiple",
