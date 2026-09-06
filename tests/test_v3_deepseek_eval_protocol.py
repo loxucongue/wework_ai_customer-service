@@ -18,6 +18,13 @@ from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
     judge_messages,
     validate_evaluation_settings,
 )
+from scripts.v3_lifecycle_eval.protocol import (  # noqa: E402
+    hard_assertions,
+    merge_ai_judge,
+    normalize_visible_messages,
+    prior_delivery_events,
+    render_visible_messages,
+)
 
 
 def _candidate(index: int, bucket: str) -> dict[str, object]:
@@ -181,3 +188,96 @@ def test_judge_uses_current_store_resolution_over_historical_order_store() -> No
     )
 
     assert "历史订单里出现的门店只说明旧订单关联" in messages[0]["content"]
+
+
+def _prior_store_delivery(store_id: str = "160") -> list[dict[str, object]]:
+    return [
+        {
+            "request_id": "old-request",
+            "occurred_at": "2026-09-06T10:00:00+08:00",
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "门店在长沙西中心"}},
+                {"type": "store_address", "order": 2, "content": {"store_id": store_id}},
+            ],
+        }
+    ]
+
+
+def test_structured_messages_are_rendered_and_seeded_instead_of_discarded() -> None:
+    messages = normalize_visible_messages(_prior_store_delivery()[0]["reply_messages"])
+
+    assert [item["type"] for item in messages] == ["text", "store_address"]
+    assert "[门店位置卡] store_id=160" in render_visible_messages(messages)
+    events = prior_delivery_events(_prior_store_delivery())
+    assert events[0]["event_type"] == "store_address_sent"
+    assert events[0]["facts"]["store_id"] == "160"
+
+
+def test_repeated_store_card_is_a_hard_failure_without_explicit_rerequest() -> None:
+    result = hard_assertions(
+        sample={"content": "可以停车吗"},
+        facts={"authoritative_facts": {"orders_and_payment": {"payment_state": "required_unpaid"}}},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {"type": "text", "order": 1, "content": "可以停车的"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "160"}},
+        ],
+    )
+
+    assert result["passed"] is False
+    assert "repeated_delivered_store_card" in result["failure_codes"]
+    assert "appointment_goal_not_explicit" in result["failure_codes"]
+
+
+def test_explicit_address_rerequest_allows_same_store_card() -> None:
+    result = hard_assertions(
+        sample={"content": "地址再发我一下，我导航过去"},
+        facts={},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {"type": "text", "order": 1, "content": "好呀，位置再发您"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "160"}},
+        ],
+    )
+
+    assert "repeated_delivered_store_card" not in result["failure_codes"]
+
+
+def test_store_detail_for_unbooked_customer_must_name_booking_goal() -> None:
+    missing = hard_assertions(
+        sample={"content": "停车方便吗"},
+        facts={"authoritative_facts": {"orders_and_payment": {"deposit_state": "required_unpaid"}}},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[{"type": "text", "order": 1, "content": "可以停车的，您工作日还是周末过来呢？"}],
+    )
+    desired = hard_assertions(
+        sample={"content": "停车方便吗"},
+        facts={"authoritative_facts": {"orders_and_payment": {"deposit_state": "required_unpaid"}}},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[{"type": "text", "order": 1, "content": "可以停车的，楼下有停车场。您工作日还是周末过来？我帮您预约一下。"}],
+    )
+
+    assert "appointment_goal_not_explicit" in missing["failure_codes"]
+    assert desired["passed"] is True
+
+
+def test_confirmed_appointment_does_not_require_another_booking_bridge() -> None:
+    result = hard_assertions(
+        sample={"content": "停车方便吗", "appointment_id": "A-1"},
+        facts={},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[{"type": "text", "order": 1, "content": "方便的，楼下就有停车场。"}],
+    )
+
+    assert "appointment_goal_not_explicit" not in result["failure_codes"]
+
+
+def test_deterministic_failure_overrides_positive_ai_judge() -> None:
+    merged = merge_ai_judge(
+        {"passed": True, "reasons": ["整体自然"]},
+        {"failures": [{"code": "appointment_goal_not_explicit", "reason": "未连接预约目标"}]},
+    )
+
+    assert merged["ai_passed"] is True
+    assert merged["passed"] is False
+    assert merged["hard_failure_codes"] == ["appointment_goal_not_explicit"]

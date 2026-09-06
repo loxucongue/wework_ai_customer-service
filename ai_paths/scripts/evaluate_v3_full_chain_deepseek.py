@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Run a write-free, two-phase DeepSeek evaluation of the V3 reply graph.
 
 The runtime phase must finish before the judge phase starts.  This prevents a
 large DeepSeek-Reasoner judging request from competing with the Router/Reply
 requests under test.  Only redacted outputs remain after ``--mode all``.
 """
+
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -16,10 +16,12 @@ import math
 import os
 import random
 import re
+import shutil
 import statistics
 import sys
 import time
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -31,7 +33,9 @@ if str(AI_PATHS_ROOT) not in sys.path:
     sys.path.insert(0, str(AI_PATHS_ROOT))
 
 from app.config import Settings  # noqa: E402
+from app.chat_runtime import ChatRuntime  # noqa: E402
 from app.graph.graph_builder import build_reply_graphs  # noqa: E402
+from app.schemas import ChatRequest  # noqa: E402
 from app.services.ai_sales_policy_service import AiSalesPolicyService  # noqa: E402
 from app.services.coze_client import CozeClient  # noqa: E402
 from app.services.customer_context import CustomerContextService  # noqa: E402
@@ -40,6 +44,7 @@ from app.services.customer_store_knowledge import CustomerStoreKnowledgeService 
 from app.services.deepseek_semantic_client import DeepSeekSemanticClient  # noqa: E402
 from app.services.follow_knowledge_client import FollowKnowledgeClient  # noqa: E402
 from app.services.model_client import ModelClient  # noqa: E402
+from app.services.memory_store import CustomerMemoryStore  # noqa: E402
 from app.services.platform_agent_client import PlatformAgentClient  # noqa: E402
 from app.services.runtime_budget import build_runtime_budget  # noqa: E402
 from app.services.sales_strategy_service import SalesStrategyService  # noqa: E402
@@ -47,6 +52,18 @@ from app.services.store_service import StoreService  # noqa: E402
 from app.services.store_snapshot_service import StoreSnapshotService  # noqa: E402
 from app.services.trace_logger import TraceLogger  # noqa: E402
 from app.services.v3_semantic_router_service import V3SemanticRouterService  # noqa: E402
+from app.services.storage import AppRepository, SQLiteStore, build_store  # noqa: E402
+from app.services.storage.serialization import loads_dict  # noqa: E402
+from app.services.workflow_compat import workflow_response_from_chat  # noqa: E402
+from scripts.v3_lifecycle_eval.protocol import (  # noqa: E402
+    customer_visible_text,
+    hard_assertions,
+    merge_ai_judge,
+    normalize_visible_messages,
+    prior_delivery_events,
+    prior_structured_summary,
+    render_visible_messages,
+)
 
 
 RUNS_ROOT = Path(os.environ.get("EVAL_RUNS_ROOT", "/opt/ai-paths/logs/runs"))
@@ -90,6 +107,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-gap-seconds", type=float, default=1.0)
     parser.add_argument("--judge-gap-seconds", type=float, default=1.0)
     parser.add_argument("--cooldown-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--request-id",
+        action="append",
+        default=[],
+        help="Only replay these source request ids. May be repeated.",
+    )
+    parser.add_argument(
+        "--source-memory-mode",
+        choices=("runs-only", "production-readonly"),
+        default="runs-only",
+        help="Optionally read point-in-time history events from the configured source database.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -172,7 +201,9 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
         rows.append(
             {
                 "source_path": str(path), "source_mtime": path.stat().st_mtime,
+                "source_request_id": _text(raw.get("request_id") or path.stem),
                 "source_reply_source": _text(raw.get("reply_source")), "content": content,
+                "source_reply_messages": normalize_visible_messages(raw.get("reply_messages") or []),
                 "conversation_history": [_text(item) for item in raw.get("conversation_history") or [] if _text(item)][-20:],
                 "corp_id": raw.get("corp_id"), "wechat": raw.get("wechat"),
                 "external_userid": raw.get("external_userid"), "customer_id": raw.get("customer_id"),
@@ -183,6 +214,24 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
                 "request_context": context, "bucket": sample_bucket(content), "identity_hash": identity_hash(raw),
             }
         )
+    timelines: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        timelines[row["identity_hash"]].append(row)
+    for timeline in timelines.values():
+        timeline.sort(key=lambda item: float(item.get("source_mtime") or 0))
+        delivered: list[dict[str, Any]] = []
+        for row in timeline:
+            row["prior_deliveries"] = list(delivered[-20:])
+            if row.get("source_reply_source") in VALID_REPLY_SOURCES and row.get("source_reply_messages"):
+                delivered.append(
+                    {
+                        "request_id": row.get("source_request_id"),
+                        "occurred_at": datetime.fromtimestamp(
+                            float(row.get("source_mtime") or 0), timezone.utc
+                        ).isoformat(),
+                        "reply_messages": row.get("source_reply_messages"),
+                    }
+                )
     return rows
 
 
@@ -226,6 +275,161 @@ def choose_samples(candidates: list[dict[str, Any]], limit: int) -> tuple[list[d
     # long reasoner-heavy or store-heavy stretches.
     rng.shuffle(selected)
     return selected, dict(Counter(row["bucket"] for row in selected))
+
+
+def load_source_history_events(
+    samples: list[dict[str, Any]],
+    audit: dict[str, Any],
+) -> None:
+    """Read point-in-time memory events without ever initializing or mutating the source."""
+
+    source_settings = Settings()
+    source_store = build_store(source_settings)
+    keys = list(
+        dict.fromkeys(
+            customer_scope_from_state(sample).sales_contact_key
+            for sample in samples
+            if customer_scope_from_state(sample).sales_contact_key
+        )
+    )
+    by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    try:
+        with source_store.connect() as conn:
+            for offset in range(0, len(keys), 200):
+                chunk = keys[offset : offset + 200]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT id, customer_id, event_type, stage, summary, facts,
+                           impact, confidence, created_at
+                    FROM history_events
+                    WHERE customer_id IN ({placeholders})
+                    ORDER BY customer_id, created_at DESC
+                    """,
+                    chunk,
+                ).fetchall()
+                audit["source_read_queries"] += 1
+                for row in rows:
+                    key = str(row["customer_id"] or "")
+                    if len(by_key[key]) >= 200:
+                        continue
+                    by_key[key].append(
+                        {
+                            "event_id": str(row["id"] or ""),
+                            "event_type": str(row["event_type"] or ""),
+                            "stage": str(row["stage"] or ""),
+                            "summary": str(row["summary"] or ""),
+                            "facts": loads_dict(row["facts"]),
+                            "impact": str(row["impact"] or ""),
+                            "confidence": float(row["confidence"] or 0),
+                            "event_time": str(row["created_at"] or ""),
+                        }
+                    )
+    finally:
+        source_store.close()
+    for sample in samples:
+        key = customer_scope_from_state(sample).sales_contact_key
+        source_request_id = str(sample.get("source_request_id") or "")
+        cutoff = float(sample.get("source_mtime") or 0)
+        eligible: list[dict[str, Any]] = []
+        for event in reversed(by_key.get(key, [])):
+            facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+            if source_request_id and str(facts.get("request_id") or "") == source_request_id:
+                continue
+            event_time = str(event.get("event_time") or "")
+            try:
+                timestamp = datetime.fromisoformat(event_time.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                timestamp = 0
+            if timestamp and cutoff and timestamp > cutoff:
+                continue
+            eligible.append(event)
+        sample["source_history_events"] = eligible[-100:]
+    audit["source_memory_mode"] = "production-readonly"
+    audit["source_history_event_count"] = sum(len(sample.get("source_history_events") or []) for sample in samples)
+
+
+def verify_source_absence(request_ids: list[str], audit: dict[str, Any]) -> None:
+    """Prove evaluation request ids never reached production persistence."""
+
+    clean_ids = list(dict.fromkeys(str(item or "").strip() for item in request_ids if str(item or "").strip()))
+    counts = {"runs": 0, "v3_strategy_usage_events": 0, "message_dispatches": 0, "strategy_data_outbox": 0}
+    if not clean_ids:
+        audit["production_absence"] = counts
+        return
+    source_store = build_store(Settings())
+
+    def count_value(row: Any) -> int:
+        if isinstance(row, dict):
+            return int(next(iter(row.values()), 0) or 0)
+        try:
+            return int(row[0] or 0)
+        except (IndexError, KeyError, TypeError):
+            return 0
+
+    try:
+        with source_store.connect() as conn:
+            for offset in range(0, len(clean_ids), 100):
+                chunk = clean_ids[offset : offset + 100]
+                placeholders = ",".join("?" for _ in chunk)
+                counts["runs"] += count_value(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM runs WHERE request_id IN ({placeholders})",
+                        chunk,
+                    ).fetchone()
+                )
+                counts["v3_strategy_usage_events"] += count_value(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM v3_strategy_usage_events WHERE request_id IN ({placeholders})",
+                        chunk,
+                    ).fetchone()
+                )
+                counts["message_dispatches"] += count_value(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM message_dispatches WHERE source_request_id IN ({placeholders})",
+                        chunk,
+                    ).fetchone()
+                )
+                like_clause = " OR ".join("payload_json LIKE ?" for _ in chunk)
+                counts["strategy_data_outbox"] += count_value(
+                    conn.execute(
+                        f"SELECT COUNT(*) FROM strategy_data_outbox WHERE {like_clause}",
+                        [f"%{item}%" for item in chunk],
+                    ).fetchone()
+                )
+                audit["source_read_queries"] += 4
+    finally:
+        source_store.close()
+    audit["production_absence"] = counts
+    if any(counts.values()):
+        raise RuntimeError("evaluation request ids unexpectedly found in production: " + json.dumps(counts))
+
+
+def _prior_deliveries_with_source_memory(sample: dict[str, Any]) -> list[dict[str, Any]]:
+    deliveries = list(sample.get("prior_deliveries") or [])
+    known_store_ids = {
+        store_id
+        for delivery in deliveries
+        for store_id in prior_structured_summary([delivery]).get("store_card_ids") or []
+    }
+    for event in sample.get("source_history_events") or []:
+        if not isinstance(event, dict) or str(event.get("event_type") or "") != "store_address_sent":
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        store_id = str(facts.get("store_id") or "").strip()
+        if not store_id or store_id in known_store_ids:
+            continue
+        known_store_ids.add(store_id)
+        deliveries.append(
+            {
+                "request_id": facts.get("request_id") or event.get("event_id"),
+                "occurred_at": event.get("event_time"),
+                "reply_messages": [
+                    {"type": "store_address", "order": 1, "content": {"store_id": store_id}}
+                ],
+            }
+        )
+    return deliveries[-20:]
 
 
 def build_settings(output_dir: Path) -> Settings:
@@ -276,12 +480,27 @@ def _block_write(name: str, audit: dict[str, Any]):
 
 
 def build_runtime(settings: Settings, audit: dict[str, Any]) -> dict[str, Any]:
-    trace_logger = TraceLogger(settings)
+    """Build shared read/model clients; per-case graphs receive isolated stores."""
+
     coze_client = CozeClient(settings)
     model_client = ModelClient(settings)
     platform_client = PlatformAgentClient(settings)
-    for name in ("create_work_order", "create_order_plan", "add_customer_mobile"):
+    blocked_platform_methods = (
+        "prepay_order",
+        "create_work_order",
+        "modify_work_order",
+        "create_order_plan",
+        "change_plan_time",
+        "cancel_plan",
+        "add_customer_mobile",
+    )
+    installed = 0
+    for name in blocked_platform_methods:
+        if not hasattr(platform_client, name):
+            continue
         setattr(platform_client, name, _block_write(f"platform_agent.{name}", audit))
+        installed += 1
+    audit["write_methods_installed"] = installed
     customer_context = CustomerContextService(platform_client)
     snapshot = StoreSnapshotService(settings, platform_client)
     store_knowledge = CustomerStoreKnowledgeService(platform_client, snapshot)
@@ -293,19 +512,160 @@ def build_runtime(settings: Settings, audit: dict[str, Any]) -> dict[str, Any]:
         max_scripts=settings.deepseek_semantic_max_scripts,
     )
     policy = AiSalesPolicyService(settings)
-    graph = build_reply_graphs(
-        coze_client, trace_logger, model_client, memory_store=None,
-        customer_context_service=customer_context,
-        customer_store_knowledge_service=store_knowledge,
-        store_service=StoreService(platform_client), outreach_send_client=None,
-        platform_agent_client=platform_client, sop_execution_service=None,
-        semantic_router_service=semantic_router, sales_strategy_service=SalesStrategyService(settings),
-    ).full_graph
     return {
-        "graph": graph, "model_client": model_client, "semantic_client": semantic_client,
+        "model_client": model_client, "semantic_client": semantic_client,
         "follow_client": follow_client, "coze_client": coze_client,
         "platform_client": platform_client, "policy": policy,
+        "customer_context": customer_context,
+        "store_knowledge": store_knowledge,
+        "store_service": StoreService(platform_client),
+        "semantic_router": semantic_router,
+        "sales_strategy": SalesStrategyService(settings),
     }
+
+
+class TimedGraph:
+    """Capture the full graph state and timing without changing production code."""
+
+    def __init__(self, graph: Any):
+        self.graph = graph
+        self.final_by_request: dict[str, dict[str, Any]] = {}
+        self.timing_by_request: dict[str, dict[str, int]] = {}
+
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(state.get("request_id") or "")
+        started = time.perf_counter()
+        final = await self.graph.ainvoke(state)
+        finished = time.perf_counter()
+        self.final_by_request[request_id] = final
+        self.timing_by_request[request_id] = {
+            "graph_started_ns": int(started * 1_000_000_000),
+            "graph_finished_ns": int(finished * 1_000_000_000),
+            "graph_duration_ms": int((finished - started) * 1000),
+        }
+        return final
+
+
+def _case_settings(settings: Settings, case_dir: Path) -> Settings:
+    return settings.model_copy(
+        update={
+            "trace_log_dir": case_dir / "trace",
+            "db_path": case_dir / "state.db",
+            "memory_dir": case_dir / "memory",
+            "store_snapshot_path": case_dir / "store_snapshot.json",
+        }
+    )
+
+
+def _seed_case_memory(
+    memory_store: CustomerMemoryStore,
+    sample: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    scope = customer_scope_from_state(sample)
+    events = list(sample.get("source_history_events") or [])
+    seen = {str(item.get("event_id") or "") for item in events if isinstance(item, dict)}
+    for event in prior_delivery_events(sample.get("prior_deliveries") or []):
+        event_id = str(event.get("event_id") or "")
+        if event_id and event_id in seen:
+            continue
+        events.append(event)
+        if event_id:
+            seen.add(event_id)
+    events = events[-100:]
+    if events:
+        memory_store.save_update(
+            scope.sales_contact_key,
+            profile_update={},
+            event_updates=events,
+        )
+    return scope.sales_contact_key, events
+
+
+def build_case_runtime(
+    *,
+    settings: Settings,
+    shared: dict[str, Any],
+    sample: dict[str, Any],
+    case_dir: Path,
+) -> dict[str, Any]:
+    case_settings = _case_settings(settings, case_dir)
+    store = SQLiteStore(case_settings)
+    store.initialize()
+    repository = AppRepository(store)
+    memory_store = CustomerMemoryStore(case_settings, repository)
+    sales_contact_key, seed_events = _seed_case_memory(memory_store, sample)
+    trace_logger = TraceLogger(case_settings)
+    graph = build_reply_graphs(
+        shared["coze_client"], trace_logger, shared["model_client"], memory_store=memory_store,
+        customer_context_service=shared["customer_context"],
+        customer_store_knowledge_service=shared["store_knowledge"],
+        store_service=shared["store_service"], outreach_send_client=None,
+        platform_agent_client=shared["platform_client"], sop_execution_service=None,
+        semantic_router_service=shared["semantic_router"], sales_strategy_service=shared["sales_strategy"],
+    ).full_graph
+    timed_graph = TimedGraph(graph)
+    runtime = ChatRuntime(
+        full_graph=timed_graph,
+        commit_graph=None,
+        trace_logger=trace_logger,
+        repository=repository,
+        memory_store=memory_store,
+        ai_sales_policy_service=shared["policy"],
+        sales_strategy_service=shared["sales_strategy"],
+        settings=case_settings,
+    )
+    return {
+        "runtime": runtime,
+        "graph": timed_graph,
+        "repository": repository,
+        "store": store,
+        "sales_contact_key": sales_contact_key,
+        "seed_event_count": len(seed_events),
+        "settings": case_settings,
+    }
+
+
+def build_request(sample: dict[str, Any]) -> ChatRequest:
+    context = {
+        key: value for key, value in dict(sample.get("request_context") or {}).items()
+        if key not in {"raw_workflow_payload", "test_isolated", "memory_persist_allowed"}
+    }
+    context.update(
+        {
+            "interface_version": "v3",
+            "api_version": "v3",
+            "reply_chain_mode": "model_led_sales_brain_v3",
+            "v3_sidecar": True,
+            "source_protocol": "real_identity_ephemeral_lifecycle_evaluation",
+            "evaluation_source_request_id": sample.get("source_request_id"),
+        }
+    )
+    return ChatRequest(
+        content=str(sample.get("content") or ""),
+        customer_id=str(sample.get("customer_id") or ""),
+        corp_id=str(sample.get("corp_id") or ""),
+        conversation_history=list(sample.get("conversation_history") or []),
+        user_id=sample.get("user_id"),
+        wechat=str(sample.get("wechat") or "") or None,
+        external_userid=str(sample.get("external_userid") or "") or None,
+        customer_add_wechat_id=sample.get("customer_add_wechat_id"),
+        confirmed_store_id=sample.get("confirmed_store_id"),
+        confirmed_store_name=sample.get("confirmed_store_name"),
+        store_id=sample.get("store_id"),
+        store_name=sample.get("store_name"),
+        appointment_id=sample.get("appointment_id"),
+        appointment_time=sample.get("appointment_time"),
+        request_context=context,
+    )
+
+
+def ephemeral_counts(store: SQLiteStore) -> dict[str, int]:
+    tables = ("runs", "messages", "history_events", "v3_strategy_usage_events", "message_dispatches", "strategy_data_outbox")
+    with store.connect() as conn:
+        return {
+            table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in tables
+        }
 
 
 def build_state(sample: dict[str, Any], settings: Settings, policy: AiSalesPolicyService) -> dict[str, Any]:
@@ -525,11 +885,15 @@ def judge_messages(private: dict[str, Any]) -> list[dict[str, str]]:
     payload = {
         "客户最近历史": private["history"][-10:], "客户本轮消息": private["content"],
         "权威事实": private["facts"], "系统决策": private["summary"],
-        "系统回复": private["reply"], "评测场景桶": private["bucket"],
+        "此前已真实交付的结构化消息": private.get("prior_structured_messages") or {},
+        "系统本轮完整客户可见回复": private.get("rendered_reply_messages") or private["reply"],
+        "确定性生命周期要求": (private.get("hard_assertions") or {}).get("contract") or {},
+        "确定性断言结果": private.get("hard_assertions") or {},
+        "评测场景桶": private["bucket"],
     }
     rubric = """你是销售客服质量评审员。只根据给定客户原话、历史和权威事实评估，不补充业务事实。
 输出严格 JSON：{"expected_intent":"7类之一","expected_emotion":"8类之一","pressure_direction_ok":true,"reply_accuracy_score":0,"reply_naturalness_score":0,"mainline_progress_score":0,"follow_sequence_fit_score":null,"closing_fit_score":null,"store_next_step_ok":null,"stale_topic_revival":false,"unsupported_fact":false,"safety_ok":true,"passed":true,"reasons":["简短中文原因"]}
-意图只能是 fact_inquiry、blocker_expression、transaction_progress、information_submission、defer、explicit_exit、normal_exchange。情绪只能是 neutral、curious、enthusiastic、hesitant、cold、defensive、impatient、angry。粗口本身不是愤怒；只有明确针对品牌、服务或接待人员的强烈敌意才是 angry。投诉不等于退订。有未解决卡点时应先解卡并暂停逼单；明确退订必须停止营销。回复必须紧扣本轮话题：若客户本轮没有提地点、门店、路线、到店或预约，却主动续接历史中的具体门店、地区、路线或预约，stale_topic_revival=true、passed=false，且自然度不得高于 5。客户询问某条广告或某个具体案例是否真实时，除非权威事实里有对应案例记录，否则确认“那个案例是真的”、声称有该人的原相机记录或用该案例承诺效果，都属于 unsupported_fact。门店、预约、付款、效果不得脱离权威事实。门店判断以本轮 normalized_tool_facts 中的 store_resolution_fact 为最高优先级；历史订单里出现的门店只说明旧订单关联，不等于客户当前位置、当前确认门店或本轮已有可发送门店，不得用它推翻本轮 no_valid_candidate/clarify_location 结果。passed 需要回复准确且自然、压力合适、安全合规，关键事实无虚构。"""
+意图只能是 fact_inquiry、blocker_expression、transaction_progress、information_submission、defer、explicit_exit、normal_exchange。情绪只能是 neutral、curious、enthusiastic、hesitant、cold、defensive、impatient、angry。粗口本身不是愤怒；只有明确针对品牌、服务或接待人员的强烈敌意才是 angry。投诉不等于退订。有未解决卡点时应先解卡并暂停逼单；明确退订必须停止营销。回复必须紧扣本轮话题：若客户本轮没有提地点、门店、路线、到店或预约，却主动续接历史中的具体门店、地区、路线或预约，stale_topic_revival=true、passed=false，且自然度不得高于 5。客户询问某条广告或某个具体案例是否真实时，除非权威事实里有对应案例记录，否则确认“那个案例是真的”、声称有该人的原相机记录或用该案例承诺效果，都属于 unsupported_fact。门店、预约、付款、效果不得脱离权威事实。门店判断以本轮 normalized_tool_facts 中的 store_resolution_fact 为最高优先级；历史订单里出现的门店只说明旧订单关联，不等于客户当前位置、当前确认门店或本轮已有可发送门店，不得用它推翻本轮 no_valid_candidate/clarify_location 结果。必须同时阅读文本、门店卡、付款卡、图片和视频，不能只评文本。门店卡已经送达且客户本轮只问停车或营业时间时，不能重复同一门店卡；客户尚未预约且没有卡点、安全风险或暂缓时，回答后必须明确说明下一步是预约/登记/保留名额，仅问“工作日还是周末”但不说明预约目的，mainline_progress_score不得高于5且passed=false。passed 需要回复准确且自然、压力合适、安全合规，关键事实无虚构。"""
     return [{"role": "system", "content": rubric}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}]
 
 
@@ -563,34 +927,109 @@ async def close_runtime(runtime: dict[str, Any]) -> None:
 async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     settings = build_settings(args.output)
     validate_evaluation_settings(settings)
-    audit: dict[str, Any] = {"blocked_attempts": [], "write_methods_installed": 3}
-    runtime = build_runtime(settings, audit)
-    samples, distribution = choose_samples(load_candidates(args.days), args.limit)
-    if len(samples) < args.limit:
-        raise RuntimeError(f"eligible real samples insufficient: {len(samples)} < {args.limit}")
+    audit: dict[str, Any] = {
+        "blocked_attempts": [],
+        "write_methods_installed": 0,
+        "ephemeral_repository_cases": 0,
+        "ephemeral_rows": Counter(),
+        "evaluation_request_ids": [],
+        "source_read_queries": 0,
+    }
+    candidates = load_candidates(args.days)
+    if args.request_id:
+        requested = list(dict.fromkeys(str(item).strip() for item in args.request_id if str(item).strip()))
+        by_request = {str(item.get("source_request_id") or ""): item for item in candidates}
+        missing = [item for item in requested if item not in by_request]
+        if missing:
+            raise RuntimeError("source request ids not found: " + ",".join(missing))
+        samples = [by_request[item] for item in requested]
+        distribution = dict(Counter(row["bucket"] for row in samples))
+    else:
+        samples, distribution = choose_samples(candidates, args.limit)
+        if len(samples) < args.limit:
+            raise RuntimeError(f"eligible real samples insufficient: {len(samples)} < {args.limit}")
+    if args.source_memory_mode == "production-readonly":
+        load_source_history_events(samples, audit)
+    else:
+        audit["source_memory_mode"] = "runs-only"
+        audit["source_read_queries"] = 0
+        audit["source_history_event_count"] = 0
+    shared = build_runtime(settings, audit)
     semaphore = asyncio.Semaphore(max(1, args.concurrency))
     rows: list[dict[str, Any] | None] = [None] * len(samples)
     private_rows: list[dict[str, Any] | None] = [None] * len(samples)
     fatal = asyncio.Event()
+    ephemeral_root = args.output / ".ephemeral"
+    ephemeral_root.mkdir(parents=True, exist_ok=True)
 
     async def one(index: int, sample: dict[str, Any]) -> None:
         if fatal.is_set():
             return
         state: dict[str, Any] = {}
+        case_id = f"C{index + 1:04d}"
+        case_dir = ephemeral_root / f"{case_id}-{uuid4().hex[:8]}"
+        case_runtime: dict[str, Any] | None = None
+        lifecycle_started = time.perf_counter()
         try:
             async with semaphore:
-                # Per-case latency starts only after the concurrency slot is
-                # acquired. Runtime deadlines are created here as well: if the
-                # budget starts while hundreds of cases wait on the semaphore,
-                # later cases expire before their graph is ever invoked.
-                state = build_state(sample, settings, runtime["policy"])
-                started = time.perf_counter()
-                final = await asyncio.wait_for(runtime["graph"].ainvoke(state), timeout=155.0)
-                duration_ms = int((time.perf_counter() - started) * 1000)
+                # Build a real ChatRuntime lifecycle around a disposable local
+                # repository. The production source remains read-only and all
+                # external write methods are fail-closed blockers.
+                lifecycle_started = time.perf_counter()
+                case_runtime = build_case_runtime(
+                    settings=settings,
+                    shared=shared,
+                    sample=sample,
+                    case_dir=case_dir,
+                )
+                request = build_request(sample)
+                response = await asyncio.wait_for(
+                    case_runtime["runtime"].run_platform_reply(request),
+                    timeout=175.0,
+                )
+                response_returned = time.perf_counter()
+                request_id = str(response.request_id or "")
+                state = case_runtime["graph"].final_by_request.get(request_id) or {}
+                response_messages = normalize_visible_messages(response.reply_messages)
+                if not state:
+                    state = {
+                        "request_id": request_id,
+                        "reply_messages": response_messages,
+                        "reply_source": (response.meta or {}).get("reply_source", ""),
+                        "trace": [],
+                        "errors": [],
+                    }
+                else:
+                    state["reply_messages"] = response_messages
+                public_body = workflow_response_from_chat(response)
+                serialize_started = time.perf_counter()
+                case_runtime["repository"].update_run_http_response(
+                    request_id=request_id,
+                    response_body=public_body,
+                )
+                json.dumps(public_body, ensure_ascii=False, default=str)
+                lifecycle_finished = time.perf_counter()
+                timing = case_runtime["graph"].timing_by_request.get(request_id) or {}
+                graph_started = int(timing.get("graph_started_ns") or 0) / 1_000_000_000
+                graph_finished = int(timing.get("graph_finished_ns") or 0) / 1_000_000_000
+                timings = {
+                    "pre_graph_ms": int(max(0.0, graph_started - lifecycle_started) * 1000) if graph_started else 0,
+                    "graph_duration_ms": int(timing.get("graph_duration_ms") or 0),
+                    "post_graph_ms": int(max(0.0, response_returned - graph_finished) * 1000) if graph_finished else 0,
+                    "response_serialize_ms": int(max(0.0, lifecycle_finished - serialize_started) * 1000),
+                    "lifecycle_duration_ms": int(max(0.0, lifecycle_finished - lifecycle_started) * 1000),
+                }
+                counts = ephemeral_counts(case_runtime["store"])
+                if counts["runs"] < 1 or counts["messages"] < 2:
+                    raise RuntimeError(f"ephemeral lifecycle persistence incomplete: {counts}")
+                audit["ephemeral_repository_cases"] += 1
+                audit["evaluation_request_ids"].append(request_id)
+                for table, count in counts.items():
+                    audit["ephemeral_rows"][table] += count
                 await asyncio.sleep(max(0.0, args.runtime_gap_seconds))
-            models = set(model_names(final))
+            models = set(model_names(state))
             for client_name in ("model_client", "semantic_client"):
-                usage = getattr(runtime[client_name], "last_usage", None)
+                usage = getattr(shared[client_name], "last_usage", None)
                 if isinstance(usage, dict) and _text(usage.get("model")):
                     models.add(_text(usage.get("model")))
             models = sorted(models)
@@ -598,36 +1037,65 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
             if non_deepseek:
                 fatal.set()
                 raise RuntimeError("non-DeepSeek model observed: " + ",".join(non_deepseek))
-            summary = decision_summary(final)
+            summary = decision_summary(state)
+            facts = compact_facts(state)
+            prior_deliveries = _prior_deliveries_with_source_memory(sample)
+            hard = hard_assertions(
+                sample=sample,
+                facts=facts,
+                prior_deliveries=prior_deliveries,
+                reply_messages=response_messages,
+            )
+            prior_summary = prior_structured_summary(prior_deliveries)
             rows[index] = {
-                "case_id": f"C{index + 1:04d}", "identity_hash": sample["identity_hash"],
+                "case_id": case_id, "identity_hash": sample["identity_hash"],
+                "source_request_hash": hashlib.sha256(str(sample.get("source_request_id") or "").encode()).hexdigest()[:12],
                 "bucket": sample["bucket"], "customer_excerpt": redact(sample["content"], 100),
-                "reply_excerpt": redact(reply_text(final), 180), **summary, "model_names": models,
-                "duration_ms": duration_ms, "judge": {}, "runtime_error": "",
+                "reply_excerpt": redact(customer_visible_text(response_messages), 180), **summary,
+                "prior_structured_count": prior_summary.get("message_count", 0),
+                "prior_store_card_count": len(prior_summary.get("store_card_ids") or []),
+                "reply_message_types": [item.get("type") for item in response_messages],
+                "hard_assertion_passed": hard.get("passed"),
+                "hard_failure_codes": hard.get("failure_codes") or [],
+                "model_names": models, **timings,
+                "duration_ms": timings["lifecycle_duration_ms"], "judge": {}, "runtime_error": "",
             }
             private_rows[index] = {
-                "case_id": f"C{index + 1:04d}", "bucket": sample["bucket"], "content": sample["content"],
-                "history": sample["conversation_history"], "facts": compact_facts(final),
-                "summary": summary, "reply": reply_text(final),
+                "case_id": case_id, "bucket": sample["bucket"], "content": sample["content"],
+                "history": sample["conversation_history"], "facts": facts,
+                "summary": summary, "reply": customer_visible_text(response_messages),
+                "reply_messages": response_messages,
+                "rendered_reply_messages": render_visible_messages(response_messages),
+                "prior_structured_messages": prior_summary,
+                "hard_assertions": hard,
             }
         except WriteBlockedError:
             fatal.set()
-            audit["blocked_attempts"].append("graph_runtime")
+            if "graph_runtime" not in audit["blocked_attempts"]:
+                audit["blocked_attempts"].append("graph_runtime")
         except Exception as exc:
-            started = locals().get("started", time.perf_counter())
             message = f"{type(exc).__name__}: {exc}"
             if "non-DeepSeek" in message:
                 fatal.set()
             rows[index] = {
-                "case_id": f"C{index + 1:04d}", "identity_hash": sample["identity_hash"],
+                "case_id": case_id, "identity_hash": sample["identity_hash"],
                 "bucket": sample["bucket"], "customer_excerpt": redact(sample["content"], 100),
-                "reply_excerpt": "", "duration_ms": int((time.perf_counter() - started) * 1000),
+                "reply_excerpt": "", "duration_ms": int((time.perf_counter() - lifecycle_started) * 1000),
                 "runtime_error": redact(message, 300), "judge": {},
             }
+        finally:
+            if case_runtime is not None:
+                case_runtime["store"].close()
+            shutil.rmtree(case_dir, ignore_errors=True)
         print(json.dumps({"phase": "runtime", "done": index + 1, "total": len(samples)}, ensure_ascii=False), flush=True)
 
-    await asyncio.gather(*(one(index, sample) for index, sample in enumerate(samples)))
-    await close_runtime(runtime)
+    try:
+        await asyncio.gather(*(one(index, sample) for index, sample in enumerate(samples)))
+        if args.source_memory_mode == "production-readonly":
+            verify_source_absence(list(audit.get("evaluation_request_ids") or []), audit)
+    finally:
+        await close_runtime(shared)
+        shutil.rmtree(ephemeral_root, ignore_errors=True)
     clean_rows = [row for row in rows if isinstance(row, dict)]
     if fatal.is_set() or audit["blocked_attempts"]:
         raise RuntimeError("evaluation aborted: non-DeepSeek model or production write attempt")
@@ -635,6 +1103,7 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
         for row in private_rows:
             if isinstance(row, dict):
                 handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+    audit["ephemeral_rows"] = dict(audit["ephemeral_rows"])
     return clean_rows, {"distribution": distribution, "audit": audit}
 
 
@@ -667,12 +1136,17 @@ async def judge_phase(args: argparse.Namespace, private_path: Path, rows: list[d
                     "stale_topic_revival": False,
                     "unsupported_fact": False,
                     "safety_ok": True,
+                    "ai_passed": False,
                     "passed": False,
+                    "hard_failure_codes": list(row.get("hard_failure_codes") or []),
                     "reasons": ["运行阶段未生成有效客户回复"],
                 }
                 continue
             raw = await judge.chat_json(judge_messages(private))
-            row["judge"] = normalize_judge(raw)
+            row["judge"] = merge_ai_judge(
+                normalize_judge(raw),
+                private.get("hard_assertions") or {},
+            )
             row["judge_model"] = _text((judge.last_usage or {}).get("model"))
             if row["judge_model"] and not row["judge_model"].startswith("deepseek-"):
                 raise RuntimeError("non-DeepSeek judge observed")
@@ -697,6 +1171,9 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
     valid_model = [row for row in completed if row.get("reply_source") in VALID_REPLY_SOURCES]
     eligible = [row for row in valid if row.get("intent") != "explicit_exit" and (row.get("sequence_candidates") or row.get("script_candidates"))]
     durations = [int(row.get("duration_ms") or 0) for row in completed]
+    graph_durations = [int(row.get("graph_duration_ms") or 0) for row in completed]
+    post_graph_durations = [int(row.get("post_graph_ms") or 0) for row in completed]
+    hard_failures = [code for row in completed for code in row.get("hard_failure_codes") or []]
     policy_case_ids = {row.get("case_id") for row in policy}
     judged_policy = [row for row in judged if row.get("case_id") in policy_case_ids]
     return {
@@ -719,7 +1196,13 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
         "closing_strategy_adopted_count": sum(bool(row.get("closing_strategy_adopted")) for row in completed),
         "closing_script_adopted_count": sum(bool(row.get("closing_script_adopted")) for row in completed),
         "closing_enter_advance_count": sum(row.get("closing_action") in {"enter", "advance"} for row in valid),
-        "judge_count": len(judged), "judge_pass_rate": round(sum(bool(row["judge"].get("passed")) for row in judged) / len(judged), 4) if judged else 0,
+        "judge_count": len(judged),
+        "ai_judge_pass_rate": round(sum(bool(row["judge"].get("ai_passed", row["judge"].get("passed"))) for row in judged) / len(judged), 4) if judged else 0,
+        "judge_pass_rate": round(sum(bool(row["judge"].get("passed")) for row in judged) / len(judged), 4) if judged else 0,
+        "hard_failure_count": len(hard_failures),
+        "hard_failures": dict(Counter(hard_failures)),
+        "structured_history_case_count": sum(int(row.get("prior_structured_count") or 0) > 0 for row in completed),
+        "prior_store_card_case_count": sum(int(row.get("prior_store_card_count") or 0) > 0 for row in completed),
         "human_expression_pass_rate": round(sum(int(row["judge"].get("reply_naturalness_score") or 0) >= 7 and not bool(row["judge"].get("stale_topic_revival")) for row in judged) / len(judged), 4) if judged else 0,
         "stale_topic_revival_count": sum(bool(row["judge"].get("stale_topic_revival")) for row in judged),
         "intent_accuracy_valid_policy": round(sum(row.get("intent") == row["judge"].get("expected_intent") for row in judged_policy) / max(1, len(judged_policy)), 4),
@@ -727,24 +1210,41 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
         "unsupported_fact_count": sum(bool(row["judge"].get("unsupported_fact")) for row in judged),
         "safety_failure_count": sum(not bool(row["judge"].get("safety_ok")) for row in judged),
         "p50_ms": int(statistics.median(durations)) if durations else 0, "p95_ms": percentile(durations, 0.95),
+        "graph_p50_ms": int(statistics.median(graph_durations)) if graph_durations else 0,
+        "graph_p95_ms": percentile(graph_durations, 0.95),
+        "post_graph_p50_ms": int(statistics.median(post_graph_durations)) if post_graph_durations else 0,
+        "post_graph_p95_ms": percentile(post_graph_durations, 0.95),
         "sample_distribution": context.get("distribution") or {},
         "model_names": sorted({name for row in completed for name in row.get("model_names") or []}),
-        "isolation": {"commit_graph_constructed": False, "public_reply_endpoint_called": False,
-                      "production_repository_constructed": False,
-                      "blocked_write_attempts": list((context.get("audit") or {}).get("blocked_attempts") or [])},
+        "isolation": {
+            "commit_graph_constructed": False,
+            "public_reply_endpoint_called": False,
+            "production_repository_passed_to_runtime": False,
+            "ephemeral_repository_cases": int((context.get("audit") or {}).get("ephemeral_repository_cases") or 0),
+            "ephemeral_rows": dict((context.get("audit") or {}).get("ephemeral_rows") or {}),
+            "external_write_blockers_installed": int((context.get("audit") or {}).get("write_methods_installed") or 0),
+            "source_memory_mode": str((context.get("audit") or {}).get("source_memory_mode") or "runs-only"),
+            "source_read_queries": int((context.get("audit") or {}).get("source_read_queries") or 0),
+            "source_history_event_count": int((context.get("audit") or {}).get("source_history_event_count") or 0),
+            "production_absence": dict((context.get("audit") or {}).get("production_absence") or {}),
+            "blocked_write_attempts": list((context.get("audit") or {}).get("blocked_attempts") or []),
+        },
     }
 
 
 CSV_FIELDS = [
-    "case_id", "identity_hash", "bucket", "customer_excerpt", "reply_excerpt", "reply_source",
+    "case_id", "identity_hash", "source_request_hash", "bucket", "customer_excerpt", "reply_excerpt", "reply_source",
+    "prior_structured_count", "prior_store_card_count", "reply_message_types",
+    "hard_assertion_passed", "hard_failure_codes",
     "primary_task", "intent", "emotion", "flow_action", "checkpoint_code", "cardpoint_state",
     "sequence_candidates", "script_candidates", "adopted_sequence_id", "adopted_script_id",
     "closing_catalog_source", "closing_catalog_status", "closing_rule_match_status",
     "closing_rule_candidates", "closing_strategy_candidates", "closing_script_candidates",
     "closing_strategy_adopted", "closing_script_adopted",
     "closing_action", "closing_sequence_key", "closing_node_key", "customer_state", "store_status",
-    "decision_status", "decision_reasons", "failure_category", "failure_code", "failure_reason", "duration_ms", "runtime_error",
-    "judge_expected_intent", "judge_expected_emotion", "judge_passed", "judge_reply_accuracy",
+    "decision_status", "decision_reasons", "failure_category", "failure_code", "failure_reason",
+    "pre_graph_ms", "graph_duration_ms", "post_graph_ms", "response_serialize_ms", "lifecycle_duration_ms", "duration_ms", "runtime_error",
+    "judge_expected_intent", "judge_expected_emotion", "judge_ai_passed", "judge_passed", "judge_reply_accuracy",
     "judge_naturalness", "judge_mainline_progress", "judge_follow_sequence_fit", "judge_closing_fit",
     "judge_store_next_step_ok", "judge_stale_topic_revival", "judge_unsupported_fact", "judge_safety_ok", "judge_reasons",
 ]
@@ -761,8 +1261,12 @@ def csv_row(row: dict[str, Any]) -> dict[str, Any]:
             "closing_strategy_candidates": "；".join(row.get("closing_strategy_candidates") or []),
             "closing_script_candidates": "；".join(row.get("closing_script_candidates") or []),
             "decision_reasons": "；".join(row.get("decision_reasons") or []),
+            "reply_message_types": "；".join(row.get("reply_message_types") or []),
+            "hard_failure_codes": "；".join(row.get("hard_failure_codes") or []),
             "judge_expected_intent": judge.get("expected_intent", ""),
-            "judge_expected_emotion": judge.get("expected_emotion", ""), "judge_passed": judge.get("passed", ""),
+            "judge_expected_emotion": judge.get("expected_emotion", ""),
+            "judge_ai_passed": judge.get("ai_passed", ""),
+            "judge_passed": judge.get("passed", ""),
             "judge_reply_accuracy": judge.get("reply_accuracy_score", ""),
             "judge_naturalness": judge.get("reply_naturalness_score", ""),
             "judge_mainline_progress": judge.get("mainline_progress_score", ""),
@@ -786,7 +1290,8 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
     failures = [row for row in rows if row.get("runtime_error") or not bool((row.get("judge") or {}).get("passed"))]
     lines = ["# 失败与人工复核案例", "", f"共 {len(failures)} 条。", ""]
     for row in failures:
-        reason = "；".join((row.get("judge") or {}).get("reasons") or []) or row.get("failure_reason") or row.get("failure_code") or row.get("runtime_error") or "AI 初评未通过"
+        hard_reason = "；".join(row.get("hard_failure_codes") or [])
+        reason = "；".join((row.get("judge") or {}).get("reasons") or []) or hard_reason or row.get("failure_reason") or row.get("failure_code") or row.get("runtime_error") or "AI 初评未通过"
         lines += [f"## {row.get('case_id')}｜{row.get('bucket')}", "", f"- 客户消息摘要：{row.get('customer_excerpt', '')}",
                   f"- 回复摘要：{row.get('reply_excerpt', '')}",
                   f"- 系统决策：意图 {row.get('intent', '')}；情绪 {row.get('emotion', '')}；B 单 {row.get('closing_action', '')}",
@@ -798,7 +1303,10 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
         f"- 样本：{metrics['requested_count']}；运行异常：{metrics['runtime_error_count']}",
         f"- 有效客户回复：{metrics['valid_customer_reply_count']}；其中主模型/单次修复：{metrics['valid_model_reply_count']}",
         f"- 完整意图+情绪+B 单覆盖率：{metrics['policy_core_coverage']:.1%}",
-        f"- AI 初评通过率：{metrics['judge_pass_rate']:.1%}",
+        f"- AI 原始初评通过率：{metrics['ai_judge_pass_rate']:.1%}",
+        f"- 合并硬断言后的最终通过率：{metrics['judge_pass_rate']:.1%}",
+        f"- 生命周期硬失败：{metrics['hard_failure_count']}；{json.dumps(metrics['hard_failures'], ensure_ascii=False)}",
+        f"- 含结构化历史/已发门店卡样本：{metrics['structured_history_case_count']}/{metrics['prior_store_card_case_count']}",
         f"- 真人表达通过率：{metrics['human_expression_pass_rate']:.1%}",
         f"- 旧话题误续接：{metrics['stale_topic_revival_count']}",
         f"- 有效策略行意图一致率：{metrics['intent_accuracy_valid_policy']:.1%}",
@@ -808,7 +1316,9 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
         f"- 条件可采用样本：{metrics['adoption_eligible_count']}；采用序列/话术：{metrics['sequence_adopted_count']}/{metrics['script_adopted_count']}",
         f"- B 单策略/话术实际采用：{metrics['closing_strategy_adopted_count']}/{metrics['closing_script_adopted_count']}",
         f"- B 单 enter/advance：{metrics['closing_enter_advance_count']}",
-        f"- P50/P95：{metrics['p50_ms']}/{metrics['p95_ms']} ms", "",
+        f"- 完整生命周期 P50/P95：{metrics['p50_ms']}/{metrics['p95_ms']} ms",
+        f"- 模型图 P50/P95：{metrics['graph_p50_ms']}/{metrics['graph_p95_ms']} ms",
+        f"- 图后持久化与返回 P50/P95：{metrics['post_graph_p50_ms']}/{metrics['post_graph_p95_ms']} ms", "",
         f"- 回复来源：{json.dumps(metrics['reply_sources'], ensure_ascii=False)}",
         f"- 失败分类：{json.dumps(metrics['failure_codes'], ensure_ascii=False)}",
         f"- 决策降级原因：{json.dumps(metrics['decision_reasons'], ensure_ascii=False)}",
@@ -819,7 +1329,12 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
     ]
     (output / "report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
     (output / "isolation_audit.md").write_text(
-        "# 隔离审计\n\n- 未调用公网回复接口。\n- 未构建 commit graph。\n- 未构建生产 Repository。\n"
+        "# 隔离审计\n\n- 未调用公网回复接口。\n- 未构建 commit graph。\n- 未把生产 Repository 传入运行时。\n"
+        f"- 临时 Repository 完整生命周期样本：{metrics['isolation']['ephemeral_repository_cases']}。\n"
+        f"- 临时持久化行数：{json.dumps(metrics['isolation']['ephemeral_rows'], ensure_ascii=False)}。\n"
+        f"- 外部写接口阻断器：{metrics['isolation']['external_write_blockers_installed']} 个。\n"
+        f"- 生产源只读查询：{metrics['isolation']['source_read_queries']} 次；读取历史事件：{metrics['isolation']['source_history_event_count']} 条。\n"
+        f"- 生产库反查命中：{json.dumps(metrics['isolation']['production_absence'], ensure_ascii=False)}。\n"
         f"- 写接口触发尝试：{len(metrics['isolation']['blocked_write_attempts'])}。\n",
         encoding="utf-8",
     )
