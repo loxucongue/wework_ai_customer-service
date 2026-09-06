@@ -5,14 +5,27 @@
 ## 新任务必读
 
 1. [项目宪法](../AGENTS.md)
-2. [系统结构](architecture/SYSTEM.md)
-3. [运行边界](contracts/RUNTIME_BOUNDARIES.md)
-4. [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
-5. [AI 销售策略运行合同](contracts/sales-strategy.md)
-6. [V3 意图、情绪与路由合同](contracts/v3-intent-emotion-routing.md)
+2. [产品背景与统一目标](background/PRODUCT_CONTEXT.md)
+3. [当前开发进度](current/DEVELOPMENT_STATUS.md)
+4. [系统结构](architecture/SYSTEM.md)
+5. [运行边界](contracts/RUNTIME_BOUNDARIES.md)
+6. 与本任务相关的合同和[接口文档](interfaces/INDEX.md)
 7. [当前生产状态](current/PRODUCTION_STATE.md)
 8. [已知问题](current/KNOWN_ISSUES.md)
-9. [访问提示](current/ACCESS_HINTS.md)
+9. [活跃任务清单](tasks/active/INDEX.md)及自己的任务文档
+10. [访问提示](current/ACCESS_HINTS.md)
+
+## 文档类别
+
+- `background/`：产品背景、业务目标和统一术语；帮助不了解项目的人先理解“为什么做”。
+- `architecture/`：组件、数据流和运行机制；说明“系统如何连接”。
+- `contracts/`：不可被实现随意破坏的产品、数据和安全边界。
+- `standards/`：开发、评测和验收口径；说明“怎样才算完成”。
+- `interfaces/`：外部依赖接口和项目对外接口，不保存凭证。
+- `current/`：当前进度、生产现场事实和已知问题；动态内容必须注明核验时间。
+- `tasks/active/`：当前窗口任务、分支、文件所有权、证据和待办。
+- `tasks/history/`：已完成任务的一行索引，详细过程回查 Git。
+- `runbooks/`：部署、验证、回滚和事故操作流程。
 
 ## 共享任务区
 
@@ -30,14 +43,20 @@
 
 ## 专项文档
 
+- [V3 Reply 质量与全链路评测规范](standards/V3_REPLY_EVALUATION.md)
+- [AI 销售策略运行合同](contracts/sales-strategy.md)
+- [V3 意图、情绪与路由合同](contracts/v3-intent-emotion-routing.md)
 - [消息送达回调](contracts/message-delivery-callback.md)
+- [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
 - [任务工作流](runbooks/TASK_WORKFLOW.md)
 - [生产发布前检查清单](runbooks/PRE_RELEASE_CHECKLIST.md)
 
 ## 目录规则
 
 - `architecture/`：稳定组件关系，不记录临时进度。
+- `background/`：稳定业务背景和产品目标，不记录上线快照。
 - `contracts/`：不得被实现随意破坏的协议和业务边界。
+- `standards/`：开发与验收的统一定义，不保存一次性测试结果。
 - `interfaces/`：外部依赖接口和项目对外暴露接口的稳定索引，不保存 token、原始日志或动态生产状态。
 - `current/`：现场核验后的动态事实；过期时必须明确标记。
 - `tasks/active/`：每个窗口独占一个活跃任务文件，任务、分支和文件所有权必须先登记。

@@ -154,6 +154,7 @@
   - 语义路由模型每轮只调用一次，只产生卡点、工具需求和检索条件，不生成客户话术。
   - 门店工具补齐事实后不再调用第二次销售语义模型；最终 Reply 直接消费真实门店事实。
   - V3 Reply 模型是唯一销售语义决策点。
+  - 当前 V3 Reply 角色使用自己的进程环境覆盖全局模型默认值：最终 Reply、full retry 和 targeted repair 均为 `deepseek-chat`，Reply fallback 为空。其他角色环境中的全局模型值不能用来判断 V3 实际调用模型，最终以 run trace 为准。
 
 ## Coze / 门店快照
 
