@@ -28,6 +28,8 @@
 - `ai_paths/app/graph/nodes/semantic_evidence.py`
 - `ai_paths/app/graph/nodes/material_selection.py`
 - `ai_paths/app/graph/nodes/action_module_outputs.py`
+- `ai_paths/app/graph/nodes/reply_nodes.py`
+- `ai_paths/app/graph/nodes/reply_generation.py`
 - `ai_paths/app/graph/nodes/reply_quality.py`
 - 必要的 Reply 素材交付测试文件
 - `docs/contracts/sales-strategy.md`
@@ -66,3 +68,4 @@
 - 2026-09-06 L1 第一轮：相关 Prompt、门店连续性、策略合同与 Reply 重试测试 `68 passed`。
 - 2026-09-07 完整确定性回归：`322 passed`；Prompt 预算 8,240 字符，未增加模型调用、数据库表或公共接口。
 - 真实矩阵发现旧平台记录只在客户可见历史中保留了门店卡名称/地址、缺少可靠 `store_address_sent` 事件时，停车详情仍可能重发同一门店卡；本任务补充基于助手已交付结构/门店名+地址精确一致性的幂等证据，不判断销售语义。
+- DeepSeek 对同一距离异议存在“已采用带图话术、但漏填 `selected_content_ids`”的随机性；收紧为 Reply 选择真实 `script_id` 后，代码只补齐该话术自身唯一、安全、未发送的配套媒体，不另选话术或业务主题。

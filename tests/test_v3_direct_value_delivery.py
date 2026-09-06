@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from ai_paths.app.graph.nodes.material_selection import parallel_reply_payload
-from ai_paths.app.graph.nodes.reply_nodes import _materialize_selected_content_media
+from ai_paths.app.graph.nodes.reply_nodes import (
+    _link_adopted_script_media,
+    _materialize_selected_content_media,
+)
 from ai_paths.app.graph.nodes.semantic_evidence import _sent_case_image_urls
 from ai_paths.app.services.v3_semantic_router_service import script_content_candidates
 
@@ -118,3 +121,39 @@ def test_selected_script_media_is_appended_after_customer_visible_text() -> None
         {"type": "text", "order": 1, "content": "我给您看个真实改善对比。"},
         {"type": "image", "content": IMAGE_URL, "order": 2},
     ]
+
+
+def test_adopted_script_automatically_links_its_own_deliverable_media() -> None:
+    candidate = script_content_candidates(_knowledge())[0]
+    state = _state([candidate])
+    payload = {
+        "selected_content_ids": [],
+        "knowledge_use": {"script_id": "187"},
+        "policy_decision": {
+            "realtime_intent": {"type": "blocker_expression"},
+            "emotion_decision": {"flow_action": "keep"},
+        },
+        "safety_assessment": {"status": "none"},
+    }
+
+    linked = _link_adopted_script_media(payload, state)
+
+    assert linked == "follow_script:187:p1"
+    assert payload["selected_content_ids"] == ["follow_script:187:p1"]
+
+
+def test_adopted_script_media_is_not_linked_across_safety_stop() -> None:
+    candidate = script_content_candidates(_knowledge())[0]
+    state = _state([candidate])
+    payload = {
+        "selected_content_ids": [],
+        "knowledge_use": {"script_id": "187"},
+        "policy_decision": {
+            "realtime_intent": {"type": "explicit_exit"},
+            "emotion_decision": {"flow_action": "stop_marketing"},
+        },
+        "safety_assessment": {"status": "explicit_reject"},
+    }
+
+    assert _link_adopted_script_media(payload, state) == ""
+    assert payload["selected_content_ids"] == []

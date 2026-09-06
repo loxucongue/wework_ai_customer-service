@@ -17,6 +17,7 @@ from app.services.trace_logger import TraceLogger
 from app.graph.nodes.reply_nodes import (
     _capped_deadline,
     _chat_json_with_deadline,
+    _link_adopted_script_media,
     _model_budget_seconds,
     _parallel_content_selection_metrics,
     _parallel_reply_repair_context,
@@ -845,6 +846,15 @@ def _validated_parallel_reply_payload(
     safety_floor: str = "",
 ) -> list[dict[str, Any]]:
     restore_reply_output_references(payload, parallel_reply_payload(state))
+    linked_content_id = _link_adopted_script_media(payload, state)
+    if linked_content_id:
+        warnings.append(
+            {
+                "node": "synthesize_reply",
+                "message": "adopted_script_media_linked",
+                "content_id": linked_content_id,
+            }
+        )
     _validate_selected_content_ids(payload, state)
     if _resolve_selected_content_media_placeholders(payload, state):
         warnings.append(

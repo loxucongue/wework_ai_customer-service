@@ -152,6 +152,76 @@ def _validate_selected_content_ids(payload: dict[str, Any], state: AgentState) -
     if invalid_ids:
         raise ValueError("selected_content_id_not_selectable:" + ",".join(invalid_ids))
 
+
+def _link_adopted_script_media(payload: dict[str, Any], state: AgentState) -> str:
+    """Complete media metadata for Reply's chosen script without a new sales decision."""
+
+    selected = [
+        str(item or "").strip()
+        for item in payload.get("selected_content_ids") or []
+        if str(item or "").strip()
+    ]
+    if selected:
+        return ""
+    knowledge_use = payload.get("knowledge_use") if isinstance(payload.get("knowledge_use"), dict) else {}
+    script_id = str(knowledge_use.get("script_id") or "").strip()
+    if not script_id:
+        return ""
+    policy = payload.get("policy_decision") if isinstance(payload.get("policy_decision"), dict) else {}
+    intent = policy.get("realtime_intent") if isinstance(policy.get("realtime_intent"), dict) else {}
+    emotion = policy.get("emotion_decision") if isinstance(policy.get("emotion_decision"), dict) else {}
+    safety = _normalized_safety_assessment(payload.get("safety_assessment"))
+    if (
+        str(intent.get("type") or "") == "explicit_exit"
+        or str(emotion.get("flow_action") or "") in {"pause_marketing_turn", "handoff_by_system_rule"}
+        or str(safety.get("status") or "none") != "none"
+    ):
+        return ""
+
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
+    matches: list[tuple[tuple[int, int, str], str]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        source_id = str(
+            candidate.get("source_script_id")
+            or candidate.get("source_script_code")
+            or candidate.get("source_id")
+            or candidate.get("script_id")
+            or ""
+        ).strip()
+        content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
+        constraints = (
+            candidate.get("selection_constraints")
+            if isinstance(candidate.get("selection_constraints"), dict)
+            else {}
+        )
+        if (
+            source_id != script_id
+            or not content_id
+            or str(candidate.get("delivery_status") or "").strip() != "available"
+            or constraints.get("direct_value_without_permission_gate") is not True
+        ):
+            continue
+        messages = candidate.get("messages") if isinstance(candidate.get("messages"), list) else []
+        media_types = [
+            str(item.get("type") or "").strip()
+            for item in messages
+            if isinstance(item, dict)
+            and str(item.get("type") or "").strip() in {"image", "video"}
+            and _passive_media_url(item).lower().startswith(("http://", "https://"))
+        ]
+        if not media_types:
+            continue
+        rank = (0 if "image" in media_types else 1, len(media_types), content_id)
+        matches.append((rank, content_id))
+    if not matches:
+        return ""
+    content_id = min(matches, key=lambda item: item[0])[1]
+    payload["selected_content_ids"] = [content_id]
+    return content_id
+
 def _resolve_selected_content_media_placeholders(
     payload: dict[str, Any],
     state: AgentState,
