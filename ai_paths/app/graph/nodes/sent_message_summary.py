@@ -25,6 +25,7 @@ def sent_message_summary_for_model(
     )
     case_image_delivery = _case_image_delivery(state.get("history_events"))
     store_address_delivery = _store_address_delivery(state.get("history_events"))
+    store_recommendation = _store_recommendation_delivery(state.get("history_events"))
     store_anchor_fact = _store_anchor_fact(store_address_delivery)
     activity_intro_image_sent = False
     store_ids: list[str] = []
@@ -63,9 +64,12 @@ def sent_message_summary_for_model(
         "activity_intro_image_sent": activity_intro_image_sent,
         "store_address_sent_by_store_id": list(dict.fromkeys(store_ids)),
         "store_address_delivery": store_address_delivery,
+        "latest_store_recommendation": store_recommendation,
         "store_anchor_fact": store_anchor_fact,
         "recent_store_search_evidence": (
-            store_address_delivery.get("store_search_evidence")
+            store_recommendation.get("store_search_evidence")
+            if isinstance(store_recommendation.get("store_search_evidence"), dict)
+            else store_address_delivery.get("store_search_evidence")
             if isinstance(store_address_delivery.get("store_search_evidence"), dict)
             else {}
         ),
@@ -123,6 +127,29 @@ def _store_anchor_fact(delivery: dict[str, Any]) -> dict[str, Any]:
 def _store_address_delivery(raw_events: Any) -> dict[str, Any]:
     """Expose the latest store-card delivery batch without deciding sales intent."""
 
+    deliveries = _store_delivery_records(raw_events)
+    if not deliveries:
+        return {}
+    latest = max(deliveries, key=_store_delivery_sort_key)
+    return _store_delivery_summary(deliveries, latest=latest)
+
+
+def _store_recommendation_delivery(raw_events: Any) -> dict[str, Any]:
+    """Expose the latest location recommendation without detail lookups replacing it."""
+
+    deliveries = _store_delivery_records(raw_events)
+    recommendations = [
+        item for item in deliveries if _is_store_recommendation_evidence(item[1])
+    ]
+    if not recommendations:
+        return {}
+    latest = max(recommendations, key=_store_delivery_sort_key)
+    result = _store_delivery_summary(deliveries, latest=latest)
+    result["source"] = "latest_store_recommendation"
+    return result
+
+
+def _store_delivery_records(raw_events: Any) -> list[tuple[int, dict[str, Any], datetime | None, str, str]]:
     deliveries: list[tuple[int, dict[str, Any], datetime | None, str, str]] = []
     for index, event in enumerate(raw_events if isinstance(raw_events, list) else []):
         if not isinstance(event, dict) or str(event.get("event_type") or "").strip() != "store_address_sent":
@@ -140,16 +167,23 @@ def _store_address_delivery(raw_events: Any) -> dict[str, Any]:
                 str(facts.get("request_id") or "").strip(),
             )
         )
-    if not deliveries:
-        return {}
+    return deliveries
 
-    latest = max(
-        deliveries,
-        key=lambda item: (
-            item[2].timestamp() if item[2] is not None else float("-inf"),
-            item[0],
-        ),
+
+def _store_delivery_sort_key(
+    item: tuple[int, dict[str, Any], datetime | None, str, str],
+) -> tuple[float, int]:
+    return (
+        item[2].timestamp() if item[2] is not None else float("-inf"),
+        item[0],
     )
+
+
+def _store_delivery_summary(
+    deliveries: list[tuple[int, dict[str, Any], datetime | None, str, str]],
+    *,
+    latest: tuple[int, dict[str, Any], datetime | None, str, str],
+) -> dict[str, Any]:
     latest_request_id = latest[4]
     if latest_request_id:
         latest_batch = [item for item in deliveries if item[4] == latest_request_id]
@@ -180,6 +214,45 @@ def _store_address_delivery(raw_events: Any) -> dict[str, Any]:
             "source": "history_events",
             "decision_policy": "evidence_only_model_decides_store_binding",
         }
+    )
+
+
+def _is_store_recommendation_evidence(event: dict[str, Any]) -> bool:
+    facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+    evidence = (
+        facts.get("store_search_evidence")
+        if isinstance(facts.get("store_search_evidence"), dict)
+        else {}
+    )
+    if not evidence:
+        return False
+    destination = (
+        evidence.get("destination_resolution")
+        if isinstance(evidence.get("destination_resolution"), dict)
+        else {}
+    )
+    request_kind = str(
+        evidence.get("request_kind") or destination.get("request_kind") or ""
+    ).strip()
+    location = (
+        evidence.get("location_evidence")
+        if isinstance(evidence.get("location_evidence"), dict)
+        else {}
+    )
+    confirmation_mode = str(location.get("confirmation_mode") or "").strip()
+    if request_kind in {"store_detail", "reuse_store"}:
+        return False
+    if confirmation_mode == "model_grounded_named_store":
+        return False
+    return any(
+        evidence.get(key) not in (None, "", [], {})
+        for key in (
+            "candidate_search_complete",
+            "recommendation_final_for_destination",
+            "recommended_store_id",
+            "delivery_store_ids",
+            "destination_fingerprint",
+        )
     )
 
 

@@ -210,6 +210,9 @@ def _turn_evidence(
                 store_address_delivery=(sent_summary or {}).get("store_address_delivery")
                 if isinstance(sent_summary, dict)
                 else {},
+                store_recommendation=(sent_summary or {}).get("latest_store_recommendation")
+                if isinstance(sent_summary, dict)
+                else {},
                 store_anchor_fact=(sent_summary or {}).get("store_anchor_fact")
                 if isinstance(sent_summary, dict)
                 else {},

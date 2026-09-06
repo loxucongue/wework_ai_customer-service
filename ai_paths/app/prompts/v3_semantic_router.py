@@ -52,7 +52,7 @@ V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路
 - 只有当前客户消息明确表示现在或今天要去某个已知地点，且完整聊天中没有实际门店卡或公开地址时，才因到店行动补查门店。孤立的“下午吧、周末吧、到时候再说”不能当成到店行动，也不能因为历史出现过地址就重新查店。
 - 客户明确把“当地没有门店”作为暂不考虑的原因时，这是已表达的距离/便利阻力；若客户没有提供或询问新地点，不再次调用门店工具。后续知识应支持换效果、活动价值或询问其他常去城市，而不是要求客户从同城其他区里硬选一家。
 - 门店查询本身通常是 inquiry，不能猜成 distance。
-- 同一目的地已有最终结果且客户未改地点，只继续说远、问价格或效果时不重复查店。
+- 已有当前城市最终门店推荐且客户未给出新城市时，不重查、不再问同城地铁站/路口/楼栋；说远时召回距离知识。只有新城市才重查。
 - destination_hint 必须来自 location_evidence_refs 指向的客户原文，不能写占位词。
 - 卡点、标签、序列、步骤、事实主题和引用只能从输入中选择，不得虚构。
 - 输出前做语义一致性自检：current_friction.summary 必须能被所选类型和标签名称直接解释；若摘要与类型或标签冲突，重新选择目录中的类型或清空不合适分类，不能保留自相矛盾的 ID。
@@ -543,6 +543,16 @@ def _current_status_block(shared: dict[str, Any]) -> str:
     orders = [item for item in order.get("orders") or [] if isinstance(item, dict)]
     case_delivery = sent.get("case_image_delivery") if isinstance(sent.get("case_image_delivery"), dict) else {}
     store_delivery = sent.get("store_address_delivery") if isinstance(sent.get("store_address_delivery"), dict) else {}
+    store_recommendation = (
+        sent.get("latest_store_recommendation")
+        if isinstance(sent.get("latest_store_recommendation"), dict)
+        else {}
+    )
+    recommendation_evidence = (
+        store_recommendation.get("store_search_evidence")
+        if isinstance(store_recommendation.get("store_search_evidence"), dict)
+        else {}
+    )
     latest_store_ids = [
         str(item).strip()
         for item in store_delivery.get("latest_batch_store_ids") or []
@@ -560,6 +570,41 @@ def _current_status_block(shared: dict[str, Any]) -> str:
         + str(latest_store_count)
         + "；门店ID："
         + _compact_value(latest_store_ids),
+        "最近门店推荐："
+        + _compact_value(
+            {
+                "query": recommendation_evidence.get("normalized_query")
+                or recommendation_evidence.get("raw_place"),
+                "city": recommendation_evidence.get("city"),
+                "district": recommendation_evidence.get("district"),
+                "candidate_search_complete": recommendation_evidence.get("candidate_search_complete"),
+                "recommendation_final_for_destination": "是"
+                if recommendation_evidence.get("recommendation_final_for_destination") is True
+                or (
+                    "recommendation_final_for_destination" not in recommendation_evidence
+                    and (
+                    recommendation_evidence.get("candidate_search_complete") is True
+                    and (
+                        recommendation_evidence.get("recommended_store_id")
+                        or recommendation_evidence.get("delivery_store_ids")
+                    )
+                    )
+                )
+                else "否",
+                "clarification_would_change_result": "是"
+                if recommendation_evidence.get("clarification_would_change_result") is True
+                else "否"
+                if recommendation_evidence.get("clarification_would_change_result") is False
+                or recommendation_evidence.get("candidate_search_complete") is True
+                else None,
+                "distance_ranking_available": "是"
+                if recommendation_evidence.get("distance_ranking_available") is True
+                else "否"
+                if recommendation_evidence.get("distance_ranking_available") is False
+                else None,
+                "ranking_method": recommendation_evidence.get("ranking_method"),
+            }
+        ),
         "已发送：" + _compact_value(
             {
                 "payment_cards": sent.get("payment_collection_count"),

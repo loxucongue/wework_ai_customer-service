@@ -1718,7 +1718,12 @@ def _store_search_evidence_from_state(state: AgentState) -> dict[str, Any]:
         if isinstance(structured.get("store_resolution_fact"), dict)
         else {}
     )
-    return {
+    destination = (
+        resolution.get("destination_resolution")
+        if isinstance(resolution.get("destination_resolution"), dict)
+        else {}
+    )
+    evidence = {
         key: resolution.get(key)
         for key in (
             "raw_place",
@@ -1740,9 +1745,21 @@ def _store_search_evidence_from_state(state: AgentState) -> dict[str, Any]:
             "delivery_store_ids",
             "ranking_method",
             "customer_claim_level",
+            "coverage_status",
+            "scope_match_level",
+            "recommendation_final_for_destination",
+            "clarification_would_change_result",
         )
-        if resolution.get(key) not in (None, "", [], {})
+        if key in resolution
+        and (
+            isinstance(resolution.get(key), bool)
+            or resolution.get(key) not in (None, "", [], {})
+        )
     }
+    for key in ("request_kind", "destination_precision"):
+        if destination.get(key) not in (None, "", [], {}):
+            evidence[key] = destination.get(key)
+    return evidence
 
 
 def _store_address_message_ids(reply_messages: list[dict[str, Any]]) -> list[str]:

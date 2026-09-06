@@ -67,6 +67,22 @@ def test_reply_uses_positive_evidence_before_effect_boundaries() -> None:
     assert "不提活动、付款、定金、名额、档期、登记、到店时间" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
+def test_reply_requires_safe_directly_relevant_script_for_active_blocker() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "必须选一个最相关序列和最多一个主话术" in prompt
+    assert "长话术允许只取语义完整且安全的一两句" in prompt
+    assert "所有候选都无关或冲突时允许 script_id 留空" in prompt
+
+
+def test_store_distance_objection_keeps_terminal_recommendation_boundary() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "不再追问同城地铁站、路口、楼栋或更细地址" in prompt
+    assert "不得客观断言门店确实远或近" in prompt
+    assert "只有客户给出不同城市才重新查店" in prompt
+
+
 def test_router_keeps_price_intents_semantically_separate() -> None:
     prompt = V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
 

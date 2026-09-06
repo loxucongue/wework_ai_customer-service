@@ -133,6 +133,11 @@ class V3SemanticRouterService:
             semantic_route["store_query"]["purpose"] = str(
                 semantic_route["store_query"].get("purpose") or "store_resolution"
             )
+        else:
+            semantic_route = _apply_terminal_store_recommendation_guard(
+                semantic_route,
+                shared_context=shared_context,
+            )
         if route_error:
             semantic_route.update({"status": "error", "reason": route_error})
         semantic_route["duration_ms"] = int((time.perf_counter() - router_started) * 1000)
@@ -2836,6 +2841,65 @@ def _store_tool_plan(route: dict[str, Any]) -> dict[str, Any]:
         "evidence_refs": list(store.get("location_evidence_refs") or []),
         "reason": "semantic_router_requires_store_lookup",
     }
+
+
+def _apply_terminal_store_recommendation_guard(
+    route: dict[str, Any],
+    *,
+    shared_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Suppress an unsourced distance re-query after a completed recommendation.
+
+    The Router still owns the customer's sales meaning. This guard only checks
+    its structured distance classification against an already completed store
+    fact, and leaves explicit new destinations and protocol location cards to
+    the normal store resolver.
+    """
+
+    store_query = route.get("store_query") if isinstance(route.get("store_query"), dict) else {}
+    if not store_query.get("required") or str(store_query.get("destination_hint") or "").strip():
+        return route
+    current_friction = (
+        route.get("current_friction")
+        if isinstance(route.get("current_friction"), dict)
+        else {}
+    )
+    checkpoint = route.get("checkpoint") if isinstance(route.get("checkpoint"), dict) else {}
+    checkpoint_code = str(
+        current_friction.get("checkpoint_code") or checkpoint.get("primary_code") or ""
+    ).strip()
+    if checkpoint_code != "distance":
+        return route
+    facts = (
+        shared_context.get("authoritative_facts")
+        if isinstance(shared_context.get("authoritative_facts"), dict)
+        else {}
+    )
+    sent = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    latest = (
+        sent.get("latest_store_recommendation")
+        if isinstance(sent.get("latest_store_recommendation"), dict)
+        else {}
+    )
+    evidence = (
+        latest.get("store_search_evidence")
+        if isinstance(latest.get("store_search_evidence"), dict)
+        else {}
+    )
+    recommendation_final = evidence.get("recommendation_final_for_destination") is True or bool(
+        evidence.get("candidate_search_complete") is True
+        and (evidence.get("recommended_store_id") or evidence.get("delivery_store_ids"))
+    )
+    if not recommendation_final:
+        return route
+    guarded = copy.deepcopy(route)
+    guarded["store_query"] = {
+        **store_query,
+        "required": False,
+        "purpose": "existing_store_recommendation_final",
+        "suppressed_reason": "distance_objection_without_new_destination",
+    }
+    return guarded
 
 
 def _valid_refs(raw: Any, valid: set[str]) -> list[str]:

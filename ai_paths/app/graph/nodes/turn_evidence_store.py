@@ -10,12 +10,20 @@ def build_store_evidence(
     store_anchor: dict[str, Any],
     *,
     store_address_delivery: dict[str, Any] | None = None,
+    store_recommendation: dict[str, Any] | None = None,
     store_anchor_fact: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     delivery = _compact_store_address_delivery(store_address_delivery or {})
+    recommendation = _compact_store_recommendation(store_recommendation or {})
     anchor_fact = _compact_store_anchor_fact(store_anchor_fact or {})
     if not isinstance(store_anchor, dict) or not store_anchor:
-        return _drop_empty({"latest_store_address_delivery": delivery, "store_anchor_fact": anchor_fact})
+        return _drop_empty(
+            {
+                "latest_store_address_delivery": delivery,
+                "latest_store_recommendation": recommendation,
+                "store_anchor_fact": anchor_fact,
+            }
+        )
     if store_anchor.get("ambiguous"):
         return _drop_empty(
             {
@@ -27,6 +35,7 @@ def build_store_evidence(
                 "ambiguous": True,
                 "source": str(store_anchor.get("source") or ""),
                 "latest_store_address_delivery": delivery,
+                "latest_store_recommendation": recommendation,
                 "store_anchor_fact": anchor_fact,
             }
         )
@@ -39,6 +48,7 @@ def build_store_evidence(
             "unique_recent_store": candidate if candidate and source not in PROFILE_STORE_SOURCES else {},
             "profile_preference_only": bool(candidate and source in PROFILE_STORE_SOURCES),
             "latest_store_address_delivery": delivery,
+            "latest_store_recommendation": recommendation,
             "store_anchor_fact": anchor_fact,
         }
     )
@@ -76,6 +86,55 @@ def _compact_store_address_delivery(value: dict[str, Any]) -> dict[str, Any]:
             "decision_policy": "evidence_only_planner_decides_store_binding",
         }
     )
+
+
+def _compact_store_recommendation(value: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    evidence = (
+        value.get("store_search_evidence")
+        if isinstance(value.get("store_search_evidence"), dict)
+        else {}
+    )
+    return _drop_empty(
+        {
+            "store_ids": [
+                str(item or "").strip()
+                for item in value.get("latest_batch_store_ids") or []
+                if str(item or "").strip()
+            ],
+            "last_sent_at": str(value.get("last_sent_at") or "").strip(),
+            "request_id": str(value.get("request_id") or "").strip(),
+            "query": str(evidence.get("normalized_query") or evidence.get("raw_place") or "").strip(),
+            "city": str(evidence.get("city") or "").strip(),
+            "district": str(evidence.get("district") or "").strip(),
+            "resolved_admin_level": str(evidence.get("resolved_admin_level") or "").strip(),
+            "candidate_search_complete": evidence.get("candidate_search_complete"),
+            "recommendation_final_for_destination": _recommendation_final(evidence),
+            "clarification_would_change_result": _clarification_would_change_result(evidence),
+            "ranking_method": str(evidence.get("ranking_method") or "").strip(),
+            "distance_ranking_available": evidence.get("distance_ranking_available"),
+            "source": "history_events",
+        }
+    )
+
+
+def _recommendation_final(evidence: dict[str, Any]) -> bool | None:
+    if "recommendation_final_for_destination" in evidence:
+        return evidence.get("recommendation_final_for_destination") is True
+    if evidence.get("candidate_search_complete") is True and (
+        evidence.get("recommended_store_id") or evidence.get("delivery_store_ids")
+    ):
+        return True
+    return None
+
+
+def _clarification_would_change_result(evidence: dict[str, Any]) -> bool | None:
+    if "clarification_would_change_result" in evidence:
+        return evidence.get("clarification_would_change_result") is True
+    if _recommendation_final(evidence) is True:
+        return False
+    return None
 
 
 def _compact_store_candidate(store: dict[str, Any]) -> dict[str, Any]:

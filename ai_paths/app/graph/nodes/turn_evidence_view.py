@@ -101,6 +101,7 @@ def _store_evidence(value: Any) -> dict[str, Any]:
             "ambiguous": value.get("ambiguous") if "ambiguous" in value else None,
             "source": _text(value.get("source")),
             "latest_store_address_delivery": _store_delivery(value.get("latest_store_address_delivery")),
+            "latest_store_recommendation": _store_recommendation(value.get("latest_store_recommendation")),
             "store_anchor_fact": _store_anchor_fact(value.get("store_anchor_fact")),
         }
     )
@@ -131,6 +132,36 @@ def _store_delivery(value: Any) -> dict[str, Any]:
             "latest_batch_count": value.get("latest_batch_count"),
             "last_sent_at": _text(value.get("last_sent_at")),
             "batch_confidence": _text(value.get("batch_confidence")),
+            "source": _text(value.get("source")),
+        }
+    )
+
+
+def _store_recommendation(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return _drop_empty(
+        {
+            "store_ids": [_text(item) for item in value.get("store_ids") or [] if _text(item)][:8],
+            "last_sent_at": _text(value.get("last_sent_at")),
+            "request_id": _text(value.get("request_id")),
+            "query": _text(value.get("query")),
+            "city": _text(value.get("city")),
+            "district": _text(value.get("district")),
+            "resolved_admin_level": _text(value.get("resolved_admin_level")),
+            "candidate_search_complete": value.get("candidate_search_complete")
+            if "candidate_search_complete" in value
+            else None,
+            "recommendation_final_for_destination": value.get("recommendation_final_for_destination")
+            if "recommendation_final_for_destination" in value
+            else None,
+            "clarification_would_change_result": value.get("clarification_would_change_result")
+            if "clarification_would_change_result" in value
+            else None,
+            "ranking_method": _text(value.get("ranking_method")),
+            "distance_ranking_available": value.get("distance_ranking_available")
+            if "distance_ranking_available" in value
+            else None,
             "source": _text(value.get("source")),
         }
     )

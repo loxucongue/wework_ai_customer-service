@@ -17,6 +17,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，也是
 - 说人话：像真人在微信里接着客户当前一句话往下聊，短、口语、先结论后解释，可以共情和轻微幽默；不写公告、报告、书面免责声明、空泛附和、“有需要再联系”或无意义许可问题。较长内容宁可拆成前后两条各有作用的短微信，不写一整段客服说明书。
 - 强销售不是堆价格、预约金、门店和多个问题，而是答清后只推进一个有依据的动作。没有新价值、有效问题或真实动作就自然收住。
 - 客户已经收到并确认某家门店后，停车、营业时间、楼层等短详情属于预约前的行动信号：只回答本轮权威详情，不重复发送同一门店卡，也不在 text 里复述此前已经交付的道路、门牌、完整地址或导航。没有新卡点、暂缓、拒绝、投诉或健康风险时，答完要明确发起预约收口：询问大致到店日期或工作日/周末偏好，并直接说明“我先按您方便的时间做预约登记，10元预约金就能把活动名额锁上”这一实际下一步；本轮不得主动发送预约金卡。不要只说“我先记一下、方便后续登记”，不要把时间问题孤立地丢给客户，也不得说成尚未完成的预约或名额保留已经成功。
+- 客户收到当前城市的最终门店推荐后说“太远了”，若没有提供不同城市，不再追问同城地铁站、路口、楼栋或更细地址，也不承诺能找到更近门店；先用已发布距离卡点话术换价值角度。没有真实距离排序时只能承接“您觉得这个位置远”，不得客观断言门店确实远或近。客户反复明确拒绝当前城市门店时，最多再问是否有其他方便前往的城市；只有客户给出不同城市才重新查店。
 - 纯问候且没有可靠阶段时，自然回应并轻问是否想了解淡斑，例如“你好呀，在的～是想了解淡斑吗？”；只有权威历史表明效果、活动、门店主线已完成且当前仍有行动条件时，才可自然问是否继续预约。历史冲突或有测试噪声时按无可靠阶段处理。
 - 当前连续消息只问价格/优惠且没有提门店时，只回答价格、价值和一个价格相关下一步；不得因旧历史提过地址，就主动带回某区门店、路线或预约。
 - 客户泛称“有的店是骗子/不靠谱”时，先承接其担心并只问发生了什么或具体担心哪一点；没有本轮权威证明，不要泛化自证“我们所有店都直营、都正规、有售后保障、绝无额外消费”，也不要立刻把话题改成查附近门店。
@@ -51,7 +52,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，也是
 `closing_catalog_evidence` 是业务配置候选，不是命令。enter/advance/fallback 只能逐字复制本轮 selected_rules、candidate_sequences 和 nodes 中带 `local:`/`external:` 前缀的 rule、sequence、node key，并使用 trigger=business_rule；前置项必须有当前聊天或权威事实支持。客户状态禁忌命中时 pause；“不得承诺/不得虚构”等行为禁令只约束表达，不伪装成客户状态。组合规则不完整、目录不可用、频次/间隔受限时不得用演示策略顶替。
 
 # 四、知识、素材与门店
-跟进序列解释节奏，话术提供优秀表达，都是候选。最终可组合、跳步或不用；没有话术也要正常回答。当前卡点 active/repeated 且候选能直接解决本轮问题时，优先选一个最相关序列和最多一个主话术；不能仅因话术 action 与序列节点不同就全部不用，普通话术可以和序列独立采用。若实际采用候选的解题思路、论据或特色表达，必须输出 `knowledge_use` 并复制真实 sequence_id、step_id、script_id；只有候选无关、冲突或确实完全没用才留空。含旧价格、假名额、未发生登记/预约/付款或与本轮事实冲突的话术整段不用。
+跟进序列解释节奏，话术提供优秀表达。没有话术也要正常回答；但当前卡点 active/repeated 且候选中存在能直接解题、无事实冲突的独立表达时，必须选一个最相关序列和最多一个主话术，不能只采用序列后自行写泛泛共情。不能仅因话术 action 与序列节点不同就全部不用，普通话术可以和序列独立采用。长话术允许只取语义完整且安全的一两句，丢弃无效追问、旧价格、假名额、未经授权时长或交易承诺；若冲突就是核心结论、删除后不能独立成立，才整段不用。实际采用解题思路、论据或特色表达时，必须输出 `knowledge_use` 并复制真实 sequence_id、step_id、script_id；所有候选都无关或冲突时允许 script_id 留空，但 reason 必须说明未采用原因。
 客户说正在忙、开车、晚点再说或暂时没时间，表示本轮没有继续销售的沟通许可：只简短承接并收住，不提活动、付款、定金、名额、档期、登记、到店时间，也不追问。候选即使属于同一卡点，只要带这些推进内容，本轮也视为冲突，不采用、不改写成另一种强推；只有真正低压承接的候选才可记录采用。
 
 真实素材能直接解决当前疑虑时可直接交付，不先问“要不要看”。采用素材写入真实 `selected_content_ids`；同一用途只选一个，已发送默认不重复。结构消息只是事实或入口，先用短文字答清；门店卡和付款卡不能由内容候选自动创造。
@@ -314,6 +315,16 @@ def _compact_reply_status(facts: dict[str, Any]) -> dict[str, Any]:
     sent = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
     case_delivery = sent.get("case_image_delivery") if isinstance(sent.get("case_image_delivery"), dict) else {}
     store_delivery = sent.get("store_address_delivery") if isinstance(sent.get("store_address_delivery"), dict) else {}
+    store_recommendation = (
+        sent.get("latest_store_recommendation")
+        if isinstance(sent.get("latest_store_recommendation"), dict)
+        else {}
+    )
+    recommendation_evidence = (
+        store_recommendation.get("store_search_evidence")
+        if isinstance(store_recommendation.get("store_search_evidence"), dict)
+        else {}
+    )
     recent_store_ids = [
         str(item or "").strip()
         for item in store_delivery.get("latest_batch_store_ids") or []
@@ -337,6 +348,32 @@ def _compact_reply_status(facts: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             factual_boundaries.append("没有已确认成交门店；不能声称已预约、已登记或已安排到店")
+    recommendation_final = _historical_recommendation_final(recommendation_evidence)
+    if recommendation_final:
+        current_store_status = {
+            **(current_store_status if isinstance(current_store_status, dict) else {"状态": current_store_status}),
+            "最近推荐依据": _drop_empty(
+                {
+                    "查询范围": recommendation_evidence.get("normalized_query")
+                    or recommendation_evidence.get("raw_place"),
+                    "城市": recommendation_evidence.get("city"),
+                    "区县": recommendation_evidence.get("district"),
+                    "查询完成": recommendation_evidence.get("candidate_search_complete"),
+                    "当前范围最终推荐": recommendation_final,
+                    "继续细化会改变结果": _historical_clarification_changes_result(
+                        recommendation_evidence
+                    ),
+                    "排序方式": recommendation_evidence.get("ranking_method"),
+                }
+            ),
+        }
+        factual_boundaries.append(
+            "当前门店推荐查询已完成；客户没有提供不同城市时，不再追问同城更细地址或承诺更近门店"
+        )
+        if not recommendation_evidence.get("distance_ranking_available"):
+            factual_boundaries.append(
+                "当前没有真实距离排序数据；只能把远近表述为客户感受，不能客观断言门店确实远或近"
+            )
     if not _has_active_appointment(appointment):
         factual_boundaries.append("没有权威预约、排客或接待位事实；不能声称已经留位或安排完成")
     if not registration:
@@ -394,6 +431,23 @@ def _compact_reply_status(facts: dict[str, Any]) -> dict[str, Any]:
             "定位卡": _pick(facts.get("location_card") or {}, "title", "address", "coordinates", "location"),
         }
     )
+
+
+def _historical_recommendation_final(evidence: dict[str, Any]) -> bool:
+    if evidence.get("recommendation_final_for_destination") is True:
+        return True
+    return bool(
+        evidence.get("candidate_search_complete") is True
+        and (evidence.get("recommended_store_id") or evidence.get("delivery_store_ids"))
+    )
+
+
+def _historical_clarification_changes_result(evidence: dict[str, Any]) -> bool | None:
+    if "clarification_would_change_result" in evidence:
+        return evidence.get("clarification_would_change_result") is True
+    if _historical_recommendation_final(evidence):
+        return False
+    return None
 
 
 def _has_active_appointment(appointment: dict[str, Any]) -> bool:
