@@ -304,6 +304,18 @@ export type AiPathsRunsQuery = {
   customer_id?: string;
   conversation_id?: string;
   has_error?: string;
+  started_from?: string;
+  started_to?: string;
+  wechat?: string;
+  run_status?: string;
+  intent_code?: string;
+  emotion_code?: string;
+  checkpoint_code?: string;
+  decision_status?: string;
+  sequence_matched?: string;
+  sequence_adopted?: string;
+  script_adopted?: string;
+  node_failed?: string;
 };
 
 export type AiPathsSopEventsQuery = {
@@ -357,15 +369,25 @@ export async function listAiPathsRuns(query: AiPathsRunsQuery) {
   });
 }
 
-export async function getAiPathsRun(requestId: string) {
+export async function getAiPathsRun(requestId: string, includeDebug = true) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const headers = aiPathsAuthHeaders();
+  const query = new URLSearchParams({ include_debug: includeDebug ? "true" : "false" });
 
-  return fetch(`${apiBase.replace(/\/$/, "")}/admin/runs/${encodeURIComponent(requestId)}`, {
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/runs/${encodeURIComponent(requestId)}?${query}`, {
     method: "GET",
     headers,
     cache: "no-store",
   });
+}
+
+export async function getAiPathsRunNode(requestId: string, nodeId: string) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = aiPathsAuthHeaders();
+  return fetch(
+    `${apiBase.replace(/\/$/, "")}/admin/runs/${encodeURIComponent(requestId)}/nodes/${encodeURIComponent(nodeId)}`,
+    { method: "GET", headers, cache: "no-store" },
+  );
 }
 
 export async function listAiPathsSopEvents(query: AiPathsSopEventsQuery) {
