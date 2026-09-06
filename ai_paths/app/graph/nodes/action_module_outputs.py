@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.graph.nodes.appointment_time_utils import summarize_available_slots, target_time_status
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.graph.state import AgentState
 from app.policies.business_rules import load_business_rules
@@ -109,6 +110,62 @@ def _destination_fingerprint(
         str(query or destination.get("destination_query") or "").strip(),
     ]
     return "|".join(item for item in parts if item)
+
+
+def _reuse_non_address_store_detail_delivery(
+    state: AgentState,
+    resolution: dict[str, Any],
+) -> dict[str, Any]:
+    """Do not resend an already delivered card for a non-address detail.
+
+    The destination resolver owns the semantic distinction between parking,
+    hours, arrival guidance, address and navigation.  Code only applies the
+    resulting delivery-idempotency boundary; it does not infer intent from
+    customer keywords.
+    """
+
+    if not _is_v3_state(state) or str(resolution.get("status") or "") not in {
+        "send_single",
+        "send_multiple",
+    }:
+        return resolution
+    destination = (
+        resolution.get("destination_resolution")
+        if isinstance(resolution.get("destination_resolution"), dict)
+        else {}
+    )
+    if str(destination.get("request_kind") or "").strip() != "store_detail":
+        return resolution
+    detail_kind = str(
+        resolution.get("requested_detail_kind") or destination.get("detail_kind") or ""
+    ).strip()
+    if detail_kind in {"address", "navigation"}:
+        return resolution
+    delivery_ids = [
+        str(item or "").strip()
+        for item in resolution.get("delivery_store_ids") or []
+        if str(item or "").strip()
+    ]
+    if not delivery_ids:
+        return resolution
+    sent_ids = {
+        str(item or "").strip()
+        for item in sent_message_summary_for_model(state).get(
+            "store_address_sent_by_store_id", []
+        )
+        if str(item or "").strip()
+    }
+    if not set(delivery_ids).issubset(sent_ids):
+        return resolution
+    return {
+        **resolution,
+        "status": "reuse_confirmed_store",
+        "outcome": "resolved",
+        "delivery_store_ids": [],
+        "already_delivered_store_ids": delivery_ids,
+        "delivery_mode": "none",
+        "reason": f"already_delivered_store_non_address_detail:{detail_kind or 'other'}",
+    }
 
 
 def _coverage_status(
@@ -398,6 +455,10 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
             store_resolution_fact["visible_candidate_ids"] = candidate_store_ids
             store_resolution_fact["delivery_store_ids"] = delivery_store_ids
+            store_resolution_fact = _reuse_non_address_store_detail_delivery(
+                state,
+                store_resolution_fact,
+            )
             structured_facts["store_resolution_fact"] = store_resolution_fact
             missing_slots.extend(lookup_missing[:4])
             continue
@@ -808,6 +869,10 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             store_resolution_fact["candidate_store_ids"] = candidate_store_ids
             store_resolution_fact["visible_candidate_ids"] = candidate_store_ids
             store_resolution_fact["delivery_store_ids"] = delivery_store_ids
+            store_resolution_fact = _reuse_non_address_store_detail_delivery(
+                state,
+                store_resolution_fact,
+            )
             structured_facts["store_resolution_fact"] = store_resolution_fact
             facts.append(
                 "distance_calculate: "

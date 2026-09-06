@@ -173,18 +173,13 @@ class MemoryRepositoryMixin:
                     now,
                 ),
             )
+            event_rows = []
             for event in memory.get("history_events") or []:
                 if not isinstance(event, dict):
                     continue
-                event_id = str(event.get("event_id") or event.get("id") or uuid4())
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO history_events
-                        (id, customer_id, event_type, stage, summary, facts, impact, confidence, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                event_rows.append(
                     (
-                        event_id,
+                        str(event.get("event_id") or event.get("id") or uuid4()),
                         customer_id,
                         str(event.get("event_type") or ""),
                         str(event.get("stage") or ""),
@@ -193,5 +188,14 @@ class MemoryRepositoryMixin:
                         str(event.get("impact") or ""),
                         float(event.get("confidence") or 0),
                         str(event.get("event_time") or event.get("created_at") or now),
-                    ),
+                    )
+                )
+            if event_rows:
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO history_events
+                        (id, customer_id, event_type, stage, summary, facts, impact, confidence, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    event_rows,
                 )
