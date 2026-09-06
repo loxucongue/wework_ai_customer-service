@@ -27,6 +27,7 @@ VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "human_handoff_notice", "payment_collection", "store_address"}
 MAX_VISIBLE_MESSAGES = 4
 MAX_SOP_SEQUENCE_VISIBLE_MESSAGES = 8
+MAX_V3_BROAD_SCOPE_STORE_CARDS = 6
 
 
 def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1332,7 +1333,9 @@ def _validate_store_resolution_contract(messages: list[dict[str, Any]], state: d
         return
     if status == "send_multiple":
         delivery_limit = (
-            3
+            MAX_V3_BROAD_SCOPE_STORE_CARDS
+            if _is_v3_reply_state(state) and resolution.get("allow_broad_scope_delivery")
+            else 3
             if _is_v3_reply_state(state)
             else max(5, int(resolution.get("visible_candidate_count") or len(delivery_ids)))
             if resolution.get("allow_broad_scope_delivery")
@@ -1465,7 +1468,9 @@ def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
             if str(item or "").strip()
         }
         delivery_limit = (
-            3
+            MAX_V3_BROAD_SCOPE_STORE_CARDS
+            if _is_v3_reply_state(state) and resolution.get("allow_broad_scope_delivery")
+            else 3
             if _is_v3_reply_state(state)
             else 5
             if resolution.get("allow_broad_scope_delivery")
@@ -2495,11 +2500,6 @@ def _asserts_time_available(text: str) -> bool:
             "能约",
             "可以预约",
             "能预约",
-            "可以先去",
-            "可以过去",
-            "可以到店",
-            "能过去",
-            "能到店",
             "有空档",
             "有档期",
             "有空位",

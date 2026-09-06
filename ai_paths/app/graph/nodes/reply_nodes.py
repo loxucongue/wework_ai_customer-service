@@ -1557,9 +1557,6 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         "invalid_closing_customer_state",
         "missing_closing_pressure",
         "invalid_closing_pressure",
-        "invalid_closing_sequence",
-        "invalid_closing_node",
-        "closing_advance_requires_valid_node",
     }
     structural_reasons = [
         str(reason)

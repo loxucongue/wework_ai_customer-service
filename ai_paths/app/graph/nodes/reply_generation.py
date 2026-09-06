@@ -113,6 +113,12 @@ def create_synthesize_reply_node(
                         messages = _verified_store_delivery_failure_recovery(state)
                     if messages:
                         if reply_source != "policy_safety_failure_recovery":
+                            recovery_payload = _verified_store_recovery_observability_payload(
+                                model_call,
+                                messages,
+                            )
+                            if recovery_payload:
+                                model_call["validated_json_output"] = recovery_payload
                             warnings.append(
                                 {
                                     "node": "synthesize_reply",
@@ -465,7 +471,39 @@ def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[st
         and isinstance(item.get("content"), dict)
         and str(item["content"].get("store_id") or "").strip()
     ]
-    if message_payloads:
+    resolution = _store_resolution_for_recovery(state)
+    text_store_summaries = [
+        item
+        for item in resolution.get("text_store_summaries") or []
+        if isinstance(item, dict) and str(item.get("store_name") or item.get("name") or "").strip()
+    ]
+    if str(resolution.get("delivery_mode") or "").strip() == "text_store_list" and text_store_summaries:
+        labels = [
+            f"{str(item.get('store_name') or item.get('name') or '').strip()}"
+            f"（{str(item.get('district') or '').strip()}）"
+            if str(item.get("district") or "").strip()
+            else str(item.get("store_name") or item.get("name") or "").strip()
+            for item in text_store_summaries
+        ]
+        midpoint = (len(labels) + 1) // 2
+        messages = [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "这个城市可选门店比较多，我按区域给您列一下：" + "、".join(labels[:midpoint]) + "。",
+            }
+        ]
+        if midpoint < len(labels):
+            messages.append(
+                {
+                    "type": "text",
+                    "order": 2,
+                    "content": "另外还有：" + "、".join(labels[midpoint:]) + "。您想看哪一家，我再把具体位置发您。",
+                }
+            )
+        else:
+            messages[0]["content"] += "您想看哪一家，我再把具体位置发您。"
+    elif message_payloads:
         messages = [
             {"type": "text", "order": 1, "content": "我把门店位置发您，您看下这个位置方便吗。"},
             *[
@@ -503,6 +541,73 @@ def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[st
     except Exception:
         return []
     return messages
+
+
+def _verified_store_recovery_observability_payload(
+    model_call: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Keep an already-produced policy decision while disabling every action.
+
+    Store recovery replaces only a fact-contract-invalid visible reply.  The
+    model's intent/emotion observation remains useful for BI, but none of its
+    action, content, payment, or write decisions may survive the recovery.
+    """
+
+    retry = model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}
+    candidates = (retry.get("raw_json_output"), model_call.get("raw_json_output"))
+    source = next(
+        (
+            item
+            for item in candidates
+            if isinstance(item, dict) and isinstance(item.get("policy_decision"), dict)
+        ),
+        None,
+    )
+    if not isinstance(source, dict):
+        return {}
+    return {
+        "reply_messages": copy.deepcopy(messages),
+        "action": "none",
+        "selected_content_ids": [],
+        "content_decisions": [],
+        "commit_actions": [],
+        "knowledge_use": {},
+        "deposit_evidence": {},
+        "sales_judgment": {
+            "customer_goal": "",
+            "primary_objective": "完成已核验的门店事实回复",
+            "customer_friction_observation": "",
+            "posture": "answer",
+            "reason": "verified_store_delivery_failure_recovery",
+        },
+        "policy_decision": copy.deepcopy(source["policy_decision"]),
+    }
+
+
+def _store_resolution_for_recovery(state: AgentState) -> dict[str, Any]:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = (
+        fact_envelope.get("structured_facts")
+        if isinstance(fact_envelope.get("structured_facts"), dict)
+        else {}
+    )
+    resolution = structured.get("store_resolution_fact")
+    if isinstance(resolution, dict):
+        return resolution
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    normalized = (
+        joined.get("normalized_tool_facts")
+        if isinstance(joined.get("normalized_tool_facts"), dict)
+        else {}
+    )
+    structured = (
+        normalized.get("structured_facts")
+        if isinstance(normalized.get("structured_facts"), dict)
+        else {}
+    )
+    resolution = structured.get("store_resolution_fact")
+    return resolution if isinstance(resolution, dict) else {}
 
 
 def _low_information_input_recovery(state: AgentState) -> list[dict[str, Any]]:

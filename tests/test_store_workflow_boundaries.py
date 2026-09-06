@@ -8,7 +8,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.graph.nodes import action_nodes
-from app.graph.nodes.reply_generation import _low_information_input_recovery, _verified_store_delivery_failure_recovery
+from app.graph.nodes.reply_generation import (
+    _low_information_input_recovery,
+    _verified_store_delivery_failure_recovery,
+    _verified_store_recovery_observability_payload,
+)
 from app.graph.nodes.reply_validation import (
     _validate_parallel_appointment_confirmation_facts,
     _validate_unconfirmed_store_availability_claim,
@@ -261,3 +265,61 @@ def test_verified_store_recovery_delivers_every_canonical_store_card() -> None:
     assert [item["content"]["store_id"] for item in messages if item["type"] == "store_address"] == [
         "1", "2", "3"
     ]
+
+
+def test_verified_store_recovery_renders_large_verified_store_list_as_text() -> None:
+    summaries = [
+        {"store_id": str(index), "store_name": f"成都门店{index}", "district": f"测试区{index}"}
+        for index in range(1, 9)
+    ]
+    resolution = {
+        "status": "send_multiple",
+        "delivery_mode": "text_store_list",
+        "delivery_store_ids": [],
+        "text_store_summaries": summaries,
+    }
+    state = {
+        "normalized_content": "成都有哪些门店",
+        "fact_envelope": {"structured_facts": {"store_resolution_fact": resolution}},
+        "evidence_join": {
+            "shared_context": {"current_message": {"content": "成都有哪些门店"}},
+            "normalized_tool_facts": {"structured_facts": {"store_resolution_fact": resolution}},
+        },
+    }
+
+    messages = _verified_store_delivery_failure_recovery(state)
+
+    assert len(messages) == 2
+    assert {item["type"] for item in messages} == {"text"}
+    visible_text = "".join(str(item["content"]) for item in messages)
+    assert all(f"成都门店{index}" in visible_text for index in range(1, 9))
+    assert all(f"测试区{index}" in visible_text for index in range(1, 9))
+
+
+def test_verified_store_recovery_keeps_policy_observation_but_removes_actions() -> None:
+    policy_decision = {
+        "primary_task": {"type": "answer_current_question"},
+        "realtime_intent": {"type": "store_location"},
+        "emotion_decision": {"label": "neutral"},
+        "closing_decision": {"action": "none", "customer_state": "evaluating"},
+    }
+    messages = [{"type": "text", "order": 1, "content": "您补一下所在城市，我帮您查准。"}]
+
+    payload = _verified_store_recovery_observability_payload(
+        {
+            "raw_json_output": {
+                "reply_messages": [{"type": "payment_collection", "content": {"amount": 10}}],
+                "action": "payment",
+                "commit_actions": [{"type": "registration"}],
+                "selected_content_ids": ["unsafe-content"],
+                "policy_decision": policy_decision,
+            }
+        },
+        messages,
+    )
+
+    assert payload["reply_messages"] == messages
+    assert payload["policy_decision"] == policy_decision
+    assert payload["action"] == "none"
+    assert payload["commit_actions"] == []
+    assert payload["selected_content_ids"] == []

@@ -33,9 +33,15 @@
 - 独占：`ai_paths/scripts/evaluate_v3_full_chain_deepseek.py`
 - 独占：`ai_paths/scripts/v3_lifecycle_eval/`
 - 独占：`ai_paths/app/services/store_destination_resolver.py`
+- 独占：`ai_paths/app/graph/nodes/reply_validation.py`
+- 独占：`ai_paths/app/graph/nodes/reply_generation.py`
+- 独占：`ai_paths/app/graph/nodes/reply_nodes.py`
 - 独占：`tests/test_v3_deepseek_eval_protocol.py`
 - 独占：`tests/test_v3_lifecycle_eval.py`
 - 独占：`tests/test_store_matching_tool_contract.py`
+- 独占：`tests/test_store_matching_semantic_matrix.py`
+- 独占：`tests/test_store_workflow_boundaries.py`
+- 独占：`tests/test_v3_policy_decision_contract.py`
 - 独占：`docs/standards/V3_REPLY_EVALUATION.md`
 - 独占：`docs/current/DEVELOPMENT_STATUS.md`
 - 独占：本任务文档、活跃任务索引和历史摘要

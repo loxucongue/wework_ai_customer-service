@@ -25,7 +25,10 @@ from app.graph.nodes.reply_generation import (  # noqa: E402
     _policy_safety_failure_recovery,
     _run_reply_model_pipeline,
 )
-from app.graph.nodes.reply_validation import _requested_store_scope_regions  # noqa: E402
+from app.graph.nodes.reply_validation import (  # noqa: E402
+    _requested_store_scope_regions,
+    _validate_appointment_time_facts,
+)
 from app.graph.nodes.reply_context import _ai_sales_policy_for_reply  # noqa: E402
 from app.prompts.reply_synthesizer import _render_missing_authority_guard  # noqa: E402
 from app.chat_runtime import _record_stop_contact_fact  # noqa: E402
@@ -849,6 +852,49 @@ def test_invalid_closing_sequence_or_node_cannot_advance() -> None:
     assert node_result["closing_decision"]["action"] == "pause"
     assert node_result["closing_decision"]["node_key"] == ""
     assert "closing_advance_requires_valid_node" in node_result["decision_reasons"]
+
+
+def test_invalid_closing_catalog_reference_degrades_without_discarding_safe_reply() -> None:
+    decision = _valid_decision()
+    decision["closing_decision"].update(
+        {
+            "action": "advance",
+            "sequence_key": "invented-sequence",
+            "node_key": "invented-node",
+        }
+    )
+    payload = {
+        "reply_messages": [{"type": "text", "order": 1, "content": "门店位置我发您，您看下是否方便。"}],
+        "action": "none",
+        "sales_judgment": {"posture": "answer"},
+        "commit_actions": [],
+        "policy_decision": decision,
+    }
+
+    _validate_policy_reply_consistency(payload, _state())
+    normalized = _normalized_policy_decision(decision, state=_state())
+
+    assert normalized["decision_status"] == "degraded"
+    assert normalized["closing_decision"]["action"] == "pause"
+    assert normalized["closing_decision"]["sequence_key"] == "none"
+
+
+def test_store_visit_suggestion_is_not_mistaken_for_live_appointment_availability() -> None:
+    _validate_appointment_time_facts(
+        [
+            {
+                "type": "text",
+                "content": "您可以先去门店做皮肤检测，了解清楚、觉得合适再做。",
+            }
+        ],
+        {},
+    )
+
+    with pytest.raises(ValueError, match="available_time_fact_required"):
+        _validate_appointment_time_facts(
+            [{"type": "text", "content": "明天下午可以到店，有空位。"}],
+            {},
+        )
 
 
 def test_shadow_closing_is_cancelled_by_authoritative_terminal_facts() -> None:

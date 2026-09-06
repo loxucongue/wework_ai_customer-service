@@ -786,3 +786,36 @@ def test_four_store_city_delivery_materializes_all_four_cards() -> None:
         for item in messages
         if item["type"] == "store_address"
     ] == ["160", "179", "546", "552"]
+
+    _validate_store_resolution_contract(
+        messages,
+        {
+            **state,
+            "request_context": {"interface_version": "v3"},
+            "evidence_join": {"normalized_tool_facts": {"structured_facts": {}}},
+        },
+    )
+
+
+def test_v3_broad_scope_card_delivery_is_bounded_at_six() -> None:
+    resolution = {
+        "status": "send_multiple",
+        "delivery_store_ids": [str(index) for index in range(1, 8)],
+        "visible_candidate_ids": [str(index) for index in range(1, 8)],
+        "allow_broad_scope_delivery": True,
+        "delivery_mode": "send_all_candidates",
+    }
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "fact_envelope": {"structured_facts": {"store_resolution_fact": resolution}},
+    }
+    messages = [
+        {"type": "text", "content": "这些门店都可以选择。"},
+        *[
+            {"type": "store_address", "content": {"store_id": str(index)}}
+            for index in range(1, 8)
+        ],
+    ]
+
+    with pytest.raises(ValueError, match="store_resolution_send_multiple_contract_violation"):
+        _validate_store_resolution_contract(messages, state)
