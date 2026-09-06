@@ -6,6 +6,7 @@ from app.graph.nodes.reply_validation import (
     _validate_appointment_time_facts,
     _validate_parallel_claimed_deposit_evidence,
     _validate_parallel_appointment_confirmation_facts,
+    _validate_parallel_registration_confirmation_facts,
     _validate_parallel_media_facts,
     _validate_parallel_payment_boundaries,
     _validate_parallel_selected_content_delivery,
@@ -41,6 +42,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
             check_visible_text=False,
         ),
         lambda: _validate_parallel_appointment_confirmation_facts(messages, state),
+        lambda: _validate_parallel_registration_confirmation_facts(messages, state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
     for check in checks:

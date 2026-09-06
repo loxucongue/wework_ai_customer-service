@@ -3,11 +3,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.chat_runtime import _store_search_evidence_from_state  # noqa: E402
 from app.graph.nodes.current_turn_context import build_current_turn_context  # noqa: E402
+from app.graph.nodes.reply_admission import validate_model_led_reply_admission  # noqa: E402
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model  # noqa: E402
 from app.graph.nodes.turn_evidence_view import turn_evidence_for_model  # noqa: E402
 from app.prompts.reply_synthesizer import (  # noqa: E402
@@ -217,3 +220,19 @@ def test_explicit_new_destination_is_not_suppressed() -> None:
     assert tool_plan["decision"] == "use_tools"
     assert tool_plan["tool_calls"][0]["name"] == "resolve_customer_store"
     assert tool_plan["tool_calls"][0]["arguments"]["destination_hint"] == "武汉市"
+
+
+def test_model_led_admission_rejects_unexecuted_slot_reservation_claim() -> None:
+    state = {
+        "evidence_join": {
+            "schema_version": "v3_evidence_join_v1",
+            "normalized_tool_facts": {"structured_facts": {}},
+            "content_candidates": [],
+        }
+    }
+
+    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "您方便的时候再来，我帮您把活动名额留着。"}],
+            state,
+        )

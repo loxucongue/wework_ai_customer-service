@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from ai_paths.app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT, _render_authoritative_facts
+from ai_paths.app.prompts.reply_synthesizer import (
+    PARALLEL_REPLY_SYSTEM_PROMPT,
+    _render_authoritative_facts,
+    _render_reference_contract,
+)
 from ai_paths.app.prompts.v3_semantic_router import V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
 
 
@@ -73,6 +77,12 @@ def test_reply_requires_safe_directly_relevant_script_for_active_blocker() -> No
     assert "必须选一个最相关序列和最多一个主话术" in prompt
     assert "长话术允许只取语义完整且安全的一两句" in prompt
     assert "所有候选都无关或冲突时允许 script_id 留空" in prompt
+    assert "即使只改写文字、不发送配套媒体" in prompt
+    contract = _render_reference_contract(
+        {"follow_script_reference_options": [{"content_id": "follow_script:225:p1"}]},
+        json_dumps=lambda value: str(value),
+    )
+    assert "也必须把对应数字话术ID填入 knowledge_use.script_id" in contract
 
 
 def test_store_distance_objection_keeps_terminal_recommendation_boundary() -> None:

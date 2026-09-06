@@ -52,7 +52,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，也是
 `closing_catalog_evidence` 是业务配置候选，不是命令。enter/advance/fallback 只能逐字复制本轮 selected_rules、candidate_sequences 和 nodes 中带 `local:`/`external:` 前缀的 rule、sequence、node key，并使用 trigger=business_rule；前置项必须有当前聊天或权威事实支持。客户状态禁忌命中时 pause；“不得承诺/不得虚构”等行为禁令只约束表达，不伪装成客户状态。组合规则不完整、目录不可用、频次/间隔受限时不得用演示策略顶替。
 
 # 四、知识、素材与门店
-跟进序列解释节奏，话术提供优秀表达。没有话术也要正常回答；但当前卡点 active/repeated 且候选中存在能直接解题、无事实冲突的独立表达时，必须选一个最相关序列和最多一个主话术，不能只采用序列后自行写泛泛共情。不能仅因话术 action 与序列节点不同就全部不用，普通话术可以和序列独立采用。长话术允许只取语义完整且安全的一两句，丢弃无效追问、旧价格、假名额、未经授权时长或交易承诺；若冲突就是核心结论、删除后不能独立成立，才整段不用。实际采用解题思路、论据或特色表达时，必须输出 `knowledge_use` 并复制真实 sequence_id、step_id、script_id；所有候选都无关或冲突时允许 script_id 留空，但 reason 必须说明未采用原因。
+跟进序列解释节奏，话术提供优秀表达。没有话术也要正常回答；但当前卡点 active/repeated 且候选中存在能直接解题、无事实冲突的独立表达时，必须选一个最相关序列和最多一个主话术，不能只采用序列后自行写泛泛共情。不能仅因话术 action 与序列节点不同就全部不用，普通话术可以和序列独立采用。长话术允许只取语义完整且安全的一两句，丢弃无效追问、旧价格、假名额、未经授权时长或交易承诺；若冲突就是核心结论、删除后不能独立成立，才整段不用。候选里的“帮您留名额/安排接送”等无权执行动作必须删除，不能包装成低压表达。实际采用解题思路、论据、社会证明或特色表达，即使只改写文字、不发送配套媒体，也必须输出 `knowledge_use` 并复制真实 sequence_id、step_id、script_id；所有候选都无关或冲突时允许 script_id 留空，但 reason 必须说明未采用原因。
 客户说正在忙、开车、晚点再说或暂时没时间，表示本轮没有继续销售的沟通许可：只简短承接并收住，不提活动、付款、定金、名额、档期、登记、到店时间，也不追问。候选即使属于同一卡点，只要带这些推进内容，本轮也视为冲突，不采用、不改写成另一种强推；只有真正低压承接的候选才可记录采用。
 
 真实素材能直接解决当前疑虑时可直接交付，不先问“要不要看”。采用素材写入真实 `selected_content_ids`；同一用途只选一个，已发送默认不重复。结构消息只是事实或入口，先用短文字答清；门店卡和付款卡不能由内容候选自动创造。
@@ -939,6 +939,11 @@ def _render_knowledge_evidence(value: Any) -> str:
             + (f"｜匹配依据={'、'.join(retrieval_sources)}" if retrieval_sources else "")
             + (f"｜来源={raw.get('source_ref')}" if raw.get("source_ref") else "")
         )
+        if script_id:
+            lines.append(
+                f"  来源记录：只使用或改写本话术的文字时，也必须填写 knowledge_use.script_id={script_id}；"
+                "selected_content_ids 仅用于实际发送完整内容组中的结构素材。"
+            )
         paragraphs = [item for item in raw.get("paragraphs") or [] if isinstance(item, dict)]
         if paragraphs:
             for paragraph in paragraphs:
@@ -1507,6 +1512,10 @@ def _render_reference_contract(
             else:
                 rendered_scripts.append(str(raw))
         lines.append("合法话术：" + "、".join(item for item in rendered_scripts if item))
+        lines.append(
+            "仅采用候选文字、社会证明或价值类比时，也必须把对应数字话术ID填入 knowledge_use.script_id；"
+            "无需选择 selected_content_ids，也不会自动发送配套图片或视频。"
+        )
     commit_refs = payload.get("valid_commit_evidence") or []
     if commit_refs:
         lines.append(

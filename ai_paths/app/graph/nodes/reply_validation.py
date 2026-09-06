@@ -2647,7 +2647,8 @@ def _asserts_registration_confirmed(text: str) -> bool:
     if any(marker in compact for marker in conditional_markers):
         return False
     if re.search(
-        r"(?:先)?(?:给|帮)[你您]?(?:把)?(?:活动|活动价|名额|资格)(?:先)?(?:保留|留住|留着|留好)",
+        r"(?:先)?(?:我)?(?:给|帮)[你您]?(?:把)?"
+        r"(?:活动价|活动名额|活动资格|活动|名额|资格)(?:先)?(?:保留|留住|留着|留好)",
         compact,
     ):
         return True
