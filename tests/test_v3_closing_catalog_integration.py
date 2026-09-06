@@ -28,6 +28,7 @@ from app.services.v3_semantic_router_service import (  # noqa: E402
     _apply_deterministic_sequence_top_k,
     _closing_catalog_evidence,
     _normalize_semantic_route,
+    _rank_script_groups,
 )
 
 
@@ -871,7 +872,71 @@ def test_deterministic_top_k_is_stable_and_bounded() -> None:
     )
 
 
-def test_ordinary_script_relaxation_stays_on_same_type_and_action() -> None:
+def test_sequence_top_k_prefers_steps_with_published_script_coverage() -> None:
+    route = {
+        "current_intent": {"summary": "客户担心第一次做没有效果"},
+        "current_friction": {"status": "explicit", "summary": "效果顾虑"},
+        "checkpoint": {
+            "primary_code": "effect",
+            "primary_type_id": 11,
+            "primary_tag_id": 376,
+        },
+    }
+    sequences = [
+        {
+            "id": "sequence-a",
+            "checkpoint_code": "effect",
+            "sequence_name": "首次效果解释",
+            "description": "回应客户效果顾虑",
+            "steps": [
+                {
+                    "id": "step-a",
+                    "action_code": "act013",
+                    "action_name": "共情引导",
+                    "trigger_base": "current_message",
+                    "relative_value": 0,
+                }
+            ],
+        },
+        {
+            "id": "sequence-b",
+            "checkpoint_code": "effect",
+            "sequence_name": "首次效果解释",
+            "description": "回应客户效果顾虑",
+            "steps": [
+                {
+                    "id": "step-b",
+                    "action_code": "act010",
+                    "action_name": "项目说明",
+                    "trigger_base": "current_message",
+                    "relative_value": 0,
+                }
+            ],
+        },
+    ]
+    taxonomy = [
+        {
+            "id": 11,
+            "action_counts": {"act004": 9, "act010": 5, "act015": 10},
+            "tags": [{"id": 376, "action_counts": {"act010": 5}}],
+        }
+    ]
+
+    result = _apply_deterministic_sequence_top_k(
+        route,
+        shared_context={"current_message": {"content": "一次能好吗"}},
+        sequences=sequences,
+        checkpoint_taxonomy=taxonomy,
+    )
+
+    assert result["sequence_match"]["sequence_ids"][0] == "sequence-b"
+    assert result["sequence_match"]["step_script_coverage"] == {
+        "step-b": True,
+        "step-a": False,
+    }
+
+
+def test_ordinary_script_pool_keeps_type_hard_and_action_soft() -> None:
     class KnowledgeClient:
         available = True
 
@@ -880,21 +945,46 @@ def test_ordinary_script_relaxation_stays_on_same_type_and_action() -> None:
 
         async def query_all_scripts(self, **kwargs: Any) -> dict[str, Any]:
             self.calls.append(kwargs)
-            if kwargs.get("checkpoint_tag_id") is not None:
-                return {"status": "ok", "total": 0, "items": []}
             return {
                 "status": "ok",
-                "total": 1,
+                "total": 4,
                 "items": [
                     {
-                        "script_code": "script-1",
-                        "script_name": "价格低压承接",
-                        "checkpoint_type": {"id": 8, "name": "价格"},
-                        "checkpoint_tag": {"id": 0, "name": ""},
-                        "action_code": "empathy",
-                        "action_name": "低压承接",
+                        "script_code": "script-proof",
+                        "script_name": "效果信任背书",
+                        "checkpoint_type": {"id": 8, "name": "效果"},
+                        "checkpoint_tag": {"id": 2, "name": "担心无效果"},
+                        "action_code": "act004",
+                        "action_name": "信任背书",
                         "paragraphs": [],
-                    }
+                    },
+                    {
+                        "script_code": "script-explain",
+                        "script_name": "项目效果说明",
+                        "checkpoint_type": {"id": 8, "name": "效果"},
+                        "checkpoint_tag": {"id": 3, "name": "单次效果"},
+                        "action_code": "act010",
+                        "action_name": "项目说明",
+                        "paragraphs": [],
+                    },
+                    {
+                        "script_code": "script-invite",
+                        "script_name": "低门槛检测",
+                        "checkpoint_type": {"id": 8, "name": "效果"},
+                        "checkpoint_tag": {"id": 4, "name": "首次体验"},
+                        "action_code": "act015",
+                        "action_name": "低门槛邀请",
+                        "paragraphs": [],
+                    },
+                    {
+                        "script_code": "wrong-type",
+                        "script_name": "距离说明",
+                        "checkpoint_type": {"id": 9, "name": "距离"},
+                        "checkpoint_tag": {"id": 2, "name": "担心太远"},
+                        "action_code": "act007",
+                        "action_name": "到店指引",
+                        "paragraphs": [],
+                    },
                 ],
             }
 
@@ -910,8 +1000,10 @@ def test_ordinary_script_relaxation_stays_on_same_type_and_action() -> None:
                     {
                         "checkpoint_type_id": 8,
                         "checkpoint_tag_id": 2,
-                        "checkpoint_code": "price",
-                        "action_code": "empathy",
+                        "checkpoint_code": "effect",
+                        "action_code": "act013",
+                        "sequence_id": "sequence-53",
+                        "step_id": "step-299",
                         "query_source": "deterministic_top_k_step",
                     }
                 ]
@@ -919,12 +1011,112 @@ def test_ordinary_script_relaxation_stays_on_same_type_and_action() -> None:
         )
     )
 
-    assert len(knowledge.calls) == 2
-    assert knowledge.calls[1]["checkpoint_type_id"] == 8
-    assert knowledge.calls[1]["checkpoint_tag_id"] is None
-    assert knowledge.calls[1]["action_code"] == "empathy"
-    assert result["query_results"][0]["fallback_used"] is True
-    assert result["items"][0]["retrieval_match_scope"] == "checkpoint_type_action"
+    assert len(knowledge.calls) == 1
+    assert knowledge.calls[0] == {
+        "checkpoint_type_id": 8,
+        "checkpoint_tag_id": None,
+        "checkpoint_code": "",
+        "action_code": "",
+    }
+    assert result["query_results"][0]["adaptive_pool_used"] is True
+    assert result["query_results"][0]["rejected_type_mismatch_count"] == 1
+    assert {item["script_code"] for item in result["items"]} == {
+        "script-proof",
+        "script-explain",
+        "script-invite",
+    }
+    proof = next(item for item in result["items"] if item["script_code"] == "script-proof")
+    assert proof["retrieval_match_scope"] == "checkpoint_type_tag"
+    assert proof["sequence_links"] == []
+    assert proof["sequence_script_alignment"] == "independent"
+
+
+def test_checkpoint_type_pool_is_used_even_without_sequence_action_query() -> None:
+    class KnowledgeClient:
+        available = True
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def query_all_scripts(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls.append(kwargs)
+            return {
+                "status": "ok",
+                "total": 1,
+                "items": [
+                    {
+                        "script_code": "effect-proof",
+                        "script_name": "首次效果证明",
+                        "checkpoint_type": {"id": 11, "name": "效果"},
+                        "checkpoint_tag": {"id": 376, "name": "担心无效果"},
+                        "action_code": "act004",
+                        "action_name": "信任背书",
+                        "body_text": "不少客户第一次体验后的反馈都挺好。",
+                        "paragraphs": [],
+                    }
+                ],
+            }
+
+    knowledge = KnowledgeClient()
+    service = V3SemanticRouterService(
+        semantic_client=None,  # type: ignore[arg-type]
+        knowledge_client=knowledge,  # type: ignore[arg-type]
+    )
+    result = asyncio.run(
+        service._script_candidates(
+            {
+                "current_friction": {"status": "explicit"},
+                "checkpoint": {
+                    "primary_type_id": 11,
+                    "primary_tag_id": 0,
+                    "primary_code": "effect",
+                },
+                "script_queries": [],
+            }
+        )
+    )
+
+    assert len(knowledge.calls) == 1
+    assert result["status"] == "ok"
+    assert result["items"][0]["retrieval_match_scope"] == "checkpoint_type_semantic"
+
+
+def test_script_pool_ranking_is_diverse_and_bounded() -> None:
+    candidates = []
+    for index, (action_code, tag_id) in enumerate(
+        [
+            ("act004", 1),
+            ("act004", 2),
+            ("act004", 3),
+            ("act010", 4),
+            ("act010", 5),
+            ("act015", 6),
+        ],
+        start=1,
+    ):
+        candidates.append(
+            {
+                "script_code": f"script-{index}",
+                "script_name": "单次效果说明",
+                "body_text": f"一次活动效果与皮肤情况有关，可以先做检测了解。参考{index}",
+                "checkpoint_type": {"id": 11, "name": "效果"},
+                "checkpoint_tag": {"id": tag_id, "name": f"效果场景{tag_id}"},
+                "action_code": action_code,
+                "action_name": action_code,
+                "retrieval_match_scope": "checkpoint_type_semantic",
+                "paragraphs": [],
+            }
+        )
+
+    selected = _rank_script_groups(
+        candidates,
+        query_text="一次能好吗，想先了解效果",
+        max_groups=6,
+    )
+
+    assert len(selected) == 5
+    assert sum(item["action_code"] == "act004" for item in selected) == 2
+    assert {item["action_code"] for item in selected} == {"act004", "act010", "act015"}
 
 
 def test_closing_script_type_never_relaxes() -> None:

@@ -212,6 +212,21 @@ def test_usage_mapping_is_structured_idempotent_and_excludes_basis(tmp_path: Pat
     assert summary["new_blocker_not_paused_count"] == 1
 
 
+def test_summary_counts_adaptive_same_type_retrieval(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    state = _state("request-adaptive-retrieval")
+    state["sales_recall"] = {"retrieval_mode": "same_type_semantic"}
+
+    repository.record_v3_strategy_usage(
+        conversation_id="conversation-adaptive",
+        final_state=state,
+    )
+
+    summary = repository.v3_strategy_analytics_summary()
+    assert summary["usage_count"] == 1
+    assert summary["retrieval_relaxed_count"] == 1
+
+
 def test_usage_replay_preserves_original_event_and_delivery_fields(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     state = _state("request-replayed", closing_action="enter", closing_sequence="gentle_invitation")

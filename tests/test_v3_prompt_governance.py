@@ -50,6 +50,20 @@ def test_realtime_prompt_budgets_prevent_rule_bloat_regression() -> None:
     assert len(PARALLEL_REPLY_SYSTEM_PROMPT) <= 9_000
 
 
+def test_reply_uses_positive_evidence_before_effect_boundaries() -> None:
+    assert "效果或信任顾虑要先建立信心，再管理个体差异" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不要先用“很难、不能、不一定”" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得把“很多、不少、满意度较高”自行升级" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能仅因话术 action 与序列节点不同就全部不用" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '`knowledge_use` 的唯一格式' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '`knowledge_use` 是每轮固定输出的来源记录' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '"knowledge_use":{"sequence_id":"","step_id":"","script_id":"","reason":""}' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "也可以只选话术" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "本轮没有继续销售的沟通许可" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "候选即使属于同一卡点" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不提活动、付款、定金、名额、档期、登记、到店时间" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
 def test_router_keeps_price_intents_semantically_separate() -> None:
     prompt = V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
 

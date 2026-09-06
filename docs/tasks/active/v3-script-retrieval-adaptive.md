@@ -1,0 +1,23 @@
+# V3 卡点话术自适应召回
+
+- Type: reply quality and retrieval contract change
+- Branch: `codex/v3-script-retrieval-adaptive`
+- Base SHA: `bfe7ab5e896867fd6ab3cb984fbe5effe1861a44`
+- Production baseline: `main@bfe7ab5e896867fd6ab3cb984fbe5effe1861a44`；本任务不直接从功能分支部署
+- Goal: 在第三方目录字段、标签和内容不可修改的约束下，以卡点类型为硬边界，将标签和序列动作由硬过滤改为排序证据；稳定返回最多 3 条序列、4 个节点和 6 个相关话术段落，避免目录动作错位导致候选归零。
+- Non-goals: 修改第三方接口或目录；跨卡点类型召回；增加模型调用；放宽 B 单节点 `followCheckpointTypeId`；改变 Reply 唯一销售决策权；启用延时自动发送。
+- Owned files: `ai_paths/app/services/v3_semantic_router_service.py`、`ai_paths/app/prompts/reply_synthesizer.py`、`ai_paths/app/services/storage/v3_strategy_analytics_repository.py`、对应 V3 召回/BI 测试、`docs/contracts/sales-strategy.md`、`docs/interfaces/external.md`。
+- Contracts: 普通话术可以在同一卡点类型内做语义排序；B 单话术继续严格匹配节点类型外键；话术不是价格、门店、支付、效果量化或交易事实的权威来源。
+- Risk: 同一卡点大类内候选过宽、通用动作挤占、话术硬事实污染、BI 误报为精确序列关联。
+- Completed:
+  - 普通话术查询改为卡点类型内一次取池，tag/action 作为软排序和审计证据；候选执行语义相关度、动作/标签多样性、全文去重、6 段和 6000 字符预算。
+  - 序列与话术双轨提供给 Reply；只有动作一致才建立 `sequence_links`，同类型语义候选不伪装成序列直属话术。
+  - Reply 固定输出 `knowledge_use` 来源记录，真实采用才填 ID；忙碌/开车/延后沟通时不被同类型强推进话术带偏。
+  - BI 保留历史 `same_type_action_relaxed`，并识别新的 `same_type_action|same_type_tag|same_type_semantic`。
+- Validation:
+  - 全量确定性测试 `204 passed`，语法、Ruff 和 diff whitespace 检查通过；Reply Prompt 7231 字符，低于 9000 预算。
+  - 线上只读目录静态审计：14/14 卡点类型均有真实序列候选和 1–6 个同类型话术段落，跨类型污染 0；第三方原始话术量覆盖 1–56 条/类型。
+  - DeepSeek 真实身份隔离复测 20/20 有效回复，AI 初评与真人表达 100%，有候选的 6 条中真实采用序列 3、话术 2；其余按客户许可不采用，非召回为空。P50 7507ms、P95 15346ms；仅 `deepseek-chat` 与 `deepseek-v4-flash`，生产写入和发送尝试 0。
+  - 指定效果样本成功采用真实效果序列、步骤及话术；忙碌样本保留候选但输出低压收口，不采用强推话术。
+- Artifacts: `artifacts/v3_script_retrieval_adaptive/`（ignored，不进入 Git）。
+- Rollback: 独立撤销本任务召回提交；不需要数据库回滚。

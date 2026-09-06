@@ -449,7 +449,10 @@ class V3StrategyAnalyticsRepositoryMixin:
                              THEN 1 ELSE 0 END) AS new_blocker_not_paused_count,
                     SUM(CASE WHEN u.selector_status IN ('empty','error') THEN 1 ELSE 0 END) AS selector_empty_or_error_count,
                     SUM(CASE WHEN u.fallback_used=1 THEN 1 ELSE 0 END) AS taxonomy_fallback_count,
-                    SUM(CASE WHEN u.retrieval_mode='same_type_action_relaxed' THEN 1 ELSE 0 END) AS retrieval_relaxed_count,
+                    SUM(CASE WHEN u.retrieval_mode IN (
+                        'same_type_action_relaxed', 'same_type_action',
+                        'same_type_tag', 'same_type_semantic'
+                    ) THEN 1 ELSE 0 END) AS retrieval_relaxed_count,
                     SUM(CASE WHEN u.closing_rule_match_status='matched' THEN 1 ELSE 0 END) AS closing_rule_matched_count,
                     SUM(CASE WHEN u.closing_constraint_status='blocked' THEN 1 ELSE 0 END) AS closing_constraint_blocked_count,
                     SUM(CASE WHEN u.closing_catalog_status IN ('error','disabled','unavailable') THEN 1 ELSE 0 END) AS closing_catalog_unavailable_count
@@ -574,7 +577,10 @@ class V3StrategyAnalyticsRepositoryMixin:
                              THEN 1 ELSE 0 END) AS new_blocker_not_paused_count,
                     SUM(CASE WHEN u.selector_status IN ('empty','error') THEN 1 ELSE 0 END) AS selector_empty_or_error_count,
                     SUM(CASE WHEN u.fallback_used=1 THEN 1 ELSE 0 END) AS taxonomy_fallback_count,
-                    SUM(CASE WHEN u.retrieval_mode='same_type_action_relaxed' THEN 1 ELSE 0 END) AS retrieval_relaxed_count,
+                    SUM(CASE WHEN u.retrieval_mode IN (
+                        'same_type_action_relaxed', 'same_type_action',
+                        'same_type_tag', 'same_type_semantic'
+                    ) THEN 1 ELSE 0 END) AS retrieval_relaxed_count,
                     SUM(CASE WHEN u.closing_rule_match_status='matched' THEN 1 ELSE 0 END) AS closing_rule_matched_count,
                     SUM(CASE WHEN u.closing_constraint_status='blocked' THEN 1 ELSE 0 END) AS closing_constraint_blocked_count,
                     SUM(CASE WHEN u.closing_catalog_status IN ('error','disabled','unavailable') THEN 1 ELSE 0 END) AS closing_catalog_unavailable_count

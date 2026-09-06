@@ -50,7 +50,7 @@
   - `combined` 规则在上游未提供组合分组及 AND/OR 关系前只记录、不可执行。
   - 普通跟进序列、taxonomy/话术、逼单规则和逼单策略是 V3 Reply 的唯一在线业务知识来源；本地同步目录不参与线上降级。
   - 候选节点话术按真实 `followCheckpointTypeId` 加入现有话术检索批次；返回话术类型不一致时丢弃。纯逼单话术候选直接交给最终 Reply 选择，不增加独立 selector 模型调用。
-  - 普通话术精确查询为空时只允许一次同 `checkpoint_type_id + action_code` 放宽，移除 tag 后仍须核对返回类型和动作；逼单话术不允许跨类型放宽。
+  - 普通卡点话术按当前 `checkpoint_type_id` 一次查询同类已发布内容；tag 和 action 只参与本地相关度排序、覆盖加权及审计，不再作为硬过滤条件。候选经过动作/标签多样性限制、重复去除和字符预算后最多向 Reply 提供 6 个段落，不跨卡点类型。逼单话术仍严格匹配节点 `followCheckpointTypeId`，不允许跨类型放宽。
   - 进程内使用 single-flight、短失败缓存与 last-known-good；陈旧快照标记 `freshness_status=stale`。该能力不能替代跨重启的持久快照。
   - 当前部署是一实例一个知识租户、一个 `FOLLOW_KNOWLEDGE_TOKEN`；所有 `slXXXX` 是该租户下不同企微号，可以共享只含业务知识的目录缓存。客户聊天、订单、记忆、限频和策略状态不得进入共享缓存，仍按 `corp_id + wechat + external_userid/customer_id` 隔离。
   - `corp_id` 不是 Follow Knowledge 租户 ID，不用于选择 token。未来出现第二个业务知识租户时采用独立服务实例和 token，再按实际部署需求评审路由方案。

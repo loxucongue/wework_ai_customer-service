@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import re
 import time
 from typing import Any
@@ -23,6 +22,7 @@ MAX_SEQUENCE_CANDIDATES = 3
 MAX_SEQUENCE_STEPS_TOTAL = 4
 MAX_STEPS_PER_SEQUENCE = 4
 MAX_PARAGRAPH_GROUPS = 6
+MAX_SCRIPT_REFERENCE_CHARS = 6000
 
 
 class V3SemanticRouterService:
@@ -178,6 +178,7 @@ class V3SemanticRouterService:
             semantic_route,
             shared_context=shared_context,
             sequences=sequences,
+            checkpoint_taxonomy=taxonomy,
         )
         semantic_route["closing_catalog_evidence"] = _closing_catalog_evidence(
             closing_catalog,
@@ -261,6 +262,7 @@ class V3SemanticRouterService:
             checkpoint_route,
             shared_context=shared_context,
             sequences=sequences,
+            checkpoint_taxonomy=taxonomy,
         )
         semantic_route["phase"] = "post_store_final"
         semantic_route["provisional_checkpoint"] = copy.deepcopy(
@@ -436,18 +438,15 @@ class V3SemanticRouterService:
             query_text=_semantic_retrieval_text(shared_context, semantic_route),
             max_groups=MAX_PARAGRAPH_GROUPS,
         )
-        retrieval_mode = (
-            "same_type_action_relaxed"
-            if any(
-                bool(item.get("fallback_used"))
-                for item in script_result.get("query_results") or []
-                if isinstance(item, dict)
-            )
-            else "deterministic_top_k"
+        retrieval_mode = _retrieval_mode_for_candidates(script_candidates)
+        adaptive_pool_used = any(
+            bool(item.get("adaptive_pool_used"))
+            for item in script_result.get("query_results") or []
+            if isinstance(item, dict)
         )
         selector_for_runtime = {
             "status": "not_needed",
-            "reason": "deterministic_top_k",
+            "reason": "adaptive_checkpoint_pool" if adaptive_pool_used else "deterministic_top_k",
             "retrieval_mode": retrieval_mode,
             "candidate_count": len(script_candidates),
             "paragraph_candidate_count": _paragraph_group_count(script_candidates),
@@ -491,88 +490,99 @@ class V3SemanticRouterService:
             if isinstance(semantic_route.get("script_queries"), list)
             else []
         )
+        ordinary_queries = [
+            item
+            for item in route_queries
+            if isinstance(item, dict)
+            and str(item.get("query_source") or "") != "closing_catalog_node"
+        ]
+        closing_route_queries = [
+            copy.deepcopy(item)
+            for item in route_queries
+            if isinstance(item, dict)
+            and str(item.get("query_source") or "") == "closing_catalog_node"
+        ]
+        generated_closing_queries = _closing_script_queries(
+            semantic_route,
+            existing_queries=route_queries,
+        )
+        seen_closing_signatures = {
+            (
+                int(item.get("checkpoint_type_id") or 0),
+                str(item.get("catalog_source") or ""),
+            )
+            for item in closing_route_queries
+        }
+        for item in generated_closing_queries:
+            signature = (
+                int(item.get("checkpoint_type_id") or 0),
+                str(item.get("catalog_source") or ""),
+            )
+            if signature not in seen_closing_signatures:
+                closing_route_queries.append(item)
+                seen_closing_signatures.add(signature)
         queries = [
-            *route_queries,
-            *_closing_script_queries(semantic_route, existing_queries=route_queries),
+            *_ordinary_script_pool_queries(
+                semantic_route,
+                requested_queries=ordinary_queries,
+            ),
+            *closing_route_queries,
         ]
         if self.knowledge_client is None or not queries:
             return {"status": "empty", "option_count": 0, "items": [], "query_results": []}
-        tasks = [
-            self._query_scripts_for_route(item)
-            for item in queries
-        ]
+        tasks = [self._query_scripts_for_route(item) for item in queries]
         results = await asyncio.gather(*tasks)
-        fallback_tasks: list[Any] = []
-        fallback_indexes: list[int] = []
-        has_any_ordinary_exact = any(
-            str(query.get("query_source") or "") != "closing_catalog_node"
-            and str(result.get("status") or "") == "ok"
-            and int(result.get("total") or 0) > 0
-            for query, result in zip(queries, results)
-        )
-        for index, (query, result) in enumerate(zip(queries, results)):
-            if (
-                not has_any_ordinary_exact
-                and not fallback_tasks
-                and str(query.get("query_source") or "") != "closing_catalog_node"
-                and str(result.get("status") or "") == "ok"
-                and int(result.get("total") or 0) == 0
-                and int(query.get("checkpoint_type_id") or 0) > 0
-                and int(query.get("checkpoint_tag_id") or 0) > 0
-                and str(query.get("action_code") or "").strip()
-            ):
-                fallback_indexes.append(index)
-                fallback_tasks.append(
-                    self.knowledge_client.query_all_scripts(
-                        checkpoint_type_id=int(query.get("checkpoint_type_id") or 0),
-                        checkpoint_tag_id=None,
-                        checkpoint_code="",
-                        action_code=str(query.get("action_code") or ""),
-                    )
-                )
-        fallback_results = await asyncio.gather(*fallback_tasks) if fallback_tasks else []
-        fallbacks_by_index = dict(zip(fallback_indexes, fallback_results))
         by_code: dict[str, dict[str, Any]] = {}
         query_results: list[dict[str, Any]] = []
         exact_candidate_count = 0
         broad_candidate_count = 0
-        for index, (query, exact_result) in enumerate(zip(queries, results)):
-            fallback_result = fallbacks_by_index.get(index)
-            result = fallback_result if isinstance(fallback_result, dict) else exact_result
-            fallback_used = isinstance(fallback_result, dict)
-            requested_tag_id = int(query.get("checkpoint_tag_id") or 0)
-            match_scope = (
-                "closing_script_type"
-                if str(query.get("query_source") or "") == "closing_catalog_node"
-                else "checkpoint_type_tag_action"
-                if requested_tag_id > 0 and not fallback_used
-                else "checkpoint_type_action"
-            )
+        for query, result in zip(queries, results):
+            query_source = str(query.get("query_source") or "")
+            is_closing_query = query_source == "closing_catalog_node"
+            requested_queries = [
+                item for item in query.get("requested_queries") or [] if isinstance(item, dict)
+            ]
             query_audit = {
-                    "checkpoint_code": query.get("checkpoint_code"),
-                    "checkpoint_type_id": query.get("checkpoint_type_id"),
-                    "checkpoint_tag_id": query.get("checkpoint_tag_id"),
-                    "action_code": query.get("action_code"),
-                    "sequence_id": query.get("sequence_id"),
-                    "step_id": query.get("step_id"),
-                    "query_source": query.get("query_source"),
-                    "sequence_links": copy.deepcopy(query.get("sequence_links") or []),
-                    "status": result.get("status"),
-                    "total": int(result.get("total") or 0),
-                    "reason": result.get("reason", ""),
-                    "source": result.get("source", ""),
-                    "duration_ms": int(result.get("duration_ms") or 0),
-                    "cache_hit_pages": int(result.get("cache_hit_pages") or 0),
-                    "match_scope": match_scope,
-                    "fallback_used": fallback_used,
-                    "exact_total": int(exact_result.get("total") or 0),
-                    "fallback_total": int(fallback_result.get("total") or 0)
-                    if isinstance(fallback_result, dict)
-                    else 0,
-                    "rejected_type_mismatch_count": 0,
-                    "rejected_tag_mismatch_count": 0,
-                    "rejected_action_mismatch_count": 0,
-                }
+                "checkpoint_code": query.get("checkpoint_code"),
+                "checkpoint_type_id": query.get("checkpoint_type_id"),
+                "checkpoint_tag_id": query.get("checkpoint_tag_id"),
+                "action_code": query.get("action_code"),
+                "sequence_id": query.get("sequence_id"),
+                "step_id": query.get("step_id"),
+                "query_source": query.get("query_source"),
+                "sequence_links": copy.deepcopy(query.get("sequence_links") or []),
+                "status": result.get("status"),
+                "total": int(result.get("total") or 0),
+                "reason": result.get("reason", ""),
+                "source": result.get("source", ""),
+                "duration_ms": int(result.get("duration_ms") or 0),
+                "cache_hit_pages": int(result.get("cache_hit_pages") or 0),
+                "match_scope": (
+                    "closing_script_type" if is_closing_query else "checkpoint_type_pool"
+                ),
+                "fallback_used": False,
+                "adaptive_pool_used": not is_closing_query,
+                "requested_action_codes": list(
+                    dict.fromkeys(
+                        str(item.get("action_code") or "").strip().lower()
+                        for item in requested_queries
+                        if str(item.get("action_code") or "").strip()
+                    )
+                ),
+                "requested_tag_ids": list(
+                    dict.fromkeys(
+                        int(item.get("checkpoint_tag_id") or 0)
+                        for item in requested_queries
+                        if int(item.get("checkpoint_tag_id") or 0) > 0
+                    )
+                ),
+                "scope_counts": {},
+                "exact_total": 0,
+                "fallback_total": 0,
+                "rejected_type_mismatch_count": 0,
+                "rejected_tag_mismatch_count": 0,
+                "rejected_action_mismatch_count": 0,
+            }
             query_results.append(query_audit)
             for raw in result.get("items") or []:
                 if not isinstance(raw, dict):
@@ -586,43 +596,29 @@ class V3SemanticRouterService:
                 if requested_type_id > 0 and int(returned_type.get("id") or 0) != requested_type_id:
                     query_audit["rejected_type_mismatch_count"] += 1
                     continue
-                if str(query.get("query_source") or "") != "closing_catalog_node":
-                    returned_action = str(raw.get("action_code") or "").strip().lower()
-                    requested_action = str(query.get("action_code") or "").strip().lower()
-                    if requested_action and returned_action != requested_action:
-                        query_audit["rejected_action_mismatch_count"] += 1
-                        continue
-                    returned_tag = (
-                        raw.get("checkpoint_tag")
-                        if isinstance(raw.get("checkpoint_tag"), dict)
-                        else {}
+                if is_closing_query:
+                    match_scope = "closing_script_type"
+                    matching_links = [
+                        item for item in query.get("sequence_links") or [] if isinstance(item, dict)
+                    ]
+                else:
+                    match_scope, matching_links = _ordinary_script_match_scope(
+                        raw,
+                        requested_queries=requested_queries,
                     )
-                    if (
-                        requested_tag_id > 0
-                        and not fallback_used
-                        and int(returned_tag.get("id") or 0) != requested_tag_id
-                    ):
-                        query_audit["rejected_tag_mismatch_count"] += 1
-                        continue
+                scope_counts = query_audit["scope_counts"]
+                scope_counts[match_scope] = int(scope_counts.get(match_scope) or 0) + 1
+                if match_scope == "checkpoint_type_tag_action":
+                    query_audit["exact_total"] += 1
                 code = str(raw.get("script_code") or "").strip()
                 if not code:
                     continue
                 item = by_code.setdefault(code, copy.deepcopy(raw))
                 existing_scope = str(item.get("retrieval_match_scope") or "")
-                if not existing_scope or match_scope == "checkpoint_type_tag_action":
+                if _retrieval_scope_priority(match_scope) > _retrieval_scope_priority(existing_scope):
                     item["retrieval_match_scope"] = match_scope
                 links = item.setdefault("sequence_links", [])
-                query_links = query.get("sequence_links")
-                if not isinstance(query_links, list) or not query_links:
-                    query_links = [
-                        {
-                            "sequence_id": str(query.get("sequence_id") or ""),
-                            "step_id": str(query.get("step_id") or ""),
-                            "action_code": str(query.get("action_code") or ""),
-                            "query_source": str(query.get("query_source") or ""),
-                        }
-                    ]
-                for raw_link in query_links:
+                for raw_link in matching_links:
                     if not isinstance(raw_link, dict):
                         continue
                     link = {
@@ -637,10 +633,13 @@ class V3SemanticRouterService:
                     }
                     if link not in links:
                         links.append(link)
-                if match_scope == "checkpoint_type_action":
-                    broad_candidate_count += 1
-                else:
+                item["sequence_script_alignment"] = (
+                    "exact_action" if links else "independent"
+                )
+                if match_scope in {"checkpoint_type_tag_action", "closing_script_type"}:
                     exact_candidate_count += 1
+                else:
+                    broad_candidate_count += 1
 
         support_level = (
             "script_exact"
@@ -668,11 +667,14 @@ class V3SemanticRouterService:
                 checkpoint_type_id=int(query.get("checkpoint_type_id") or 0),
                 catalog_source=str(query.get("catalog_source") or ""),
             )
+        is_checkpoint_pool = str(query.get("query_source") or "") == "checkpoint_type_pool"
         return await self.knowledge_client.query_all_scripts(
             checkpoint_type_id=int(query.get("checkpoint_type_id") or 0) or None,
-            checkpoint_tag_id=int(query.get("checkpoint_tag_id") or 0) or None,
-            checkpoint_code=str(query.get("checkpoint_code") or ""),
-            action_code=str(query.get("action_code") or ""),
+            checkpoint_tag_id=None
+            if is_checkpoint_pool
+            else int(query.get("checkpoint_tag_id") or 0) or None,
+            checkpoint_code="" if is_checkpoint_pool else str(query.get("checkpoint_code") or ""),
+            action_code="" if is_checkpoint_pool else str(query.get("action_code") or ""),
         )
 
     async def _narrow_scripts(
@@ -1659,33 +1661,12 @@ def _taxonomy_allows_action(
     return isinstance(counts, dict) and int(counts.get(action) or 0) > 0
 
 
-def _taxonomy_action_fallback_queries(
-    route: dict[str, Any],
-    *,
+def _taxonomy_action_counts(
     taxonomy: list[dict[str, Any]],
-    existing_signatures: set[tuple[int, int, str, str]],
-    enabled: bool,
-    max_actions: int = 4,
-) -> list[dict[str, Any]]:
-    """Add retrieval-only queries for published actions covered by taxonomy.
-
-    This does not decide sales semantics.  It only prevents a model-selected
-    sequence step with an uncovered action_code from starving the downstream
-    script selector when the tenant taxonomy says the same checkpoint has
-    published scripts under nearby actions.
-    """
-
-    if not enabled:
-        return []
-    current_friction = route.get("current_friction") if isinstance(route.get("current_friction"), dict) else {}
-    if str(current_friction.get("status") or "none") == "none":
-        return []
-    checkpoint = route.get("checkpoint") if isinstance(route.get("checkpoint"), dict) else {}
-    checkpoint_type_id = int(checkpoint.get("primary_type_id") or 0)
-    checkpoint_tag_id = int(checkpoint.get("primary_tag_id") or 0)
-    checkpoint_code = str(checkpoint.get("primary_code") or "").strip().lower()
-    if checkpoint_type_id <= 0 or not checkpoint_code or checkpoint_code == "all":
-        return []
+    *,
+    checkpoint_type_id: int,
+    checkpoint_tag_id: int,
+) -> dict[str, int]:
     checkpoint_type = next(
         (
             item
@@ -1695,10 +1676,9 @@ def _taxonomy_action_fallback_queries(
         None,
     )
     if not isinstance(checkpoint_type, dict):
-        return []
-
-    ordered_actions: list[tuple[str, int, int]] = []
-    if checkpoint_tag_id:
+        return {}
+    combined: dict[str, int] = {}
+    if checkpoint_tag_id > 0:
         tag = next(
             (
                 item
@@ -1707,35 +1687,147 @@ def _taxonomy_action_fallback_queries(
             ),
             None,
         )
-        if isinstance(tag, dict):
-            ordered_actions.extend(_ordered_action_counts(tag.get("action_counts"), scope=1))
-    ordered_actions.extend(_ordered_action_counts(checkpoint_type.get("action_counts"), scope=0))
+        tag_counts = tag.get("action_counts") if isinstance(tag, dict) else {}
+        if isinstance(tag_counts, dict) and tag_counts:
+            combined.update(
+                {
+                    str(key).strip().lower(): max(0, int(value or 0))
+                    for key, value in tag_counts.items()
+                    if str(key or "").strip()
+                }
+            )
+    type_counts = checkpoint_type.get("action_counts")
+    if not isinstance(type_counts, dict):
+        return combined
+    for key, value in type_counts.items():
+        action_code = str(key or "").strip().lower()
+        if action_code:
+            combined[action_code] = max(combined.get(action_code, 0), max(0, int(value or 0)))
+    return combined
 
-    output: list[dict[str, Any]] = []
-    seen_actions: set[str] = set()
-    for action_code, _count, scope in ordered_actions:
-        if action_code in seen_actions or action_code not in ACTION_CODES:
+
+def _ordinary_script_pool_queries(
+    route: dict[str, Any],
+    *,
+    requested_queries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collapse strict action/tag lookups into one bounded pool per checkpoint type.
+
+    The third-party type remains a hard tenant-owned boundary. Tag and action
+    metadata are retained as ranking and audit evidence instead of filters, so
+    an uncovered sequence action cannot starve otherwise published scripts.
+    """
+
+    grouped: dict[int, dict[str, Any]] = {}
+    for raw in requested_queries:
+        if not isinstance(raw, dict):
             continue
-        seen_actions.add(action_code)
-        query_tag_id = checkpoint_tag_id if scope == 1 else 0
-        signature = (checkpoint_type_id, query_tag_id, checkpoint_code, action_code)
-        if signature in existing_signatures:
+        checkpoint_type_id = int(raw.get("checkpoint_type_id") or 0)
+        if checkpoint_type_id <= 0:
             continue
-        output.append(
+        query = grouped.setdefault(
+            checkpoint_type_id,
             {
                 "checkpoint_type_id": checkpoint_type_id,
-                "checkpoint_tag_id": query_tag_id,
-                "checkpoint_code": checkpoint_code,
-                "action_code": action_code,
+                "checkpoint_tag_id": 0,
+                "checkpoint_code": str(raw.get("checkpoint_code") or "").strip().lower(),
+                "action_code": "",
                 "sequence_id": "",
                 "step_id": "",
-                "query_source": "taxonomy_action_coverage_fallback",
-            }
+                "query_source": "checkpoint_type_pool",
+                "requested_queries": [],
+            },
         )
-        existing_signatures.add(signature)
-        if len(output) >= max_actions:
-            break
-    return output
+        normalized = copy.deepcopy(raw)
+        normalized["action_code"] = str(raw.get("action_code") or "").strip().lower()
+        if normalized not in query["requested_queries"]:
+            query["requested_queries"].append(normalized)
+
+    checkpoint = route.get("checkpoint") if isinstance(route.get("checkpoint"), dict) else {}
+    checkpoint_type_id = int(checkpoint.get("primary_type_id") or 0)
+    checkpoint_code = str(checkpoint.get("primary_code") or "").strip().lower()
+    current_friction = (
+        route.get("current_friction") if isinstance(route.get("current_friction"), dict) else {}
+    )
+    if (
+        checkpoint_type_id > 0
+        and checkpoint_code != "all"
+        and str(current_friction.get("status") or "none") != "none"
+        and checkpoint_type_id not in grouped
+    ):
+        grouped[checkpoint_type_id] = {
+            "checkpoint_type_id": checkpoint_type_id,
+            "checkpoint_tag_id": 0,
+            "checkpoint_code": checkpoint_code,
+            "action_code": "",
+            "sequence_id": "",
+            "step_id": "",
+            "query_source": "checkpoint_type_pool",
+            "requested_queries": [],
+        }
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def _ordinary_script_match_scope(
+    script: dict[str, Any],
+    *,
+    requested_queries: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    action_code = str(script.get("action_code") or "").strip().lower()
+    checkpoint_tag = (
+        script.get("checkpoint_tag") if isinstance(script.get("checkpoint_tag"), dict) else {}
+    )
+    tag_id = int(checkpoint_tag.get("id") or 0)
+    exact_queries: list[dict[str, Any]] = []
+    action_queries: list[dict[str, Any]] = []
+    tag_match = False
+    for query in requested_queries:
+        requested_action = str(query.get("action_code") or "").strip().lower()
+        requested_tag_id = int(query.get("checkpoint_tag_id") or 0)
+        if requested_tag_id > 0 and requested_tag_id == tag_id:
+            tag_match = True
+        if not requested_action or requested_action != action_code:
+            continue
+        action_queries.append(query)
+        if requested_tag_id > 0 and requested_tag_id == tag_id:
+            exact_queries.append(query)
+    matched_queries = exact_queries or action_queries
+    links: list[dict[str, Any]] = []
+    for query in matched_queries:
+        raw_links = query.get("sequence_links")
+        if not isinstance(raw_links, list) or not raw_links:
+            raw_links = [
+                {
+                    "sequence_id": str(query.get("sequence_id") or ""),
+                    "step_id": str(query.get("step_id") or ""),
+                    "action_code": str(query.get("action_code") or ""),
+                    "query_source": str(query.get("query_source") or ""),
+                }
+            ]
+        for link in raw_links:
+            if not isinstance(link, dict):
+                continue
+            if not str(link.get("sequence_id") or "").strip():
+                continue
+            if link not in links:
+                links.append(copy.deepcopy(link))
+    if exact_queries:
+        return "checkpoint_type_tag_action", links
+    if action_queries:
+        return "checkpoint_type_action", links
+    if tag_match:
+        return "checkpoint_type_tag", []
+    return "checkpoint_type_semantic", []
+
+
+def _retrieval_scope_priority(value: Any) -> int:
+    return {
+        "checkpoint_type_semantic": 1,
+        "checkpoint_type_tag": 2,
+        "checkpoint_type_action": 3,
+        "checkpoint_type_tag_action": 4,
+        "closing_script_type": 5,
+    }.get(str(value or ""), 0)
 
 
 def _closing_script_queries(
@@ -1821,17 +1913,6 @@ def _closing_script_queries(
         if len(output) >= 8:
             break
     return output
-
-
-def _ordered_action_counts(value: Any, *, scope: int) -> list[tuple[str, int, int]]:
-    if not isinstance(value, dict):
-        return []
-    items = [
-        (str(action or "").strip().lower(), int(count or 0), scope)
-        for action, count in value.items()
-        if str(action or "").strip().lower() and int(count or 0) > 0
-    ]
-    return sorted(items, key=lambda item: (-item[1], item[0]))
 
 
 def _semantic_route_contract_issues(route: dict[str, Any]) -> list[str]:
@@ -1970,6 +2051,7 @@ def _apply_deterministic_sequence_top_k(
     *,
     shared_context: dict[str, Any],
     sequences: list[dict[str, Any]],
+    checkpoint_taxonomy: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Rank real external sequences and current nodes without a selector model."""
 
@@ -1982,6 +2064,11 @@ def _apply_deterministic_sequence_top_k(
 
     checkpoint = output.get("checkpoint") if isinstance(output.get("checkpoint"), dict) else {}
     checkpoint_code = str(checkpoint.get("primary_code") or "").strip().lower()
+    action_counts = _taxonomy_action_counts(
+        checkpoint_taxonomy or [],
+        checkpoint_type_id=int(checkpoint.get("primary_type_id") or 0),
+        checkpoint_tag_id=int(checkpoint.get("primary_tag_id") or 0),
+    )
     query_text = _semantic_retrieval_text(shared_context, output)
     query_terms = _retrieval_terms(query_text)
     ranked: list[tuple[int, str, dict[str, Any], list[dict[str, Any]]]] = []
@@ -2010,6 +2097,12 @@ def _apply_deterministic_sequence_top_k(
         elif sequence_code == "all":
             score += 10
         current_steps = _current_step_candidates(sequence, query_terms=query_terms)
+        covered_step_count = sum(
+            1
+            for step in current_steps
+            if int(action_counts.get(str(step.get("action_code") or "").strip().lower()) or 0) > 0
+        )
+        score += min(2, covered_step_count) * 6
         if score <= 0 or not current_steps:
             continue
         ranked.append((-score, sequence_id, sequence, current_steps))
@@ -2042,6 +2135,19 @@ def _apply_deterministic_sequence_top_k(
         "excluded_sequence_ids": [],
         "exclusion_reasons": {},
         "reason": "deterministic_top_k",
+        "step_script_coverage": {
+            str(step.get("id") or ""): bool(
+                int(
+                    action_counts.get(
+                        str(step.get("action_code") or "").strip().lower()
+                    )
+                    or 0
+                )
+            )
+            for _, _, _, steps in ranked
+            for step in steps
+            if str(step.get("id") or "") in selected_step_ids
+        },
     }
     return _expand_sequence_action_queries(output, sequences=[item[2] for item in ranked])
 
@@ -2052,10 +2158,10 @@ def _rank_script_groups(
     query_text: str,
     max_groups: int,
 ) -> list[dict[str, Any]]:
-    """Return at most ``max_groups`` published paragraph groups in stable order."""
+    """Return a relevant and diverse subset from the same-checkpoint script pool."""
 
     query_terms = _retrieval_terms(query_text)
-    ranked: list[tuple[int, str, int, bool]] = []
+    ranked: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
     for raw in candidates:
         if not isinstance(raw, dict):
@@ -2077,10 +2183,34 @@ def _rank_script_groups(
                 raw.get("action_name"),
             )
         )
+        scope = str(raw.get("retrieval_match_scope") or "")
+        scope_bonus = {
+            "closing_script_type": 20,
+            "checkpoint_type_tag_action": 12,
+            "checkpoint_type_action": 8,
+            "checkpoint_type_tag": 5,
+            "checkpoint_type_semantic": 0,
+        }.get(scope, 0)
+        weight_bonus = min(10, max(0, int(raw.get("weight") or 0)))
+        action_code = str(raw.get("action_code") or "").strip().lower()
+        tag_id = int(checkpoint_tag.get("id") or 0)
         paragraphs = [item for item in raw.get("paragraphs") or [] if isinstance(item, dict)]
         if not paragraphs:
             searchable = base + " " + str(raw.get("body_text") or "")
-            ranked.append((-_retrieval_overlap(query_terms, searchable), script_id, 0, False))
+            ranked.append(
+                {
+                    "score": 10 * _retrieval_overlap(query_terms, searchable)
+                    + scope_bonus
+                    + weight_bonus,
+                    "script_id": script_id,
+                    "paragraph_no": 0,
+                    "has_group": False,
+                    "action_code": action_code,
+                    "tag_id": tag_id,
+                    "scope": scope,
+                    "text": str(raw.get("body_text") or ""),
+                }
+            )
             continue
         for paragraph in paragraphs:
             paragraph_no = max(1, int(paragraph.get("paragraph_no") or 1))
@@ -2090,18 +2220,100 @@ def _rank_script_groups(
                 if isinstance(message, dict)
             )
             ranked.append(
-                (-_retrieval_overlap(query_terms, base + " " + body), script_id, paragraph_no, True)
+                {
+                    "score": 10 * _retrieval_overlap(query_terms, base + " " + body)
+                    + scope_bonus
+                    + weight_bonus,
+                    "script_id": script_id,
+                    "paragraph_no": paragraph_no,
+                    "has_group": True,
+                    "action_code": action_code,
+                    "tag_id": tag_id,
+                    "scope": scope,
+                    "text": body,
+                }
             )
-    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
-    selected = ranked[: max(1, int(max_groups or 1))]
-    selected_groups = [(script_id, paragraph_no) for _, script_id, paragraph_no, has_group in selected if has_group]
-    selected_scripts = [script_id for _, script_id, _, has_group in selected if not has_group]
+    ranked.sort(
+        key=lambda item: (
+            -int(item["score"]),
+            str(item["script_id"]),
+            int(item["paragraph_no"]),
+        )
+    )
+    selected: list[dict[str, Any]] = []
+    action_counts: dict[str, int] = {}
+    tag_counts: dict[int, int] = {}
+    closing_count = 0
+    has_ordinary_candidates = any(
+        str(item.get("scope") or "") != "closing_script_type" for item in ranked
+    )
+    seen_text: set[str] = set()
+    selected_chars = 0
+    limit = max(1, int(max_groups or 1))
+    for item in ranked:
+        is_closing = str(item.get("scope") or "") == "closing_script_type"
+        action_code = str(item.get("action_code") or "")
+        tag_id = int(item.get("tag_id") or 0)
+        if is_closing and has_ordinary_candidates and closing_count >= 2:
+            continue
+        if not is_closing and action_code and action_counts.get(action_code, 0) >= 2:
+            continue
+        if not is_closing and tag_id > 0 and tag_counts.get(tag_id, 0) >= 2:
+            continue
+        fingerprint = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(item.get("text") or "").lower())
+        if fingerprint and fingerprint in seen_text:
+            continue
+        text_length = len(str(item.get("text") or ""))
+        if selected and selected_chars + text_length > MAX_SCRIPT_REFERENCE_CHARS:
+            continue
+        selected.append(item)
+        selected_chars += text_length
+        if action_code:
+            action_counts[action_code] = action_counts.get(action_code, 0) + 1
+        if tag_id > 0:
+            tag_counts[tag_id] = tag_counts.get(tag_id, 0) + 1
+        if is_closing:
+            closing_count += 1
+        if fingerprint:
+            seen_text.add(fingerprint)
+        if len(selected) >= limit:
+            break
+    selected_groups = [
+        (str(item["script_id"]), int(item["paragraph_no"]))
+        for item in selected
+        if bool(item["has_group"])
+    ]
+    selected_scripts = [
+        str(item["script_id"])
+        for item in selected
+        if not bool(item["has_group"])
+    ]
+    selected_script_order = list(
+        dict.fromkeys(str(item["script_id"]) for item in selected)
+    )
     return _filter_script_groups(
-        list(by_id.values()),
+        [by_id[script_id] for script_id in selected_script_order],
         selected_groups=selected_groups,
         selected_script_ids=selected_scripts,
         max_groups=max_groups,
     )
+
+
+def _retrieval_mode_for_candidates(candidates: list[dict[str, Any]]) -> str:
+    scopes = {
+        str(item.get("retrieval_match_scope") or "")
+        for item in candidates
+        if isinstance(item, dict)
+    }
+    if "checkpoint_type_semantic" in scopes:
+        return "same_type_semantic"
+    if "checkpoint_type_tag" in scopes:
+        return "same_type_tag"
+    if "checkpoint_type_action" in scopes:
+        return "same_type_action"
+    if "checkpoint_type_tag_action" in scopes:
+        return "exact_tag_action"
+    return "deterministic_top_k"
 
 
 def _sequences_for_checkpoint(
@@ -2238,6 +2450,11 @@ def _selected_sequences(sequences: list[dict[str, Any]], route: dict[str, Any]) 
         if str(item or "").strip()
     ][:MAX_SEQUENCE_CANDIDATES]
     relevant_steps = set((route.get("sequence_match") or {}).get("relevant_step_ids") or [])
+    step_script_coverage = (
+        (route.get("sequence_match") or {}).get("step_script_coverage")
+        if isinstance((route.get("sequence_match") or {}).get("step_script_coverage"), dict)
+        else {}
+    )
     selection_reason = str((route.get("sequence_match") or {}).get("reason") or "")[:500]
     by_id = {str(item.get("id") or "").strip(): item for item in sequences if isinstance(item, dict)}
     output = []
@@ -2273,6 +2490,9 @@ def _selected_sequences(sequences: list[dict[str, Any]], route: dict[str, Any]) 
                         "fixed_time": str(step.get("fixed_time") or ""),
                         "remark": _single_line(step.get("remark"), 300),
                         "relevant": str(step.get("id") or "") in relevant_steps,
+                        "script_action_covered": bool(
+                            step_script_coverage.get(str(step.get("id") or ""), False)
+                        ),
                     }
                     for step in selected_steps
                 ],
