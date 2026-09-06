@@ -239,11 +239,17 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
                         "reply_messages": row.get("source_reply_messages"),
                     }
                 )
+    refresh_state_tags(rows)
+    return rows
+
+
+def refresh_state_tags(rows: list[dict[str, Any]]) -> None:
     for row in rows:
+        prior_deliveries = _prior_deliveries_with_source_memory(row)
         contract = expected_contract(
             sample=row,
             facts={},
-            prior_deliveries=list(row.get("prior_deliveries") or []),
+            prior_deliveries=prior_deliveries,
         )
         tags: list[str] = []
         if contract.get("prior_store_card_ids"):
@@ -251,13 +257,14 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
         if contract.get("current_is_store_detail_question"):
             tags.append("store_detail")
         if contract.get("current_requests_address_or_navigation"):
-            tags.append("store_address_rerequest")
+            tags.append("store_address_request")
+        if contract.get("prior_store_card_ids") and contract.get("current_requests_address_or_navigation"):
+            tags.append("store_address_after_card")
         if contract.get("prior_store_card_ids") and contract.get("current_is_store_detail_question"):
             tags.append("store_detail_after_card")
         if row.get("appointment_id") or row.get("appointment_time"):
             tags.append("appointment_present")
         row["state_tags"] = tags
-    return rows
 
 
 def choose_samples(candidates: list[dict[str, Any]], limit: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -302,7 +309,7 @@ def choose_samples(candidates: list[dict[str, Any]], limit: int) -> tuple[list[d
     scale = min(1.0, limit / 400.0)
     for tag, quota in (
         ("store_detail_after_card", 24),
-        ("store_address_rerequest", 16),
+        ("store_address_after_card", 16),
         ("appointment_present", 12),
     ):
         take_state(tag, max(1, round(quota * scale)))
@@ -393,7 +400,6 @@ def load_source_history_events(
             eligible.append(event)
         sample["source_history_events"] = eligible[-100:]
     audit["source_memory_mode"] = "production-readonly"
-    audit["source_history_event_count"] = sum(len(sample.get("source_history_events") or []) for sample in samples)
 
 
 def verify_source_absence(request_ids: list[str], audit: dict[str, Any]) -> None:
@@ -983,6 +989,19 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
         "source_read_queries": 0,
     }
     candidates = load_candidates(args.days)
+    if args.source_memory_mode == "production-readonly":
+        # Load historical state for store/appointment candidates before
+        # sampling, otherwise the state matrix would again be selected only by
+        # current-message wording.
+        state_candidates = [
+            item
+            for item in candidates
+            if item.get("bucket") == "store"
+            or item.get("appointment_id")
+            or item.get("appointment_time")
+        ]
+        load_source_history_events(state_candidates, audit)
+        refresh_state_tags(state_candidates)
     if args.request_id:
         requested = list(dict.fromkeys(str(item).strip() for item in args.request_id if str(item).strip()))
         by_request = {str(item.get("source_request_id") or ""): item for item in candidates}
@@ -997,6 +1016,10 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
             raise RuntimeError(f"eligible real samples insufficient: {len(samples)} < {args.limit}")
     if args.source_memory_mode == "production-readonly":
         load_source_history_events(samples, audit)
+        refresh_state_tags(samples)
+        audit["source_history_event_count"] = sum(
+            len(sample.get("source_history_events") or []) for sample in samples
+        )
     else:
         audit["source_memory_mode"] = "runs-only"
         audit["source_read_queries"] = 0

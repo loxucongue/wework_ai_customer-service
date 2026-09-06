@@ -16,6 +16,7 @@ from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
     compact_facts,
     decision_summary,
     judge_messages,
+    refresh_state_tags,
     sample_bucket,
     validate_evaluation_settings,
 )
@@ -57,6 +58,28 @@ def test_store_detail_questions_are_sampled_as_store_scenarios() -> None:
     assert sample_bucket("可以停车吗") == "store"
     assert sample_bucket("你们几点关门") == "store"
     assert sample_bucket("地址再发一下，我要导航") == "store"
+
+
+def test_state_stratification_uses_prior_structured_memory() -> None:
+    rows = [
+        {
+            "content": "可以停车吗",
+            "prior_deliveries": [],
+            "source_history_events": [
+                {
+                    "event_id": "store-sent-1",
+                    "event_type": "store_address_sent",
+                    "event_time": "2026-09-06T10:00:00+08:00",
+                    "facts": {"store_id": "218", "request_id": "old"},
+                }
+            ],
+        }
+    ]
+
+    refresh_state_tags(rows)
+
+    assert "prior_store_card" in rows[0]["state_tags"]
+    assert "store_detail_after_card" in rows[0]["state_tags"]
 
 
 def test_metrics_use_conditional_adoption_denominator() -> None:
