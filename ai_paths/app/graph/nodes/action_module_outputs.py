@@ -168,6 +168,21 @@ def _latest_recommendation_is_final(sent_summary: dict[str, Any]) -> bool:
     )
 
 
+def _latest_recommendation_store_ids(sent_summary: dict[str, Any]) -> list[str]:
+    recommendation = (
+        sent_summary.get("latest_store_recommendation")
+        if isinstance(sent_summary.get("latest_store_recommendation"), dict)
+        else {}
+    )
+    return list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in recommendation.get("latest_batch_store_ids") or []
+            if str(item or "").strip()
+        )
+    )
+
+
 def _reuse_already_delivered_store_delivery(
     state: AgentState,
     resolution: dict[str, Any],
@@ -212,9 +227,6 @@ def _reuse_already_delivered_store_delivery(
         for item in sent_summary.get("store_address_sent_by_store_id", [])
         if str(item or "").strip()
     }
-    repeated_ids = [store_id for store_id in delivery_ids if store_id in sent_ids]
-    if not repeated_ids:
-        return resolution
     current_city = _store_resolution_city(resolution)
     previous_city = _latest_recommendation_city(sent_summary)
     if current_city and previous_city and current_city != previous_city:
@@ -225,15 +237,19 @@ def _reuse_already_delivered_store_delivery(
         and current_city == previous_city
         and _latest_recommendation_is_final(sent_summary)
     ):
+        recommendation_ids = _latest_recommendation_store_ids(sent_summary)
         return {
             **resolution,
             "status": "reuse_confirmed_store",
             "outcome": "resolved",
             "delivery_store_ids": [],
-            "already_delivered_store_ids": repeated_ids,
+            "already_delivered_store_ids": recommendation_ids,
             "delivery_mode": "none",
             "reason": f"already_delivered_store_terminal_destination:{request_kind}",
         }
+    repeated_ids = [store_id for store_id in delivery_ids if store_id in sent_ids]
+    if not repeated_ids:
+        return resolution
     remaining_ids = [store_id for store_id in delivery_ids if store_id not in sent_ids]
     if remaining_ids:
         if request_kind == "list":

@@ -335,6 +335,32 @@ def test_new_city_is_allowed_even_if_a_store_id_was_delivered_before() -> None:
     assert unchanged == resolution
 
 
+def test_same_city_finer_location_cannot_replace_a_terminal_recommendation() -> None:
+    resolution = {
+        "status": "send_single",
+        "city": "长沙市",
+        "delivery_store_ids": ["999"],
+        "destination_resolution": {
+            "request_kind": "match_location",
+            "destination_precision": "poi",
+            "administrative_context": {"city": "长沙市"},
+        },
+    }
+
+    reused = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert reused["status"] == "reuse_confirmed_store"
+    assert reused["delivery_store_ids"] == []
+    assert reused["already_delivered_store_ids"] == ["160"]
+    assert reused["reason"] == "already_delivered_store_terminal_destination:match_location"
+
+
 def test_explicit_address_request_can_repeat_an_already_delivered_card() -> None:
     resolution = {
         "status": "send_single",
