@@ -1090,7 +1090,8 @@ async def runtime_phase(args: argparse.Namespace, private_path: Path) -> tuple[l
                     "lifecycle_duration_ms": int(max(0.0, lifecycle_finished - lifecycle_started) * 1000),
                 }
                 counts = ephemeral_counts(case_runtime["store"])
-                if counts["runs"] < 1 or counts["messages"] < 2:
+                expected_message_count = 2 if response_messages else 1
+                if counts["runs"] < 1 or counts["messages"] < expected_message_count:
                     raise RuntimeError(f"ephemeral lifecycle persistence incomplete: {counts}")
                 audit["ephemeral_repository_cases"] += 1
                 audit["evaluation_request_ids"].append(request_id)
