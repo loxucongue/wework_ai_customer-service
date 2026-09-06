@@ -3,6 +3,8 @@ from __future__ import annotations
 from ai_paths.app.prompts.reply_synthesizer import (
     PARALLEL_REPLY_SYSTEM_PROMPT,
     _render_authoritative_facts,
+    _render_delivery_assets,
+    _render_knowledge_evidence,
     _render_reference_contract,
 )
 from ai_paths.app.prompts.v3_semantic_router import V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
@@ -83,6 +85,71 @@ def test_reply_requires_safe_directly_relevant_script_for_active_blocker() -> No
         json_dumps=lambda value: str(value),
     )
     assert "也必须把对应数字话术ID填入 knowledge_use.script_id" in contract
+
+
+def test_reply_directly_delivers_available_value_without_permission_gate() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "已经具备且可在本轮直接交付的明确价值，不再向客户索取许可" in prompt
+    assert "要不要我发活动价" in prompt
+    assert "要不要看效果图" in prompt
+    assert "默认直接交付" in prompt
+    assert "先用一条短文字给信心和观看理由，再让素材紧跟在话术下面" in prompt
+
+
+def test_follow_script_media_is_rendered_as_directly_deliverable_asset() -> None:
+    candidate = {
+        "content_id": "follow_script:187:p1",
+        "name": "侧面烘托 / 第1组",
+        "purpose": "距离卡点 / 效果案例",
+        "asset_role": "sales_reference",
+        "delivery_status": "available",
+        "delivery_observation": {"sent_count": 0},
+        "messages": [
+            {"type": "image", "content": "https://example.com/effect.png"},
+        ],
+    }
+    rendered = _render_delivery_assets(
+        [candidate],
+        json_dumps=lambda value: str(value),
+        relevant_fact_topic_ids=[],
+    )
+
+    assert "无可用素材" not in rendered
+    assert "follow_script:187:p1" in rendered
+    assert "距离卡点 / 效果案例" in rendered
+    assert "https://example.com/effect.png" in rendered
+    assert "不要先问客户要不要看" in rendered
+
+
+def test_follow_script_knowledge_does_not_duplicate_media_urls() -> None:
+    rendered = _render_knowledge_evidence(
+        {
+            "candidates": [
+                {
+                    "source_id": "187",
+                    "script_id": "187",
+                    "script_name": "侧面烘托",
+                    "checkpoint_name": "距离卡点",
+                    "action_name": "效果案例",
+                    "paragraphs": [
+                        {
+                            "paragraph_no": 1,
+                            "messages": [
+                                {"type": "text", "content": "用效果价值处理距离顾虑"},
+                                {"type": "image", "url": "https://example.com/effect.png"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert "用效果价值处理距离顾虑" in rendered
+    assert "业务原始话术含素材：图片1个" in rendered
+    assert "本轮是否仍可发送" in rendered
+    assert "https://example.com/effect.png" not in rendered
 
 
 def test_store_distance_objection_keeps_terminal_recommendation_boundary() -> None:

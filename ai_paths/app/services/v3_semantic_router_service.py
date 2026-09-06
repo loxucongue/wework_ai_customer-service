@@ -2722,7 +2722,16 @@ def _script_reference(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def script_content_candidates(knowledge: dict[str, Any]) -> list[dict[str, Any]]:
+def script_content_candidates(
+    knowledge: dict[str, Any],
+    *,
+    sent_image_urls: list[str] | set[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    already_sent_images = {
+        str(item or "").strip()
+        for item in sent_image_urls or []
+        if str(item or "").strip()
+    }
     output = []
     for item in knowledge.get("candidates") or []:
         if not isinstance(item, dict):
@@ -2750,6 +2759,8 @@ def script_content_candidates(knowledge: dict[str, Any]) -> list[dict[str, Any]]
             reference_lines: list[str] = []
             structured_media: list[dict[str, str]] = []
             ordered_reference_messages: list[dict[str, Any]] = []
+            original_media_count = 0
+            filtered_sent_image_count = 0
             for message in paragraph.get("messages") or []:
                 if not isinstance(message, dict):
                     continue
@@ -2762,6 +2773,10 @@ def script_content_candidates(knowledge: dict[str, Any]) -> list[dict[str, Any]]
                     continue
                 url = str(message.get("url") or "").strip()
                 if message_type in {"image", "video"} and _is_http_url(url):
+                    original_media_count += 1
+                    if message_type == "image" and url in already_sent_images:
+                        filtered_sent_image_count += 1
+                        continue
                     structured = {"type": message_type, "content": url}
                     structured_media.append(structured)
                     ordered_reference_messages.append(
@@ -2789,11 +2804,24 @@ def script_content_candidates(knowledge: dict[str, Any]) -> list[dict[str, Any]]
                     "reference_messages": ordered_reference_messages,
                     "messages": structured_media,
                     "required_structured_media": structured_media,
+                    "delivery_status": (
+                        "available"
+                        if structured_media
+                        else "completed"
+                        if original_media_count and filtered_sent_image_count == original_media_count
+                        else "reference_only"
+                    ),
+                    "delivery_observation": {
+                        "sent_count": filtered_sent_image_count,
+                        "remaining_media_count": len(structured_media),
+                        "source": "sent_message_summary_url_dedupe",
+                    },
                     "selection_constraints": {
                         "authority_scope": "approved_sales_expression",
                         "hard_fact_authority": False,
                         "complete_reference_group": True,
                         "authoritative_facts_override": True,
+                        "direct_value_without_permission_gate": True,
                         "retrieval_match_scope": str(item.get("retrieval_match_scope") or ""),
                     },
                     "sequence_links": copy.deepcopy(item.get("sequence_links") or []),

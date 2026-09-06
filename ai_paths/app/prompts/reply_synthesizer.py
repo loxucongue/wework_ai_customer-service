@@ -15,6 +15,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，也是
 - 禁止客服菜单，例如“门店还是活动”“效果还是价格”；一轮最多问一个答案会真实改变下一步的问题。
 - 禁止把内部审计语言说给客户，包括“权威事实、本轮确认、当前可确认、经核验、确认适合后再操作、系统状态显示、工具事实”。把事实直接自然说清。
 - 说人话：像真人在微信里接着客户当前一句话往下聊，短、口语、先结论后解释，可以共情和轻微幽默；不写公告、报告、书面免责声明、空泛附和、“有需要再联系”或无意义许可问题。较长内容宁可拆成前后两条各有作用的短微信，不写一整段客服说明书。
+- 已经具备且可在本轮直接交付的明确价值，不再向客户索取许可：有权威活动价就直接说，有直接相关且可发送的效果图/案例就用一句话自然引出后直接发送。禁止“要不要我发活动价、要不要看效果图、要不要先了解具体效果、需要的话我再发”等把现成价值拖到下一轮的问法。只有缺少会改变事实或动作的信息时才追问。
 - 强销售不是堆价格、预约金、门店和多个问题，而是答清后只推进一个有依据的动作。没有新价值、有效问题或真实动作就自然收住。
 - 客户已经收到并确认某家门店后，停车、营业时间、楼层等短详情属于预约前的行动信号：只回答本轮权威详情，不重复发送同一门店卡，也不在 text 里复述此前已经交付的道路、门牌、完整地址或导航。没有新卡点、暂缓、拒绝、投诉或健康风险时，答完要明确发起预约收口：询问大致到店日期或工作日/周末偏好，并直接说明“我先按您方便的时间做预约登记，10元预约金就能把活动名额锁上”这一实际下一步；本轮不得主动发送预约金卡。不要只说“我先记一下、方便后续登记”，不要把时间问题孤立地丢给客户，也不得说成尚未完成的预约或名额保留已经成功。
 - 客户收到当前城市的最终门店推荐后说“太远了”，若没有提供不同城市，不再追问同城地铁站、路口、楼栋或更细地址，也不承诺能找到更近门店；先用已发布距离卡点话术换价值角度。没有真实距离排序时只能承接“您觉得这个位置远”，不得客观断言门店确实远或近。客户反复明确拒绝当前城市门店时，最多再问是否有其他方便前往的城市；只有客户给出不同城市才重新查店。
@@ -55,7 +56,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，也是
 跟进序列解释节奏，话术提供优秀表达。没有话术也要正常回答；但当前卡点 active/repeated 且候选中存在能直接解题、无事实冲突的独立表达时，必须选一个最相关序列和最多一个主话术，不能只采用序列后自行写泛泛共情。不能仅因话术 action 与序列节点不同就全部不用，普通话术可以和序列独立采用。长话术允许只取语义完整且安全的一两句，丢弃无效追问、旧价格、假名额、未经授权时长或交易承诺；若冲突就是核心结论、删除后不能独立成立，才整段不用。候选里的“帮您留名额/安排接送”等无权执行动作必须删除，不能包装成低压表达。实际采用解题思路、论据、社会证明或特色表达，即使只改写文字、不发送配套媒体，也必须输出 `knowledge_use` 并复制真实 sequence_id、step_id、script_id；所有候选都无关或冲突时允许 script_id 留空，但 reason 必须说明未采用原因。
 客户说正在忙、开车、晚点再说或暂时没时间，表示本轮没有继续销售的沟通许可：只简短承接并收住，不提活动、付款、定金、名额、档期、登记、到店时间，也不追问。候选即使属于同一卡点，只要带这些推进内容，本轮也视为冲突，不采用、不改写成另一种强推；只有真正低压承接的候选才可记录采用。
 
-真实素材能直接解决当前疑虑时可直接交付，不先问“要不要看”。采用素材写入真实 `selected_content_ids`；同一用途只选一个，已发送默认不重复。结构消息只是事实或入口，先用短文字答清；门店卡和付款卡不能由内容候选自动创造。
+真实素材能直接解决当前疑虑时默认直接交付，不先问“要不要看”。当前主任务是效果、信任，或本轮决定用效果价值处理其他卡点时，只要有直接相关、未重复且无事实冲突的图片/案例，优先选择一个最相关内容 ID：先用一条短文字给信心和观看理由，再让素材紧跟在话术下面；不要改成“您要不要先了解效果”。只有素材与当前问题无关、已经发送、存在事实冲突或命中暂停/停止边界时才跳过。采用素材写入真实 `selected_content_ids`；同一用途只选一个内容 ID，能用单张图片说明时优先选择只含一张图的候选，避免同时堆多组素材。结构消息只是事实或入口，先用短文字答清；门店卡和付款卡不能由内容候选自动创造。
 
 门店查询只证明位置需求和本轮返回的公开门店事实，不等于报名、预约、可直接接待或今天能做。地点不足时只追问客户尚未给出的城市、区县、道路或地标，不猜区域；查询无候选或不完整时如实按工具结果说。门店卡/地址不等于预约，没有权威安排时不得说“直接过去、随时来、已留位、已登记、已安排”。客户给姓名、电话、意向时间只证明已提供信息，不证明系统或门店已登记。
 
@@ -204,7 +205,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         _section("跟进序列与优秀话术参考", _render_knowledge_evidence(knowledge)),
         _section("本轮相关权威事实：最终口径", _render_authoritative_facts(rules, topic_ids=relevant_fact_topic_ids)),
         _section(
-            "可用真实素材",
+            "可直接交付的真实素材",
             _render_delivery_assets(
                 evidence.get("content_candidates") or [],
                 json_dumps=json_dumps,
@@ -949,17 +950,25 @@ def _render_knowledge_evidence(value: Any) -> str:
             for paragraph in paragraphs:
                 number = int(paragraph.get("paragraph_no") or 1)
                 paragraph_ref = paragraph.get("source_ref") or f"follow_script:{source_id}:p{number}"
-                lines.append(f"  内容组 {paragraph_ref}（整组参考，可采用、组合或忽略）：")
+                lines.append(f"  话术段落 {paragraph_ref}（文字可取用；实际发送媒体需选择下方真实素材 ID）：")
+                media_counts: dict[str, int] = {}
                 for message in paragraph.get("messages") or []:
                     if not isinstance(message, dict):
                         continue
                     if message.get("type") == "text" and message.get("content"):
                         lines.append("    文字：" + _dedupe_reference_text(message.get("content")))
                     elif message.get("type") in {"image", "video"} and message.get("url"):
-                        lines.append(
-                            f"    {message.get('type')}：{message.get('url')}"
-                            + (f"｜备注={message.get('remark')}" if message.get("remark") else "")
+                        media_type = str(message.get("type") or "")
+                        media_counts[media_type] = media_counts.get(media_type, 0) + 1
+                if media_counts:
+                    lines.append(
+                        "    业务原始话术含素材："
+                        + "、".join(
+                            f"{'图片' if key == 'image' else '视频'}{count}个"
+                            for key, count in media_counts.items()
                         )
+                        + "；本轮是否仍可发送及具体 ID 以【可直接交付的真实素材】为准"
+                    )
         else:
             if text:
                 lines.append("  参考表达：" + text)
@@ -1029,7 +1038,16 @@ def _render_delivery_assets(
         for item in assets
     )
     for raw in assets:
-        if not isinstance(raw, dict) or str(raw.get("asset_role") or "") == "sales_reference":
+        if not isinstance(raw, dict):
+            continue
+        messages = raw.get("messages") or raw.get("media") or []
+        structured_messages = [
+            message
+            for message in messages
+            if isinstance(message, dict)
+            and str(message.get("type") or "").strip() not in {"", "text"}
+        ]
+        if not structured_messages:
             continue
         observation = raw.get("delivery_observation") if isinstance(raw.get("delivery_observation"), dict) else {}
         content_id = str(raw.get("content_id") or "").strip()
@@ -1040,7 +1058,6 @@ def _render_delivery_assets(
         )
         if str(raw.get("asset_role") or "").strip() in relevant_topics:
             lines.append("  相关性：与 Router 本轮选择的事实主题直接对应")
-        messages = raw.get("messages") or raw.get("media") or []
         if content_id == "s10_activity_intro":
             lines.append("  用途：首次完整活动或价格介绍的配套凭证")
             message_types = {
@@ -1059,6 +1076,22 @@ def _render_delivery_assets(
                 + ("当前销售接触尚未发送" if not observation.get("sent_count") else "当前销售接触已发送")
             )
             lines.append("  采用方式：选择该素材 ID 即会原样交付配置的活动图；活动文字按本轮权威事实自行组织")
+        elif str(raw.get("asset_role") or "").strip() == "sales_reference":
+            image_count = sum(1 for item in structured_messages if str(item.get("type") or "") == "image")
+            video_count = sum(1 for item in structured_messages if str(item.get("type") or "") == "video")
+            lines.append(f"  用途：已召回话术的配套证据；{raw.get('purpose') or '支持本轮主要问题'}")
+            lines.append(
+                "  交付规模："
+                + " + ".join(
+                    value
+                    for value in (
+                        f"图片{image_count}个" if image_count else "",
+                        f"视频{video_count}个" if video_count else "",
+                    )
+                    if value
+                )
+            )
+            lines.append("  采用方式：选择该素材 ID 后，结构媒体会紧跟在本轮文字后原样交付；不要先问客户要不要看")
         elif str(raw.get("asset_role") or "").strip() == "deposit_close":
             lines.append("  用途：成交基础成熟且客户当前明确报名、预约或付款时的预约金说明")
             lines.append("  边界：不是首次活动或价格介绍的配套图，不能替代 activity_offer")
@@ -1484,7 +1517,7 @@ def _render_reference_contract(
             "历史交付证据可引用“小贝/人工”的对应行。编号只证明来源真实，不代表条件已经满足。"
         ),
         "可选内容 ID：" + _join(payload.get("allowed_selected_content_ids") or []),
-        "实际采用候选内容时，在 selected_content_ids 记录对应 ID；候选图片和视频按 ID 原样交付，不需要复制 URL。",
+        "实际采用候选内容时，在 selected_content_ids 记录对应 ID；候选图片和视频按 ID 原样交付，不需要复制 URL。已经可直接提供的活动价、效果图或案例不要先问客户要不要看。",
     ]
     if extra_supporting_refs:
         lines.append(
@@ -1513,8 +1546,9 @@ def _render_reference_contract(
                 rendered_scripts.append(str(raw))
         lines.append("合法话术：" + "、".join(item for item in rendered_scripts if item))
         lines.append(
-            "仅采用候选文字、社会证明或价值类比时，也必须把对应数字话术ID填入 knowledge_use.script_id；"
-            "无需选择 selected_content_ids，也不会自动发送配套图片或视频。"
+            "仅采用候选文字、社会证明或价值类比时，也必须把对应数字话术ID填入 knowledge_use.script_id。"
+            "若当前解题方式需要该话术的配套图片或视频，必须同时选择上方真实素材 ID 并直接交付；"
+            "只有明确决定文字已经足够时才不选素材，且不能改成询问客户是否要看。"
         )
     commit_refs = payload.get("valid_commit_evidence") or []
     if commit_refs:

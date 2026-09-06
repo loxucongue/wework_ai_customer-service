@@ -22,6 +22,20 @@ from app.graph.nodes.reply_contract import (
 )
 
 
+def _sent_case_image_urls(state: AgentState) -> list[str]:
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    sent = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    delivery = sent.get("case_image_delivery") if isinstance(sent.get("case_image_delivery"), dict) else {}
+    return list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in delivery.get("sent_image_urls") or []
+            if str(item or "").strip()
+        )
+    )
+
+
 def create_post_fact_semantic_evidence_node(
     *,
     trace_logger: TraceLogger,
@@ -96,7 +110,10 @@ def create_post_fact_semantic_evidence_node(
             sales_recall = copy.deepcopy(semantic_output.get("knowledge_evidence") or {})
             existing_gate = copy.deepcopy(state.get("content_gate_result") or {})
             existing_candidates = _dict_list(existing_gate.get("content_candidates"))
-            recalled_candidates = script_content_candidates(sales_recall)
+            recalled_candidates = script_content_candidates(
+                sales_recall,
+                sent_image_urls=_sent_case_image_urls(state),
+            )
             content_candidates = _dedupe_content_candidates(
                 [
                     *existing_candidates,
@@ -222,7 +239,10 @@ def create_semantic_evidence_node(
             if tool_plan["tool_calls"]:
                 tool_plan["decision"] = "use_tools"
             assets = _dict_list((state.get("shared_context") or {}).get("available_assets"))
-            recalled_candidates = script_content_candidates(sales_recall)
+            recalled_candidates = script_content_candidates(
+                sales_recall,
+                sent_image_urls=_sent_case_image_urls(state),
+            )
             content_candidates = _dedupe_content_candidates(
                 [
                     *assets,

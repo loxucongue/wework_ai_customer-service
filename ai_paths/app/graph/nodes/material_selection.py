@@ -162,7 +162,18 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         for item in joined.get("content_candidates") or []
         if isinstance(item, dict)
         and str(item.get("content_id") or item.get("id") or "").strip()
-        and str(item.get("delivery_status") or "").strip() != "completed"
+        and str(item.get("delivery_status") or "").strip() not in {"completed", "reference_only"}
+        and any(
+            isinstance(message, dict)
+            and str(message.get("type") or "").strip() not in {"", "text"}
+            for message in (
+                item.get("messages")
+                if isinstance(item.get("messages"), list)
+                else item.get("reply_messages")
+                if isinstance(item.get("reply_messages"), list)
+                else []
+            )
+        )
     ]
     content_candidate_reference_options = [
         {
