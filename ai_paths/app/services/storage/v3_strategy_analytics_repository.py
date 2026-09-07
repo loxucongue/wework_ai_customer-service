@@ -16,6 +16,10 @@ _SCHEDULED_STATES = {"scheduled", "visited", "finished", "evaluated"}
 _VISITED_STATES = {"visited", "finished", "evaluated"}
 _FINISHED_STATES = {"finished", "evaluated"}
 _ORDER_WINDOW_POLL_TOLERANCE_SECONDS = 2 * 60 * 60
+_DECISION_ELIGIBLE_SQL = (
+    "u.policy_version<>'' "
+    "AND u.decision_status NOT IN ('not_enabled', 'system_guard', 'skipped')"
+)
 _USAGE_COLUMNS = (
     "id", "request_id", "conversation_id", "customer_id", "corp_id", "wechat",
     "external_userid", "user_id", "sales_contact_key", "occurred_at",
@@ -23,7 +27,8 @@ _USAGE_COLUMNS = (
     "checkpoint_tag_name", "friction_status", "sequence_id", "sequence_name",
     "sequence_step_id", "action_code", "action_name", "script_id", "script_code",
     "script_name", "script_match_scope", "matched_count", "candidate_count",
-    "sequence_candidate_count", "script_candidate_count", "adopted", "dispatch_id",
+    "sequence_candidate_count", "script_candidate_count", "adopted", "sequence_adopted",
+    "script_adopted", "adoption_detail_observed", "dispatch_id",
     "delivery_status", "delivered_at", "failed_reason", "reply_source", "reply_action",
     "intent_code", "closing_strategy_code", "emotion_before", "emotion_after",
     "policy_version", "decision_status", "intent_confidence", "intent_secondary_json",
@@ -405,10 +410,22 @@ class V3StrategyAnalyticsRepositoryMixin:
                 f"""
                 SELECT
                     COUNT(*) AS usage_count,
+                    COUNT(DISTINCT NULLIF(u.sales_contact_key, '')) AS customer_count,
                     SUM(CASE WHEN u.adopted=1 THEN 1 ELSE 0 END) AS adopted_count,
                     SUM(CASE WHEN u.adopted=1 OR u.candidate_count>0
                                   OR u.sequence_candidate_count>0 OR u.script_candidate_count>0
                              THEN 1 ELSE 0 END) AS adoption_eligible_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.checkpoint_code<>'' THEN 1 ELSE 0 END) AS checkpoint_turn_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.sequence_candidate_count>0 THEN 1 ELSE 0 END) AS sequence_candidate_turn_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.sequence_candidate_count>0 THEN 1 ELSE 0 END) AS sequence_adoption_eligible_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.sequence_adopted=1 THEN 1 ELSE 0 END) AS sequence_adopted_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.script_candidate_count>0 THEN 1 ELSE 0 END) AS script_candidate_turn_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.script_candidate_count>0 THEN 1 ELSE 0 END) AS script_adoption_eligible_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.script_adopted=1 THEN 1 ELSE 0 END) AS script_adopted_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 THEN 1 ELSE 0 END) AS adoption_detail_observed_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.checkpoint_code<>'' AND u.script_candidate_count=0 THEN 1 ELSE 0 END) AS checkpoint_without_script_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.sequence_candidate_count>0 AND u.sequence_adopted=0 THEN 1 ELSE 0 END) AS sequence_not_adopted_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.script_candidate_count>0 AND u.script_adopted=0 THEN 1 ELSE 0 END) AS script_not_adopted_count,
                     SUM(CASE WHEN u.dispatch_id<>'' THEN 1 ELSE 0 END) AS dispatch_count,
                     SUM(CASE WHEN u.delivery_status=? THEN 1 ELSE 0 END) AS delivery_success_count,
                     SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown'
@@ -540,6 +557,12 @@ class V3StrategyAnalyticsRepositoryMixin:
         non_empty_column = non_empty_columns.get(dimension)
         if non_empty_column:
             where_sql = f"{where_sql} AND {non_empty_column}<>''"
+        if dimension in {"checkpoint", "sequence", "script"}:
+            where_sql = f"{where_sql} AND {_DECISION_ELIGIBLE_SQL}"
+        if dimension == "sequence":
+            where_sql = f"{where_sql} AND u.adoption_detail_observed=1 AND u.sequence_adopted=1"
+        elif dimension == "script":
+            where_sql = f"{where_sql} AND u.adoption_detail_observed=1 AND u.script_adopted=1"
         if dimension == "transitions":
             transition_clause = (
                 "COALESCE(o.next_usage_event_id, '')<>'' AND "
@@ -560,6 +583,17 @@ class V3StrategyAnalyticsRepositoryMixin:
                     COUNT(*) AS usage_count,
                     {adopted_count_sql} AS adopted_count,
                     {adoption_eligible_sql} AS adoption_eligible_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.checkpoint_code<>'' THEN 1 ELSE 0 END) AS checkpoint_turn_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.sequence_candidate_count>0 THEN 1 ELSE 0 END) AS sequence_candidate_turn_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.sequence_candidate_count>0 THEN 1 ELSE 0 END) AS sequence_adoption_eligible_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.sequence_adopted=1 THEN 1 ELSE 0 END) AS sequence_adopted_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.script_candidate_count>0 THEN 1 ELSE 0 END) AS script_candidate_turn_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.script_candidate_count>0 THEN 1 ELSE 0 END) AS script_adoption_eligible_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.script_adopted=1 THEN 1 ELSE 0 END) AS script_adopted_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 THEN 1 ELSE 0 END) AS adoption_detail_observed_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.checkpoint_code<>'' AND u.script_candidate_count=0 THEN 1 ELSE 0 END) AS checkpoint_without_script_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.sequence_candidate_count>0 AND u.sequence_adopted=0 THEN 1 ELSE 0 END) AS sequence_not_adopted_count,
+                    SUM(CASE WHEN {_DECISION_ELIGIBLE_SQL} AND u.adoption_detail_observed=1 AND u.script_candidate_count>0 AND u.script_adopted=0 THEN 1 ELSE 0 END) AS script_not_adopted_count,
                     SUM(CASE WHEN u.dispatch_id<>'' THEN 1 ELSE 0 END) AS dispatch_count,
                     SUM(CASE WHEN u.delivery_status=? THEN 1 ELSE 0 END) AS delivery_success_count,
                     SUM(CASE WHEN COALESCE(o.attribution_anchor_source, 'unknown')<>'unknown'
@@ -746,6 +780,7 @@ def _usage_event_from_state(*, conversation_id: str, final_state: dict[str, Any]
     sequence_candidate_count = len(_list(recall.get("sequence_candidates")))
     script_candidate_count = int(recall.get("candidate_count") or len(_list(recall.get("candidates"))))
     selected_script_ids = _string_list(knowledge_use.get("selected_script_ids"))
+    adopted_sequence_id = _text(knowledge_use.get("sequence_id"))
     fallback_used = _fallback_used(final_state, recall)
     intent = _decision_part(final_state, "realtime_intent")
     emotion = _decision_part(final_state, "emotion_decision")
@@ -797,6 +832,9 @@ def _usage_event_from_state(*, conversation_id: str, final_state: dict[str, Any]
         "sequence_candidate_count": sequence_candidate_count,
         "script_candidate_count": script_candidate_count,
         "adopted": 1 if adopted else 0,
+        "sequence_adopted": 1 if adopted_sequence_id else 0,
+        "script_adopted": 1 if selected_script_ids else 0,
+        "adoption_detail_observed": 1,
         "dispatch_id": _text(async_final.get("dispatch_id") or control_async.get("dispatch_id")),
         "delivery_status": _text(async_final.get("status") or control_async.get("status")),
         "delivered_at": "",
@@ -1363,8 +1401,18 @@ def _customer_turn_eligible(state: dict[str, Any]) -> bool:
 
 def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
     usage_count = _int(row.get("usage_count"))
+    customer_count = _int(row.get("customer_count"))
     adopted_count = _int(row.get("adopted_count"))
     adoption_eligible_count = _int(row.get("adoption_eligible_count"))
+    checkpoint_turn_count = _int(row.get("checkpoint_turn_count"))
+    sequence_candidate_turn_count = _int(row.get("sequence_candidate_turn_count"))
+    sequence_adoption_eligible_count = _int(row.get("sequence_adoption_eligible_count"))
+    sequence_adopted_count = _int(row.get("sequence_adopted_count"))
+    script_candidate_turn_count = _int(row.get("script_candidate_turn_count"))
+    script_adoption_eligible_count = _int(row.get("script_adoption_eligible_count"))
+    script_adopted_count = _int(row.get("script_adopted_count"))
+    adoption_detail_observed_count = _int(row.get("adoption_detail_observed_count"))
+    checkpoint_without_script_count = _int(row.get("checkpoint_without_script_count"))
     dispatch_count = _int(row.get("dispatch_count"))
     delivery_success_count = _int(row.get("delivery_success_count"))
     delivered_attribution_count = _int(row.get("delivered_attribution_count"))
@@ -1374,7 +1422,12 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
     order_query_attempt_count = _int(row.get("order_query_attempt_count"))
     return {
         **{key: value for key, value in row.items() if key not in {
-            "usage_count", "adopted_count", "adoption_eligible_count", "dispatch_count", "delivery_success_count",
+            "usage_count", "customer_count", "adopted_count", "adoption_eligible_count",
+            "checkpoint_turn_count", "sequence_candidate_turn_count", "sequence_adoption_eligible_count",
+            "sequence_adopted_count", "script_candidate_turn_count", "script_adoption_eligible_count",
+            "script_adopted_count", "adoption_detail_observed_count", "checkpoint_without_script_count",
+            "sequence_not_adopted_count", "script_not_adopted_count",
+            "dispatch_count", "delivery_success_count",
             "replied_24h_count", "paid_72h_count", "scheduled_7d_count",
             "decision_coverage_count", "decision_eligible_count", "decision_degraded_count",
             "delivered_attribution_count", "delivery_unknown_count",
@@ -1390,9 +1443,30 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
             "closing_catalog_unavailable_count",
         }},
         "usage_count": usage_count,
+        "customer_count": customer_count,
         "adopted_count": adopted_count,
         "adoption_eligible_count": adoption_eligible_count,
         "adoption_rate": _optional_rate(adopted_count, adoption_eligible_count),
+        "checkpoint_turn_count": checkpoint_turn_count,
+        "checkpoint_turn_rate": _optional_rate(checkpoint_turn_count, decision_eligible_count),
+        "sequence_candidate_turn_count": sequence_candidate_turn_count,
+        "sequence_candidate_rate": _optional_rate(sequence_candidate_turn_count, decision_eligible_count),
+        "sequence_adoption_eligible_count": sequence_adoption_eligible_count,
+        "sequence_adopted_count": sequence_adopted_count,
+        "sequence_adoption_rate": _optional_rate(sequence_adopted_count, sequence_adoption_eligible_count),
+        "script_candidate_turn_count": script_candidate_turn_count,
+        "script_candidate_rate": _optional_rate(script_candidate_turn_count, decision_eligible_count),
+        "script_adoption_eligible_count": script_adoption_eligible_count,
+        "script_adopted_count": script_adopted_count,
+        "script_adoption_rate": _optional_rate(script_adopted_count, script_adoption_eligible_count),
+        "adoption_detail_observed_count": adoption_detail_observed_count,
+        "checkpoint_without_script_count": checkpoint_without_script_count,
+        "checkpoint_script_coverage_rate": _optional_rate(
+            max(0, checkpoint_turn_count - checkpoint_without_script_count),
+            checkpoint_turn_count,
+        ),
+        "sequence_not_adopted_count": _int(row.get("sequence_not_adopted_count")),
+        "script_not_adopted_count": _int(row.get("script_not_adopted_count")),
         "dispatch_count": dispatch_count,
         "delivery_success_count": delivery_success_count,
         "delivery_success_rate": _optional_rate(delivery_success_count, dispatch_count),
@@ -1436,6 +1510,9 @@ def _analytics_counts(row: dict[str, Any]) -> dict[str, Any]:
 
 def _decode_usage_row(row: dict[str, Any]) -> dict[str, Any]:
     row["adopted"] = bool(row.get("adopted"))
+    row["sequence_adopted"] = bool(row.get("sequence_adopted"))
+    row["script_adopted"] = bool(row.get("script_adopted"))
+    row["adoption_detail_observed"] = bool(row.get("adoption_detail_observed"))
     row["fallback_used"] = bool(row.get("fallback_used"))
     if "decision_reasons_json" in row:
         row["decision_reasons"] = loads_list(_text(row.pop("decision_reasons_json")))

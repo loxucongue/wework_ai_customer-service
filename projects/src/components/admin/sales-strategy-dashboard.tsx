@@ -4,13 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
+  BookOpenCheck,
   CheckCircle2,
   Clock3,
   Filter,
-  MessageCircleMore,
+  GitBranch,
+  Library,
   RefreshCw,
   ShieldCheck,
-  Sparkles,
   Target,
   TrendingUp,
 } from "lucide-react";
@@ -38,6 +39,7 @@ import { cn } from "@/lib/utils";
 
 type MetricSet = {
   usage_count?: number;
+  customer_count?: number;
   adopted_count?: number;
   adoption_eligible_count?: number;
   adoption_rate?: number | null;
@@ -55,6 +57,23 @@ type MetricSet = {
   decision_coverage_rate?: number;
   decision_degraded_count?: number;
   decision_degraded_rate?: number;
+  checkpoint_turn_count?: number;
+  checkpoint_turn_rate?: number | null;
+  sequence_candidate_turn_count?: number;
+  sequence_candidate_rate?: number | null;
+  sequence_adoption_eligible_count?: number;
+  sequence_adopted_count?: number;
+  sequence_adoption_rate?: number | null;
+  script_candidate_turn_count?: number;
+  script_candidate_rate?: number | null;
+  script_adoption_eligible_count?: number;
+  script_adopted_count?: number;
+  script_adoption_rate?: number | null;
+  adoption_detail_observed_count?: number;
+  checkpoint_without_script_count?: number;
+  checkpoint_script_coverage_rate?: number | null;
+  sequence_not_adopted_count?: number;
+  script_not_adopted_count?: number;
   delivery_unknown_count?: number;
   delivery_unknown_rate?: number;
   delivered_attribution_count?: number;
@@ -173,7 +192,7 @@ export function SalesStrategyDashboard() {
     setError("");
     const query = buildQuery(applied);
     try {
-      const response = await fetch(`/api/v3-strategy-analytics?${query}`, { cache: "no-store" });
+      const response = await fetch(`/api/v3-strategy-analytics?${query}&refresh=${refreshKey}`, { cache: "no-store" });
       const next = (await response.json()) as DashboardPayload;
       if (!response.ok) throw new Error(next.detail || next.error || "销售策略数据加载失败");
       setPayload(next);
@@ -196,21 +215,21 @@ export function SalesStrategyDashboard() {
   return (
     <div className="min-h-[calc(100vh-3.5rem)] bg-[#f5f7f8]">
       <div className="mx-auto max-w-[1680px] space-y-5 p-4 lg:p-6">
-        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 px-5 py-5 text-white shadow-sm lg:px-7">
-          <div className="flex flex-col justify-between gap-5 xl:flex-row xl:items-end">
-            <div className="max-w-3xl">
-              <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-300">
-                <TrendingUp className="size-4" /> V3 Sales Intelligence
+        <section className="border-b border-slate-200 pb-5">
+          <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-emerald-700">
+                <GitBranch className="size-4" /> V3 策略生效监控
               </div>
-              <h2 className="text-2xl font-semibold tracking-tight lg:text-3xl">销售策略 BI</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-300">
-                观察客户卡在哪里、Reply 采用了什么策略，以及后续开口和订单状态如何变化。结果采用时间窗口归因，不代表单一策略直接造成成交。
+              <h2 className="text-2xl font-semibold text-slate-950">从识别客户问题到最终采用策略</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                监控卡点是否识别、序列和话术是否召回、Reply 是否正式采用，并定位需要业务补内容或复盘的节点。
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
-              <span className="rounded-full bg-white/10 px-3 py-1.5">每次刷新读取实时聚合</span>
-              <span className="rounded-full bg-white/10 px-3 py-1.5">不展示聊天原文</span>
-              <span className="rounded-full bg-white/10 px-3 py-1.5">延时逼单保持 Shadow</span>
+            <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
+              <span><strong className="text-slate-950">{number(summary.customer_count)}</strong> 个客户</span>
+              <span><strong className="text-slate-950">{number(summary.usage_count)}</strong> 个真实 V3 轮次</span>
+              <span>正式采用以 Reply 记录的真实 ID 为准</span>
             </div>
           </div>
         </section>
@@ -249,27 +268,24 @@ export function SalesStrategyDashboard() {
           </div>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-          <MetricCard label="有效客户轮次" value={number(summary.usage_count)} detail={`${number(summary.decision_eligible_count)} 次进入策略决策`} icon={Target} />
-          <MetricCard label="Reply 采用率" value={percent(summary.adoption_rate)} detail={`${number(summary.adopted_count)} / ${number(summary.adoption_eligible_count)} 次候选采用`} icon={Sparkles} tone="emerald" />
-          <MetricCard label="24h 后续开口率" value={percent(summary.customer_replied_24h_rate)} detail={`${number(summary.customer_replied_24h_count)} / ${number(summary.delivered_attribution_count)} 次可归因记录`} icon={MessageCircleMore} tone="blue" />
-          <MetricCard label="72h 支付率" value={percent(summary.paid_72h_rate)} detail={`${number(summary.paid_72h_count)} / ${number(summary.order_outcome_eligible_count)} 次到期记录`} icon={TrendingUp} tone="violet" />
-          <MetricCard label="7d 排客率" value={percent(summary.scheduled_7d_rate)} detail={`${number(summary.scheduled_7d_count)} / ${number(summary.order_7d_eligible_count)} 次到期记录`} icon={CheckCircle2} tone="amber" />
-          {salesDecision ? (
-            <MetricCard label="决策覆盖率" value={percent(summary.decision_coverage_rate)} detail={`${number(summary.decision_degraded_count)} 次降级`} icon={ShieldCheck} tone="slate" />
-          ) : (
-            <MetricCard label="发送成功率" value={percent(summary.delivery_success_rate)} detail={`${number(summary.delivery_success_count)} 次成功送达`} icon={ShieldCheck} tone="slate" />
-          )}
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <MetricCard label="策略决策轮次" value={number(summary.decision_eligible_count)} detail={`筛选范围共 ${number(summary.usage_count)} 个 V3 轮次`} icon={Target} />
+          <MetricCard label="卡点识别率" value={percent(summary.checkpoint_turn_rate)} detail={`${number(summary.checkpoint_turn_count)} / ${number(summary.decision_eligible_count)} 个策略轮次`} icon={Library} tone="blue" />
+          <MetricCard label="序列正式采用率" value={percent(summary.sequence_adoption_rate)} detail={`${number(summary.sequence_adopted_count)} / ${number(summary.sequence_adoption_eligible_count)} 个有候选轮次`} icon={GitBranch} tone="emerald" />
+          <MetricCard label="话术正式采用率" value={percent(summary.script_adoption_rate)} detail={`${number(summary.script_adopted_count)} / ${number(summary.script_adoption_eligible_count)} 个有候选轮次`} icon={BookOpenCheck} tone="violet" />
+          <MetricCard label="正常完成决策" value={percent(normalDecisionRate(summary))} detail={`${number((summary.decision_coverage_count || 0) - (summary.decision_degraded_count || 0))} 正常 / ${number(summary.decision_degraded_count)} 降级`} icon={ShieldCheck} tone="amber" />
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(420px,0.8fr)]">
-          <Panel title="关键结果概览" subtitle="各指标分母不同，用于同屏观察，不作为严格转化漏斗">
-            <ResultBars summary={summary} />
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
+          <Panel title="V3 策略生效链路" subtitle="候选表示系统提供了可选内容；正式采用表示 Reply 输出了真实序列或话术 ID">
+            <EffectivenessPath summary={summary} />
           </Panel>
-          <Panel title="质量与安全监控" subtitle="优先处理误推进、卡点未暂停和决策结构问题">
-            <HealthGrid summary={summary} />
+          <Panel title="当前需要处理" subtitle="直接指向业务补内容、复盘候选或修复策略结构">
+            <ManagementActions summary={summary} />
           </Panel>
         </div>
+
+        <CheckpointSupplyTable items={data?.checkpoints?.items} summary={summary} />
 
         {salesDecision && <div className="grid gap-4 xl:grid-cols-3">
           <DimensionChart
@@ -298,16 +314,12 @@ export function SalesStrategyDashboard() {
           />
         </div>}
 
-        {salesDecision && <ClosingStrategyTable items={data?.closing?.items} />}
-
         <div className="grid gap-4 xl:grid-cols-2">
-          <RankTable
-            title="卡点与跟进序列"
-            subtitle="先看高频卡点，再看 Reply 是否真正采用候选"
-            items={mergeStrategyItems(data?.checkpoints?.items, data?.sequences?.items)}
-          />
-          <ScriptTable items={data?.scripts?.items} />
+          <SequenceTable items={data?.sequences?.items} total={summary.sequence_adopted_count} />
+          <ScriptTable items={data?.scripts?.items} total={summary.script_adopted_count} />
         </div>
+
+        {salesDecision && <ClosingStrategyTable items={data?.closing?.items} />}
 
         <div className={cn("grid gap-4", salesDecision && "xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]")}>
           {salesDecision && <TransitionTable items={data?.transitions?.items} />}
@@ -408,53 +420,87 @@ function Panel({ title, subtitle, children }: { title: string; subtitle: string;
   );
 }
 
-function ResultBars({ summary }: { summary: MetricSet }) {
-  if (summary.usage_count === undefined) return <Empty label="暂无可确认的结果数据" />;
-  const values = [
-    { name: "策略记录", value: summary.usage_count || 0 },
-    { name: "Reply 采用", value: summary.adopted_count || 0 },
-    ...(summary.dispatch_count ? [{ name: "发送成功", value: summary.delivery_success_count || 0 }] : []),
-    ...(summary.delivered_attribution_count ? [{ name: "24h 开口", value: summary.customer_replied_24h_count || 0 }] : []),
-    ...(summary.order_outcome_eligible_count ? [{ name: "72h 支付", value: summary.paid_72h_count || 0 }] : []),
-    ...(summary.order_7d_eligible_count ? [{ name: "7d 排客", value: summary.scheduled_7d_count || 0 }] : []),
-  ];
+function EffectivenessPath({ summary }: { summary: MetricSet }) {
   return (
-    <div className="h-64">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={values} layout="vertical" margin={{ left: 6, right: 24 }}>
-          <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" horizontal={false} />
-          <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-          <YAxis type="category" dataKey="name" width={72} tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-          <Tooltip formatter={(value) => number(Number(value))} cursor={{ fill: "#f1f5f9" }} />
-          <Bar dataKey="value" name="数量" fill="#0f172a" radius={[0, 6, 6, 0]} maxBarSize={24} isAnimationActive={false} />
-        </BarChart>
-      </ResponsiveContainer>
+    <div className="space-y-4">
+      <PathNode
+        label="策略完成判断"
+        value={summary.decision_eligible_count}
+        detail={`${number(summary.checkpoint_turn_count)} 轮识别到明确卡点`}
+        icon={Target}
+      />
+      <div className="grid gap-3 lg:grid-cols-2">
+        <PathLane
+          label="跟进序列"
+          icon={GitBranch}
+          candidate={summary.sequence_candidate_turn_count}
+          candidateRate={summary.sequence_candidate_rate}
+          adopted={summary.sequence_adopted_count}
+          eligible={summary.sequence_adoption_eligible_count}
+          adoptionRate={summary.sequence_adoption_rate}
+        />
+        <PathLane
+          label="卡点话术"
+          icon={BookOpenCheck}
+          candidate={summary.script_candidate_turn_count}
+          candidateRate={summary.script_candidate_rate}
+          adopted={summary.script_adopted_count}
+          eligible={summary.script_adoption_eligible_count}
+          adoptionRate={summary.script_adoption_rate}
+        />
+      </div>
     </div>
   );
 }
 
-function HealthGrid({ summary }: { summary: MetricSet }) {
-  const items = [
-    { label: "明确退订误推进", value: summary.hard_stop_wrong_advance_count, danger: true },
-    { label: "新卡点未暂停", value: summary.new_blocker_not_paused_count, danger: true },
-    { label: "旧 Selector 空/错误", value: summary.selector_empty_or_error_count },
-    { label: "策略降级", value: summary.decision_degraded_count },
-    { label: "送达未知", value: summary.delivery_unknown_count },
-    { label: "同类型同动作放宽", value: summary.retrieval_relaxed_count ?? summary.taxonomy_fallback_count },
-  ].filter((item) => item.value !== undefined);
+function PathNode({ label, value, detail, icon: Icon }: { label: string; value?: number; detail: string; icon: typeof Target }) {
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-2">
+    <div className="flex items-center gap-4 border-b border-slate-200 pb-4">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-slate-950 text-white"><Icon className="size-4" /></span>
+      <div className="min-w-0 flex-1"><div className="text-sm font-medium text-slate-700">{label}</div><div className="mt-1 text-xs text-slate-500">{detail}</div></div>
+      <strong className="text-2xl tabular-nums text-slate-950">{number(value)}</strong>
+    </div>
+  );
+}
+
+function PathLane({ label, icon: Icon, candidate, candidateRate, adopted, eligible, adoptionRate }: {
+  label: string;
+  icon: typeof Target;
+  candidate?: number;
+  candidateRate?: number | null;
+  adopted?: number;
+  eligible?: number;
+  adoptionRate?: number | null;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-900"><Icon className="size-4 text-emerald-700" />{label}</div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <div><div className="text-xs text-slate-500">召回候选</div><div className="mt-1 text-xl font-semibold tabular-nums">{number(candidate)}</div><div className="mt-1 text-xs text-slate-500">占策略轮次 {percent(candidateRate)}</div></div>
+        <ArrowRight className="size-4 text-slate-400" />
+        <div><div className="text-xs text-slate-500">Reply 正式采用</div><div className="mt-1 text-xl font-semibold tabular-nums">{number(adopted)}</div><div className="mt-1 text-xs text-slate-500">{number(adopted)} / {number(eligible)}，采用率 {percent(adoptionRate)}</div></div>
+      </div>
+    </div>
+  );
+}
+
+function ManagementActions({ summary }: { summary: MetricSet }) {
+  const items = [
+    { label: "卡点没有话术候选", value: summary.checkpoint_without_script_count, action: "业务补充话术", danger: true },
+    { label: "有话术候选但未采用", value: summary.script_not_adopted_count, action: "复盘相关性与表达" },
+    { label: "有序列候选但未采用", value: summary.sequence_not_adopted_count, action: "复盘跟进节奏" },
+    { label: "策略结构降级", value: summary.decision_degraded_count, action: "检查规则与目录" },
+    { label: "新卡点没有暂停推进", value: summary.new_blocker_not_paused_count, action: "优先复核", danger: true },
+  ];
+  return (
+    <div className="divide-y divide-slate-200">
       {items.map((item) => {
-        const count = item.value;
-        const hasValue = typeof count === "number";
-        const isDanger = Boolean(item.danger && hasValue && count > 0);
+        const active = Boolean(item.value);
         return (
-          <div key={item.label} className={cn("rounded-lg border px-3 py-3", isDanger ? "border-red-200 bg-red-50" : "border-slate-200 bg-slate-50")}>
-            <div className="flex items-center gap-2 text-xs text-slate-600">
-              {isDanger ? <AlertTriangle className="size-3.5 text-red-600" /> : <ShieldCheck className="size-3.5 text-slate-400" />}
-              {item.label}
-            </div>
-            <div className={cn("mt-2 text-xl font-semibold tabular-nums", isDanger && "text-red-700")}>{number(count)}</div>
+          <div key={item.label} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+            {item.danger && active ? <AlertTriangle className="size-4 shrink-0 text-red-600" /> : <ShieldCheck className="size-4 shrink-0 text-slate-400" />}
+            <div className="min-w-0 flex-1"><div className="text-sm text-slate-800">{item.label}</div><div className="mt-0.5 text-xs text-slate-500">{item.action}</div></div>
+            <strong className={cn("text-lg tabular-nums", item.danger && active ? "text-red-700" : "text-slate-950")}>{number(item.value)}</strong>
           </div>
         );
       })}
@@ -471,6 +517,7 @@ function DimensionChart({ title, subtitle, items = [], dataKey, labels, color }:
   const chartData = Array.from(totals, ([key, value]) => ({
     name: labels[key] || key || "未分类",
     value,
+    share: ratio(value, Array.from(totals.values()).reduce((sum, count) => sum + count, 0)),
   })).sort((left, right) => right.value - left.value).slice(0, 8);
   return (
     <Panel title={title} subtitle={subtitle}>
@@ -481,7 +528,13 @@ function DimensionChart({ title, subtitle, items = [], dataKey, labels, color }:
               <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="name" angle={-24} textAnchor="end" interval={0} tick={{ fontSize: 10 }} height={54} />
               <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
-              <Tooltip formatter={(value) => number(Number(value))} cursor={{ fill: "#f8fafc" }} />
+              <Tooltip
+                formatter={(value, _name, entry) => [
+                  `${number(Number(value))} 次（${percent(entry.payload?.share)}）`,
+                  "占比",
+                ]}
+                cursor={{ fill: "#f8fafc" }}
+              />
               <Bar dataKey="value" name="使用次数" fill={color} radius={[6, 6, 0, 0]} maxBarSize={34} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
@@ -491,33 +544,66 @@ function DimensionChart({ title, subtitle, items = [], dataKey, labels, color }:
   );
 }
 
-function RankTable({ title, subtitle, items }: { title: string; subtitle: string; items: Array<{ name: string; type: string; metrics: DimensionItem }> }) {
+function CheckpointSupplyTable({ items = [], summary }: { items?: DimensionItem[]; summary: MetricSet }) {
+  const total = summary.checkpoint_turn_count || items.reduce((sum, item) => sum + (item.usage_count || 0), 0);
   return (
-    <Panel title={title} subtitle={subtitle}>
+    <Panel title="客户卡点与内容供给" subtitle="按卡点占比决定业务内容优先级；候选覆盖低时优先补话术，有候选但采用低时优先复盘质量">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px] text-left text-sm">
-          <thead className="border-b text-xs text-slate-500"><tr><th className="pb-2 font-medium">名称</th><th className="pb-2 font-medium">类型</th><th className="pb-2 text-right font-medium">使用</th><th className="pb-2 text-right font-medium">采用率</th><th className="pb-2 text-right font-medium">24h 开口</th></tr></thead>
+        <table className="w-full min-w-[760px] text-left text-sm">
+          <thead className="border-b text-xs text-slate-500"><tr><th className="pb-2 font-medium">客户卡点</th><th className="pb-2 text-right font-medium">卡点轮次</th><th className="pb-2 text-right font-medium">卡点占比</th><th className="pb-2 text-right font-medium">序列候选覆盖</th><th className="pb-2 text-right font-medium">话术候选覆盖</th><th className="pb-2 text-right font-medium">话术采用率</th><th className="pb-2 text-right font-medium">建议动作</th></tr></thead>
           <tbody className="divide-y divide-slate-100">
-            {items.slice(0, 10).map((item, index) => <tr key={`${item.type}-${item.name}-${index}`}><td className="max-w-56 truncate py-3 font-medium text-slate-800" title={item.name}>{item.name}</td><td className="py-3"><Badge variant="outline">{item.type}</Badge></td><td className="py-3 text-right tabular-nums">{number(item.metrics.usage_count)}</td><td className="py-3 text-right tabular-nums">{percent(item.metrics.adoption_rate)}</td><td className="py-3 text-right tabular-nums">{percent(item.metrics.customer_replied_24h_rate)}</td></tr>)}
+            {items.slice(0, 12).map((item) => {
+              const scriptCoverage = ratio(item.script_candidate_turn_count, item.usage_count);
+              const advice = checkpointAdvice(scriptCoverage, item.script_adoption_rate);
+              return <tr key={item.checkpoint_code || item.checkpoint_name}>
+                <td className="max-w-64 truncate py-3 font-medium text-slate-800" title={item.checkpoint_name || item.checkpoint_code}>{item.checkpoint_name || item.checkpoint_code || "未命名卡点"}</td>
+                <td className="py-3 text-right tabular-nums">{number(item.usage_count)}</td>
+                <td className="py-3 text-right tabular-nums">{percent(ratio(item.usage_count, total))}</td>
+                <td className="py-3 text-right tabular-nums">{percent(ratio(item.sequence_candidate_turn_count, item.usage_count))}</td>
+                <td className="py-3 text-right tabular-nums">{percent(scriptCoverage)}</td>
+                <td className="py-3 text-right tabular-nums">{percent(item.script_adoption_rate)}</td>
+                <td className="py-3 text-right"><Badge variant={advice.urgent ? "destructive" : "outline"}>{advice.label}</Badge></td>
+              </tr>;
+            })}
           </tbody>
         </table>
-        {!items.length && <Empty label="暂无卡点或序列数据" />}
+        {!items.length && <Empty label="暂无客户卡点数据" />}
       </div>
     </Panel>
   );
 }
 
-function ScriptTable({ items = [] }: { items?: DimensionItem[] }) {
+function SequenceTable({ items = [], total }: { items?: DimensionItem[]; total?: number }) {
   return (
-    <Panel title="高频卡点话术" subtitle="话术使用、Reply 采用和后续结果同表观察">
+    <Panel title="正式采用的跟进序列" subtitle="只统计 Reply 明确写入真实序列 ID 的轮次，不把 Router 召回当成正式使用">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px] text-left text-sm">
-          <thead className="border-b text-xs text-slate-500"><tr><th className="pb-2 font-medium">话术</th><th className="pb-2 text-right font-medium">使用</th><th className="pb-2 text-right font-medium">采用率</th><th className="pb-2 text-right font-medium">24h 开口</th><th className="pb-2 text-right font-medium">72h 支付</th></tr></thead>
+        <table className="w-full min-w-[520px] text-left text-sm">
+          <thead className="border-b text-xs text-slate-500"><tr><th className="pb-2 font-medium">跟进序列</th><th className="pb-2 text-right font-medium">采用轮次</th><th className="pb-2 text-right font-medium">采用占比</th></tr></thead>
           <tbody className="divide-y divide-slate-100">
-            {items.slice(0, 10).map((item, index) => <tr key={`${item.script_id || item.script_name}-${index}`}><td className="max-w-64 truncate py-3 font-medium text-slate-800" title={item.script_name || item.script_id}>{item.script_name || item.script_id || "未命名话术"}</td><td className="py-3 text-right tabular-nums">{number(item.usage_count)}</td><td className="py-3 text-right tabular-nums">{percent(item.adoption_rate)}</td><td className="py-3 text-right tabular-nums">{percent(item.customer_replied_24h_rate)}</td><td className="py-3 text-right tabular-nums">{percent(item.paid_72h_rate)}</td></tr>)}
+            {items.slice(0, 10).map((item) => <tr key={item.sequence_id || item.sequence_name}>
+              <td className="max-w-80 truncate py-3 font-medium text-slate-800" title={item.sequence_name || item.sequence_id}>{item.sequence_name || item.sequence_id || "未命名序列"}</td>
+              <td className="py-3 text-right tabular-nums">{number(item.usage_count)}</td>
+              <td className="py-3 text-right tabular-nums">{percent(ratio(item.usage_count, total))}</td>
+            </tr>)}
           </tbody>
         </table>
-        {!items.length && <Empty label="暂无话术采用数据" />}
+        {!items.length && <Empty label="暂无可确认的正式序列采用记录" />}
+      </div>
+    </Panel>
+  );
+}
+
+function ScriptTable({ items = [], total }: { items?: DimensionItem[]; total?: number }) {
+  return (
+    <Panel title="最终采用的话术" subtitle="用于发现高频采用表达并交给业务复盘；采用多不等于转化效果好">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[520px] text-left text-sm">
+          <thead className="border-b text-xs text-slate-500"><tr><th className="pb-2 font-medium">话术</th><th className="pb-2 text-right font-medium">采用轮次</th><th className="pb-2 text-right font-medium">采用占比</th></tr></thead>
+          <tbody className="divide-y divide-slate-100">
+            {items.slice(0, 10).map((item) => <tr key={item.script_id || item.script_name}><td className="max-w-72 truncate py-3 font-medium text-slate-800" title={item.script_name || item.script_id}>{item.script_name || item.script_id || "未命名话术"}</td><td className="py-3 text-right tabular-nums">{number(item.usage_count)}</td><td className="py-3 text-right tabular-nums">{percent(ratio(item.usage_count, total))}</td></tr>)}
+          </tbody>
+        </table>
+        {!items.length && <Empty label="暂无可确认的正式话术采用记录" />}
       </div>
     </Panel>
   );
@@ -527,8 +613,8 @@ function ClosingStrategyTable({ items = [] }: { items?: DimensionItem[] }) {
   return (
     <Panel title="逼单策略实际使用" subtitle="名称来自本轮外部业务目录，ID 只用于追溯">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
-          <thead className="border-b text-xs text-slate-500"><tr><th className="pb-2 font-medium">规则</th><th className="pb-2 font-medium">策略 / 节点</th><th className="pb-2 font-medium">动作</th><th className="pb-2 font-medium">召回方式</th><th className="pb-2 text-right font-medium">使用</th><th className="pb-2 text-right font-medium">24h 开口</th></tr></thead>
+        <table className="w-full min-w-[680px] text-left text-sm">
+          <thead className="border-b text-xs text-slate-500"><tr><th className="pb-2 font-medium">规则</th><th className="pb-2 font-medium">策略 / 节点</th><th className="pb-2 font-medium">动作</th><th className="pb-2 font-medium">召回方式</th><th className="pb-2 text-right font-medium">使用轮次</th></tr></thead>
           <tbody className="divide-y divide-slate-100">
             {items.slice(0, 12).map((item, index) => (
               <tr key={`${item.closing_sequence_key || "none"}-${item.closing_node_key || "none"}-${index}`}>
@@ -537,7 +623,6 @@ function ClosingStrategyTable({ items = [] }: { items?: DimensionItem[] }) {
                 <td className="py-3"><Badge variant="outline">{closingLabels[item.closing_action || ""] || item.closing_action || "未判断"}</Badge></td>
                 <td className="py-3 text-xs text-slate-500">{item.retrieval_mode === "deterministic_top_k" ? "稳定 Top-K" : item.retrieval_mode || "—"}</td>
                 <td className="py-3 text-right tabular-nums">{number(item.usage_count)}</td>
-                <td className="py-3 text-right tabular-nums">{percent(item.customer_replied_24h_rate)}</td>
               </tr>
             ))}
           </tbody>
@@ -601,11 +686,21 @@ function Empty({ label, success = false }: { label: string; success?: boolean })
   return <div className="flex min-h-28 flex-col items-center justify-center gap-2 text-center text-sm text-slate-400">{success ? <CheckCircle2 className="size-5 text-emerald-500" /> : <TrendingUp className="size-5" />}<span>{label}</span></div>;
 }
 
-function mergeStrategyItems(checkpoints: DimensionItem[] = [], sequences: DimensionItem[] = []) {
-  return [
-    ...checkpoints.map((metrics) => ({ name: metrics.checkpoint_name || metrics.checkpoint_code || "未命名卡点", type: "卡点", metrics })),
-    ...sequences.map((metrics) => ({ name: metrics.sequence_name || metrics.sequence_id || "未命名序列", type: "序列", metrics })),
-  ].sort((a, b) => (b.metrics.usage_count || 0) - (a.metrics.usage_count || 0));
+function normalDecisionRate(summary: MetricSet) {
+  const total = summary.decision_coverage_count;
+  if (!total) return total === 0 ? null : undefined;
+  return Math.max(0, total - (summary.decision_degraded_count || 0)) / total;
+}
+
+function ratio(numerator?: number, denominator?: number) {
+  if (numerator === undefined || denominator === undefined || denominator <= 0) return null;
+  return numerator / denominator;
+}
+
+function checkpointAdvice(scriptCoverage: number | null, adoptionRate?: number | null) {
+  if (scriptCoverage !== null && scriptCoverage < 0.8) return { label: "补充话术", urgent: true };
+  if (adoptionRate !== undefined && adoptionRate !== null && adoptionRate < 0.3) return { label: "复盘候选", urgent: false };
+  return { label: "持续观察", urgent: false };
 }
 
 function defaultFilters(days: number, current?: Filters): Filters {

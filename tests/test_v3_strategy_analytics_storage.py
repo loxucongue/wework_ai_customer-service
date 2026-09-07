@@ -168,6 +168,9 @@ def test_usage_mapping_is_structured_idempotent_and_excludes_basis(tmp_path: Pat
     assert row["policy_version"] == "2026-09-03.1"
     assert row["decision_status"] == "ok"
     assert row["adopted"] == 0
+    assert row["sequence_adopted"] == 0
+    assert row["script_adopted"] == 0
+    assert row["adoption_detail_observed"] == 1
     assert row["intent_confidence"] == "high"
     assert json.loads(row["intent_secondary_json"]) == ["general_chat"]
     assert row["closing_action"] == "enter"
@@ -921,6 +924,46 @@ def test_by_closing_uses_closing_action_adoption_without_changing_global_adoptio
     )
     assert by_rule["items"][0]["closing_rule_id"] == "external:rule:101"
     assert by_rule["items"][0]["adopted_count"] == 1
+
+
+def test_summary_separates_candidates_from_formal_sequence_and_script_adoption(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    candidate = _state("candidate-only")
+    candidate["semantic_route"]["sequence_match"] = {"sequence_ids": ["sequence-1"]}
+    candidate["sales_recall"] = {
+        "sequence_candidates": [{"sequence_id": "sequence-1", "sequence_name": "候选序列"}],
+        "candidates": [{"script_id": "script-1", "script_name": "候选话术"}],
+        "candidate_count": 1,
+    }
+    repository.record_v3_strategy_usage(conversation_id="conversation-1", final_state=candidate)
+
+    adopted = _state("formally-adopted")
+    adopted["semantic_route"]["sequence_match"] = {"sequence_ids": ["sequence-1"]}
+    adopted["sales_recall"] = candidate["sales_recall"]
+    adopted["reply_knowledge_use"] = {
+        "sequence_id": "sequence-1",
+        "sequence_name": "候选序列",
+        "selected_script_ids": ["script-1"],
+    }
+    repository.record_v3_strategy_usage(conversation_id="conversation-1", final_state=adopted)
+
+    summary = repository.v3_strategy_analytics_summary()
+    assert summary["checkpoint_turn_count"] == 2
+    assert summary["sequence_candidate_turn_count"] == 2
+    assert summary["sequence_adopted_count"] == 1
+    assert summary["sequence_adoption_rate"] == 0.5
+    assert summary["script_candidate_turn_count"] == 2
+    assert summary["script_adopted_count"] == 1
+    assert summary["script_adoption_rate"] == 0.5
+    assert summary["sequence_not_adopted_count"] == 1
+    assert summary["script_not_adopted_count"] == 1
+
+    sequence_items = repository.v3_strategy_analytics_by_dimension(dimension="sequence")["items"]
+    script_items = repository.v3_strategy_analytics_by_dimension(dimension="script")["items"]
+    assert [(item["sequence_id"], item["usage_count"]) for item in sequence_items] == [("sequence-1", 1)]
+    assert [(item["script_id"], item["usage_count"]) for item in script_items] == [("script-1", 1)]
 
 
 def test_system_guard_is_excluded_from_policy_coverage_and_not_a_failure(tmp_path: Path) -> None:

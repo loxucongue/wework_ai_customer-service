@@ -73,10 +73,13 @@
 - `GET /admin/v3-strategy-analytics/failures`
 - `POST /admin/v3-strategy-analytics/outcomes/refresh`
 - `by-intent`、`by-emotion`、`by-closing`、`transitions` 属于统一销售决策观测增强接口；部署未包含对应后端版本时，管理页面必须将这些维度标记为暂不可用，不能把缺失数据解释为零。
-- 管理页面：`/analytics/sales`；前端通过同源只读聚合代理 `/api/v3-strategy-analytics` 并发读取上述查询接口。单个维度不可用时展示局部空态，`summary` 不可用时展示明确错误，不伪造零值；采用、发送、开口和订单指标没有有效分母时返回并展示不可用，而不是 `0%`。
+- 管理页面：`/analytics/sales`；前端通过同源只读聚合代理 `/api/v3-strategy-analytics` 并发读取上述查询接口。单个维度不可用时展示局部空态，`summary` 不可用时展示明确错误，不伪造零值；采用指标没有有效分母时返回并展示不可用，而不是 `0%`。
 - 鉴权：`AI_PATHS_API_KEY`。
 - 常用筛选：`started_from`、`started_to`、`corp_id`、`wechat`、`checkpoint_code`、`sequence_id`、`script_id`、`action_code`、`fallback_used`、`intent_code`、`emotion_code`、`closing_rule_id`（最终决策保留的主命中规则）、`closing_sequence_key`、`closing_action`、`closing_catalog_status`、`closing_rule_match_status`、`closing_constraint_status`、`decision_status`。
-- 指标：使用与采用、策略决策覆盖/降级、发送成功、客户 24h 开口、72h 支付、7d 排客、意图/情绪/逼单分布、真实跨轮情绪变化、selector empty/error、taxonomy fallback、退订误推进、新卡点未暂停、订单查询成功率和订单窗口可归因率。
+- 页面主链路指标：有效策略决策轮次、卡点识别率、序列候选覆盖、序列正式采用率、话术候选覆盖、话术正式采用率、策略正常完成/降级、意图/情绪/逼单动作分布和真实跨轮变化。7d 排客率不再作为管理页面指标。
+- `summary` 的 `checkpoint_turn_count`、`sequence_candidate_turn_count`、`script_candidate_turn_count` 及其采用指标只统计存在策略版本且未被 `not_enabled/system_guard/skipped` 排除的有效决策轮次。候选表示策略提供了可选内容，不表示 Reply 已使用。
+- `sequence_adopted`、`script_adopted` 只来自 Reply 最终输出的真实 ID；`adoption_detail_observed` 标记该轮是否有可验证的采用详情。历史记录无法从留存运行快照确认时不进入采用率分母，禁止把 Router 召回 ID 当成正式采用。
+- 卡点视图同时返回卡点轮次、序列/话术候选覆盖和正式采用数据，用于区分“业务内容缺失”与“已有候选但未采用”；序列、话术排行只展示可验证的正式采用记录。采用频次用于筛选复盘对象，不等于转化效果。
 - 数据边界：不返回完整客户聊天原文；只返回 ID、分类、策略、话术、发送状态和归因窗口结果。
 - 归因口径：时间窗口统计，不声明强因果。客户开口只来自已标记为真实客户轮次的后续 V3 消息；平台自动消息、撤回、去重/覆盖和隔离评测消息不计入。启用平台订单归因后，支付、排客、到店和完成优先使用平台只读订单状态。送达未知不计算开口/订单窗口；订单接口成功但基线不足与查询失败分别统计，均不能写成未成交。
 - `transitions` 只返回已有下一次真实 V3 客户回复的变化，不把“尚未回复”伪装成空意图/空情绪迁移。

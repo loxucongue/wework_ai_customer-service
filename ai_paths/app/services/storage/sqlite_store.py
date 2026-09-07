@@ -254,6 +254,9 @@ class SQLiteStore:
                 "decision_evidence_refs_json": "TEXT NOT NULL DEFAULT '{}'",
                 "retrieval_mode": "TEXT NOT NULL DEFAULT ''",
                 "customer_turn_eligible": "INTEGER NOT NULL DEFAULT 1",
+                "sequence_adopted": "INTEGER NOT NULL DEFAULT 0",
+                "script_adopted": "INTEGER NOT NULL DEFAULT 0",
+                "adoption_detail_observed": "INTEGER NOT NULL DEFAULT 0",
             },
             "v3_strategy_outcome_events": {
                 "next_usage_event_id": "TEXT NOT NULL DEFAULT ''",
