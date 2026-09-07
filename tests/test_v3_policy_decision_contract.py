@@ -15,6 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 from app.graph.nodes.reply_nodes import (  # noqa: E402
     _normalized_policy_decision,
     _policy_safety_floor,
+    _reply_repair_hint,
     _reply_retry_messages,
     _validate_policy_reply_consistency,
     _validate_policy_safety_floor,
@@ -29,6 +30,7 @@ from app.graph.nodes.reply_validation import (  # noqa: E402
     _requested_store_scope_regions,
     _validate_appointment_time_facts,
 )
+from app.graph.nodes.reply_admission import validate_model_led_reply_admission  # noqa: E402
 from app.graph.nodes.reply_context import _ai_sales_policy_for_reply  # noqa: E402
 from app.prompts.reply_synthesizer import _render_missing_authority_guard  # noqa: E402
 from app.chat_runtime import _record_stop_contact_fact  # noqa: E402
@@ -879,22 +881,60 @@ def test_invalid_closing_catalog_reference_degrades_without_discarding_safe_repl
     assert normalized["closing_decision"]["sequence_key"] == "none"
 
 
-def test_store_visit_suggestion_is_not_mistaken_for_live_appointment_availability() -> None:
-    _validate_appointment_time_facts(
-        [
-            {
-                "type": "text",
-                "content": "您可以先去门店做皮肤检测，了解清楚、觉得合适再做。",
-            }
-        ],
-        {},
-    )
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "您可以先去门店做皮肤检测，了解清楚、觉得合适再做。",
+        "可以预约，时间都能协调，您哪天方便？",
+        "明天下午可以协调，先按这个时间作为到店意向。",
+        "我是小贝，主要协助您了解活动和预约。您哪天方便过来，我帮您协调时间？",
+        "活动目前还有名额，到店时间可以再协调。",
+    ],
+)
+def test_coordination_language_is_not_mistaken_for_live_appointment_availability(reply: str) -> None:
+    _validate_appointment_time_facts([{"type": "text", "content": reply}], {})
 
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "明天下午可以到店，有空位。",
+        "明天下午有档期。",
+        "明天下午能约。",
+        "明天下午的时段已经确认。",
+    ],
+)
+def test_concrete_slot_claim_still_requires_available_time_fact(reply: str) -> None:
     with pytest.raises(ValueError, match="available_time_fact_required"):
-        _validate_appointment_time_facts(
-            [{"type": "text", "content": "明天下午可以到店，有空位。"}],
-            {},
-        )
+        _validate_appointment_time_facts([{"type": "text", "content": reply}], {})
+
+
+def test_identity_answer_can_naturally_advance_appointment_without_slot_facts() -> None:
+    messages = [
+        {
+            "type": "text",
+            "content": "我是小贝，负责协助您了解活动和预约。可以预约，时间都能协调，您哪天方便？",
+        }
+    ]
+    state = {
+        "normalized_content": "你是哪位",
+        "conversation_history": [
+            "小贝：活动名额需要预约金。",
+            "客户：我下午有空。",
+            "小贝：之前说过可以登记到店时间。",
+        ],
+        "evidence_join": {"structured_facts": {}, "content_candidates": []},
+    }
+
+    validate_model_led_reply_admission(messages, state)
+
+
+def test_available_time_repair_preserves_legal_appointment_progression() -> None:
+    hint = _reply_repair_hint("available_time_fact_required")
+
+    assert "可以预约、时间可协调" in hint
+    assert "这个时间可以协调、先作为到店意向" in hint
+    assert "不要说可以约" not in hint
 
 
 def test_shadow_closing_is_cancelled_by_authoritative_terminal_facts() -> None:

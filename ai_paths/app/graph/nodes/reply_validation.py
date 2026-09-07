@@ -2490,25 +2490,44 @@ def _store_like_names_from_text(text: str) -> list[str]:
 
 
 def _asserts_time_available(text: str) -> bool:
+    """Return whether the reply claims a concrete slot is actually available.
+
+    Generic bookability and coordination language are standing business
+    capabilities, not live slot facts.  Only concrete capacity/slot claims
+    must be backed by an ``available_time`` fact.
+    """
     compact = re.sub(r"\s+", "", str(text or ""))
     if _negates_appointment_availability(compact):
         return False
     if any(
         term in compact
         for term in (
-            "可以约",
-            "能约",
-            "可以预约",
-            "能预约",
             "有空档",
             "有档期",
             "有空位",
+            "档期已确认",
+            "档期已经确认",
+            "时段已确认",
+            "时段已经确认",
         )
     ):
         return True
     return bool(
-        re.search(r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?).{0,8}(?:可以|有空|有时间|有名额|有位置|能约|可约|安排)", compact)
-        or re.search(r"(?:有空|有时间|有名额|有位置|能约|可约|安排).{0,8}(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?)", compact)
+        re.search(
+            r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?).{0,8}"
+            r"(?:有空|有时间|有名额|有位置|有档期|有空档|能约|可约)",
+            compact,
+        )
+        or re.search(
+            r"(?:有空|有时间|有名额|有位置|有档期|有空档|能约|可约).{0,8}"
+            r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?)",
+            compact,
+        )
+        or re.search(
+            r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?).{0,8}"
+            r"(?:档期|时段).{0,4}(?:可以|没问题|已确认|已经确认|确认好)",
+            compact,
+        )
     )
 
 
@@ -2555,9 +2574,23 @@ def _asserts_appointment_confirmed(text: str) -> bool:
     matched = any(
         term in compact
         for term in (
+            "已为您约好",
+            "已经为您约好",
+            "已帮您约好",
+            "已经帮您约好",
+            "已预约好",
+            "已经预约好",
+            "已预约",
+            "已经预约",
+            "已约好",
+            "已经约好",
             "已为您锁定",
             "已经为您锁定",
             "已锁定",
+            "已留位",
+            "已经留位",
+            "已安排",
+            "已经安排",
             "已安排好",
             "已经安排好",
             "安排好了",
@@ -2586,6 +2619,11 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             "现在过去来得及",
             "能直接看",
             "可以直接看",
+            "能直接到店",
+            "可以直接到店",
+            "直接到店即可",
+            "能直接过去",
+            "可以直接过去",
             "直接过去看",
             "直接过去就行",
             "直接到店就行",
@@ -2616,9 +2654,8 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             return True
     if re.search(rf"按{time_token}(?:到店|过来|来店|来就行)", compact):
         return True
-    if "安排" in compact and not any(term in compact for term in ("适合再安排", "确认适合再安排", "检测评估", "皮肤状态")):
-        if re.search(r"(?:我)?(?:帮|给)[你您]?.{0,4}按.{0,12}安排", compact):
-            return True
+    if re.search(r"(?:我)?(?:帮|给)[你您]?.{0,4}按.{0,12}安排(?:好)?了", compact):
+        return True
     if re.search(rf"(?:能帮[你您]?|可以帮[你您]?|帮[你您]?|给[你您]?).{{0,4}}留(?:下|住)?{time_token}", compact):
         return True
     return bool(
@@ -2674,6 +2711,10 @@ def _asserts_registration_confirmed(text: str) -> bool:
     return any(
         term in compact
         for term in (
+            "已登记",
+            "已经登记",
+            "登记完成",
+            "已完成登记",
             "已经报名",
             "报名好了",
             "已经给您报上",
