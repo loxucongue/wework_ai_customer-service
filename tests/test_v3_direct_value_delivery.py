@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ai_paths.app.graph.nodes.material_selection import parallel_reply_payload
+from ai_paths.app.graph.nodes.reply_admission import validate_model_led_reply_admission
 from ai_paths.app.graph.nodes.reply_nodes import (
     _link_adopted_script_media,
     _materialize_selected_content_media,
@@ -157,3 +158,38 @@ def test_adopted_script_media_is_not_linked_across_safety_stop() -> None:
 
     assert _link_adopted_script_media(payload, state) == ""
     assert payload["selected_content_ids"] == []
+
+
+def test_distance_script_hold_language_keeps_direct_effect_media_delivery() -> None:
+    knowledge = _knowledge(include_video=True)
+    knowledge["candidates"][0]["source_id"] = "225"
+    knowledge["candidates"][0]["script_id"] = "225"
+    candidates = script_content_candidates(knowledge)
+    state = _state(candidates)
+    payload = {
+        "selected_content_ids": [],
+        "knowledge_use": {"script_id": "225"},
+        "policy_decision": {
+            "realtime_intent": {"type": "blocker_expression"},
+            "emotion_decision": {"flow_action": "keep"},
+        },
+        "safety_assessment": {"status": "none"},
+    }
+
+    linked = _link_adopted_script_media(payload, state)
+    state["reply_selected_content_ids"] = payload["selected_content_ids"]
+    messages, materialized = _materialize_selected_content_media(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "那没关系呀，我们不少客户专程过来，主要还是看重技术和效果。我先帮您把活动名额留着。",
+            }
+        ],
+        state,
+    )
+
+    assert linked == "follow_script:225:p1"
+    assert materialized == ["follow_script:225:p1"]
+    assert [item["type"] for item in messages] == ["text", "image", "video"]
+    validate_model_led_reply_admission(messages, state)

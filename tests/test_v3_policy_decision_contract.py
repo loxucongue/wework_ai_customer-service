@@ -684,7 +684,8 @@ def test_parallel_reply_repair_includes_specific_fact_instruction_and_preserves_
     )
 
     contract_text = str(repaired[-1]["content"])
-    assert "不能说已经登记、已经留好名额、已经安排或已经预约" in contract_text
+    assert "不能说系统已经登记完成或报名完成" in contract_text
+    assert "我先帮您留着/保留活动名额’不属于系统完成态" in contract_text
     assert "policy_decision 不是本次错误来源时必须原样保留" in contract_text
 
 

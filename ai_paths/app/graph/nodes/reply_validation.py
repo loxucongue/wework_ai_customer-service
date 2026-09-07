@@ -2755,31 +2755,11 @@ def _asserts_registration_confirmed(text: str) -> bool:
     )
     if any(marker in compact for marker in conditional_markers):
         return False
-    if re.search(
-        r"(?:先)?(?:我)?(?:给|帮)[你您]?(?:把)?"
-        r"(?:活动价|活动名额|活动资格|活动|名额|资格)(?:先)?(?:保留|留住|留着|留好)",
-        compact,
-    ):
-        return True
-    if any(term in compact for term in ("活动", "活动价", "名额", "资格")) and any(
-        term in compact
-        for term in (
-            "给您留着",
-            "给你留着",
-            "帮您留着",
-            "帮你留着",
-            "给您留住",
-            "给你留住",
-            "帮您留住",
-            "帮你留住",
-            "给您留好了",
-            "给你留好了",
-        )
-    ):
-        return True
-    # Keep this factual guard limited to unmistakable completed-state claims.
-    # Future sales language such as “付好后给您登记” belongs to the model and
-    # must not be reclassified by a broad keyword branch.
+    # A salesperson saying “我先帮您留着活动名额” is a customer-facing sales
+    # commitment, not proof that the appointment/registration system has
+    # completed a write.  Do not reject that wording here.  This guard remains
+    # deliberately limited to unmistakable completed registration claims;
+    # appointment completion and payment stay under their independent checks.
     return any(
         term in compact
         for term in (

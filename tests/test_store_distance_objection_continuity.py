@@ -225,7 +225,7 @@ def test_explicit_new_destination_is_not_suppressed() -> None:
     assert tool_plan["tool_calls"][0]["arguments"]["destination_hint"] == "武汉市"
 
 
-def test_model_led_admission_rejects_unexecuted_slot_reservation_claim() -> None:
+def test_model_led_admission_allows_sales_slot_hold_language() -> None:
     state = {
         "evidence_join": {
             "schema_version": "v3_evidence_join_v1",
@@ -234,11 +234,16 @@ def test_model_led_admission_rejects_unexecuted_slot_reservation_claim() -> None
         }
     }
 
-    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
-        validate_model_led_reply_admission(
-            [{"type": "text", "content": "您方便的时候再来，我帮您把活动名额留着。"}],
-            state,
-        )
+    validate_model_led_reply_admission(
+        [{"type": "text", "content": "那没关系呀，我先帮您把活动名额留着。"}],
+        state,
+    )
+
+
+def test_distance_prompt_reframes_without_repeating_negative_objection() -> None:
+    assert "不要复述或放大“远、折腾、麻烦、跑一趟”等负面感受" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "马上用已发布距离卡点话术把注意力转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "我先帮您留着/保留活动名额" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_same_city_store_list_does_not_resend_an_already_delivered_card() -> None:

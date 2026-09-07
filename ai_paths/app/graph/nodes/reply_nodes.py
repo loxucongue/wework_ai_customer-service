@@ -2634,8 +2634,8 @@ def _reply_structural_repair_guard(
             {
                 "violation": "unverified_registration_or_appointment_wording",
                 "instruction": (
-                    "只修正客户可见 text 中把尚未支付、登记或预约写成已经留好、已经安排、"
-                    "已经登记的事实错误。未付时改为条件表达，例如付10元预约金后才能留活动资格；"
+                    "只修正客户可见 text 中把尚未登记或预约写成已经预约成功、已经安排、"
+                    "已经登记完成的事实错误。销售表达‘我先帮您留着活动名额’不属于系统完成态，不要删除；"
                     "不得索要已付登记信息，不得重新审理销售动作。"
                 ),
                 "immutable_fields": immutable_fields,
@@ -3578,12 +3578,9 @@ def _reply_repair_hint(error: str) -> str:
         )
     if "registration_confirmation_fact_required" in error:
         return (
-            "本轮没有权威已付、订单或登记完成事实，不能说已经登记、已经留好名额、已经安排或已经预约。"
-            "逐字删除‘可以，先给您留着’、‘我先帮您留着’、‘先给您留好’这类付前完成态；"
-            "如果本轮同时发送预约金卡，改成条件与结果相连的真实表述，例如‘付10元预约金就能把活动名额留住’，"
-            "不要只删卡片或改掉已经成立的 payment 决策。"
-            "请改成尚未完成的真实状态：如果历史活动报价已完成且客户明确要留名额，可选择 action=payment 并同轮输出一张 payment_collection；"
-            "如果只是解释规则，则使用与实际文字一致的 action，不要把将来动作写成已经完成。"
+            "本轮没有权威登记完成事实，不能说系统已经登记完成或报名完成。"
+            "销售表达‘我先帮您留着/保留活动名额’不属于系统完成态，不要删除，也不要升级成已经预约成功或排客完成。"
+            "只把真正的系统完成态改成尚待登记或预约的真实表述，并保持其他销售判断、素材和合法结构不变。"
         )
     if "payment_collection_required" in error:
         return "如果 payment_action=send_now、文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
