@@ -2,16 +2,16 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T15:34:10+08:00`
+- verified_at: `2026-09-07T16:58:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-152202-b4dfc184`
-- git commit: `b4dfc184ea635afeb8f62dd881df30b1946dd016`
+- release: `ai-paths-unified-20260907-165401-9b8ba028`
+- git commit: `9b8ba02839b0597a708476e848d025f7f75ceeb6`
 - branch contract: `main`
 - dirty: `false`
-- config revision: `74eee9d04bedb99c0dc25ef2aaefab2cd96d2d8ef40fdf500a8ff838fd4ae4c0`
+- config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
 - database backend: MySQL
 
 | 角色 | Unit | 现场状态 | 现场健康信息 |
@@ -19,7 +19,7 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-152202-b4dfc184`；AI 运行日志已显示接口总耗时与客户/接待身份 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-152202-b4dfc184`；本次未改前端 |
 
 三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
@@ -37,18 +37,24 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`，最近轮询错误为空。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=20`、`dead=16`。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=23`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务前的 clean release `ai-paths-unified-20260907-143217-71a18d7d`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务前的 clean release `ai-paths-unified-20260907-164338-f4f25d80`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-143217-71a18d7d`。
 - 数据库已迁移到 `20260907_01`，只增加序列采用、话术采用和采用详情已观测三个字段；旧代码会忽略这些字段，不需要破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
+
+- 2026-09-07 16:58 发布 clean `main@9b8ba028`：合入大城市门店列表最新版、预约时间事实边界和已配置 B 单规则候选恢复。control/reply/worker 使用同一 release，三个 `/health` 的 commit、config revision 和 `dirty=false` 一致，均 active/running 且 `NRestarts=0`；唯一客户回复路由仍为 `/reply/workflow-compatible-v3`。
+- “怎么预约”真实身份只读重放命中本地真实规则、策略、节点和话术，Reply 输出文字及 10 元预约金卡，耗时 14.43 秒；“明早 9 点可以吗”在无本轮营业时间事实时被校验并修复为到店意向、门店确认后再去，耗时 11.74 秒。两条均只使用 DeepSeek，生产发送和生产落库为 0。
+- 当前预约合同区分三层事实：可预约/时间可协调是业务能力，客户提出的具体时间可记录为到店意向；具体空位、营业时间、已预约、已安排或允许直接到店必须有本轮权威事实。双次模型越界时使用同话题的安全恢复，不再被门店补位置兜底抢走。
+- 大城市普通“有没有门店”且候选超过 6 家时，按最新版先给真实覆盖区县并追问区县/地标；只有客户明确索要全部门店，才编号列出完整门店名、区县和地址。门店类失败恢复与预约事实失败恢复已按错误类型隔离。
+- 合并后全仓 394 条测试通过，重叠的 Reply 恢复、门店事实校验、Prompt 与业务规则均完成组合回归；本次无数据库迁移、无前端变更。生产根分区 76%，剩余约 9.0 GB。
 
 - V3 唯一回复路由为 `/reply/workflow-compatible-v3`，未注册产品 V1/V2 回复路由。
 - Reply 进程 `/proc/<pid>/environ` 已现场确认 `MODEL_REPLY=deepseek-chat`、`AI_SALES_POLICY_ENABLED=true`；共享基础环境中的其他角色模型值不代表 Reply 实际模型。
