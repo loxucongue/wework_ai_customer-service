@@ -379,6 +379,43 @@ def test_local_closing_ids_and_script_type_are_valid_reply_evidence() -> None:
     assert result["closing_decision"]["script_type_id"] == 9201
 
 
+def test_reply_repair_context_keeps_exact_closing_catalog_references() -> None:
+    from app.graph.nodes.reply_nodes import _parallel_reply_repair_context
+
+    client = FollowKnowledgeClient(
+        Settings(FOLLOW_KNOWLEDGE_ENABLED=False, AI_CLOSING_CATALOG_SOURCE="local")
+    )
+    catalog = asyncio.run(client.query_closing_catalog())
+    evidence = _closing_catalog_evidence(
+        catalog,
+        {
+            "status": "matched",
+            "selected_rule_ids": ["local:rule:explicit_registration_or_payment_query"],
+            "sequence_candidate_ids": ["local:sequence:direct_deposit_entry"],
+            "evidence_refs": ["current_message"],
+        },
+    )
+    state = _policy_state(evidence)
+    state["evidence_join"] = {
+        "shared_context": {
+            "current_message": {"message_ref": "current_message", "content": "怎么预约"},
+            "conversation": [],
+        },
+        "semantic_route": {"closing_catalog_evidence": evidence},
+        "content_candidates": [],
+    }
+    state["semantic_route"] = {"closing_catalog_evidence": evidence}
+
+    context = _parallel_reply_repair_context(state)
+
+    assert context["closing_catalog_evidence"]["selected_rules"][0]["rule_key"] == (
+        "local:rule:explicit_registration_or_payment_query"
+    )
+    assert context["closing_catalog_evidence"]["candidate_sequences"][0]["sequence_key"] == (
+        "local:sequence:direct_deposit_entry"
+    )
+
+
 def test_router_retrieves_local_script_from_the_same_catalog_source() -> None:
     class SemanticClient:
         available = True

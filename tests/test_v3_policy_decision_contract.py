@@ -33,6 +33,7 @@ from app.graph.nodes.reply_validation import (  # noqa: E402
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission  # noqa: E402
 from app.graph.nodes.reply_context import _ai_sales_policy_for_reply  # noqa: E402
 from app.prompts.reply_synthesizer import _render_missing_authority_guard  # noqa: E402
+from app.prompts.reply_synthesizer import PARALLEL_REPLY_SYSTEM_PROMPT  # noqa: E402
 from app.chat_runtime import _record_stop_contact_fact  # noqa: E402
 from app.services.outreach.planning import _closing_shadow_terminal_reason  # noqa: E402
 from app.services.outreach.execution import TaskExecutor  # noqa: E402
@@ -935,6 +936,15 @@ def test_available_time_repair_preserves_legal_appointment_progression() -> None
     assert "可以预约、时间可协调" in hint
     assert "这个时间可以协调、先作为到店意向" in hint
     assert "不要说可以约" not in hint
+
+
+def test_reply_prompt_marks_active_closing_provenance_as_runtime_required() -> None:
+    assert '"rule_ids":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '"satisfied_prerequisite_ids":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '"blocking_taboo_ids":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '"evidence_refs":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "这些是运行必需字段，不是 BI 可选项" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '"offer_prior_turn_refs":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_shadow_closing_is_cancelled_by_authoritative_terminal_facts() -> None:

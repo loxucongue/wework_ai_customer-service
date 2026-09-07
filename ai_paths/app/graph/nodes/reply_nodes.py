@@ -2216,6 +2216,10 @@ def _parallel_generic_reply_repair_messages(
                 "trigger": "none|business_rule",
                 "customer_state": "目录合法值",
                 "pressure": "normal|low|none",
+                "rule_ids": "enter/advance/fallback 时复制本轮规则 key 列表",
+                "satisfied_prerequisite_ids": "enter/advance/fallback 时复制并确认全部前置 key",
+                "blocking_taboo_ids": "命中的禁忌 key；没有则空列表",
+                "evidence_refs": "enter/advance/fallback 时至少包含当前客户证据 ref",
             },
         }
     repair_contract = {
@@ -2266,6 +2270,9 @@ def _parallel_generic_reply_repair_messages(
             "tool_fact_reference_options": validation_context.get("tool_fact_reference_options") or [],
             "authoritative_fact_reference_options": validation_context.get("authoritative_fact_reference_options") or [],
             "content_candidate_delivery_requirements": validation_context.get("content_candidate_delivery_requirements") or [],
+            "closing_catalog_evidence": validation_context.get("closing_catalog_evidence") or {},
+            "structured_prior_activity_refs": validation_context.get("structured_prior_activity_refs") or [],
+            "structured_prior_supporting_refs": validation_context.get("structured_prior_supporting_refs") or [],
             "authoritative_paid": bool(validation_context.get("authoritative_paid")),
         },
     }
@@ -2959,6 +2966,7 @@ def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
         "authoritative_fact_reference_options": (
             payload.get("authoritative_fact_reference_options") or []
         ),
+        "closing_catalog_evidence": payload.get("closing_catalog_evidence") or {},
         "content_candidate_delivery_requirements": candidate_requirements,
         "authoritative_paid": bool(_parallel_paid_deposit_context(state)),
     }
