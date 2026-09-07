@@ -117,9 +117,9 @@
 上述 `first-day` 路径是历史兼容名称；产品页面统一称为“千人千面日志”，实际记录的是沉默客户唤醒，当前运行逻辑不限制加微时间。
 
 - `GET /admin/outreach/dashboard` 是只读 BI 聚合接口，支持 `started_from`、`started_to`、`corp_id`、`wechat` 和 `queue_limit`，最长查询 31 天。返回扫描到预约/支付进展的漏斗、成功触达与 24h 开口趋势、未触达原因、当前队列、企微号分布、数据新鲜度和后台配置。队列项同时返回 `customer_id`、`external_userid`、`conversation_id`、`corp_id`、`user_id`、`wechat`、`workflow_run_id`、`plan_id` 和轻量 `task_refs`；会话身份只按完整销售接触边界补齐。管理前端 `/analytics/outreach` 还会并行读取 Worker `/health`，只有配置、阈值、账号范围和计划/执行任务同时一致才显示“运行中”。详细口径见 [主动唤醒 BI 观测合同](../contracts/outreach-analytics.md)。
-- `GET /admin/outreach/first-day-settings` 返回的关键运行信息包括启用状态、沉默分钟数、企微范围和启用水位。
+- `GET /admin/outreach/first-day-settings` 返回的关键运行信息包括启用状态、沉默分钟数、企微范围、启用水位、动态任务来源、每日计划/任务不限制，以及夜间开始、结束、恢复和活跃压缩窗口。历史 `first-day` 路径只为接口兼容。
 - 修改设置会影响主动触达候选范围，属于有运行副作用的管理操作；全账号空白名单不等于跳过 AI/人工、安全、退订、订单和最新消息门禁。
-- `GET /admin/outreach/first-day-runs` 的每条记录增加可选 `business_summary`，包含最近客户消息摘要、客户当前需要、沉默卡点、场景顺序和可用/计划媒体数量。历史运行缺少字段时返回空值，不把“未记录”伪装成 0。
+- `GET /admin/outreach/first-day-runs` 的每条记录增加可选 `business_summary`，包含最近客户消息摘要、客户当前需要、卡点/主线模式、所选序列和动态任务数。详情按节点展示候选话术、正式采用话术、调度模式和发送结果；历史运行缺少字段时返回空值，不把“未记录”伪装成 0。
 - `GET /admin/outreach/first-day-runs/{workflow_run_id}` 增加可选 `observability_view`，按 `decision`、`customer_context`、`materials`、`workflow_nodes` 和 `data_availability` 组织现有留存数据。素材步骤区分候选、可用、计划附加和已发送；节点包含脱敏输入输出、模型、Prompt 版本、耗时和重试信息。该视图只从当时快照派生，不返回素材 URL、不重新查询当前目录、不延长原始数据留存期。
 
 ## 健康检查
