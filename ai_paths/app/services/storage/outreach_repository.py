@@ -766,7 +766,15 @@ class OutreachRepositoryMixin:
     ) -> list[dict[str, Any]]:
         cutoff_72h = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
         result_limit = max(1, min(limit, 2000))
-        query_limit = 5000 if keyword.strip() else max(result_limit, min(result_limit * 10, 5000))
+        expands_after_query = bool(
+            keyword.strip() or outreach_status or lifecycle_stage or no_plan_only
+        )
+        if keyword.strip():
+            query_limit = 5000
+        elif expands_after_query:
+            query_limit = max(result_limit, min(result_limit * 10, 5000))
+        else:
+            query_limit = result_limit
         with self.store.connect() as conn:
             rows = conn.execute(
                 """
@@ -831,11 +839,12 @@ class OutreachRepositoryMixin:
             item["portrait"] = memory.get("portrait") if isinstance(memory.get("portrait"), dict) else {}
             item["basic_info"] = memory.get("basic_info") if isinstance(memory.get("basic_info"), dict) else {}
             item["lifecycle_stage"] = str(memory.get("lifecycle_stage") or "")
-            item["last_customer_message_at"] = str(
-                memory.get("last_customer_message_at")
-                or item.get("conversation_last_customer_at")
-                or item.get("updated_at")
-                or ""
+            latest_customer_message_at = _latest_iso_value(
+                memory.get("last_customer_message_at"),
+                item.get("conversation_last_customer_at"),
+            )
+            item["last_customer_message_at"] = latest_customer_message_at or _string(
+                item.get("updated_at")
             )
             item["last_staff_message_at"] = str(memory.get("last_staff_message_at") or "")
             item["last_ai_reply_at"] = str(memory.get("last_ai_reply_at") or "")

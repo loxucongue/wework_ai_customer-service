@@ -104,6 +104,7 @@ def build_reply_services(settings: Settings) -> ReplyServices:
     message_delivery_service = MessageDeliveryService(settings, repository)
     coze_client = CozeClient(settings)
     model_client = ModelClient(settings)
+    outreach_model_client = _build_outreach_model_client(settings)
     memory_store = CustomerMemoryStore(settings, repository)
     platform_agent_client = PlatformAgentClient(settings)
     outreach_send_client = OutreachSendClient(settings, delivery_service=message_delivery_service)
@@ -145,7 +146,7 @@ def build_reply_services(settings: Settings) -> ReplyServices:
     outreach_service = _build_outreach_service(
         settings=settings,
         repository=repository,
-        model_client=model_client,
+        model_client=outreach_model_client,
         system_client=outreach_system_client,
         customer_context_service=customer_context_service,
         precision_qa_playbook_service=precision_qa_playbook_service,
@@ -202,6 +203,7 @@ def build_reply_services(settings: Settings) -> ReplyServices:
         service_rule_data_service=service_rule_data_service,
         _closers=(
             model_client,
+            outreach_model_client,
             coze_client,
             follow_knowledge_client,
             deepseek_semantic_client,
@@ -222,6 +224,7 @@ def build_control_services(settings: Settings) -> ControlServices:
     memory_store = CustomerMemoryStore(settings, repository)
     async_reply_delivery_finalizer = AsyncReplyDeliveryFinalizer(repository, memory_store)
     model_client = ModelClient(settings)
+    outreach_model_client = _build_outreach_model_client(settings)
     coze_client = CozeClient(settings)
     platform_agent_client = PlatformAgentClient(settings)
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
@@ -235,7 +238,7 @@ def build_control_services(settings: Settings) -> ControlServices:
     outreach_service = _build_outreach_service(
         settings=settings,
         repository=repository,
-        model_client=model_client,
+        model_client=outreach_model_client,
         system_client=outreach_system_client,
         customer_context_service=customer_context_service,
         precision_qa_playbook_service=precision_qa_playbook_service,
@@ -278,7 +281,13 @@ def build_control_services(settings: Settings) -> ControlServices:
             max_retries=settings.v3_strategy_analytics_outcome_max_retries,
             retry_base_seconds=settings.v3_strategy_analytics_outcome_retry_base_seconds,
         ),
-        _closers=(model_client, coze_client, outreach_system_client, sop_platform_client),
+        _closers=(
+            model_client,
+            outreach_model_client,
+            coze_client,
+            outreach_system_client,
+            sop_platform_client,
+        ),
         _platform_agent_client=platform_agent_client,
     )
 
@@ -287,6 +296,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
     storage_store, repository = _build_repository(settings)
     message_delivery_service = MessageDeliveryService(settings, repository)
     model_client = ModelClient(settings)
+    outreach_model_client = _build_outreach_model_client(settings)
     coze_client = CozeClient(settings)
     platform_agent_client = PlatformAgentClient(settings)
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
@@ -299,7 +309,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
     outreach_service = _build_outreach_service(
         settings=settings,
         repository=repository,
-        model_client=model_client,
+        model_client=outreach_model_client,
         system_client=outreach_system_client,
         customer_context_service=customer_context_service,
         precision_qa_playbook_service=precision_qa_playbook_service,
@@ -333,6 +343,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
         ),
         _closers=(
             model_client,
+            outreach_model_client,
             coze_client,
             outreach_system_client,
             sop_platform_client,
@@ -345,6 +356,31 @@ def build_worker_services(settings: Settings) -> WorkerServices:
 def _build_repository(settings: Settings) -> tuple[Any, AppRepository]:
     storage_store = build_store(settings)
     return storage_store, AppRepository(storage_store)
+
+
+def _build_outreach_model_client(settings: Settings) -> ModelClient:
+    """Keep proactive sales decisions on their own explicitly configured model."""
+
+    model = settings.outreach_decision_model.strip() or "deepseek-chat"
+    fallbacks = settings.outreach_decision_model_fallbacks.strip()
+    return ModelClient(
+        settings.model_copy(
+            update={
+                "model_fast": model,
+                "model_planner": model,
+                "model_balanced": model,
+                "model_strong": model,
+                "model_reply": model,
+                "model_fast_fallbacks": fallbacks,
+                "model_planner_fallbacks": fallbacks,
+                "model_balanced_fallbacks": fallbacks,
+                "model_strong_fallbacks": fallbacks,
+                "model_reply_fallbacks": fallbacks,
+                "model_emergency_fallbacks": "",
+                "model_hedge_max_parallel": 1,
+            }
+        )
+    )
 
 
 def _build_outreach_service(

@@ -86,6 +86,11 @@ FIRST_DAY_STALE_RUNNING_RETRY_MINUTES = 15
 FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS = {
     "customer_never_spoke",
 }
+FIRST_DAY_RECOVERABLE_FAILED_RUN_REASONS = {
+    "model_node_failed",
+    "workflow_failed",
+    "workflow_retry_scheduled",
+}
 FIRST_DAY_NON_RETRYABLE_RUN_REASONS = {
     "customer_deleted",
     "first_day_daily_plan_limit_reached",
@@ -602,7 +607,21 @@ def _first_day_full_retry_delay_seconds(error: str, retry_count: int) -> int | N
         return 60 if retry_count < 1 else None
     transient = any(
         marker in normalized
-        for marker in ("timeout", "timed out", "http_500", "http_502", "http_503", "http_504", "5xx")
+        for marker in (
+            "timeout",
+            "timed out",
+            "http_404",
+            "http 404",
+            "404 not found",
+            "not supported",
+            "unsupported model",
+            "model not found",
+            "http_500",
+            "http_502",
+            "http_503",
+            "http_504",
+            "5xx",
+        )
     )
     if not transient:
         return None
@@ -2845,9 +2864,16 @@ def _first_day_existing_run_retry_reason(
         current = now or datetime.now(timezone.utc)
         if next_retry_at and next_retry_at.tzinfo is None:
             next_retry_at = next_retry_at.replace(tzinfo=timezone.utc)
-        if not next_retry_at or next_retry_at > current:
+        if next_retry_at and next_retry_at > current:
             return ""
-        return "failed_retry"
+        if next_retry_at:
+            return "failed_retry"
+        if (
+            reason_code in FIRST_DAY_RECOVERABLE_FAILED_RUN_REASONS
+            and int(existing_run.get("retry_count") or 0) < 2
+        ):
+            return f"failed_recovery:{reason_code}"
+        return ""
     if reason_code in FIRST_DAY_NON_RETRYABLE_RUN_REASONS:
         return ""
     if (
@@ -2901,6 +2927,7 @@ class FirstDayWorkflow:
         self.first_day_wechat_allowlist = first_day_wechat_allowlist
         self.planning = planning
         self._monitor_status: dict[str, Any] = {
+            "state": "not_started",
             "last_scan_started_at": "",
             "last_scan_finished_at": "",
             "candidate_count": 0,
@@ -2975,7 +3002,14 @@ class FirstDayWorkflow:
             "last_error": "",
             "results": [],
             "eligible_after": _string(eligible_after),
+            "threshold_minutes": max(1, int(silent_minutes)),
+            "scan_duration_ms": 0,
         }
+        self._monitor_status = {
+            **{key: value for key, value in stats.items() if key != "results"},
+            "state": "running",
+        }
+        scan_started = time.perf_counter()
         scan_limit = max(200, min(2000, max(1, int(limit)) * 200))
         candidates = await asyncio.to_thread(
             self.planning.list_candidates,
@@ -3016,8 +3050,8 @@ class FirstDayWorkflow:
             outbound_ts = outbound_at.timestamp() if outbound_at else 0.0
             return (
                 0,
-                max(0, reply_wait - threshold_minutes),
-                -outbound_ts,
+                -max(0, reply_wait - threshold_minutes),
+                outbound_ts,
                 _string(candidate.get("customer_id")),
             )
 
@@ -3080,7 +3114,11 @@ class FirstDayWorkflow:
                 }:
                     evaluated_budget_used += 1
         stats["last_scan_finished_at"] = utc_now_iso()
-        self._monitor_status = {key: value for key, value in stats.items() if key != "results"}
+        stats["scan_duration_ms"] = round((time.perf_counter() - scan_started) * 1000)
+        self._monitor_status = {
+            **{key: value for key, value in stats.items() if key != "results"},
+            "state": "idle",
+        }
         return stats
 
     @staticmethod

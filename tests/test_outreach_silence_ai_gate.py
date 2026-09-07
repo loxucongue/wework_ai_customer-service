@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,12 +16,16 @@ from app.services.outreach.first_day import (  # noqa: E402
     FirstDayWorkflow,
     _conversation_ai_auto_reply,
     _first_day_existing_run_retry_reason,
+    _first_day_full_retry_delay_seconds,
     _first_day_wechat_allowed,
     _sop_candidate_requires_platform_refresh,
     _timestamp_at_or_after,
 )
+from app.runtime_services import _build_outreach_model_client  # noqa: E402
+from app.services.customer_scope import build_customer_scope  # noqa: E402
 from app.services.storage.repositories import AppRepository  # noqa: E402
 from app.services.storage.sqlite_store import SQLiteStore  # noqa: E402
+from app.workers.supervisor import WorkerSupervisor  # noqa: E402
 
 
 class _StatusClient:
@@ -85,12 +90,21 @@ class _Repository:
 
 
 class _Planning:
-    def __init__(self, system_client: _StatusClient) -> None:
+    def __init__(
+        self,
+        system_client: _StatusClient,
+        *,
+        candidates: list[dict[str, object]] | None = None,
+    ) -> None:
         self.system_client = system_client
+        self.candidates = candidates or []
 
     @staticmethod
     def _plan_lock(_: dict[str, object]) -> asyncio.Lock:
         return asyncio.Lock()
+
+    def list_candidates(self, **_: object) -> list[dict[str, object]]:
+        return list(self.candidates)
 
 
 class _FirstDayRecorder:
@@ -114,8 +128,28 @@ def _identity() -> dict[str, str]:
 def test_silence_defaults_to_one_minute_and_empty_allowlist_allows_every_account() -> None:
     settings = Settings(_env_file=None)
     assert settings.outreach_first_day_silence_minutes == 1
+    assert settings.outreach_decision_model == "deepseek-chat"
+    assert settings.outreach_decision_model_fallbacks == ""
     assert _first_day_wechat_allowed("SL8003", "") is True
     assert _first_day_wechat_allowed("ANY_ACCOUNT", "") is True
+
+
+def test_outreach_model_client_never_inherits_global_gpt_candidates() -> None:
+    settings = Settings(
+        _env_file=None,
+        MODEL_STRONG="gpt-5.4",
+        MODEL_BALANCED="gpt-5.4-mini",
+        MODEL_EMERGENCY_FALLBACKS="gpt-5.4,gpt-5.4-mini",
+        OUTREACH_DECISION_MODEL="deepseek-chat",
+        OUTREACH_DECISION_MODEL_FALLBACKS="",
+    )
+    client = _build_outreach_model_client(settings)
+    assert client.settings.model_strong == "deepseek-chat"
+    assert client.settings.model_balanced == "deepseek-chat"
+    assert client.settings.model_reply == "deepseek-chat"
+    assert client.settings.model_strong_fallbacks == ""
+    assert client.settings.model_balanced_fallbacks == ""
+    assert client.settings.model_emergency_fallbacks == ""
 
 
 def test_ai_mode_parser_requires_explicit_ai_and_rejects_human() -> None:
@@ -302,6 +336,163 @@ def test_platform_conversation_sync_soft_block_retries_only_once() -> None:
         existing,
         latest_customer_message_at="2026-09-05T09:42:00+00:00",
     ) == ""
+
+
+def test_failed_model_cycle_can_recover_after_model_configuration_is_fixed() -> None:
+    existing = {
+        "status": "failed",
+        "reason_code": "workflow_failed",
+        "retry_count": 0,
+        "next_retry_at": "",
+    }
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at="2026-09-05T09:42:00+00:00",
+    ) == "failed_recovery:workflow_failed"
+    existing["retry_count"] = 2
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at="2026-09-05T09:42:00+00:00",
+    ) == ""
+
+
+def test_unsupported_model_failure_gets_bounded_retry() -> None:
+    error = "HTTP 404: model gpt-5.4 is not supported"
+    assert _first_day_full_retry_delay_seconds(error, 0) == 60
+    assert _first_day_full_retry_delay_seconds(error, 1) == 300
+    assert _first_day_full_retry_delay_seconds(error, 2) is None
+
+
+def test_monitor_evaluates_longest_waiting_customer_first() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    def candidate(customer_id: str, *, wait_minutes: int) -> dict[str, object]:
+        return {
+            **_identity(),
+            "customer_id": customer_id,
+            "candidate_source": "conversation",
+            "last_customer_message_at": (now - timedelta(minutes=wait_minutes + 1)).isoformat(),
+            "latest_outbound_message_at": (now - timedelta(minutes=wait_minutes)).isoformat(),
+            "reply_wait_minutes": wait_minutes,
+            "awaiting_customer_reply": True,
+        }
+
+    planning = _Planning(
+        _StatusClient(),
+        candidates=[candidate("newly-eligible", wait_minutes=1), candidate("oldest", wait_minutes=30)],
+    )
+    workflow = FirstDayWorkflow(
+        repository=_Repository(),
+        model_client=object(),
+        customer_context_service=None,
+        first_day_wechat_allowlist="",
+        planning=planning,
+    )
+    evaluated: list[str] = []
+
+    async def record(candidate_value: dict[str, object], **_: object) -> dict[str, object]:
+        evaluated.append(str(candidate_value["customer_id"]))
+        return {"status": "evaluated", "customer_id": candidate_value["customer_id"], "created": False}
+
+    workflow._evaluate_first_day_silence_candidate = record  # type: ignore[method-assign]
+    result = asyncio.run(
+        workflow.evaluate_first_day_opened_silence_customers(
+            limit=1,
+            silent_minutes=1,
+            eligible_after=(now - timedelta(hours=1)).isoformat(),
+        )
+    )
+    assert evaluated == ["oldest"]
+    assert result["evaluated_count"] == 1
+    assert workflow.monitor_status()["state"] == "idle"
+
+
+def test_candidate_uses_newer_conversation_customer_time_over_stale_memory(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        AI_PATHS_DB_PATH=tmp_path / "candidate-time.db",
+        AICS_STORAGE_BACKEND="sqlite",
+    )
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    request = SimpleNamespace(
+        customer_id="customer-time",
+        external_userid="external-time",
+        corp_id="corp-time",
+        user_id="user-time",
+        wechat="SL8003",
+    )
+    repository.upsert_conversation(conversation_id="conversation-time", request=request, title="")
+    repository.add_user_message(
+        conversation_id="conversation-time",
+        request_id="request-user",
+        content="想了解一下",
+        file_image=None,
+    )
+    repository.add_assistant_message(
+        conversation_id="conversation-time",
+        request_id="request-assistant",
+        reply_messages=[{"type": "text", "content": "可以的"}],
+    )
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    stale_customer_at = (now - timedelta(hours=2)).isoformat()
+    actual_customer_at = (now - timedelta(minutes=3)).isoformat()
+    actual_staff_at = (now - timedelta(minutes=2)).isoformat()
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE conversations SET created_at=?, updated_at=? WHERE id=?",
+            ((now - timedelta(minutes=4)).isoformat(), (now - timedelta(minutes=2)).isoformat(), "conversation-time"),
+        )
+        conn.execute(
+            "UPDATE messages SET created_at=? WHERE request_id=?",
+            (actual_customer_at, "request-user"),
+        )
+        conn.execute(
+            "UPDATE messages SET created_at=? WHERE request_id=?",
+            (actual_staff_at, "request-assistant"),
+        )
+    scope = build_customer_scope(
+        corp_id="corp-time",
+        wechat="SL8003",
+        external_userid="external-time",
+        customer_id="customer-time",
+    )
+    repository.touch_customer_message_time(
+        scope.sales_contact_key,
+        field="last_customer_message_at",
+        value=stale_customer_at,
+    )
+
+    candidates = repository.list_outreach_candidates(limit=10, silent_minutes_min=0)
+    assert len(candidates) == 1
+    assert candidates[0]["last_customer_message_at"] == actual_customer_at
+    assert candidates[0]["latest_outbound_message_at"] == actual_staff_at
+    assert candidates[0]["awaiting_customer_reply"] is True
+
+
+def test_worker_health_exposes_silence_monitor_configuration() -> None:
+    settings = SimpleNamespace(
+        outreach_first_day_silence_enabled=True,
+        outreach_first_day_silence_minutes=1,
+        outreach_first_day_wechat_allowlist="",
+        outreach_decision_model="deepseek-chat",
+        outreach_decision_model_fallbacks="",
+        outreach_silence_eligible_after="2026-09-05T09:41:20+00:00",
+    )
+    outreach_service = SimpleNamespace(
+        monitor_status=lambda: {"state": "idle", "candidate_count": 3, "last_error": ""}
+    )
+    supervisor = WorkerSupervisor(
+        settings,  # type: ignore[arg-type]
+        SimpleNamespace(outreach_service=outreach_service),  # type: ignore[arg-type]
+    )
+    status = supervisor.status()
+    assert status["enabled"] is True
+    assert status["threshold_minutes"] == 1
+    assert status["wechat_scope"] == "all"
+    assert status["decision_model"] == "deepseek-chat"
+    assert status["monitor"]["state"] == "idle"  # type: ignore[index]
 
 
 def test_sop_discovery_refresh_retries_only_once() -> None:

@@ -19,6 +19,11 @@ class WorkerSupervisor:
         self.services = services
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._first_day_retention_last_date = ""
+        self._outreach_monitor_runtime: dict[str, object] = {
+            "last_iteration_started_at": "",
+            "last_iteration_finished_at": "",
+            "last_error": "",
+        }
 
     async def start(self) -> None:
         if self.services.service_rule_data_service.available:
@@ -54,6 +59,39 @@ class WorkerSupervisor:
         if self.settings.outreach_first_day_silence_enabled:
             self._start("outreach_plan_monitor", self._run_outreach_plan_monitor())
             self._start("outreach_task_executor", self._run_outreach_task_executor())
+
+    def status(self) -> dict[str, object]:
+        tasks: dict[str, dict[str, object]] = {}
+        for name, task in self._tasks.items():
+            error = ""
+            if task.done() and not task.cancelled():
+                try:
+                    exception = task.exception()
+                except asyncio.CancelledError:
+                    exception = None
+                if exception is not None:
+                    error = f"{type(exception).__name__}: {exception}"[:500]
+            tasks[name] = {
+                "running": not task.done(),
+                "done": task.done(),
+                "cancelled": task.cancelled(),
+                "error": error,
+            }
+        return {
+            "enabled": self.settings.outreach_first_day_silence_enabled,
+            "threshold_minutes": self.settings.outreach_first_day_silence_minutes,
+            "wechat_scope": (
+                "all" if not self.settings.outreach_first_day_wechat_allowlist.strip() else "allowlist"
+            ),
+            "decision_model": self.settings.outreach_decision_model,
+            "decision_model_fallbacks": self.settings.outreach_decision_model_fallbacks,
+            "eligible_after": self.settings.outreach_silence_eligible_after,
+            "tasks": tasks,
+            "monitor": {
+                **self.services.outreach_service.monitor_status(),
+                **self._outreach_monitor_runtime,
+            },
+        }
 
     def _start(self, name: str, coroutine: object) -> None:
         current = self._tasks.get(name)
@@ -133,6 +171,9 @@ class WorkerSupervisor:
 
     async def _run_outreach_plan_monitor(self) -> None:
         while True:
+            self._outreach_monitor_runtime["last_iteration_started_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
             try:
                 if self.settings.outreach_first_day_silence_enabled:
                     await self.services.outreach_service.evaluate_first_day_opened_silence_customers(
@@ -141,10 +182,16 @@ class WorkerSupervisor:
                         auto_activate=self.settings.outreach_plan_monitor_auto_activate,
                         eligible_after=self.settings.outreach_silence_eligible_after,
                     )
+                self._outreach_monitor_runtime["last_error"] = ""
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                self._outreach_monitor_runtime["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
                 logger.exception("Outreach plan monitor iteration failed")
+            finally:
+                self._outreach_monitor_runtime["last_iteration_finished_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
             await asyncio.sleep(max(5.0, float(self.settings.outreach_plan_monitor_poll_seconds)))
 
     async def _run_outreach_task_executor(self) -> None:

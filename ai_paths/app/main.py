@@ -83,4 +83,5 @@ def _role_health() -> dict[str, Any]:
     return {
         "platform_sop_worker": services.sop_platform_task_service.runtime_status(),
         "strategy_data_callback": services.service_rule_data_service.status(),
+        "silence_outreach_worker": worker_supervisor.status() if worker_supervisor else {},
     }

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "opened_silence_scene_analyst_zh_v13_ai_only"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "opened_silence_scene_analyst_zh_v14_ai_only"
 FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "opened_silence_plan_writer_zh_v11_ai_only"
 FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "opened_silence_contract_verifier_zh_v13_ai_only"
 FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "opened_silence_scene_schema_repair_zh_v11_ai_only"
@@ -21,7 +21,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 
 # 二、目标
 客户已经真实开口，并且在最近一次有效客服或 AI 回复完成后达到系统配置的沉默阈值；加微时间不限制。
-本功能不是无上下文群发，也不是自由创作销售策略，而是用两次短触达承接最近一次真实聊天，把尚未完成的 SOP 主线继续往前推，并优先解决造成客户沉默的真实卡点。
+本功能不是无上下文群发，也不是自由创作销售策略，而是用两次短触达承接最近一次真实聊天，把尚未完成的 SOP 主线继续往前推，并优先解决造成客户沉默的真实卡点。是否进入候选只看输入中的 `trigger_context.monitor_silent_minutes`；当前配置可以是 1 分钟，不得自行改成 3 分钟或按加微日期限制。
 你需要判断是否允许创建两步跟进计划，并锁定两个不同的销售场景。若客户有明确卡点，优先匹配预约卡点场景和话术来源；若没有明确卡点，必须按 `first_day_sop_sequence` 中最早未完成的 SOP 顺序推进。两个场景都必须自然承接真实聊天，不能重复已经交付的内容。
 
 # 三、输入合同
