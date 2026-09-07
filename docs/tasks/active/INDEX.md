@@ -2,5 +2,4 @@
 
 | Task ID | Owner | Branch | Base SHA | 独占范围 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| sop-monitor-navigation | Codex | codex/sop-monitor-navigation | e69770bb | SOP BI/log pages, navigation, focused tests/docs | active |
 开始新任务时，主 Agent 先在本表中新增一行，再创建对应 `<task-id>.md`。同一文件或目录不能被两个活跃任务同时登记。

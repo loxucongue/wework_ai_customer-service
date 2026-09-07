@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T13:37:00+08:00`
+- verified_at: `2026-09-07T14:09:03+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-133305-5043dbf3`
-- git commit: `5043dbf34ba2f6e0dd25c24fbb70ce9b05a5af10`
+- release: `ai-paths-unified-20260907-140801-808a801b`
+- git commit: `808a801bae9bfa15d7765c0e3889be7445f68fa4`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `74eee9d04bedb99c0dc25ef2aaefab2cd96d2d8ef40fdf500a8ff838fd4ae4c0`
@@ -19,7 +19,7 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-133305-5043dbf3`；主动唤醒、SOP 和 AI 回复日志管理页均可用 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-140801-808a801b`；独立 SOP BI、SOP 任务日志和底层事件日志均可用 |
 
 三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
@@ -43,7 +43,7 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务前的已验证 clean release `ai-paths-unified-20260907-113657-7e795d47`；未把存在看板响应过期问题的中间版设为回滚点。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务前的 clean release `ai-paths-unified-20260907-133305-5043dbf3`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-113657-7e795d47`。
 - 数据库已迁移到 `20260907_01`，只增加序列采用、话术采用和采用详情已观测三个字段；旧代码会忽略这些字段，不需要破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
@@ -59,8 +59,9 @@
 - 指定问题场景 DeepSeek 隔离复现 2/2 通过；20 条真实身份只读矩阵 AI 初评通过率和真人表达通过率均为 95%，许可式素材追问为 0，策略适用样本中的序列/话术采用为 6/6，生产发送和关键写入均为 0。确定性回归为 326 条全部通过。
 - 销售策略 BI 已改为“有效决策 → 卡点 → 序列/话术候选 → Reply 正式采用”的管理链路，移除 7d 排客率。候选和正式采用使用独立字段，历史回填 110 条均有运行快照证据、0 条无法确认；有效客户轮次中旧序列字段的 9 条有 5 条只是候选，正式采用为 4 条，话术正式采用为 2 条。
 - SOP 运行监控已上线：独立只读接口 `/admin/sop-platform-dashboard` 从 MySQL 聚合平台任务、本地任务、客户、真实发送消息、无需发送、异常、未完成、小时趋势、企微号分布和持久化耗时；页面同时从 worker 进程读取实时队列，默认不刷新第三方平台。
-- 2026-09-07 现场口径为平台任务 108、本地任务 108、客户 66、确认发送 54 批/123 条消息、无需发送 52、异常 1、未完成 1，终态率 99.1%；无需发送由人工接管 41、客户关系失效 7、任务超时 4 构成。平台 pending、本地队列和执行中均为 0；唯一异常是模型服务 HTTP 503 留下的可恢复记录，不能表述为全部成功。
 - SOP 专用聚合接口热态实测约 3.3～4.2 秒；服务重启后的首个冷查询约 15～19 秒。发送完成只按主动发送接口返回的消息 ID 计数，不从会话归档推断。
+- SOP 处理结果总览已独立为“监控”导航下的 `/analytics/sop`；`/logs/sop-platform` 只保留任务证据，`/logs/sop` 明确标为底层事件日志。三个页面只读，不触发平台拉取、发送、消费或回传。
+- 2026-09-07 14:09 现场口径更新为平台任务 121、本地任务 121、确认发送 67 批/147 条消息、无需发送 52、异常 1、未完成 1；队列、平台待处理和执行中均为 0。独立看板接口本次发布后实测 7.45 秒。
 - 30 天线上口径为 213 个客户、279 个真实 V3 轮次、23 个有效策略决策；卡点识别率 `9/23=39.1%`、序列正式采用率 `4/9=44.4%`、话术正式采用率 `2/10=20.0%`、正常决策 `16/23=69.6%`。整页接口实测 `4.21s`，9 个并发只读视图无错误。
 - 桌面和 390px 手机真实浏览器验收通过：无控制台错误、无横向溢出、7d 排客率未出现；334 条后端回归、前端类型/Lint/生产构建通过。
 - MySQL/RDS 在发布前后均有间歇性连接超时；当前三个角色健康、SOP 队列和 pending 为 0，但该外部连接风险需继续处理，详见 `KNOWN_ISSUES.md`。
@@ -68,7 +69,7 @@
 - 千人千面日志列表和详情接口已现场返回 `business_summary`、`observability_view`、10 个模型/修复节点及素材摘要；前端桌面、手机和节点抽屉已验收。
 - 主动唤醒 BI 已上线 `/analytics/outreach` 和只读接口 `/admin/outreach/dashboard`：24 小时现场漏斗为扫描 92、符合条件 4、生成计划 4、成功触达 4、客户开口 0、预约/支付进展 0；当前队列展示 92 条、覆盖 14 个企微号。Worker 实际状态为全账号启用、沉默阈值 1 分钟，计划扫描和发送执行任务均存活；单客户明细接口可正常下钻。
 - 主动唤醒看板热态现场查询约 6.2 秒。已修复后台统计较慢时 Worker 健康响应体在等待期间过期、导致前端错误显示不可用并返回 500 的问题；修复后接口返回 `runtime_source=worker_service`。该看板只读，不触发扫描、计划、发送、重试或平台写入。
-- 本次发布 control、reply、worker 和前端均为 clean `main@5043dbf3`，四个 unit 为 active 且 `NRestarts=0`，三个后端 `/health` 的 release/commit 一致，Nginx 配置检查通过，发布后新增错误行数为 0。
+- 本次发布 control、reply、worker 和前端均为 clean `main@808a801b`，四个 unit 为 active 且 `NRestarts=0`，三个后端 `/health` 的 release/commit 一致。前端类型检查、全量 Lint、生产构建以及桌面/390px 手机真实浏览器验收通过；本次未修改 SOP 运行逻辑。
 - 生产根分区使用率为 74%、剩余约 10 GB；本次前端 release 通过只读硬链接复用未变更的依赖文件，并已清理自身 `/tmp`。后续仍按发布保留规范维护当前版和已验证回滚版。
 
 每次发布任务都必须重新记录 main SHA、三个角色 release/健康、数据库、worker/outbox、Nginx 和回滚点。超过核验时间后，本页只能作为线索，不能替代现场事实。
