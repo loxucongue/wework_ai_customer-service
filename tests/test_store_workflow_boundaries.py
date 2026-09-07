@@ -15,6 +15,7 @@ from app.graph.nodes.reply_generation import (
 )
 from app.graph.nodes.reply_validation import (
     _validate_parallel_appointment_confirmation_facts,
+    _validate_parallel_registration_confirmation_facts,
     _validate_unconfirmed_store_availability_claim,
 )
 from app.services.store_destination_resolver import _structured_current_location_query
@@ -212,6 +213,57 @@ def test_store_card_does_not_authorize_direct_visit_wording() -> None:
             [{"type": "text", "content": "有，广州这边能直接看。"}],
             state,
         )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "已预约。",
+        "已经帮您约好了。",
+        "已安排。",
+        "已经帮您安排好了。",
+        "已经留位。",
+        "明天下午准时等您。",
+        "可以直接到店。",
+        "今天直接过去就行。",
+    ],
+)
+def test_appointment_completion_claims_still_require_authoritative_fact(reply: str) -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        _validate_parallel_appointment_confirmation_facts(
+            [{"type": "text", "content": reply}],
+            {"normalized_content": "明天下午", "evidence_join": {"structured_facts": {}}},
+        )
+
+
+@pytest.mark.parametrize("reply", ["已登记。", "已经帮您登记好了。", "登记完成。"])
+def test_registration_completion_claim_still_requires_authoritative_fact(reply: str) -> None:
+    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
+        _validate_parallel_registration_confirmation_facts(
+            [{"type": "text", "content": reply}],
+            {"evidence_join": {"structured_facts": {}}},
+        )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "明天下午可以协调，先按这个时间作为到店意向。",
+        "我先帮您协调这个时间。",
+        "可以预约，您哪天方便？",
+    ],
+)
+def test_future_coordination_and_intent_are_not_completed_appointments(reply: str) -> None:
+    state = {"normalized_content": "明天下午", "evidence_join": {"structured_facts": {}}}
+
+    _validate_parallel_appointment_confirmation_facts(
+        [{"type": "text", "content": reply}],
+        state,
+    )
+    _validate_parallel_registration_confirmation_facts(
+        [{"type": "text", "content": reply}],
+        state,
+    )
 
 
 def test_low_information_input_recovery_only_handles_standalone_symbol_input() -> None:
