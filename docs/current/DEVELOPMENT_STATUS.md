@@ -1,8 +1,8 @@
 # 当前开发进度
 
 - status: active-production-development
-- code_baseline: `production@44fcd568`（客户身份合同与全部已验证待合入提交已收敛，沉默唤醒最新版保持不变）
-- production_verified_at: `2026-09-07T20:34:56+08:00`
+- code_baseline: `production@e738330c`（距离卡点价值重构与效果素材直接交付已上线）
+- production_verified_at: `2026-09-07T22:16:39+08:00`
 - source_of_truth: 当前 main、生产现场核验与对应合同
 
 本页给新窗口提供统一的产品进度。一次性测试报告、客户原文和原始模型输出不在这里保存；详细实现回查 Git 和 [已完成任务索引](../tasks/history/INDEX.md)。

@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T21:24:07+08:00`
+- verified_at: `2026-09-07T22:16:39+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-211433-17813a1`
-- git commit: `17813a1b0884302a79bc8832c84cce2e7a033e89`
+- release: `ai-paths-unified-20260907-221233-e738330c`
+- git commit: `e738330c4e68a832d97de4ec4af0ae4c54495aea`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -45,13 +45,14 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260907-201840-44fcd568`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260907-211433-17813a1`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-152202-b4dfc184`。
 - 数据库已迁移到 `20260907_02`，新增兼容的 `aics_customer_identity_links`；发布前 AICS 20 张表、841,130 行的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-44fcd568-20260907-201840/aics-before-20260907_02.sql.gz`，SHA-256 为 `481b853b31b244fa8e307a31f3be632ef46904ca3ea7692fdfc3da1e4a23439c`。旧代码会忽略新表，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-07 22:16 发布并核验 clean `main@e738330c`：距离卡点回复不再复述或放大“远、折腾、麻烦”，而是轻承接后转向技术、效果和案例价值；Reply 使用第三方距离话术时先对候选示例做客户可见表达适配，但保留真实序列、话术和素材 ID。销售可说“先保留活动名额”，真实“已预约/已登记/已排客”仍需权威事实。指定日志 DeepSeek 只读复现采用序列 11、话术 225 并直接交付效果视频，无门店重查、重复门店卡或兜底；全仓 438 条测试通过。本次无数据库迁移、无前端变更；V3 鉴权边界 401、V2 路由 404，四个 unit active 且 `NRestarts=0`，SOP 队列和 pending 为 0，回滚点为 `ai-paths-unified-20260907-211433-17813a1`。
 - 2026-09-07 21:24 发布并核验 clean `main@17813a1`：V3 Router 保留客户提交信息和继续交易的只读证据，Reply 在无活动卡点且交易未终态时回答当前事实后回到一个主线动作；已确认具体门店时只追问一个到店时间方向。结构校验要求 `action=ask` 必须有可见问题、正常销售轮次最多一个问题，并保持退订、人工接管、风险和终态优先。全仓 435 条测试及 Ruff 通过；指定日志生产配置隔离重放交付真实门店卡并只追加一个到店问题，生产写入为 0。发布后合成 V3 HTTP 验证成功且测试数据精确清理；V3 路由鉴权返回 401、V2 路由返回 404，三个后端与前端均 active、`NRestarts=0`，新版本启动后二十分钟无 error 级日志。MySQL 仍为 `20260907_02`，SOP 队列和 pending 均为 0；本次无数据库迁移、无前端变更，回滚点为 `ai-paths-unified-20260907-201840-44fcd568`。
 - 2026-09-07 20:35 发布 clean `main@44fcd568`：逐提交收敛所有 worktree 和远端分支。预约时间边界、直接预约收口已是 main 祖先；身份合同修复完整合入；生产内存治理作为已知问题保留；旧 DeepSeek 评测分支只含过期活跃任务占位且工作区有未提交错字/产物，未覆盖最新版代码。
 - 新版把平台客户 ID、企微外部联系人 ID、平台接待人员 ID、接待企微和加微关系 ID 分开处理，客户状态只按 `corp_id + wechat + external_userid` 隔离；新增身份质量与冲突只读接口。生产最近 200 条入参中 200 条平台客户和外部联系人互不混用，199 条具备完整托管身份；唯一缺接待人员 ID 的旧请求发生于 9 月 5 日，新版会在模型前返回 400。
