@@ -567,25 +567,32 @@ def _is_confirmed_send(row: dict[str, Any]) -> bool:
 
 
 def _contact_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    external_userid = _text(row.get("external_userid")).lower()
+    platform_customer_id = _text(row.get("customer_id")).lower()
+    identity = (
+        f"external:{external_userid}"
+        if external_userid
+        else f"platform_customer:{platform_customer_id}"
+        if platform_customer_id
+        else ""
+    )
     return (
         _text(row.get("corp_id")).lower(),
         _text(row.get("wechat")).lower(),
-        (_text(row.get("external_userid")) or _text(row.get("customer_id"))).lower(),
+        identity,
     )
 
 
 def _identity_contact_keys(row: dict[str, Any]) -> list[tuple[str, str, str]]:
     corp_id = _text(row.get("corp_id")).lower()
     wechat = _text(row.get("wechat")).lower()
+    external_userid = _text(row.get("external_userid")).lower()
+    platform_customer_id = _text(row.get("customer_id")).lower()
     identifiers = [
-        _text(row.get("external_userid")).lower(),
-        _text(row.get("customer_id")).lower(),
+        f"external:{external_userid}" if external_userid else "",
+        f"platform_customer:{platform_customer_id}" if platform_customer_id else "",
     ]
-    return [
-        (corp_id, wechat, identifier)
-        for identifier in dict.fromkeys(identifiers)
-        if corp_id and wechat and identifier
-    ]
+    return [(corp_id, wechat, identifier) for identifier in identifiers if corp_id and wechat and identifier]
 
 
 def _parse_time(value: str) -> datetime | None:

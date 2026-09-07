@@ -4,6 +4,8 @@ import hashlib
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
+from app.customer_identity import IdentityContractError, canonical_platform_customer_id
+
 
 @dataclass(frozen=True)
 class CustomerScope:
@@ -15,6 +17,7 @@ class CustomerScope:
     wechat: str
     external_userid: str
     customer_id: str
+    platform_customer_id: str
     customer_add_wechat_id: str
     user_id: str
     persistence_allowed: bool
@@ -30,7 +33,12 @@ def customer_scope_from_state(state: Mapping[str, Any]) -> CustomerScope:
         corp_id=request_context.get("corp_id") or state.get("corp_id"),
         wechat=request_context.get("wechat") or state.get("wechat"),
         external_userid=request_context.get("external_userid") or state.get("external_userid"),
-        customer_id=request_context.get("customer_id") or state.get("customer_id"),
+        customer_id=(
+            request_context.get("platform_customer_id")
+            or state.get("platform_customer_id")
+            or request_context.get("customer_id")
+            or state.get("customer_id")
+        ),
         customer_add_wechat_id=request_context.get("customer_add_wechat_id") or state.get("customer_add_wechat_id"),
         user_id=request_context.get("user_id") or state.get("user_id"),
     )
@@ -41,7 +49,7 @@ def customer_scope_from_identity(identity: Mapping[str, Any]) -> CustomerScope:
         corp_id=identity.get("corp_id"),
         wechat=identity.get("wechat"),
         external_userid=identity.get("external_userid"),
-        customer_id=identity.get("customer_id"),
+        customer_id=identity.get("platform_customer_id") or identity.get("customer_id"),
         customer_add_wechat_id=identity.get("customer_add_wechat_id"),
         user_id=identity.get("user_id"),
     )
@@ -59,14 +67,23 @@ def build_customer_scope(
     corp = _clean(corp_id)
     account = _clean(wechat)
     external = _clean(external_userid)
-    customer = _clean(customer_id)
+    raw_customer = _clean(customer_id)
     relation = _clean(customer_add_wechat_id)
     operator = _clean(user_id)
-    customer_identity = external or customer
+    try:
+        customer, _ = canonical_platform_customer_id(
+            legacy_customer_id=raw_customer,
+            external_userid=external,
+            allow_empty=True,
+            allow_synthetic=raw_customer.lower().startswith("sim_"),
+        )
+    except IdentityContractError:
+        customer = ""
+    customer_identity = external
 
     missing = tuple(
         name
-        for name, value in (("corp_id", corp), ("wechat", account), ("customer_identity", customer_identity))
+        for name, value in (("corp_id", corp), ("wechat", account), ("external_userid", customer_identity))
         if not value
     )
     persistence_allowed = not missing
@@ -79,6 +96,7 @@ def build_customer_scope(
         wechat=account,
         external_userid=external,
         customer_id=customer,
+        platform_customer_id=customer,
         customer_add_wechat_id=relation,
         user_id=operator,
         persistence_allowed=persistence_allowed,

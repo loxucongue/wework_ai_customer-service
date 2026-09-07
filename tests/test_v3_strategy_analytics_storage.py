@@ -351,6 +351,25 @@ def test_next_turn_links_only_the_exact_sales_contact(tmp_path: Path) -> None:
     ) == {}
 
 
+def test_latest_state_does_not_cross_match_platform_and_external_ids(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    stored = _state(
+        "request-platform-external-collision",
+        customer_id="shared-identifier",
+        external_userid="external-a",
+    )
+    repository.record_v3_strategy_usage(conversation_id="conversation-a", final_state=stored)
+
+    latest = repository.latest_v3_strategy_state(
+        stored["sales_contact_key"],
+        corp_id="corp-1",
+        wechat="sales-a",
+        external_userid="shared-identifier",
+        customer_id="different-platform-customer",
+    )
+    assert latest == {}
+
+
 def test_protocol_events_do_not_link_or_replace_stable_strategy_state(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     first = repository.record_v3_strategy_usage(

@@ -97,8 +97,8 @@ class ChatRuntime:
         try:
             status = await self._outreach_system_client.conversation_status(
                 corp_id=str(request.corp_id or ""),
-                customer_id=str(request.customer_id or request.external_userid or ""),
-                external_userid=str(request.external_userid or request.customer_id or ""),
+                customer_id=str(request.platform_customer_id or request.customer_id or ""),
+                external_userid=str(request.external_userid or ""),
                 user_id=str(request.user_id or ""),
                 wechat=str(request.wechat or ""),
                 ai_profile_id=str(request_context.get("ai_profile_id") or ""),
@@ -512,6 +512,18 @@ class ChatRuntime:
 
     def _prepare_conversation(self, request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> str:
         conversation_id = conversation_id_from_request(request, request_context)
+        if not (request_context.get("conversation_id") or request_context.get("session_id")):
+            find_existing = getattr(self._repository, "find_conversation_id_for_identity", None)
+            if callable(find_existing):
+                existing = safe_repository_call(
+                    find_existing,
+                    corp_id=str(request.corp_id or ""),
+                    wechat=str(request.wechat or ""),
+                    external_userid=str(request.external_userid or ""),
+                    customer_id=str(request.platform_customer_id or request.customer_id or ""),
+                )
+                if existing:
+                    conversation_id = str(existing)
         safe_repository_call(
             self._repository.upsert_conversation,
             conversation_id=conversation_id,
@@ -599,6 +611,7 @@ class ChatRuntime:
         state: AgentState = {
             "request_id": request_id,
             "customer_id": request.customer_id,
+            "platform_customer_id": request.platform_customer_id or request.customer_id,
             "corp_id": request.corp_id,
             "content": request.content,
             "conversation_history": request.conversation_history,

@@ -662,7 +662,7 @@ def _request_context(state: AgentState) -> dict[str, Any]:
 
 def _platform_customer_id(state: AgentState) -> str:
     context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
-    return str(context.get("platform_customer_id") or context.get("customer_id") or state.get("customer_id") or "").strip()
+    return str(context.get("platform_customer_id") or state.get("platform_customer_id") or "").strip()
 
 
 def _customer_add_wechat_id(state: AgentState) -> str:
@@ -1221,8 +1221,8 @@ async def _recover_customer_store_scope(
     identity = context.get("identity") if isinstance(context.get("identity"), dict) else {}
     platform_customer_id = str(
         context.get("platform_customer_id")
-        or context.get("customer_id")
         or identity.get("platform_customer_id")
+        or state.get("platform_customer_id")
         or ""
     ).strip()
     customer_add_wechat_id = str(
@@ -1258,7 +1258,6 @@ async def _recover_customer_store_scope(
         {
             "input_customer_id": request_context.get("customer_id"),
             "platform_customer_id": platform_customer_id,
-            "customer_id": platform_customer_id,
             "customer_add_wechat_id": customer_add_wechat_id,
         }
     )

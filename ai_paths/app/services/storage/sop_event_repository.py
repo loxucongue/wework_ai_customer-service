@@ -353,6 +353,16 @@ class SopEventRepositoryMixin:
                     ).fetchone()
         task = self._decode_sop_send_task(dict(row)) if row else {}
         task["created"] = created
+        observe_identity = getattr(self, "observe_customer_identity", None)
+        if created and callable(observe_identity):
+            observe_identity(
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                customer_id=customer_id,
+                user_id=user_id,
+                source=f"sop:{trigger_source or 'unknown'}",
+            )
         if duplicate_of_task_id:
             task["dedupe_reason"] = "send_once_key"
             task["duplicate_of_task_id"] = duplicate_of_task_id
@@ -771,66 +781,47 @@ class SopEventRepositoryMixin:
         external_userid: str = "",
         wechat: str = "",
     ) -> dict[str, str]:
-        external_key = str(external_userid or customer_id or "").strip()
-        customer_key = str(customer_id or external_userid or "").strip()
+        external_key = str(external_userid or "").strip()
+        customer_key = str(customer_id or "").strip()
         wechat_key = str(wechat or "").strip()
+        if external_key:
+            identity_sql = "LOWER(external_userid)=LOWER(?)"
+            identity_value = external_key
+        elif customer_key:
+            identity_sql = "customer_id=?"
+            identity_value = customer_key
+        else:
+            return {}
         with self.store.connect() as conn:
-            if external_key or customer_key:
-                row = conn.execute(
-                    """
-                    SELECT customer_id, external_userid, corp_id, user_id, wechat, source, updated_at FROM (
-                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'conversations' AS source, updated_at
-                        FROM conversations
-                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
-                          AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
-                          AND (?='' OR LOWER(wechat)=LOWER(?))
-                        UNION ALL
-                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'sop_send_tasks' AS source, updated_at
-                        FROM sop_send_tasks
-                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
-                          AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
-                          AND (?='' OR LOWER(wechat)=LOWER(?))
-                        UNION ALL
-                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'outreach_plans' AS source, updated_at
-                        FROM outreach_plans
-                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
-                          AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
-                          AND (?='' OR LOWER(wechat)=LOWER(?))
-                    ) AS identities
-                    ORDER BY updated_at DESC
-                    LIMIT 1
-                    """,
-                    (
-                        external_key, customer_key, wechat_key, wechat_key,
-                        external_key, customer_key, wechat_key, wechat_key,
-                        external_key, customer_key, wechat_key, wechat_key,
-                    ),
-                ).fetchone()
-                if row:
-                    return _identity_row(dict(row))
-            if wechat_key:
-                row = conn.execute(
-                    """
-                    SELECT customer_id, external_userid, corp_id, user_id, wechat, source, updated_at FROM (
-                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'conversations' AS source, updated_at
-                        FROM conversations
-                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND LOWER(wechat)=LOWER(?)
-                        UNION ALL
-                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'sop_send_tasks' AS source, updated_at
-                        FROM sop_send_tasks
-                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND LOWER(wechat)=LOWER(?)
-                        UNION ALL
-                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'outreach_plans' AS source, updated_at
-                        FROM outreach_plans
-                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND LOWER(wechat)=LOWER(?)
-                    ) AS identities
-                    ORDER BY updated_at DESC
-                    LIMIT 1
-                    """,
-                    (wechat_key, wechat_key, wechat_key),
-                ).fetchone()
-                if row:
-                    return _identity_row(dict(row))
+            row = conn.execute(
+                f"""
+                SELECT customer_id, external_userid, corp_id, user_id, wechat, source, updated_at FROM (
+                    SELECT customer_id, external_userid, corp_id, user_id, wechat, 'conversations' AS source, updated_at
+                    FROM conversations
+                    WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND {identity_sql}
+                      AND (?='' OR LOWER(wechat)=LOWER(?))
+                    UNION ALL
+                    SELECT customer_id, external_userid, corp_id, user_id, wechat, 'sop_send_tasks' AS source, updated_at
+                    FROM sop_send_tasks
+                    WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND {identity_sql}
+                      AND (?='' OR LOWER(wechat)=LOWER(?))
+                    UNION ALL
+                    SELECT customer_id, external_userid, corp_id, user_id, wechat, 'outreach_plans' AS source, updated_at
+                    FROM outreach_plans
+                    WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND {identity_sql}
+                      AND (?='' OR LOWER(wechat)=LOWER(?))
+                ) AS identities
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (
+                    identity_value, wechat_key, wechat_key,
+                    identity_value, wechat_key, wechat_key,
+                    identity_value, wechat_key, wechat_key,
+                ),
+            ).fetchone()
+            if row:
+                return _identity_row(dict(row))
         return {}
 
     def has_sent_sop_pack_for_customer(

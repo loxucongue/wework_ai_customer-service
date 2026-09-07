@@ -424,9 +424,11 @@ def _customer_key(request: ChatRequest) -> str:
     corp_id = str(context.get("corp_id") or request.corp_id or "").strip()
     wechat = str(context.get("wechat") or request.wechat or "").strip()
     external_userid = str(context.get("external_userid") or request.external_userid or "").strip()
-    customer_id = str(context.get("customer_id") or request.customer_id or "").strip()
-    identity = external_userid or customer_id
-    return f"{corp_id}:wechat:{wechat}:customer:{identity}" if corp_id and wechat and identity else ""
+    return (
+        f"{corp_id}:wechat:{wechat}:external:{external_userid}"
+        if corp_id and wechat and external_userid
+        else ""
+    )
 
 
 def _message_id(request: ChatRequest) -> str:

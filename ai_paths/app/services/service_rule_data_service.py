@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from app.customer_identity import IdentityContractError, canonical_platform_customer_id
 from app.services.service_rule_data_client import ServiceRuleDataClient
 from app.services.storage import AppRepository
 
@@ -63,9 +64,27 @@ class ServiceRuleDataService:
         if not state.get("reply_messages") and not allow_empty_reply:
             return {"status": "skipped", "reason": "no_customer_visible_reply"}
 
+        context_identity = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+        try:
+            platform_customer_id, platform_customer_id_source = canonical_platform_customer_id(
+                platform_customer_id=(
+                    context.get("platform_customer_id")
+                    or context_identity.get("platform_customer_id")
+                    or state.get("platform_customer_id")
+                ),
+                legacy_customer_id=state.get("customer_id"),
+                external_userid=state.get("external_userid"),
+                allow_empty=True,
+                allow_synthetic=bool(state.get("test_isolated")),
+            )
+        except IdentityContractError as exc:
+            return {"status": "skipped", "reason": "identity_contract_violation", "detail": str(exc)}
+        if not platform_customer_id:
+            return {"status": "skipped", "reason": "missing_platform_customer_id"}
+
         replied_at_iso, reply_epoch = _reply_times(context)
         task = self.repository.find_latest_platform_task_for_customer_reply(
-            customer_id=str(state.get("customer_id") or ""),
+            customer_id=platform_customer_id,
             external_userid=str(state.get("external_userid") or ""),
             corp_id=str(state.get("corp_id") or ""),
             wechat=str(state.get("wechat") or ""),
@@ -87,9 +106,7 @@ class ServiceRuleDataService:
             "sceneName": _CUSTOMER_OPEN_SCENE_NAME,
             "taskId": task_id,
             "sendStatus": 10 if state.get("reply_messages") else 20,
-            "customerId": _numeric_or_text(
-                state.get("customer_id") or state.get("external_userid") or ""
-            ),
+            "customerId": _numeric_or_text(platform_customer_id),
             "customerReply": _customer_reply_content(state),
             "customerReplyType": customer_reply_type(
                 str(context.get("source_msgtype") or context.get("msgtype") or ""),
@@ -138,7 +155,7 @@ class ServiceRuleDataService:
             record_kind="customer_open",
             task_id=str(task_id),
             sales_contact_key=str(state.get("sales_contact_key") or ""),
-            customer_id=str(state.get("customer_id") or ""),
+            customer_id=platform_customer_id,
             interface_version="v3",
             payload=payload,
         )
@@ -146,6 +163,7 @@ class ServiceRuleDataService:
             "status": str(record.get("status") or "pending"),
             "outbox_id": str(record.get("id") or ""),
             "task_id": str(task.get("task_id") or ""),
+            "platform_customer_id_source": platform_customer_id_source,
             "reply_msgid": reply_msgid,
             "customer_reply_type": payload["customerReplyType"],
             "checkpoint_code": checkpoint,

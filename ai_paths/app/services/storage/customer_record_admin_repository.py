@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.customer_identity import looks_like_external_userid
 from app.services.customer_scope import build_customer_scope
 from app.services.storage.store_base import scalar
 
@@ -19,6 +20,14 @@ class CustomerRecordAdminRepositoryMixin:
         account = _clean(wechat)
         requested_corp = _clean(corp_id)
         requested_external = _clean(external_userid)
+        if looks_like_external_userid(customer) and not requested_external:
+            return {
+                "status": "identity_type_mismatch",
+                "customer_id": customer,
+                "wechat": account,
+                "missing": ["external_userid"],
+                "detail": "external contact IDs must be supplied through external_userid",
+            }
         if not customer or not account:
             return {
                 "status": "missing_required_scope",
@@ -30,14 +39,15 @@ class CustomerRecordAdminRepositoryMixin:
         rows: list[dict[str, str]] = []
         with self.store.connect() as conn:
             for table in ("conversations", "sop_send_tasks", "outreach_plans"):
-                clauses = ["(customer_id=? OR external_userid=?)", "wechat=?"]
-                params: list[Any] = [customer, customer, account]
+                if requested_external:
+                    clauses = ["external_userid=?", "wechat=?"]
+                    params: list[Any] = [requested_external, account]
+                else:
+                    clauses = ["customer_id=?", "wechat=?"]
+                    params = [customer, account]
                 if requested_corp:
                     clauses.append("corp_id=?")
                     params.append(requested_corp)
-                if requested_external:
-                    clauses.append("external_userid=?")
-                    params.append(requested_external)
                 found = conn.execute(
                     f"""
                     SELECT customer_id, external_userid, corp_id, wechat
@@ -52,22 +62,24 @@ class CustomerRecordAdminRepositoryMixin:
 
         external_values = {row["external_userid"] for row in rows if row["external_userid"]}
         corp_values = {row["corp_id"] for row in rows if row["corp_id"]}
+        customer_values = {row["customer_id"] for row in rows if row["customer_id"]}
         if requested_external:
             external_values = {requested_external}
         if requested_corp:
             corp_values = {requested_corp}
-        if len(external_values) > 1 or len(corp_values) > 1:
+        if len(external_values) > 1 or len(corp_values) > 1 or len(customer_values) > 1:
             return {
                 "status": "ambiguous_scope",
                 "customer_id": customer,
                 "wechat": account,
                 "corp_candidates": sorted(corp_values),
                 "external_userid_candidates": sorted(external_values),
+                "platform_customer_id_candidates": sorted(customer_values),
             }
 
         resolved_external = next(iter(external_values), "")
         resolved_corp = next(iter(corp_values), "")
-        matched_customer = next((row["customer_id"] for row in rows if row["customer_id"]), customer)
+        matched_customer = customer if customer in customer_values else next(iter(customer_values), customer)
         can_use_customer_fallback = bool(rows) and not resolved_external
         scope = build_customer_scope(
             corp_id=resolved_corp,
@@ -109,7 +121,12 @@ class CustomerRecordAdminRepositoryMixin:
         if not customer or not account or scope.get("status") == "ambiguous_scope":
             return {"customer_id": customer, "wechat": account, "scope": scope, "counts": {}, "sop_summary": [], "latest_events": []}
 
-        account_sql, account_params = _account_match(customer, account, resolved_corp)
+        account_sql, account_params = _account_match(
+            customer,
+            account,
+            resolved_corp,
+            _clean(scope.get("external_userid")),
+        )
         with self.store.connect() as conn:
             memory_count = _count(conn, "SELECT COUNT(*) FROM customer_memory WHERE customer_id=?", (sales_key,)) if sales_key else 0
             history_count = _count(conn, "SELECT COUNT(*) FROM history_events WHERE customer_id=?", (sales_key,)) if sales_key else 0
@@ -219,7 +236,12 @@ class CustomerRecordAdminRepositoryMixin:
         if scope.get("status") == "ambiguous_scope":
             return {"status": "ambiguous_scope", "customer_id": customer, "wechat": account, "scope": scope, "deleted": {}}
 
-        account_sql, account_params = _account_match(customer, account, _clean(scope.get("corp_id")))
+        account_sql, account_params = _account_match(
+            customer,
+            account,
+            _clean(scope.get("corp_id")),
+            _clean(scope.get("external_userid")),
+        )
         sales_key = _clean(scope.get("sales_contact_key"))
         deleted: dict[str, int] = {}
         with self.store.connect() as conn:
@@ -278,9 +300,13 @@ class CustomerRecordAdminRepositoryMixin:
         }
 
 
-def _account_match(customer: str, wechat: str, corp_id: str) -> tuple[str, tuple[Any, ...]]:
-    clauses = ["(customer_id=? OR external_userid=?)", "wechat=?"]
-    params: list[Any] = [customer, customer, wechat]
+def _account_match(customer: str, wechat: str, corp_id: str, external_userid: str = "") -> tuple[str, tuple[Any, ...]]:
+    if external_userid:
+        clauses = ["external_userid=?", "wechat=?"]
+        params: list[Any] = [external_userid, wechat]
+    else:
+        clauses = ["customer_id=?", "wechat=?"]
+        params = [customer, wechat]
     if corp_id:
         clauses.append("corp_id=?")
         params.append(corp_id)

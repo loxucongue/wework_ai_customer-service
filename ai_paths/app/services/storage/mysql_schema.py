@@ -81,6 +81,25 @@ conversations = Table(
     ),
 )
 
+customer_identity_links = Table(
+    f"{TABLE_PREFIX}customer_identity_links",
+    metadata,
+    _id("id", primary_key=True),
+    _id("corp_id"),
+    _id("wechat"),
+    _id("external_userid"),
+    _id("platform_customer_id"),
+    _id("platform_user_id"),
+    _id("customer_add_wechat_id"),
+    _short("platform_customer_id_source", length=64),
+    _short("verification_status", "observed", length=64),
+    _json("conflict_json", "{}"),
+    _time("first_seen_at"),
+    _time("last_seen_at"),
+    UniqueConstraint("corp_id", "wechat", "external_userid", name="uq_aics_customer_identity_scope"),
+    Index("idx_aics_customer_identity_platform_customer", "corp_id", "wechat", "platform_customer_id"),
+)
+
 messages = Table(
     f"{TABLE_PREFIX}messages",
     metadata,

@@ -7,6 +7,33 @@ from app.services.storage.serialization import dumps, loads_dict, loads_list, ut
 
 
 class ConversationRepositoryMixin:
+    def find_conversation_id_for_identity(
+        self,
+        *,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        customer_id: str,
+    ) -> str:
+        if not str(corp_id or "").strip() or not str(wechat or "").strip():
+            return ""
+        clauses = ["corp_id=?", "LOWER(wechat)=LOWER(?)"]
+        params: list[Any] = [corp_id, wechat]
+        if external_userid:
+            clauses.append("external_userid=?")
+            params.append(external_userid)
+        elif customer_id:
+            clauses.append("customer_id=?")
+            params.append(customer_id)
+        else:
+            return ""
+        with self.store.connect() as conn:
+            row = conn.execute(
+                f"SELECT id FROM conversations WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT 1",
+                tuple(params),
+            ).fetchone()
+        return str(row["id"] or "") if row else ""
+
     def upsert_conversation(self, *, conversation_id: str, request: Any, title: str) -> None:
         now = utc_now_iso()
         with self.store.connect() as conn:
@@ -34,6 +61,17 @@ class ConversationRepositoryMixin:
                     now,
                     now,
                 ),
+            )
+        observe_identity = getattr(self, "observe_customer_identity", None)
+        if callable(observe_identity):
+            observe_identity(
+                corp_id=str(getattr(request, "corp_id", "") or ""),
+                wechat=str(getattr(request, "wechat", "") or ""),
+                external_userid=str(getattr(request, "external_userid", "") or ""),
+                customer_id=str(getattr(request, "platform_customer_id", "") or getattr(request, "customer_id", "") or ""),
+                user_id=str(getattr(request, "user_id", "") or ""),
+                customer_add_wechat_id=str(getattr(request, "customer_add_wechat_id", "") or ""),
+                source="v3_request",
             )
 
     def add_user_message(self, *, conversation_id: str, request_id: str, content: str, file_image: str | None) -> None:
