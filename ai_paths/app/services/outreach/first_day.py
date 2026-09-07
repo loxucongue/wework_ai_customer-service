@@ -3164,7 +3164,37 @@ class FirstDayWorkflow:
                 eligible_after=eligible_after,
             )
             if rough_reason:
-                return (1, 0, 0.0, _string(candidate.get("customer_id")))
+                return (2, 0, 0.0, _string(candidate.get("customer_id")))
+            candidate_fingerprint = _conversation_fingerprint(
+                corp_id=_string(candidate.get("corp_id")),
+                wechat=_string(candidate.get("wechat")),
+                external_userid=_string(candidate.get("external_userid")),
+                customer_id=_string(candidate.get("customer_id")),
+                latest_customer_message_at=_string(candidate.get("last_customer_message_at")),
+                latest_staff_message_at=_string(
+                    candidate.get("latest_outbound_message_at")
+                    or candidate.get("last_staff_message_at")
+                ),
+            )
+            preloaded = preloaded_runs.get(
+                (
+                    _string(candidate.get("corp_id")),
+                    _string(candidate.get("wechat")).lower(),
+                    _string(candidate.get("external_userid")),
+                    _string(candidate.get("customer_id")),
+                    candidate_fingerprint,
+                ),
+                {},
+            )
+            retry_rank = (
+                0
+                if _first_day_existing_run_retry_reason(
+                    preloaded,
+                    latest_customer_message_at=_string(candidate.get("last_customer_message_at")),
+                )
+                not in {"", "new_run"}
+                else 1
+            )
             reply_wait = max(0, _int(candidate.get("reply_wait_minutes"), 0))
             outbound_at = (
                 _parse_iso(_string(candidate.get("latest_outbound_message_at")))
@@ -3174,7 +3204,7 @@ class FirstDayWorkflow:
             )
             outbound_ts = outbound_at.timestamp() if outbound_at else 0.0
             return (
-                0,
+                retry_rank,
                 -max(0, reply_wait - threshold_minutes),
                 outbound_ts,
                 _string(candidate.get("customer_id")),

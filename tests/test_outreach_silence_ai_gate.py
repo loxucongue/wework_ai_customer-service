@@ -584,6 +584,71 @@ def test_monitor_evaluates_longest_waiting_customer_first() -> None:
     assert workflow.monitor_status()["state"] == "idle"
 
 
+def test_monitor_prioritizes_retryable_fingerprint_before_fresh_candidates() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    def candidate(customer_id: str, *, wait_minutes: int) -> dict[str, object]:
+        return {
+            **_identity(),
+            "customer_id": customer_id,
+            "candidate_source": "conversation",
+            "last_customer_message_at": (now - timedelta(minutes=wait_minutes + 1)).isoformat(),
+            "latest_outbound_message_at": (now - timedelta(minutes=wait_minutes)).isoformat(),
+            "reply_wait_minutes": wait_minutes,
+            "awaiting_customer_reply": True,
+        }
+
+    retry_candidate = candidate("retry-customer", wait_minutes=2)
+    fresh_candidate = candidate("fresh-customer", wait_minutes=30)
+
+    class RetrySnapshotRepository(_Repository):
+        def list_first_day_outreach_runs_for_monitor(self, **_: object) -> list[dict[str, object]]:
+            from app.services.outreach.first_day import _conversation_fingerprint
+
+            return [
+                {
+                    **retry_candidate,
+                    "workflow_run_id": "retry-run",
+                    "status": "blocked",
+                    "reason_code": "authoritative_fingerprint_already_logged",
+                    "retry_count": 0,
+                    "conversation_fingerprint": _conversation_fingerprint(
+                        corp_id="corp-1",
+                        wechat="SL8003",
+                        external_userid="external-1",
+                        customer_id="retry-customer",
+                        latest_customer_message_at=str(retry_candidate["last_customer_message_at"]),
+                        latest_staff_message_at=str(retry_candidate["latest_outbound_message_at"]),
+                    ),
+                }
+            ]
+
+    workflow = FirstDayWorkflow(
+        repository=RetrySnapshotRepository(),
+        model_client=object(),
+        customer_context_service=None,
+        first_day_wechat_allowlist="",
+        planning=_Planning(_StatusClient(), candidates=[fresh_candidate, retry_candidate]),
+    )
+    evaluated: list[str] = []
+
+    async def record(candidate_value: dict[str, object], **_: object) -> dict[str, object]:
+        evaluated.append(str(candidate_value["customer_id"]))
+        return {"status": "evaluated", "customer_id": candidate_value["customer_id"], "created": False}
+
+    workflow._evaluate_first_day_silence_candidate = record  # type: ignore[method-assign]
+    result = asyncio.run(
+        workflow.evaluate_first_day_opened_silence_customers(
+            limit=1,
+            silent_minutes=1,
+            eligible_after=(now - timedelta(hours=1)).isoformat(),
+        )
+    )
+
+    assert evaluated == ["retry-customer"]
+    assert result["evaluated_count"] == 1
+
+
 def test_monitor_preloads_fingerprints_and_avoids_per_candidate_lookup() -> None:
     now = datetime.now(timezone.utc).replace(microsecond=0)
     customer_at = (now - timedelta(minutes=3)).isoformat()
