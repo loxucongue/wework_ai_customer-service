@@ -484,8 +484,8 @@ function SopMonitorDashboard({ metrics, worker, runs }: { metrics: SopMetrics; w
         </div>
       </section>
 
-      <section className="grid border-b bg-white xl:grid-cols-[minmax(0,1.05fr)_minmax(0,.95fr)]">
-        <div className="border-b px-5 py-5 xl:border-b-0 xl:border-r">
+      <section className="grid min-w-0 border-b bg-white xl:grid-cols-[minmax(0,1.05fr)_minmax(0,.95fr)]">
+        <div className="min-w-0 border-b px-5 py-5 xl:border-b-0 xl:border-r">
           <div className="flex items-center gap-2"><Users className="h-4 w-4 text-slate-500" /><h2 className="text-sm font-semibold">企微账号处理分布</h2></div>
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[560px] text-left text-xs">
@@ -496,7 +496,7 @@ function SopMonitorDashboard({ metrics, worker, runs }: { metrics: SopMetrics; w
             </table>
           </div>
         </div>
-        <div className="px-5 py-5">
+        <div className="min-w-0 px-5 py-5">
           <div className="flex items-center gap-2"><Timer className="h-4 w-4 text-slate-500" /><h2 className="text-sm font-semibold">链路耗时</h2></div>
           <p className="mt-1 text-xs text-slate-500">历史列来自数据库；实时列为 worker 本次启动后的最近 500 次采样</p>
           <div className="mt-4 divide-y border-y">
