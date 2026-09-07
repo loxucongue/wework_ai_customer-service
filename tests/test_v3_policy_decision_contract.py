@@ -22,9 +22,11 @@ from app.graph.nodes.reply_nodes import (  # noqa: E402
 )
 from app.graph.nodes.reply_generation import (  # noqa: E402
     ReplyModelPipelineError,
+    _appointment_fact_failure_recovery,
     _reply_failure_diagnostic,
     _policy_safety_failure_recovery,
     _run_reply_model_pipeline,
+    _store_failure_recovery_eligible,
 )
 from app.graph.nodes.reply_validation import (  # noqa: E402
     _promises_payment_entry,
@@ -944,6 +946,32 @@ def test_business_hours_repair_preserves_customer_arrival_intent() -> None:
 
     assert "不要把客户提出的到店时间改写成门店开门" in hint
     assert "早上9点我先作为您的到店时间意向" in hint
+
+
+def test_appointment_fact_failure_recovery_keeps_current_topic() -> None:
+    result = _appointment_fact_failure_recovery(
+        {
+            "primary_error": "appointment_confirmation_fact_required",
+            "raw_json_output": {"policy_decision": _valid_decision()},
+        },
+        _state(),
+    )
+
+    assert result is not None
+    messages, payload = result
+    assert "到店意向" in messages[0]["content"]
+    assert "补一下城市" not in messages[0]["content"]
+    assert payload["action"] == "none"
+    assert payload["policy_decision"]["closing_decision"]["action"] == "pause"
+
+
+def test_store_failure_recovery_is_not_used_for_appointment_failure() -> None:
+    assert not _store_failure_recovery_eligible(
+        {"error": "reply_admission_violations::appointment_confirmation_fact_required"}
+    )
+    assert _store_failure_recovery_eligible(
+        {"error": "reply_admission_violations::store_address_fact_required"}
+    )
 
 
 def test_reply_prompt_marks_active_closing_provenance_as_runtime_required() -> None:

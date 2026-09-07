@@ -111,9 +111,27 @@ def create_synthesize_reply_node(
                         )
                         reply_source = "policy_safety_failure_recovery"
                     else:
-                        messages = _verified_store_delivery_failure_recovery(state)
+                        appointment_recovery = _appointment_fact_failure_recovery(model_call, state)
+                        if appointment_recovery:
+                            messages, safe_payload = appointment_recovery
+                            model_call["validated_json_output"] = safe_payload
+                            warnings.append(
+                                {
+                                    "node": "synthesize_reply",
+                                    "message": "appointment_fact_failure_recovery_used",
+                                    "detail": primary_error[:500],
+                                }
+                            )
+                            reply_source = "appointment_fact_failure_recovery"
+                        elif _store_failure_recovery_eligible(model_call):
+                            messages = _verified_store_delivery_failure_recovery(state)
+                        else:
+                            messages = []
                     if messages:
-                        if reply_source != "policy_safety_failure_recovery":
+                        if reply_source not in {
+                            "policy_safety_failure_recovery",
+                            "appointment_fact_failure_recovery",
+                        }:
                             recovery_payload = _verified_store_recovery_observability_payload(
                                 model_call,
                                 messages,
@@ -439,6 +457,101 @@ def _policy_safety_failure_recovery(
         }
     )
     return safe_payload["reply_messages"], safe_payload
+
+
+def _appointment_fact_failure_recovery(
+    model_call: dict[str, Any],
+    state: AgentState,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Keep a failed appointment claim safe without changing the customer's topic."""
+
+    error_text = _model_call_error_text(model_call)
+    if "appointment_confirmation_fact_required" in error_text:
+        text = "您说的时间我先作为到店意向，具体接待安排还需要门店确认，确认后再过去，避免白跑。"
+        reason = "appointment_confirmation_fact_recovery"
+    elif "business_hours_fact_required" in error_text:
+        text = "您说的时间我先作为到店意向，具体营业和接待安排需要以门店确认为准。"
+        reason = "business_hours_fact_recovery"
+    else:
+        return None
+    messages = [{"type": "text", "order": 1, "content": text}]
+    try:
+        validate_model_led_reply_admission(messages, state)
+    except Exception:
+        return None
+    payload = _fact_failure_recovery_observability_payload(
+        model_call,
+        messages,
+        reason=reason,
+    )
+    return messages, payload
+
+
+def _store_failure_recovery_eligible(model_call: dict[str, Any]) -> bool:
+    error_text = _model_call_error_text(model_call)
+    return any(
+        marker in error_text
+        for marker in (
+            "store_",
+            "parking_fact_required",
+            "distance_fact_required",
+            "distance_value_not_customer_visible",
+        )
+    )
+
+
+def _model_call_error_text(model_call: dict[str, Any]) -> str:
+    retry = model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}
+    return " ".join(
+        str(value or "").lower()
+        for value in (
+            model_call.get("primary_error"),
+            retry.get("error"),
+            model_call.get("error"),
+        )
+    )
+
+
+def _fact_failure_recovery_observability_payload(
+    model_call: dict[str, Any],
+    messages: list[dict[str, Any]],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    retry = model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}
+    source = next(
+        (
+            item
+            for item in (retry.get("raw_json_output"), model_call.get("raw_json_output"))
+            if isinstance(item, dict) and isinstance(item.get("policy_decision"), dict)
+        ),
+        {},
+    )
+    policy_decision = copy.deepcopy(source.get("policy_decision") or {})
+    closing = (
+        policy_decision.get("closing_decision")
+        if isinstance(policy_decision.get("closing_decision"), dict)
+        else {}
+    )
+    if closing:
+        closing.update({"action": "pause", "sequence_key": "none", "node_key": ""})
+    return {
+        "reply_messages": copy.deepcopy(messages),
+        "action": "none",
+        "selected_content_ids": [],
+        "content_decisions": [],
+        "commit_actions": [],
+        "knowledge_use": {},
+        "deposit_evidence": {},
+        "sales_judgment": {
+            "customer_goal": "",
+            "primary_objective": "安全承接客户的到店时间意向",
+            "customer_friction_observation": "",
+            "posture": "answer",
+            "reason": reason,
+        },
+        "policy_decision": policy_decision,
+    }
 
 
 def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[str, Any]]:
