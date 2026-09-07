@@ -19,6 +19,7 @@ from app.graph.nodes.turn_evidence_view import turn_evidence_for_model  # noqa: 
 from app.prompts.reply_synthesizer import (  # noqa: E402
     PARALLEL_REPLY_SYSTEM_PROMPT,
     _compact_reply_status,
+    _render_knowledge_evidence,
 )
 from app.prompts.v3_semantic_router import (  # noqa: E402
     V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT,
@@ -241,9 +242,56 @@ def test_model_led_admission_allows_sales_slot_hold_language() -> None:
 
 
 def test_distance_prompt_reframes_without_repeating_negative_objection() -> None:
-    assert "不要复述或放大“远、折腾、麻烦、跑一趟”等负面感受" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "马上用已发布距离卡点话术把注意力转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户可见文字不得再用“距离、远、折腾、麻烦”复述顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "即使候选原文有也不得照搬" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "马上把注意力转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "正向社会证明可以说“专程过来/花一两个小时过来”" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "我先帮您留着/保留活动名额" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_distance_candidate_examples_are_adapted_before_reply_prompt() -> None:
+    rendered = _render_knowledge_evidence(
+        {
+            "sequence_candidates": [
+                {
+                    "sequence_id": "11",
+                    "sequence_name": "到店受阻-店太远了，不愿意过来",
+                    "checkpoint_name": "店太远了，不愿意过来",
+                    "steps": [
+                        {
+                            "step_id": "53",
+                            "action_name": "共情引导",
+                            "objective": "确实距离不算近，来回赶路挺折腾的。",
+                        }
+                    ],
+                }
+            ],
+            "candidates": [
+                {
+                    "source_id": "225",
+                    "script_id": "225",
+                    "script_name": "换位思考",
+                    "checkpoint_type": {"name": "到店受阻"},
+                    "checkpoint_tag": {"name": "店太远了，不愿意过来"},
+                    "paragraphs": [
+                        {
+                            "paragraph_no": 1,
+                            "messages": [
+                                {"type": "text", "content": "距离不是问题，来回折腾但效果值得。"},
+                                {"type": "video", "url": "https://example.com/effect.mp4"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert "序列 11" in rendered
+    assert "话术ID=225" in rendered
+    assert "客户会专程到店、看重技术与效果、值得了解" in rendered
+    assert "确实距离不算近" not in rendered
+    assert "距离不是问题，来回折腾" not in rendered
 
 
 def test_same_city_store_list_does_not_resend_an_already_delivered_card() -> None:

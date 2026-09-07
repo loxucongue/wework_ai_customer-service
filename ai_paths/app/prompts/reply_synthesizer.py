@@ -18,7 +18,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，也是
 - 已经具备且可在本轮直接交付的明确价值，不再向客户索取许可：活动价直接说，相关可发效果图/案例用短句引出后发送。禁止“要不要我发活动价、要不要看效果图”等拖延；只有缺少会改变事实或动作的信息才追问。
 - 强销售是答清后只推进一个有依据的动作。客户回答上一轮补充问题并延续未完成交易路径时，事实交付后回到主线；无卡点、安全暂停或终态，选择具体门店后不再问位置是否方便，只问一个到店日期/时段。`closing_decision.action=none` 不表示停止主线；不得同时推进留名额、预约金和到店。
 - 客户已收到并确认门店后，停车、营业时间、楼层等详情只答权威事实，不重复门店卡、完整地址或导航。无卡点、安全暂停或终态时，答后询问到店日期或工作日/周末偏好，并说明按方便时间做预约登记及10元预约金锁活动名额；本轮不发付款卡、不声称预约或留名额已成功。
-- 客户收到当前城市的最终门店推荐后说“太远了”，若没有提供不同城市，不再追问同城地铁站、路口、楼栋或更细地址，也不承诺能找到更近门店。第一句只做轻承接，例如“那没关系呀”，不要复述或放大“远、折腾、麻烦、跑一趟”等负面感受；马上用已发布距离卡点话术把注意力转到技术、效果、案例和是否值得。没有真实距离排序时不得客观断言门店确实远或近。客户反复明确拒绝当前城市门店时，最多再问是否有其他方便前往的城市；只有客户给出不同城市才重新查店。
+- 客户收到当前城市的最终门店推荐后说“太远了”，若没有提供不同城市，不再追问同城地铁站、路口、楼栋或更细地址，也不承诺能找到更近门店。第一句只用“那没关系呀/没事的”轻承接；随后客户可见文字不得再用“距离、远、折腾、麻烦”复述顾虑，即使候选原文有也不得照搬。马上把注意力转到技术、效果、案例和是否值得；正向社会证明可以说“专程过来/花一两个小时过来”。没有真实距离排序时不得客观断言门店确实远或近。客户反复明确拒绝当前城市门店时，最多再问是否有其他方便前往的城市；只有客户给出不同城市才重新查店。
 - 纯问候且阶段不可靠时自然回应并轻问淡斑需求；只有权威历史证明主线已完成且仍有行动条件时才问是否继续预约。
 - 当前只问价格/优惠且未提门店时，只回答价格、价值和一个相关下一步，不得恢复旧门店、路线或预约。
 - 客户泛称“有的店是骗子/不靠谱”时，先承接其担心并只问发生了什么或具体担心哪一点；没有本轮权威证明，不要泛化自证“我们所有店都直营、都正规、有售后保障、绝无额外消费”，也不要立刻把话题改成查附近门店。
@@ -902,6 +902,9 @@ def _render_knowledge_evidence(value: Any) -> str:
         name = raw.get("sequence_name") or raw.get("name") or ""
         checkpoint = raw.get("checkpoint_name") or raw.get("checkpoint_code") or ""
         description = raw.get("description") or raw.get("reason") or ""
+        distance_objection = _is_distance_objection_reference(raw)
+        if distance_objection:
+            description = "保留该序列的价值转换节奏；不复述原节点中远、折腾、麻烦等顾虑描述"
         lines.append(f"序列 {sequence_id}｜{name}｜卡点={checkpoint}｜思路={description}")
         steps = raw.get("steps") or raw.get("relevant_steps") or []
         for step in steps:
@@ -913,7 +916,11 @@ def _render_knowledge_evidence(value: Any) -> str:
                 + "｜动作="
                 + str(step.get("action_name") or step.get("action_code") or "")
                 + "｜说明="
-                + str(step.get("objective") or step.get("remark") or step.get("reason") or "")
+                + (
+                    "轻承接后直接转技术、效果、案例和是否值得；原节点负面前置句不进入客户回复"
+                    if distance_objection
+                    else str(step.get("objective") or step.get("remark") or step.get("reason") or "")
+                )
             )
     for raw in value.get("candidates") or []:
         if not isinstance(raw, dict):
@@ -923,6 +930,7 @@ def _render_knowledge_evidence(value: Any) -> str:
         text = _dedupe_reference_text(raw.get("reference_text") or raw.get("body_text") or raw.get("text") or "")
         checkpoint_type = raw.get("checkpoint_type") if isinstance(raw.get("checkpoint_type"), dict) else {}
         checkpoint_tag = raw.get("checkpoint_tag") if isinstance(raw.get("checkpoint_tag"), dict) else {}
+        distance_objection = _is_distance_objection_reference(raw)
         query_sources = {
             str(item.get("query_source") or "").strip()
             for item in raw.get("sequence_links") or []
@@ -965,7 +973,12 @@ def _render_knowledge_evidence(value: Any) -> str:
                     if not isinstance(message, dict):
                         continue
                     if message.get("type") == "text" and message.get("content"):
-                        lines.append("    文字：" + _dedupe_reference_text(message.get("content")))
+                        lines.append(
+                            "    文字改写要求：只取客户会专程到店、看重技术与效果、值得了解的正向逻辑；"
+                            "原文中复述距离、远、折腾或麻烦的句子不进入客户回复"
+                            if distance_objection
+                            else "    文字：" + _dedupe_reference_text(message.get("content"))
+                        )
                     elif message.get("type") in {"image", "video"} and message.get("url"):
                         media_type = str(message.get("type") or "")
                         media_counts[media_type] = media_counts.get(media_type, 0) + 1
@@ -980,7 +993,12 @@ def _render_knowledge_evidence(value: Any) -> str:
                     )
         else:
             if text:
-                lines.append("  参考表达：" + text)
+                lines.append(
+                    "  参考表达改写要求：只取客户会专程到店、看重技术与效果、值得了解的正向逻辑；"
+                    "原文中复述距离、远、折腾或麻烦的句子不进入客户回复"
+                    if distance_objection
+                    else "  参考表达：" + text
+                )
             media = raw.get("media") if isinstance(raw.get("media"), dict) else {}
             if media.get("url"):
                 lines.append(f"  配套素材：{media.get('url')}")
@@ -1004,6 +1022,25 @@ def _render_knowledge_evidence(value: Any) -> str:
         "个体效果和个体安全仍以【本轮相关权威事实】与【当前工具权威事实：不得虚构或违背】为准。"
     )
     return "\n".join(lines) or "无"
+
+
+def _is_distance_objection_reference(value: Any) -> bool:
+    """Identify tenant-configured distance references without reading customer prose."""
+
+    if not isinstance(value, dict):
+        return False
+    checkpoint_type = value.get("checkpoint_type") if isinstance(value.get("checkpoint_type"), dict) else {}
+    checkpoint_tag = value.get("checkpoint_tag") if isinstance(value.get("checkpoint_tag"), dict) else {}
+    catalog_text = " ".join(
+        str(item or "")
+        for item in (
+            value.get("checkpoint_name"),
+            value.get("sequence_name"),
+            checkpoint_type.get("name"),
+            checkpoint_tag.get("name"),
+        )
+    )
+    return any(marker in catalog_text for marker in ("店太远", "距离远", "路程远"))
 
 
 def _render_delivery_assets(
