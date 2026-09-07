@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T10:26:14+08:00`
+- verified_at: `2026-09-07T11:39:01+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-102203-753c3324`
-- git commit: `753c33245276b5eb8f6b6e9a00a32e2debd12470`
+- release: `ai-paths-unified-20260907-113657-7e795d47`
+- git commit: `7e795d4796023ce4ddaac1f9bb25ed69f30bbd6c`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `74eee9d04bedb99c0dc25ef2aaefab2cd96d2d8ef40fdf500a8ff838fd4ae4c0`
@@ -19,7 +19,7 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-102203-753c3324`；`/logs/outreach-first-day` 返回 HTTP 200，展示沉默唤醒业务与素材链路 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-113657-7e795d47`；`/logs/sop-platform` 返回 HTTP 200，展示 SOP 运行监控和证据下钻 |
 
 三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
@@ -36,15 +36,15 @@
 
 ## Worker 与 outbox
 
-- 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`。
+- 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`，最近轮询错误为空。
 - Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=20`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上线前 clean release `ai-paths-unified-20260907-095632-8d333d06`。
-- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-095632-8d333d06`；本次环境与 release 指针备份位于权限受限的 `/opt/ai-paths/backups/pre-753c3324/`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一版已验证 clean release `ai-paths-unified-20260907-112925-5864c5fd`。
+- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-112925-5864c5fd`。
 - 数据库已迁移到 `20260907_01`，只增加序列采用、话术采用和采用详情已观测三个字段；旧代码会忽略这些字段，不需要破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
@@ -58,11 +58,14 @@
 - 已采用的话术若带有本轮相关、安全且未发送的效果图/视频，会把媒体作为客户可见结构消息直接交付，不再先问“要不要发效果图”；活动价格等已有权威价值也应直接回答。代码只补齐模型已经采用的话术自身媒体，不跨话术或跨主题替模型做销售选择。
 - 指定问题场景 DeepSeek 隔离复现 2/2 通过；20 条真实身份只读矩阵 AI 初评通过率和真人表达通过率均为 95%，许可式素材追问为 0，策略适用样本中的序列/话术采用为 6/6，生产发送和关键写入均为 0。确定性回归为 326 条全部通过。
 - 销售策略 BI 已改为“有效决策 → 卡点 → 序列/话术候选 → Reply 正式采用”的管理链路，移除 7d 排客率。候选和正式采用使用独立字段，历史回填 110 条均有运行快照证据、0 条无法确认；有效客户轮次中旧序列字段的 9 条有 5 条只是候选，正式采用为 4 条，话术正式采用为 2 条。
+- SOP 运行监控已上线：独立只读接口 `/admin/sop-platform-dashboard` 从 MySQL 聚合平台任务、本地任务、客户、真实发送消息、无需发送、异常、未完成、小时趋势、企微号分布和持久化耗时；页面同时从 worker 进程读取实时队列，默认不刷新第三方平台。
+- 2026-09-07 现场口径为平台任务 108、本地任务 108、客户 66、确认发送 54 批/123 条消息、无需发送 52、异常 1、未完成 1，终态率 99.1%；无需发送由人工接管 41、客户关系失效 7、任务超时 4 构成。平台 pending、本地队列和执行中均为 0；唯一异常是模型服务 HTTP 503 留下的可恢复记录，不能表述为全部成功。
+- SOP 专用聚合接口热态实测约 3.3～4.2 秒；服务重启后的首个冷查询约 15～19 秒。发送完成只按主动发送接口返回的消息 ID 计数，不从会话归档推断。
 - 30 天线上口径为 213 个客户、279 个真实 V3 轮次、23 个有效策略决策；卡点识别率 `9/23=39.1%`、序列正式采用率 `4/9=44.4%`、话术正式采用率 `2/10=20.0%`、正常决策 `16/23=69.6%`。整页接口实测 `4.21s`，9 个并发只读视图无错误。
 - 桌面和 390px 手机真实浏览器验收通过：无控制台错误、无横向溢出、7d 排客率未出现；334 条后端回归、前端类型/Lint/生产构建通过。
 - MySQL/RDS 在发布前后均有间歇性连接超时；当前三个角色健康、SOP 队列和 pending 为 0，但该外部连接风险需继续处理，详见 `KNOWN_ISSUES.md`。
 - 沉默计划模型现在接收去 URL 的素材来源、用途与本轮可发送状态；写作和审核共享逐步媒体交付合同。当前生产目录共 68 张图片、0 个视频；无媒体步骤禁止生成悬空看图表达，`effect_proof` 必须绑定真实可发媒体。
 - 千人千面日志列表和详情接口已现场返回 `business_summary`、`observability_view`、10 个模型/修复节点及素材摘要；前端桌面、手机和节点抽屉已验收。
-- 生产根分区使用率为 97%、剩余约 1.4 GB；这是当前最高运维风险。本次前端 release 通过只读硬链接复用未变更的依赖文件，仅新增构建产物，并已清理自身 `/tmp`；后续仍必须按保留规范先归档再清理，同时保留当前与已验证回滚版本。
+- 生产根分区使用率为 74%、剩余约 10 GB；本次前端 release 通过只读硬链接复用未变更的依赖文件，并已清理自身 `/tmp`。后续仍按发布保留规范维护当前版和已验证回滚版。
 
 每次发布任务都必须重新记录 main SHA、三个角色 release/健康、数据库、worker/outbox、Nginx 和回滚点。超过核验时间后，本页只能作为线索，不能替代现场事实。

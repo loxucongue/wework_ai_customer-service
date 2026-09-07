@@ -2,7 +2,7 @@
 
 - status: current
 - owner: SOP/platform integration
-- last_verified: 2026-08-31 Asia/Shanghai
+- last_verified: 2026-09-07 Asia/Shanghai
 - source_of_truth: 当前 main SOP 代码与生产日志；动态状态必须现场核验
 
 ## 消费状态
@@ -65,3 +65,11 @@
 ## 日志审计
 
 管理页日志版本为 `sop_platform_run_view_v3`，历史 V2 只做展示兼容。任务审计必须区分模型决策、提交发送、真实送达、消费回传和策略数据回传，并保留完整业务 JSON；不得记录 token、鉴权头或密钥。
+
+## 运行监控口径
+
+- `/admin/sop-platform-dashboard` 是只读 MySQL 聚合接口；默认管理页不因查看看板而访问第三方 pending 接口。
+- 平台任务、本地任务、客户和真实发送消息必须分别计数，不能把批次数、人数和消息条数相加或互相替代。
+- “发送完成”只按主动发送接口已接受且保存了平台消息 ID 的任务计数；会话归档可能包含人工消息，不能据此反推 SOP 已发送。
+- “无需发送”与“异常/未完成”分开统计；原因缺失显示为未记录，不猜测业务状态。
+- 队列、执行中和平台待处理数从 worker 进程 `/health` 获取；控制进程没有后台 worker，不能用其状态判断任务服务关闭。
