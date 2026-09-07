@@ -48,7 +48,7 @@ Revert the merge commit and return to `main@6060eb8c`; schema changes, if any, m
 - [x] Identity model and ingress validation implemented.
 - [x] Runtime, SOP, storage, and UI callers migrated.
 - [x] Regression suite passed.
-- [ ] PR created.
+- [x] PR created: https://github.com/loxucongue/wework_ai_customer-service/pull/1
 
 ## Evidence
 
