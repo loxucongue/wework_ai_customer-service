@@ -489,6 +489,134 @@ def test_router_rejects_closing_match_without_customer_evidence() -> None:
     assert route["closing_catalog_match"]["selected_rule_ids"] == []
 
 
+def test_router_recovers_exact_business_configured_closing_candidate() -> None:
+    client = FollowKnowledgeClient(
+        Settings(FOLLOW_KNOWLEDGE_ENABLED=False, AI_CLOSING_CATALOG_SOURCE="local")
+    )
+    catalog = asyncio.run(client.query_closing_catalog())
+    route = _normalize_semantic_route(
+        {
+            "current_intent": {
+                "summary": "客户询问如何预约",
+                "evidence_refs": ["current_message"],
+            },
+            "current_friction": {"status": "none"},
+            "closing_catalog_match": {
+                "status": "none",
+                "selected_rule_ids": [],
+                "sequence_candidate_ids": [],
+                "evidence_refs": [],
+            },
+        },
+        shared_context={
+            "current_message": {"content": "怎么预约"},
+            "conversation": [],
+        },
+        sequences=[],
+        checkpoint_taxonomy=[],
+        fact_topic_catalog=[],
+        closing_catalog=catalog,
+    )
+
+    assert route["closing_catalog_match"] == {
+        "status": "matched",
+        "selected_rule_ids": ["local:rule:explicit_registration_or_payment_query"],
+        "sequence_candidate_ids": [
+            "local:sequence:direct_deposit_entry",
+            "local:sequence:fee_then_deposit",
+        ],
+        "evidence_refs": ["current_message"],
+        "reason": "configured_catalog_exact_candidate",
+    }
+
+
+def test_router_exact_candidate_does_not_turn_phrase_containment_into_decision() -> None:
+    client = FollowKnowledgeClient(
+        Settings(FOLLOW_KNOWLEDGE_ENABLED=False, AI_CLOSING_CATALOG_SOURCE="local")
+    )
+    catalog = asyncio.run(client.query_closing_catalog())
+    route = _normalize_semantic_route(
+        {
+            "current_intent": {
+                "summary": "客户限制继续讲预约",
+                "evidence_refs": ["current_message"],
+            },
+            "current_friction": {"status": "none"},
+            "closing_catalog_match": {"status": "none"},
+        },
+        shared_context={
+            "current_message": {"content": "不要再问我怎么预约了"},
+            "conversation": [],
+        },
+        sequences=[],
+        checkpoint_taxonomy=[],
+        fact_topic_catalog=[],
+        closing_catalog=catalog,
+    )
+
+    assert route["closing_catalog_match"]["status"] == "none"
+    assert route["closing_catalog_match"]["selected_rule_ids"] == []
+
+
+def test_router_exact_candidate_respects_model_safety_block() -> None:
+    client = FollowKnowledgeClient(
+        Settings(FOLLOW_KNOWLEDGE_ENABLED=False, AI_CLOSING_CATALOG_SOURCE="local")
+    )
+    catalog = asyncio.run(client.query_closing_catalog())
+    route = _normalize_semantic_route(
+        {
+            "current_intent": {
+                "summary": "当前不可推进",
+                "evidence_refs": ["current_message"],
+            },
+            "current_friction": {"status": "none"},
+            "closing_catalog_match": {"status": "blocked"},
+        },
+        shared_context={
+            "current_message": {"content": "怎么预约"},
+            "conversation": [],
+        },
+        sequences=[],
+        checkpoint_taxonomy=[],
+        fact_topic_catalog=[],
+        closing_catalog=catalog,
+    )
+
+    assert route["closing_catalog_match"]["status"] == "none"
+    assert route["closing_catalog_match"]["selected_rule_ids"] == []
+
+
+def test_router_drops_unsupported_historical_friction_without_degrading_turn() -> None:
+    route = _normalize_semantic_route(
+        {
+            "current_intent": {
+                "summary": "客户询问如何预约",
+                "evidence_refs": ["current_message"],
+            },
+            "current_friction": {"status": "none"},
+            "historical_unresolved_friction": {
+                "checkpoint_code": "price",
+                "summary": "历史上可能有价格顾虑",
+                "evidence_refs": [],
+            },
+        },
+        shared_context={
+            "current_message": {"content": "怎么预约"},
+            "conversation": [],
+        },
+        sequences=[],
+        checkpoint_taxonomy=[{"id": 8, "code": "price", "name": "价格"}],
+        fact_topic_catalog=[],
+        closing_catalog={"status": "unavailable"},
+    )
+
+    assert route["historical_unresolved_friction"] == {
+        "checkpoint_code": "",
+        "summary": "",
+        "evidence_refs": [],
+    }
+
+
 def test_successful_empty_rule_catalog_never_exposes_demo_sequence() -> None:
     catalog = _catalog(empty_rules=True)
     route = _normalize_semantic_route(
