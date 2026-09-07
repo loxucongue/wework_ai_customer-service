@@ -2,7 +2,7 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T00:42:27+08:00`
+- verified_at: `2026-09-07T09:04:49+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
@@ -19,7 +19,7 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | 继续使用 `frontend-20260907-bi-4a926b66`，本次后端变更不包含前端差异；`/analytics/sales` 返回 HTTP 200 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-bi-6ee81405`；`/analytics/sales` 返回 HTTP 200，逼单动作按动作代码汇总 |
 
 三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；共享基础环境仍保留其他角色的全局模型默认值，不能据此推断 V3 Reply 使用 GPT，实际模型仍应以每次 run trace 为准。
 
