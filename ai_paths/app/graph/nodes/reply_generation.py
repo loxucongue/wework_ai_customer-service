@@ -480,18 +480,15 @@ def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[st
     ]
     if str(resolution.get("delivery_mode") or "").strip() == "text_store_list" and text_store_summaries:
         labels = [
-            f"{str(item.get('store_name') or item.get('name') or '').strip()}"
-            f"（{str(item.get('district') or '').strip()}）"
-            if str(item.get("district") or "").strip()
-            else str(item.get("store_name") or item.get("name") or "").strip()
-            for item in text_store_summaries
+            _store_text_list_line(item, index=index)
+            for index, item in enumerate(text_store_summaries, start=1)
         ]
         midpoint = (len(labels) + 1) // 2
         messages = [
             {
                 "type": "text",
                 "order": 1,
-                "content": "这个城市可选门店比较多，我按区域给您列一下：" + "、".join(labels[:midpoint]) + "。",
+                "content": "这个城市的全部门店如下：\n" + "\n".join(labels[:midpoint]),
             }
         ]
         if midpoint < len(labels):
@@ -499,11 +496,33 @@ def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[st
                 {
                     "type": "text",
                     "order": 2,
-                    "content": "另外还有：" + "、".join(labels[midpoint:]) + "。您想看哪一家，我再把具体位置发您。",
+                    "content": "\n".join(labels[midpoint:]) + "\n您想看哪一家，我再给您发门店位置。",
                 }
             )
         else:
-            messages[0]["content"] += "您想看哪一家，我再把具体位置发您。"
+            messages[0]["content"] += "\n您想看哪一家，我再给您发门店位置。"
+    elif (
+        str(resolution.get("status") or "").strip() == "need_location"
+        and resolution.get("available_districts")
+    ):
+        districts = [
+            str(item).strip()
+            for item in resolution.get("available_districts") or []
+            if str(item).strip()
+        ]
+        examples = "、".join(districts[:6])
+        suffix = "等区域" if len(districts) > 6 else ""
+        city = str(resolution.get("city") or "这个城市").strip()
+        messages = [
+            {
+                "type": "text",
+                "order": 1,
+                "content": (
+                    f"{city}有门店，我们在{examples}{suffix}都有覆盖。"
+                    "您在什么区，或者附近有什么地标？我帮您按位置找一家相对近的。"
+                ),
+            }
+        ]
     elif message_payloads:
         messages = [
             {"type": "text", "order": 1, "content": "我把门店位置发您，您看下这个位置方便吗。"},
@@ -542,6 +561,15 @@ def _verified_store_delivery_failure_recovery(state: AgentState) -> list[dict[st
     except Exception:
         return []
     return messages
+
+
+def _store_text_list_line(item: dict[str, Any], *, index: int) -> str:
+    name = str(item.get("store_name") or item.get("name") or "").strip()
+    district = str(item.get("district") or "").strip()
+    address = str(item.get("store_address") or item.get("address") or "").strip()
+    district_label = f"（{district}）" if district else ""
+    address_label = f"，{address}" if address else ""
+    return f"{index}. {name}{district_label}{address_label}"
 
 
 def _verified_store_recovery_observability_payload(

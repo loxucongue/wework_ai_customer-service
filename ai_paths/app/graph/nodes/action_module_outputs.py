@@ -45,6 +45,7 @@ def _store_resolution_status(
     visible_candidate_count: int,
     recommended_store_id: str = "",
     allow_broad_scope_delivery: bool = False,
+    full_list_requested: bool = False,
 ) -> str:
     if tool_status in {
         "need_location",
@@ -73,6 +74,14 @@ def _store_resolution_status(
         return "send_single"
     if tool_status == "ok" and 2 <= visible_candidate_count <= 3:
         return "send_multiple"
+    if (
+        tool_status == "ok"
+        and visible_candidate_count > MAX_BROAD_SCOPE_CARD_COUNT
+        and resolved_level == "city"
+        and allow_broad_scope_delivery
+        and not full_list_requested
+    ):
+        return "need_location"
     if tool_status == "ok" and visible_candidate_count > 3 and allow_broad_scope_delivery:
         return "send_multiple"
     if tool_status == "ok" and visible_candidate_count > 3:
@@ -386,6 +395,16 @@ def _coverage_status(
     return "location_pending"
 
 
+def _available_store_districts(items: list[dict[str, Any]]) -> list[str]:
+    return list(
+        dict.fromkeys(
+            str(item.get("district") or "").strip()
+            for item in items
+            if isinstance(item, dict) and str(item.get("district") or "").strip()
+        )
+    )
+
+
 def _distance_tie_store_ids(stores: list[dict[str, Any]], *, threshold_km: float = 5.0) -> list[str]:
     if len(stores) < 2:
         return []
@@ -539,6 +558,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 visible_candidate_count=visible_candidate_count,
                 recommended_store_id=recommended_store_id,
                 allow_broad_scope_delivery=bool(value.get("allow_broad_scope_delivery")),
+                full_list_requested=str(
+                    (
+                        value.get("destination_resolution")
+                        if isinstance(value.get("destination_resolution"), dict)
+                        else {}
+                    ).get("request_kind")
+                    or value.get("request_kind")
+                    or ""
+                ).strip()
+                == "list",
             )
             candidate_store_ids = [
                 str(item.get("store_id") or item.get("id") or "")
@@ -630,6 +659,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     ),
                     "recommended_store_id": recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
+                    "available_districts": (
+                        _available_store_districts(authorized_stores)
+                        if resolution_status == "need_location" and resolved_level == "city"
+                        else []
+                    ),
                     "text_store_summaries": (
                         _store_text_summaries(authorized_stores, state=state)
                         if text_store_list_delivery
@@ -854,6 +888,9 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     if use_broad_exact_scope and visible_candidate_count > 1
                     else ranked_recommended_store_id
                 ),
+                allow_broad_scope_delivery=use_broad_exact_scope,
+                full_list_requested=str(destination_resolution.get("request_kind") or "").strip()
+                == "list",
             )
             candidate_store_ids = list(dict.fromkeys(ranked_candidate_ids))
             if preserve_no_candidate_resolution:
@@ -874,7 +911,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 origin_precision=str(
                     origin_precision
                 ),
-            ):
+            ) and str(destination_resolution.get("request_kind") or "").strip() == "list":
                 resolution_status = "send_multiple"
             if not has_authoritative_ranking and exact_scope_has_store is not True:
                 resolution_status = "search_incomplete"
@@ -1008,6 +1045,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "cross_district_recommendation": cross_district_recommendation,
                     "recommended_store_id": ranked_recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
+                    "available_districts": (
+                        _available_store_districts(authorized_comparable_stores)
+                        if resolution_status == "need_location" and resolved_admin_level == "city"
+                        else []
+                    ),
                     "text_store_summaries": (
                         _store_text_summaries(authorized_comparable_stores, state=state)
                         if text_store_list_delivery
@@ -1348,7 +1390,14 @@ def _store_text_summaries(
         summaries.append(
             {
                 key: str(fact.get(key) or "").strip()
-                for key in ("store_id", "store_name", "province", "city", "district")
+                for key in (
+                    "store_id",
+                    "store_name",
+                    "province",
+                    "city",
+                    "district",
+                    "store_address",
+                )
                 if str(fact.get(key) or "").strip()
             }
         )

@@ -1233,6 +1233,7 @@ def _render_tool_facts(
             "clarification_would_change_result",
             "recommendation_final_for_destination",
             "delivery_mode",
+            "available_districts",
             "customer_claim_level",
             "candidate_store_ids",
             "delivery_store_ids",
@@ -1279,7 +1280,7 @@ def _render_tool_facts(
                 if isinstance(item, dict)
             ]
             lines.append(
-                "门店文字清单事实（按顺序完整列出名称和区县，不输出门店卡、地址或门店ID）："
+                "门店文字清单事实（按编号逐行完整列出名称、区县和完整地址，不输出门店卡或门店ID）："
                 + json_dumps(summaries)
             )
     stores = [item for item in structured.get("store_facts") or [] if isinstance(item, dict)]
@@ -1358,6 +1359,18 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
             "客户地点证据已经足够时，不得重复追问同一地址。"
         )
     if status in {"need_location", "need_location_confirmation", "ambiguous_location"}:
+        available_districts = [
+            str(item).strip()
+            for item in resolution.get("available_districts") or []
+            if str(item).strip()
+        ]
+        if status == "need_location" and available_districts:
+            return (
+                "门店最终结论：当前城市确认有门店，但候选较多，仍缺客户所在区县或附近地标，"
+                "不能一次堆叠全部门店。先自然告知门店覆盖区县可以从 available_districts 中举例，"
+                "再只追问客户所在区县或附近地标，以便按权威距离事实推荐；不得编造覆盖区域，"
+                "不得发送门店卡或承诺未经排序的‘最近’门店。"
+            )
         return "门店最终结论：仍缺一个会改变查询结果的位置事实；只补问这一项，不发送门店卡。"
     if status == "no_valid_candidate" and complete:
         return (
@@ -1375,9 +1388,9 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
             ]
             return (
                 "门店最终结论：候选范围已经完整，共"
-                f"{len(summaries)}家；候选较多，本轮只用一至两条 text，"
-                "按 text_store_summaries 的顺序完整列出所有门店名称和所在区县，"
-                "不要遗漏、不要自行筛选、不要输出 store_address、具体地址或门店ID；"
+                f"{len(summaries)}家；客户明确要求全量清单，本轮只用一至两条 text，"
+                "按 text_store_summaries 的顺序和编号逐行完整列出所有门店名称、所在区县和完整地址，"
+                "不要遗漏、不要自行筛选、不要输出 store_address 卡或门店ID；"
                 "末尾可以询问客户希望查看哪一家详情。"
             )
         is_reuse = status == "reuse_confirmed_store"
