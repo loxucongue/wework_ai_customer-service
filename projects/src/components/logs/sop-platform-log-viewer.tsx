@@ -439,7 +439,7 @@ function SopMonitorDashboard({ metrics, worker, runs }: { metrics: SopMetrics; w
         </div>
         <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <Kpi label="平台任务" value={metrics.events} detail={`${metrics.customers || 0} 个客户`} icon={<Inbox />} />
-          <Kpi label="已载入批次" value={runs.length} detail={`${metrics.tasks || 0} 条本地任务`} icon={<BarChart3 />} />
+          <Kpi label="本地任务" value={metrics.tasks} detail={`已载入 ${runs.length} 个批次明细`} icon={<BarChart3 />} />
           <Kpi label="发送完成" value={metrics.sent} detail={`${metrics.messages_sent || 0} 条实际消息`} icon={<CheckCircle2 />} tone="success" />
           <Kpi label="无需发送" value={metrics.no_send} detail={formatRate(metrics.no_send || 0, terminal)} icon={<XCircle />} tone="warning" />
           <Kpi label="未完成" value={metrics.unfinished} detail={`当前平台待处理 ${worker.pending_total || 0}`} icon={<Clock3 />} tone={(metrics.unfinished || 0) > 0 ? "warning" : "neutral"} />
@@ -999,6 +999,7 @@ function reasonLabel(reason: string) {
     sop_no_send_duplicate: "已有接待消息，避免重复发送",
     all_due_groups_filtered: "本轮任务均被策略过滤",
     account_disabled: "企微账号未启用",
+    reason_unrecorded: "历史原因未记录",
   };
   if (labels[reason]) return labels[reason];
   if (reason.includes("超过") && reason.includes("分钟")) return "任务超过有效期";

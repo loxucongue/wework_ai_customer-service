@@ -326,9 +326,9 @@ def _platform_sop_metrics(rows: list[dict[str, Any]], bucket: str) -> dict[str, 
         if str(row.get("task_status") or "") not in {"completed_without_send", "failed"} and not error.strip():
             continue
         payload = loads_dict(row.get("send_payload_json"))
-        reason = _sop_reason(payload, error)
-        if reason:
-            reasons[reason] += 1
+        platform_task = loads_dict(row.get("raw_payload_json")).get("platform_task")
+        platform_task = platform_task if isinstance(platform_task, dict) else {}
+        reasons[_sop_reason(payload, error, platform_task) or "reason_unrecorded"] += 1
     dispatch_latencies = []
     process_latencies = []
     queue_latencies = []
@@ -474,10 +474,18 @@ def _is_confirmed_sop_send(row: dict[str, Any]) -> bool:
     )
 
 
-def _sop_reason(payload: dict[str, Any], error: str) -> str:
+def _sop_reason(payload: dict[str, Any], error: str, platform_task: dict[str, Any] | None = None) -> str:
     decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+    consume_results = payload.get("consume_results") if isinstance(payload.get("consume_results"), list) else []
+    consume_remarks = [
+        item.get("remark")
+        for item in reversed(consume_results)
+        if isinstance(item, dict) and str(item.get("remark") or "").strip()
+    ]
+    platform_task = platform_task or {}
     candidates = [
         payload.get("reason_code"), payload.get("reason"), payload.get("terminal_reason"),
+        *consume_remarks, platform_task.get("remark"), platform_task.get("pauseReason"),
         decision.get("reason_code"), decision.get("reason"), decision.get("decision_source"),
     ]
     evaluations = decision.get("evaluations") if isinstance(decision.get("evaluations"), list) else []
@@ -485,7 +493,15 @@ def _sop_reason(payload: dict[str, Any], error: str) -> str:
         if isinstance(evaluation, dict):
             candidates.extend((evaluation.get("reason_code"), evaluation.get("reason")))
     candidates.append(error)
-    return next((str(value).strip() for value in candidates if str(value or "").strip()), "")
+    reason = next((str(value).strip() for value in candidates if str(value or "").strip()), "")
+    lowered = reason.lower()
+    if "human_takeover" in lowered or "人工接待" in reason or "人工接管" in reason:
+        return "human_takeover"
+    if "customer_relation_deleted" in lowered or ("客户关系" in reason and ("失效" in reason or "删除" in reason)):
+        return "customer_relation_deleted"
+    if "expired" in lowered or ("超过" in reason and "分钟" in reason):
+        return "sop_task_expired"
+    return reason
 
 
 def _first_day_metrics(
