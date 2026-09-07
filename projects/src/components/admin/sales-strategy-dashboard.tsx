@@ -463,10 +463,15 @@ function HealthGrid({ summary }: { summary: MetricSet }) {
 }
 
 function DimensionChart({ title, subtitle, items = [], dataKey, labels, color }: { title: string; subtitle: string; items?: DimensionItem[]; dataKey: keyof DimensionItem; labels: Record<string, string>; color: string }) {
-  const chartData = items.slice(0, 8).map((item) => {
+  const totals = new Map<string, number>();
+  items.forEach((item) => {
     const key = String(item[dataKey] || "unknown");
-    return { name: labels[key] || key || "未分类", value: item.usage_count || 0 };
+    totals.set(key, (totals.get(key) || 0) + (item.usage_count || 0));
   });
+  const chartData = Array.from(totals, ([key, value]) => ({
+    name: labels[key] || key || "未分类",
+    value,
+  })).sort((left, right) => right.value - left.value).slice(0, 8);
   return (
     <Panel title={title} subtitle={subtitle}>
       {chartData.length ? (
