@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T19:49:47+08:00`
+- verified_at: `2026-09-07T20:34:56+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-190313-0873b27d`
-- git commit: `0873b27da16a0fbb26197722d6632866181a32b0`
+- release: `ai-paths-unified-20260907-201840-44fcd568`
+- git commit: `44fcd5688c84185cfea83bab5f979e9b3e873006`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -19,7 +19,7 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-152202-b4dfc184`；本次未改前端 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-201840-44fcd568`；身份名称和兼容字段已同步 |
 
 三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
@@ -39,18 +39,24 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`，最近轮询错误为空。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=29`、`dead=16`。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=30`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务的上一 clean release `ai-paths-unified-20260907-185509-25cea55f`；更早的发布前基线为 `ai-paths-unified-20260907-165401-9b8ba028`。
-- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-143217-71a18d7d`。
-- 数据库已迁移到 `20260907_01`，只增加序列采用、话术采用和采用详情已观测三个字段；旧代码会忽略这些字段，不需要破坏性降级。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260907-190313-0873b27d`。
+- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-152202-b4dfc184`。
+- 数据库已迁移到 `20260907_02`，新增兼容的 `aics_customer_identity_links`；发布前 AICS 20 张表、841,130 行的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-44fcd568-20260907-201840/aics-before-20260907_02.sql.gz`，SHA-256 为 `481b853b31b244fa8e307a31f3be632ef46904ca3ea7692fdfc3da1e4a23439c`。旧代码会忽略新表，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
+
+- 2026-09-07 20:35 发布 clean `main@44fcd568`：逐提交收敛所有 worktree 和远端分支。预约时间边界、直接预约收口已是 main 祖先；身份合同修复完整合入；生产内存治理作为已知问题保留；旧 DeepSeek 评测分支只含过期活跃任务占位且工作区有未提交错字/产物，未覆盖最新版代码。
+- 新版把平台客户 ID、企微外部联系人 ID、平台接待人员 ID、接待企微和加微关系 ID 分开处理，客户状态只按 `corp_id + wechat + external_userid` 隔离；新增身份质量与冲突只读接口。生产最近 200 条入参中 200 条平台客户和外部联系人互不混用，199 条具备完整托管身份；唯一缺接待人员 ID 的旧请求发生于 9 月 5 日，新版会在模型前返回 400。
+- 合并后 422 条后端回归、Python 编译、迁移单 head、前端 TypeScript/Lint/生产构建通过。上线后合成 V3 请求返回成功，随后精确清理其 1 条 run、8 条 trace、1 条消息和 1 条会话；未产生策略事件、主动唤醒、SOP 或发送记录。错误身份请求在模型前返回 HTTP 400。
+- control、reply、worker 均返回 release `20260907-201840-44fcd568`、完整 SHA 和 `dirty=false`；四个 unit active 且 `NRestarts=0`，前端 `/logs` 返回 200，Nginx 配置检查通过。SOP 队列和 pending 为 0；主动唤醒完成 1038 候选扫描，36.594 秒、错误 0，全部账号、1 分钟、DeepSeek、无 fallback 和动态序列节点配置保持生效。
+- 发布过程没有在生产机安装依赖或构建前端；本地构建产物直接部署并复用已验证依赖硬链接。生产根分区当前 78%、剩余约 8.4 GB；数据库备份必须保留到本版本稳定确认后。
 
 - 2026-09-07 19:49 发布 clean `main@0873b27d`：沉默唤醒改为从第三方 92 条跟进序列和 522 条话术中选择，有卡点时按所选序列全部 3～11 个节点生成任务；兼容平台当前 `act001～act038` 及后续合法 `actNNN`，不再静默丢弃新动作节点。取消固定两步、固定 15～20 分钟、固定场景组合和每日 2 计划/4 任务限制；夜间非活跃顺延，夜间活跃 40 分钟内压缩。
 - 发布现场目录为 92 条可用序列、544 个完整节点、522 条话术、28 种实际动作码，非法序列 0；隔离验证做到 544/544 节点均有渐进话术候选，28/28 代表动作由 DeepSeek 选择真实话术，92/92 序列完整保留夜间节点。完整确定性回归 411 条通过。
