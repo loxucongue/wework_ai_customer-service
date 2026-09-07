@@ -2665,7 +2665,7 @@ def _asserts_appointment_confirmed(text: str) -> bool:
         )
     ):
         return True
-    if re.search(rf"{time_token}.{{0,8}}(?:过去|到店|过来|来店)(?:也)?(?:可以|没问题|就行)", compact):
+    if re.search(rf"{time_token}.{{0,8}}(?:过去|到店|过来|来店)(?:也)?(?:可以|没问题|就行|就好|即可)", compact):
         return True
     hold_terms = ("先留着", "帮你留着", "帮您留着", "给你留着", "给您留着", "留好", "预留", "帮你记上", "帮您记上", "先记上")
     if any(term in compact for term in hold_terms) and (

@@ -227,6 +227,7 @@ def test_store_card_does_not_authorize_direct_visit_wording() -> None:
         "明天下午准时等您。",
         "可以直接到店。",
         "今天直接过去就行。",
+        "您和姐姐明天早上9点过来就好。",
     ],
 )
 def test_appointment_completion_claims_still_require_authoritative_fact(reply: str) -> None:
