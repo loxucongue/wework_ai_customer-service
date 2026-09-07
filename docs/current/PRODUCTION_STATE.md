@@ -2,16 +2,16 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T15:34:10+08:00`
+- verified_at: `2026-09-07T16:54:17+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-152202-b4dfc184`
-- git commit: `b4dfc184ea635afeb8f62dd881df30b1946dd016`
+- release: `ai-paths-unified-20260907-164338-f4f25d80`
+- git commit: `f4f25d8022989e9583e5f277851c369d5fe05440`
 - branch contract: `main`
 - dirty: `false`
-- config revision: `74eee9d04bedb99c0dc25ef2aaefab2cd96d2d8ef40fdf500a8ff838fd4ae4c0`
+- config revision: `d651bf144770748af5b3b906a5f59f29e02da3a15f33d6f33b286a1fb2cad687`
 - database backend: MySQL
 
 | 角色 | Unit | 现场状态 | 现场健康信息 |
@@ -37,13 +37,13 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`，最近轮询错误为空。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=20`、`dead=16`。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=23`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务前的 clean release `ai-paths-unified-20260907-143217-71a18d7d`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务前的 clean release `ai-paths-unified-20260907-152202-b4dfc184`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-143217-71a18d7d`。
 - 数据库已迁移到 `20260907_01`，只增加序列采用、话术采用和采用详情已观测三个字段；旧代码会忽略这些字段，不需要破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
@@ -74,5 +74,6 @@
 - AI 运行日志现在从 V3 接口进入 Reply 服务时开始计时，到最后一个 HTTP 响应体成功发送后结束；列表和详情的“接口总耗时”优先使用该口径，同时保留模型图耗时供排障。发布后的真实请求已显示 8.79～10.2 秒完整耗时；发布前历史请求不补造新口径。
 - 日志详情新增客户 ID、客户加微 ID、外部联系人 ID、企微 ID/账号、企业 ID、接待人员 ID、会话 ID、请求 ID，并支持逐项复制。字段只取本轮请求留存，不查询当前平台状态补历史；上游未传入时显示“未记录”。桌面 1440px 和手机 390px 真实浏览器验收通过。
 - 本次发布 control、reply、worker 和前端均为 clean `main@b4dfc184`，四个 unit 为 active 且 `NRestarts=0`，三个后端 `/health` 的 release/commit 一致；后端 348 条回归、前端类型/Lint/生产构建通过。无数据库迁移，不修改 V3 回复、策略、发送或主动唤醒逻辑。生产根分区使用率为 76%，剩余约 9.3 GB。
+- V3 门店问答已发布后端 clean `main@f4f25d80`：普通城市级“有门店吗”在候选超过 6 家时先列真实覆盖区县并询问客户所在区或地标；明确要求全部门店时，按编号逐行给出完整门店名、区县和地址。真实平台门店知识隔离验证中重庆命中 13 家，两类请求分别进入 `need_location` 与完整清单路径，未生成客户回复、未持久化、未调用发送。三个后端角色均为 active、`NRestarts=0`、release/commit 一致；SOP `queue_depth=0`、`in_flight_count=0`、`pending_total=0`，Nginx 检查通过且发布后无新增错误日志。前端保持 `b4dfc184`，本次无数据库迁移，也未修改 SOP 或发送协议。
 
 每次发布任务都必须重新记录 main SHA、三个角色 release/健康、数据库、worker/outbox、Nginx 和回滚点。超过核验时间后，本页只能作为线索，不能替代现场事实。
