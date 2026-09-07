@@ -80,7 +80,7 @@ Semantic Router 只提供分类、检索查询和只读工具需求，不决定�
 
 完整验证层级见 [V3 Reply 质量与全链路评测规范](../standards/V3_REPLY_EVALUATION.md)。
 
-当前部署只有一个业务知识租户，所有 `slXXXX` 企微号共用实例级 Follow Knowledge 凭证与业务知识缓存。共享知识不改变客户数据边界：记忆、策略状态、发送频次和订单仍按 `corp_id + wechat + external_userid/customer_id` 隔离。
+当前部署只有一个业务知识租户，所有 `slXXXX` 企微号共用实例级 Follow Knowledge 凭证与业务知识缓存。共享知识不改变客户数据边界：记忆、策略状态、发送频次和订单仍按 `corp_id + wechat + external_userid` 隔离；平台客户 ID 只用于第三方平台记录和接口调用，不得替代外部联系人 ID。
 
 ## Outreach
 

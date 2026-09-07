@@ -11,6 +11,7 @@
   - `Authorization: Bearer <AI_PATHS_API_KEY 或 AI_EXTERNAL_API_KEY>`
   - 或 `X-API-Key`
 - 读写性质：会触发 V3 回复链路；可能在本地存储运行记录、消息记录、素材使用记录和必要的异步提交状态。
+- 身份入参：托管请求必须分别提供 `corp_id`、接待企微 `wechat`、企微外部联系人 `external_userid`、平台客户 ID `customer_id`（兼容名 `platform_customer_id`）和平台接待人员 ID `user_id`。这些 ID 不得互相补位；缺失或把 `wm...` 外部联系人写入平台客户字段时返回 400。`customer_add_wechat_id` 作为可选关系 ID 独立传递。
 - 运行边界：
   - V3 是唯一客户回复产品接口。
   - V1/V2 回复路由不得重新注册。
@@ -36,10 +37,14 @@
 
 - `GET /admin/conversations`
 - `GET /admin/conversations/{conversation_id}`
+- `GET /admin/customer-identities/quality`
+- `GET /admin/customer-identities/conflicts`
 - `GET /admin/customers/{customer_id}/memory`
 - `DELETE /admin/customers/{customer_id}/memory`
 - `GET /admin/customer-records`
 - `POST /admin/customer-records/clear`
+
+客户身份质量接口只统计已保存映射、历史混用和冲突；冲突接口最多返回 500 条待核对映射。两者均为 Bearer 鉴权后的内部只读接口，不自动改写历史客户数据。
 
 ### 运行与消息送达
 

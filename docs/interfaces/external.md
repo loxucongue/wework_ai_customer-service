@@ -54,7 +54,7 @@
   - 普通卡点话术按当前 `checkpoint_type_id` 一次查询同类已发布内容；tag 和 action 只参与本地相关度排序、覆盖加权及审计，不再作为硬过滤条件。候选经过动作/标签多样性限制、重复去除和字符预算后最多向 Reply 提供 6 个段落，不跨卡点类型。逼单话术仍严格匹配节点 `followCheckpointTypeId`，不允许跨类型放宽。
   - 沉默唤醒另按已选跟进序列逐节点生成任务。节点话术最多保留 6 条渐进候选：先同卡点同动作，再同卡点其他动作；平台二级标签缺失时允许补充全目录语义相关候选。跨类型候选只用于回答客户当前原话，不能改变卡点或序列，最终由 DeepSeek 选择真实话术 ID，代码校验 ID、素材、安全与发送资格。
   - 进程内使用 single-flight、短失败缓存与 last-known-good；陈旧快照标记 `freshness_status=stale`。该能力不能替代跨重启的持久快照。
-  - 当前部署是一实例一个知识租户、一个 `FOLLOW_KNOWLEDGE_TOKEN`；所有 `slXXXX` 是该租户下不同企微号，可以共享只含业务知识的目录缓存。客户聊天、订单、记忆、限频和策略状态不得进入共享缓存，仍按 `corp_id + wechat + external_userid/customer_id` 隔离。
+  - 当前部署是一实例一个知识租户、一个 `FOLLOW_KNOWLEDGE_TOKEN`；所有 `slXXXX` 是该租户下不同企微号，可以共享只含业务知识的目录缓存。客户聊天、订单、记忆、限频和策略状态不得进入共享缓存，仍按 `corp_id + wechat + external_userid` 隔离；平台客户 ID 独立用于第三方平台查询。
   - `corp_id` 不是 Follow Knowledge 租户 ID，不用于选择 token。未来出现第二个业务知识租户时采用独立服务实例和 token，再按实际部署需求评审路由方案。
   - 当前两个逼单接口没有共同 `publishVersion`，数字 ID 也没有不可复用保证；跨接口 checksum 只能审计本次组合，不能证明上游原子发布。上游应补 `tenantKey`、共同版本、稳定 code、标准 timing、组合分组及 taboo 类型。
 - 本地同步：

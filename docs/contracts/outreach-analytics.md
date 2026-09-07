@@ -16,14 +16,14 @@
 | 符合条件 | 已生成计划，或模型场景结果明确 `eligible=true` 的运行 |
 | 计划生成 | 具有真实 `plan_id` 的运行 |
 | 成功触达 | 计划至少有一条任务同时满足 `status=sent`、存在 `sent_at`，且有平台消息 ID 或发送接受状态 |
-| 客户开口 | 首次成功触达后 24 小时内，同一 `corp_id + wechat + external_userid/customer_id` 出现真实客户入站消息 |
+| 客户开口 | 首次成功触达后 24 小时内，同一 `corp_id + wechat + external_userid` 出现真实客户入站消息 |
 | 预约/支付进展 | 首次成功触达后 7 天内，发送前检查记录订单状态发生预约或支付方向变化 |
 
 漏斗是时间窗口相关性观察，不表示主动唤醒直接导致客户开口或成交。订单结果来自当前已有发送前权威状态事件；没有事件只能显示未观测到，不能推断未成交。
 
 ## 客户与账号边界
 
-- 客户关联固定使用 `corp_id + wechat + external_userid/customer_id`，不同企微号不得合并。
+- 客户关联固定使用 `corp_id + wechat + external_userid`，不同企微号不得合并；平台客户 ID 只能作为已验证映射和平台接口参数，不能与外部联系人 ID 互相补位。
 - 企微知识可共享，客户回复、计划、发送和结果不能跨账号共享。
 - 当前队列明细返回并展示现有稳定身份链：`customer_id`、`external_userid`、`conversation_id`、`corp_id`、`user_id`、`wechat`、`workflow_run_id`、`plan_id`，以及每一步的 `task_id` 和已存在的 `system_msgid`。客户名称只取当时快照或同一身份边界下最新会话名称；ID 缺失必须显示“未记录”。
 - 队列身份信息仅供 Bearer 鉴权后的内部运营排障，不增加手机号、token 或新的敏感字段留存；会话补齐必须同时匹配企业、企微和客户标识，禁止仅凭 `customer_id` 跨企微关联。
