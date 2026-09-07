@@ -27,7 +27,7 @@ def test_outreach_dashboard_builds_funnel_trend_reasons_and_queue(tmp_path) -> N
             ("c1", "customer-1", "ext-1", "sl8003", "staff-1", "客户甲"),
             ("c2", "customer-2", "ext-2", "sl8003", "staff-1", "客户乙"),
             ("c3", "customer-3", "ext-3", "sl8003", "staff-1", "客户丙"),
-            ("c4", "customer-4", "ext-4", "sl9000", "staff-2", "客户丁"),
+            ("c4", "customer-4", "", "sl9000", "staff-2", "客户丁"),
         ):
             conn.execute(
                 "INSERT INTO conversations (id,customer_id,external_userid,corp_id,user_id,wechat,title,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",

@@ -238,7 +238,7 @@ class OutreachDashboardRepositoryMixin:
         self,
         runs: list[dict[str, Any]],
     ) -> dict[tuple[str, str, str], dict[str, Any]]:
-        wanted_keys = {_contact_key(run) for run in runs if any(_contact_key(run))}
+        wanted_keys = {key for run in runs for key in _identity_contact_keys(run)}
         customer_ids = sorted({_text(run.get("customer_id")) for run in runs if _text(run.get("customer_id"))})
         external_ids = sorted({_text(run.get("external_userid")) for run in runs if _text(run.get("external_userid"))})
         if not wanted_keys or (not customer_ids and not external_ids):
@@ -264,9 +264,9 @@ class OutreachDashboardRepositoryMixin:
             ).fetchall())
         identities: dict[tuple[str, str, str], dict[str, Any]] = {}
         for row in rows:
-            key = _contact_key(row)
-            if key in wanted_keys and key not in identities:
-                identities[key] = row
+            for key in _identity_contact_keys(row):
+                if key in wanted_keys and key not in identities:
+                    identities[key] = row
         return identities
 
 
@@ -359,7 +359,10 @@ def _build_queue(
         activity = _dict(snapshot.get("conversation_activity"))
         trigger = _dict(snapshot.get("trigger_context"))
         customer_context = _dict(snapshot.get("customer_context"))
-        identity = customer_identities.get(_contact_key(run), {})
+        identity = next(
+            (customer_identities[key] for key in _identity_contact_keys(run) if key in customer_identities),
+            {},
+        )
         task_refs = [
             {
                 "task_id": _text(item.get("id")),
@@ -569,6 +572,20 @@ def _contact_key(row: dict[str, Any]) -> tuple[str, str, str]:
         _text(row.get("wechat")).lower(),
         (_text(row.get("external_userid")) or _text(row.get("customer_id"))).lower(),
     )
+
+
+def _identity_contact_keys(row: dict[str, Any]) -> list[tuple[str, str, str]]:
+    corp_id = _text(row.get("corp_id")).lower()
+    wechat = _text(row.get("wechat")).lower()
+    identifiers = [
+        _text(row.get("external_userid")).lower(),
+        _text(row.get("customer_id")).lower(),
+    ]
+    return [
+        (corp_id, wechat, identifier)
+        for identifier in dict.fromkeys(identifiers)
+        if corp_id and wechat and identifier
+    ]
 
 
 def _parse_time(value: str) -> datetime | None:
