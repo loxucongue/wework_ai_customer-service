@@ -939,6 +939,13 @@ def test_available_time_repair_preserves_legal_appointment_progression() -> None
     assert "不要说可以约" not in hint
 
 
+def test_business_hours_repair_preserves_customer_arrival_intent() -> None:
+    hint = _reply_repair_hint("business_hours_fact_required")
+
+    assert "不要把客户提出的到店时间改写成门店开门" in hint
+    assert "早上9点我先作为您的到店时间意向" in hint
+
+
 def test_reply_prompt_marks_active_closing_provenance_as_runtime_required() -> None:
     assert '"rule_ids":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert '"satisfied_prerequisite_ids":[]' in PARALLEL_REPLY_SYSTEM_PROMPT

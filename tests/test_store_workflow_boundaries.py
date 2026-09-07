@@ -15,6 +15,7 @@ from app.graph.nodes.reply_generation import (
 )
 from app.graph.nodes.reply_validation import (
     _validate_parallel_appointment_confirmation_facts,
+    _validate_parallel_business_hours_facts,
     _validate_parallel_registration_confirmation_facts,
     _validate_unconfirmed_store_availability_claim,
 )
@@ -262,6 +263,25 @@ def test_future_coordination_and_intent_are_not_completed_appointments(reply: st
     )
     _validate_parallel_registration_confirmation_facts(
         [{"type": "text", "content": reply}],
+        state,
+    )
+
+
+def test_customer_arrival_time_does_not_authorize_store_opening_hours() -> None:
+    state = {"normalized_content": "明天早上9点可以吗", "evidence_join": {"structured_facts": {}}}
+
+    with pytest.raises(ValueError, match="business_hours_fact_required"):
+        _validate_parallel_business_hours_facts(
+            [{"type": "text", "content": "早上9点可以的，我们开门营业的。"}],
+            state,
+        )
+
+
+def test_customer_arrival_time_may_remain_a_tentative_intent_without_hours_fact() -> None:
+    state = {"normalized_content": "明天早上9点可以吗", "evidence_join": {"structured_facts": {}}}
+
+    _validate_parallel_business_hours_facts(
+        [{"type": "text", "content": "早上9点我先作为您的到店时间意向，具体接待安排以门店确认为准。"}],
         state,
     )
 

@@ -3542,7 +3542,10 @@ def _reply_repair_hint(error: str) -> str:
     if "parking_fact_required" in error:
         return "没有停车工具事实时，不要说有停车场或可以停车，只能说需要核对或询问门店/区域。"
     if "business_hours_fact_required" in error:
-        return "没有营业时间工具事实时，不要输出具体营业时间。"
+        return (
+            "没有营业时间工具事实时，不要输出具体营业时间，也不要把客户提出的到店时间改写成门店开门或可接待时间。"
+            "可以保留客户的行动意向，例如‘早上9点我先作为您的到店时间意向，具体接待安排以门店确认为准’。"
+        )
     if "store_address_fact_required" in error:
         return "没有门店详情事实时，不要输出具体地址。"
     if "store_availability_fact_required" in error:
@@ -3607,7 +3610,7 @@ def _reply_repair_hint(error: str) -> str:
         return (
             "客户自己提出下午过去、开车过去、姓名或手机号，只是到店意向和信息提交，不代表预约成立。"
             "没有 appointment_created/confirmed 事实时，不要复述为‘好的，您下午直接来’，也不要说已留位、已安排、已登记。"
-            "改为先确认已收到到店想法和信息；若缺门店位置，只问一个城市、区县或地标，若位置已知则说明具体接待时间仍需确认。"
+            "改为‘您说的早上9点我先作为到店时间意向，具体接待安排以门店确认为准’；若缺门店位置，只问一个城市、区县或地标。"
             "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。"
         )
     if "too_many_appointment_time_options" in error:

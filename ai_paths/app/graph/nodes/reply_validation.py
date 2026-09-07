@@ -1847,6 +1847,30 @@ def _validate_fact_boundaries(messages: list[dict[str, Any]], state: dict[str, A
         raise ValueError("distance_fact_required")
 
 
+def _validate_parallel_business_hours_facts(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Reject customer-visible opening-hours claims without store facts.
+
+    The model-led admission path does not run the legacy all-in-one fact
+    validator.  Keep this guard narrow: a customer's proposed arrival time may
+    be recorded as an intent, but it must not become a store opening-hours fact.
+    """
+
+    text = _combined_text(messages)
+    if not text or not _asserts_business_hours(text):
+        return
+    store_facts = _authorized_store_facts_for_validation(state)
+    if any(
+        isinstance(item, dict)
+        and str(item.get("business_hours") or item.get("hours") or "").strip()
+        for item in store_facts
+    ):
+        return
+    raise ValueError("business_hours_fact_required")
+
+
 def _validate_unconfirmed_store_availability_claim(
     messages: list[dict[str, Any]],
     state: dict[str, Any],
@@ -2289,8 +2313,15 @@ def _asserts_parking(text: str) -> bool:
 
 
 def _asserts_business_hours(text: str) -> bool:
-    return any(term in text for term in ("营业时间是", "营业时间为", "营业到")) or bool(
-        re.search(r"\d{1,2}[:：]\d{2}\s*[-~到至]\s*\d{1,2}[:：]\d{2}", text)
+    if any(term in text for term in ("营业时间是", "营业时间为", "营业到")):
+        return True
+    if re.search(r"\d{1,2}[:：]\d{2}\s*[-~到至]\s*\d{1,2}[:：]\d{2}", text):
+        return True
+    compact = re.sub(r"\s+", "", str(text or ""))
+    time_token = r"(?:早上|上午|下午|晚上)?\d{1,2}(?:点(?:半)?|[:：]\d{2})"
+    return bool(
+        re.search(rf"{time_token}.{{0,14}}(?:开门|营业)", compact)
+        or re.search(rf"(?:开门|营业).{{0,14}}{time_token}", compact)
     )
 
 
