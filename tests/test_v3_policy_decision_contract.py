@@ -27,6 +27,7 @@ from app.graph.nodes.reply_generation import (  # noqa: E402
     _run_reply_model_pipeline,
 )
 from app.graph.nodes.reply_validation import (  # noqa: E402
+    _promises_payment_entry,
     _requested_store_scope_regions,
     _validate_appointment_time_facts,
 )
@@ -945,6 +946,22 @@ def test_reply_prompt_marks_active_closing_provenance_as_runtime_required() -> N
     assert '"evidence_refs":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "这些是运行必需字段，不是 BI 可选项" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert '"offer_prior_turn_refs":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "可以的亲，我把10元预约金发您哈，点进去付就可以。",
+        "我把付款方式发给您。",
+        "这边把收款卡发您。",
+    ],
+)
+def test_current_tense_payment_delivery_promise_requires_structure(reply: str) -> None:
+    assert _promises_payment_entry(reply)
+
+
+def test_refund_explanation_is_not_payment_delivery_promise() -> None:
+    assert not _promises_payment_entry("没做或不满意，预约金可以退给您。")
 
 
 def test_shadow_closing_is_cancelled_by_authoritative_terminal_facts() -> None:
