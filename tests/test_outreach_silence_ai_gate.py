@@ -14,6 +14,7 @@ from app.config import Settings  # noqa: E402
 from app.services.outreach.execution import TaskExecutor  # noqa: E402
 from app.services.outreach.first_day import (  # noqa: E402
     FirstDayWorkflow,
+    _ai_mode_gate,
     _conversation_ai_auto_reply,
     _first_day_existing_run_retry_reason,
     _first_day_full_retry_delay_seconds,
@@ -168,6 +169,19 @@ def test_ai_mode_parser_requires_explicit_ai_and_rejects_human() -> None:
         }
     ) is False
     assert _conversation_ai_auto_reply({"data": {"takeover": {}}}) is None
+
+
+def test_ai_mode_gate_treats_missing_conversation_as_permanent_skip() -> None:
+    class MissingConversationClient:
+        async def conversation_status(self, **_: object) -> dict[str, object]:
+            raise RuntimeError(
+                'outreach_system_http_404: {"code":40402,"msg":"conversation not found"}'
+            )
+
+    result = asyncio.run(_ai_mode_gate(MissingConversationClient(), _identity()))
+    assert result["eligible"] is False
+    assert result["available"] is True
+    assert result["reason"] == "ai_mode_conversation_not_found"
 
 
 def test_activation_watermark_does_not_limit_contact_age() -> None:
@@ -353,6 +367,27 @@ def test_failed_model_cycle_can_recover_after_model_configuration_is_fixed() -> 
     assert _first_day_existing_run_retry_reason(
         existing,
         latest_customer_message_at="2026-09-05T09:42:00+00:00",
+    ) == ""
+
+
+def test_ai_mode_status_retry_is_bounded_even_with_expired_retry_time() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    existing = {
+        "status": "failed",
+        "reason_code": "ai_mode_status_unavailable",
+        "retry_count": 2,
+        "next_retry_at": (now - timedelta(seconds=1)).isoformat(),
+    }
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at=now.isoformat(),
+        now=now,
+    ) == "failed_retry"
+    existing["retry_count"] = 3
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at=now.isoformat(),
+        now=now,
     ) == ""
 
 

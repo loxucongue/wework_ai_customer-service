@@ -81,6 +81,7 @@ OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 FIRST_DAY_SILENCE_TRIGGER_TYPE = "first_day_opened_silence"
 FIRST_DAY_SOP_PLAN_ID = "first_day_opened_silence"
 FIRST_DAY_STALE_RUNNING_RETRY_MINUTES = 15
+FIRST_DAY_AI_MODE_STATUS_MAX_RETRIES = 3
 FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS = {
     "customer_never_spoke",
 }
@@ -99,6 +100,8 @@ FIRST_DAY_NON_RETRYABLE_RUN_REASONS = {
     "manual_takeover_active",
     "human_mode",
     "ai_outreach_not_allowed",
+    "ai_mode_conversation_not_found",
+    "ai_mode_identity_unavailable",
     "outbound_before_activation",
 }
 FIRST_DAY_SCENES = {
@@ -495,11 +498,25 @@ async def _ai_mode_gate(system_client: Any, identity: dict[str, Any]) -> dict[st
             wechat=_string(identity.get("wechat")),
         )
     except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"[:500]
+        error_lower = error.lower()
+        permanent_reason = ""
+        if "outreach_system_http_404" in error_lower or "40402" in error_lower:
+            permanent_reason = "ai_mode_conversation_not_found"
+        elif "outreach_system_http_409" in error_lower or "40902" in error_lower:
+            permanent_reason = "ai_mode_identity_unavailable"
+        if permanent_reason:
+            return {
+                "eligible": False,
+                "available": True,
+                "reason": permanent_reason,
+                "error": error,
+            }
         return {
             "eligible": False,
             "available": False,
             "reason": "ai_mode_status_unavailable",
-            "error": f"{type(exc).__name__}: {exc}"[:500],
+            "error": error,
         }
     data = response.get("data") if isinstance(response, dict) and isinstance(response.get("data"), dict) else response
     data = data if isinstance(data, dict) else {}
@@ -2929,8 +2946,14 @@ def _first_day_existing_run_retry_reason(
     if status == "failed":
         next_retry_at = _parse_iso(_string(existing_run.get("next_retry_at")))
         current = now or datetime.now(timezone.utc)
+        retry_count = int(existing_run.get("retry_count") or 0)
         if next_retry_at and next_retry_at.tzinfo is None:
             next_retry_at = next_retry_at.replace(tzinfo=timezone.utc)
+        if (
+            reason_code == "ai_mode_status_unavailable"
+            and retry_count >= FIRST_DAY_AI_MODE_STATUS_MAX_RETRIES
+        ):
+            return ""
         if next_retry_at and next_retry_at > current:
             return ""
         if next_retry_at:
