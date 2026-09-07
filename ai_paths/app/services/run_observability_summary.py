@@ -78,9 +78,9 @@ def build_run_observability(
     final_messages = _final_messages(output, raw_log or {})
     delivery = _delivery_view(clean_dispatches)
     fallback_detected = _fallback_detected(output, final_messages, nodes)
-    wall_duration_ms = trace_wall_duration_ms(clean_traces)
-    if wall_duration_ms <= 0:
-        wall_duration_ms = int(run.get("duration_ms") or 0)
+    graph_duration_ms = trace_wall_duration_ms(clean_traces)
+    recorded_duration_ms = int(run.get("duration_ms") or 0)
+    wall_duration_ms = recorded_duration_ms or graph_duration_ms
 
     status = _overall_status(
         errors=errors,
@@ -104,7 +104,8 @@ def build_run_observability(
             "message_type": str(request_context.get("msgtype") or "text"),
             "customer_message": str(input_snapshot.get("content") or ""),
             "wall_duration_ms": wall_duration_ms,
-            "recorded_duration_ms": int(run.get("duration_ms") or 0),
+            "recorded_duration_ms": recorded_duration_ms,
+            "graph_duration_ms": graph_duration_ms,
             "slowest_node": {
                 "node_name": slowest.get("node_name", ""),
                 "display_name": slowest.get("display_name", ""),

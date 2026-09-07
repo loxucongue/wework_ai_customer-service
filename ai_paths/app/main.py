@@ -21,6 +21,7 @@ from app.runtime_services import (
     build_reply_services,
     build_worker_services,
 )
+from app.services.v3_request_timing import V3RequestTimingMiddleware
 from app.workers.supervisor import WorkerSupervisor
 
 
@@ -37,6 +38,8 @@ else:
     worker_supervisor = WorkerSupervisor(settings, services)
 
 app = FastAPI(title=settings.app_name, lifespan=create_lifespan(services, worker_supervisor))
+if runtime_role is RuntimeRole.REPLY:
+    app.add_middleware(V3RequestTimingMiddleware, repository=services.repository)
 
 
 @app.get("/health")

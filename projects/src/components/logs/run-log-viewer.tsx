@@ -8,6 +8,8 @@ import {
   Check,
   CheckCircle2,
   CircleDashed,
+  Clock3,
+  Copy,
   Filter,
   MessageSquareText,
   RefreshCw,
@@ -27,6 +29,7 @@ import {
   INTENT_LABELS,
   STATUS_META,
   type CheckpointSummary,
+  type CustomerIdentity,
   type Evidence,
   type Filters,
   type JsonValue,
@@ -284,7 +287,12 @@ function RunListItem({ run, selected, onSelect }: { run: RunItem; selected: bool
     <button type="button" onClick={() => onSelect(run.request_id)} className={`w-full border-b border-zinc-100 px-4 py-3 text-left transition-colors ${selected ? "bg-blue-50/80 shadow-[inset_3px_0_0_#2563eb]" : "bg-white hover:bg-zinc-50"}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="line-clamp-2 text-sm font-medium leading-relaxed text-zinc-900">{runContent(run)}</div>
-        <StatusPill status={status} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600" title="从 V3 接口收到请求到 HTTP 响应完成">
+            <Clock3 className="size-3" />{runDurationLabel(run)}
+          </span>
+          <StatusPill status={status} />
+        </div>
       </div>
       {reply ? <div className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-zinc-500">AI：{reply}</div> : null}
       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -317,6 +325,7 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
   const finalMessages = summary?.final_messages?.length ? summary.final_messages : replyMessages(run.output_snapshot);
   const finalReply = finalMessages.map((item) => contentString(isRecord(item) ? item.content : item)).filter(Boolean);
   const alerts = collectAlerts(run, view);
+  const identity = view?.customer_identity || identityFromRun(run);
 
   return (
     <div className="mx-auto max-w-[1440px] space-y-5 p-4 sm:p-6">
@@ -329,12 +338,13 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
           </div>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
             <span className="font-mono">{run.request_id}</span>
-            <span>企微 {run.business_summary?.wechat || "未记录"}</span>
+            <span>客户 {identity.customer_id || "未记录"}</span>
+            <span>企微 {identity.wechat || run.business_summary?.wechat || "未记录"}</span>
             <span>{formatTime(run.created_at)}</span>
           </div>
         </div>
         <div className="flex flex-wrap gap-2 text-xs text-zinc-500">
-          <Metric label="总耗时" value={formatDuration(summary?.wall_duration_ms || run.duration_ms)} />
+          <Metric label="接口总耗时" value={formatDuration(summary?.wall_duration_ms || run.duration_ms)} />
           <Metric label="模型调用" value={`${summary?.model_call_count ?? "-"} 次`} />
           <Metric label="Token" value={summary?.total_tokens ? String(summary.total_tokens) : "未记录"} />
           <Metric label="实际模型" value={modelsUsed(view)} />
@@ -346,6 +356,8 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
         <Notice tone="blue" title={runtimePhaseLabel(run.runtime_phase)} text="运行中只展示主链阶段；请求完成后才提供准确的逐节点输入与输出。" />
       ) : null}
       {alerts.map((alert, index) => <Notice key={index} tone={alert.tone} title={alert.title} text={alert.text} />)}
+
+      <IdentitySection identity={identity} />
 
       <section className="grid gap-4 lg:grid-cols-2">
         <ConversationCard label="客户当前原话" icon={<MessageSquareText className="size-4 text-blue-600" />} lines={[customerMessage]} />
@@ -363,6 +375,49 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
       <WorkflowSection view={view} onOpenNode={onOpenNode} />
       <DeliverySection view={view} />
     </div>
+  );
+}
+
+function IdentitySection({ identity }: { identity: CustomerIdentity }) {
+  const [copiedKey, setCopiedKey] = useState("");
+  const fields: Array<[keyof CustomerIdentity, string]> = [
+    ["customer_id", "客户 ID"],
+    ["customer_add_wechat_id", "客户加微 ID"],
+    ["external_userid", "外部联系人 ID"],
+    ["wechat", "企微 ID / 账号"],
+    ["corp_id", "企业 ID"],
+    ["user_id", "接待人员 ID"],
+    ["conversation_id", "会话 ID"],
+    ["request_id", "请求 ID"],
+  ];
+  const copy = async (key: keyof CustomerIdentity, value: string) => {
+    if (!value || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(value);
+    setCopiedKey(String(key));
+    window.setTimeout(() => setCopiedKey((current) => current === key ? "" : current), 1500);
+  };
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <SectionHeader title="客户与接待身份" subtitle="来自本轮请求留存；历史缺失不补造" />
+      <div className="grid gap-px overflow-hidden border-t border-zinc-100 bg-zinc-100 sm:grid-cols-2 xl:grid-cols-4">
+        {fields.map(([key, label]) => {
+          const value = String(identity[key] || "").trim();
+          return (
+            <div key={key} className="group min-w-0 bg-white px-4 py-3">
+              <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-zinc-500">
+                <span>{label}</span>
+                {value ? (
+                  <button type="button" onClick={() => void copy(key, value)} className="rounded p-1 text-zinc-400 opacity-70 hover:bg-zinc-100 hover:text-zinc-700 group-hover:opacity-100" title={`复制${label}`}>
+                    {copiedKey === key ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}
+                  </button>
+                ) : null}
+              </div>
+              <div className={`mt-1 truncate text-sm ${value ? "font-mono text-zinc-800" : "text-zinc-400"}`} title={value || "未记录"}>{value || "未记录"}</div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -589,6 +644,29 @@ function runStatus(run: RunItem, view?: ObservabilityView) {
   if (view?.summary?.fallback_detected || run.business_summary?.fallback_used) return "fallback";
   if (view?.decision_summary?.decision_status === "degraded" || run.business_summary?.decision_status === "degraded") return "degraded";
   return "success";
+}
+
+function runDurationLabel(run: RunItem) {
+  const recorded = Number(run.duration_ms || 0);
+  if (recorded > 0) return formatDuration(recorded);
+  if (isRunning(run) && run.started_at) {
+    const startedAt = new Date(run.started_at).getTime();
+    if (Number.isFinite(startedAt)) return `${formatDuration(Math.max(0, Date.now() - startedAt))}+`;
+  }
+  return "未记录";
+}
+
+function identityFromRun(run: RunItem): CustomerIdentity {
+  return {
+    request_id: run.request_id,
+    conversation_id: run.conversation_id,
+    customer_id: run.customer_id || stringField(run.input_snapshot?.customer_id),
+    customer_add_wechat_id: stringField(run.input_snapshot?.customer_add_wechat_id),
+    external_userid: stringField(run.input_snapshot?.external_userid),
+    corp_id: stringField(run.input_snapshot?.corp_id),
+    user_id: stringField(run.input_snapshot?.user_id),
+    wechat: run.business_summary?.wechat || stringField(run.input_snapshot?.wechat),
+  };
 }
 
 function modelsUsed(view?: ObservabilityView) {

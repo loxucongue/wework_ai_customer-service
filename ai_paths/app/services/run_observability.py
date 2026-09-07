@@ -4,9 +4,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
-from app.services.run_observability_summary import build_run_observability, trace_wall_duration_ms
-
-
 _INTENT_LABELS = {
     "fact_inquiry": "咨询事实",
     "blocker_expression": "表达卡点",
@@ -287,6 +284,8 @@ def enrich_admin_observability_v3(
     reference_map = _stored_reference_map(stored)
     compact_model_usage = _dict_list(stored.get("model_usage"))
     token_usage = _dict(run.get("token_usage"))
+    input_snapshot = _dict(run.get("input_snapshot"))
+    request_context = _dict(input_snapshot.get("request_context"))
 
     intent_code = _text(intent.get("type") or usage.get("intent_code"))
     emotion_code = _text(emotion.get("label") or usage.get("emotion_before"))
@@ -315,6 +314,21 @@ def enrich_admin_observability_v3(
     if not _integer(summary.get("total_tokens")):
         summary["total_tokens"] = _integer(token_usage.get("total_tokens"))
     view["summary"] = summary
+    view["customer_identity"] = {
+        "request_id": _text(run.get("request_id")),
+        "conversation_id": _text(run.get("conversation_id")),
+        "customer_id": _text(run.get("customer_id") or input_snapshot.get("customer_id")),
+        "customer_add_wechat_id": _text(
+            input_snapshot.get("customer_add_wechat_id")
+            or request_context.get("customer_add_wechat_id")
+        ),
+        "external_userid": _text(
+            input_snapshot.get("external_userid") or request_context.get("external_userid")
+        ),
+        "corp_id": _text(input_snapshot.get("corp_id") or request_context.get("corp_id")),
+        "user_id": _text(input_snapshot.get("user_id") or request_context.get("user_id")),
+        "wechat": _text(input_snapshot.get("wechat") or request_context.get("wechat")),
+    }
     view["decision_summary"] = {
         "available": bool(intent or emotion or closing or usage),
         "decision_status": _text(output.get("decision_status") or usage.get("decision_status")),
@@ -396,6 +410,7 @@ def enrich_admin_observability_v3(
     )
     view["data_availability"] = {
         "business_summary": "available" if stored or view["decision_summary"]["available"] else "not_recorded",
+        "customer_identity": "available" if any(view["customer_identity"].values()) else "not_recorded",
         "strategy_usage_event": "available" if usage else "not_recorded",
         "node_traces": trace_status,
         "raw_detail": "available" if nodes else trace_status,
@@ -422,6 +437,8 @@ def compact_admin_run_detail(run: dict[str, Any]) -> dict[str, Any]:
                 "corp_id": _text(input_snapshot.get("corp_id")),
                 "wechat": _text(input_snapshot.get("wechat")),
                 "external_userid": _text(input_snapshot.get("external_userid")),
+                "customer_add_wechat_id": _text(input_snapshot.get("customer_add_wechat_id")),
+                "user_id": _text(input_snapshot.get("user_id")),
                 "request_context": {
                     key: request_context.get(key)
                     for key in (

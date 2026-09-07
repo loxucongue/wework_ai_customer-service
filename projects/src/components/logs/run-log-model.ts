@@ -15,6 +15,17 @@ export type BusinessSummary = {
   usage_event_recorded?: boolean;
 };
 
+export type CustomerIdentity = {
+  request_id?: string;
+  conversation_id?: string;
+  customer_id?: string;
+  customer_add_wechat_id?: string;
+  external_userid?: string;
+  corp_id?: string;
+  user_id?: string;
+  wechat?: string;
+};
+
 export type RunItem = {
   request_id: string;
   interface_version?: string;
@@ -257,6 +268,7 @@ export type ObservabilityView = {
     customer_message: string;
     wall_duration_ms: number;
     recorded_duration_ms: number;
+    graph_duration_ms?: number;
     slowest_node: { node_name: string; display_name: string; duration_ms: number };
     model_call_count: number;
     model_retry_count: number;
@@ -278,6 +290,7 @@ export type ObservabilityView = {
     failed_count: number;
     dispatches: DeliveryDispatch[];
   };
+  customer_identity?: CustomerIdentity;
   decision_summary?: DecisionSummary;
   checkpoint_summary?: CheckpointSummary;
   knowledge_match?: KnowledgeMatch;
@@ -285,6 +298,7 @@ export type ObservabilityView = {
   store_workflow?: Record<string, JsonValue>;
   data_availability?: {
     business_summary?: string;
+    customer_identity?: string;
     strategy_usage_event?: string;
     node_traces?: string;
     raw_detail?: string;

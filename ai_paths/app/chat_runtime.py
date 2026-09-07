@@ -583,6 +583,8 @@ class ChatRuntime:
             customer_id=str(request.customer_id or ""),
             input_snapshot=_run_tracking_input_snapshot(request, request_context),
             interface_version=str(request_context.get("interface_version") or "v3"),
+            started_at=str(request_context.get("http_request_started_at") or ""),
+            http_request_ingress_id=str(request_context.get("http_request_ingress_id") or ""),
         )
 
     def _update_run_progress(self, request_id: str, phase: str) -> None:
@@ -934,6 +936,7 @@ def _run_tracking_input_snapshot(request: ChatRequest, request_context: dict[str
         "user_id": request.user_id,
         "wechat": request.wechat,
         "external_userid": request.external_userid,
+        "customer_add_wechat_id": request.customer_add_wechat_id,
         "request_context": request_context,
     }
 

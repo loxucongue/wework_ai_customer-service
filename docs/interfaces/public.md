@@ -54,7 +54,9 @@
 运行日志接口口径：
 
 - `GET /admin/runs` 默认返回轻量运行摘要和 `business_summary`；可按时间、企微号、客户/会话、运行状态、最终意图、情绪、Router 卡点、决策状态、序列匹配/采用、话术采用和节点失败筛选。即使策略 usage event 未写入，运行记录仍会保留在列表中，缺失维度标记为未记录。
+- `GET /admin/runs` 每条记录的 `duration_ms` 对新产生的 V3 请求表示完整服务端接口耗时：从请求进入 Reply 服务开始，到 HTTP 响应最后一段成功发出为止，包含鉴权、请求解析、业务预处理、模型/工具、持久化尾部和响应序列化。历史记录仍沿用当时口径，缺失时管理页显示“未记录”。
 - `GET /admin/runs/{request_id}?include_debug=false` 返回 `observability_view`，其中 `decision_summary` 以 V3 Reply 的 `policy_decision` 为准，`checkpoint_summary` 分开呈现 Router 检索卡点和 Reply 最终卡点，`knowledge_match` 分开呈现候选、采用与交付，`workflow_nodes` 呈现固定业务阶段。轻量模式只返回节点标识、状态和耗时，不读取节点原始输入输出。
+- `observability_view.customer_identity` 只整理本轮已经留存的身份字段：`request_id`、`conversation_id`、`customer_id`、`customer_add_wechat_id`、`external_userid`、`corp_id`、`user_id` 和 `wechat`。管理页不调用当前平台接口补造历史身份，缺失字段显示“未记录”。
 - 旧调用不传 `include_debug` 时继续返回原有完整详情；管理页面默认使用轻量模式。
 - `GET /admin/runs/{request_id}/nodes/{node_id}` 仅在用户点击节点时读取该节点现有留存的输入、输出、模型和工具记录，并递归隐藏 token、Authorization、密钥和密码。节点必须同时属于指定请求，禁止跨请求读取。
 - 原始节点轨迹沿用现有 14 天保留期，运行和业务摘要沿用现有 90 天保留期。历史字段缺失、轨迹过期和真实零候选必须分别展示；禁止用当前知识目录回填历史正文。

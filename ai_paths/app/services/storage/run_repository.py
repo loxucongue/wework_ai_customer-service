@@ -30,10 +30,12 @@ class RunRepositoryMixin:
         customer_id: str,
         input_snapshot: dict[str, Any],
         interface_version: str = "v1",
+        started_at: str = "",
+        http_request_ingress_id: str = "",
     ) -> None:
         """Persist the request before model execution so it is visible live."""
 
-        started_at = utc_now_iso()
+        started_at = str(started_at or utc_now_iso())
         version = str(interface_version or "v1").strip().lower()
         if version not in {"v1", "v2", "v3"}:
             version = "v1"
@@ -43,6 +45,8 @@ class RunRepositoryMixin:
             "runtime_started_at": started_at,
             "runtime_updated_at": started_at,
             "interface_version": version,
+            "http_request_ingress_id": str(http_request_ingress_id or ""),
+            "http_request_started_at": started_at,
         }
         with self.store.connect() as conn:
             conn.execute(
@@ -260,6 +264,52 @@ class RunRepositoryMixin:
                 "UPDATE runs SET output_snapshot=? WHERE request_id=?",
                 (dumps(_compact_run_output(output_snapshot)), request_id),
             )
+
+    def finalize_run_http_timing(
+        self,
+        *,
+        request_id: str,
+        ingress_id: str,
+        started_at: str,
+        finished_at: str,
+        duration_ms: int,
+    ) -> bool:
+        """Finalize timing only for the ingress that created this run.
+
+        Platform retries may reuse an earlier result and request_id. The ingress
+        identity check prevents a cached retry from replacing the original run's
+        lifecycle duration with the retry's much shorter HTTP duration.
+        """
+
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT output_snapshot, duration_ms FROM runs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if not row:
+                return False
+            output_snapshot = loads_dict(row["output_snapshot"])
+            stored_ingress_id = str(output_snapshot.get("http_request_ingress_id") or "")
+            if not ingress_id or stored_ingress_id != str(ingress_id):
+                return False
+            processing_finished_at = str(output_snapshot.get("runtime_finished_at") or "")
+            if processing_finished_at:
+                output_snapshot["runtime_processing_finished_at"] = processing_finished_at
+            effective_duration_ms = max(int(row["duration_ms"] or 0), max(0, int(duration_ms or 0)))
+            output_snapshot.update(
+                {
+                    "http_request_started_at": str(started_at or output_snapshot.get("http_request_started_at") or ""),
+                    "http_response_finished_at": str(finished_at or ""),
+                    "http_duration_ms": effective_duration_ms,
+                    "runtime_finished_at": str(finished_at or processing_finished_at),
+                    "runtime_updated_at": str(finished_at or output_snapshot.get("runtime_updated_at") or ""),
+                }
+            )
+            conn.execute(
+                "UPDATE runs SET output_snapshot=?, duration_ms=? WHERE request_id=?",
+                (dumps(_compact_run_output(output_snapshot)), effective_duration_ms, request_id),
+            )
+        return True
 
     def list_runs(
         self,

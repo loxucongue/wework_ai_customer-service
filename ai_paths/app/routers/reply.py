@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Request
 from fastapi.responses import JSONResponse
 
 from app.config import Settings
@@ -13,6 +13,7 @@ from app.services.workflow_compat import (
     workflow_error_response,
     workflow_response_from_chat,
 )
+from app.services.v3_request_timing import attach_v3_http_timing, bind_v3_run_request_id
 
 from .security import workflow_api_key_dependency
 
@@ -46,18 +47,22 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
     async def workflow_reply(
         payload: dict[str, Any],
         *,
+        http_request: Request,
         background_tasks: BackgroundTasks | None,
     ) -> JSONResponse:
         try:
             request = normalize_workflow_request(payload)
         except ValueError as exc:
             return JSONResponse(status_code=400, content=workflow_error_response(str(exc)))
+        attach_v3_http_timing(http_request, request)
         attach_request_interface_version(request, "v3")
         takeover_response = await chat_runtime.run_v3_takeover_guard(request)
         if takeover_response is not None:
             response_body = workflow_response_from_chat(takeover_response)
             record_http_response(takeover_response.request_id, response_body)
-            return JSONResponse(content=response_body)
+            http_response = JSONResponse(content=response_body)
+            bind_v3_run_request_id(http_request, takeover_response.request_id)
+            return http_response
         request = await services.platform_voice_batch_coordinator.prepare(
             request,
             services.voice_transcription_client,
@@ -68,14 +73,21 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
         )
         response_body = workflow_response_from_chat(response)
         record_http_response(response.request_id, response_body)
-        return JSONResponse(content=response_body)
+        http_response = JSONResponse(content=response_body)
+        bind_v3_run_request_id(http_request, response.request_id)
+        return http_response
 
     @router.post("/reply/workflow-compatible-v3")
     async def reply_workflow_compatible_v3(
+        http_request: Request,
         payload: dict[str, Any] = Body(...),
         background_tasks: BackgroundTasks = None,
         _: None = Depends(require_workflow_api_key),
     ) -> JSONResponse:
-        return await workflow_reply(payload, background_tasks=background_tasks)
+        return await workflow_reply(
+            payload,
+            http_request=http_request,
+            background_tasks=background_tasks,
+        )
 
     return router

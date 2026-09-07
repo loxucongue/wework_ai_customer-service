@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,9 +17,10 @@ from app.services.run_observability import (  # noqa: E402
     build_v3_run_observability,
     enrich_admin_observability_v3,
 )
-from app.services.run_observability_summary import sanitize_debug_payload  # noqa: E402
+from app.services.run_observability_summary import build_run_observability, sanitize_debug_payload  # noqa: E402
 from app.services.storage.repositories import AppRepository  # noqa: E402
 from app.services.storage.sqlite_store import SQLiteStore  # noqa: E402
+from app.services.v3_request_timing import V3RequestTimingMiddleware  # noqa: E402
 
 
 def test_v3_admin_view_separates_router_from_reply_and_explains_adoption() -> None:
@@ -183,6 +185,133 @@ def test_lightweight_run_detail_keeps_node_headers_and_loads_raw_node_on_demand(
     assert repository.get_run_node_trace(request_id="run-without-bi", node_id="node-1") == {}
 
 
+def test_http_lifecycle_timing_uses_ingress_identity_and_full_duration(tmp_path: Path) -> None:
+    settings = Settings(AI_PATHS_DB_PATH=tmp_path / "timing.db", AICS_STORAGE_BACKEND="sqlite")
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO conversations (id, customer_id, created_at, updated_at) VALUES (?,?,?,?)",
+            (
+                "conversation-timing",
+                "customer-timing",
+                "2026-09-07T08:00:00+00:00",
+                "2026-09-07T08:00:00+00:00",
+            ),
+        )
+    repository.start_run(
+        request_id="run-timing",
+        conversation_id="conversation-timing",
+        customer_id="customer-timing",
+        input_snapshot={"content": "你好"},
+        interface_version="v3",
+        started_at="2026-09-07T08:00:00+00:00",
+        http_request_ingress_id="ingress-original",
+    )
+
+    assert repository.finalize_run_http_timing(
+        request_id="run-timing",
+        ingress_id="ingress-cached-retry",
+        started_at="2026-09-07T08:01:00+00:00",
+        finished_at="2026-09-07T08:01:00.010000+00:00",
+        duration_ms=10,
+    ) is False
+    assert repository.get_run("run-timing", include_debug=False)["run"]["duration_ms"] == 0
+
+    assert repository.finalize_run_http_timing(
+        request_id="run-timing",
+        ingress_id="ingress-original",
+        started_at="2026-09-07T08:00:00+00:00",
+        finished_at="2026-09-07T08:00:02.250000+00:00",
+        duration_ms=2250,
+    ) is True
+    run = repository.get_run("run-timing", include_debug=False)["run"]
+    assert run["duration_ms"] == 2250
+    assert run["started_at"] == "2026-09-07T08:00:00+00:00"
+    assert run["finished_at"] == "2026-09-07T08:00:02.250000+00:00"
+    assert run["output_snapshot"]["http_duration_ms"] == 2250
+
+
+def test_observability_total_duration_prefers_recorded_http_lifecycle() -> None:
+    view = build_run_observability(
+        {
+            "run": {
+                "request_id": "run-duration",
+                "duration_ms": 4200,
+                "input_snapshot": {},
+                "output_snapshot": {},
+            },
+            "node_traces": [
+                {
+                    "id": "node-1",
+                    "node_name": "reply_decision",
+                    "duration_ms": 900,
+                    "created_at": "2026-09-07T08:00:01+00:00",
+                }
+            ],
+        }
+    )
+
+    assert view["summary"]["wall_duration_ms"] == 4200
+    assert view["summary"]["recorded_duration_ms"] == 4200
+    assert view["summary"]["graph_duration_ms"] == 900
+
+
+def test_v3_timing_middleware_finalizes_after_response_and_preserves_errors() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def finalize_run_http_timing(self, **values: object) -> None:
+            self.calls.append(values)
+
+    repository = Repository()
+
+    async def response_app(scope: dict[str, object], _receive: object, send: object) -> None:
+        scope.setdefault("state", {})["v3_run_request_id"] = "run-middleware"  # type: ignore[index]
+        await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[operator]
+        await send({"type": "http.response.body", "body": b"{}"})  # type: ignore[operator]
+
+    middleware = V3RequestTimingMiddleware(response_app, repository=repository)
+    sent: list[dict[str, object]] = []
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    asyncio.run(
+        middleware(
+            {"type": "http", "method": "POST", "path": "/reply/workflow-compatible-v3"},
+            receive,
+            send,
+        )
+    )
+    assert sent[-1]["type"] == "http.response.body"
+    assert repository.calls[0]["request_id"] == "run-middleware"
+    assert str(repository.calls[0]["ingress_id"])
+
+    async def failing_app(_scope: object, _receive: object, _send: object) -> None:
+        raise RuntimeError("route failed")
+
+    async def invoke_failure() -> None:
+        failing = V3RequestTimingMiddleware(failing_app, repository=repository)
+        await failing(
+            {"type": "http", "method": "POST", "path": "/reply/workflow-compatible-v3"},
+            receive,
+            send,
+        )
+
+    try:
+        asyncio.run(invoke_failure())
+    except RuntimeError as exc:
+        assert str(exc) == "route failed"
+    else:
+        raise AssertionError("middleware must not suppress route failures")
+
+
 def test_node_debug_payload_masks_credentials_without_removing_business_input() -> None:
     sanitized = sanitize_debug_payload(
         {
@@ -211,9 +340,19 @@ def test_run_log_admin_endpoints_forward_filters_and_lazy_load_node() -> None:
             return {
                 "run": {
                     "request_id": request_id,
+                    "conversation_id": "conversation-1",
+                    "customer_id": "customer-1",
                     "runtime_status": "completed",
                     "created_at": "2026-09-06T08:00:00+00:00",
-                    "input_snapshot": {"content": "多少钱", "conversation_history": ["不应进入轻量响应"]},
+                    "input_snapshot": {
+                        "content": "多少钱",
+                        "conversation_history": ["不应进入轻量响应"],
+                        "corp_id": "corp-1",
+                        "wechat": "sl8003",
+                        "external_userid": "external-1",
+                        "customer_add_wechat_id": "relation-1",
+                        "user_id": "staff-1",
+                    },
                     "output_snapshot": {"realtime_intent": {"type": "fact_inquiry"}},
                 },
                 "node_traces": [
@@ -264,6 +403,16 @@ def test_run_log_admin_endpoints_forward_filters_and_lazy_load_node() -> None:
     assert detail_response.status_code == 200
     assert repository.include_debug is False
     assert detail_response.json()["observability_view"]["contract_version"] == "run_observability_v2"
+    assert detail_response.json()["observability_view"]["customer_identity"] == {
+        "request_id": "run-1",
+        "conversation_id": "conversation-1",
+        "customer_id": "customer-1",
+        "customer_add_wechat_id": "relation-1",
+        "external_userid": "external-1",
+        "corp_id": "corp-1",
+        "user_id": "staff-1",
+        "wechat": "sl8003",
+    }
     assert "raw_log" not in detail_response.json()
     assert "conversation_history" not in detail_response.json()["run"]["input_snapshot"]
 
