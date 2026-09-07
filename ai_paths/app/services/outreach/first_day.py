@@ -617,7 +617,14 @@ def _conversation_id_from_response(payload: Any) -> str:
 
 def _first_day_full_retry_delay_seconds(error: str, retry_count: int) -> int | None:
     normalized = _string(error).lower()
-    if "first_day_scene_analysis_invalid" in normalized:
+    if any(
+        marker in normalized
+        for marker in (
+            "first_day_scene_analysis_invalid",
+            "first_day_follow_sequence_",
+            "'nonetype' object has no attribute 'get'",
+        )
+    ):
         return 60 if retry_count < 1 else None
     transient = any(
         marker in normalized
@@ -3613,20 +3620,59 @@ class FirstDayWorkflow:
             if authoritative_existing_run and _string(
                 authoritative_existing_run.get("workflow_run_id")
             ) != workflow_run_id:
-                await _update_run(
-                    status="blocked",
-                    reason_code="authoritative_fingerprint_already_logged",
-                    final_decision="no_plan",
-                    finished_at=utc_now_iso(),
+                authoritative_retry_reason = _first_day_existing_run_retry_reason(
+                    authoritative_existing_run,
+                    latest_customer_message_at=latest_customer_text,
                 )
-                return {
-                    "status": "skipped",
-                    "customer_id": customer_id,
-                    "reason": "conversation_fingerprint_already_logged",
-                    "workflow_run_id": _string(
+                if authoritative_retry_reason:
+                    # A pre-refresh candidate can create a provisional run with a
+                    # different fingerprint.  If the authoritative fingerprint
+                    # belongs to a retryable failed run that never produced a
+                    # plan, resume that run instead of permanently consuming the
+                    # customer cycle with a duplicate-idempotency block.
+                    await _update_run(
+                        status="blocked",
+                        reason_code="superseded_by_retryable_authoritative_run",
+                        final_decision="no_plan",
+                        finished_at=utc_now_iso(),
+                    )
+                    workflow_run_id = _string(
                         authoritative_existing_run.get("workflow_run_id")
-                    ),
-                }
+                    )
+                    await _update_run(
+                        status="running",
+                        reason_code="preflight_retry",
+                        final_decision="retrying",
+                        retry_count=int(authoritative_existing_run.get("retry_count") or 0) + 1,
+                        error_node="",
+                        error_type="",
+                        error_message="",
+                        finished_at="",
+                        next_retry_at="",
+                        workflow={
+                            **(
+                                authoritative_existing_run.get("workflow")
+                                if isinstance(authoritative_existing_run.get("workflow"), dict)
+                                else {}
+                            ),
+                            "retry_reason": authoritative_retry_reason,
+                        },
+                    )
+                else:
+                    await _update_run(
+                        status="blocked",
+                        reason_code="authoritative_fingerprint_already_logged",
+                        final_decision="no_plan",
+                        finished_at=utc_now_iso(),
+                    )
+                    return {
+                        "status": "skipped",
+                        "customer_id": customer_id,
+                        "reason": "conversation_fingerprint_already_logged",
+                        "workflow_run_id": _string(
+                            authoritative_existing_run.get("workflow_run_id")
+                        ),
+                    }
             await _update_run(conversation_fingerprint=conversation_fingerprint)
             if await asyncio.to_thread(
                 self.repository.has_outreach_evaluation_fingerprint,

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from app.config import Settings
@@ -67,9 +69,18 @@ class CustomerMemoryStore:
     def __init__(self, settings: Settings, repository: AppRepository | None = None):
         self.memory_dir: Path = settings.memory_dir
         self.repository = repository
+        self._write_batch: ContextVar[dict[str, Any] | None] = ContextVar(
+            f"customer_memory_write_batch_{id(self)}",
+            default=None,
+        )
 
     def load(self, customer_id: str) -> dict[str, Any]:
         """Load by sales_contact_key; the argument name is retained for API compatibility."""
+        batch = self._write_batch.get()
+        if batch and str(batch.get("customer_id") or "") == str(customer_id or ""):
+            data = batch.get("data")
+            if isinstance(data, dict):
+                return data
         if self.repository:
             memory = self.repository.load_memory(customer_id)
             if memory:
@@ -82,6 +93,59 @@ class CustomerMemoryStore:
             return self._with_scope_key(data, customer_id) if isinstance(data, dict) else self._empty(customer_id)
         except (OSError, json.JSONDecodeError):
             return self._empty(customer_id)
+
+    @contextmanager
+    def write_batch(self, customer_id: str) -> Iterator[None]:
+        """Coalesce same-request memory mutations into one durable write.
+
+        V3 records several provenance facts after one reply.  Loading and saving
+        the same memory row for every fact multiplies remote database latency and
+        can delay the customer response by tens of seconds.  The batch remains
+        context-local, so concurrent customers never share mutable state.
+        """
+
+        clean_customer_id = str(customer_id or "").strip()
+        if not clean_customer_id:
+            yield
+            return
+        active = self._write_batch.get()
+        if active and str(active.get("customer_id") or "") == clean_customer_id:
+            yield
+            return
+        state: dict[str, Any] = {
+            "customer_id": clean_customer_id,
+            "data": self.load(clean_customer_id),
+            "dirty": False,
+        }
+        token: Token[dict[str, Any] | None] = self._write_batch.set(state)
+        try:
+            yield
+        finally:
+            try:
+                if state.get("dirty") and isinstance(state.get("data"), dict):
+                    self._persist_now(clean_customer_id, state["data"])
+            finally:
+                self._write_batch.reset(token)
+
+    def _persist(self, customer_id: str, data: dict[str, Any]) -> None:
+        batch = self._write_batch.get()
+        if batch and str(batch.get("customer_id") or "") == str(customer_id or ""):
+            batch["data"] = data
+            batch["dirty"] = True
+            return
+        self._persist_now(customer_id, data)
+
+    def _persist_now(self, customer_id: str, data: dict[str, Any]) -> None:
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
 
     def has_stop_contact(self, customer_id: str) -> bool:
         """Check both durable DB and local journal, replaying local-only safety facts."""
@@ -144,13 +208,7 @@ class CustomerMemoryStore:
                         continue
                     events.append(event)
                 data["history_events"] = events[-100:]
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        if self.repository:
-            try:
-                self.repository.save_memory(customer_id, data)
-            except Exception:
-                pass
+        self._persist(customer_id, data)
         return data
 
     def clear(self, customer_id: str) -> None:
@@ -212,13 +270,7 @@ class CustomerMemoryStore:
                 }
             )
             data["history_events"] = events[-100:]
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        if self.repository:
-            try:
-                self.repository.save_memory(customer_id, data)
-            except Exception:
-                pass
+        self._persist(customer_id, data)
         return {
             "status": "recorded",
             "document_ids": clean_ids,
@@ -261,13 +313,7 @@ class CustomerMemoryStore:
                     }
                 )
             data["history_events"] = events[-100:]
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        if self.repository:
-            try:
-                self.repository.save_memory(customer_id, data)
-            except Exception:
-                pass
+        self._persist(customer_id, data)
         return {"status": "recorded", "image_url": clean_url}
 
     def record_reply_model_observation(
@@ -323,16 +369,7 @@ class CustomerMemoryStore:
         data["customer_id"] = customer_id
         data["updated_at"] = now
         data["history_events"] = events[-100:]
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._path(customer_id).write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        if self.repository:
-            try:
-                self.repository.save_memory(customer_id, data)
-            except Exception:
-                pass
+        self._persist(customer_id, data)
         return {"status": "recorded", "event_id": event_id}
 
     def record_follow_knowledge_usage(
@@ -395,16 +432,7 @@ class CustomerMemoryStore:
         data["customer_id"] = customer_id
         data["updated_at"] = now
         data["history_events"] = events[-100:]
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._path(customer_id).write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        if self.repository:
-            try:
-                self.repository.save_memory(customer_id, data)
-            except Exception:
-                pass
+        self._persist(customer_id, data)
         return {"status": "recorded", "event_id": event_id}
 
     def record_follow_knowledge_match(
@@ -472,16 +500,7 @@ class CustomerMemoryStore:
         data["customer_id"] = customer_id
         data["updated_at"] = now
         data["history_events"] = events[-100:]
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._path(customer_id).write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        if self.repository:
-            try:
-                self.repository.save_memory(customer_id, data)
-            except Exception:
-                pass
+        self._persist(customer_id, data)
         return {"status": "recorded", "event_id": event_id}
 
     def record_sop_pack_sent(
@@ -533,13 +552,7 @@ class CustomerMemoryStore:
         data["customer_id"] = customer_id
         data["updated_at"] = created_at
         data["history_events"] = events[-100:]
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        if self.repository:
-            try:
-                self.repository.save_memory(customer_id, data)
-            except Exception:
-                pass
+        self._persist(customer_id, data)
         return {"status": "recorded", "event_id": event_id, "sop_pack_id": clean_pack_id}
 
     def record_stop_contact(
@@ -658,13 +671,7 @@ class CustomerMemoryStore:
             )
             data["history_events"] = events[-100:]
 
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        if self.repository:
-            try:
-                self.repository.save_memory(customer_id, data)
-            except Exception:
-                pass
+        self._persist(customer_id, data)
         return {
             "status": "recorded",
             "event_type": event_type,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import asyncio
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -209,7 +210,6 @@ def test_http_lifecycle_timing_uses_ingress_identity_and_full_duration(tmp_path:
         started_at="2026-09-07T08:00:00+00:00",
         http_request_ingress_id="ingress-original",
     )
-
     assert repository.finalize_run_http_timing(
         request_id="run-timing",
         ingress_id="ingress-cached-retry",
@@ -231,6 +231,55 @@ def test_http_lifecycle_timing_uses_ingress_identity_and_full_duration(tmp_path:
     assert run["started_at"] == "2026-09-07T08:00:00+00:00"
     assert run["finished_at"] == "2026-09-07T08:00:02.250000+00:00"
     assert run["output_snapshot"]["http_duration_ms"] == 2250
+
+
+def test_save_run_preserves_http_ingress_timing_and_batches_traces(tmp_path: Path) -> None:
+    settings = Settings(AI_PATHS_DB_PATH=tmp_path / "timing-save.db", AICS_STORAGE_BACKEND="sqlite")
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    started = datetime.now(timezone.utc) - timedelta(seconds=1)
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO conversations (id, customer_id, created_at, updated_at) VALUES (?,?,?,?)",
+            ("conversation-save", "customer-save", started.isoformat(), started.isoformat()),
+        )
+    repository.start_run(
+        request_id="run-save",
+        conversation_id="conversation-save",
+        customer_id="customer-save",
+        input_snapshot={"content": "你好"},
+        interface_version="v3",
+        started_at=started.isoformat(),
+        http_request_ingress_id="ingress-save",
+    )
+    repository.save_run(
+        conversation_id="conversation-save",
+        final_state={
+            "request_id": "run-save",
+            "customer_id": "customer-save",
+            "request_context": {"interface_version": "v3"},
+            "trace": [
+                {"node": "context", "duration_ms": 10, "started_at": started.isoformat()},
+                {"node": "reply", "duration_ms": 20, "started_at": started.isoformat()},
+            ],
+        },
+        token_usage={},
+    )
+
+    saved = repository.get_run("run-save", include_debug=False)
+    assert saved["run"]["output_snapshot"]["http_request_ingress_id"] == "ingress-save"
+    assert saved["run"]["output_snapshot"]["http_request_started_at"] == started.isoformat()
+    assert [trace["node_name"] for trace in saved["node_traces"]] == ["context", "reply"]
+
+    assert repository.finalize_run_http_timing(
+        request_id="run-save",
+        ingress_id="ingress-save",
+        started_at=started.isoformat(),
+        finished_at=(started + timedelta(milliseconds=2500)).isoformat(),
+        duration_ms=2500,
+    ) is True
+    assert repository.get_run("run-save", include_debug=False)["run"]["duration_ms"] == 2500
 
 
 def test_observability_total_duration_prefers_recorded_http_lifecycle() -> None:

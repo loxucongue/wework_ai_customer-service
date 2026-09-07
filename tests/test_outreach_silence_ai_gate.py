@@ -398,6 +398,133 @@ def test_unsupported_model_failure_gets_bounded_retry() -> None:
     assert _first_day_full_retry_delay_seconds(error, 2) is None
 
 
+def test_plan_generation_null_failure_gets_one_recovery_retry() -> None:
+    error = "'NoneType' object has no attribute 'get'"
+    assert _first_day_full_retry_delay_seconds(error, 0) == 60
+    assert _first_day_full_retry_delay_seconds(error, 1) is None
+    assert _first_day_full_retry_delay_seconds(
+        "first_day_follow_sequence_nodes_unavailable",
+        0,
+    ) == 60
+
+
+def test_authoritative_fingerprint_resumes_failed_run_without_a_plan() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    customer_at = (now - timedelta(minutes=3)).isoformat()
+    authoritative_staff_at = (now - timedelta(minutes=2)).isoformat()
+    candidate_staff_at = (now - timedelta(minutes=4)).isoformat()
+
+    from app.services.outreach.first_day import _conversation_fingerprint
+
+    authoritative_fingerprint = _conversation_fingerprint(
+        corp_id="corp-1",
+        wechat="SL8003",
+        external_userid="external-1",
+        customer_id="customer-1",
+        latest_customer_message_at=customer_at,
+        latest_staff_message_at=authoritative_staff_at,
+    )
+
+    class RecoveryRepository(_Repository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.runs["failed-run"] = {
+                "workflow_run_id": "failed-run",
+                "status": "failed",
+                "reason_code": "workflow_failed",
+                "retry_count": 0,
+                "conversation_fingerprint": authoritative_fingerprint,
+                "workflow": {},
+            }
+
+        def create_first_day_outreach_run(self, **values: object) -> dict[str, object]:
+            run = {"workflow_run_id": "provisional-run", **values}
+            self.runs["provisional-run"] = run
+            return run
+
+        def find_first_day_outreach_run_by_fingerprint(self, **values: object) -> dict[str, object]:
+            if values.get("conversation_fingerprint") == authoritative_fingerprint:
+                return dict(self.runs["failed-run"])
+            return {}
+
+        def has_outreach_evaluation_fingerprint(self, **_: object) -> bool:
+            return False
+
+        def recent_customer_context(self, *_: object, **__: object) -> dict[str, object]:
+            return {"memory": {}}
+
+    class RecoveryPlanning(_Planning):
+        def __init__(self) -> None:
+            super().__init__(_StatusClient())
+            self.generated_with = ""
+
+        async def refresh_customer_conversation(self, **_: object) -> dict[str, object]:
+            return {
+                "customer_relation": {"available": True, "deleted": False},
+                "conversation_id": "conversation-1",
+                "first_added_at": (now - timedelta(days=10)).isoformat(),
+                "messages": [
+                    {"direction": "customer", "content": "还是太远", "created_at": customer_at},
+                    {"direction": "staff", "content": "可以给您发效果图", "created_at": authoritative_staff_at},
+                ],
+            }
+
+        @staticmethod
+        def _latest_message_time(messages: list[dict[str, object]], *, sender: str) -> str:
+            direction = "customer" if sender == "customer" else "staff"
+            return max(
+                str(item.get("created_at") or "")
+                for item in messages
+                if item.get("direction") == direction
+            )
+
+        @staticmethod
+        def _completed_cycle_blocks_auto_plan(**_: object) -> bool:
+            return False
+
+        async def generate_plan(self, **values: object) -> dict[str, object]:
+            self.generated_with = str(values.get("workflow_run_id") or "")
+            return {"created": True, "plan": {"id": "plan-1"}}
+
+        @staticmethod
+        def _auto_approve_plan(plan_id: str) -> dict[str, object]:
+            return {"plan_id": plan_id, "status": "active"}
+
+    repository = RecoveryRepository()
+    planning = RecoveryPlanning()
+    workflow = FirstDayWorkflow(
+        repository=repository,
+        model_client=object(),
+        customer_context_service=object(),
+        first_day_wechat_allowlist="",
+        planning=planning,
+    )
+
+    async def load_context(**_: object) -> dict[str, object]:
+        return {"source": "platform_agent", "orders": []}
+
+    workflow._load_monitor_customer_context = load_context  # type: ignore[method-assign]
+    result = asyncio.run(
+        workflow._evaluate_first_day_silence_candidate(
+            {
+                **_identity(),
+                "last_customer_message_at": customer_at,
+                "last_staff_message_at": candidate_staff_at,
+                "latest_outbound_message_at": candidate_staff_at,
+            },
+            silent_minutes=1,
+            auto_activate=True,
+            eligible_after=(now - timedelta(hours=1)).isoformat(),
+        )
+    )
+
+    assert result["created"] is True
+    assert planning.generated_with == "failed-run"
+    assert repository.runs["failed-run"]["status"] == "running"
+    assert repository.runs["failed-run"]["retry_count"] == 1
+    assert repository.runs["provisional-run"]["reason_code"] == "superseded_by_retryable_authoritative_run"
+
+
 def test_monitor_evaluates_longest_waiting_customer_first() -> None:
     now = datetime.now(timezone.utc).replace(microsecond=0)
 

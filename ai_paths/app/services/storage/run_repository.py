@@ -192,7 +192,15 @@ class RunRepositoryMixin:
             started_at = ""
             if existing:
                 existing_output = loads_dict(existing["output_snapshot"])
-                for key in ("http_response_body", "http_response_reply_messages"):
+                # ``start_run`` owns the HTTP ingress identity.  The final graph
+                # snapshot must not erase it; otherwise the response middleware
+                # cannot attach the real end-to-end duration to the run.
+                for key in (
+                    "http_request_ingress_id",
+                    "http_request_started_at",
+                    "http_response_body",
+                    "http_response_reply_messages",
+                ):
                     if key in existing_output and key not in output_snapshot:
                         output_snapshot[key] = existing_output[key]
                 started_at = str(existing_output.get("runtime_started_at") or existing["created_at"] or "")
@@ -230,26 +238,29 @@ class RunRepositoryMixin:
                     started_at or finished_at,
                 ),
             )
-            for index, entry in enumerate(trace):
-                if not isinstance(entry, dict):
-                    continue
-                conn.execute(
+            trace_rows = [
+                (
+                    f"{request_id}_{index}",
+                    request_id,
+                    str(entry.get("node") or ""),
+                    dumps(entry.get("input_snapshot") or {}),
+                    dumps(entry.get("output_snapshot") or {}),
+                    dumps(entry.get("tool_calls") or []),
+                    int(entry.get("duration_ms") or 0),
+                    str(entry.get("error") or ""),
+                    str(entry.get("started_at") or finished_at),
+                )
+                for index, entry in enumerate(trace)
+                if isinstance(entry, dict)
+            ]
+            if trace_rows:
+                conn.executemany(
                     """
                     INSERT OR REPLACE INTO node_traces
                         (id, request_id, node_name, input_snapshot, output_snapshot, tool_calls, duration_ms, error, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        f"{request_id}_{index}",
-                        request_id,
-                        str(entry.get("node") or ""),
-                        dumps(entry.get("input_snapshot") or {}),
-                        dumps(entry.get("output_snapshot") or {}),
-                        dumps(entry.get("tool_calls") or []),
-                        int(entry.get("duration_ms") or 0),
-                        str(entry.get("error") or ""),
-                        str(entry.get("started_at") or utc_now_iso()),
-                    ),
+                    trace_rows,
                 )
 
     def update_run_http_response(self, *, request_id: str, response_body: dict[str, Any]) -> None:
@@ -566,6 +577,20 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
     stored = compact(output_snapshot)
     if not isinstance(stored, dict):
         stored = {}
+    # Generic compaction bounds dictionaries by insertion order.  HTTP timing
+    # fields are appended after the business snapshot and would otherwise be
+    # silently dropped once that snapshot grows beyond the generic key limit.
+    for key in (
+        "http_request_ingress_id",
+        "http_request_started_at",
+        "http_response_finished_at",
+        "http_duration_ms",
+        "http_response_body",
+        "http_response_reply_messages",
+        "runtime_processing_finished_at",
+    ):
+        if key in output_snapshot:
+            stored[key] = compact(output_snapshot[key])
     observability = output_snapshot.get("observability_v3")
     if isinstance(observability, dict) and observability:
         # The projection is already bounded and scrubbed by its builder. Do not

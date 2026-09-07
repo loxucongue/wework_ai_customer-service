@@ -275,6 +275,58 @@ def test_progressive_retrieval_weights_business_labels_above_body_noise() -> Non
     assert "metadata-fit" in {item["id"] for item in selected}
 
 
+def test_follow_sequence_plan_tolerates_invalid_script_catalog_response() -> None:
+    class NullScriptCatalog:
+        available = True
+
+        async def query_all_scripts(self) -> None:
+            return None
+
+    planner = PlanGenerator(
+        repository=object(),
+        model_client=None,
+        system_client=None,
+        customer_context_service=None,
+        precision_qa_playbook_service=None,
+        sop_reply_pack_service=None,
+        coze_client=None,
+        sales_strategy_service=None,
+        follow_knowledge_client=NullScriptCatalog(),
+    )
+    source_snapshot = {"follow_sequence_catalog": {"status": "ok"}}
+    result = asyncio.run(
+        planner._build_follow_sequence_plan(
+            source_snapshot=source_snapshot,
+            decision={
+                "sequence_match_scope": "checkpoint_type",
+                "checkpoint": {"name": "距离卡点", "evidence": "客户觉得远"},
+            },
+            sequence={
+                "id": "45",
+                "sequence_name": "距离卡点跟进",
+                "checkpoint_code": "cp9",
+                "checkpoint_name": "距离卡点",
+                "steps": [
+                    {
+                        "id": "node-1",
+                        "action_code": "act003",
+                        "action_name": "价值承接",
+                        "remark": "说明专程到店的价值",
+                    }
+                ],
+            },
+        )
+    )
+
+    assert result["should_create_plan"] is True
+    assert len(result["steps"]) == 1
+    assert source_snapshot["follow_sequence_selection"]["script_catalog_status"] == "error"
+    assert (
+        source_snapshot["follow_sequence_selection"]["script_catalog_reason"]
+        == "follow_script_catalog_invalid_response"
+    )
+
+
 def test_night_active_plan_keeps_all_nodes_inside_customer_40_minute_window() -> None:
     latest_customer = datetime(2026, 9, 7, 14, 10, tzinfo=timezone.utc)  # 22:10 Beijing
     now = latest_customer + timedelta(minutes=1)

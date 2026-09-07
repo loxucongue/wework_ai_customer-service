@@ -366,7 +366,7 @@ class PlanGenerator:
                 current = self.repository.get_first_day_outreach_run(
                     workflow_run_id,
                     include_related=False,
-                )
+                ) or {}
                 retry_count = int(current.get("retry_count") or 0)
                 retry_delay = _first_day_full_retry_delay_seconds(str(exc), retry_count)
                 terminal = {"blocked", "sent", "cancelled", "completed"}
@@ -793,8 +793,19 @@ class PlanGenerator:
         decision: dict[str, Any],
         sequence: dict[str, Any],
     ) -> dict[str, Any]:
+        if not isinstance(decision, dict):
+            raise RuntimeError("first_day_follow_sequence_decision_not_object")
+        if not isinstance(sequence, dict) or not _string(sequence.get("id")):
+            raise RuntimeError("first_day_follow_sequence_selected_sequence_unavailable")
+        raw_nodes = sequence.get("steps")
+        if not isinstance(raw_nodes, list) or not raw_nodes:
+            raise RuntimeError("first_day_follow_sequence_nodes_unavailable")
+        nodes = [dict(node) for node in raw_nodes if isinstance(node, dict)]
+        if len(nodes) != len(raw_nodes):
+            raise RuntimeError("first_day_follow_sequence_node_not_object")
+
         client = self.follow_knowledge_client
-        scripts_result = (
+        raw_scripts_result = (
             await client.query_all_scripts()
             if client is not None and bool(getattr(client, "available", False))
             else {
@@ -803,7 +814,21 @@ class PlanGenerator:
                 "items": [],
             }
         )
-        scripts = [dict(item) for item in scripts_result.get("items") or [] if isinstance(item, dict)]
+        scripts_result = (
+            dict(raw_scripts_result)
+            if isinstance(raw_scripts_result, dict)
+            else {
+                "status": "error",
+                "reason": "follow_script_catalog_invalid_response",
+                "items": [],
+            }
+        )
+        raw_scripts = scripts_result.get("items")
+        scripts = [
+            dict(item)
+            for item in (raw_scripts if isinstance(raw_scripts, list) else [])
+            if isinstance(item, dict)
+        ]
         checksum = sequence_checksum(sequence)
         sequence_match_scope = _string(decision.get("sequence_match_scope"))
         script_search_query = " ".join(
@@ -817,7 +842,7 @@ class PlanGenerator:
         )
         steps: list[dict[str, Any]] = []
         script_match_summary: list[dict[str, Any]] = []
-        for index, node in enumerate(sequence.get("steps") or [], start=1):
+        for index, node in enumerate(nodes, start=1):
             candidates = rank_follow_scripts_for_node(
                 scripts,
                 node=node,
@@ -866,7 +891,7 @@ class PlanGenerator:
                     "timing_reason": "采用平台序列节点时间",
                     "urgency_level": "normal",
                     "no_reply_action": (
-                        "end_plan" if index == len(sequence.get("steps") or []) else "advance_to_next_step"
+                        "end_plan" if index == len(nodes) else "advance_to_next_step"
                     ),
                     "no_reply_strategy": "客户仍未回复时按已发布序列进入下一节点",
                     "content_mode": "soft_conversion",
@@ -894,7 +919,7 @@ class PlanGenerator:
                         "checkpoint_code": _string(sequence.get("checkpoint_code")),
                         "checkpoint_name": _string(sequence.get("checkpoint_name")),
                         "checksum": checksum,
-                        "node_count": len(sequence.get("steps") or []),
+                        "node_count": len(nodes),
                         "match_scope": sequence_match_scope,
                     },
                     "follow_sequence_node": dict(node),
@@ -928,7 +953,7 @@ class PlanGenerator:
             "customer_checkpoint_name": _string((decision.get("checkpoint") or {}).get("name")),
             "sequence_match_scope": sequence_match_scope,
             "checksum": checksum,
-            "source_node_count": len(sequence.get("steps") or []),
+            "source_node_count": len(nodes),
             "script_catalog_status": _string(scripts_result.get("status")),
             "script_catalog_reason": _string(scripts_result.get("reason")),
             "script_search_query": script_search_query,

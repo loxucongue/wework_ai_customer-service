@@ -738,63 +738,10 @@ class ChatRuntime:
                 reply_messages=reply_message_dicts,
             )
             if _memory_persistence_allowed(final_state):
-                _record_authoritative_payment_fact(
-                    self._memory_store,
-                    final_state,
-                    customer_id=str(final_state.get("sales_contact_key") or ""),
-                )
-                _record_sent_case_images(
-                    self._memory_store,
-                    final_state,
-                    customer_id=str(final_state.get("sales_contact_key") or ""),
+                self._record_reply_memory(
+                    final_state=final_state,
                     reply_messages=reply_message_dicts,
                 )
-                _record_activity_intro_image(
-                    self._memory_store,
-                    final_state,
-                    customer_id=str(final_state.get("sales_contact_key") or ""),
-                    reply_messages=reply_message_dicts,
-                    send_mode="sync",
-                )
-                _record_visible_store_facts(
-                    self._memory_store,
-                    final_state,
-                    customer_id=str(final_state.get("sales_contact_key") or ""),
-                    reply_messages=reply_message_dicts,
-                )
-                try:
-                    _record_reply_model_observation(
-                        self._memory_store,
-                        final_state,
-                        customer_id=str(final_state.get("sales_contact_key") or ""),
-                    )
-                except Exception as exc:
-                    final_state.setdefault("warnings", []).append(
-                        {
-                            "node": "reply_model_observation",
-                            "message": "observation_persistence_failed",
-                            "detail": f"{type(exc).__name__}: {exc}",
-                        }
-                    )
-                try:
-                    _record_follow_knowledge_match(
-                        self._memory_store,
-                        final_state,
-                        customer_id=str(final_state.get("sales_contact_key") or ""),
-                    )
-                    _record_follow_knowledge_usage(
-                        self._memory_store,
-                        final_state,
-                        customer_id=str(final_state.get("sales_contact_key") or ""),
-                    )
-                except Exception as exc:
-                    final_state.setdefault("warnings", []).append(
-                        {
-                            "node": "follow_knowledge_usage",
-                            "message": "knowledge_usage_persistence_failed",
-                            "detail": f"{type(exc).__name__}: {exc}",
-                        }
-                    )
             if self._service_rule_data_service:
                 try:
                     final_state["strategy_data_callback"] = (
@@ -913,6 +860,78 @@ class ChatRuntime:
                 "conversation_id": conversation_id,
             },
         )
+
+    def _record_reply_memory(
+        self,
+        *,
+        final_state: AgentState,
+        reply_messages: list[dict[str, Any]],
+    ) -> None:
+        memory_store = self._memory_store
+        customer_id = str(final_state.get("sales_contact_key") or "")
+        if memory_store is None or not customer_id:
+            return
+        # All mutations below belong to the same visible reply.  Persisting
+        # them as one memory snapshot preserves their semantics while avoiding
+        # repeated remote load/save round trips on the synchronous response path.
+        with memory_store.write_batch(customer_id):
+            _record_authoritative_payment_fact(
+                memory_store,
+                final_state,
+                customer_id=customer_id,
+            )
+            _record_sent_case_images(
+                memory_store,
+                final_state,
+                customer_id=customer_id,
+                reply_messages=reply_messages,
+            )
+            _record_activity_intro_image(
+                memory_store,
+                final_state,
+                customer_id=customer_id,
+                reply_messages=reply_messages,
+                send_mode="sync",
+            )
+            _record_visible_store_facts(
+                memory_store,
+                final_state,
+                customer_id=customer_id,
+                reply_messages=reply_messages,
+            )
+            try:
+                _record_reply_model_observation(
+                    memory_store,
+                    final_state,
+                    customer_id=customer_id,
+                )
+            except Exception as exc:
+                final_state.setdefault("warnings", []).append(
+                    {
+                        "node": "reply_model_observation",
+                        "message": "observation_persistence_failed",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            try:
+                _record_follow_knowledge_match(
+                    memory_store,
+                    final_state,
+                    customer_id=customer_id,
+                )
+                _record_follow_knowledge_usage(
+                    memory_store,
+                    final_state,
+                    customer_id=customer_id,
+                )
+            except Exception as exc:
+                final_state.setdefault("warnings", []).append(
+                    {
+                        "node": "follow_knowledge_usage",
+                        "message": "knowledge_usage_persistence_failed",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
 
     def _save_state(self, conversation_id: str, state: AgentState) -> None:
         self._trace_logger.write_run(state)
