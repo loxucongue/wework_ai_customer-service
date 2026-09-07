@@ -11,29 +11,42 @@ export async function GET(request: NextRequest) {
   const authError = requireExternalApiKey(request);
   if (authError) return authError;
 
-  const [dashboardResponse, workerResponse] = await Promise.all([
+  const [dashboardResponse, workerRuntime] = await Promise.all([
     proxyAiPathsAdmin(`/admin/outreach/dashboard?${request.nextUrl.searchParams.toString()}`),
-    getAiPathsWorkerHealth().catch(() => null),
+    loadWorkerRuntime(),
   ]);
   if (!dashboardResponse.ok) return dashboardResponse;
 
   const dashboard = await dashboardResponse.json() as Record<string, unknown>;
-  let runtime: Record<string, unknown> = {};
-  let runtimeSource = "unavailable";
-  let runtimeError = "";
-  if (workerResponse?.ok) {
-    const health = await workerResponse.json() as Record<string, unknown>;
-    runtime = isRecord(health.silence_outreach_worker) ? health.silence_outreach_worker : {};
-    runtimeSource = "worker_service";
-  } else {
-    runtimeError = workerResponse ? `Worker API returned ${workerResponse.status}` : "Worker API unavailable";
-  }
   return jsonResponse({
     ...dashboard,
-    runtime,
-    runtime_source: runtimeSource,
-    runtime_error: runtimeError,
+    ...workerRuntime,
   });
+}
+
+async function loadWorkerRuntime() {
+  try {
+    const response = await getAiPathsWorkerHealth();
+    if (!response.ok) {
+      return {
+        runtime: {},
+        runtime_source: "unavailable",
+        runtime_error: `Worker API returned ${response.status}`,
+      };
+    }
+    const health = await response.json() as Record<string, unknown>;
+    return {
+      runtime: isRecord(health.silence_outreach_worker) ? health.silence_outreach_worker : {},
+      runtime_source: "worker_service",
+      runtime_error: "",
+    };
+  } catch {
+    return {
+      runtime: {},
+      runtime_source: "unavailable",
+      runtime_error: "Worker API unavailable",
+    };
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -18,7 +18,6 @@ import {
   MessageCircle,
   RefreshCw,
   Route,
-  Send,
   Settings2,
   ShieldCheck,
   UserRoundCheck,
