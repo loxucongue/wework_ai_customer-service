@@ -19,6 +19,7 @@ export type CustomerIdentity = {
   request_id?: string;
   conversation_id?: string;
   customer_id?: string;
+  platform_customer_id?: string;
   customer_add_wechat_id?: string;
   external_userid?: string;
   corp_id?: string;

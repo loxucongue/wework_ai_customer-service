@@ -114,7 +114,7 @@ def build_reply_services(settings: Settings) -> ReplyServices:
     platform_reply_coordinator = PlatformReplyCoordinator(settings)
     ai_sales_policy_service = AiSalesPolicyService(settings)
     sales_strategy_service = SalesStrategyService(settings)
-    customer_context_service = CustomerContextService(platform_agent_client)
+    customer_context_service = CustomerContextService(platform_agent_client, repository)
     store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
     customer_store_knowledge_service = CustomerStoreKnowledgeService(
         platform_agent_client, store_snapshot_service
@@ -230,7 +230,7 @@ def build_control_services(settings: Settings) -> ControlServices:
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
     ai_sales_policy_service = AiSalesPolicyService(settings)
     sales_strategy_service = SalesStrategyService(settings)
-    customer_context_service = CustomerContextService(platform_agent_client)
+    customer_context_service = CustomerContextService(platform_agent_client, repository)
     store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
     sop_reply_pack_service = SopReplyPackService(settings)
     precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
@@ -302,7 +302,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
     sales_strategy_service = SalesStrategyService(settings)
     follow_knowledge_client = FollowKnowledgeClient(settings)
-    customer_context_service = CustomerContextService(platform_agent_client)
+    customer_context_service = CustomerContextService(platform_agent_client, repository)
     store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
     sop_reply_pack_service = SopReplyPackService(settings)
     precision_qa_playbook_service = PrecisionQaPlaybookService(settings)

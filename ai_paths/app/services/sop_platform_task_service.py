@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+from app.customer_identity import IdentityContractError, customer_identity_from_mapping
 from app.policies.business_rules import sop_platform_business_facts_for_model
 from app.services.payment_collection import PAYMENT_COLLECTION_UNIT_AMOUNT
 from app.services.v3_sop_execution_service import is_platform_auto_opening_message
@@ -3684,9 +3685,7 @@ def _platform_duplicate_send_once_key(platform_task: dict[str, Any]) -> str:
     if not messages:
         return ""
     identity = _task_identity(platform_task)
-    if not identity["corp_id"] or not identity["wechat"] or not (
-        identity["external_userid"] or identity["customer_id"]
-    ):
+    if not identity["corp_id"] or not identity["wechat"] or not identity["external_userid"]:
         return ""
     scheduled_epoch = _task_scheduled_epoch(platform_task) or time.time()
     scheduled_day = datetime.fromtimestamp(scheduled_epoch, tz=_BEIJING_TZ).strftime("%Y%m%d")
@@ -3696,7 +3695,7 @@ def _platform_duplicate_send_once_key(platform_task: dict[str, Any]) -> str:
         [
             identity["corp_id"].lower(),
             identity["wechat"].lower(),
-            (identity["external_userid"] or identity["customer_id"]).lower(),
+            identity["external_userid"].lower(),
         ]
     )
     task_type = _task_type(platform_task) or "unknown"
@@ -4070,20 +4069,17 @@ def _platform_message_error(platform_task: dict[str, Any]) -> str:
 
 
 def _task_identity(task: dict[str, Any]) -> dict[str, str]:
-    external = str(
-        task.get("customer_wechat_id")
-        or task.get("customerWechatId")
-        or task.get("external_userid")
-        or task.get("customerWechat")
-        or ""
-    ).strip()
-    return {
-        "corp_id": str(task.get("corp_id") or task.get("corpId") or task.get("wecomCorpId") or "").strip(),
-        "customer_id": str(task.get("customerId") or task.get("customer_id") or external).strip(),
-        "external_userid": external,
-        "user_id": str(task.get("user_wechat_id") or task.get("userWechatId") or task.get("user_id") or "").strip(),
-        "wechat": str(task.get("user_wechat") or task.get("userWechat") or task.get("wechat") or "").strip(),
-    }
+    try:
+        identity = customer_identity_from_mapping(task, allow_empty_platform_customer_id=True)
+        return identity.as_legacy_dict()
+    except IdentityContractError as exc:
+        identity_values = dict(task)
+        for key in ("platform_customer_id", "platformCustomerId", "customer_id", "customerId"):
+            identity_values.pop(key, None)
+        identity = customer_identity_from_mapping(identity_values, allow_empty_platform_customer_id=True)
+        values = identity.as_legacy_dict()
+        values["identity_contract_error"] = str(exc)
+        return values
 
 
 def _task_id(task: dict[str, Any]) -> str:

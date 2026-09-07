@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 LOGICAL_TABLES = (
     "conversations",
+    "customer_identity_links",
     "messages",
     "runs",
     "node_traces",

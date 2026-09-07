@@ -47,7 +47,6 @@ class CustomerStoreKnowledgeService:
             provided_identity.get("platform_customer_id")
             or customer.get("id")
             or context_identity.get("platform_customer_id")
-            or (customer_context or {}).get("customer_id")
             or ctx.get("platform_customer_id")
             or ""
         ).strip()
@@ -87,7 +86,6 @@ class CustomerStoreKnowledgeService:
         scoped_context = dict(ctx)
         scoped_context["input_customer_id"] = ctx.get("customer_id")
         scoped_context["platform_customer_id"] = platform_customer_id
-        scoped_context["customer_id"] = platform_customer_id
         scoped_context["customer_add_wechat_id"] = customer_add_wechat_id
         rows, scope_cache_hit, scope_error, scope_cache_status = self._load_scope_rows(
             platform_customer_id=platform_customer_id,

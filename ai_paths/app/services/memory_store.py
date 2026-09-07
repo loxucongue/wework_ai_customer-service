@@ -69,16 +69,17 @@ class CustomerMemoryStore:
         self.repository = repository
 
     def load(self, customer_id: str) -> dict[str, Any]:
+        """Load by sales_contact_key; the argument name is retained for API compatibility."""
         if self.repository:
             memory = self.repository.load_memory(customer_id)
             if memory:
-                return memory
+                return self._with_scope_key(memory, customer_id)
         path = self._path(customer_id)
         if not path.exists():
             return self._empty(customer_id)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else self._empty(customer_id)
+            return self._with_scope_key(data, customer_id) if isinstance(data, dict) else self._empty(customer_id)
         except (OSError, json.JSONDecodeError):
             return self._empty(customer_id)
 
@@ -130,6 +131,7 @@ class CustomerMemoryStore:
             return self.load(customer_id)
         data = self.load(customer_id)
         data["customer_id"] = customer_id
+        data["sales_contact_key"] = customer_id
         data["updated_at"] = self._now()
         if profile_update:
             self._merge_profile(data, profile_update)
@@ -731,11 +733,17 @@ class CustomerMemoryStore:
     def _empty(customer_id: str) -> dict[str, Any]:
         return {
             "customer_id": customer_id,
+            "sales_contact_key": customer_id,
             "portrait": {},
             "basic_info": {},
             "lifecycle_stage": "",
             "history_events": [],
         }
+
+    @staticmethod
+    def _with_scope_key(memory: dict[str, Any], sales_contact_key: str) -> dict[str, Any]:
+        memory["sales_contact_key"] = sales_contact_key
+        return memory
 
     @staticmethod
     def _now() -> str:

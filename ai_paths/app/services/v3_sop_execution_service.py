@@ -2571,14 +2571,11 @@ def _pack_category(pack: dict[str, Any]) -> str:
 def _send_once_key(identity: dict[str, str], sop_pack_id: str) -> str:
     pack_id = _string(sop_pack_id).lower()
     external_userid = _string(identity.get("external_userid")).lower()
-    customer_id = _string(identity.get("customer_id")).lower()
-    customer_key = external_userid or customer_id
     wechat = _string(identity.get("wechat")).lower()
-    if not pack_id or not customer_key or not wechat:
+    if not pack_id or not external_userid or not wechat:
         return ""
     corp_id = _string(identity.get("corp_id")).lower()
-    customer_kind = "external" if external_userid else "customer"
-    return f"sop_pack:{pack_id}|corp:{corp_id}|wechat:{wechat}|{customer_kind}:{customer_key}"
+    return f"sop_pack:{pack_id}|corp:{corp_id}|wechat:{wechat}|external:{external_userid}"
 
 
 def _sent_categories(repository: Any, identity: dict[str, str], *, sent_before: str = "") -> list[str]:
@@ -2599,13 +2596,19 @@ def _sent_categories(repository: Any, identity: dict[str, str], *, sent_before: 
 
 def _chat_identity(request: ChatRequest, request_context: dict[str, Any]) -> dict[str, str]:
     external_userid = _string(request_context.get("external_userid")) or _string(request.external_userid)
-    customer_id = _string(request_context.get("customer_id")) or _string(request.customer_id)
+    customer_id = (
+        _string(request_context.get("platform_customer_id"))
+        or _string(request.platform_customer_id)
+        or _string(request_context.get("customer_id"))
+        or _string(request.customer_id)
+    )
     return {
         "corp_id": _string(request_context.get("corp_id")) or _string(request.corp_id),
         "user_id": _string(request_context.get("user_id")) or _string(request.user_id),
         "wechat": _string(request_context.get("wechat")) or _string(request.wechat),
         "external_userid": external_userid,
-        "customer_id": external_userid or customer_id,
+        "platform_customer_id": customer_id,
+        "customer_id": customer_id,
     }
 
 

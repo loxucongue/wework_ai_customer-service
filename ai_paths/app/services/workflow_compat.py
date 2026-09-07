@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.customer_identity import customer_identity_from_mapping, missing_managed_identity_fields
 from app.schemas import ChatRequest, ChatResponse
 from app.services.payment_collection import payment_collection_content
 
@@ -46,24 +47,32 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
         message_summary = _string(messages)
         conversation_history = [f"对话摘要: {message_summary}"] if message_summary else []
 
-    customer_id = (
-        _string(parameters.get("customer_id"))
-        or _string(parameters.get("external_userid"))
-        or _string(request_context.get("customer_id"))
+    identity_values = dict(request_context)
+    identity_values.update({key: value for key, value in parameters.items() if value not in (None, "")})
+    identity = customer_identity_from_mapping(
+        identity_values,
+        allow_synthetic=bool(request_context.get("test_isolated")),
     )
-    if not customer_id:
-        raise ValueError("missing required parameter: customer_id")
+    missing_identity = missing_managed_identity_fields(identity)
+    if missing_identity:
+        raise ValueError(f"missing managed identity fields: {', '.join(missing_identity)}")
+    platform_user_id = _int_or_none(identity.platform_user_id)
+    if platform_user_id is None:
+        raise ValueError("invalid managed identity field: platform_user_id")
+    request_context.update(identity.as_legacy_dict())
+    request_context["input_customer_id"] = _string(parameters.get("customer_id") or parameters.get("customerId"))
 
     return ChatRequest(
         content=content,
-        customer_id=customer_id,
-        corp_id=_string(parameters.get("corp_id")) or customer_id,
+        customer_id=identity.platform_customer_id,
+        platform_customer_id=identity.platform_customer_id,
+        corp_id=identity.corp_id,
         conversation_history=conversation_history,
         file_image=image or None,
-        user_id=_int_or_none(parameters.get("user_id")),
-        wechat=_string(parameters.get("wechat")) or None,
-        external_userid=_string(parameters.get("external_userid")) or None,
-        customer_add_wechat_id=_string(parameters.get("customer_add_wechat_id")) or None,
+        user_id=platform_user_id,
+        wechat=identity.wechat or None,
+        external_userid=identity.external_userid or None,
+        customer_add_wechat_id=identity.customer_add_wechat_id or None,
         confirmed_store_id=_string(parameters.get("confirmed_store_id")) or None,
         confirmed_store_name=_string(parameters.get("confirmed_store_name")) or None,
         store_id=_string(parameters.get("store_id")) or None,

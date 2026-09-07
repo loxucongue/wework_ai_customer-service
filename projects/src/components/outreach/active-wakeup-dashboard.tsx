@@ -575,14 +575,14 @@ function CustomerContext({ detail, source }: { detail: RunDetail; source: QueueI
   const detailTasks = arrayOfRecords(detail.tasks);
   const taskRefs = source.task_refs?.length ? source.task_refs : detailTasks.map((task) => ({ task_id: text(task.id), step_index: number(task.step_index), status: text(task.status), system_msgid: text(task.system_msgid) }));
   const identifiers = [
-    ["客户 ID", source.customer_id],
+    ["任务原始客户 ID", source.customer_id],
     ["外部联系人 ID", source.external_userid],
     ["会话 ID", source.conversation_id || text(snapshot.conversation_id) || text(record(snapshot.trigger_context).conversation_id)],
-    ["客户加微 ID", source.customer_add_wechat_id],
+    ["加微关系 ID", source.customer_add_wechat_id],
     ["平台客户 ID", source.platform_customer_id],
-    ["企业 ID", source.corp_id],
-    ["接待人员 ID", source.user_id],
-    ["企微号", source.wechat],
+    ["企微企业 ID", source.corp_id],
+    ["平台接待人员 ID", source.user_id],
+    ["接待企微账号", source.wechat],
     ["唤醒运行 ID", source.workflow_run_id],
     ["计划 ID", source.plan_id],
   ] as Array<[string, string | undefined]>;

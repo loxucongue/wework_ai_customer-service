@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.services.storage.conversation_repository import ConversationRepositoryMixin
 from app.services.storage.customer_record_admin_repository import CustomerRecordAdminRepositoryMixin
+from app.services.storage.customer_identity_repository import CustomerIdentityRepositoryMixin
 from app.services.storage.memory_repository import MemoryRepositoryMixin
 from app.services.storage.message_delivery_repository import MessageDeliveryRepositoryMixin
 from app.services.storage.outreach_dashboard_repository import OutreachDashboardRepositoryMixin
@@ -16,6 +17,7 @@ from app.services.storage.v3_strategy_analytics_repository import V3StrategyAnal
 
 class AppRepository(
     ConversationRepositoryMixin,
+    CustomerIdentityRepositoryMixin,
     CustomerRecordAdminRepositoryMixin,
     MemoryRepositoryMixin,
     MessageDeliveryRepositoryMixin,

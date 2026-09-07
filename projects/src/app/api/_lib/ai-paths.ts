@@ -2,7 +2,8 @@ import { NextRequest } from "next/server";
 
 export type ChatRequestBody = {
   content: string;
-  customer_id: string;
+  customer_id?: string;
+  platform_customer_id?: string;
   corp_id?: string;
   conversation_history?: string[];
   conversation_history_count?: number;
@@ -80,8 +81,35 @@ export function validateChatRequest(body: ChatRequestBody) {
   if (!body.content && !body.file_image) {
     return jsonResponse({ error: "content or file_image is required" }, 400);
   }
-  if (!body.customer_id) {
-    return jsonResponse({ error: "customer_id is required" }, 400);
+  const platformCustomerId = body.platform_customer_id || body.customer_id;
+  if (!platformCustomerId) {
+    return jsonResponse({ error: "platform_customer_id is required" }, 400);
+  }
+  if (body.platform_customer_id && body.customer_id && body.platform_customer_id !== body.customer_id) {
+    return jsonResponse({ error: "platform_customer_id conflicts with customer_id" }, 400);
+  }
+  if (
+    platformCustomerId.toLowerCase().startsWith("wm") ||
+    (body.external_userid && platformCustomerId === body.external_userid)
+  ) {
+    return jsonResponse({ error: "platform_customer_id must not contain an external_userid" }, 400);
+  }
+  return null;
+}
+
+function validateManagedIdentity(body: ChatRequestBody) {
+  const missing = [
+    ["corp_id", body.corp_id],
+    ["wechat", body.wechat],
+    ["external_userid", body.external_userid],
+    ["platform_customer_id", body.platform_customer_id || body.customer_id],
+    ["platform_user_id", body.user_id],
+  ].filter(([, value]) => value === undefined || value === null || String(value).trim() === "");
+  if (missing.length) {
+    return jsonResponse(
+      { error: "managed request identity is incomplete", missing: missing.map(([name]) => name) },
+      400
+    );
   }
   return null;
 }
@@ -90,7 +118,7 @@ export async function parseWorkflowCompatibleRequest(request: NextRequest) {
   try {
     const body = (await request.json()) as WorkflowCompatibleBody | Record<string, unknown>;
     const normalized = normalizeWorkflowCompatibleBody(body);
-    const error = validateChatRequest(normalized);
+    const error = validateChatRequest(normalized) || validateManagedIdentity(normalized);
     return { body: normalized, error };
   } catch {
     return {
@@ -172,20 +200,60 @@ export function normalizeWorkflowCompatibleBody(
   }));
 
   const customerId =
+    stringValue(parameters.platform_customer_id) ||
+    stringValue(parameters.platformCustomerId) ||
     stringValue(parameters.customer_id) ||
-    stringValue(parameters.external_userid) ||
+    stringValue(parameters.customerId) ||
+    stringValue(requestContext.platform_customer_id) ||
     stringValue(requestContext.customer_id);
+  const externalUserid =
+    stringValue(parameters.external_userid) ||
+    stringValue(parameters.customer_wechat_id) ||
+    stringValue(parameters.customerWechatId) ||
+    stringValue(parameters.customerWechat) ||
+    stringValue(requestContext.external_userid) ||
+    stringValue(requestContext.customer_wechat_id) ||
+    stringValue(requestContext.customerWechatId);
+  const corpId =
+    stringValue(parameters.corp_id) ||
+    stringValue(parameters.corpId) ||
+    stringValue(parameters.wecomCorpId) ||
+    stringValue(requestContext.corp_id) ||
+    stringValue(requestContext.corpId) ||
+    stringValue(requestContext.wecomCorpId);
+  const wechat =
+    stringValue(parameters.wechat) ||
+    stringValue(parameters.user_wechat) ||
+    stringValue(parameters.userWechat) ||
+    stringValue(requestContext.wechat) ||
+    stringValue(requestContext.user_wechat) ||
+    stringValue(requestContext.userWechat);
+  const userId =
+    numberValue(parameters.user_id) ??
+    numberValue(parameters.user_wechat_id) ??
+    numberValue(parameters.userWechatId) ??
+    numberValue(requestContext.platform_user_id) ??
+    numberValue(requestContext.user_id) ??
+    numberValue(requestContext.user_wechat_id) ??
+    numberValue(requestContext.userWechatId);
 
   return {
     content,
     customer_id: customerId,
-    corp_id: stringValue(parameters.corp_id) || customerId,
+    platform_customer_id: customerId,
+    corp_id: corpId,
     conversation_history: conversationHistory,
     file_image: image || undefined,
-    user_id: numberValue(parameters.user_id),
-    wechat: stringValue(parameters.wechat) || undefined,
-    external_userid: stringValue(parameters.external_userid) || undefined,
-    customer_add_wechat_id: stringValue(parameters.customer_add_wechat_id) || undefined,
+    user_id: userId,
+    wechat: wechat || undefined,
+    external_userid: externalUserid || undefined,
+    customer_add_wechat_id:
+      stringValue(parameters.customer_add_wechat_id) ||
+      stringValue(parameters.customerAddWechatId) ||
+      stringValue(parameters.customerWechatRelationId) ||
+      stringValue(requestContext.customer_add_wechat_id) ||
+      stringValue(requestContext.customerAddWechatId) ||
+      undefined,
     confirmed_store_id: stringValue(parameters.confirmed_store_id) || undefined,
     confirmed_store_name: stringValue(parameters.confirmed_store_name) || undefined,
     store_id: stringValue(parameters.store_id) || undefined,
@@ -224,8 +292,9 @@ async function callAiPathsV3BackendPath(body: ChatRequestBody, token: string) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const payload = {
     content: body.content || "",
-    customer_id: body.customer_id,
-    corp_id: body.corp_id || process.env.DEFAULT_CORP_ID || body.customer_id || "",
+    customer_id: body.platform_customer_id || body.customer_id,
+    platform_customer_id: body.platform_customer_id || body.customer_id,
+    corp_id: body.corp_id || process.env.DEFAULT_CORP_ID || "",
     conversation_history: body.conversation_history || [],
     conversation_history_count: body.conversation_history_count ?? body.conversation_history?.length ?? 0,
     file_image: body.file_image || null,

@@ -243,7 +243,7 @@ function FilterPanel({ filters, onChange, onApply, onClear }: {
         <FilterField label="结束时间"><Input type="datetime-local" value={filters.started_to} onChange={(event) => update("started_to", event.target.value)} /></FilterField>
         <FilterField label="企微号"><Input value={filters.wechat} onChange={(event) => update("wechat", event.target.value)} placeholder="如 sl8003" /></FilterField>
         <FilterField label="显示数量"><Input value={filters.limit} onChange={(event) => update("limit", event.target.value)} inputMode="numeric" /></FilterField>
-        <FilterField label="客户 ID"><Input value={filters.customer_id} onChange={(event) => update("customer_id", event.target.value)} /></FilterField>
+        <FilterField label="平台客户 ID"><Input value={filters.customer_id} onChange={(event) => update("customer_id", event.target.value)} /></FilterField>
         <FilterField label="会话 ID"><Input value={filters.conversation_id} onChange={(event) => update("conversation_id", event.target.value)} /></FilterField>
         <FilterField label="请求状态"><Select value={filters.run_status} onChange={(value) => update("run_status", value)} options={[["", "全部"], ["success", "正常"], ["degraded", "降级"], ["fallback", "兜底"], ["failed", "失败"], ["delivery_failed", "发送异常"]]} /></FilterField>
         <FilterField label="决策状态"><Select value={filters.decision_status} onChange={(value) => update("decision_status", value)} options={[["", "全部"], ["valid", "正常"], ["degraded", "降级"]]} /></FilterField>
@@ -381,12 +381,12 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
 function IdentitySection({ identity }: { identity: CustomerIdentity }) {
   const [copiedKey, setCopiedKey] = useState("");
   const fields: Array<[keyof CustomerIdentity, string]> = [
-    ["customer_id", "客户 ID"],
-    ["customer_add_wechat_id", "客户加微 ID"],
+    ["platform_customer_id", "平台客户 ID"],
+    ["customer_add_wechat_id", "加微关系 ID"],
     ["external_userid", "外部联系人 ID"],
-    ["wechat", "企微 ID / 账号"],
-    ["corp_id", "企业 ID"],
-    ["user_id", "接待人员 ID"],
+    ["wechat", "接待企微账号"],
+    ["corp_id", "企微企业 ID"],
+    ["user_id", "平台接待人员 ID"],
     ["conversation_id", "会话 ID"],
     ["request_id", "请求 ID"],
   ];
@@ -661,6 +661,10 @@ function identityFromRun(run: RunItem): CustomerIdentity {
     request_id: run.request_id,
     conversation_id: run.conversation_id,
     customer_id: run.customer_id || stringField(run.input_snapshot?.customer_id),
+    platform_customer_id:
+      stringField(run.input_snapshot?.platform_customer_id) ||
+      run.customer_id ||
+      stringField(run.input_snapshot?.customer_id),
     customer_add_wechat_id: stringField(run.input_snapshot?.customer_add_wechat_id),
     external_userid: stringField(run.input_snapshot?.external_userid),
     corp_id: stringField(run.input_snapshot?.corp_id),

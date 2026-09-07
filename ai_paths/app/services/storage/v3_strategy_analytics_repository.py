@@ -132,10 +132,10 @@ class V3StrategyAnalyticsRepositoryMixin:
         if external_userid:
             identity_clauses.append("u.external_userid=?")
             params.append(external_userid)
-        if customer_id:
+        elif customer_id:
             identity_clauses.append("u.customer_id=?")
             params.append(customer_id)
-        clauses.append(f"({' OR '.join(identity_clauses)})")
+        clauses.append(identity_clauses[0])
         if _text(exclude_request_id):
             clauses.append("u.request_id<>?")
             params.append(_text(exclude_request_id))
@@ -909,7 +909,7 @@ def _previous_usage_for_event(conn: Any, event: dict[str, Any]) -> Any | None:
     if external_userid:
         identity_clauses.append("external_userid=?")
         identity_params.append(external_userid)
-    if customer_id:
+    elif customer_id:
         identity_clauses.append("customer_id=?")
         identity_params.append(customer_id)
     return conn.execute(
@@ -919,7 +919,7 @@ def _previous_usage_for_event(conn: Any, event: dict[str, Any]) -> Any | None:
         FROM v3_strategy_usage_events u
         LEFT JOIN v3_strategy_outcome_events o ON o.usage_event_id=u.id
         WHERE u.sales_contact_key=? AND u.corp_id=? AND u.wechat=?
-          AND ({' OR '.join(f'u.{clause}' for clause in identity_clauses)}) AND u.request_id<>?
+          AND u.{identity_clauses[0]} AND u.request_id<>?
           AND u.customer_turn_eligible=1 AND u.decision_status IN ('ok', 'degraded')
           AND COALESCE(o.next_usage_event_id, '')=''
         ORDER BY u.occurred_at DESC, u.created_at DESC
@@ -1642,7 +1642,7 @@ def _validated_contact_boundary(
     wechat = _text(wechat)
     external_userid = _text(external_userid)
     customer_id = _text(customer_id)
-    if not corp_id or not wechat or not (external_userid or customer_id):
+    if not corp_id or not wechat or not external_userid:
         return None
     return corp_id, wechat, external_userid, customer_id
 

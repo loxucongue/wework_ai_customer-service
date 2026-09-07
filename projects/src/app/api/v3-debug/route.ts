@@ -9,6 +9,7 @@ import {
 const COZE_MAIN_WORKFLOW_ID = "7639623828015988742";
 const FRONTEND_TEST_WECHAT_CONTEXT = {
   customer_id: "21325693",
+  platform_customer_id: "21325693",
   corp_id: "ww943af61cd5d2afe4",
   user_id: 7294,
   wechat: "CS001",
@@ -40,7 +41,9 @@ function withFrontendTestContext(body: ChatRequestBody): ChatRequestBody {
   const requestContext = {
     ...(body.request_context || {}),
     source_protocol: body.request_context?.source_protocol || "frontend-test",
-    conversation_id: body.request_context?.conversation_id || body.customer_id,
+    conversation_id:
+      body.request_context?.conversation_id ||
+      `frontend-test:${body.platform_customer_id || body.customer_id}`,
     raw_message_count:
       body.request_context?.raw_message_count ||
       String((body.conversation_history || []).length + 1),
@@ -77,9 +80,10 @@ async function callCozeMainWorkflow(body: ChatRequestBody) {
 
   const parameters: Record<string, unknown> = {
     content: body.content,
-    customer_id: body.customer_id,
+    customer_id: body.platform_customer_id || body.customer_id,
+    platform_customer_id: body.platform_customer_id || body.customer_id,
     conversation_history: body.conversation_history || [],
-    corp_id: body.corp_id || body.customer_id || "",
+    corp_id: body.corp_id || "",
   };
 
   if (body.file_image) {
