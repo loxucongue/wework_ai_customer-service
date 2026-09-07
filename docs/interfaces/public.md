@@ -115,6 +115,8 @@
 
 - `GET /admin/outreach/first-day-settings` 返回的关键运行信息包括启用状态、沉默分钟数、企微范围和启用水位。
 - 修改设置会影响主动触达候选范围，属于有运行副作用的管理操作；全账号空白名单不等于跳过 AI/人工、安全、退订、订单和最新消息门禁。
+- `GET /admin/outreach/first-day-runs` 的每条记录增加可选 `business_summary`，包含最近客户消息摘要、客户当前需要、沉默卡点、场景顺序和可用/计划媒体数量。历史运行缺少字段时返回空值，不把“未记录”伪装成 0。
+- `GET /admin/outreach/first-day-runs/{workflow_run_id}` 增加可选 `observability_view`，按 `decision`、`customer_context`、`materials`、`workflow_nodes` 和 `data_availability` 组织现有留存数据。素材步骤区分候选、可用、计划附加和已发送；节点包含脱敏输入输出、模型、Prompt 版本、耗时和重试信息。该视图只从当时快照派生，不返回素材 URL、不重新查询当前目录、不延长原始数据留存期。
 
 ## 健康检查
 
