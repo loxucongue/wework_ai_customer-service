@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T14:49:03+08:00`
+- verified_at: `2026-09-07T15:34:10+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-143217-71a18d7d`
-- git commit: `71a18d7d153083dc95e40470e030a48ce4c29f0b`
+- release: `ai-paths-unified-20260907-152202-b4dfc184`
+- git commit: `b4dfc184ea635afeb8f62dd881df30b1946dd016`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `74eee9d04bedb99c0dc25ef2aaefab2cd96d2d8ef40fdf500a8ff838fd4ae4c0`
@@ -19,7 +19,7 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-143217-71a18d7d`；主动唤醒队列客户与任务 ID 明细已启用 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-152202-b4dfc184`；AI 运行日志已显示接口总耗时与客户/接待身份 |
 
 三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
@@ -43,8 +43,8 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务前的 clean release `ai-paths-unified-20260907-140801-808a801b`。
-- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-140801-808a801b`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向本任务前的 clean release `ai-paths-unified-20260907-143217-71a18d7d`。
+- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-143217-71a18d7d`。
 - 数据库已迁移到 `20260907_01`，只增加序列采用、话术采用和采用详情已观测三个字段；旧代码会忽略这些字段，不需要破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
@@ -71,5 +71,8 @@
 - 主动唤醒看板热态现场查询约 6.2 秒。已修复后台统计较慢时 Worker 健康响应体在等待期间过期、导致前端错误显示不可用并返回 500 的问题；修复后接口返回 `runtime_source=worker_service`。该看板只读，不触发扫描、计划、发送、重试或平台写入。
 - 本次发布 control、reply、worker 和前端均为 clean `main@71a18d7d`，四个 unit 为 active 且 `NRestarts=0`，三个后端 `/health` 的 release/commit 一致。主动唤醒接口热态实测约 6.46 秒；后端 345 条回归、前端类型/Lint/生产构建以及桌面/390px 手机真实浏览器验收通过。本次只扩展只读观测，不修改候选、计划、发送或 SOP 运行逻辑。
 - 生产根分区使用率为 74%、剩余约 10 GB；本次前端 release 通过只读硬链接复用未变更的依赖文件，并已清理自身 `/tmp`。后续仍按发布保留规范维护当前版和已验证回滚版。
+- AI 运行日志现在从 V3 接口进入 Reply 服务时开始计时，到最后一个 HTTP 响应体成功发送后结束；列表和详情的“接口总耗时”优先使用该口径，同时保留模型图耗时供排障。发布后的真实请求已显示 8.79～10.2 秒完整耗时；发布前历史请求不补造新口径。
+- 日志详情新增客户 ID、客户加微 ID、外部联系人 ID、企微 ID/账号、企业 ID、接待人员 ID、会话 ID、请求 ID，并支持逐项复制。字段只取本轮请求留存，不查询当前平台状态补历史；上游未传入时显示“未记录”。桌面 1440px 和手机 390px 真实浏览器验收通过。
+- 本次发布 control、reply、worker 和前端均为 clean `main@b4dfc184`，四个 unit 为 active 且 `NRestarts=0`，三个后端 `/health` 的 release/commit 一致；后端 348 条回归、前端类型/Lint/生产构建通过。无数据库迁移，不修改 V3 回复、策略、发送或主动唤醒逻辑。生产根分区使用率为 76%，剩余约 9.3 GB。
 
 每次发布任务都必须重新记录 main SHA、三个角色 release/健康、数据库、worker/outbox、Nginx 和回滚点。超过核验时间后，本页只能作为线索，不能替代现场事实。
