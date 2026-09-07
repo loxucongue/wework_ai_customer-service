@@ -84,6 +84,10 @@ FIRST_DAY_STALE_RUNNING_RETRY_MINUTES = 15
 FIRST_DAY_AI_MODE_STATUS_MAX_RETRIES = 3
 FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS = {
     "customer_never_spoke",
+    # A provisional pre-refresh fingerprint may point at this duplicate row
+    # while the authoritative row is a recoverable failed run.  Recheck once;
+    # the post-refresh branch will either resume that run or block again.
+    "authoritative_fingerprint_already_logged",
 }
 FIRST_DAY_RECOVERABLE_FAILED_RUN_REASONS = {
     "model_node_failed",

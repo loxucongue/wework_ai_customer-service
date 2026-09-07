@@ -351,6 +351,21 @@ def test_platform_conversation_sync_soft_block_retries_only_once() -> None:
         latest_customer_message_at="2026-09-05T09:42:00+00:00",
     ) == ""
 
+    duplicate = {
+        "status": "blocked",
+        "reason_code": "authoritative_fingerprint_already_logged",
+        "retry_count": 0,
+    }
+    assert _first_day_existing_run_retry_reason(
+        duplicate,
+        latest_customer_message_at="2026-09-05T09:42:00+00:00",
+    ) == "soft_block_retry:authoritative_fingerprint_already_logged"
+    duplicate["retry_count"] = 1
+    assert _first_day_existing_run_retry_reason(
+        duplicate,
+        latest_customer_message_at="2026-09-05T09:42:00+00:00",
+    ) == ""
+
 
 def test_failed_model_cycle_can_recover_after_model_configuration_is_fixed() -> None:
     existing = {
