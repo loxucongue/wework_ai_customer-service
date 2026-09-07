@@ -1649,16 +1649,72 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         "handoff_by_system_rule",
     }
     closing = decision.get("closing_decision") if isinstance(decision.get("closing_decision"), dict) else {}
+    primary_task = (
+        decision.get("primary_task")
+        if isinstance(decision.get("primary_task"), dict)
+        else {}
+    )
     active_cardpoint = (
         str(cardpoint.get("state") or "") in {"active", "repeated"}
         or str(closing.get("customer_state") or "") == "new_blocker"
     )
+    terminal_or_safety_task = str(primary_task.get("type") or "") in {
+        "risk",
+        "human_takeover",
+        "hard_stop",
+        "transaction_terminal",
+    } or str(closing.get("customer_state") or "") in {
+        "hard_stop",
+        "transaction_terminal_or_handoff",
+    }
+    reply_action = _reply_action_from_payload(payload)
+    messages = payload.get("reply_messages") if isinstance(payload.get("reply_messages"), list) else []
     if not explicit_exit and not pause_marketing and not active_cardpoint:
+        question_count = sum(
+            str(item.get("content") or "").count("？")
+            + str(item.get("content") or "").count("?")
+            for item in messages
+            if isinstance(item, dict) and str(item.get("type") or "").strip() == "text"
+        )
+        if question_count > 1:
+            raise ValueError("reply_visible_question_limit_exceeded")
+        if reply_action == "ask" and question_count == 0:
+            raise ValueError("reply_action_ask_requires_visible_question")
+        structured = _structured_facts(state)
+        store_resolution = (
+            structured.get("store_resolution_fact")
+            if isinstance(structured.get("store_resolution_fact"), dict)
+            else {}
+        )
+        destination = (
+            store_resolution.get("destination_resolution")
+            if isinstance(store_resolution.get("destination_resolution"), dict)
+            else {}
+        )
+        location_evidence = (
+            store_resolution.get("location_evidence")
+            if isinstance(store_resolution.get("location_evidence"), dict)
+            else {}
+        )
+        confirmed_named_store = bool(
+            str(destination.get("named_store") or "").strip()
+            and str(
+                destination.get("confirmation_status")
+                or location_evidence.get("confirmation_status")
+                or ""
+            ).strip()
+            == "confirmed"
+        )
+        if (
+            not terminal_or_safety_task
+            and str(store_resolution.get("status") or "").strip() == "send_single"
+            and confirmed_named_store
+            and question_count == 0
+        ):
+            raise ValueError("confirmed_store_mainline_question_required")
         return
 
     sales = _normalized_sales_judgment(payload.get("sales_judgment"))
-    reply_action = _reply_action_from_payload(payload)
-    messages = payload.get("reply_messages") if isinstance(payload.get("reply_messages"), list) else []
     structured_sales_types = {
         str(item.get("type") or "").strip()
         for item in messages
@@ -3231,6 +3287,25 @@ def _reply_repair_hint(error: str) -> str:
         return (
             "action 必须逐字使用 none、ask、offer、payment、registration 之一，并与本轮实际可见消息一致。"
             "不要用自定义枚举，也不要用 registration 表示未付客户参加活动。"
+        )
+    if "reply_action_ask_requires_visible_question" in error:
+        return (
+            "你声明了 action=ask，但客户可见 text 没有实际问题。保留原有正确回答和销售判断，"
+            "只补上本轮唯一、能推动真实下一步的问题，并用一个问号结尾；不要增加第二个销售方向。"
+        )
+    if "confirmed_store_mainline_question_required" in error:
+        return (
+            "本轮权威门店事实表明客户已确认具体门店，且没有卡点、安全暂停或交易终态。"
+            "保留已经正确交付的门店文字和 store_address，只追加一个到店日期或时段问题；"
+            "不要再问位置是否方便，不要同时推进预约金或留名额，也不要删除门店卡。"
+        )
+    if (
+        "reply_action_ask_requires_single_question" in error
+        or "reply_visible_question_limit_exceeded" in error
+    ):
+        return (
+            "你声明了 action=ask，但客户可见 text 同时出现了多个问题。保留最符合当前主任务的一个问题，"
+            "删除其他问句；不要把留名额、预约金、门店和到店时间同时推进。"
         )
     if "invalid_parallel_reply_list_field" in error:
         return (

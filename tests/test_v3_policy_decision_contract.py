@@ -397,6 +397,27 @@ def test_explicit_exit_rejects_same_turn_sales_structures() -> None:
         _validate_policy_reply_consistency(payload, _state())
 
 
+def test_explicit_exit_conflict_takes_priority_over_generic_ask_shape() -> None:
+    decision = _valid_decision()
+    decision["realtime_intent"] = {
+        "type": "explicit_exit",
+        "secondary_types": [],
+        "confidence": "high",
+        "evidence_refs": ["current_message"],
+        "basis": ["客户明确要求停止联系"],
+    }
+    payload = {
+        "reply_messages": [{"type": "text", "order": 1, "content": "我再帮您安排"}],
+        "action": "ask",
+        "sales_judgment": {"posture": "advance"},
+        "commit_actions": [],
+        "policy_decision": decision,
+    }
+
+    with pytest.raises(ValueError, match="policy_decision_explicit_exit_conflict"):
+        _validate_policy_reply_consistency(payload, _state())
+
+
 def test_pause_marketing_emotion_rejects_same_turn_advance() -> None:
     decision = _valid_decision()
     decision["emotion_decision"] = {
@@ -478,6 +499,134 @@ def test_active_cardpoint_still_rejects_structured_payment_action() -> None:
 
     with pytest.raises(ValueError, match="policy_decision_active_cardpoint_conflict"):
         _validate_policy_reply_consistency(payload, _state())
+
+
+def test_ask_action_requires_one_customer_visible_question() -> None:
+    payload = {
+        "reply_messages": [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "门店地址和营业时间发您，我继续帮您安排到店时间。",
+            }
+        ],
+        "action": "ask",
+        "sales_judgment": {"posture": "advance"},
+        "commit_actions": [],
+        "policy_decision": _valid_decision(),
+    }
+
+    with pytest.raises(ValueError, match="reply_action_ask_requires_visible_question"):
+        _validate_policy_reply_consistency(payload, _state())
+
+    payload["reply_messages"][0]["content"] = (
+        "门店地址和营业时间发您，您大概哪天方便到店？"
+    )
+    _validate_policy_reply_consistency(payload, _state())
+
+
+@pytest.mark.parametrize("action", ["ask", "offer", "none"])
+def test_safe_reply_rejects_multiple_customer_visible_questions(action: str) -> None:
+    payload = {
+        "reply_messages": [
+            {"type": "text", "order": 1, "content": "您周末方便吗？"},
+            {"type": "text", "order": 2, "content": "需要我发预约金入口吗？"},
+        ],
+        "action": action,
+        "sales_judgment": {"posture": "advance"},
+        "commit_actions": [],
+        "policy_decision": _valid_decision(),
+    }
+
+    with pytest.raises(ValueError, match="reply_visible_question_limit_exceeded"):
+        _validate_policy_reply_consistency(payload, _state())
+
+
+def test_ask_action_repair_hints_preserve_one_mainline_direction() -> None:
+    missing = _reply_repair_hint("reply_action_ask_requires_visible_question")
+    multiple = _reply_repair_hint("reply_visible_question_limit_exceeded")
+
+    assert "唯一" in missing
+    assert "保留原有正确回答" in missing
+    assert "保留最符合当前主任务的一个问题" in multiple
+    assert "同时推进" in multiple
+
+
+def test_confirmed_store_requires_one_visible_mainline_question() -> None:
+    state = _state()
+    state["fact_envelope"] = {
+        "structured_facts": {
+            "store_resolution_fact": {
+                "status": "send_single",
+                "delivery_store_ids": ["store-306"],
+                "location_evidence": {"confirmation_status": "confirmed"},
+                "destination_resolution": {
+                    "named_store": "示例江津店",
+                },
+            }
+        }
+    }
+    payload = {
+        "reply_messages": [
+            {"type": "text", "order": 1, "content": "门店地址和营业时间发您。"},
+            {
+                "type": "store_address",
+                "order": 2,
+                "content": {"store_id": "store-306"},
+            },
+        ],
+        "action": "none",
+        "sales_judgment": {"posture": "answer"},
+        "commit_actions": [],
+        "policy_decision": _valid_decision(),
+    }
+
+    with pytest.raises(ValueError, match="confirmed_store_mainline_question_required"):
+        _validate_policy_reply_consistency(payload, state)
+
+    payload["reply_messages"].append(
+        {"type": "text", "order": 3, "content": "您大概哪天方便到店？"}
+    )
+    _validate_policy_reply_consistency(payload, state)
+
+
+def test_confirmed_store_does_not_advance_transaction_terminal() -> None:
+    state = _state()
+    state["fact_envelope"] = {
+        "structured_facts": {
+            "store_resolution_fact": {
+                "status": "send_single",
+                "location_evidence": {"confirmation_status": "confirmed"},
+                "destination_resolution": {
+                    "named_store": "示例江津店",
+                },
+            }
+        }
+    }
+    decision = _valid_decision()
+    decision["primary_task"] = {
+        "type": "transaction_terminal",
+        "goal": "确认已经完成的安排",
+        "basis": [],
+    }
+    decision["closing_decision"]["customer_state"] = "transaction_terminal_or_handoff"
+    payload = {
+        "reply_messages": [{"type": "text", "order": 1, "content": "好的，欢迎按已确认安排到店。"}],
+        "action": "none",
+        "sales_judgment": {"posture": "close"},
+        "commit_actions": [],
+        "policy_decision": decision,
+    }
+
+    _validate_policy_reply_consistency(payload, state)
+
+
+def test_confirmed_store_repair_hint_keeps_delivery_and_one_arrival_question() -> None:
+    hint = _reply_repair_hint("confirmed_store_mainline_question_required")
+
+    assert "保留已经正确交付的门店文字和 store_address" in hint
+    assert "只追加一个到店日期或时段问题" in hint
+    assert "不要再问位置是否方便" in hint
 
 
 def test_reply_failure_diagnostic_redacts_provider_and_contract_errors() -> None:

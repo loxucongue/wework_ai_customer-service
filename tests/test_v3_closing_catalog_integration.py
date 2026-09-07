@@ -504,6 +504,54 @@ def test_router_keeps_only_real_rule_and_sequence_candidates() -> None:
     }
 
 
+def test_router_preserves_only_supported_current_continuation_signals() -> None:
+    route = _normalize_semantic_route(
+        {
+            "current_intent": {
+                "summary": "客户按上一轮要求选择了具体门店",
+                "evidence_refs": ["current_message"],
+                "continuation_signals": [
+                    "information_submission",
+                    "transaction_progress",
+                    "invented_signal",
+                    "information_submission",
+                ],
+            },
+            "current_friction": {"status": "none"},
+        },
+        shared_context={"conversation": []},
+        sequences=[],
+        checkpoint_taxonomy=[],
+        fact_topic_catalog=[],
+        closing_catalog={"status": "unavailable"},
+    )
+
+    assert route["current_intent"]["continuation_signals"] == [
+        "information_submission",
+        "transaction_progress",
+    ]
+
+
+def test_router_rejects_non_list_continuation_signals() -> None:
+    route = _normalize_semantic_route(
+        {
+            "current_intent": {
+                "summary": "客户询问门店地址",
+                "evidence_refs": ["current_message"],
+                "continuation_signals": "transaction_progress",
+            },
+            "current_friction": {"status": "none"},
+        },
+        shared_context={"conversation": []},
+        sequences=[],
+        checkpoint_taxonomy=[],
+        fact_topic_catalog=[],
+        closing_catalog={"status": "unavailable"},
+    )
+
+    assert route["current_intent"]["continuation_signals"] == []
+
+
 def test_router_rejects_closing_match_without_customer_evidence() -> None:
     route = _normalize_semantic_route(
         {

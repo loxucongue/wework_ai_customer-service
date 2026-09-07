@@ -24,6 +24,10 @@ MAX_STEPS_PER_SEQUENCE = 4
 MAX_PARAGRAPH_GROUPS = 6
 MAX_SCRIPT_REFERENCE_CHARS = 6000
 MAX_SCRIPT_GROUPS_PER_ACTION_OR_TAG = 3
+CURRENT_INTENT_CONTINUATION_SIGNALS = {
+    "information_submission",
+    "transaction_progress",
+}
 
 
 class V3SemanticRouterService:
@@ -1200,9 +1204,23 @@ def _normalize_semantic_route(
     current_intent_refs = _valid_refs(current_intent_raw.get("evidence_refs"), valid_customer_refs)
     if current_intent_summary and "current_message" not in current_intent_refs:
         current_intent_refs.insert(0, "current_message")
+    continuation_signals: list[str] = []
+    raw_continuation_signals = current_intent_raw.get("continuation_signals")
+    if not isinstance(raw_continuation_signals, list):
+        raw_continuation_signals = []
+    for item in raw_continuation_signals:
+        signal = str(item or "").strip()
+        if (
+            signal in CURRENT_INTENT_CONTINUATION_SIGNALS
+            and signal not in continuation_signals
+        ):
+            continuation_signals.append(signal)
+        if len(continuation_signals) >= 2:
+            break
     current_intent = {
         "summary": current_intent_summary,
         "evidence_refs": current_intent_refs,
+        "continuation_signals": continuation_signals,
     }
     current_friction_refs = _valid_refs(
         current_friction_raw.get("evidence_refs") or checkpoint_raw.get("evidence_refs"),
