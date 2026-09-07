@@ -946,6 +946,8 @@ def test_reply_prompt_marks_active_closing_provenance_as_runtime_required() -> N
     assert '"evidence_refs":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "这些是运行必需字段，不是 BI 可选项" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert '"offer_prior_turn_refs":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '"supporting_key":"address|effect|objection"' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能只填其中一部分" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize(
