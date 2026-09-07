@@ -317,6 +317,38 @@ class OutreachRepositoryMixin:
                 return decoded
         return {}
 
+    def find_latest_unplanned_first_day_outreach_run_for_customer(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+    ) -> dict[str, Any]:
+        """Return the scoped run that an interrupted monitor must close.
+
+        This deliberately excludes rows with a materialized plan: the task
+        executor owns those rows and monitor recovery must not mutate them.
+        """
+
+        if not all((customer_id, corp_id, wechat, external_userid)):
+            return {}
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM first_day_outreach_runs
+                WHERE customer_id=? AND corp_id=? AND lower(wechat)=lower(?)
+                  AND external_userid=?
+                  AND trigger_type='first_day_opened_silence'
+                  AND status IN ('running', 'created')
+                  AND (plan_id IS NULL OR plan_id='')
+                ORDER BY updated_at DESC, started_at DESC
+                LIMIT 1
+                """,
+                (customer_id, corp_id, wechat, external_userid),
+            ).fetchone()
+        return self._decode_first_day_outreach_run(dict(row)) if row else {}
+
     def list_first_day_outreach_runs_for_monitor(
         self,
         *,

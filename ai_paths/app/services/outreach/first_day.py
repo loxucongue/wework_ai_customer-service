@@ -88,6 +88,10 @@ FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS = {
     # while the authoritative row is a recoverable failed run.  Recheck once;
     # the post-refresh branch will either resume that run or block again.
     "authoritative_fingerprint_already_logged",
+    # The provisional row records that the authoritative row should be
+    # resumed.  Allow one more bounded refresh so a stale/failed authoritative
+    # run is not hidden forever behind the provisional fingerprint.
+    "superseded_by_retryable_authoritative_run",
 }
 FIRST_DAY_RECOVERABLE_FAILED_RUN_REASONS = {
     "model_node_failed",
@@ -2981,7 +2985,8 @@ def _first_day_existing_run_retry_reason(
         status == "blocked"
         and reason_code in FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS
         and _string(latest_customer_message_at)
-        and int(existing_run.get("retry_count") or 0) < 1
+        and int(existing_run.get("retry_count") or 0)
+        < (2 if reason_code == "superseded_by_retryable_authoritative_run" else 1)
     ):
         return f"soft_block_retry:{reason_code}"
     if status in {"running", "created"} and _string(existing_run.get("plan_id")):
@@ -3258,10 +3263,68 @@ class FirstDayWorkflow:
                         ),
                     )
                 except Exception as exc:
+                    # Never leave a run in ``running`` when an exception occurs
+                    # before PlanGenerator takes ownership of the workflow.
+                    # A stuck row otherwise permanently consumes the contact's
+                    # authoritative fingerprint and no wake-up plan is retried.
+                    run_finder = getattr(
+                        self.repository,
+                        "find_latest_unplanned_first_day_outreach_run_for_customer",
+                        None,
+                    )
+                    run_updater = getattr(
+                        self.repository,
+                        "update_first_day_outreach_run",
+                        None,
+                    )
+                    recovered_run_id = ""
+                    if callable(run_finder) and callable(run_updater):
+                        try:
+                            active_run = await asyncio.to_thread(
+                                run_finder,
+                                customer_id=_string(candidate.get("customer_id")),
+                                corp_id=_string(candidate.get("corp_id")),
+                                wechat=_string(candidate.get("wechat")),
+                                external_userid=_string(candidate.get("external_userid")),
+                            )
+                            recovered_run_id = _string(active_run.get("workflow_run_id"))
+                            retry_count = int(active_run.get("retry_count") or 0)
+                            if recovered_run_id:
+                                retryable = retry_count < 2
+                                await asyncio.to_thread(
+                                    run_updater,
+                                    recovered_run_id,
+                                    status="failed",
+                                    reason_code=(
+                                        "workflow_retry_scheduled"
+                                        if retryable
+                                        else "workflow_failed"
+                                    ),
+                                    final_decision=(
+                                        "retry_pending" if retryable else "failed"
+                                    ),
+                                    next_retry_at=(
+                                        (
+                                            datetime.now(timezone.utc)
+                                            + timedelta(seconds=60)
+                                        ).isoformat()
+                                        if retryable
+                                        else ""
+                                    ),
+                                    error_node="silence_candidate_evaluation",
+                                    error_type=type(exc).__name__,
+                                    error_message=str(exc)[:4000],
+                                    finished_at=utc_now_iso(),
+                                )
+                        except Exception:
+                            # Keep the original monitor failure visible even if
+                            # the best-effort observability write also fails.
+                            recovered_run_id = ""
                     result = {
                         "status": "error",
                         "customer_id": _string(candidate.get("customer_id")),
                         "error": f"{type(exc).__name__}: {exc}",
+                        "workflow_run_id": recovered_run_id,
                     }
             stats["results"].append(result)
             status = _string(result.get("status"))
@@ -3668,6 +3731,16 @@ class FirstDayWorkflow:
                         status="blocked",
                         reason_code="superseded_by_retryable_authoritative_run",
                         final_decision="no_plan",
+                        workflow={
+                            **(
+                                existing_run.get("workflow")
+                                if isinstance(existing_run.get("workflow"), dict)
+                                else {}
+                            ),
+                            "superseded_by_workflow_run_id": _string(
+                                authoritative_existing_run.get("workflow_run_id")
+                            ),
+                        },
                         finished_at=utc_now_iso(),
                     )
                     workflow_run_id = _string(

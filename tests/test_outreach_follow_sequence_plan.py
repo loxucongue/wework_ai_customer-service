@@ -155,6 +155,26 @@ def test_catalog_paging_uses_raw_count_instead_of_stopping_on_invalid_items() ->
     assert len(result["pages"]) == 2
 
 
+def test_catalog_paging_turns_null_page_into_explicit_error() -> None:
+    async def fetch_page(_: int) -> None:
+        return None
+
+    client = object.__new__(FollowKnowledgeClient)
+    result = asyncio.run(
+        client._query_all_pages(fetch_page, schema_version="follow_script_index_v2")
+    )
+
+    assert result == {
+        "schema_version": "follow_script_index_v2",
+        "status": "error",
+        "reason": "page_query_invalid_response",
+        "total": 0,
+        "items": [],
+        "pages": [],
+        "duration_ms": result["duration_ms"],
+    }
+
+
 def test_follow_sequence_plan_contract_requires_one_task_per_source_node() -> None:
     snapshot = {
         "follow_sequence_selection": {

@@ -423,6 +423,26 @@ def test_plan_generation_null_failure_gets_one_recovery_retry() -> None:
     ) == 60
 
 
+def test_superseded_provisional_run_gets_one_final_authoritative_refresh() -> None:
+    now = datetime.now(timezone.utc)
+    existing = {
+        "status": "blocked",
+        "reason_code": "superseded_by_retryable_authoritative_run",
+        "retry_count": 1,
+    }
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at=now.isoformat(),
+        now=now,
+    ) == "soft_block_retry:superseded_by_retryable_authoritative_run"
+    existing["retry_count"] = 2
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at=now.isoformat(),
+        now=now,
+    ) == ""
+
+
 def test_authoritative_fingerprint_resumes_failed_run_without_a_plan() -> None:
     now = datetime.now(timezone.utc).replace(microsecond=0)
     customer_at = (now - timedelta(minutes=3)).isoformat()
@@ -647,6 +667,91 @@ def test_monitor_prioritizes_retryable_fingerprint_before_fresh_candidates() -> 
 
     assert evaluated == ["retry-customer"]
     assert result["evaluated_count"] == 1
+
+
+def test_monitor_exception_closes_unplanned_running_run_for_retry() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    candidate = {
+        **_identity(),
+        "candidate_source": "conversation",
+        "last_customer_message_at": (now - timedelta(minutes=3)).isoformat(),
+        "latest_outbound_message_at": (now - timedelta(minutes=2)).isoformat(),
+        "reply_wait_minutes": 2,
+        "awaiting_customer_reply": True,
+    }
+
+    class RecoveryRepository(_Repository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.runs["running-run"] = {
+                "workflow_run_id": "running-run",
+                "status": "running",
+                "retry_count": 0,
+            }
+
+        def find_latest_unplanned_first_day_outreach_run_for_customer(
+            self, **_: object
+        ) -> dict[str, object]:
+            return dict(self.runs["running-run"])
+
+    repository = RecoveryRepository()
+    workflow = FirstDayWorkflow(
+        repository=repository,
+        model_client=object(),
+        customer_context_service=None,
+        first_day_wechat_allowlist="",
+        planning=_Planning(_StatusClient(), candidates=[candidate]),
+    )
+
+    async def fail(*_: object, **__: object) -> dict[str, object]:
+        raise TimeoutError("context timed out")
+
+    workflow._evaluate_first_day_silence_candidate = fail  # type: ignore[method-assign]
+    result = asyncio.run(
+        workflow.evaluate_first_day_opened_silence_customers(
+            limit=1,
+            silent_minutes=1,
+            eligible_after=(now - timedelta(hours=1)).isoformat(),
+        )
+    )
+
+    assert result["error_count"] == 1
+    assert result["results"][0]["workflow_run_id"] == "running-run"
+    assert repository.runs["running-run"]["status"] == "failed"
+    assert repository.runs["running-run"]["reason_code"] == "workflow_retry_scheduled"
+    assert repository.runs["running-run"]["error_node"] == "silence_candidate_evaluation"
+    assert repository.runs["running-run"]["next_retry_at"]
+
+
+def test_repository_finds_only_scoped_unplanned_running_run(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        AI_PATHS_DB_PATH=tmp_path / "outreach-running-run.db",
+        AICS_STORAGE_BACKEND="sqlite",
+    )
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    run = repository.create_first_day_outreach_run(
+        **_identity(),
+        trigger_type="first_day_opened_silence",
+        conversation_fingerprint="fingerprint-1",
+    )
+
+    found = repository.find_latest_unplanned_first_day_outreach_run_for_customer(
+        customer_id="customer-1",
+        corp_id="corp-1",
+        wechat="sl8003",
+        external_userid="external-1",
+    )
+
+    assert found["workflow_run_id"] == run["workflow_run_id"]
+    assert repository.find_latest_unplanned_first_day_outreach_run_for_customer(
+        customer_id="customer-1",
+        corp_id="corp-1",
+        wechat="another-wechat",
+        external_userid="external-1",
+    ) == {}
 
 
 def test_monitor_preloads_fingerprints_and_avoids_per_candidate_lookup() -> None:

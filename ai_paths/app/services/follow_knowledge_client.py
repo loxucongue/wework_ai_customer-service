@@ -485,7 +485,18 @@ class FollowKnowledgeClient:
         cache_hits = 0
         page_results: list[dict[str, Any]] = []
         while True:
-            result = await fetch_page(page)
+            raw_result = await fetch_page(page)
+            if not isinstance(raw_result, dict):
+                return {
+                    "schema_version": schema_version,
+                    "status": "error",
+                    "reason": "page_query_invalid_response",
+                    "total": total,
+                    "items": items,
+                    "pages": page_results,
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                }
+            result = raw_result
             page_results.append(
                 {
                     "page": page,
