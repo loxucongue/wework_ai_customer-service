@@ -4,6 +4,7 @@ import json
 
 from app.config import Settings
 from app.services.storage.repositories import AppRepository
+from app.services.storage.operations_dashboard_repository import _platform_sop_metrics
 from app.services.storage.mysql_store import MySQLStore
 from app.services.storage.sqlite_store import SQLiteStore
 
@@ -54,13 +55,20 @@ def test_operations_dashboard_uses_authoritative_business_facts(tmp_path) -> Non
             )
         for event_id in ("sent-event", "shadow-event", "no-send-event"):
             conn.execute(
-                "INSERT INTO sop_events (event_id,event_type,status,received_at,updated_at) VALUES (?,?,?,?,?)",
-                (event_id, "platform_sop_task", "platform_completed", now, now),
+                "INSERT INTO sop_events (event_id,event_type,status,raw_payload_json,received_at,updated_at) VALUES (?,?,?,?,?,?)",
+                (
+                    event_id,
+                    "platform_sop_task",
+                    "platform_completed",
+                    json.dumps({"platform_task": {"scheduledAt": "2026-09-06 09:00:00"}}),
+                    now,
+                    now,
+                ),
             )
         accepted = {"data": {"send_status": "accepted", "system_msgids": ["msg-1"]}}
         conn.execute(
-            "INSERT INTO sop_send_tasks (id,event_id,idempotency_key,status,send_payload_json,send_response_json,created_at,updated_at,sent_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            ("sent", "sent-event", "sent", "sent", "{}", json.dumps(accepted), now, now, now),
+            "INSERT INTO sop_send_tasks (id,event_id,idempotency_key,customer_id,external_userid,corp_id,wechat,status,send_payload_json,send_response_json,created_at,updated_at,sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("sent", "sent-event", "sent", "customer", "ext-1", "corp", "SL1580", "sent", "{}", json.dumps(accepted), now, now, now),
         )
         conn.execute(
             "INSERT INTO sop_send_tasks (id,event_id,idempotency_key,status,send_payload_json,created_at,updated_at,sent_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -84,6 +92,21 @@ def test_operations_dashboard_uses_authoritative_business_facts(tmp_path) -> Non
     assert result["ai_reply"]["calls"] == 1
     assert result["platform_sop"]["sent"] == 1
     assert result["platform_sop"]["no_send"] == 1
+    assert result["platform_sop"]["customers"] == 1
+    assert result["platform_sop"]["messages_sent"] == 1
+    assert result["platform_sop"]["unfinished"] == 0
+    assert result["platform_sop"]["terminal_rate"] == 1.0
+    assert any(item["wechat"] == "SL1580" for item in result["platform_sop"]["wechat_breakdown"])
+    assert result["platform_sop"]["trend"] == [
+        {
+            "bucket": "2026-09-06T09:00:00+08:00",
+            "total": 3,
+            "sent": 1,
+            "no_send": 1,
+            "failed": 0,
+            "unfinished": 0,
+        }
+    ]
     assert result["platform_sop"]["reason_breakdown"] == [{"key": "human_takeover", "count": 1}]
     assert result["first_day_outreach"]["plans_created"] == 1
     assert result["first_day_outreach"]["failed"] == 1
@@ -105,3 +128,28 @@ def test_mysql_source_tables_are_read_without_aics_prefix() -> None:
     assert "JOIN messages" in sql
     assert "aics_customer_member_relations" not in sql
     assert "aics_messages" not in sql
+
+
+def test_platform_sop_metrics_exposes_recoverable_errors_as_failed_and_unfinished() -> None:
+    metrics = _platform_sop_metrics(
+        [
+            {
+                "event_id": "platform_sop_task:22528",
+                "event_status": "platform_processing_retry",
+                "event_error": "Model HTTP 503",
+                "received_at": "2026-09-07T02:00:00+00:00",
+                "task_id": "local-task",
+                "task_status": "sent",
+                "task_error": "Model HTTP 503",
+                "send_payload_json": "{}",
+                "send_response_json": "{}",
+            }
+        ],
+        "hour",
+    )
+
+    assert metrics["failed"] == 1
+    assert metrics["unfinished"] == 1
+    assert metrics["terminal_rate"] == 0.0
+    assert metrics["trend"][0]["failed"] == 1
+    assert metrics["reason_breakdown"] == [{"key": "Model HTTP 503", "count": 1}]

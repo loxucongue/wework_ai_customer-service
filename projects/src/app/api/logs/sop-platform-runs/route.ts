@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { jsonResponse, listAiPathsSopPlatformRuns } from "../../_lib/ai-paths";
+import { getAiPathsWorkerHealth, jsonResponse, listAiPathsSopPlatformRuns } from "../../_lib/ai-paths";
 
 export async function GET(request: NextRequest) {
   const search = request.nextUrl.searchParams;
@@ -22,10 +22,18 @@ export async function GET(request: NextRequest) {
     if (!response.ok) {
       return jsonResponse({ error: `AI Paths API returned ${response.status}`, detail: text }, response.status);
     }
-    return new Response(text, {
-      status: response.status,
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-    });
+    const payload = JSON.parse(text) as Record<string, unknown>;
+    const workerResponse = await getAiPathsWorkerHealth().catch(() => null);
+    if (workerResponse?.ok) {
+      const health = await workerResponse.json() as Record<string, unknown>;
+      payload.worker = health.platform_sop_worker || {};
+      payload.worker_source = "worker_service";
+    } else {
+      payload.worker = { running: null };
+      payload.worker_source = "unavailable";
+      payload.worker_error = workerResponse ? `Worker API returned ${workerResponse.status}` : "Worker API unavailable";
+    }
+    return jsonResponse(payload);
   } catch (error) {
     console.error("Failed to load third-party SOP batch logs:", error);
     return jsonResponse({ error: "Failed to load third-party SOP batch logs" }, 500);

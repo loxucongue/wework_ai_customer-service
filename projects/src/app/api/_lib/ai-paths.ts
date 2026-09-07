@@ -456,6 +456,15 @@ export async function listAiPathsSopPlatformRuns(query: AiPathsSopPlatformRunsQu
   });
 }
 
+export async function getAiPathsWorkerHealth() {
+  const workerBase = process.env.AI_PATHS_WORKER_API_BASE || "http://127.0.0.1:8014";
+  return fetch(`${workerBase.replace(/\/$/, "")}/health`, {
+    method: "GET",
+    cache: "no-store",
+    signal: AbortSignal.timeout(5000),
+  });
+}
+
 export async function proxyAiPathsAdmin(path: string, init: RequestInit = {}) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const targetPath = path.startsWith("/") ? path : `/${path}`;

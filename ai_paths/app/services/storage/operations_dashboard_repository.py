@@ -10,6 +10,13 @@ from app.services.storage.serialization import loads_dict
 
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_SOP_UNFINISHED_STATUSES = {
+    "accepted", "pending", "platform_received", "platform_queued", "platform_claiming",
+    "platform_judging", "platform_processing", "platform_processing_retry",
+    "platform_delivery_pending", "platform_send_uncertain", "platform_complete_pending",
+    "platform_batch_send_retry", "platform_batch_consume_pending",
+    "platform_failure_rule_data_pending", "sending", "processing_retry",
+}
 
 
 class OperationsDashboardRepositoryMixin:
@@ -78,10 +85,13 @@ class OperationsDashboardRepositoryMixin:
             sop_rows = _dict_rows(conn.execute(
                 f"""
                 SELECT e.event_id, e.status AS event_status, e.error AS event_error,
-                       e.retry_count, e.received_at, e.updated_at,
-                       t.id AS task_id, t.status AS task_status, t.error AS task_error,
+                       e.retry_count, e.received_at, e.updated_at AS event_updated_at,
+                       e.raw_payload_json,
+                       t.id AS task_id, t.customer_id, t.external_userid, t.corp_id,
+                       t.user_id, t.wechat, t.status AS task_status, t.error AS task_error,
                        t.send_payload_json, t.send_response_json,
-                       t.created_at AS task_created_at, t.sent_at
+                       t.reply_messages_json, t.created_at AS task_created_at,
+                       t.updated_at AS task_updated_at, t.sent_at
                 FROM sop_events e
                 LEFT JOIN sop_send_tasks t ON t.event_id=e.event_id
                 WHERE {' AND '.join(sop_clauses)}
@@ -255,44 +265,154 @@ def _platform_sop_metrics(rows: list[dict[str, Any]], bucket: str) -> dict[str, 
         for row in rows
         if str(row.get("event_status") or "") == "platform_failed"
         or str(row.get("task_status") or "") == "failed"
+        or bool(str(row.get("event_error") or row.get("task_error") or "").strip())
     }
     failed = len(failed_event_ids)
+    unfinished = sum(
+        str(row.get("event_status") or "") in _SOP_UNFINISHED_STATUSES
+        or str(row.get("task_status") or "") in _SOP_UNFINISHED_STATUSES
+        for row in events.values()
+    )
     reasons = Counter()
     for row in task_values:
-        if str(row.get("task_status") or "") not in {"completed_without_send", "failed"}:
+        error = str(row.get("task_error") or row.get("event_error") or "")
+        if str(row.get("task_status") or "") not in {"completed_without_send", "failed"} and not error.strip():
             continue
         payload = loads_dict(row.get("send_payload_json"))
-        reason = _sop_reason(payload, str(row.get("task_error") or row.get("event_error") or ""))
+        reason = _sop_reason(payload, error)
         if reason:
             reasons[reason] += 1
-    latencies = []
+    dispatch_latencies = []
+    process_latencies = []
+    queue_latencies = []
+    consume_latencies = []
+    message_count = 0
     for row in sent_rows:
         start = _parse_time(str(row.get("task_created_at") or ""))
         finish = _parse_time(str(row.get("sent_at") or ""))
         if start and finish and finish >= start:
-            latencies.append(int((finish - start).total_seconds() * 1000))
+            dispatch_latencies.append(int((finish - start).total_seconds() * 1000))
+        response = loads_dict(row.get("send_response_json"))
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        system_msgids = data.get("system_msgids") if isinstance(data.get("system_msgids"), list) else []
+        message_count += len(system_msgids) or (1 if data.get("system_msgid") else 0)
+    for row in task_values:
+        created = _parse_time(str(row.get("task_created_at") or ""))
+        updated = _parse_time(str(row.get("task_updated_at") or ""))
+        if created and updated and updated >= created:
+            process_latencies.append(int((updated - created).total_seconds() * 1000))
+        platform_task = loads_dict(row.get("raw_payload_json")).get("platform_task")
+        platform_task = platform_task if isinstance(platform_task, dict) else {}
+        scheduled = _parse_time(
+            str(platform_task.get("scheduledAt") or platform_task.get("scheduled_at") or ""),
+            default_tz=_SHANGHAI,
+        )
+        if created and scheduled and created >= scheduled:
+            queue_latencies.append(int((created - scheduled).total_seconds() * 1000))
+        payload = loads_dict(row.get("send_payload_json"))
+        attempts = payload.get("consume_results") if isinstance(payload.get("consume_results"), list) else []
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            requested = _parse_time(str(attempt.get("requested_at") or ""))
+            completed = _parse_time(str(attempt.get("completed_at") or ""))
+            if requested and completed and completed >= requested:
+                consume_latencies.append(int((completed - requested).total_seconds() * 1000))
     terminal_total = sent + no_send + failed
-    trend_events = [
-        {
-            **row,
-            "failed_marker": str(row.get("event_error") or "failed")
-            if str(row.get("event_status") or "") == "platform_failed"
-            else "",
-        }
+    terminal_events = sum(
+        str(row.get("event_status") or "") in {"platform_completed", "platform_failed"}
         for row in events.values()
-    ]
+    )
     return {
         "events": len(events),
         "tasks": len(task_values),
+        "customers": len(_contact_keys(task_values)),
+        "messages_sent": message_count,
         "sent": sent,
         "no_send": no_send,
         "failed": failed,
+        "unfinished": unfinished,
         "retry_count": sum(int(row.get("retry_count") or 0) for row in events.values()),
         "send_rate": _rate(sent, terminal_total),
-        "avg_dispatch_ms": _average(latencies) if latencies else None,
+        "terminal_rate": _rate(terminal_events, len(events)),
+        "avg_dispatch_ms": _average(dispatch_latencies) if dispatch_latencies else None,
+        "latency": {
+            "queue": _latency_summary(queue_latencies),
+            "process": _latency_summary(process_latencies),
+            "dispatch": _latency_summary(dispatch_latencies),
+            "consume_request": _latency_summary(consume_latencies),
+        },
         "status_breakdown": _counter_items(statuses),
         "reason_breakdown": _counter_items(reasons),
-        "trend": _trend(trend_events, bucket, time_field="received_at", failure_field="failed_marker"),
+        "wechat_breakdown": _platform_sop_wechat_breakdown(task_values),
+        "trend": _platform_sop_trend(list(events.values()), bucket),
+    }
+
+
+def _platform_sop_wechat_breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row.get("wechat") or "未记录")].append(row)
+    result = []
+    for wechat, values in grouped.items():
+        result.append({
+            "wechat": wechat,
+            "tasks": len(values),
+            "customers": len(_contact_keys(values)),
+            "sent": sum(_is_confirmed_sop_send(row) for row in values),
+            "no_send": sum(str(row.get("task_status") or "") == "completed_without_send" for row in values),
+            "failed": sum(
+                str(row.get("task_status") or "") == "failed"
+                or bool(str(row.get("event_error") or row.get("task_error") or "").strip())
+                for row in values
+            ),
+        })
+    return sorted(result, key=lambda item: (-item["tasks"], item["wechat"]))
+
+
+def _platform_sop_trend(rows: list[dict[str, Any]], bucket: str) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        parsed = _parse_time(str(row.get("received_at") or ""))
+        if not parsed:
+            continue
+        local = parsed.astimezone(_SHANGHAI)
+        key = local.strftime("%Y-%m-%dT%H:00:00+08:00" if bucket == "hour" else "%Y-%m-%dT00:00:00+08:00")
+        grouped[key].append(row)
+    result = []
+    for key in sorted(grouped):
+        values = grouped[key]
+        sent = sum(_is_confirmed_sop_send(row) for row in values)
+        no_send = sum(str(row.get("task_status") or "") == "completed_without_send" for row in values)
+        failed = sum(
+            str(row.get("event_status") or "") == "platform_failed"
+            or str(row.get("task_status") or "") == "failed"
+            or bool(str(row.get("event_error") or row.get("task_error") or "").strip())
+            for row in values
+        )
+        result.append({
+            "bucket": key,
+            "total": len(values),
+            "sent": sent,
+            "no_send": no_send,
+            "failed": failed,
+            "unfinished": sum(
+                str(row.get("event_status") or "") in _SOP_UNFINISHED_STATUSES
+                or str(row.get("task_status") or "") in _SOP_UNFINISHED_STATUSES
+                for row in values
+            ),
+        })
+    return result
+
+
+def _latency_summary(values: list[int]) -> dict[str, Any]:
+    clean = [max(0, int(value)) for value in values]
+    return {
+        "count": len(clean),
+        "avg_ms": _average(clean) if clean else None,
+        "p50_ms": _percentile(clean, 50) if clean else None,
+        "p90_ms": _percentile(clean, 90) if clean else None,
+        "max_ms": max(clean) if clean else None,
     }
 
 

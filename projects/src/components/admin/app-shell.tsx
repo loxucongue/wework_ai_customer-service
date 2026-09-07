@@ -43,7 +43,7 @@ const groups = [
     items: [
       { href: "/logs", label: "AI 运行日志", icon: FileClock },
       { href: "/logs/sop", label: "SOP 触达日志", icon: History },
-      { href: "/logs/sop-platform", label: "第三方 SOP 日志", icon: Archive },
+      { href: "/logs/sop-platform", label: "SOP 运行监控", icon: Archive },
       { href: "/logs/outreach-first-day", label: "千人千面日志", icon: Sparkles },
     ],
   },
