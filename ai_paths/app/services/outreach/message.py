@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .follow_sequence import script_media_assets
+
 from .first_day import (
     FIRST_DAY_SILENCE_TRIGGER_TYPE,
     OUTREACH_MESSAGE_SYSTEM_PROMPT,
@@ -31,7 +33,7 @@ class MessageGenerator:
         task: dict[str, Any],
         plan: dict[str, Any],
         recent_messages_override: list[dict[str, Any]] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         context = self.repository.recent_customer_context(
             str(task["customer_id"]),
             corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
@@ -50,6 +52,20 @@ class MessageGenerator:
         resolved_assets = _task_resolved_assets(task)
         resolved_asset = resolved_assets[0] if resolved_assets else {}
         task_metadata = _task_metadata(task)
+        plan_mode = _string(task_metadata.get("plan_mode"))
+        follow_script_candidates = [
+            dict(item)
+            for item in task_metadata.get("follow_script_candidates") or []
+            if isinstance(item, dict)
+        ]
+        prompt_task_metadata = dict(task_metadata)
+        if plan_mode == "follow_sequence":
+            prompt_task_metadata["follow_script_candidates"] = [
+                dict(item)
+                for item in task_metadata.get("follow_script_model_candidates") or []
+                if isinstance(item, dict)
+            ]
+            prompt_task_metadata.pop("follow_script_model_candidates", None)
         source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
         trigger_context = (
             source_snapshot.get("trigger_context")
@@ -95,7 +111,7 @@ class MessageGenerator:
                 "draft_texts": _reply_texts(task.get("reply_messages")),
                 "should_send_payment_collection": should_send_payment_collection,
             },
-            "task_metadata": task_metadata,
+            "task_metadata": prompt_task_metadata,
             "resolved_asset": {
                 key: resolved_asset.get(key)
                 for key in (
@@ -144,6 +160,7 @@ class MessageGenerator:
         ]
         last_error = ""
         last_evidence = ""
+        last_selection_error = ""
         for attempt in range(2):
             response = await self.model_client.chat_json(
                 model_messages,
@@ -153,6 +170,47 @@ class MessageGenerator:
             texts = _reply_texts(response.get("reply_messages"))
             if not texts:
                 raise RuntimeError("outreach_message_model_empty")
+            selected_script_id = _string(response.get("selected_script_id"))
+            script_rejection_reason = _string(response.get("script_rejection_reason"))
+            selected_script = next(
+                (
+                    item
+                    for item in follow_script_candidates
+                    if selected_script_id
+                    and selected_script_id
+                    in {_string(item.get("id")), _string(item.get("script_code"))}
+                ),
+                {},
+            )
+            last_selection_error = ""
+            if plan_mode == "follow_sequence":
+                if selected_script_id and not selected_script:
+                    last_selection_error = "selected_script_id_not_in_candidates"
+                elif follow_script_candidates and not selected_script_id and not script_rejection_reason:
+                    last_selection_error = "script_selection_or_rejection_reason_required"
+                elif not follow_script_candidates and selected_script_id:
+                    last_selection_error = "script_catalog_empty_cannot_select_script"
+            if last_selection_error:
+                if attempt == 0:
+                    model_messages.extend(
+                        [
+                            {"role": "assistant", "content": dumps(response)},
+                            {
+                                "role": "user",
+                                "content": dumps(
+                                    {
+                                        "structure_error": last_selection_error,
+                                        "repair_instruction": (
+                                            "只从 follow_script_candidates 选择真实ID；"
+                                            "若全部不安全，selected_script_id 留空并填写具体拒绝原因。"
+                                        ),
+                                    }
+                                ),
+                            },
+                        ]
+                    )
+                    continue
+                raise OutreachMessagePolicyError(last_selection_error)
             if not first_day_opened_silence:
                 return _compose_outreach_messages(
                     texts,
@@ -172,9 +230,12 @@ class MessageGenerator:
                 context=context,
             )
             if not last_error:
-                return _compose_outreach_messages(
+                generated_messages = _compose_outreach_messages(
                     texts,
-                    resolved_assets=resolved_assets,
+                    resolved_assets=[
+                        *resolved_assets,
+                        *script_media_assets(selected_script),
+                    ],
                     should_send_payment_collection=should_send_payment_collection,
                     text_limit=(
                         None
@@ -182,6 +243,16 @@ class MessageGenerator:
                         else 2
                     ),
                 )
+                if plan_mode == "follow_sequence":
+                    return {
+                        "reply_messages": generated_messages,
+                        "selected_script_id": selected_script_id,
+                        "selected_script_code": _string(selected_script.get("script_code")),
+                        "selected_script_name": _string(selected_script.get("script_name")),
+                        "script_candidate_count": len(follow_script_candidates),
+                        "script_rejection_reason": script_rejection_reason,
+                    }
+                return generated_messages
             if attempt == 0:
                 model_messages.extend(
                     [
@@ -201,5 +272,6 @@ class MessageGenerator:
                         },
                     ]
                 )
-        raise OutreachMessagePolicyError(last_error or "first_day_message_policy_violation")
-
+        raise OutreachMessagePolicyError(
+            last_selection_error or last_error or "first_day_message_policy_violation"
+        )

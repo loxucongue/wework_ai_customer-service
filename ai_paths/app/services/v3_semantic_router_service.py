@@ -15,7 +15,7 @@ from app.prompts.v3_semantic_router import (
 )
 from app.policies.business_rules import v3_fact_topic_catalog_for_model
 from app.services.deepseek_semantic_client import DeepSeekSemanticClient
-from app.services.follow_knowledge_client import ACTION_CODES, FollowKnowledgeClient
+from app.services.follow_knowledge_client import FollowKnowledgeClient, is_supported_action_code
 
 
 MAX_SEQUENCE_CANDIDATES = 3
@@ -1376,7 +1376,7 @@ def _normalize_semantic_route(
         step = step_link[1]
         if action != str(step.get("action_code") or "").strip().lower():
             continue
-        if checkpoint != primary or action not in ACTION_CODES:
+        if checkpoint != primary or not is_supported_action_code(action):
             continue
         if checkpoint_type_id != int(primary_fact.get("type_id") or 0):
             continue
@@ -1752,7 +1752,7 @@ def _taxonomy_allows_action(
 
     action = str(action_code or "").strip().lower()
     type_id = int(fact.get("type_id") or 0)
-    if not action or action not in ACTION_CODES or type_id <= 0:
+    if not is_supported_action_code(action) or type_id <= 0:
         return False
     checkpoint_type = next(
         (item for item in taxonomy if int(item.get("id") or 0) == type_id),
@@ -2131,7 +2131,7 @@ def _current_step_candidates(sequence: dict[str, Any], *, query_terms: set[str])
             continue
         step_id = str(step.get("id") or "").strip()
         action_code = str(step.get("action_code") or "").strip().lower()
-        if not step_id or action_code not in ACTION_CODES:
+        if not step_id or not is_supported_action_code(action_code):
             continue
         trigger_base = str(step.get("trigger_base") or "").strip().lower()
         relative_value = max(0, int(step.get("relative_value") or 0))
@@ -2675,7 +2675,7 @@ def _expand_sequence_action_queries(
                 )
                 if (
                     not step_id
-                    or action not in ACTION_CODES
+                    or not is_supported_action_code(action)
                     or key in seen_actions
                 ):
                     continue
@@ -2717,7 +2717,7 @@ def _expand_sequence_action_queries(
     if (
         focus_type_id > 0
         and focus_code
-        and focus_action in ACTION_CODES
+        and is_supported_action_code(focus_action)
         and str(focus.get("source") or "none") != "none"
         and focus_key not in seen_actions
         and focus_signature not in query_by_signature

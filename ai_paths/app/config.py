@@ -338,6 +338,13 @@ class Settings(BaseSettings):
         default="",
         alias="OUTREACH_DECISION_MODEL_FALLBACKS",
     )
+    outreach_quiet_hours_start: str = Field(default="22:00", alias="OUTREACH_QUIET_HOURS_START")
+    outreach_quiet_hours_end: str = Field(default="08:00", alias="OUTREACH_QUIET_HOURS_END")
+    outreach_quiet_hours_resume: str = Field(default="08:30", alias="OUTREACH_QUIET_HOURS_RESUME")
+    outreach_night_active_window_minutes: int = Field(
+        default=40,
+        alias="OUTREACH_NIGHT_ACTIVE_WINDOW_MINUTES",
+    )
     debug_platform_context_enabled: bool = Field(default=False, alias="DEBUG_PLATFORM_CONTEXT_ENABLED")
     debug_platform_customer_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ID")
     debug_platform_customer_add_wechat_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ADD_WECHAT_ID")

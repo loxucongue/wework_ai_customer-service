@@ -86,6 +86,19 @@ class WorkerSupervisor:
             "decision_model": self.settings.outreach_decision_model,
             "decision_model_fallbacks": self.settings.outreach_decision_model_fallbacks,
             "eligible_after": self.settings.outreach_silence_eligible_after,
+            "daily_plan_limit": None,
+            "daily_task_limit": None,
+            "task_count_source": "follow_sequence_nodes_or_selected_mainline_sources",
+            "quiet_hours": {
+                "start": getattr(self.settings, "outreach_quiet_hours_start", "22:00"),
+                "end": getattr(self.settings, "outreach_quiet_hours_end", "08:00"),
+                "resume": getattr(self.settings, "outreach_quiet_hours_resume", "08:30"),
+                "night_active_window_minutes": getattr(
+                    self.settings,
+                    "outreach_night_active_window_minutes",
+                    40,
+                ),
+            },
             "tasks": tasks,
             "monitor": {
                 **self.services.outreach_service.monitor_status(),

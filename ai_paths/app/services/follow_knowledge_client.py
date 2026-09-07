@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -25,28 +26,21 @@ CANONICAL_ACTION_CODES = {
     "care",
     "appt_confirm",
 }
-PUBLISHED_ACTION_CODES = {
-    "act001",
-    "act002",
-    "act003",
-    "act004",
-    "act005",
-    "act006",
-    "act007",
-    "act008",
-    "act009",
-    "act010",
-    "act011",
-    "act012",
-    "act013",
-    "act014",
-    "act015",
-    "act016",
-    "act017",
-    "act018",
-}
+PUBLISHED_ACTION_CODES = {f"act{index:03d}" for index in range(1, 39)}
 ACTION_CODES = CANONICAL_ACTION_CODES | PUBLISHED_ACTION_CODES
+_PUBLISHED_ACTION_CODE_RE = re.compile(r"^act\d{3,}$")
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+
+def is_supported_action_code(value: Any) -> bool:
+    """Accept canonical actions and tenant-published actNNN identifiers.
+
+    The upstream catalog owns the numeric action directory. Keeping a finite
+    local allowlist caused newly published nodes to disappear from sequences.
+    """
+
+    action = _code(value)
+    return bool(action in CANONICAL_ACTION_CODES or _PUBLISHED_ACTION_CODE_RE.fullmatch(action))
 
 
 @dataclass(frozen=True)
@@ -98,7 +92,7 @@ class FollowKnowledgeClient:
     ) -> dict[str, Any]:
         checkpoint = _code(checkpoint_code)
         action = _code(action_code)
-        if action and action not in ACTION_CODES:
+        if action and not is_supported_action_code(action):
             return _empty_result("follow_script_query_v1", "unknown_action_code")
         type_id = _positive_int(checkpoint_type_id)
         tag_id = _positive_int(checkpoint_tag_id)
@@ -487,6 +481,7 @@ class FollowKnowledgeClient:
         items: list[dict[str, Any]] = []
         page = 1
         total = 0
+        raw_seen = 0
         cache_hits = 0
         page_results: list[dict[str, Any]] = []
         while True:
@@ -496,7 +491,9 @@ class FollowKnowledgeClient:
                     "page": page,
                     "status": result.get("status"),
                     "reason": result.get("reason", ""),
-                    "count": len(result.get("items") or []),
+                    "raw_count": int(result.get("raw_item_count") or len(result.get("items") or [])),
+                    "usable_count": len(result.get("items") or []),
+                    "invalid_count": int(result.get("invalid_item_count") or 0),
                 }
             )
             if str(result.get("status") or "") != "ok":
@@ -511,9 +508,15 @@ class FollowKnowledgeClient:
                 }
             page_items = [copy.deepcopy(item) for item in result.get("items") or [] if isinstance(item, dict)]
             items.extend(page_items)
+            raw_page_count = int(result.get("raw_item_count") or len(page_items))
+            raw_seen += raw_page_count
             total = max(total, int(result.get("total") or 0))
             cache_hits += int(bool(result.get("cache_hit")))
-            if not page_items or len(items) >= total or len(page_items) < int(result.get("page_size") or 100):
+            if (
+                raw_page_count <= 0
+                or raw_seen >= total
+                or raw_page_count < int(result.get("page_size") or 100)
+            ):
                 break
             page += 1
         return {
@@ -521,6 +524,8 @@ class FollowKnowledgeClient:
             "status": "ok",
             "source": "follow_knowledge_api",
             "total": total,
+            "raw_item_count": raw_seen,
+            "invalid_item_count": max(0, raw_seen - len(items)),
             "items": items,
             "pages": page_results,
             "cache_hit_pages": cache_hits,
@@ -557,11 +562,11 @@ class FollowKnowledgeClient:
                 message = _text(body.get("message")) if isinstance(body, dict) else "invalid_response"
                 raise RuntimeError(f"business_error:{message or 'unknown'}")
             data = body.get("data") if isinstance(body.get("data"), dict) else {}
+            raw_items = [raw for raw in data.get("list") or [] if isinstance(raw, dict)]
             items = [
                 normalized
-                for raw in data.get("list") or []
-                if isinstance(raw, dict)
-                and (normalized := item_normalizer(raw)) is not None
+                for raw in raw_items
+                if (normalized := item_normalizer(raw)) is not None
             ]
             result = {
                 "schema_version": schema_version,
@@ -571,6 +576,8 @@ class FollowKnowledgeClient:
                 "total": max(0, int(data.get("total") or 0)),
                 "page": max(1, int(data.get("page") or payload["page"])),
                 "page_size": max(1, int(data.get("pageSize") or payload["pageSize"])),
+                "raw_item_count": len(raw_items),
+                "invalid_item_count": max(0, len(raw_items) - len(items)),
                 "items": items,
                 "cache_hit": False,
                 "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -1028,15 +1035,19 @@ def _normalize_sequence(raw: dict[str, Any]) -> dict[str, Any] | None:
     if not sequence_id and not name:
         return None
     steps: list[dict[str, Any]] = []
-    for item in raw.get("steps") or []:
+    raw_steps = raw.get("steps") or []
+    if not isinstance(raw_steps, list) or not raw_steps:
+        return None
+    for item in raw_steps:
         if not isinstance(item, dict):
-            continue
+            return None
+        step_id = _text(item.get("id"))
         action_code = _code(item.get("actionCode"))
-        if action_code and action_code not in ACTION_CODES:
-            continue
+        if not step_id or not is_supported_action_code(action_code):
+            return None
         steps.append(
             {
-                "id": _text(item.get("id")),
+                "id": step_id,
                 "sort_order": int(item.get("sortOrder") or 0),
                 "action_code": action_code,
                 "action_name": _text(item.get("actionName")),
@@ -1049,6 +1060,9 @@ def _normalize_sequence(raw: dict[str, Any]) -> dict[str, Any] | None:
             }
         )
     steps.sort(key=lambda item: item["sort_order"])
+    declared_step_count = int(raw.get("stepCount") or len(raw_steps))
+    if declared_step_count != len(raw_steps) or len(steps) != len(raw_steps):
+        return None
     return {
         "id": sequence_id,
         "sequence_name": name,
@@ -1057,7 +1071,7 @@ def _normalize_sequence(raw: dict[str, Any]) -> dict[str, Any] | None:
         "description": _text(raw.get("description")),
         "status": int(raw.get("status") or 0),
         "status_text": _text(raw.get("statusText")),
-        "step_count": int(raw.get("stepCount") or len(steps)),
+        "step_count": declared_step_count,
         "estimated_minutes": max(0, int(raw.get("estimatedMinutes") or 0)),
         "steps": steps,
         "create_time": _text(raw.get("createTime")),

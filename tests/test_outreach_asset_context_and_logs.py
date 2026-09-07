@@ -267,6 +267,90 @@ def test_outreach_log_derives_source_for_historical_asset_rows() -> None:
     assert view["materials"]["steps"][0]["available_asset_count"] == 1
 
 
+def test_outreach_log_shows_dynamic_follow_sequence_nodes_and_script_selection() -> None:
+    snapshot = _snapshot()
+    snapshot.update(
+        {
+            "follow_sequence_selection": {
+                "sequence_id": "sequence-45",
+                "sequence_name": "距离顾虑跟进",
+                "source_node_count": 3,
+                "materialized_task_count": 3,
+            },
+            "personalized_schedule": {
+                "plan_mode": "follow_sequence",
+                "task_count": 3,
+            },
+        }
+    )
+    strategy = {
+        "eligible": True,
+        "decision_mode": "follow_sequence",
+        "checkpoint": {"code": "distance", "name": "距离顾虑"},
+        "selected_sequence_id": "sequence-45",
+        "hard_boundary": {"active": False, "type": "none"},
+    }
+    tasks = []
+    events = []
+    for index in range(1, 4):
+        task_id = f"task-{index}"
+        tasks.append(
+            {
+                "id": task_id,
+                "step_index": index,
+                "status": "pending",
+                "content_sources": [f"follow-sequence-node:node-{index}"],
+                "content_source_metadata": [
+                    {
+                        "outreach_task_metadata": {
+                            "plan_mode": "follow_sequence",
+                            "schedule_mode": "night_active_compressed",
+                            "follow_sequence_node": {
+                                "id": f"node-{index}",
+                                "action_code": f"act{index:03d}",
+                                "action_name": f"动作{index}",
+                            },
+                            "follow_script_candidates": [
+                                {
+                                    "id": f"script-{index}",
+                                    "script_name": f"话术{index}",
+                                    "action_code": f"act{index:03d}",
+                                }
+                            ],
+                        }
+                    }
+                ],
+            }
+        )
+        if index == 1:
+            events.append(
+                {
+                    "task_id": task_id,
+                    "event_type": "task_follow_script_selected",
+                    "payload": {
+                        "selected_script_id": "script-1",
+                        "selected_script_name": "话术1",
+                    },
+                }
+            )
+    run = {
+        "input_snapshot": snapshot,
+        "workflow": {"summary": {"strategy_decision": strategy}},
+        "tasks": tasks,
+        "events": events,
+    }
+
+    summary = build_first_day_run_business_summary(run)
+    view = build_first_day_run_observability(run)
+
+    assert summary["plan_mode"] == "follow_sequence"
+    assert summary["sequence_name"] == "距离顾虑跟进"
+    assert summary["planned_task_count"] == 3
+    assert len(view["materials"]["steps"]) == 3
+    assert view["materials"]["steps"][0]["selected_script"]["id"] == "script-1"
+    assert view["materials"]["steps"][2]["follow_sequence_node"]["id"] == "node-3"
+
+
 def test_prompts_bind_visual_language_to_actual_delivery_contract() -> None:
     assert "delivery_contract" in FIRST_DAY_PLAN_WRITER_PROMPT
     assert "media_will_be_sent=false" in FIRST_DAY_PLAN_WRITER_PROMPT

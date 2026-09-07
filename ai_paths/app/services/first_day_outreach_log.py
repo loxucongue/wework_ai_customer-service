@@ -65,7 +65,9 @@ def build_first_day_run_business_summary(run: dict[str, Any]) -> dict[str, Any]:
     snapshot = _dict(run.get("input_snapshot"))
     workflow = _dict(run.get("workflow"))
     scene = _scene_analysis(workflow)
-    mainline = _dict(scene.get("customer_mainline"))
+    strategy = _strategy_decision(workflow)
+    decision = strategy or scene
+    mainline = _dict(decision.get("customer_mainline"))
     last_customer = _last_customer_message(snapshot.get("recent_messages"))
     assets = _dict(snapshot.get("asset_availability_summary"))
     required = _dict(scene.get("required_assets"))
@@ -75,7 +77,12 @@ def build_first_day_run_business_summary(run: dict[str, Any]) -> dict[str, Any]:
         "customer_need": _string(mainline.get("latest_customer_main_need")),
         "silence_barrier": _string(mainline.get("silence_barrier")),
         "precedence": _string(_dict(scene.get("precedence_decision")).get("row_id")),
-        "eligible": scene.get("eligible") if isinstance(scene.get("eligible"), bool) else None,
+        "eligible": decision.get("eligible") if isinstance(decision.get("eligible"), bool) else None,
+        "plan_mode": _string(decision.get("decision_mode")),
+        "checkpoint_name": _string(_dict(decision.get("checkpoint")).get("name")),
+        "sequence_id": _string(decision.get("selected_sequence_id")),
+        "sequence_name": _string(_dict(snapshot.get("follow_sequence_selection")).get("sequence_name")),
+        "planned_task_count": _int(_dict(snapshot.get("personalized_schedule")).get("task_count")),
         "planned_media_count": sum(
             1
             for key in ("step1", "step2")
@@ -90,7 +97,11 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
     snapshot = _dict(run.get("input_snapshot"))
     workflow = _dict(run.get("workflow"))
     scene = _scene_analysis(workflow)
-    mainline = _dict(scene.get("customer_mainline"))
+    strategy = _strategy_decision(workflow)
+    decision_source = strategy or scene
+    mainline = _dict(decision_source.get("customer_mainline"))
+    follow_selection = _dict(snapshot.get("follow_sequence_selection"))
+    schedule = _dict(snapshot.get("personalized_schedule"))
     asset_catalog = [
         dict(item)
         for item in _list(snapshot.get("asset_catalog"))
@@ -100,7 +111,12 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
     selected_sources = _dict(scene.get("selected_source_ids"))
     required_assets = _dict(scene.get("required_assets"))
     material_steps: list[dict[str, Any]] = []
-    for index, key in enumerate(("step1", "step2"), start=1):
+    step_keys = (
+        [f"step{index}" for index in range(1, len(tasks) + 1)]
+        if strategy and tasks
+        else ["step1", "step2"]
+    )
+    for index, key in enumerate(step_keys, start=1):
         source_ids = {
             _string(value) for value in _list(selected_sources.get(key)) if _string(value)
         }
@@ -114,6 +130,12 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
             (item for item in tasks if _int(item.get("step_index")) == index),
             {},
         )
+        if strategy and not source_ids:
+            source_ids = {
+                _string(value)
+                for value in _list(task.get("content_sources"))
+                if _string(value)
+            }
         reply_messages = [
             item
             for item in _list(task.get("reply_messages"))
@@ -123,6 +145,24 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
             item for item in reply_messages if _string(item.get("type")) in {"image", "video"}
         ]
         required = _dict(required_assets.get(key))
+        task_metadata = _task_metadata(task)
+        follow_node = _dict(task_metadata.get("follow_sequence_node"))
+        follow_scripts = [
+            dict(item)
+            for item in _list(task_metadata.get("follow_script_candidates"))
+            if isinstance(item, dict)
+        ]
+        selection_event = next(
+            (
+                item
+                for item in _list(run.get("events"))
+                if isinstance(item, dict)
+                and _string(item.get("task_id")) == _string(task.get("id"))
+                and _string(item.get("event_type")) == "task_follow_script_selected"
+            ),
+            {},
+        )
+        script_selection = _dict(selection_event.get("payload"))
         material_steps.append(
             {
                 "step": index,
@@ -138,6 +178,31 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
                     1 for item in reply_messages if _string(item.get("type")) == "text"
                 ),
                 "task_status": _string(task.get("status")),
+                "schedule_mode": _string(task_metadata.get("schedule_mode")),
+                "requested_at": _string(task_metadata.get("requested_at")),
+                "scheduled_at": _string(task.get("scheduled_at")),
+                "follow_sequence_node": {
+                    "id": _string(follow_node.get("id")),
+                    "action_code": _string(follow_node.get("action_code")),
+                    "action_name": _string(follow_node.get("action_name")),
+                    "remark": _string(follow_node.get("remark")),
+                },
+                "script_candidate_count": len(follow_scripts),
+                "script_candidates": [
+                    {
+                        "id": _string(item.get("id")),
+                        "name": _string(item.get("script_name")),
+                        "action_code": _string(item.get("action_code")),
+                        "action_name": _string(item.get("action_name")),
+                    }
+                    for item in follow_scripts
+                ],
+                "selected_script": {
+                    "id": _string(script_selection.get("selected_script_id")),
+                    "code": _string(script_selection.get("selected_script_code")),
+                    "name": _string(script_selection.get("selected_script_name")),
+                    "rejection_reason": _string(script_selection.get("script_rejection_reason")),
+                },
                 "delivery_state": (
                     "sent"
                     if media_messages and _string(task.get("status")) == "sent"
@@ -151,10 +216,13 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "decision": {
-            "eligible": scene.get("eligible") if isinstance(scene.get("eligible"), bool) else None,
+            "eligible": decision_source.get("eligible") if isinstance(decision_source.get("eligible"), bool) else None,
             "final_decision": _string(run.get("final_decision")),
             "reason_code": _string(run.get("reason_code")),
             "current_scene": _string(scene.get("current_scene")),
+            "plan_mode": _string(strategy.get("decision_mode")),
+            "checkpoint": _dict(strategy.get("checkpoint")),
+            "selected_sequence_id": _string(strategy.get("selected_sequence_id")),
             "first_scene": _string(scene.get("step1_scene")) or _string(run.get("first_scene")),
             "second_scene": _string(scene.get("step2_scene")) or _string(run.get("second_scene")),
             "first_objective": _string(scene.get("step1_objective")),
@@ -163,8 +231,12 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
             "silence_barrier": _string(mainline.get("silence_barrier")),
             "next_business_action": _string(mainline.get("next_business_action")),
             "precedence": _dict(scene.get("precedence_decision")),
-            "hard_boundary": _dict(scene.get("hard_boundary")),
-            "confidence": scene.get("confidence"),
+            "hard_boundary": _dict(decision_source.get("hard_boundary")),
+            "confidence": decision_source.get("confidence"),
+        },
+        "follow_sequence": {
+            **follow_selection,
+            "schedule": schedule,
         },
         "customer_context": {
             "recent_message_count": len(_list(snapshot.get("recent_messages"))),
@@ -184,6 +256,8 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
             "has_messages": bool(_list(snapshot.get("recent_messages"))),
             "has_material_catalog": bool(asset_catalog),
             "has_scene_analysis": bool(scene),
+            "has_strategy_decision": bool(strategy),
+            "has_follow_sequence": bool(follow_selection),
             "has_plan": bool(_dict(run.get("final_plan"))),
             "has_tasks": bool(tasks),
         },
@@ -191,7 +265,11 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
 
 
 def _workflow_nodes(workflow: dict[str, Any], run: dict[str, Any]) -> list[dict[str, Any]]:
-    definitions = (
+    selector_definitions = (
+        ("follow_sequence_selector", "卡点与跟进序列选择"),
+        ("follow_sequence_selector_repair", "序列选择结构修复"),
+    )
+    legacy_definitions = (
         ("scene_analyst", "场景分析"),
         ("scene_analyst_schema_repair", "场景结构修复"),
         ("scene_analyst_schema_repair_2", "场景二次结构修复"),
@@ -203,6 +281,12 @@ def _workflow_nodes(workflow: dict[str, Any], run: dict[str, Any]) -> list[dict[
         ("plan_writer_after_replan", "重选后写作"),
         ("contract_verifier_after_replan", "重选后审核"),
     )
+    uses_selector = bool(
+        _dict(workflow.get("follow_sequence_selector"))
+        or _dict(workflow.get("follow_sequence_selector_repair"))
+        or _strategy_decision(workflow)
+    )
+    definitions = selector_definitions + legacy_definitions if uses_selector else legacy_definitions
     error_node = _string(run.get("error_node"))
     output: list[dict[str, Any]] = []
     reached_failure = False
@@ -252,6 +336,15 @@ def _scene_analysis(workflow: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _strategy_decision(workflow: dict[str, Any]) -> dict[str, Any]:
+    summary = _dict(workflow.get("summary"))
+    return (
+        _dict(summary.get("strategy_decision"))
+        or _dict(workflow.get("strategy_decision"))
+        or _dict(_dict(workflow.get("follow_sequence_selector")).get("output"))
+    )
+
+
 def _last_customer_message(messages: Any) -> dict[str, Any]:
     values = [item for item in _list(messages) if isinstance(item, dict)]
     for message in reversed(values):
@@ -277,10 +370,17 @@ def _message_text(message: dict[str, Any]) -> str:
 
 
 def _task_scene(task: dict[str, Any]) -> str:
-    for item in _list(task.get("content_source_metadata")):
-        if isinstance(item, dict) and _string(item.get("scene")):
-            return _string(item.get("scene"))
+    metadata = _task_metadata(task)
+    if _string(metadata.get("scene")):
+        return _string(metadata.get("scene"))
     return ""
+
+
+def _task_metadata(task: dict[str, Any]) -> dict[str, Any]:
+    for item in _list(task.get("content_source_metadata")):
+        if isinstance(item, dict) and isinstance(item.get("outreach_task_metadata"), dict):
+            return dict(item["outreach_task_metadata"])
+    return {}
 
 
 def _asset_summary(items: list[dict[str, Any]]) -> dict[str, Any]:

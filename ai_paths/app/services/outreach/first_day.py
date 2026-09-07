@@ -77,8 +77,6 @@ OUTREACH_MIN_STEP_GAP_MINUTES = 6 * 60
 OUTREACH_MAX_STEP_GAP_MINUTES = 72 * 60
 OUTREACH_MAX_PLAN_MINUTES = 7 * 24 * 60
 OUTREACH_DAILY_TASK_LIMIT = 2
-FIRST_DAY_DAILY_PLAN_LIMIT = 2
-FIRST_DAY_DAILY_TASK_LIMIT = FIRST_DAY_DAILY_PLAN_LIMIT * 2
 OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 FIRST_DAY_SILENCE_TRIGGER_TYPE = "first_day_opened_silence"
 FIRST_DAY_SOP_PLAN_ID = "first_day_opened_silence"
@@ -93,7 +91,6 @@ FIRST_DAY_RECOVERABLE_FAILED_RUN_REASONS = {
 }
 FIRST_DAY_NON_RETRYABLE_RUN_REASONS = {
     "customer_deleted",
-    "first_day_daily_plan_limit_reached",
     "outreach_cycle_completed_without_new_customer_reply",
     "customer_replied",
     "order_state_changed",
@@ -3452,33 +3449,6 @@ class FirstDayWorkflow:
                     "status": "skipped",
                     "customer_id": customer_id,
                     "reason": "conversation_id_unavailable",
-                }
-            local_now = datetime.now(timezone.utc).astimezone(OUTREACH_BEIJING_TIMEZONE)
-            local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-            local_day_end = local_day_start + timedelta(days=1)
-            created_today = await asyncio.to_thread(
-                self.repository.count_outreach_plans_for_trigger_between,
-                customer_id=customer_id,
-                corp_id=identity["corp_id"],
-                wechat=identity["wechat"],
-                external_userid=identity["external_userid"],
-                trigger_type=FIRST_DAY_SILENCE_TRIGGER_TYPE,
-                started_at=local_day_start.astimezone(timezone.utc).isoformat(),
-                ended_at=local_day_end.astimezone(timezone.utc).isoformat(),
-            )
-            if created_today >= FIRST_DAY_DAILY_PLAN_LIMIT:
-                await _update_run(
-                    status="blocked",
-                    reason_code="first_day_daily_plan_limit_reached",
-                    final_decision="no_plan",
-                    finished_at=utc_now_iso(),
-                )
-                return {
-                    "status": "skipped",
-                    "customer_id": customer_id,
-                    "reason": "first_day_daily_plan_limit_reached",
-                    "created_today": created_today,
-                    "daily_limit": FIRST_DAY_DAILY_PLAN_LIMIT,
                 }
             real_customer_count = _real_customer_message_count(messages)
             latest_customer_text = _latest_real_customer_message_time(messages)

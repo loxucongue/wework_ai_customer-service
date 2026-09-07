@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from .first_day import (
-    FIRST_DAY_DAILY_TASK_LIMIT,
     FIRST_DAY_SILENCE_TRIGGER_TYPE,
     OUTREACH_DAILY_TASK_LIMIT,
     OutreachMessagePolicyError,
@@ -289,48 +288,15 @@ class TaskExecutor:
                 )
                 return {"ok": False, "status": "rescheduled", "reason": reason, "retryable": True}
         sent_today_loader = getattr(self.repository, "outreach_sent_today_count", None)
-        if callable(sent_today_loader):
+        if callable(sent_today_loader) and not is_first_day_plan:
             sent_today_count = sent_today_loader(
                 customer_id=str(task["customer_id"]),
                 corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
                 wechat=str(task.get("wechat") or plan.get("wechat") or ""),
                 external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
             )
-            daily_task_limit = FIRST_DAY_DAILY_TASK_LIMIT if is_first_day_plan else OUTREACH_DAILY_TASK_LIMIT
+            daily_task_limit = OUTREACH_DAILY_TASK_LIMIT
             if sent_today_count >= daily_task_limit:
-                if is_first_day_plan:
-                    self.repository.update_outreach_task(
-                        task_id,
-                        status="skipped",
-                        error_message="first_day_daily_task_limit_reached",
-                    )
-                    self.repository.skip_remaining_outreach_tasks(
-                        str(task["plan_id"]),
-                        reason="first_day_daily_task_limit_reached",
-                        exclude_task_id=task_id,
-                    )
-                    self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
-                    self.repository.add_outreach_event(
-                        plan_id=str(task["plan_id"]),
-                        task_id=task_id,
-                        customer_id=str(task["customer_id"]),
-                        event_type="plan_cancelled_first_day_daily_task_limit",
-                        event_summary="First-day outreach plan cancelled because its daily task limit was reached",
-                        payload={"sent_today": sent_today_count, "daily_task_limit": daily_task_limit},
-                    )
-                    self.first_day._sync_first_day_run_for_task(
-                        plan=plan,
-                        task=task,
-                        status="cancelled",
-                        reason_code="first_day_daily_task_limit_reached",
-                        final_decision="no_send",
-                        terminal=True,
-                    )
-                    return {
-                        "ok": True,
-                        "status": "skipped",
-                        "reason": "first_day_daily_task_limit_reached",
-                    }
                 next_window = _next_outreach_day_start()
                 delay_seconds = max(
                     1,
@@ -506,11 +472,32 @@ class TaskExecutor:
         try:
             if is_first_day_plan and conversation_id_send_support is True and not send_conversation_id:
                 raise RuntimeError("first_day_conversation_id_unavailable")
-            reply_messages = await self.message._generate_task_messages(
+            generated = await self.message._generate_task_messages(
                 task=task,
                 plan=plan,
                 recent_messages_override=fresh_conversation_messages,
             )
+            if isinstance(generated, dict):
+                reply_messages = [
+                    dict(item)
+                    for item in generated.get("reply_messages") or []
+                    if isinstance(item, dict)
+                ]
+                execution["message_generation"] = {
+                    key: value
+                    for key, value in generated.items()
+                    if key != "reply_messages"
+                }
+                self.repository.add_outreach_event(
+                    plan_id=str(task["plan_id"]),
+                    task_id=task_id,
+                    customer_id=str(task["customer_id"]),
+                    event_type="task_follow_script_selected",
+                    event_summary="Selected a published follow script for the sequence node",
+                    payload=execution["message_generation"],
+                )
+            else:
+                reply_messages = generated
         except OutreachMessagePolicyError as exc:
             reason = _string(exc) or "first_day_message_policy_violation"
             self.repository.update_outreach_task(task_id, status="skipped", error_message=reason)

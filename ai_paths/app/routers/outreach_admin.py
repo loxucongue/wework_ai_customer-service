@@ -20,6 +20,10 @@ _FIRST_DAY_SETTINGS_ENV_KEYS = {
     "OUTREACH_FIRST_DAY_SILENCE_MINUTES",
     "OUTREACH_FIRST_DAY_WECHAT_ALLOWLIST",
     "OUTREACH_SILENCE_ELIGIBLE_AFTER",
+    "OUTREACH_QUIET_HOURS_START",
+    "OUTREACH_QUIET_HOURS_END",
+    "OUTREACH_QUIET_HOURS_RESUME",
+    "OUTREACH_NIGHT_ACTIVE_WINDOW_MINUTES",
 }
 
 
@@ -67,6 +71,13 @@ def _normalize_eligible_after(value: Any) -> str:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
+def _normalize_clock_setting(value: Any, *, field: str) -> str:
+    raw = str(value or "").strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", raw):
+        raise HTTPException(status_code=400, detail=f"{field} must use HH:MM")
+    return raw
+
+
 def _write_settings_env(updates: dict[str, str]) -> None:
     unknown = set(updates) - _FIRST_DAY_SETTINGS_ENV_KEYS
     if unknown:
@@ -107,6 +118,15 @@ def _settings_response(settings: Settings) -> dict[str, Any]:
         "empty_allowlist_means_all_allowed": True,
         "eligible_after": str(settings.outreach_silence_eligible_after or "").strip(),
         "contact_age_limited": False,
+        "daily_plan_limit": None,
+        "daily_task_limit": None,
+        "task_count_source": "follow_sequence_nodes_or_selected_mainline_sources",
+        "quiet_hours": {
+            "start": settings.outreach_quiet_hours_start,
+            "end": settings.outreach_quiet_hours_end,
+            "resume": settings.outreach_quiet_hours_resume,
+            "night_active_window_minutes": settings.outreach_night_active_window_minutes,
+        },
     }
 
 
@@ -138,11 +158,45 @@ def create_outreach_admin_router(
         eligible_after = _normalize_eligible_after(
             payload.get("eligible_after", settings.outreach_silence_eligible_after)
         )
+        quiet_hours = payload.get("quiet_hours") if isinstance(payload.get("quiet_hours"), dict) else {}
+        quiet_start = _normalize_clock_setting(
+            quiet_hours.get("start", settings.outreach_quiet_hours_start),
+            field="quiet_hours.start",
+        )
+        quiet_end = _normalize_clock_setting(
+            quiet_hours.get("end", settings.outreach_quiet_hours_end),
+            field="quiet_hours.end",
+        )
+        quiet_resume = _normalize_clock_setting(
+            quiet_hours.get("resume", settings.outreach_quiet_hours_resume),
+            field="quiet_hours.resume",
+        )
+        try:
+            night_active_window = int(
+                quiet_hours.get(
+                    "night_active_window_minutes",
+                    settings.outreach_night_active_window_minutes,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="quiet_hours.night_active_window_minutes must be an integer",
+            ) from exc
+        if night_active_window < 1 or night_active_window > 240:
+            raise HTTPException(
+                status_code=400,
+                detail="quiet_hours.night_active_window_minutes must be between 1 and 240",
+            )
         updates = {
             "OUTREACH_FIRST_DAY_SILENCE_ENABLED": "true" if enabled else "false",
             "OUTREACH_FIRST_DAY_SILENCE_MINUTES": str(silence_minutes),
             "OUTREACH_FIRST_DAY_WECHAT_ALLOWLIST": allowlist_raw,
             "OUTREACH_SILENCE_ELIGIBLE_AFTER": eligible_after,
+            "OUTREACH_QUIET_HOURS_START": quiet_start,
+            "OUTREACH_QUIET_HOURS_END": quiet_end,
+            "OUTREACH_QUIET_HOURS_RESUME": quiet_resume,
+            "OUTREACH_NIGHT_ACTIVE_WINDOW_MINUTES": str(night_active_window),
         }
         await asyncio.to_thread(_write_settings_env, updates)
         os.environ.update(updates)
@@ -150,7 +204,15 @@ def create_outreach_admin_router(
         object.__setattr__(settings, "outreach_first_day_silence_minutes", silence_minutes)
         object.__setattr__(settings, "outreach_first_day_wechat_allowlist", allowlist_raw)
         object.__setattr__(settings, "outreach_silence_eligible_after", eligible_after)
+        object.__setattr__(settings, "outreach_quiet_hours_start", quiet_start)
+        object.__setattr__(settings, "outreach_quiet_hours_end", quiet_end)
+        object.__setattr__(settings, "outreach_quiet_hours_resume", quiet_resume)
+        object.__setattr__(settings, "outreach_night_active_window_minutes", night_active_window)
         services.outreach_service.first_day_wechat_allowlist = allowlist_raw
+        services.outreach_service.planning.quiet_hours_start = quiet_start
+        services.outreach_service.planning.quiet_hours_end = quiet_end
+        services.outreach_service.planning.quiet_hours_resume = quiet_resume
+        services.outreach_service.planning.night_active_window_minutes = night_active_window
         return _settings_response(settings)
 
     @router.get("/admin/outreach/first-day-runs", dependencies=[Depends(require_api_key)])

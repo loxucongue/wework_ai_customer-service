@@ -5,6 +5,7 @@ from typing import Any
 from app.config import get_settings
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
+from app.services.follow_knowledge_client import FollowKnowledgeClient
 from app.services.model_client import ModelClient
 from app.services.outreach_system_client import OutreachSystemClient
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
@@ -32,6 +33,11 @@ class OutreachService:
         before_send_retry_seconds: int = 60,
         first_day_wechat_allowlist: str | None = None,
         sales_strategy_service: SalesStrategyService | None = None,
+        follow_knowledge_client: FollowKnowledgeClient | None = None,
+        quiet_hours_start: str = "22:00",
+        quiet_hours_end: str = "08:00",
+        quiet_hours_resume: str = "08:30",
+        night_active_window_minutes: int = 40,
     ) -> None:
         allowlist = (
             first_day_wechat_allowlist
@@ -51,6 +57,11 @@ class OutreachService:
             sop_reply_pack_service=sop_reply_pack_service,
             coze_client=coze_client,
             sales_strategy_service=sales_strategy_service,
+            follow_knowledge_client=follow_knowledge_client,
+            quiet_hours_start=quiet_hours_start,
+            quiet_hours_end=quiet_hours_end,
+            quiet_hours_resume=quiet_hours_resume,
+            night_active_window_minutes=night_active_window_minutes,
         )
         self.first_day = FirstDayWorkflow(
             repository=repository,

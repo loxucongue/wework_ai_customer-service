@@ -1,0 +1,479 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "ai_paths"))
+
+from app.services.follow_knowledge_client import (  # noqa: E402
+    FollowKnowledgeClient,
+    _normalize_sequence,
+    is_supported_action_code,
+)
+from app.services.outreach.follow_sequence import (  # noqa: E402
+    compact_follow_sequence_catalog,
+    normalize_follow_sequence_decision,
+    normalize_follow_sequence_schedule,
+    rank_follow_scripts_for_node,
+)
+from app.services.outreach.planning import (  # noqa: E402
+    PlanGenerator,
+    _personalized_sequence_plan_error,
+)
+from app.services.outreach.message import MessageGenerator  # noqa: E402
+
+
+def _raw_sequence(step_count: int, *, action: str = "act022") -> dict[str, object]:
+    return {
+        "id": "sequence-1",
+        "sequenceName": "效果信任跟进",
+        "checkpointCode": "effect_trust",
+        "checkpointName": "效果信任",
+        "stepCount": step_count,
+        "steps": [
+            {
+                "id": f"node-{index}",
+                "sortOrder": index,
+                "actionCode": action if index == step_count else "act003",
+                "actionName": "案例证明" if index == step_count else "低压承接",
+                "triggerBase": "last_reply",
+                "relativeValue": (index - 1) * 5,
+                "relativeUnit": "minute",
+                "fixedTime": "",
+                "remark": f"节点{index}",
+            }
+            for index in range(1, step_count + 1)
+        ],
+    }
+
+
+def _plan_step(index: int, total: int) -> dict[str, object]:
+    return {
+        "step": index,
+        "plan_mode": "follow_sequence",
+        "source_id": f"follow-sequence-node:node-{index}",
+        "delay_minutes": (index - 1) * 5,
+        "schedule_source": {
+            "trigger_base": "last_reply",
+            "relative_minutes": (index - 1) * 5,
+        },
+        "message_goal": f"完成节点{index}",
+        "no_reply_action": "end_plan" if index == total else "advance_to_next_step",
+        "reply_messages": [{"type": "text", "order": 1, "content": {"text": f"节点{index}草稿"}}],
+        "should_send_payment_collection": False,
+        "follow_sequence": {
+            "id": "sequence-1",
+            "checksum": "checksum-1",
+        },
+        "follow_sequence_node": {
+            "id": f"node-{index}",
+            "action_code": "act022",
+        },
+        "content_sources": [f"follow-sequence-node:node-{index}"],
+    }
+
+
+def test_published_action_codes_are_forward_compatible_and_keep_every_node() -> None:
+    assert is_supported_action_code("act019") is True
+    assert is_supported_action_code("act038") is True
+    assert is_supported_action_code("act039") is True
+    assert is_supported_action_code("action-39") is False
+
+    normalized = _normalize_sequence(_raw_sequence(7, action="act038"))
+    assert normalized is not None
+    assert normalized["step_count"] == 7
+    assert len(normalized["steps"]) == 7
+    assert normalized["steps"][-1]["action_code"] == "act038"
+
+
+def test_selector_catalog_keeps_outline_but_not_all_node_payloads() -> None:
+    sequence = _normalize_sequence(_raw_sequence(11, action="act038"))
+    assert sequence is not None
+    compact = compact_follow_sequence_catalog({"status": "ok", "total": 1, "items": [sequence]})
+    assert compact["usable_total"] == 1
+    assert compact["items"][0]["step_count"] == 11
+    assert "nodes" not in compact["items"][0]
+    assert len(compact["items"][0]["action_outline"]) <= 5
+
+
+def test_selector_normalizes_common_stop_contact_alias_without_a_model_retry() -> None:
+    decision = normalize_follow_sequence_decision(
+        {
+            "eligible": False,
+            "hard_boundary": {
+                "active": True,
+                "type": "explicit_exit",
+                "message_indexes": [0],
+                "fact": "客户明确要求停止联系",
+            },
+            "decision_mode": "mainline",
+            "checkpoint": {"code": "none", "name": "无卡点"},
+            "selected_sequence_id": "",
+            "mainline_tasks": [],
+        }
+    )
+    assert decision["hard_boundary"]["type"] == "stop_contact"
+    assert decision["sequence_match_scope"] == "none"
+
+
+def test_invalid_sequence_node_rejects_the_whole_sequence_instead_of_dropping_it() -> None:
+    raw = _raw_sequence(4)
+    raw["steps"][2]["id"] = ""  # type: ignore[index]
+    assert _normalize_sequence(raw) is None
+
+
+def test_catalog_paging_uses_raw_count_instead_of_stopping_on_invalid_items() -> None:
+    async def fetch_page(page: int) -> dict[str, object]:
+        if page == 1:
+            return {
+                "status": "ok",
+                "total": 110,
+                "page_size": 100,
+                "raw_item_count": 100,
+                "invalid_item_count": 10,
+                "items": [{"id": f"first-{index}"} for index in range(90)],
+            }
+        return {
+            "status": "ok",
+            "total": 110,
+            "page_size": 100,
+            "raw_item_count": 10,
+            "invalid_item_count": 0,
+            "items": [{"id": f"second-{index}"} for index in range(10)],
+        }
+
+    client = object.__new__(FollowKnowledgeClient)
+    result = asyncio.run(client._query_all_pages(fetch_page, schema_version="follow_sequence_index_v2"))
+    assert result["status"] == "ok"
+    assert result["raw_item_count"] == 110
+    assert result["invalid_item_count"] == 10
+    assert len(result["items"]) == 100
+    assert len(result["pages"]) == 2
+
+
+def test_follow_sequence_plan_contract_requires_one_task_per_source_node() -> None:
+    snapshot = {
+        "follow_sequence_selection": {
+            "sequence_id": "sequence-1",
+            "checksum": "checksum-1",
+            "source_node_count": 5,
+        },
+        "first_day_sop_sequence": [],
+    }
+    response = {
+        "should_create_plan": True,
+        "plan_mode": "follow_sequence",
+        "steps": [_plan_step(index, 5) for index in range(1, 6)],
+    }
+    assert _personalized_sequence_plan_error(response, source_snapshot=snapshot) == ""
+
+    response["steps"] = response["steps"][:4]
+    assert (
+        _personalized_sequence_plan_error(response, source_snapshot=snapshot)
+        == "follow sequence node count must equal materialized task count"
+    )
+
+
+def test_same_checkpoint_scripts_relax_action_without_returning_too_many() -> None:
+    scripts = [
+        {"id": "exact", "action_code": "act022", "action_name": "案例证明", "weight": 1},
+        {"id": "other-high", "action_code": "act003", "action_name": "低压承接", "weight": 99},
+        *[{"id": f"other-{index}", "action_code": "act004", "weight": index} for index in range(10)],
+    ]
+    selected = rank_follow_scripts_for_node(
+        scripts,
+        node={"action_code": "act022", "action_name": "案例证明"},
+        limit=6,
+    )
+    assert len(selected) == 6
+    assert selected[0]["id"] == "exact"
+    assert "other-high" in {item["id"] for item in selected}
+
+
+def test_progressive_script_retrieval_reserves_room_for_global_semantic_candidates() -> None:
+    scripts = [
+        *[
+            {
+                "id": f"price-{index}",
+                "checkpoint_code": "cp10",
+                "checkpoint_name": "价格卡点",
+                "action_code": "act013",
+                "script_name": "低价真实性解释",
+                "body_text": "解释为什么活动价格低",
+                "weight": 100 - index,
+            }
+            for index in range(8)
+        ],
+        {
+            "id": "budget-fit",
+            "checkpoint_code": "cp6",
+            "checkpoint_name": "需求不匹配",
+            "checkpoint_tag": {"name": "客户预算较低"},
+            "action_code": "act003",
+            "script_name": "低预算也能改善",
+            "body_text": "结合预算说明性价比和可获得的改善",
+            "weight": 1,
+        },
+    ]
+    selected = rank_follow_scripts_for_node(
+        scripts,
+        node={"action_code": "act013", "action_name": "共情引导"},
+        checkpoint_code="cp10",
+        query_text="客户觉得价格太贵，预算不足，希望了解性价比",
+        limit=6,
+    )
+    assert len(selected) <= 6
+    budget = next(item for item in selected if item["id"] == "budget-fit")
+    assert budget["outreach_match_scope"] == "semantic_global"
+
+
+def test_progressive_retrieval_weights_business_labels_above_body_noise() -> None:
+    scripts = [
+        {
+            "id": "local",
+            "checkpoint_code": "price",
+            "action_code": "act001",
+            "script_name": "价格说明",
+            "body_text": "说明活动价格",
+        },
+        {
+            "id": "body-noise-1",
+            "checkpoint_code": "other-1",
+            "action_code": "act002",
+            "script_name": "其他问题",
+            "body_text": "价格贵预算有限预算有限预算有限",
+        },
+        {
+            "id": "body-noise-2",
+            "checkpoint_code": "other-2",
+            "action_code": "act003",
+            "script_name": "其他问题",
+            "body_text": "价格贵预算有限预算有限",
+        },
+        {
+            "id": "metadata-fit",
+            "checkpoint_code": "other-3",
+            "checkpoint_tag": {"name": "预算有限"},
+            "action_code": "act004",
+            "script_name": "预算顾虑承接",
+            "body_text": "先理解客户再解释价值",
+        },
+    ]
+
+    selected = rank_follow_scripts_for_node(
+        scripts,
+        node={"action_code": "act001", "action_name": "价格说明"},
+        checkpoint_code="price",
+        query_text="客户觉得贵，预算有限",
+        limit=3,
+    )
+
+    assert "metadata-fit" in {item["id"] for item in selected}
+
+
+def test_night_active_plan_keeps_all_nodes_inside_customer_40_minute_window() -> None:
+    latest_customer = datetime(2026, 9, 7, 14, 10, tzinfo=timezone.utc)  # 22:10 Beijing
+    now = latest_customer + timedelta(minutes=1)
+    steps = [
+        {
+            "delay_minutes": index * 30,
+            "schedule_source": {
+                "trigger_base": "last_reply",
+                "relative_minutes": index * 30,
+            },
+        }
+        for index in range(11)
+    ]
+    schedule = normalize_follow_sequence_schedule(
+        now.isoformat(),
+        steps,
+        source_snapshot={
+            "conversation_activity": {
+                "latest_customer_message_at": latest_customer.isoformat(),
+                "latest_staff_message_at": now.isoformat(),
+            }
+        },
+    )
+    deadline = latest_customer + timedelta(minutes=40)
+    assert len(schedule) == 11
+    assert {item["schedule_mode"] for item in schedule} == {"night_active_compressed"}
+    assert all(datetime.fromisoformat(item["scheduled_at"]) <= deadline for item in schedule)
+
+
+def test_inactive_night_plan_moves_the_first_node_to_morning_and_preserves_gap() -> None:
+    now = datetime(2026, 9, 7, 14, 30, tzinfo=timezone.utc)  # 22:30 Beijing
+    schedule = normalize_follow_sequence_schedule(
+        now.isoformat(),
+        [
+            {"delay_minutes": 0, "schedule_source": {"relative_minutes": 0}},
+            {"delay_minutes": 10, "schedule_source": {"relative_minutes": 10}},
+        ],
+        source_snapshot={
+            "conversation_activity": {
+                "latest_customer_message_at": (now - timedelta(hours=2)).isoformat(),
+                "latest_staff_message_at": now.isoformat(),
+            }
+        },
+    )
+    first = datetime.fromisoformat(schedule[0]["scheduled_at"])
+    second = datetime.fromisoformat(schedule[1]["scheduled_at"])
+    assert first.astimezone(timezone(timedelta(hours=8))).strftime("%H:%M") == "08:30"
+    assert second - first == timedelta(minutes=10)
+    assert {item["schedule_mode"] for item in schedule} == {"quiet_hours_deferred"}
+
+
+class _CaptureRepository:
+    def __init__(self) -> None:
+        self.tasks: list[dict[str, object]] = []
+
+    def create_outreach_plan(self, **values: object) -> dict[str, object]:
+        self.tasks = list(values["tasks"])  # type: ignore[arg-type]
+        return {"plan": {"id": "plan-1"}, "tasks": self.tasks}
+
+    def add_outreach_event(self, **_: object) -> None:
+        return None
+
+
+def test_materialization_does_not_truncate_a_five_node_sequence() -> None:
+    repository = _CaptureRepository()
+    planner = PlanGenerator(
+        repository=repository,
+        model_client=None,
+        system_client=None,
+        customer_context_service=None,
+        precision_qa_playbook_service=None,
+        sop_reply_pack_service=None,
+        coze_client=None,
+        sales_strategy_service=None,
+    )
+    response = {
+        "should_create_plan": True,
+        "plan_mode": "follow_sequence",
+        "conversion_stage": "opened_silence",
+        "stall_reason": "效果顾虑",
+        "customer_psychology": "效果信任",
+        "plan_goal": "处理卡点",
+        "plan_arc": "效果信任跟进",
+        "steps": [_plan_step(index, 5) for index in range(1, 6)],
+    }
+    now = datetime.now(timezone.utc)
+    source_snapshot = {
+        "conversation_activity": {
+            "latest_customer_message_at": (now - timedelta(hours=2)).isoformat(),
+            "latest_staff_message_at": now.isoformat(),
+        },
+        "follow_sequence_selection": {
+            "sequence_id": "sequence-1",
+            "checksum": "checksum-1",
+            "source_node_count": 5,
+        },
+        "first_day_sop_sequence": [],
+        "trigger_context": {"trigger_type": "first_day_opened_silence"},
+    }
+    result = asyncio.run(
+        planner._materialize_plan(
+            {
+                "customer_id": "customer-1",
+                "corp_id": "corp-1",
+                "user_id": "user-1",
+                "wechat": "SL8003",
+                "external_userid": "external-1",
+                "sop_plan_id": "first_day_opened_silence",
+                "trigger_context": source_snapshot["trigger_context"],
+                "workflow_run_id": "",
+                "first_day_trigger": True,
+                "reply_wait_minutes": 1,
+                "customer_silence_minutes": 2,
+                "activity_quote_fact": {},
+                "asset_catalog": [],
+                "recent_media": {},
+                "payment_collection_gate": {},
+                "source_snapshot": source_snapshot,
+            },
+            response,
+        )
+    )
+    assert result["created"] is True
+    assert len(repository.tasks) == 5
+    assert source_snapshot["follow_sequence_selection"]["materialized_task_count"] == 5
+
+
+class _MessageRepository:
+    def recent_customer_context(self, *_: object, **__: object) -> dict[str, object]:
+        return {"recent_messages": []}
+
+
+class _MessageModel:
+    async def chat_json(self, *_: object, **__: object) -> dict[str, object]:
+        return {
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "content": {"text": "这个位置确实需要多花一点路程，我们不少客户看中的还是技术和效果。"},
+                }
+            ],
+            "selected_script_id": "script-1",
+            "script_rejection_reason": "",
+        }
+
+
+def test_follow_node_requires_real_script_selection_and_attaches_its_media() -> None:
+    script = {
+        "id": "script-1",
+        "script_code": "distance-value",
+        "script_name": "距离价值承接",
+        "checkpoint_code": "distance",
+        "action_code": "act022",
+        "paragraphs": [
+            {
+                "paragraph_no": 1,
+                "messages": [
+                    {"type": "text", "content": "不少客户看中的是技术和效果。"},
+                    {
+                        "type": "image",
+                        "url": "https://cdn.example.com/case.jpg",
+                        "title": "效果参考",
+                    },
+                ],
+            }
+        ],
+    }
+    task = {
+        "customer_id": "customer-1",
+        "corp_id": "corp-1",
+        "wechat": "SL8003",
+        "external_userid": "external-1",
+        "step_index": 1,
+        "intent": "处理距离卡点",
+        "message_goal": "用价值承接距离顾虑",
+        "reply_messages": [{"type": "text", "content": {"text": "处理距离顾虑"}}],
+        "content_source_metadata": [
+            {
+                "outreach_task_metadata": {
+                    "plan_mode": "follow_sequence",
+                    "follow_sequence_node": {
+                        "id": "node-1",
+                        "action_code": "act022",
+                    },
+                    "follow_script_candidates": [script],
+                    "follow_script_model_candidates": [script],
+                }
+            }
+        ],
+    }
+    result = asyncio.run(
+        MessageGenerator(
+            repository=_MessageRepository(),
+            model_client=_MessageModel(),
+        )._generate_task_messages(
+            task=task,
+            plan={"source_snapshot": {"trigger_context": {"trigger_type": "first_day_opened_silence"}}},
+        )
+    )
+    assert isinstance(result, dict)
+    assert result["selected_script_id"] == "script-1"
+    assert [item["type"] for item in result["reply_messages"]] == ["text", "image"]

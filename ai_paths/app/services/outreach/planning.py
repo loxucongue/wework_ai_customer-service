@@ -6,6 +6,19 @@ from typing import Any
 from app.services.customer_payment_state import is_paid_deposit_state
 from app.services.outreach_assets import build_outreach_asset_model_context
 
+from .follow_sequence import (
+    FOLLOW_SEQUENCE_SELECTOR_PROMPT,
+    FOLLOW_SEQUENCE_SELECTOR_PROMPT_VERSION,
+    compact_follow_sequence_catalog,
+    compact_script_for_model,
+    find_selected_sequence,
+    follow_sequence_decision_error,
+    normalize_follow_sequence_decision,
+    normalize_follow_sequence_schedule,
+    rank_follow_scripts_for_node,
+    sequence_checksum,
+)
+
 from .first_day import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
@@ -38,7 +51,6 @@ from .first_day import (
     _first_day_internal_activity_quote_evidence,
     _first_day_materialized_sop_messages,
     _first_day_message_policy_error,
-    _first_day_outreach_plan_error,
     _first_day_scene_analysis_error,
     _first_day_sop_pack_for_step,
     _first_day_sop_pack_texts,
@@ -52,7 +64,6 @@ from .first_day import (
     _merge_first_day_scene_schema_repair,
     _message_time_iso,
     _missing_outreach_identity_fields,
-    _normalize_first_day_outreach_schedule,
     _normalize_first_day_repaired_plan,
     _normalize_first_day_scene_analysis,
     _normalize_outreach_plan_response,
@@ -87,6 +98,123 @@ from .first_day import (
     time,
     utc_now_iso,
 )
+
+
+def _follow_node_relative_minutes(node: dict[str, Any]) -> int:
+    value = max(0, _int(node.get("relative_value"), 0))
+    unit = _string(node.get("relative_unit")).lower()
+    factors = {
+        "": 1,
+        "分钟": 1,
+        "minute": 1,
+        "minutes": 1,
+        "小时": 60,
+        "hour": 60,
+        "hours": 60,
+        "天": 1440,
+        "day": 1440,
+        "days": 1440,
+    }
+    return value * factors.get(unit, 1)
+
+
+def _first_script_text(script: dict[str, Any]) -> str:
+    for paragraph in script.get("paragraphs") or []:
+        if not isinstance(paragraph, dict):
+            continue
+        for message in paragraph.get("messages") or []:
+            if isinstance(message, dict) and _string(message.get("type")) == "text":
+                text = _string(message.get("content"))
+                if text:
+                    return text
+    return _string(script.get("body_text"))
+
+
+def _configured_assets_for_source(
+    source_id: str,
+    *,
+    asset_catalog: list[dict[str, Any]],
+    recent_media: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    if not source_id:
+        return []
+    sent_urls = set(recent_media.get("urls") or [])
+    output: list[dict[str, Any]] = []
+    for item in asset_catalog:
+        if not isinstance(item, dict) or _string(item.get("source_id")) != source_id:
+            continue
+        resolved = resolve_configured_asset(
+            asset_catalog,
+            _string(item.get("asset_id")),
+            sent_urls=sent_urls,
+        )
+        if resolved:
+            output.append(resolved)
+    return output
+
+
+def _personalized_sequence_plan_error(
+    response: dict[str, Any],
+    *,
+    source_snapshot: dict[str, Any],
+) -> str:
+    if not bool(response.get("should_create_plan", True)):
+        if response.get("steps") or _string(response.get("plan_arc")):
+            return "rejected personalized plan cannot contain steps"
+        return ""
+    mode = _string(response.get("plan_mode"))
+    if mode not in {"follow_sequence", "mainline"}:
+        return "personalized plan_mode must be follow_sequence or mainline"
+    steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
+    if not steps:
+        return "personalized plan requires at least one task"
+    if mode == "follow_sequence":
+        selected = source_snapshot.get("follow_sequence_selection") or {}
+        expected_count = _int(selected.get("source_node_count"), 0)
+        if expected_count <= 0 or len(steps) != expected_count:
+            return "follow sequence node count must equal materialized task count"
+    for index, step in enumerate(steps, start=1):
+        if _int(step.get("step"), 0) != index:
+            return "personalized plan steps must be contiguous and ordered"
+        if _string(step.get("plan_mode")) != mode:
+            return "personalized task plan_mode must match its plan"
+        if not _string(step.get("source_id")) or not _string(step.get("message_goal")):
+            return "personalized task source_id and message_goal are required"
+        if not _plan_step_texts(step):
+            return "personalized task requires a reviewable draft"
+        if _bool(step.get("should_send_payment_collection")):
+            return "personalized silence plan cannot send payment collection"
+        expected_action = "end_plan" if index == len(steps) else "advance_to_next_step"
+        if _string(step.get("no_reply_action")) != expected_action:
+            return "personalized task no_reply_action does not match node order"
+    if mode == "follow_sequence":
+        selected = source_snapshot.get("follow_sequence_selection") or {}
+        sequence_id = _string(selected.get("sequence_id"))
+        checksum = _string(selected.get("checksum"))
+        node_ids: list[str] = []
+        for step in steps:
+            sequence = step.get("follow_sequence") or {}
+            node = step.get("follow_sequence_node") or {}
+            if _string(sequence.get("id")) != sequence_id or _string(sequence.get("checksum")) != checksum:
+                return "follow sequence task source identity is inconsistent"
+            node_id = _string(node.get("id"))
+            if not node_id or not _string(node.get("action_code")):
+                return "follow sequence task is missing a source node"
+            node_ids.append(node_id)
+        if len(set(node_ids)) != len(node_ids):
+            return "follow sequence task nodes must be unique"
+    else:
+        available = {
+            _string(item.get("source_id"))
+            for item in source_snapshot.get("first_day_sop_sequence") or []
+            if isinstance(item, dict)
+        }
+        selected_sources = [_string(step.get("source_id")) for step in steps]
+        if any(source not in available for source in selected_sources):
+            return "mainline task source is not in the published SOP catalog"
+        if len(set(selected_sources)) != len(selected_sources):
+            return "mainline task sources must be unique"
+    return ""
 
 
 def _closing_shadow_terminal_reason(state: dict[str, Any]) -> str:
@@ -167,6 +295,11 @@ class PlanGenerator:
         sop_reply_pack_service: Any,
         coze_client: Any,
         sales_strategy_service: Any,
+        follow_knowledge_client: Any = None,
+        quiet_hours_start: str = "22:00",
+        quiet_hours_end: str = "08:00",
+        quiet_hours_resume: str = "08:30",
+        night_active_window_minutes: int = 40,
     ) -> None:
         self.repository = repository
         self.model_client = model_client
@@ -176,6 +309,11 @@ class PlanGenerator:
         self.sop_reply_pack_service = sop_reply_pack_service
         self.coze_client = coze_client
         self.sales_strategy_service = sales_strategy_service
+        self.follow_knowledge_client = follow_knowledge_client
+        self.quiet_hours_start = _string(quiet_hours_start) or "22:00"
+        self.quiet_hours_end = _string(quiet_hours_end) or "08:00"
+        self.quiet_hours_resume = _string(quiet_hours_resume) or "08:30"
+        self.night_active_window_minutes = max(1, int(night_active_window_minutes or 40))
         self._plan_locks: dict[str, asyncio.Lock] = {}
 
     async def generate_plan(
@@ -419,6 +557,10 @@ class PlanGenerator:
         appointment_playbook = self._appointment_blocker_playbook()
         appointment_material_catalog = appointment_blocker_materials(appointment_playbook)
         first_day_sop_sequence = self._first_day_sop_sequence(required=first_day_trigger)
+        follow_sequence_result = await self._load_follow_sequence_catalog(
+            required=first_day_trigger
+        )
+        follow_sequence_catalog = compact_follow_sequence_catalog(follow_sequence_result)
         asset_catalog = (
             build_appointment_blocker_asset_catalog(appointment_playbook)
             + self._first_day_sop_asset_catalog(first_day_sop_sequence)
@@ -475,6 +617,7 @@ class PlanGenerator:
             "recent_media_delivery": recent_media,
             "recent_sop_delivery": recent_sop_delivery,
             "first_day_sop_sequence": first_day_sop_sequence,
+            "follow_sequence_catalog": follow_sequence_catalog,
             "appointment_blocker_scene_index": appointment_blocker_scene_index,
         }
         source_snapshot["available_sources_by_scene"] = _first_day_available_sources_by_scene(
@@ -504,6 +647,7 @@ class PlanGenerator:
             "activity_quote_fact": activity_quote_fact,
             "payment_collection_gate": payment_collection_gate,
             "source_snapshot": source_snapshot,
+            "follow_sequence_result": follow_sequence_result,
         }
 
     async def _decide_plan(self, prepared: dict[str, Any]) -> dict[str, Any]:
@@ -539,31 +683,344 @@ class PlanGenerator:
         return await self._decide_standard_plan(prepared)
 
     async def _decide_first_day_plan(self, prepared: dict[str, Any]) -> dict[str, Any]:
-        appointment_material_catalog = prepared["appointment_material_catalog"]
         source_snapshot = prepared["source_snapshot"]
-        first_day_model_snapshot, scene_analysis, analyst_trace = await self._analyze_first_day_scene(
-            source_snapshot
-        )
-        source_snapshot["first_day_workflow"] = {
-            "scene_analysis": scene_analysis,
-            "writer_result": {},
-            "verifier_result": {},
-            "traces": {"scene_analyst": analyst_trace},
+        sequence_result = prepared.get("follow_sequence_result") or {}
+        sequences = [
+            dict(item)
+            for item in sequence_result.get("items") or []
+            if isinstance(item, dict)
+        ]
+        mainline_sources = [
+            {
+                "source_id": _string(item.get("source_id")),
+                "name": _string(item.get("name")),
+                "mapped_scene": _string(item.get("mapped_scene")),
+                "order": _int(item.get("order"), 999),
+                "purpose": _string(item.get("purpose")),
+                "message_types": [
+                    _string(message.get("type"))
+                    for message in item.get("reply_messages") or []
+                    if isinstance(message, dict) and _string(message.get("type"))
+                ],
+            }
+            for item in source_snapshot.get("first_day_sop_sequence") or []
+            if isinstance(item, dict) and _string(item.get("source_id"))
+        ]
+        payload = {
+            "workflow_run_id": _string(source_snapshot.get("workflow_run_id")),
+            "recent_messages": source_snapshot.get("recent_messages") or [],
+            "conversation_activity": source_snapshot.get("conversation_activity") or {},
+            "customer_fact_snapshot": source_snapshot.get("customer_fact_snapshot") or {},
+            "customer_context": source_snapshot.get("customer_context") or {},
+            "customer_relation": source_snapshot.get("customer_relation") or {},
+            "personalized_order_gate": source_snapshot.get("personalized_order_gate") or {},
+            "recent_media_delivery": source_snapshot.get("recent_media_delivery") or {},
+            "recent_sop_delivery": source_snapshot.get("recent_sop_delivery") or [],
+            "follow_sequences": (source_snapshot.get("follow_sequence_catalog") or {}).get("items") or [],
+            "follow_sequence_catalog_status": {
+                key: (source_snapshot.get("follow_sequence_catalog") or {}).get(key)
+                for key in ("status", "reason", "declared_total", "usable_total")
+            },
+            "mainline_sources": mainline_sources,
         }
-        if not _bool(scene_analysis.get("eligible")):
+        decision, trace = await self._run_first_day_model_node(
+            node="follow_sequence_selector",
+            prompt=FOLLOW_SEQUENCE_SELECTOR_PROMPT,
+            prompt_version=FOLLOW_SEQUENCE_SELECTOR_PROMPT_VERSION,
+            payload=payload,
+        )
+        decision = normalize_follow_sequence_decision(decision)
+        decision_error = follow_sequence_decision_error(
+            decision,
+            sequences=sequences,
+            mainline_sources=mainline_sources,
+            message_count=len(source_snapshot.get("recent_messages") or []),
+        )
+        if decision_error:
+            repaired, repair_trace = await self._run_first_day_model_node(
+                node="follow_sequence_selector_repair",
+                prompt=FOLLOW_SEQUENCE_SELECTOR_PROMPT,
+                prompt_version=FOLLOW_SEQUENCE_SELECTOR_PROMPT_VERSION,
+                payload={
+                    **payload,
+                    "invalid_decision": decision,
+                    "structure_error": decision_error,
+                    "repair_instruction": (
+                        "只修复结构和目录ID，保留已有客户语义及硬边界判断；返回完整对象。"
+                    ),
+                },
+            )
+            trace["schema_repair"] = repair_trace
+            decision = normalize_follow_sequence_decision(repaired)
+            decision_error = follow_sequence_decision_error(
+                decision,
+                sequences=sequences,
+                mainline_sources=mainline_sources,
+                message_count=len(source_snapshot.get("recent_messages") or []),
+            )
+        source_snapshot["first_day_workflow"] = {
+            "strategy_decision": decision,
+            "traces": {"follow_sequence_selector": trace},
+            "decision_error": decision_error,
+        }
+        if decision_error:
+            raise RuntimeError(f"first_day_follow_sequence_decision_invalid: {decision_error}")
+        if not _bool(decision.get("eligible")):
             return {
                 "should_create_plan": False,
-                "stall_reason": _string(scene_analysis.get("suppress_reason"))
-                or "first_day_scene_analyst_suppressed",
+                "stall_reason": _string(decision.get("suppress_reason"))
+                or _string((decision.get("hard_boundary") or {}).get("type"))
+                or "first_day_strategy_suppressed",
                 "plan_arc": "",
                 "steps": [],
             }
-        return await self._write_first_day_plan(
+        if _string(decision.get("decision_mode")) == "follow_sequence":
+            selected = find_selected_sequence(sequences, decision.get("selected_sequence_id"))
+            return await self._build_follow_sequence_plan(
+                source_snapshot=source_snapshot,
+                decision=decision,
+                sequence=selected,
+            )
+        return self._build_mainline_plan(
             source_snapshot=source_snapshot,
-            model_snapshot=first_day_model_snapshot,
-            scene_analysis=scene_analysis,
-            appointment_material_catalog=appointment_material_catalog,
+            decision=decision,
         )
+
+    async def _build_follow_sequence_plan(
+        self,
+        *,
+        source_snapshot: dict[str, Any],
+        decision: dict[str, Any],
+        sequence: dict[str, Any],
+    ) -> dict[str, Any]:
+        client = self.follow_knowledge_client
+        scripts_result = (
+            await client.query_all_scripts()
+            if client is not None and bool(getattr(client, "available", False))
+            else {
+                "status": "disabled",
+                "reason": "follow_knowledge_not_configured",
+                "items": [],
+            }
+        )
+        scripts = [dict(item) for item in scripts_result.get("items") or [] if isinstance(item, dict)]
+        checksum = sequence_checksum(sequence)
+        sequence_match_scope = _string(decision.get("sequence_match_scope"))
+        script_search_query = " ".join(
+            value
+            for value in (
+                _string(decision.get("script_search_query")),
+                _string((decision.get("checkpoint") or {}).get("name")),
+                _string((decision.get("checkpoint") or {}).get("evidence")),
+            )
+            if value
+        )
+        steps: list[dict[str, Any]] = []
+        script_match_summary: list[dict[str, Any]] = []
+        for index, node in enumerate(sequence.get("steps") or [], start=1):
+            candidates = rank_follow_scripts_for_node(
+                scripts,
+                node=node,
+                limit=6,
+                checkpoint_code=_string(sequence.get("checkpoint_code")),
+                query_text=script_search_query,
+            )
+            model_candidates = [compact_script_for_model(item) for item in candidates]
+            draft_text = _first_script_text(candidates[0]) if candidates else ""
+            if not draft_text:
+                draft_text = _string(node.get("remark")) or _string(node.get("action_name"))
+            if not draft_text:
+                draft_text = "围绕客户当前卡点提供一个新的、自然的销售价值。"
+            node_goal = (
+                _string(node.get("action_name"))
+                if sequence_match_scope == "checkpoint_type"
+                else _string(node.get("remark")) or _string(node.get("action_name"))
+            )
+            if not node_goal:
+                node_goal = "围绕客户当前卡点提供一个新的、自然的销售价值。"
+            relative_minutes = _follow_node_relative_minutes(node)
+            source_ids = [
+                f"follow-sequence:{_string(sequence.get('id'))}",
+                f"follow-sequence-node:{_string(node.get('id'))}",
+                *[
+                    _string(item.get("source_ref"))
+                    for item in candidates
+                    if _string(item.get("source_ref"))
+                ],
+            ]
+            steps.append(
+                {
+                    "step": index,
+                    "plan_mode": "follow_sequence",
+                    "scene": "objection_resolution",
+                    "source_id": f"follow-sequence-node:{_string(node.get('id'))}",
+                    "delay_minutes": relative_minutes,
+                    "schedule_source": {
+                        "trigger_base": _string(node.get("trigger_base")),
+                        "trigger_base_name": _string(node.get("trigger_base_name")),
+                        "relative_value": _int(node.get("relative_value"), 0),
+                        "relative_unit": _string(node.get("relative_unit")),
+                        "relative_minutes": relative_minutes,
+                        "fixed_time": _string(node.get("fixed_time")),
+                    },
+                    "timing_reason": "采用平台序列节点时间",
+                    "urgency_level": "normal",
+                    "no_reply_action": (
+                        "end_plan" if index == len(sequence.get("steps") or []) else "advance_to_next_step"
+                    ),
+                    "no_reply_strategy": "客户仍未回复时按已发布序列进入下一节点",
+                    "content_mode": "soft_conversion",
+                    "intent": _string(node.get("action_name")) or "follow_sequence",
+                    "persuasion_angle": "empathy",
+                    "new_value": node_goal,
+                    "avoid_repeating": [],
+                    "before_send_check": True,
+                    "message_goal": node_goal,
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": draft_text}}
+                    ],
+                    "asset_strategy": "none",
+                    "asset_id": "",
+                    "case_query": "",
+                    "fallback_asset_id": "",
+                    "cta": "根据当前客户状态自然推进一个动作",
+                    "payment_collection_basis": "none",
+                    "payment_collection_evidence": {},
+                    "should_send_payment_collection": False,
+                    "content_sources": source_ids,
+                    "follow_sequence": {
+                        "id": _string(sequence.get("id")),
+                        "name": _string(sequence.get("sequence_name")),
+                        "checkpoint_code": _string(sequence.get("checkpoint_code")),
+                        "checkpoint_name": _string(sequence.get("checkpoint_name")),
+                        "checksum": checksum,
+                        "node_count": len(sequence.get("steps") or []),
+                        "match_scope": sequence_match_scope,
+                    },
+                    "follow_sequence_node": dict(node),
+                    "follow_script_candidates": candidates,
+                    "follow_script_model_candidates": model_candidates,
+                    "script_match_scope": (
+                        "progressive_checkpoint_action_semantic"
+                        if candidates
+                        else "progressive_empty"
+                    ),
+                }
+            )
+            script_match_summary.append(
+                {
+                    "step": index,
+                    "node_id": _string(node.get("id")),
+                    "action_code": _string(node.get("action_code")),
+                    "candidate_count": len(candidates),
+                    "candidate_script_ids": [_string(item.get("id")) for item in candidates],
+                    "candidate_match_scopes": [
+                        _string(item.get("outreach_match_scope")) for item in candidates
+                    ],
+                }
+            )
+        source_snapshot["follow_sequence_selection"] = {
+            "catalog_status": _string((source_snapshot.get("follow_sequence_catalog") or {}).get("status")),
+            "sequence_id": _string(sequence.get("id")),
+            "sequence_name": _string(sequence.get("sequence_name")),
+            "checkpoint_code": _string(sequence.get("checkpoint_code")),
+            "checkpoint_name": _string(sequence.get("checkpoint_name")),
+            "customer_checkpoint_name": _string((decision.get("checkpoint") or {}).get("name")),
+            "sequence_match_scope": sequence_match_scope,
+            "checksum": checksum,
+            "source_node_count": len(sequence.get("steps") or []),
+            "script_catalog_status": _string(scripts_result.get("status")),
+            "script_catalog_reason": _string(scripts_result.get("reason")),
+            "script_search_query": script_search_query,
+            "script_matches": script_match_summary,
+        }
+        return {
+            "should_create_plan": True,
+            "conversion_stage": "opened_silence",
+            "customer_stage": "opened_silence",
+            "stall_reason": _string((decision.get("customer_mainline") or {}).get("silence_barrier")),
+            "customer_psychology": _string((decision.get("checkpoint") or {}).get("name")),
+            "plan_goal": "按已发布跟进序列处理当前卡点并继续推进预约",
+            "plan_arc": _string(sequence.get("sequence_name")),
+            "plan_mode": "follow_sequence",
+            "steps": steps,
+        }
+
+    def _build_mainline_plan(
+        self,
+        *,
+        source_snapshot: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        packs = {
+            _string(item.get("source_id")): dict(item)
+            for item in source_snapshot.get("first_day_sop_sequence") or []
+            if isinstance(item, dict) and _string(item.get("source_id"))
+        }
+        selected = [
+            item
+            for item in decision.get("mainline_tasks") or []
+            if _string(item.get("source_id")) in packs
+        ]
+        selected_source_ids: dict[str, list[str]] = {}
+        steps: list[dict[str, Any]] = []
+        for index, item in enumerate(selected, start=1):
+            pack = packs[_string(item.get("source_id"))]
+            texts = _first_day_sop_pack_texts(pack.get("reply_messages") or [])
+            draft_text = texts[0] if texts else _string(item.get("objective"))
+            selected_source_ids[f"step{index}"] = [_string(pack.get("source_id"))]
+            steps.append(
+                {
+                    "step": index,
+                    "plan_mode": "mainline",
+                    "scene": _string(pack.get("mapped_scene")),
+                    "source_id": _string(pack.get("source_id")),
+                    "delay_minutes": max(0, _int(item.get("delay_minutes"), 0)),
+                    "schedule_source": {
+                        "trigger_base": "plan_created",
+                        "relative_minutes": max(0, _int(item.get("delay_minutes"), 0)),
+                    },
+                    "timing_reason": "由 DeepSeek 根据当前主线和沉默状态安排",
+                    "urgency_level": "normal",
+                    "no_reply_action": "end_plan" if index == len(selected) else "advance_to_next_step",
+                    "no_reply_strategy": "客户仍未回复时继续下一个未完成主线节点",
+                    "content_mode": "soft_conversion",
+                    "intent": _string(pack.get("mapped_scene")) or "mainline",
+                    "persuasion_angle": "professionalism",
+                    "new_value": _string(item.get("objective")),
+                    "avoid_repeating": [],
+                    "before_send_check": True,
+                    "message_goal": _string(item.get("objective")),
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": draft_text}}
+                    ],
+                    "asset_strategy": "none",
+                    "asset_id": "",
+                    "case_query": "",
+                    "fallback_asset_id": "",
+                    "cta": "自然推进主线",
+                    "payment_collection_basis": "none",
+                    "payment_collection_evidence": {},
+                    "should_send_payment_collection": False,
+                    "content_sources": [_string(pack.get("source_id"))],
+                }
+            )
+        source_snapshot["first_day_workflow"]["strategy_decision"]["selected_source_ids"] = selected_source_ids
+        source_snapshot["mainline_plan_selection"] = {
+            "source_count": len(steps),
+            "source_ids": [_string(item.get("source_id")) for item in selected],
+        }
+        return {
+            "should_create_plan": True,
+            "conversion_stage": "opened_silence",
+            "customer_stage": "opened_silence",
+            "stall_reason": "无明确卡点，继续未完成销售主线",
+            "customer_psychology": "无明确卡点",
+            "plan_goal": "继续提供新价值并自然推进预约",
+            "plan_arc": "主线内容按当前客户状态继续推进",
+            "plan_mode": "mainline",
+            "steps": steps,
+        }
 
     async def _analyze_first_day_scene(
         self, source_snapshot: dict[str, Any]
@@ -1035,13 +1492,14 @@ class PlanGenerator:
                     final_decision="no_plan",
                     first_scene=_string((scene_analysis or {}).get("step1_scene")),
                     second_scene=_string((scene_analysis or {}).get("step2_scene")),
+                    input_snapshot_json=source_snapshot,
                     workflow_json=recorded_workflow,
                     final_plan_json=response,
                     finished_at=utc_now_iso(),
                 )
             return {"created": False, "ai_result": response}
         structure_error = (
-            _first_day_outreach_plan_error(response)
+            _personalized_sequence_plan_error(response, source_snapshot=source_snapshot)
             if first_day_trigger
             else _outreach_plan_structure_error(response) or _outreach_plan_context_error(
                 response,
@@ -1066,7 +1524,7 @@ class PlanGenerator:
                 customer_psychology=str(response.get("customer_psychology") or ""),
                 plan_goal=str(response.get("plan_goal") or ""),
                 source_snapshot=source_snapshot,
-                tasks=tasks[:3],
+                tasks=tasks,
                 sop_plan_id=sop_plan_id,
                 workflow_run_id=workflow_run_id,
             )
@@ -1085,6 +1543,7 @@ class PlanGenerator:
                 "second_task_id": _string((created_tasks[1] if len(created_tasks) > 1 else {}).get("id")),
                 "first_scene": _string((raw_steps[0] if raw_steps else {}).get("scene")),
                 "second_scene": _string((raw_steps[1] if len(raw_steps) > 1 else {}).get("scene")),
+                "input_snapshot_json": source_snapshot,
                 "workflow_json": recorded_workflow,
                 "final_plan_json": response,
             }
@@ -1108,7 +1567,10 @@ class PlanGenerator:
         activity_quote_fact = prepared["activity_quote_fact"]
         payment_collection_gate = prepared["payment_collection_gate"]
         source_snapshot = prepared["source_snapshot"]
-        raw_steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:2 if first_day_trigger else 3]
+        plan_mode = _string(response.get("plan_mode"))
+        raw_steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
+        if not first_day_trigger:
+            raw_steps = raw_steps[:3]
 
         primary_resolved_assets = await asyncio.gather(
             *[
@@ -1133,7 +1595,15 @@ class PlanGenerator:
             if identity
         }
         normalized_schedule = (
-            _normalize_first_day_outreach_schedule(now, raw_steps)
+            normalize_follow_sequence_schedule(
+                now,
+                raw_steps,
+                source_snapshot=source_snapshot,
+                quiet_start=self.quiet_hours_start,
+                quiet_end=self.quiet_hours_end,
+                quiet_resume=self.quiet_hours_resume,
+                night_active_window_minutes=self.night_active_window_minutes,
+            )
             if first_day_trigger
             else _normalize_outreach_schedule(now, raw_steps)
         )
@@ -1164,15 +1634,24 @@ class PlanGenerator:
                 )
             )
             payment_collection_added = payment_collection_added or should_send_payment_collection
-            sop_pack = (
-                _first_day_sop_pack_for_step(
+            if first_day_trigger and plan_mode == "mainline":
+                sop_pack = next(
+                    (
+                        dict(item)
+                        for item in source_snapshot.get("first_day_sop_sequence") or []
+                        if isinstance(item, dict)
+                        and _string(item.get("source_id")) == _string(step.get("source_id"))
+                    ),
+                    {},
+                )
+            elif first_day_trigger and plan_mode not in {"follow_sequence", "mainline"}:
+                sop_pack = _first_day_sop_pack_for_step(
                     source_snapshot,
                     step_index=index,
                     scene=_string(step.get("scene")),
                 )
-                if first_day_trigger
-                else {}
-            )
+            else:
+                sop_pack = {}
             sop_pack_messages = [
                 dict(message)
                 for message in sop_pack.get("reply_messages") or []
@@ -1189,7 +1668,11 @@ class PlanGenerator:
                     plan={"source_snapshot": source_snapshot},
                     context={},
                 )
-            preserve_sop_pack_messages = bool(sop_pack_messages and not sop_pack_policy_error)
+            preserve_sop_pack_messages = bool(
+                sop_pack_messages
+                and not sop_pack_policy_error
+                and plan_mode not in {"follow_sequence", "mainline"}
+            )
             draft_texts = (
                 writer_texts
                 if use_writer_text
@@ -1227,7 +1710,13 @@ class PlanGenerator:
                         used_asset_keys.add(asset_key)
             else:
                 candidate_assets = (
-                    _first_day_configured_assets_for_step(
+                    _configured_assets_for_source(
+                        _string(step.get("source_id")),
+                        asset_catalog=asset_catalog,
+                        recent_media=recent_media,
+                    )
+                    if first_day_trigger and plan_mode == "mainline"
+                    else _first_day_configured_assets_for_step(
                         source_snapshot,
                         step_index=index,
                         asset_catalog=asset_catalog,
@@ -1266,7 +1755,7 @@ class PlanGenerator:
                     "selected_source_ids"
                 ) or {}).get(f"step{index}")
             )
-            main_source_id = _string(sop_pack.get("source_id")) or next(
+            main_source_id = _string(step.get("source_id")) or _string(sop_pack.get("source_id")) or next(
                 (
                     source_id
                     for source_id in selected_source_ids
@@ -1286,6 +1775,10 @@ class PlanGenerator:
                 "no_reply_strategy": _string(step.get("no_reply_strategy")),
                 "requested_delay_minutes": schedule["requested_delay_minutes"],
                 "normalized_delay_minutes": schedule["normalized_delay_minutes"],
+                "requested_at": schedule.get("requested_at"),
+                "schedule_mode": schedule.get("schedule_mode"),
+                "night_active": schedule.get("night_active"),
+                "night_deadline": schedule.get("night_deadline"),
                 "asset_strategy": _string(step.get("asset_strategy")) or "none",
                 "asset_id": _string(step.get("asset_id")),
                 "case_query": _string(step.get("case_query")),
@@ -1305,6 +1798,20 @@ class PlanGenerator:
                 "sop_pack_rewrite_reason": sop_pack_policy_error,
                 "sop_pack_reply_messages": sop_pack_messages,
                 "resolved_assets": resolved_assets_for_step,
+                "plan_mode": plan_mode,
+                "follow_sequence": dict(step.get("follow_sequence") or {}),
+                "follow_sequence_node": dict(step.get("follow_sequence_node") or {}),
+                "follow_script_candidates": [
+                    dict(item)
+                    for item in step.get("follow_script_candidates") or []
+                    if isinstance(item, dict)
+                ],
+                "follow_script_model_candidates": [
+                    dict(item)
+                    for item in step.get("follow_script_model_candidates") or []
+                    if isinstance(item, dict)
+                ],
+                "script_match_scope": _string(step.get("script_match_scope")),
             }
             tasks.append(
                 {
@@ -1326,6 +1833,32 @@ class PlanGenerator:
             )
         if not tasks:
             raise RuntimeError("outreach_plan_model_missing_reviewable_drafts")
+        if first_day_trigger:
+            source_snapshot["personalized_schedule"] = {
+                "plan_mode": plan_mode,
+                "task_count": len(tasks),
+                "quiet_hours": {
+                    "start": self.quiet_hours_start,
+                    "end": self.quiet_hours_end,
+                    "resume": self.quiet_hours_resume,
+                },
+                "night_active_window_minutes": self.night_active_window_minutes,
+                "schedule_modes": list(
+                    dict.fromkeys(_string(item.get("schedule_mode")) for item in normalized_schedule)
+                ),
+                "tasks": [
+                    {
+                        "step": index,
+                        "requested_at": item.get("requested_at"),
+                        "scheduled_at": item.get("scheduled_at"),
+                        "schedule_mode": item.get("schedule_mode"),
+                        "night_deadline": item.get("night_deadline"),
+                    }
+                    for index, item in enumerate(normalized_schedule, start=1)
+                ],
+            }
+            if isinstance(source_snapshot.get("follow_sequence_selection"), dict):
+                source_snapshot["follow_sequence_selection"]["materialized_task_count"] = len(tasks)
         return raw_steps, tasks
 
     async def _run_first_day_model_node(
@@ -1728,6 +2261,26 @@ class PlanGenerator:
 
     def _outreach_asset_catalog(self) -> list[dict[str, Any]]:
         return build_appointment_blocker_asset_catalog(self._appointment_blocker_playbook())
+
+    async def _load_follow_sequence_catalog(self, *, required: bool = False) -> dict[str, Any]:
+        client = self.follow_knowledge_client
+        if client is None or not bool(getattr(client, "available", False)):
+            return {
+                "schema_version": "follow_sequence_index_v2",
+                "status": "disabled",
+                "source": "follow_knowledge_api",
+                "reason": "follow_knowledge_not_configured",
+                "total": 0,
+                "items": [],
+            }
+        result = await client.query_all_sequences()
+        if required and _string(result.get("status")) == "ok" and not result.get("items"):
+            return {
+                **result,
+                "status": "empty",
+                "reason": _string(result.get("reason")) or "published_follow_sequence_catalog_empty",
+            }
+        return result
 
     def _first_day_sop_sequence(self, *, required: bool = False) -> list[dict[str, Any]]:
         if self.sop_reply_pack_service is None:

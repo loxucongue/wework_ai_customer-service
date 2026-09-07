@@ -301,6 +301,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
     platform_agent_client = PlatformAgentClient(settings)
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
     sales_strategy_service = SalesStrategyService(settings)
+    follow_knowledge_client = FollowKnowledgeClient(settings)
     customer_context_service = CustomerContextService(platform_agent_client)
     store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
     sop_reply_pack_service = SopReplyPackService(settings)
@@ -316,6 +317,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
         sop_reply_pack_service=sop_reply_pack_service,
         coze_client=coze_client,
         sales_strategy_service=sales_strategy_service,
+        follow_knowledge_client=follow_knowledge_client,
     )
     sop_platform_client = SopPlatformClient(settings)
     service_rule_data_service = _build_service_rule_data_worker(settings, repository)
@@ -348,6 +350,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
             outreach_system_client,
             sop_platform_client,
             service_rule_data_service.client,
+            follow_knowledge_client,
         ),
         _platform_agent_client=platform_agent_client,
     )
@@ -394,6 +397,7 @@ def _build_outreach_service(
     sop_reply_pack_service: SopReplyPackService,
     coze_client: CozeClient,
     sales_strategy_service: SalesStrategyService,
+    follow_knowledge_client: FollowKnowledgeClient | None = None,
 ) -> OutreachService:
     return OutreachService(
         repository=repository,
@@ -405,6 +409,11 @@ def _build_outreach_service(
         coze_client=coze_client,
         before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
         sales_strategy_service=sales_strategy_service,
+        follow_knowledge_client=follow_knowledge_client,
+        quiet_hours_start=settings.outreach_quiet_hours_start,
+        quiet_hours_end=settings.outreach_quiet_hours_end,
+        quiet_hours_resume=settings.outreach_quiet_hours_resume,
+        night_active_window_minutes=settings.outreach_night_active_window_minutes,
     )
 
 
