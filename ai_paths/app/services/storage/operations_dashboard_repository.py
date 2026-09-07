@@ -234,9 +234,9 @@ def _contact_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
     for row in rows:
         corp = str(row.get("corp_id") or "").strip().lower()
         wechat = str(row.get("wechat") or "").strip().lower()
-        external = str(row.get("external_userid") or row.get("customer_id") or "").strip().lower()
-        customer = str(row.get("customer_id") or row.get("external_userid") or "").strip().lower()
-        identity = external or customer
+        external = str(row.get("external_userid") or "").strip().lower()
+        customer = str(row.get("customer_id") or "").strip().lower()
+        identity = f"external:{external}" if external else f"platform_customer:{customer}" if customer else ""
         if identity:
             output.add((corp, wechat, identity))
     return output

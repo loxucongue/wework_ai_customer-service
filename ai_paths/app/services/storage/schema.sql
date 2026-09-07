@@ -18,6 +18,25 @@ CREATE INDEX IF NOT EXISTS idx_conversations_customer_id ON conversations(custom
 CREATE INDEX IF NOT EXISTS idx_conversations_sales_contact
 ON conversations(corp_id, wechat, external_userid, customer_id, updated_at);
 
+CREATE TABLE IF NOT EXISTS customer_identity_links (
+    id TEXT PRIMARY KEY,
+    corp_id TEXT NOT NULL,
+    wechat TEXT NOT NULL,
+    external_userid TEXT NOT NULL,
+    platform_customer_id TEXT NOT NULL DEFAULT '',
+    platform_user_id TEXT NOT NULL DEFAULT '',
+    customer_add_wechat_id TEXT NOT NULL DEFAULT '',
+    platform_customer_id_source TEXT NOT NULL DEFAULT '',
+    verification_status TEXT NOT NULL DEFAULT 'observed',
+    conflict_json TEXT NOT NULL DEFAULT '{}',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    UNIQUE(corp_id, wechat, external_userid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_customer_identity_links_platform_customer
+ON customer_identity_links(corp_id, wechat, platform_customer_id);
+
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL,

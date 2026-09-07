@@ -760,7 +760,11 @@ def _load_customer_identity(
             "replay_snapshot_used": True,
         }
     if not customer_context_service:
-        return {"platform_customer_id": str(state.get("customer_id") or "unknown"), "request_context": request_context}
+        return {
+            "platform_customer_id": str(state.get("platform_customer_id") or ""),
+            "platform_customer_id_source": "validated_request",
+            "request_context": request_context,
+        }
     return customer_context_service.load_identity(
         customer_id=str(state.get("customer_id") or "unknown"),
         request_context=request_context,

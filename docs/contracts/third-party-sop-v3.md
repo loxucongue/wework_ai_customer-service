@@ -60,7 +60,7 @@
 
 当权威会话事实确认客户未开口时，SOP 内容直接发送，不调用模型决定是否发送。会话拉取失败或客户消息时间不可靠时不得把客户当作未开口。
 
-客户真实回复需要回写策略数据时，只能在同一 `corp_id + wechat + external_userid/customer_id` 边界内，关联回复时间之前最近一条真实 `status=sent` 平台 SOP 任务。Shadow、未发送、失败和 `completed_without_send` 均不得关联；无匹配任务属于正常 `skipped`，不记录告警。平台任务 ID 从平台事件或 `platform-sop:<task_id>` 幂等键解析，重复回复回写仍须幂等。
+客户真实回复需要回写策略数据时，只能在同一 `corp_id + wechat + external_userid` 边界内，关联回复时间之前最近一条真实 `status=sent` 平台 SOP 任务。`platform_customer_id` 必须来自任务显式字段或客户资料查询，不得使用 `external_userid` 补位。Shadow、未发送、失败和 `completed_without_send` 均不得关联；无匹配任务属于正常 `skipped`，不记录告警。平台任务 ID 从平台事件或 `platform-sop:<task_id>` 幂等键解析，重复回复回写仍须幂等。
 
 ## 日志审计
 

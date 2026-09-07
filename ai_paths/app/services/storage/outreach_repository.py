@@ -59,6 +59,20 @@ def _string(value: Any) -> str:
     return str(value).strip()
 
 
+def _strict_identity_match(
+    *,
+    external_userid: str,
+    customer_id: str,
+    table_alias: str = "",
+) -> tuple[str, tuple[str, ...]]:
+    prefix = f"{table_alias}." if table_alias else ""
+    if _string(external_userid):
+        return f"lower({prefix}external_userid)=lower(?)", (_string(external_userid),)
+    if _string(customer_id):
+        return f"{prefix}customer_id=?", (_string(customer_id),)
+    return "1=0", ()
+
+
 def _outreach_candidate_matches_keyword(candidate: dict[str, Any], keyword: str) -> bool:
     needle = keyword.strip().lower()
     if not needle:
@@ -1176,11 +1190,19 @@ class OutreachRepositoryMixin:
         ).fetchall()
 
         def contact_key(row: Any) -> tuple[str, str, str]:
-            external = _string(row["external_userid"]).lower() or _string(row["customer_id"]).lower()
+            external_userid = _string(row["external_userid"]).lower()
+            platform_customer_id = _string(row["customer_id"]).lower()
+            identity = (
+                f"external:{external_userid}"
+                if external_userid
+                else f"platform_customer:{platform_customer_id}"
+                if platform_customer_id
+                else ""
+            )
             return (
                 _string(row["corp_id"]).lower(),
                 _string(row["wechat"]).lower(),
-                external,
+                identity,
             )
 
         customer_messages: dict[tuple[str, str, str], list[datetime]] = {}
@@ -1413,6 +1435,17 @@ class OutreachRepositoryMixin:
             event_summary="AI generated outreach plan",
             payload=source_snapshot,
         )
+        observe_identity = getattr(self, "observe_customer_identity", None)
+        if callable(observe_identity):
+            observe_identity(
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                customer_id=customer_id,
+                user_id=user_id,
+                customer_add_wechat_id=_string(source_snapshot.get("customer_add_wechat_id")),
+                source="outreach_plan",
+            )
         scope = build_customer_scope(
             corp_id=corp_id,
             wechat=wechat,
@@ -1872,17 +1905,21 @@ class OutreachRepositoryMixin:
         now = utc_now_iso()
         plan_ids: list[str] = []
         skipped_tasks = 0
+        identity_sql, identity_params = _strict_identity_match(
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
         with self.store.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id
                 FROM outreach_plans
                 WHERE corp_id=?
                   AND lower(wechat)=lower(?)
-                  AND (lower(external_userid)=lower(?) OR customer_id=?)
+                  AND {identity_sql}
                   AND status IN ('draft', 'active', 'waiting', 'paused')
                 """,
-                (corp_id, wechat, external_userid or customer_id, customer_id),
+                (corp_id, wechat, *identity_params),
             ).fetchall()
             plan_ids = [_string(row["id"]) for row in rows if _string(row["id"])]
             for plan_id in plan_ids:
@@ -1956,21 +1993,25 @@ class OutreachRepositoryMixin:
         if not _string(wechat):
             return []
         since = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat()
+        identity_sql, identity_params = _strict_identity_match(
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
         with self.store.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT sop_pack_id, sop_pack_name, sop_category, trigger_source,
                        reply_messages_json, sent_at
                 FROM sop_send_tasks
                 WHERE status='sent'
                   AND corp_id=?
                   AND lower(wechat)=lower(?)
-                  AND (lower(external_userid)=lower(?) OR customer_id=?)
+                  AND {identity_sql}
                   AND sent_at>=?
                 ORDER BY sent_at DESC
                 LIMIT 20
                 """,
-                (corp_id, wechat, external_userid or customer_id, customer_id, since),
+                (corp_id, wechat, *identity_params, since),
             ).fetchall()
         return [
             {
@@ -2005,9 +2046,14 @@ class OutreachRepositoryMixin:
         end = (
             local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         ).astimezone(timezone.utc).isoformat()
+        identity_sql, identity_params = _strict_identity_match(
+            external_userid=external_userid,
+            customer_id=customer_id,
+            table_alias="p",
+        )
         with self.store.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM outreach_tasks t
                 JOIN outreach_plans p ON p.id=t.plan_id
@@ -2015,9 +2061,9 @@ class OutreachRepositoryMixin:
                   AND t.sent_at>=? AND t.sent_at<?
                   AND p.corp_id=?
                   AND lower(p.wechat)=lower(?)
-                  AND (lower(p.external_userid)=lower(?) OR p.customer_id=?)
+                  AND {identity_sql}
                 """,
-                (start, end, corp_id, wechat, external_userid or customer_id, customer_id),
+                (start, end, corp_id, wechat, *identity_params),
             ).fetchone()
         return int(scalar(row))
 
@@ -2253,14 +2299,18 @@ class OutreachRepositoryMixin:
         )
         memory = self.load_memory(scope.sales_contact_key) if scope.persistence_allowed else None
         memory = memory or {"customer_id": scope.sales_contact_key, "history_events": []}
+        identity_sql, identity_params = _strict_identity_match(
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
         with self.store.connect() as conn:
             conversation = conn.execute(
-                """
+                f"""
                 SELECT id FROM conversations
-                WHERE (customer_id=? OR external_userid=?) AND corp_id=? AND wechat=?
+                WHERE {identity_sql} AND corp_id=? AND lower(wechat)=lower(?)
                 ORDER BY updated_at DESC LIMIT 1
                 """,
-                (customer_id, external_userid or customer_id, corp_id, wechat),
+                (*identity_params, corp_id, wechat),
             ).fetchone()
             messages = []
             if conversation:

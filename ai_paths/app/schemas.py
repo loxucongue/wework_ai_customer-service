@@ -1,11 +1,14 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.customer_identity import canonical_platform_customer_id
 
 
 class ChatRequest(BaseModel):
     content: str = ""
     customer_id: str
+    platform_customer_id: str | None = None
     corp_id: str
     conversation_history: list[str] = Field(default_factory=list)
     conversation_history_count: int | None = None
@@ -21,6 +24,19 @@ class ChatRequest(BaseModel):
     appointment_id: str | int | None = None
     appointment_time: str | None = None
     request_context: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_customer_identity(self) -> "ChatRequest":
+        isolated = bool(self.request_context.get("test_isolated"))
+        platform_customer_id, _ = canonical_platform_customer_id(
+            platform_customer_id=self.platform_customer_id,
+            legacy_customer_id=self.customer_id,
+            external_userid=self.external_userid,
+            allow_synthetic=isolated,
+        )
+        self.platform_customer_id = platform_customer_id
+        self.customer_id = platform_customer_id
+        return self
 
 
 class ReplyMessage(BaseModel):

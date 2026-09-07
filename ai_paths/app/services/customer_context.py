@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import logging
 from threading import Lock
 from typing import Any
 
@@ -16,11 +17,15 @@ from app.services.customer_payment_state import normalize_prepay_facts
 from app.services.platform_agent_client import PlatformAgentClient
 
 
+logger = logging.getLogger(__name__)
+
+
 class CustomerContextService:
     """Replace this class with the real customer-system adapter later."""
 
-    def __init__(self, platform_client: PlatformAgentClient | None = None) -> None:
+    def __init__(self, platform_client: PlatformAgentClient | None = None, repository: Any | None = None) -> None:
         self._platform_client = platform_client
+        self._repository = repository
         self._identity_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._cache_lock = Lock()
         self._identity_ttl_seconds = 30 * 60
@@ -61,12 +66,9 @@ class CustomerContextService:
 
     def load_identity(self, *, customer_id: str, request_context: dict[str, Any]) -> dict[str, Any]:
         info, cache_hit, error = self._load_customer_info(request_context)
-        if not info and request_context.get("customer_id"):
-            info = {
-                "id": request_context.get("customer_id"),
-                "customer_add_wechat_id": request_context.get("customer_add_wechat_id"),
-            }
-        platform_customer_id = str(info.get("id") or customer_id or "").strip()
+        input_platform_customer_id = str(request_context.get("platform_customer_id") or customer_id or "").strip()
+        platform_customer_id = str(info.get("id") or input_platform_customer_id).strip()
+        platform_customer_id_source = "platform_lookup" if info.get("id") else "validated_request"
         customer_add_wechat_id = str(info.get("customer_add_wechat_id") or "").strip()
         scoped_context = dict(request_context)
         scoped_context["input_customer_id"] = request_context.get("customer_id") or customer_id
@@ -74,9 +76,26 @@ class CustomerContextService:
             scoped_context["platform_customer_id"] = platform_customer_id
         if customer_add_wechat_id:
             scoped_context["customer_add_wechat_id"] = customer_add_wechat_id
+        if info.get("id") and self._repository is not None:
+            observe_identity = getattr(self._repository, "observe_customer_identity", None)
+            if callable(observe_identity):
+                try:
+                    observe_identity(
+                        corp_id=str(request_context.get("corp_id") or ""),
+                        wechat=str(request_context.get("wechat") or ""),
+                        external_userid=str(request_context.get("external_userid") or ""),
+                        customer_id=platform_customer_id,
+                        user_id=str(request_context.get("user_id") or ""),
+                        customer_add_wechat_id=customer_add_wechat_id,
+                        source="platform_customer_lookup",
+                        verified=True,
+                    )
+                except Exception as exc:
+                    logger.warning("Customer identity observation failed: %s", exc)
         return {
             "input_customer_id": request_context.get("customer_id") or customer_id,
             "platform_customer_id": platform_customer_id,
+            "platform_customer_id_source": platform_customer_id_source,
             "customer_add_wechat_id": customer_add_wechat_id,
             "external_userid": request_context.get("external_userid"),
             "customer_info": info,
@@ -141,7 +160,7 @@ class CustomerContextService:
         info = identity.get("customer_info") if isinstance(identity.get("customer_info"), dict) else {}
         if not info.get("id"):
             return {}
-        platform_customer_id = str(identity.get("platform_customer_id") or info.get("id") or customer_id or "")
+        platform_customer_id = str(identity.get("platform_customer_id") or info.get("id") or "")
         scoped_context = dict(identity.get("request_context") or request_context)
         orders, orders_error, orders_cache_hit = self._load_orders(platform_customer_id, scoped_context)
         appointment = appointment_from_request_context(request_context) or appointment_from_orders(orders)
@@ -154,6 +173,7 @@ class CustomerContextService:
         context = {
             "customer_id": platform_customer_id,
             "platform_customer_id": platform_customer_id,
+            "platform_customer_id_source": identity.get("platform_customer_id_source") or "platform_lookup",
             "customer_add_wechat_id": str(info.get("customer_add_wechat_id") or ""),
             "source": "platform_agent",
             "identity": {

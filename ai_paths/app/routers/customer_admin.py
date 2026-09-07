@@ -19,6 +19,14 @@ def create_customer_admin_router(settings: Settings, services: ControlServices) 
     async def conversations(limit: int = 50) -> dict[str, Any]:
         return {"items": repository.list_conversations(limit=limit)}
 
+    @router.get("/admin/customer-identities/quality", dependencies=[Depends(require_api_key)])
+    async def customer_identity_quality() -> dict[str, Any]:
+        return repository.customer_identity_quality()
+
+    @router.get("/admin/customer-identities/conflicts", dependencies=[Depends(require_api_key)])
+    async def customer_identity_conflicts(limit: int = 100) -> dict[str, Any]:
+        return {"items": repository.list_customer_identity_conflicts(limit=limit)}
+
     @router.get("/admin/conversations/{conversation_id}", dependencies=[Depends(require_api_key)])
     async def conversation(conversation_id: str) -> dict[str, Any]:
         return repository.get_conversation(conversation_id)
@@ -36,8 +44,8 @@ def create_customer_admin_router(settings: Settings, services: ControlServices) 
             corp_id=corp_id,
             external_userid=external_userid,
         )
-        if scope.get("status") == "ambiguous_scope":
-            raise HTTPException(status_code=409, detail=scope)
+        if scope.get("status") in {"ambiguous_scope", "identity_type_mismatch"}:
+            raise HTTPException(status_code=409 if scope.get("status") == "ambiguous_scope" else 400, detail=scope)
         sales_contact_key = str(scope.get("sales_contact_key") or "")
         return repository.load_memory(sales_contact_key) or {} if sales_contact_key else {}
 
@@ -54,8 +62,8 @@ def create_customer_admin_router(settings: Settings, services: ControlServices) 
             corp_id=corp_id,
             external_userid=external_userid,
         )
-        if scope.get("status") == "ambiguous_scope":
-            raise HTTPException(status_code=409, detail=scope)
+        if scope.get("status") in {"ambiguous_scope", "identity_type_mismatch"}:
+            raise HTTPException(status_code=409 if scope.get("status") == "ambiguous_scope" else 400, detail=scope)
         sales_contact_key = str(scope.get("sales_contact_key") or "")
         if not sales_contact_key:
             raise HTTPException(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from app.config import get_settings
@@ -14,6 +15,7 @@ def build_request_context(request: ChatRequest) -> dict[str, Any]:
         "wechat": request.wechat,
         "external_userid": request.external_userid,
         "customer_id": request.customer_id,
+        "platform_customer_id": request.platform_customer_id,
         "customer_add_wechat_id": request.customer_add_wechat_id,
         "confirmed_store_id": request.confirmed_store_id,
         "confirmed_store_name": request.confirmed_store_name,
@@ -62,6 +64,7 @@ def _inject_debug_platform_context_if_needed(request: ChatRequest, context: dict
         return
     debug_context = {
         "customer_id": settings.debug_platform_customer_id,
+        "platform_customer_id": settings.debug_platform_customer_id,
         "customer_add_wechat_id": settings.debug_platform_customer_add_wechat_id,
         "external_userid": settings.debug_platform_external_userid,
         "user_id": settings.debug_platform_user_id,
@@ -74,10 +77,7 @@ def _inject_debug_platform_context_if_needed(request: ChatRequest, context: dict
     synthetic_corp = str(request.corp_id or "").strip()
     if not synthetic_id or synthetic_id != synthetic_corp:
         return
-    if any(
-        context.get(key)
-        for key in ("user_id", "wechat", "external_userid", "customer_add_wechat_id", "platform_customer_id")
-    ):
+    if any(context.get(key) for key in ("user_id", "wechat", "external_userid", "customer_add_wechat_id")):
         return
     context.update(debug_context)
     context["debug_platform_context_injected"] = True
@@ -85,7 +85,17 @@ def _inject_debug_platform_context_if_needed(request: ChatRequest, context: dict
 
 def conversation_id_from_request(request: ChatRequest, request_context: dict[str, Any]) -> str:
     explicit = request_context.get("conversation_id") or request_context.get("session_id")
-    return str(explicit or request.customer_id or request.external_userid or "unknown")
+    if explicit:
+        return str(explicit)
+    external = str(request.external_userid or "").strip().lower()
+    platform_customer_id = str(request.platform_customer_id or request.customer_id or "").strip().lower()
+    identity_kind = "external" if external else "platform_customer"
+    identity_value = external or platform_customer_id
+    canonical = "\x1f".join(
+        [str(request.corp_id or "").strip().lower(), str(request.wechat or "").strip().lower(), identity_kind, identity_value]
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"conversation:v3:{digest}"
 
 
 def conversation_title(content: str) -> str:

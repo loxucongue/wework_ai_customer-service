@@ -89,11 +89,17 @@ def conversation_fetch_params(
     if request_context:
         merged_context.update({key: value for key, value in request_context.items() if value is not None})
     external_userid = str(merged_context.get("external_userid") or state.get("external_userid") or "").strip()
-    customer_id = str(external_userid or merged_context.get("customer_id") or state.get("customer_id") or "").strip()
+    customer_id = str(
+        merged_context.get("platform_customer_id")
+        or state.get("platform_customer_id")
+        or merged_context.get("customer_id")
+        or state.get("customer_id")
+        or ""
+    ).strip()
     return {
         "corp_id": str(merged_context.get("corp_id") or state.get("corp_id") or "").strip(),
         "customer_id": customer_id,
-        "external_userid": str(external_userid or customer_id).strip(),
+        "external_userid": external_userid,
         "user_id": str(merged_context.get("user_id") or state.get("user_id") or "").strip(),
         "wechat": str(merged_context.get("wechat") or state.get("wechat") or "").strip(),
         "limit": max(1, min(int(limit or 30), 50)),

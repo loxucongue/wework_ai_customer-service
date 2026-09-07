@@ -20,14 +20,11 @@ def _pack_category(pack: dict[str, Any]) -> str:
 def _send_once_key(identity: dict[str, str], sop_pack_id: str) -> str:
     pack_id = _string(sop_pack_id).lower()
     external_userid = _string(identity.get("external_userid")).lower()
-    customer_id = _string(identity.get("customer_id")).lower()
-    customer_key = external_userid or customer_id
     wechat = _string(identity.get("wechat")).lower()
-    if not pack_id or not customer_key or not wechat:
+    if not pack_id or not external_userid or not wechat:
         return ""
     corp_id = _string(identity.get("corp_id")).lower()
-    customer_kind = "external" if external_userid else "customer"
-    return f"sop_pack:{pack_id}|corp:{corp_id}|wechat:{wechat}|{customer_kind}:{customer_key}"
+    return f"sop_pack:{pack_id}|corp:{corp_id}|wechat:{wechat}|external:{external_userid}"
 
 
 def _chat_order_request_context(
@@ -160,7 +157,7 @@ class SopExecutionCore:
         task = self.repository.create_sop_send_task(
             event_id=event_id,
             idempotency_key="|".join(
-                ["chat_gate", request_id, identity["external_userid"] or identity["customer_id"], sop_pack_id]
+                ["chat_gate", request_id, identity["external_userid"], sop_pack_id]
             ),
             customer_id=identity["customer_id"],
             external_userid=identity["external_userid"],

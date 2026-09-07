@@ -244,7 +244,7 @@ export function SopPlatformLogViewer() {
           />
           <CompactInput
             value={filters.customer_id}
-            placeholder="客户 ID"
+            placeholder="平台客户 ID"
             onChange={(value) => setFilters((current) => ({ ...current, customer_id: value }))}
           />
           <CompactInput
@@ -382,9 +382,9 @@ function RunDetail({ run }: { run: RunItem }) {
             <div className="mt-1 break-all font-mono text-xs text-slate-400">{run.run_id}</div>
           </div>
           <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm sm:grid-cols-3">
-            <Fact label="客户 ID" value={run.customer_id} />
-            <Fact label="企微账号" value={run.wechat} />
-            <Fact label="user_wechat_id" value={run.user_id} />
+            <Fact label="平台客户 ID" value={run.customer_id} />
+            <Fact label="接待企微账号" value={run.wechat} />
+            <Fact label="平台接待人员 ID" value={run.user_id} />
             <Fact label="发生时间" value={formatTime(run.occurred_at)} />
           </div>
         </div>

@@ -22,6 +22,7 @@ class TraceEntry(TypedDict, total=False):
 class AgentState(TypedDict, total=False):
     request_id: str
     customer_id: str
+    platform_customer_id: str
     corp_id: str
     content: str
     file_image: str | None
@@ -29,7 +30,7 @@ class AgentState(TypedDict, total=False):
     conversation_history: list[str]
     conversation_turns: list[dict[str, Any]]
     conversation_fetch: dict[str, Any]
-    user_id: int | None
+    user_id: int | str | None
     wechat: str | None
     external_userid: str | None
     customer_add_wechat_id: str | int | None
