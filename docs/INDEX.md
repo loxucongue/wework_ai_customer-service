@@ -48,6 +48,7 @@
 - [V3 意图、情绪与路由合同](contracts/v3-intent-emotion-routing.md)
 - [消息送达回调](contracts/message-delivery-callback.md)
 - [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
+- [主动唤醒 BI 观测合同](contracts/outreach-analytics.md)
 - [任务工作流](runbooks/TASK_WORKFLOW.md)
 - [生产发布前检查清单](runbooks/PRE_RELEASE_CHECKLIST.md)
 

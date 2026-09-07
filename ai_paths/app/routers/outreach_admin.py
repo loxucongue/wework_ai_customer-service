@@ -187,6 +187,27 @@ def create_outreach_admin_router(
             failed=failed,
         )
 
+    @router.get("/admin/outreach/dashboard", dependencies=[Depends(require_api_key)])
+    async def outreach_dashboard(
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        queue_limit: int = 50,
+    ) -> dict[str, Any]:
+        try:
+            dashboard = await asyncio.to_thread(
+                services.repository.outreach_bi_dashboard,
+                started_from=started_from,
+                started_to=started_to,
+                corp_id=corp_id,
+                wechat=wechat,
+                queue_limit=queue_limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {**dashboard, "settings": _settings_response(settings)}
+
     @router.get("/admin/outreach/first-day-runs/{workflow_run_id}", dependencies=[Depends(require_api_key)])
     async def first_day_run(workflow_run_id: str) -> dict[str, Any]:
         detail = services.repository.get_first_day_outreach_run(workflow_run_id)

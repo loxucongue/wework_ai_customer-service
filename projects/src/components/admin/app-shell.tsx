@@ -6,6 +6,7 @@ import { useState } from "react";
 import {
   Archive,
   BarChart3,
+  BellRing,
   Bot,
   ChevronLeft,
   DatabaseZap,
@@ -28,6 +29,7 @@ const groups = [
     label: "监控",
     items: [
       { href: "/", label: "运维总览", icon: BarChart3 },
+      { href: "/analytics/outreach", label: "主动唤醒", icon: BellRing },
       { href: "/analytics/sales", label: "销售策略 BI", icon: TrendingUp },
     ],
   },
