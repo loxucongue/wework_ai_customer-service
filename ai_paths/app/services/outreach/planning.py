@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.services.customer_payment_state import is_paid_deposit_state
+from app.services.outreach_assets import build_outreach_asset_model_context
 
 from .first_day import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
@@ -426,6 +427,7 @@ class PlanGenerator:
             recent_outreach_media(recent_messages, hours=72),
             asset_catalog,
         )
+        asset_model_context = build_outreach_asset_model_context(asset_catalog, recent_media)
         activity_quote_fact = build_outreach_activity_quote_fact(recent_messages, memory)
         personalized_order_gate = personalized_order_eligibility(context.get("customer_context") or {})
         payment_collection_gate = personalized_payment_collection_eligibility(
@@ -468,21 +470,8 @@ class PlanGenerator:
             "trigger_context": trigger_context or {},
             "customer_context": context.get("customer_context") or {},
             "customer_relation": customer_relation,
-            "asset_catalog": [
-                {
-                    key: asset.get(key)
-                    for key in (
-                        "asset_id",
-                        "type",
-                        "name",
-                        "annotation",
-                        "use_cases",
-                        "avoid_when",
-                        "tags",
-                    )
-                }
-                for asset in asset_catalog
-            ],
+            "asset_availability_summary": asset_model_context["summary"],
+            "asset_catalog": asset_model_context["items"],
             "recent_media_delivery": recent_media,
             "recent_sop_delivery": recent_sop_delivery,
             "first_day_sop_sequence": first_day_sop_sequence,
@@ -703,6 +692,7 @@ class PlanGenerator:
             payload={
                 "source_snapshot": first_day_model_snapshot,
                 "scene_contract": scene_analysis,
+                "writer_context": writer_payload.get("writer_context") or {},
                 "candidate_plan": writer_result,
                 "candidate_structure_error": writer_structure_error,
             },
@@ -720,6 +710,7 @@ class PlanGenerator:
                 payload={
                     "source_snapshot": first_day_model_snapshot,
                     "scene_contract": scene_analysis,
+                    "writer_context": writer_payload.get("writer_context") or {},
                     "candidate_plan": writer_result,
                     "invalid_verifier_result": verifier_result,
                     "schema_error": verifier_error,
@@ -793,6 +784,7 @@ class PlanGenerator:
                 payload={
                     "source_snapshot": replanned_snapshot,
                     "scene_contract": scene_analysis,
+                    "writer_context": writer_payload.get("writer_context") or {},
                     "candidate_plan": writer_result,
                     "candidate_structure_error": writer_structure_error,
                 },
@@ -1870,6 +1862,7 @@ class PlanGenerator:
                 assets.append(
                     {
                         "asset_id": asset_id,
+                        "source_id": f"sop-pack:{pack_id}",
                         "type": message_type,
                         "url": url,
                         "source": "first_day_sop_pack",

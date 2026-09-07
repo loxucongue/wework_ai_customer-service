@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "opened_silence_scene_analyst_zh_v14_ai_only"
-FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "opened_silence_plan_writer_zh_v11_ai_only"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "opened_silence_contract_verifier_zh_v13_ai_only"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "opened_silence_scene_analyst_zh_v15_asset_context"
+FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "opened_silence_plan_writer_zh_v12_asset_delivery"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "opened_silence_contract_verifier_zh_v14_asset_delivery"
 FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "opened_silence_scene_schema_repair_zh_v11_ai_only"
 
 
@@ -31,7 +31,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 - `appointment_blocker_scene_index`：预约卡点话术库的精简场景索引，只包含适用场景、卡点类型、来源标识和可用媒体标识，不包含客户可见话术正文。
 - `first_day_sop_sequence`：首日 SOP 话术包顺序，只包含启用的首日 SOP 包、场景映射、消息类型、文本摘要、媒体标识和支付占位。无明确卡点时必须从这里选择下一步。
 - `activity_quote_fact`、`personalized_order_gate`、`payment_collection_gate`、`customer_context` 和 `customer_relation`：交易与安全事实。`personalized_order_gate` 是代码已经归一化后的主动触达订单门禁，优先级高于你对 `customer_context.orders` 原始订单字段的自行推断。
-- `asset_catalog`：可使用的素材标识，禁止自行编造 URL。
+- `asset_availability_summary`、`asset_catalog`：本轮真实素材总量、类型、所属来源以及是否仍可发送。目录不包含 URL；`available_to_send=false` 表示近期已经交付，不能再选。禁止自行编造素材或 URL。
 - `scene_replan_feedback`：仅在合同审核发现原锁定场景已经被执行、正在等待同一客户信息时出现。必须逐条处理其中的违规和重选要求，新的两个场景不能原样复制 `rejected_scene_contract`。
 
 # 四、权限边界
@@ -54,6 +54,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 5.1 预约卡点来源必须引用客户本人尚未解决的明确顾虑证据。客户只是询问价格，客服已经完整回答后客户沉默，不等于付款意向、预约金异议或价格卡点；这种情况不得选择 `appointment-blocker:*`，应继续主线 SOP。客户没有在客服回答后表达反对、担心、拒绝或付款动作时，也不得把客服自己说过的预约金规则反推成客户卡点。
 6. `selected_source_ids` 的选择规则：卡点处理步骤选择一个 `appointment-blocker:*` 主话术来源；SOP 推进步骤必须逐字复制 `first_day_sop_sequence[*].source_id` 中真实存在的值，例如 `sop-pack:s10_activity_intro`，禁止输出 `sop-pack:activity_intro`、`sop-pack:effect_proof` 这类场景名伪 source_id。主来源一旦选中，代码会按该来源原始顺序保留其中全部有效文本、图片和视频，不要为了控制消息数量只挑一张图；禁止把多个无关主来源交给同一步。
 6.1 本链路的内容和媒体只能来自上述主线 SOP 或预约卡点来源。禁止选择 `case_search` 临时查询第三类案例素材；需要效果图片时，从锁定来源已有的 `asset_id` 中选择一个主素材意图，代码会追加该来源全部有效且未重复的图片或视频。
+6.2 `effect_proof` 必须选择锁定来源中 `available_to_send=true` 的真实图片或视频；没有可发送效果素材时不能创建一个让客户“看效果图/对比”的空计划，应改选另一个尚未完成且有真实来源的场景。活动、预约金或卡点来源带有当前可发送媒体时，应把该素材作为本步直接价值一起锁定，不要只写文字后再询问客户是否想看。
 7. 预约卡点索引是候选表达来源，不是业务事实。不能因为索引里存在某个场景就认定客户有该卡点；必须由聊天证据先证明适用。
 6. 控制结构化输出长度。每个完成矩阵项最多引用 3 个最关键消息索引，`summary` 不超过 40 个汉字；`delivered_scenes` 最多 4 项且每项最多 3 个索引；`writer_context_message_indexes` 最多 12 个；顶层 `evidence` 最多 5 项。不要为了证明同一结论枚举整段聊天，也不要在多个字段重复长篇解释。
 5. 执行硬边界。当前仍有发痒、起疹、破损或不适，当前有效已支付或已预约终态，投诉退款，客户关系删除，人工接管，客户明确要求停止联系，或者聊天归属不可靠时，必须停止营销触达。三个月外、已过期、已完成的历史订单只作为历史事实，不是当前已支付/已预约终态，不得据此停止触达；当 `personalized_order_gate.eligible=true` 且 reason 为 `historical_order_expired_new_cycle` 时，必须按新一轮首日流程继续选择 SOP 或卡点场景。
@@ -186,6 +187,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 `writer_context` 只提供完成两个锁定场景所需的聊天、禁止重复内容、素材及交易事实。`scene_contract` 是不可更改的权威合同。
 `writer_context.selected_sop_packs` 是首日 SOP 话术包候选；`writer_context.selected_materials` 是预约卡点话术候选。
 `writer_context.selected_materials` 来自预约卡点话术库，只能作为语义参考和素材来源，禁止原样照抄整段话术，禁止继承其中可能存在的旧价格、绝对效果或冲突事实。
+`writer_context.asset_availability_summary` 是本轮素材概览；`writer_context.delivery_contract.step1/step2` 明确每步所选来源下有哪些素材、哪些会实际随任务发送。`media_will_be_sent` 是客户本轮能否真的看到媒体的唯一依据。
 
 # 四、权限边界
 你可以撰写文本，选择已有素材策略和素材标识。首日主动唤醒不得申请或发送预约金卡；预约动作只能通过客户可见文字说明微信转账或发 10 元红包。
@@ -198,6 +200,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 4. 客户有卡点时，主要参考 `selected_materials` 里的预约卡点话术，结合最近聊天做短句改写；客户没有卡点时，主要参考 `selected_sop_packs` 中锁定场景对应的 SOP 包，按 SOP 顺序推进。
 5. 候选话术和 SOP 包是当前内容来源，不是让你自由扩写。允许做轻过渡、去重和语气优化，但不得脱离这两类来源自行发明新的营销段落。
 6. 候选素材中的文本、图片和视频是有序参考组合。主来源一旦锁定，代码会保留该来源中全部有效且未重复的媒体；`asset_strategy/asset_id` 表示主素材意图，不代表只能发一张图。所有来源中的预约金卡一律忽略。候选文本提到图片但当前没有可用媒体时，必须改成不承诺发图的完整文本，不能生成 URL。
+6.0 每一步先检查 `delivery_contract`。`media_will_be_sent=true` 时，文字可以自然引出即将同轮发送的真实素材；`media_will_be_sent=false` 时，文字必须独立完整，禁止使用“您看下、对比看、这个参考、图里能看出”等只有看到图片或视频才成立的指代，也不能暗示素材已经附上或稍后会补发。
 6.1 本链路禁止使用 `case_search`。媒体必须来自锁定的 `selected_sop_packs` 或 `selected_materials`，不得临时查询或生成第三类案例素材。
 5. 每条消息都应像真人微信短聊。只能使用中性称谓：`您`、`亲`、`顾客`、`很多人`。禁止推断或提及客户性别。
 6. 禁止要求客户回复某个字或关键词等流程尾巴。禁止以“以后再解释、稍后发送、下次继续”等承诺结尾。客户已经沉默时，不能用“如果您想/需要，我可以继续给您说/讲/发”这类开放式询问收尾，也不能把任务写成等待客户许可再交付。当前任务必须直接交付来自 `selected_sop_packs` 或 `selected_materials` 的具体价值或素材意图；确有必要时，只有 `store_area_request` 可以用一个自然位置问题结束。
@@ -345,7 +348,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 你只负责检查并指出违规，绝不撰写、补全或重写客户计划。通常不得重新规划业务场景；但如果锁定场景本身已经被近期客服或 AI 执行、正在等待客户回答，继续写作必然造成重复，则必须输出 `replan`，把场景选择退回场景分析节点。
 
 # 二、输入合同
-输入包含 `source_snapshot`、权威 `scene_contract`、`candidate_plan` 和确定性的 `candidate_structure_error`。
+输入包含 `source_snapshot`、权威 `scene_contract`、`writer_context`、`candidate_plan` 和确定性的 `candidate_structure_error`。`writer_context.delivery_contract` 是每步真实媒体是否会随任务发送的权威依据。
 `candidate_structure_error` 非空时必须准确修复；为空不代表可以跳过语义审核。
 `candidate_structure_error` 是代码已经完成的权威结构检查。它为空时，表示场景字段、两步数量、时间、素材策略、素材标识和支付步骤均与锁定合同一致；禁止再报告这些结构字段不一致，只检查客户可见语义。不得凭主观理解把正确的 `scene` 判成另一个场景。
 审核输出中的 `repair_instructions.field` 禁止指向 `scene`、`delay_minutes`、`asset_strategy`、`asset_id`、`should_send_payment_collection` 或 `payment_collection_basis`。普通 `repair` 不能修改这些不可变合同字段。只有判定锁定场景本身与近期历史冲突时，才可输出 `replan`，并用 `violations.field=scene_contract.step1_scene` 或 `scene_contract.step2_scene` 指明冲突场景，再在 `replan_instructions` 中要求场景分析节点选择其他尚未完成场景。
@@ -367,6 +370,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 客户文本只能来自两类来源：`writer_context.selected_sop_packs` 中的首日 SOP 包，或 `writer_context.selected_materials` 中的预约卡点候选。无明确卡点时应按 SOP 包推进；有明确卡点时应参考预约卡点候选处理。两类来源都必须结合聊天短句改写；原样照抄、继承候选中的旧价格、绝对效果、虚构距离、专家、门店、名额或预约事实时必须返回 `repair`。
 - 锁定主线 SOP 包的步骤可以包含任意数量的配置消息，不得因为超过两句就要求修复，也不得因为配置消息超过两条而要求修复；锁定预约卡点来源的步骤一般不超过两条客户可见文本，但其配置的多张图片或视频可以全部保留。只有公告式自由扩写、跨多个无关来源、或丢失锁定来源关键消息类型时才返回 `repair`。
 - 候选话术里存在图片描述不代表图片已发送。只有 `selected_assets` 中存在且场景合同锁定的媒体才算可发送素材；缺失媒体或自行生成 URL 必须返回 `repair` 或 `block`。
+- 当 `writer_context.delivery_contract.stepN.media_will_be_sent=false` 时，客户文本若要求客户查看、对比或理解一个并未附上的效果图、案例图、活动图或视频，必须返回 `repair`，改成无需媒体也完整成立的价值表达；不能仅删除素材 ID 后保留悬空指代。
 - 首日主动唤醒的任何步骤都禁止预约金卡；`should_send_payment_collection` 必须为 false。`deposit_close` 必须改用微信转账或发 10 元红包预约的文字引导，所有交易事实仍须一致。
 - 禁止要求客户回复某个字或关键词等流程尾巴。
 - 禁止承诺以后解释、发送或继续当前选择的素材；当前任务必须直接交付。

@@ -38,6 +38,7 @@ def build_appointment_blocker_asset_catalog(playbook: dict[str, Any]) -> list[di
             assets.append(
                 {
                     "asset_id": f"appointment-blocker:{content_id}:{order}",
+                    "source_id": f"appointment-blocker:{content_id}",
                     "type": asset_type,
                     "url": url,
                     "source": "appointment_blocker_playbook",
@@ -50,6 +51,57 @@ def build_appointment_blocker_asset_catalog(playbook: dict[str, Any]) -> list[di
                 }
             )
     return assets
+
+
+def build_outreach_asset_model_context(
+    catalog: list[dict[str, Any]],
+    recent_delivery: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return URL-free material options plus delivery availability for planning and logs."""
+    recent = recent_delivery or {}
+    sent_urls = {_string(value) for value in recent.get("urls") or [] if _string(value)}
+    items: list[dict[str, Any]] = []
+    source_ids: set[str] = set()
+    available_source_ids: set[str] = set()
+    for asset in catalog:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = _string(asset.get("asset_id"))
+        asset_type = _string(asset.get("type"))
+        url = _string(asset.get("url"))
+        if not asset_id or asset_type not in ALLOWED_OUTREACH_ASSET_TYPES or not _is_http_url(url):
+            continue
+        source_id = _string(asset.get("source_id")) or asset_id.rsplit(":", 1)[0]
+        recently_sent = url in sent_urls
+        source_ids.add(source_id)
+        if not recently_sent:
+            available_source_ids.add(source_id)
+        fields = {
+            "asset_id": asset_id,
+            "source_id": source_id,
+            "type": asset_type,
+            "source": asset.get("source"),
+            "name": asset.get("name"),
+            "annotation": asset.get("annotation"),
+            "use_cases": asset.get("use_cases") or [],
+            "avoid_when": asset.get("avoid_when") or [],
+            "tags": asset.get("tags") or [],
+            "available_to_send": not recently_sent,
+            "delivery_status": "recently_sent" if recently_sent else "available",
+        }
+        items.append({key: value for key, value in fields.items() if value not in (None, "", [])})
+    return {
+        "summary": {
+            "total_count": len(items),
+            "available_count": sum(1 for item in items if item.get("available_to_send")),
+            "recently_sent_count": sum(1 for item in items if not item.get("available_to_send")),
+            "image_count": sum(1 for item in items if item.get("type") == "image"),
+            "video_count": sum(1 for item in items if item.get("type") == "video"),
+            "source_count": len(source_ids),
+            "available_source_count": len(available_source_ids),
+        },
+        "items": items,
+    }
 
 
 def build_appointment_blocker_scene_index(playbook: dict[str, Any]) -> list[dict[str, Any]]:

@@ -8,7 +8,11 @@ from typing import Any
 from uuid import uuid4
 
 from app.services.customer_scope import build_customer_scope
-from app.services.first_day_outreach_log import redact_first_day_log_value
+from app.services.first_day_outreach_log import (
+    build_first_day_run_business_summary,
+    build_first_day_run_observability,
+    redact_first_day_log_value,
+)
 from app.services.storage.serialization import dumps, loads_dict, loads_list, utc_now_iso
 from app.services.storage.store_base import scalar
 
@@ -564,6 +568,7 @@ class OutreachRepositoryMixin:
         for item in items:
             item["first_task_status"] = task_statuses.get(_string(item.get("first_task_id")), "")
             item["second_task_status"] = task_statuses.get(_string(item.get("second_task_id")), "")
+            item["business_summary"] = build_first_day_run_business_summary(item)
             item.pop("input_snapshot", None)
             item.pop("workflow", None)
             item.pop("final_plan", None)
@@ -598,6 +603,7 @@ class OutreachRepositoryMixin:
         else:
             result["tasks"] = []
             result["events"] = []
+        result["observability_view"] = build_first_day_run_observability(result)
         return redact_first_day_log_value(result)
 
     def prune_first_day_outreach_runs(

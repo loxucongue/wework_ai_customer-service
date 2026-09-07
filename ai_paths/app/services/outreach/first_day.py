@@ -888,11 +888,16 @@ def _first_day_default_asset_id_for_sources(
     assets: dict[str, dict[str, Any]],
     source_ids: list[str],
 ) -> str:
-    for source_id in source_ids:
-        prefix = f"{_string(source_id)}:"
-        for asset_id, asset in assets.items():
-            if asset_id.startswith(prefix) and _string(asset.get("type")) == "image":
-                return asset_id
+    for expected_type in ("image", "video"):
+        for source_id in source_ids:
+            prefix = f"{_string(source_id)}:"
+            for asset_id, asset in assets.items():
+                if (
+                    asset_id.startswith(prefix)
+                    and _string(asset.get("type")) == expected_type
+                    and asset.get("available_to_send") is not False
+                ):
+                    return asset_id
     return ""
 
 
@@ -2110,6 +2115,11 @@ def _first_day_scene_analysis_error(
         for asset in source_snapshot.get("asset_catalog") or []
         if isinstance(asset, dict) and _string(asset.get("asset_id"))
     }
+    available_assets_by_id = {
+        _string(asset.get("asset_id")): asset
+        for asset in source_snapshot.get("asset_catalog") or []
+        if isinstance(asset, dict) and _string(asset.get("asset_id"))
+    }
     for key in ("step1", "step2"):
         asset = required_assets.get(key)
         if not isinstance(asset, dict):
@@ -2127,6 +2137,24 @@ def _first_day_scene_analysis_error(
             not asset_id or asset_id not in available_asset_ids
         ):
             return f"scene analysis required_assets.{key}.asset_id is unavailable"
+        step_scene = _string(response.get(f"{key}_scene"))
+        if step_scene == "effect_proof" and strategy not in {
+            "configured_image",
+            "operation_video",
+        }:
+            return f"scene analysis required_assets.{key} must attach real effect media"
+        if asset_id:
+            selected_sources = {
+                _string(source_id)
+                for source_id in selected_source_ids.get(key) or []
+                if _string(source_id)
+            }
+            asset_fact = available_assets_by_id.get(asset_id) or {}
+            asset_source_id = _string(asset_fact.get("source_id")) or asset_id.rsplit(":", 1)[0]
+            if asset_source_id not in selected_sources:
+                return f"scene analysis required_assets.{key}.asset_id is outside selected source"
+            if asset_fact.get("available_to_send") is False:
+                return f"scene analysis required_assets.{key}.asset_id was recently sent"
     payment_action = response.get("payment_action")
     if not isinstance(payment_action, dict):
         return "scene analysis payment_action must be an object"
@@ -2356,7 +2384,12 @@ def _normalize_first_day_scene_analysis(
                     ],
                 )
                 if default_asset_id:
-                    required["strategy"] = "configured_image"
+                    default_asset = available_assets.get(default_asset_id) or {}
+                    required["strategy"] = (
+                        "operation_video"
+                        if _string(default_asset.get("type")) == "video"
+                        else "configured_image"
+                    )
                     required["asset_id"] = default_asset_id
                     required["reason"] = "锁定场景含图片素材，代码补齐结构化素材意图"
             strategy = _string(required.get("strategy"))
@@ -2614,11 +2647,46 @@ def _first_day_writer_payload(
         for key in ("step1", "step2")
         if _string((scene_analysis.get("required_assets") or {}).get(key, {}).get("asset_id"))
     }
-    selected_assets = [
+    model_asset_catalog = [
         dict(item)
         for item in source_snapshot.get("asset_catalog") or []
-        if isinstance(item, dict) and _string(item.get("asset_id")) in required_asset_ids
+        if isinstance(item, dict) and _string(item.get("asset_id"))
     ]
+    selected_assets = [
+        item
+        for item in model_asset_catalog
+        if _string(item.get("asset_id")) in required_asset_ids
+        or _string(item.get("asset_id")) in selected_source_ids
+        or _string(item.get("source_id")) in selected_source_ids
+    ]
+    delivery_contract: dict[str, dict[str, Any]] = {}
+    for index, key in enumerate(("step1", "step2"), start=1):
+        step_source_ids = {
+            _string(source_id)
+            for source_id in (scene_analysis.get("selected_source_ids") or {}).get(key) or []
+            if _string(source_id)
+        }
+        source_assets = [
+            item
+            for item in model_asset_catalog
+            if _string(item.get("asset_id")) in step_source_ids
+            or _string(item.get("source_id")) in step_source_ids
+        ]
+        deliverable_assets = [
+            item for item in source_assets if item.get("available_to_send") is not False
+        ]
+        delivery_contract[key] = {
+            "step": index,
+            "scene": _string(scene_analysis.get(f"{key}_scene")),
+            "selected_source_ids": sorted(step_source_ids),
+            "required_asset": (scene_analysis.get("required_assets") or {}).get(key) or {},
+            "source_asset_options": source_assets,
+            "planned_asset_ids": [
+                _string(item.get("asset_id")) for item in deliverable_assets
+            ],
+            "media_will_be_sent": bool(deliverable_assets),
+            "text_must_be_self_contained": not bool(deliverable_assets),
+        }
     payload: dict[str, Any] = {
         "workflow_run_id": _string(source_snapshot.get("workflow_run_id")),
         "scene_contract": scene_analysis,
@@ -2628,6 +2696,8 @@ def _first_day_writer_payload(
             "selected_materials": selected_materials,
             "selected_sop_packs": selected_sop_packs,
             "selected_assets": selected_assets,
+            "asset_availability_summary": source_snapshot.get("asset_availability_summary") or {},
+            "delivery_contract": delivery_contract,
             "conversation_activity": source_snapshot.get("conversation_activity") or {},
             "activity_quote_fact": source_snapshot.get("activity_quote_fact") or {},
             "payment_collection_gate": source_snapshot.get("payment_collection_gate") or {},
