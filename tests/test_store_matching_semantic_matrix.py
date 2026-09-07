@@ -14,7 +14,12 @@ from app.graph.nodes import action_nodes
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.reply_nodes import _materialize_required_store_delivery
 from app.graph.nodes.reply_validation import _validate_store_resolution_contract
-from app.prompts.reply_synthesizer import _render_store_resolution_conclusion, _render_tool_facts
+from app.prompts.reply_synthesizer import (
+    PARALLEL_REPLY_SYSTEM_PROMPT,
+    _render_semantic_route,
+    _render_store_resolution_conclusion,
+    _render_tool_facts,
+)
 from app.services.store_destination_resolver import resolve_active_store_destination
 
 
@@ -40,6 +45,50 @@ def test_reused_store_detail_prompt_requires_one_related_next_step() -> None:
     assert "我先记一下、方便后续登记" in conclusion
     assert "不补道路、门牌和导航描述" in conclusion
     assert "closing_action=none" in conclusion
+
+
+def test_store_selection_continuation_is_visible_to_reply() -> None:
+    rendered = _render_semantic_route(
+        {
+            "current_intent": {
+                "summary": "客户按上一轮要求选择了具体门店",
+                "evidence_refs": ["current_message"],
+                "continuation_signals": [
+                    "information_submission",
+                    "transaction_progress",
+                ],
+            }
+        }
+    )
+
+    assert "information_submission" in rendered
+    assert "transaction_progress" in rendered
+    assert "仅作证据，不授权动作" in rendered
+    assert "选择具体门店后不再问位置是否方便，只问一个到店日期/时段" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "closing_decision.action=none" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_confirmed_named_store_requires_one_arrival_question() -> None:
+    conclusion = _render_store_resolution_conclusion(
+        {
+            "status": "send_single",
+            "scope_match_level": "named_store",
+            "exact_scope_has_store": True,
+            "delivery_store_ids": ["store-306"],
+            "location_evidence": {"confirmation_status": "confirmed"},
+            "destination_resolution": {
+                "named_store": "示例江津店",
+                "request_kind": "store_detail",
+                "detail_kind": "address",
+            },
+        }
+    )
+
+    assert "客户已确认具体门店" in conclusion
+    assert "必须只问一个到店日期或时段" in conclusion
+    assert "不得再问位置是否方便" in conclusion
+    assert "不得只讲地址后结束" in conclusion
+    assert "不得同时追问预约金或留名额" in conclusion
 
 
 def _store(

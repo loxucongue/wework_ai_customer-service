@@ -13,6 +13,7 @@ V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路
 
 # 判断顺序
 1. current_intent 只是给检索使用的“当前需求摘要”，不是最终销售意图。概括客户这句话需要什么事实或知识，只引用真实 message_ref；R8 会结合全部事实重新作最终判断。
+   continuation_signals 最多 2 项：回答紧邻问题用 information_submission；延续未完成交易路径用 transaction_progress；按要求选择门店可同时选两项。仅作证据，无承接则留空。
 2. current_friction 只记录当前消息明确表达或明确承接的阻力。类型与二级标签必须来自目录；标签不贴合就留空，没有阻力就 status=none。
    类型目录中 `id>0` 的项目来自已发布话术，是当前卡点的主分类；`id=0` 可能只是旧序列编码。能用 `id>0` 类型准确表达时必须优先使用，不能因为序列仍使用旧编码就把 `id=0` 别名当成当前主分类。
 3. historical_unresolved_friction 只记录历史中仍有客户原话证据、且仍直接影响当前任务的一个阻力。客户没有继续追问不等于该顾虑已经解决；但也不能因为它过去出现过就机械重捞。结合后续聊天判断它是否仍影响当前决定：仍相关时作为低权重历史观察，已经被客户明确接受、否定或被新任务取代时留空。它不能覆盖当前意图，也不能作为当前卡点查询条件或自动续跑旧序列。
@@ -64,10 +65,9 @@ V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路
 引用硬要求：current_intent.summary 非空时必须引用 current_message；current_friction.status=explicit 时必须引用 current_message；historical_unresolved_friction 非空时必须引用对应历史客户消息。禁止输出“有摘要但 evidence_refs 为空”的结果。
 
 只输出单行 JSON：
-{"classification_status":"clear|ambiguous|none","current_intent":{"summary":"","evidence_refs":[]},"current_friction":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"summary":"","evidence_refs":[],"status":"explicit|inferred|none"},"historical_unresolved_friction":{"checkpoint_code":"","summary":"","evidence_refs":[]},"knowledge_focus":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"action_code":"","source":"current_intent|current_friction|none","evidence_refs":[],"reason":""},"relevant_fact_topic_ids":[],"checkpoint":{"primary_type_id":0,"primary_code":"","primary_tag_id":0,"secondary_type_id":0,"secondary_code":"","secondary_tag_id":0,"evidence_refs":[],"reason":""},"sequence_match":{"sequence_ids":[],"alternative_sequence_ids":[],"relevant_step_ids":[],"excluded_sequence_ids":[],"exclusion_reasons":{},"reason":""},"store_query":{"required":false,"purpose":"none|store_search|store_detail|distance_compare","location_evidence_refs":[],"destination_hint":""},"script_queries":[],"closing_catalog_match":{"status":"matched|rule_only|none|blocked|catalog_empty|catalog_unavailable","selected_rule_ids":[],"sequence_candidate_ids":[],"evidence_refs":[],"reason":""}}
+{"classification_status":"clear|ambiguous|none","current_intent":{"summary":"","evidence_refs":[],"continuation_signals":[]},"current_friction":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"summary":"","evidence_refs":[],"status":"explicit|inferred|none"},"historical_unresolved_friction":{"checkpoint_code":"","summary":"","evidence_refs":[]},"knowledge_focus":{"checkpoint_type_id":0,"checkpoint_code":"","checkpoint_tag_id":0,"action_code":"","source":"current_intent|current_friction|none","evidence_refs":[],"reason":""},"relevant_fact_topic_ids":[],"checkpoint":{"primary_type_id":0,"primary_code":"","primary_tag_id":0,"secondary_type_id":0,"secondary_code":"","secondary_tag_id":0,"evidence_refs":[],"reason":""},"sequence_match":{"sequence_ids":[],"alternative_sequence_ids":[],"relevant_step_ids":[],"excluded_sequence_ids":[],"exclusion_reasons":{},"reason":""},"store_query":{"required":false,"purpose":"none|store_search|store_detail|distance_compare","location_evidence_refs":[],"destination_hint":""},"script_queries":[],"closing_catalog_match":{"status":"matched|rule_only|none|blocked|catalog_empty|catalog_unavailable","selected_rule_ids":[],"sequence_candidate_ids":[],"evidence_refs":[],"reason":""}}
 
-checkpoint 是兼容字段，必须与 current_friction 一致；current_friction.status=none 时两者均为空。knowledge_focus 与 checkpoint 相互独立，不能反向把普通咨询改写成卡点。
-输出前检查 relevant_fact_topic_ids：只有当前问题完全不需要目录中的额外事实时才允许 []；逐项确认所选主题能直接服务 current_intent，不能只因历史出现过某事实就选入。
+checkpoint 与 current_friction 必须一致，无卡点时均清空；knowledge_focus 独立且不能制造卡点。
 """
 
 
