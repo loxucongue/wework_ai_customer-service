@@ -15,6 +15,7 @@ from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.reply_nodes import _materialize_required_store_delivery
 from app.graph.nodes.reply_validation import _validate_store_resolution_contract
 from app.prompts.reply_synthesizer import _render_store_resolution_conclusion, _render_tool_facts
+from app.services.store_destination_resolver import resolve_active_store_destination
 
 
 def test_reused_store_detail_prompt_requires_one_related_next_step() -> None:
@@ -660,6 +661,12 @@ def test_large_city_scope_keeps_all_candidates_and_switches_from_cards_to_text()
                 "raw_query": "成都有哪些门店",
                 "query": "成都市",
                 "purpose": "list",
+                "request_kind": "list",
+                "destination_resolution": {
+                    "request_kind": "list",
+                    "destination_query": "成都市",
+                    "destination_precision": "city",
+                },
                 "resolved_admin_level": "city",
                 "scope_match_level": "city",
                 "allow_broad_scope_delivery": True,
@@ -683,6 +690,80 @@ def test_large_city_scope_keeps_all_candidates_and_switches_from_cards_to_text()
     assert [item["store_name"] for item in resolution["text_store_summaries"]] == [
         f"成都门店{index}" for index in range(1, 9)
     ]
+    assert [item["store_address"] for item in resolution["text_store_summaries"]] == [
+        f"四川省成都市测试区{index}成都门店{index}测试地址" for index in range(1, 9)
+    ]
+
+
+def test_large_city_availability_query_asks_for_district_instead_of_dumping_stores() -> None:
+    stores = [
+        _store(str(index), f"重庆门店{index}", "重庆市", "重庆市", f"测试区{index}")
+        for index in range(1, 9)
+    ]
+    state = _state("重庆有门店吗", stores)
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "raw_query": "重庆有门店吗",
+                "query": "重庆市",
+                "purpose": "store_search",
+                "request_kind": "availability",
+                "destination_resolution": {
+                    "request_kind": "availability",
+                    "destination_query": "重庆市",
+                    "destination_precision": "city",
+                },
+                "resolved_admin_level": "city",
+                "scope_match_level": "city",
+                "allow_broad_scope_delivery": True,
+                "stores": stores,
+                "candidate_stores": stores,
+                "candidate_store_count": len(stores),
+                "missing": [],
+            }
+        },
+        state,
+    )
+    resolution = output["structured_facts"]["store_resolution_fact"]
+
+    assert resolution["status"] == "need_location"
+    assert resolution["delivery_mode"] == "clarify_location"
+    assert resolution["delivery_store_ids"] == []
+    assert resolution["available_districts"] == [f"测试区{index}" for index in range(1, 9)]
+    assert "当前城市确认有门店" in _render_store_resolution_conclusion(resolution)
+    assert "available_districts" in _render_store_resolution_conclusion(resolution)
+
+
+def test_destination_resolver_accepts_availability_without_treating_it_as_full_list() -> None:
+    result = asyncio.run(
+        resolve_active_store_destination(
+            model_client=_DestinationModel(
+                {
+                    "request_kind": "availability",
+                    "destination_query": "重庆市",
+                    "destination_precision": "city",
+                    "administrative_context": {"province": "重庆市", "city": "重庆市"},
+                    "poi_query": "",
+                    "candidate_interpretations": [],
+                    "destination_subject": "customer",
+                    "named_store": "",
+                    "detail_kind": "none",
+                    "evidence_refs": ["current_message"],
+                    "superseded_location_refs": [],
+                    "confidence": "high",
+                    "needs_clarification": False,
+                    "geocode_before_clarification": True,
+                    "reason": "客户只确认重庆是否有门店",
+                }
+            ),
+            state=_state("重庆有门店吗"),
+            tool={"destination_hint": "重庆市"},
+        )
+    )
+
+    assert result["resolver_status"] == "ok"
+    assert result["request_kind"] == "availability"
 
 
 def test_text_store_list_prompt_and_validation_forbid_store_cards() -> None:
@@ -694,7 +775,12 @@ def test_text_store_list_prompt_and_validation_forbid_store_cards() -> None:
         "delivery_store_ids": [],
         "delivery_mode": "text_store_list",
         "text_store_summaries": [
-            {"store_id": str(index), "store_name": f"长沙门店{index}", "district": f"测试区{index}"}
+            {
+                "store_id": str(index),
+                "store_name": f"长沙门店{index}",
+                "district": f"测试区{index}",
+                "store_address": f"长沙市测试区{index}测试街道{index}号",
+            }
             for index in range(1, 8)
         ],
     }
@@ -702,7 +788,7 @@ def test_text_store_list_prompt_and_validation_forbid_store_cards() -> None:
     state = {"fact_envelope": {"structured_facts": {"store_resolution_fact": resolution}}}
 
     assert "只用一至两条 text" in conclusion
-    assert "完整列出所有门店名称和所在区县" in conclusion
+    assert "编号逐行完整列出所有门店名称、所在区县和完整地址" in conclusion
     rendered_facts = _render_tool_facts(
         {
             "normalized_tool_facts": {
@@ -723,8 +809,9 @@ def test_text_store_list_prompt_and_validation_forbid_store_cards() -> None:
         [
             {
                 "type": "text",
-                "content": "、".join(
-                    f"长沙门店{index}（测试区{index}）" for index in range(1, 8)
+                "content": "\n".join(
+                    f"{index}. 长沙门店{index}（测试区{index}），长沙市测试区{index}测试街道{index}号"
+                    for index in range(1, 8)
                 ),
             }
         ],
@@ -735,8 +822,9 @@ def test_text_store_list_prompt_and_validation_forbid_store_cards() -> None:
             [
                 {
                     "type": "text",
-                    "content": "、".join(
-                        f"长沙门店{index}（测试区{index}）" for index in range(1, 7)
+                    "content": "\n".join(
+                        f"{index}. 长沙门店{index}（测试区{index}），长沙市测试区{index}测试街道{index}号"
+                        for index in range(1, 7)
                     ),
                 }
             ],
@@ -747,8 +835,21 @@ def test_text_store_list_prompt_and_validation_forbid_store_cards() -> None:
             [
                 {
                     "type": "text",
-                    "content": "、".join(
-                        f"长沙门店{index}（测试区{index if index != 7 else 6}）"
+                    "content": "\n".join(
+                        f"{index}. 长沙门店{index}（测试区{index if index != 7 else 6}），长沙市测试区{index}测试街道{index}号"
+                        for index in range(1, 8)
+                    ),
+                }
+            ],
+            state,
+        )
+    with pytest.raises(ValueError, match="incomplete_text_store_list_contract"):
+        _validate_store_resolution_contract(
+            [
+                {
+                    "type": "text",
+                    "content": "\n".join(
+                        f"{index}. 长沙门店{index}（测试区{index}）"
                         for index in range(1, 8)
                     ),
                 }

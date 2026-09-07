@@ -17,10 +17,12 @@ STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT = """你是门店匹配工具的目的�
 - planner_hint.destination_hint 只是待解析文本，不是已经确认的地点事实。
 - 定位卡坐标是最高优先级确定性证据。
 - evidence_refs 只能引用输入中存在的 current_message 或 conversation.message_ref，且至少包含一个客户证据。
+- request_kind=availability 只表示客户在确认某个省市是否有门店，例如“重庆有门店吗”；它不表示客户要求查看全量门店。城市级候选很多时，后续应继续询问区县或附近地标。
+- request_kind=list 只用于客户明确要求查看全部/所有门店、问“都有哪些门店”或要求完整门店清单。不能把普通“有没有门店”问题标记为 list。
 
 ## 输出合同
 {
-  "request_kind": "match_location | nearest | list | store_detail | compare | reuse_store | clarify",
+  "request_kind": "match_location | nearest | availability | list | store_detail | compare | reuse_store | clarify",
   "destination_query": "用于地图查询的完整地点",
   "destination_precision": "coordinates | exact_address | poi | village | township | district | city | province | unknown",
   "administrative_context": {

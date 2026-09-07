@@ -358,7 +358,12 @@ def test_verified_store_recovery_delivers_every_canonical_store_card() -> None:
 
 def test_verified_store_recovery_renders_large_verified_store_list_as_text() -> None:
     summaries = [
-        {"store_id": str(index), "store_name": f"成都门店{index}", "district": f"测试区{index}"}
+        {
+            "store_id": str(index),
+            "store_name": f"成都门店{index}",
+            "district": f"测试区{index}",
+            "store_address": f"成都市测试区{index}测试街道{index}号",
+        }
         for index in range(1, 9)
     ]
     resolution = {
@@ -383,6 +388,33 @@ def test_verified_store_recovery_renders_large_verified_store_list_as_text() -> 
     visible_text = "".join(str(item["content"]) for item in messages)
     assert all(f"成都门店{index}" in visible_text for index in range(1, 9))
     assert all(f"测试区{index}" in visible_text for index in range(1, 9))
+    assert all(f"成都市测试区{index}测试街道{index}号" in visible_text for index in range(1, 9))
+    assert all(f"{index}. 成都门店{index}" in visible_text for index in range(1, 9))
+
+
+def test_verified_store_recovery_asks_for_district_for_large_availability_scope() -> None:
+    resolution = {
+        "status": "need_location",
+        "delivery_mode": "clarify_location",
+        "city": "重庆市",
+        "available_districts": ["南岸区", "巴南区", "渝北区", "九龙坡区", "江津区", "永川区", "渝中区"],
+    }
+    state = {
+        "normalized_content": "重庆有门店吗",
+        "fact_envelope": {"structured_facts": {"store_resolution_fact": resolution}},
+        "evidence_join": {
+            "shared_context": {"current_message": {"content": "重庆有门店吗"}},
+            "normalized_tool_facts": {"structured_facts": {"store_resolution_fact": resolution}},
+        },
+    }
+
+    messages = _verified_store_delivery_failure_recovery(state)
+
+    assert len(messages) == 1
+    assert messages[0]["type"] == "text"
+    assert "重庆市有门店" in messages[0]["content"]
+    assert "南岸区、巴南区、渝北区、九龙坡区、江津区、永川区等区域" in messages[0]["content"]
+    assert "您在什么区" in messages[0]["content"]
 
 
 def test_verified_store_recovery_keeps_policy_observation_but_removes_actions() -> None:

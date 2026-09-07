@@ -12,6 +12,7 @@ from app.services.model_client import ModelClient
 _REQUEST_KINDS = {
     "match_location",
     "nearest",
+    "availability",
     "list",
     "store_detail",
     "compare",

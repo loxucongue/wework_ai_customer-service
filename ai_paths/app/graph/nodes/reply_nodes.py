@@ -3566,8 +3566,8 @@ def _reply_repair_hint(error: str) -> str:
     ):
         return (
             "本轮门店候选较多，delivery_mode=text_store_list。删除所有 store_address，"
-            "只用一至两条自然文字，按 text_store_summaries 完整列出门店名称和所在区县，"
-            "不要遗漏、不要写门店ID或具体地址，最后可以问客户想看哪一家详情。"
+            "只用一至两条自然文字，按 text_store_summaries 的顺序和编号逐行完整列出"
+            "门店名称、所在区县和完整地址，不要遗漏、不要写门店ID，最后可以问客户想看哪一家详情。"
         )
     if "invalid_store_fact_integrity" in error:
         return (

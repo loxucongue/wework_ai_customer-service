@@ -1296,19 +1296,45 @@ def _validate_store_resolution_contract(messages: list[dict[str, Any]], state: d
             for item in resolution.get("text_store_summaries") or []
             if isinstance(item, dict)
         ]
-        visible_text = re.sub(r"\s+", "", _combined_text(messages))
+        text_messages = [
+            message_content_text(item.get("content"))
+            for item in messages
+            if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+        ]
+        visible_text = re.sub(r"\s+", "", "\n".join(text_messages))
+        visible_lines = [
+            line.strip()
+            for content in text_messages
+            for line in str(content or "").splitlines()
+            if line.strip()
+        ]
         if not summaries or not visible_text:
             raise ValueError("incomplete_text_store_list_contract")
-        for summary in summaries:
+        for index, summary in enumerate(summaries, start=1):
             store_name = re.sub(
                 r"\s+",
                 "",
                 str(summary.get("store_name") or summary.get("name") or "").strip(),
             )
             district = re.sub(r"\s+", "", str(summary.get("district") or "").strip())
-            if not store_name or store_name not in visible_text:
+            address = re.sub(
+                r"\s+",
+                "",
+                str(summary.get("store_address") or summary.get("address") or "").strip(),
+            )
+            matching_lines = [
+                line
+                for line in visible_lines
+                if store_name and store_name in re.sub(r"\s+", "", line)
+            ]
+            if not store_name or not matching_lines:
                 raise ValueError("incomplete_text_store_list_contract")
-            if district and district not in visible_text:
+            compact_line = re.sub(r"\s+", "", matching_lines[0])
+            if not re.match(rf"^{index}[.、]", compact_line):
+                raise ValueError("incomplete_text_store_list_contract")
+            if district and f"{store_name}（{district}）" not in compact_line:
+                raise ValueError("incomplete_text_store_list_contract")
+            if address and address not in compact_line:
                 raise ValueError("incomplete_text_store_list_contract")
         return
     if status in {
