@@ -87,6 +87,7 @@ def test_operations_dashboard_uses_authoritative_business_facts(tmp_path) -> Non
             )
 
     result = repository.operations_dashboard(started_from=start, started_to=end)
+    sop_result = repository.platform_sop_dashboard(started_from=start, started_to=end)
 
     assert result["contacts"] == {"new_contacts": 2, "opened_contacts": 1}
     assert result["ai_reply"]["calls"] == 1
@@ -108,6 +109,8 @@ def test_operations_dashboard_uses_authoritative_business_facts(tmp_path) -> Non
         }
     ]
     assert result["platform_sop"]["reason_breakdown"] == [{"key": "human_takeover", "count": 1}]
+    assert sop_result["platform_sop"] == result["platform_sop"]
+    assert sop_result["freshness"]["latest_platform_sop_at"] == now
     assert result["first_day_outreach"]["plans_created"] == 1
     assert result["first_day_outreach"]["failed"] == 1
     assert result["first_day_outreach"]["retry_count"] == 2

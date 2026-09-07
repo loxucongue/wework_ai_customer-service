@@ -113,6 +113,23 @@ def create_sop_admin_router(settings: Settings, services: ControlServices) -> AP
             refresh_platform=refresh_platform,
         )
 
+    @router.get("/admin/sop-platform-dashboard", dependencies=[Depends(require_api_key)])
+    async def sop_platform_dashboard(
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+    ) -> dict[str, Any]:
+        try:
+            return services.repository.platform_sop_dashboard(
+                started_from=started_from,
+                started_to=started_to,
+                corp_id=corp_id,
+                wechat=wechat,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @router.post(
         "/admin/sop-platform-tasks/{task_id}/resend",
         dependencies=[Depends(require_api_key)],

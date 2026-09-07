@@ -20,6 +20,53 @@ _SOP_UNFINISHED_STATUSES = {
 
 
 class OperationsDashboardRepositoryMixin:
+    def platform_sop_dashboard(
+        self,
+        *,
+        started_from: str = "",
+        started_to: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+    ) -> dict[str, Any]:
+        start, end = _dashboard_range(started_from, started_to)
+        clauses = ["e.event_type='platform_sop_task'", "e.received_at>=?", "e.received_at<=?"]
+        params: list[Any] = [start.isoformat(), end.isoformat()]
+        if corp_id:
+            clauses.append("t.corp_id=?")
+            params.append(corp_id)
+        if wechat:
+            clauses.append("t.wechat=?")
+            params.append(wechat)
+        with self.store.connect() as conn:
+            rows = _dict_rows(conn.execute(
+                f"""
+                SELECT e.event_id, e.status AS event_status, e.error AS event_error,
+                       e.retry_count, e.received_at, e.updated_at AS event_updated_at,
+                       e.raw_payload_json,
+                       t.id AS task_id, t.customer_id, t.external_userid, t.corp_id,
+                       t.user_id, t.wechat, t.status AS task_status, t.error AS task_error,
+                       t.send_payload_json, t.send_response_json,
+                       t.reply_messages_json, t.created_at AS task_created_at,
+                       t.updated_at AS task_updated_at, t.sent_at
+                FROM sop_events e
+                LEFT JOIN sop_send_tasks t ON t.event_id=e.event_id
+                WHERE {' AND '.join(clauses)}
+                """,
+                params,
+            ).fetchall())
+        bucket = "hour" if end - start <= timedelta(days=2) else "day"
+        return {
+            "range": {
+                "started_from": start.isoformat(),
+                "started_to": end.isoformat(),
+                "bucket": bucket,
+                "timezone": "Asia/Shanghai",
+            },
+            "filters": {"corp_id": corp_id, "wechat": wechat},
+            "platform_sop": _platform_sop_metrics(rows, bucket),
+            "freshness": {"latest_platform_sop_at": _latest(rows, "received_at")},
+        }
+
     def operations_dashboard(
         self,
         *,

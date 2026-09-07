@@ -233,7 +233,7 @@ export function SopPlatformLogViewer() {
       });
       if (filters.wechat) analyticsSearch.set("wechat", filters.wechat);
       const [analyticsResponse, workerResponse] = await Promise.all([
-        fetch(`/api/operations-dashboard?${analyticsSearch.toString()}`, { cache: "no-store" }),
+        fetch(`/api/logs/sop-platform-dashboard?${analyticsSearch.toString()}`, { cache: "no-store" }),
         fetch("/api/logs/sop-platform-worker", { cache: "no-store" }),
       ]);
       const analyticsPayload = (await analyticsResponse.json()) as AnalyticsResult;
