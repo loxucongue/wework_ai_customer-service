@@ -1219,12 +1219,20 @@ def _normalize_semantic_route(
     historical_code = str(historical_raw.get("checkpoint_code") or "").strip().lower()
     if historical_code not in taxonomy_codes or historical_code == primary:
         historical_code = ""
+    historical_refs = (
+        _valid_refs(historical_raw.get("evidence_refs"), valid_customer_refs)
+        if historical_code
+        else []
+    )
+    # Historical friction is optional retrieval context. If the model cannot
+    # point to a real customer message, drop it instead of degrading an
+    # otherwise valid current turn or anchoring Reply on unsupported history.
+    if historical_code and not historical_refs:
+        historical_code = ""
     historical_friction = {
         "checkpoint_code": historical_code,
         "summary": str(historical_raw.get("summary") or "")[:300] if historical_code else "",
-        "evidence_refs": _valid_refs(historical_raw.get("evidence_refs"), valid_customer_refs)
-        if historical_code
-        else [],
+        "evidence_refs": historical_refs if historical_code else [],
     }
     knowledge_focus_raw = (
         payload.get("knowledge_focus")
@@ -1404,10 +1412,18 @@ def _normalize_semantic_route(
             store_purpose = "store_search"
             location_refs = _valid_refs(["current_message"], valid_customer_refs)
             destination_hint = structured_location_hint
+    normalized_closing_catalog = _normalized_closing_catalog(closing_catalog)
+    raw_closing_catalog_match = payload.get("closing_catalog_match")
     closing_catalog_match = _normalize_closing_catalog_match(
-        payload.get("closing_catalog_match"),
-        catalog=_normalized_closing_catalog(closing_catalog),
+        raw_closing_catalog_match,
+        catalog=normalized_closing_catalog,
         valid_customer_refs=valid_customer_refs,
+    )
+    closing_catalog_match = _configured_exact_closing_candidates(
+        closing_catalog_match,
+        raw_match=raw_closing_catalog_match,
+        catalog=normalized_closing_catalog,
+        shared_context=shared_context,
     )
     return {
         "schema_version": "v3_semantic_route_v2",
@@ -1587,6 +1603,99 @@ def _normalize_closing_catalog_match(
             else str(raw.get("reason") or "")[:300]
         ),
     }
+
+
+def _configured_exact_closing_candidates(
+    match_value: Any,
+    *,
+    raw_match: Any,
+    catalog: dict[str, Any],
+    shared_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Recover exact tenant-configured candidates without making a sales decision.
+
+    The published rule keyword is business-owned retrieval metadata. An exact
+    normalized match only exposes its linked rule and sequences to Reply; it
+    does not choose a node, authorize payment, or override a model-declared
+    safety block. Reply remains responsible for the final semantic decision.
+    """
+
+    match = copy.deepcopy(match_value) if isinstance(match_value, dict) else {}
+    raw = raw_match if isinstance(raw_match, dict) else {}
+    if str(match.get("status") or "") != "none":
+        return match
+    if str(raw.get("status") or "").strip().lower() == "blocked":
+        return match
+    if str(catalog.get("status") or "") != "ok":
+        return match
+
+    current = (
+        shared_context.get("current_message")
+        if isinstance(shared_context.get("current_message"), dict)
+        else {}
+    )
+    current_text = _configured_phrase_key(
+        current.get("content") or current.get("raw_content")
+    )
+    if not current_text:
+        return match
+
+    rules = catalog.get("rules") if isinstance(catalog.get("rules"), dict) else {}
+    selected_rule_ids: list[str] = []
+    for rule in rules.get("triggers") or []:
+        if not isinstance(rule, dict):
+            continue
+        rule_key = str(rule.get("rule_key") or "").strip()
+        trigger_mode = str(rule.get("trigger_mode") or "independent").strip().lower()
+        if (
+            not rule_key
+            or trigger_mode != "independent"
+            or not bool(rule.get("grouping_supported", True))
+        ):
+            continue
+        keywords = rule.get("keywords")
+        if isinstance(keywords, str):
+            configured_phrases = re.split(r"[,，;；\n]+", keywords)
+        else:
+            configured_phrases = keywords if isinstance(keywords, list) else []
+        if any(
+            _configured_phrase_key(phrase) == current_text
+            for phrase in configured_phrases
+            if _configured_phrase_key(phrase)
+        ):
+            selected_rule_ids.append(rule_key)
+        if len(selected_rule_ids) >= 3:
+            break
+    if not selected_rule_ids:
+        return match
+
+    selected_rule_set = set(selected_rule_ids)
+    sequence_candidate_ids: list[str] = []
+    for sequence in catalog.get("sequences") or []:
+        if not isinstance(sequence, dict) or sequence.get("enabled") is False:
+            continue
+        sequence_key = str(sequence.get("sequence_key") or "").strip()
+        linked_rules = {
+            str(item or "").strip()
+            for item in sequence.get("rule_keys") or []
+            if str(item or "").strip()
+        }
+        if sequence_key and linked_rules.intersection(selected_rule_set):
+            sequence_candidate_ids.append(sequence_key)
+        if len(sequence_candidate_ids) >= 3:
+            break
+
+    return {
+        "status": "matched" if sequence_candidate_ids else "rule_only",
+        "selected_rule_ids": selected_rule_ids,
+        "sequence_candidate_ids": sequence_candidate_ids,
+        "evidence_refs": ["current_message"],
+        "reason": "configured_catalog_exact_candidate",
+    }
+
+
+def _configured_phrase_key(value: Any) -> str:
+    return "".join(re.findall(r"[a-z0-9\u4e00-\u9fff]+", str(value or "").lower()))
 
 
 def _closing_catalog_evidence(value: Any, match_value: Any) -> dict[str, Any]:
