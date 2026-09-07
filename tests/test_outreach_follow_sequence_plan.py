@@ -347,6 +347,67 @@ def test_follow_sequence_plan_tolerates_invalid_script_catalog_response() -> Non
     )
 
 
+def test_follow_sequence_tasks_do_not_require_legacy_scene_analysis() -> None:
+    planner = PlanGenerator(
+        repository=object(),
+        model_client=None,
+        system_client=None,
+        customer_context_service=None,
+        precision_qa_playbook_service=None,
+        sop_reply_pack_service=None,
+        coze_client=None,
+        sales_strategy_service=None,
+    )
+    source_snapshot = {
+        "first_day_workflow": {"strategy_decision": {"decision_mode": "follow_sequence"}},
+        "first_day_sop_sequence": [],
+        "conversation_activity": {
+            "latest_customer_message_at": "2026-09-07T15:00:00+00:00",
+            "latest_staff_message_at": "2026-09-07T15:01:00+00:00",
+        },
+    }
+    response = {
+        "should_create_plan": True,
+        "plan_mode": "follow_sequence",
+        "plan_arc": "距离卡点",
+        "steps": [
+            {
+                "step": 1,
+                "scene": "objection_resolution",
+                "source_id": "follow-sequence-node:251",
+                "delay_minutes": 10,
+                "schedule_source": {"relative_minutes": 10},
+                "intent": "解决疑虑",
+                "message_goal": "提供距离顾虑的新价值",
+                "reply_messages": [
+                    {"type": "text", "content": {"text": "很多客户会专程过来，主要看重技术和效果。"}}
+                ],
+                "follow_sequence": {"id": "45"},
+                "follow_sequence_node": {"id": "251"},
+                "follow_script_candidates": [{"id": "72"}],
+            }
+        ],
+    }
+
+    raw_steps, tasks = asyncio.run(
+        planner._materialize_tasks(
+            {
+                "first_day_trigger": True,
+                "asset_catalog": [],
+                "recent_media": {"urls": []},
+                "activity_quote_fact": {},
+                "payment_collection_gate": {},
+                "source_snapshot": source_snapshot,
+            },
+            response,
+        )
+    )
+
+    assert len(raw_steps) == 1
+    assert len(tasks) == 1
+    assert tasks[0]["content_sources"][-3]["outreach_task_metadata"]["follow_sequence"]["id"] == "45"
+
+
 def test_night_active_plan_keeps_all_nodes_inside_customer_40_minute_window() -> None:
     latest_customer = datetime(2026, 9, 7, 14, 10, tzinfo=timezone.utc)  # 22:10 Beijing
     now = latest_customer + timedelta(minutes=1)

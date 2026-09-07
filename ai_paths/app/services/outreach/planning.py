@@ -1775,10 +1775,23 @@ class PlanGenerator:
                     text_limit=None if sop_pack else 2,
                 )
             resolved_asset = resolved_assets_for_step[0] if resolved_assets_for_step else {}
+            first_day_workflow = (
+                source_snapshot.get("first_day_workflow")
+                if isinstance(source_snapshot.get("first_day_workflow"), dict)
+                else {}
+            )
+            scene_analysis = (
+                first_day_workflow.get("scene_analysis")
+                if isinstance(first_day_workflow.get("scene_analysis"), dict)
+                else {}
+            )
+            selected_source_map = (
+                scene_analysis.get("selected_source_ids")
+                if isinstance(scene_analysis.get("selected_source_ids"), dict)
+                else {}
+            )
             selected_source_ids = _list_strings(
-                (((source_snapshot.get("first_day_workflow") or {}).get("scene_analysis") or {}).get(
-                    "selected_source_ids"
-                ) or {}).get(f"step{index}")
+                selected_source_map.get(f"step{index}")
             )
             main_source_id = _string(step.get("source_id")) or _string(sop_pack.get("source_id")) or next(
                 (

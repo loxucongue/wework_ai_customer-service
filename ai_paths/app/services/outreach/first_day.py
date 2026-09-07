@@ -1381,10 +1381,19 @@ def _first_day_configured_assets_for_step(
     recent_media: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
     workflow = source_snapshot.get("first_day_workflow")
-    scene_analysis = workflow.get("scene_analysis") if isinstance(workflow, dict) else {}
+    scene_analysis = (
+        workflow.get("scene_analysis")
+        if isinstance(workflow, dict) and isinstance(workflow.get("scene_analysis"), dict)
+        else {}
+    )
+    selected_source_ids = (
+        scene_analysis.get("selected_source_ids")
+        if isinstance(scene_analysis.get("selected_source_ids"), dict)
+        else {}
+    )
     selected_ids = [
         _string(source_id)
-        for source_id in (scene_analysis.get("selected_source_ids") or {}).get(f"step{step_index}") or []
+        for source_id in selected_source_ids.get(f"step{step_index}") or []
         if _string(source_id)
     ]
     configured_main_sources = [
