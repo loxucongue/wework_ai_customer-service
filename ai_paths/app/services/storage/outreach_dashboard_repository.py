@@ -120,6 +120,9 @@ class OutreachDashboardRepositoryMixin:
             ("converted", "预约/支付进展", len(transaction_plan_ids)),
         ]
         bucket = "hour" if end - start <= timedelta(days=2) else "day"
+        queue_limit_value = max(1, min(int(queue_limit or 50), 100))
+        queue_runs = runs[:queue_limit_value]
+        customer_identities = self._outreach_dashboard_customer_identities(queue_runs)
         return {
             "range": {
                 "started_from": start.isoformat(),
@@ -143,7 +146,8 @@ class OutreachDashboardRepositoryMixin:
                 plans=plans,
                 tasks=tasks,
                 reopened_plan_ids=reopened_plan_ids,
-                limit=max(1, min(int(queue_limit or 50), 100)),
+                customer_identities=customer_identities,
+                limit=queue_limit_value,
             ),
             "queue_total": len(runs),
             "wechat_breakdown": _wechat_breakdown(
@@ -230,6 +234,41 @@ class OutreachDashboardRepositoryMixin:
                 params,
             ).fetchall())
 
+    def _outreach_dashboard_customer_identities(
+        self,
+        runs: list[dict[str, Any]],
+    ) -> dict[tuple[str, str, str], dict[str, Any]]:
+        wanted_keys = {_contact_key(run) for run in runs if any(_contact_key(run))}
+        customer_ids = sorted({_text(run.get("customer_id")) for run in runs if _text(run.get("customer_id"))})
+        external_ids = sorted({_text(run.get("external_userid")) for run in runs if _text(run.get("external_userid"))})
+        if not wanted_keys or (not customer_ids and not external_ids):
+            return {}
+        clauses: list[str] = []
+        params: list[str] = []
+        if customer_ids:
+            clauses.append(f"customer_id IN ({','.join('?' for _ in customer_ids)})")
+            params.extend(customer_ids)
+        if external_ids:
+            clauses.append(f"external_userid IN ({','.join('?' for _ in external_ids)})")
+            params.extend(external_ids)
+        with self.store.connect() as conn:
+            rows = _dict_rows(conn.execute(
+                f"""
+                SELECT id AS conversation_id, customer_id, external_userid, corp_id, user_id,
+                       wechat, title AS customer_name, updated_at
+                FROM conversations
+                WHERE {' OR '.join(clauses)}
+                ORDER BY updated_at DESC, id DESC
+                """,
+                params,
+            ).fetchall())
+        identities: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in rows:
+            key = _contact_key(row)
+            if key in wanted_keys and key not in identities:
+                identities[key] = row
+        return identities
+
 
 def _build_funnel(values: list[tuple[str, str, int]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
@@ -289,6 +328,7 @@ def _build_queue(
     plans: dict[str, dict[str, Any]],
     tasks: list[dict[str, Any]],
     reopened_plan_ids: set[str],
+    customer_identities: dict[tuple[str, str, str], dict[str, Any]],
     limit: int,
 ) -> list[dict[str, Any]]:
     by_plan: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -318,6 +358,19 @@ def _build_queue(
         snapshot = _dict(run.get("input_snapshot"))
         activity = _dict(snapshot.get("conversation_activity"))
         trigger = _dict(snapshot.get("trigger_context"))
+        customer_context = _dict(snapshot.get("customer_context"))
+        identity = customer_identities.get(_contact_key(run), {})
+        task_refs = [
+            {
+                "task_id": _text(item.get("id")),
+                "step_index": int(item.get("step_index") or 0),
+                "status": _text(item.get("status")),
+                "system_msgid": _text(item.get("system_msgid")),
+                "scheduled_at": _text(item.get("scheduled_at")),
+                "sent_at": _text(item.get("sent_at")),
+            }
+            for item in plan_tasks
+        ]
         silence_minutes = int(
             activity.get("reply_wait_minutes")
             or trigger.get("reply_wait_minutes")
@@ -330,7 +383,24 @@ def _build_queue(
             "customer_id": _text(run.get("customer_id")),
             "external_userid": _text(run.get("external_userid")),
             "corp_id": _text(run.get("corp_id")),
+            "user_id": _text(run.get("user_id")) or _text(identity.get("user_id")),
             "wechat": _text(run.get("wechat")),
+            "conversation_id": (
+                _text(snapshot.get("conversation_id"))
+                or _text(trigger.get("conversation_id"))
+                or _text(identity.get("conversation_id"))
+            ),
+            "customer_name": _customer_name(run, identity),
+            "customer_add_wechat_id": _nested_text(
+                customer_context,
+                "customer_add_wechat_id",
+                "add_wechat_id",
+            ),
+            "platform_customer_id": _nested_text(
+                customer_context,
+                "platform_customer_id",
+                "customer_platform_id",
+            ),
             "started_at": _text(run.get("started_at")),
             "finished_at": _text(run.get("finished_at")),
             "status": _text(run.get("status")),
@@ -346,9 +416,31 @@ def _build_queue(
             "next_touch_at": next_touch,
             "sent_steps": len(sent),
             "task_count": len(plan_tasks),
+            "task_refs": task_refs,
             "reopened_24h": plan_id in reopened_plan_ids,
         })
     return result
+
+
+def _customer_name(run: dict[str, Any], identity: dict[str, Any]) -> str:
+    snapshot = _dict(run.get("input_snapshot"))
+    customer_context = _dict(snapshot.get("customer_context"))
+    customer = _dict(customer_context.get("customer"))
+    basic_info = _dict(_dict(snapshot.get("customer_fact_snapshot")).get("basic_info"))
+    return (
+        _nested_text(customer_context, "name", "nickname", "customer_name", "remark")
+        or _nested_text(customer, "name", "nickname", "remark")
+        or _nested_text(basic_info, "name", "nickname", "remark")
+        or _text(identity.get("customer_name"))
+    )
+
+
+def _nested_text(value: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        item = _text(value.get(key))
+        if item:
+            return item
+    return ""
 
 
 def _reason_breakdown(runs: list[dict[str, Any]], events: list[dict[str, Any]]) -> list[dict[str, Any]]:

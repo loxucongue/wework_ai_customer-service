@@ -25,6 +25,8 @@
 
 - 客户关联固定使用 `corp_id + wechat + external_userid/customer_id`，不同企微号不得合并。
 - 企微知识可共享，客户回复、计划、发送和结果不能跨账号共享。
+- 当前队列明细返回并展示现有稳定身份链：`customer_id`、`external_userid`、`conversation_id`、`corp_id`、`user_id`、`wechat`、`workflow_run_id`、`plan_id`，以及每一步的 `task_id` 和已存在的 `system_msgid`。客户名称只取当时快照或同一身份边界下最新会话名称；ID 缺失必须显示“未记录”。
+- 队列身份信息仅供 Bearer 鉴权后的内部运营排障，不增加手机号、token 或新的敏感字段留存；会话补齐必须同时匹配企业、企微和客户标识，禁止仅凭 `customer_id` 跨企微关联。
 - 明细可展示现有留存的最近客户可见对话、计划和素材；不得新增模型思维过程或凭证留存。
 - 历史字段不存在时显示“未记录”，不得补成 0 或用当前目录冒充当时素材。
 
@@ -42,7 +44,7 @@
 
 ## 接口与保留
 
-- `GET /admin/outreach/dashboard`：按时间、企业和企微号聚合漏斗、趋势、原因、队列、账号分布和数据新鲜度；最大范围 31 天。
+- `GET /admin/outreach/dashboard`：按时间、企业和企微号聚合漏斗、趋势、原因、队列、账号分布和数据新鲜度；队列项携带客户、会话、运行、计划和任务的稳定 ID；最大范围 31 天。
 - `GET /admin/outreach/first-day-runs/{workflow_run_id}`：按需读取单次运行、计划、任务、素材、节点和客户上下文。
 - 管理接口使用现有 Bearer 鉴权；前端路径为 `/analytics/outreach`。
 - 看板不新增事实表；运行快照和原始轨迹继续按现有保留策略清理。

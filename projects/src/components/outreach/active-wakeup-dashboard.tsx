@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock3,
+  Copy,
   ExternalLink,
   FileClock,
   ImageIcon,
@@ -71,13 +72,27 @@ type TrendPoint = {
 
 type ReasonItem = { key: string; label: string; count: number };
 
+type TaskRef = {
+  task_id?: string;
+  step_index?: number;
+  status?: string;
+  system_msgid?: string;
+  scheduled_at?: string;
+  sent_at?: string;
+};
+
 type QueueItem = {
   workflow_run_id: string;
   plan_id?: string;
   customer_id?: string;
   external_userid?: string;
   corp_id?: string;
+  user_id?: string;
   wechat?: string;
+  conversation_id?: string;
+  customer_name?: string;
+  customer_add_wechat_id?: string;
+  platform_customer_id?: string;
   started_at?: string;
   status?: string;
   reason_code?: string;
@@ -92,6 +107,7 @@ type QueueItem = {
   next_touch_at?: string;
   sent_steps?: number;
   task_count?: number;
+  task_refs?: TaskRef[];
   reopened_24h?: boolean;
 };
 
@@ -442,19 +458,20 @@ function QueuePanel({ rows, total, loading, selectedId, onSelect, onConfig }: { 
   return (
     <section className="overflow-hidden rounded-md border bg-white shadow-sm">
       <div className="flex flex-col justify-between gap-3 border-b px-4 py-4 sm:flex-row sm:items-center">
-        <div><h2 className="text-sm font-semibold">当前唤醒队列</h2><p className="mt-1 text-xs text-zinc-500">当前范围共 {formatNumber(total)} 条，点击记录查看完整判断和计划。</p></div>
+        <div><h2 className="text-sm font-semibold">当前唤醒队列</h2><p className="mt-1 text-xs text-zinc-500">当前范围共 {formatNumber(total)} 条，点击记录查看客户身份、完整 ID、判断和计划。</p></div>
         <div className="flex flex-wrap gap-2"><Button variant="default" size="sm" asChild><Link href="/logs/outreach-first-day"><FileClock className="size-4" />查看全部运行记录</Link></Button><Button variant="outline" size="sm" onClick={onConfig}><Settings2 className="size-4" />查看配置</Button></div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[980px] text-left text-sm">
-          <thead className="bg-zinc-50 text-xs font-medium text-zinc-500"><tr><th className="px-4 py-3">客户摘要</th><th className="px-3 py-3">企微号</th><th className="px-3 py-3">沉默时长</th><th className="px-3 py-3">当前阶段</th><th className="px-3 py-3">计划主题</th><th className="px-3 py-3">下一触达</th><th className="px-4 py-3">状态 / 原因</th></tr></thead>
+        <table className="w-full min-w-[1280px] text-left text-sm">
+          <thead className="bg-zinc-50 text-xs font-medium text-zinc-500"><tr><th className="px-4 py-3">客户与关键 ID</th><th className="px-3 py-3">企微号</th><th className="px-3 py-3">沉默时长</th><th className="px-3 py-3">当前阶段</th><th className="px-3 py-3">计划 / 任务</th><th className="px-3 py-3">计划主题</th><th className="px-3 py-3">下一触达</th><th className="px-4 py-3">状态 / 原因</th></tr></thead>
           <tbody className="divide-y divide-zinc-100">
             {rows.map((row) => (
               <tr key={row.workflow_run_id} tabIndex={0} onClick={() => onSelect(row)} onKeyDown={(event) => { if (event.key === "Enter") onSelect(row); }} className={cn("cursor-pointer outline-none hover:bg-zinc-50 focus:bg-blue-50", selectedId === row.workflow_run_id && "bg-blue-50")}>
-                <td className="max-w-[280px] px-4 py-3"><div className="truncate font-medium">{customerLabel(row)}</div><div className="mt-1 truncate text-xs text-zinc-500" title={row.last_customer_message}>{row.last_customer_message || row.customer_need || "未记录客户原话"}</div></td>
+                <td className="max-w-[320px] px-4 py-3"><div className="truncate font-medium">{customerLabel(row)}</div><div className="mt-1 truncate font-mono text-[11px] text-zinc-500" title={row.customer_id}>客户 {idPreview(row.customer_id)}</div><div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500" title={row.conversation_id}>会话 {idPreview(row.conversation_id)}</div><div className="mt-1 truncate text-xs text-zinc-500" title={row.last_customer_message}>{row.last_customer_message || row.customer_need || "未记录客户原话"}</div></td>
                 <td className="px-3 py-3 text-zinc-600">{row.wechat || "未记录"}</td>
                 <td className="px-3 py-3 tabular-nums">{row.silence_minutes ? `${row.silence_minutes} 分钟` : "未记录"}</td>
                 <td className="px-3 py-3"><PhaseBadge phase={row.phase} /></td>
+                <td className="max-w-[220px] px-3 py-3"><div className="truncate font-mono text-xs text-zinc-700" title={row.plan_id}>计划 {idPreview(row.plan_id)}</div><div className="mt-1 truncate font-mono text-[11px] text-zinc-500" title={row.task_refs?.map((item) => item.task_id).filter(Boolean).join("、")}>{row.task_count ? `${row.task_count} 个任务 · ${idPreview(row.task_refs?.[0]?.task_id)}` : "尚未生成任务"}</div></td>
                 <td className="px-3 py-3 text-zinc-600">{sceneLabel(row.first_scene) || row.plan_goal || "未生成"}</td>
                 <td className="px-3 py-3 text-zinc-600">{formatTime(row.next_touch_at, true)}</td>
                 <td className="px-4 py-3"><div className="flex items-center justify-between gap-2"><span className="truncate text-zinc-600" title={row.reason_label}>{row.phase === "reopened" ? "24h 内已开口" : row.reason_label || PHASE_LABELS[row.phase] || row.status || "处理中"}</span><ChevronRight className="size-4 shrink-0 text-zinc-400" /></div></td>
@@ -480,19 +497,19 @@ function DetailSheet({ open, onOpenChange, summary, detail, loading, error, tab,
           <SheetDescription className="flex flex-wrap items-center gap-2"><span>{source?.wechat || "企微号未记录"}</span><span>·</span><span>{source?.silence_minutes ? `沉默 ${source.silence_minutes} 分钟` : "沉默时长未记录"}</span>{source?.phase ? <PhaseBadge phase={source.phase} /> : null}</SheetDescription>
         </SheetHeader>
         <div className="flex border-b px-4 py-2">
-          {([['plan', '唤醒计划'], ['record', '运行记录'], ['context', '客户上下文']] as const).map(([key, label]) => <Button key={key} variant={tab === key ? "default" : "ghost"} size="sm" onClick={() => onTab(key)}>{label}</Button>)}
+          {([['plan', '唤醒计划'], ['record', '运行记录'], ['context', '客户与 ID']] as const).map(([key, label]) => <Button key={key} variant={tab === key ? "default" : "ghost"} size="sm" onClick={() => onTab(key)}>{label}</Button>)}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
-          {loading ? <LoadingBlock text="正在加载完整运行明细" /> : error ? <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div> : detail ? <DetailContent detail={detail} tab={tab} /> : <EmptyBlock text="未取得运行明细" />}
+          {loading ? <LoadingBlock text="正在加载完整运行明细" /> : error ? <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div> : detail ? <DetailContent detail={detail} source={source || detail} tab={tab} /> : <EmptyBlock text="未取得运行明细" />}
         </div>
       </SheetContent>
     </Sheet>
   );
 }
 
-function DetailContent({ detail, tab }: { detail: RunDetail; tab: "plan" | "record" | "context" }) {
+function DetailContent({ detail, source, tab }: { detail: RunDetail; source: QueueItem; tab: "plan" | "record" | "context" }) {
   if (tab === "record") return <RunRecord detail={detail} />;
-  if (tab === "context") return <CustomerContext detail={detail} />;
+  if (tab === "context") return <CustomerContext detail={detail} source={source} />;
   return <WakeupPlan detail={detail} />;
 }
 
@@ -530,6 +547,7 @@ function TaskCard({ task, material }: { task: JsonRecord; material?: JsonRecord 
   const mediaLinks = [...new Set([...media, ...sourceOptions].map(mediaUrl).filter(Boolean))].slice(0, 5);
   return <article className="rounded-md border border-zinc-200 p-4">
     <div className="flex items-start justify-between gap-3"><div><div className="font-semibold">第 {number(task.step_index) || 1} 条 · {sceneLabel(taskScene(task)) || sceneLabel(material?.scene) || "计划触达"}</div><div className="mt-1 text-xs text-zinc-500">计划时间 {formatTime(task.scheduled_at)} · {formatNumber(messages.length)} 条消息</div></div><StatusBadge status={text(task.status)} /></div>
+    <div className="mt-2 grid gap-1 rounded-md bg-zinc-50 px-3 py-2 font-mono text-[11px] text-zinc-500"><span className="break-all">任务 ID：{text(task.id) || "未记录"}</span>{text(task.system_msgid) ? <span className="break-all">平台消息 ID：{text(task.system_msgid)}</span> : null}</div>
     <div className="mt-3 space-y-2">{texts.map((message, index) => <p key={index} className="rounded-md bg-zinc-50 px-3 py-2 text-sm leading-6">{messageText(message) || "文本未记录"}</p>)}</div>
     {(media.length || sourceOptions.length) ? <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 p-3"><div className="flex items-center gap-2 text-sm font-medium text-blue-900"><ImageIcon className="size-4" />素材 {formatNumber(media.length || sourceOptions.length)} 项</div><div className="mt-2 flex flex-wrap gap-2">{mediaLinks.length ? mediaLinks.map((url, index) => <a key={`${url}-${index}`} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-xs text-blue-700 ring-1 ring-blue-200">打开素材 {index + 1}<ExternalLink className="size-3" /></a>) : <span className="text-xs text-blue-800">素材地址已脱敏、过期或未留存</span>}</div></div> : null}
   </article>;
@@ -549,14 +567,32 @@ function RunRecord({ detail }: { detail: RunDetail }) {
   </div>;
 }
 
-function CustomerContext({ detail }: { detail: RunDetail }) {
+function CustomerContext({ detail, source }: { detail: RunDetail; source: QueueItem }) {
   const snapshot = record(detail.input_snapshot);
   const messages = arrayOfRecords(snapshot.recent_messages);
   const relation = record(record(detail.observability_view?.customer_context).customer_relation);
   const activity = record(record(detail.observability_view?.customer_context).conversation_activity);
+  const detailTasks = arrayOfRecords(detail.tasks);
+  const taskRefs = source.task_refs?.length ? source.task_refs : detailTasks.map((task) => ({ task_id: text(task.id), step_index: number(task.step_index), status: text(task.status), system_msgid: text(task.system_msgid) }));
+  const identifiers = [
+    ["客户 ID", source.customer_id],
+    ["外部联系人 ID", source.external_userid],
+    ["会话 ID", source.conversation_id || text(snapshot.conversation_id) || text(record(snapshot.trigger_context).conversation_id)],
+    ["客户加微 ID", source.customer_add_wechat_id],
+    ["平台客户 ID", source.platform_customer_id],
+    ["企业 ID", source.corp_id],
+    ["接待人员 ID", source.user_id],
+    ["企微号", source.wechat],
+    ["唤醒运行 ID", source.workflow_run_id],
+    ["计划 ID", source.plan_id],
+  ] as Array<[string, string | undefined]>;
   return <div className="space-y-5">
     <Section title="客户状态" icon={<UsersRound className="size-4" />}>
-      <div className="grid gap-3 sm:grid-cols-2"><Fact label="接待模式" value={text(relation.ai_mode || relation.service_mode) || "未记录"} /><Fact label="沉默时长" value={number(activity.reply_wait_minutes) ? `${number(activity.reply_wait_minutes)} 分钟` : detail.silence_minutes ? `${detail.silence_minutes} 分钟` : "未记录"} /><Fact label="企微号" value={detail.wechat || "未记录"} /><Fact label="订单状态" value={text(record(snapshot.order_context).state || record(snapshot.order_context).status) || "未记录"} /></div>
+      <div className="grid gap-3 sm:grid-cols-2"><Fact label="客户名称 / 备注" value={source.customer_name || "未记录"} /><Fact label="接待模式" value={text(relation.ai_mode || relation.service_mode) || "未记录"} /><Fact label="沉默时长" value={number(activity.reply_wait_minutes) ? `${number(activity.reply_wait_minutes)} 分钟` : detail.silence_minutes ? `${detail.silence_minutes} 分钟` : "未记录"} /><Fact label="企微号" value={detail.wechat || "未记录"} /><Fact label="订单状态" value={text(record(snapshot.order_context).state || record(snapshot.order_context).status) || "未记录"} /></div>
+    </Section>
+    <Section title="客户与任务 ID" icon={<Info className="size-4" />}>
+      <div className="divide-y rounded-md border">{identifiers.map(([label, value]) => <IdentifierRow key={label} label={label} value={value} />)}</div>
+      <div className="mt-3 space-y-2">{taskRefs.length ? taskRefs.map((task, index) => <div key={task.task_id || index} className="rounded-md border bg-zinc-50 p-3"><div className="mb-2 flex items-center justify-between gap-3"><span className="text-xs font-medium">第 {task.step_index || index + 1} 条任务</span><StatusBadge status={task.status || ""} /></div><IdentifierRow label="任务 ID" value={task.task_id} compact />{task.system_msgid ? <IdentifierRow label="平台消息 ID" value={task.system_msgid} compact /> : null}</div>) : <EmptyBlock text="尚未生成任务 ID" />}</div>
     </Section>
     <Section title="最近客户可见对话" icon={<MessageCircle className="size-4" />}>
       {messages.length ? <div className="space-y-3">{messages.map((message, index) => { const customer = isCustomerMessage(message); return <div key={index} className={cn("flex", customer ? "justify-start" : "justify-end")}><div className={cn("max-w-[88%] rounded-lg px-3 py-2 text-sm", customer ? "bg-zinc-100" : "bg-blue-600 text-white")}><div className="mb-1 text-[11px] opacity-70">{customer ? "客户" : "AI / 客服"} · {formatTime(message.created_at || message.timestamp, true)}</div><p className="whitespace-pre-wrap break-words leading-5">{messageText(message) || `[${text(message.type || message.msgtype) || "非文本消息"}]`}</p></div></div>; })}</div> : <EmptyBlock text="最近对话未留存或已超过保留期" />}
@@ -610,6 +646,18 @@ function Panel({ title, subtitle, children }: { title: string; subtitle: string;
 function Section({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) { return <section><h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">{icon}{title}</h3>{children}</section>; }
 function Fact({ label, value }: { label: string; value: string }) { return <div className="rounded-md border p-3"><div className="text-xs text-zinc-500">{label}</div><div className="mt-1 text-sm font-medium leading-5">{value}</div></div>; }
 function Guard({ label, detail }: { label: string; detail: string }) { return <div className="flex items-start gap-2 rounded-md bg-zinc-50 p-3"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-zinc-500" /><div><div className="text-sm font-medium">{label}</div><div className="mt-1 text-xs text-zinc-500">{detail}</div></div></div>; }
+
+function IdentifierRow({ label, value, compact = false }: { label: string; value?: string; compact?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const display = text(value) || "未记录";
+  const copyValue = async () => {
+    if (!text(value)) return;
+    await navigator.clipboard.writeText(text(value));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  };
+  return <div className={cn("grid items-center gap-2", compact ? "grid-cols-[92px_1fr_auto] py-1.5" : "grid-cols-[110px_1fr_auto] px-3 py-2.5")}><span className="text-xs text-zinc-500">{label}</span><code className={cn("min-w-0 break-all text-xs", display === "未记录" && "font-sans text-zinc-400")}>{display}</code><Button type="button" variant="ghost" size="icon" className="size-7" disabled={!text(value)} onClick={() => void copyValue()} aria-label={`复制${label}`}>{copied ? <Check className="size-3.5 text-emerald-600" /> : <Copy className="size-3.5" />}</Button></div>;
+}
 function ConfigRow({ label, configured, effective }: { label: string; configured: string; effective: string }) { return <div className="grid grid-cols-[110px_1fr] gap-3 px-3 py-3"><span className="text-zinc-500">{label}</span><div><div>{configured}</div><div className="mt-1 text-xs text-zinc-500">当前生效：{effective}</div></div></div>; }
 function MiniMetric({ label, value }: { label: string; value: string }) { return <div className="bg-white p-3"><div className="text-[11px] text-zinc-500">{label}</div><div className="mt-1 text-sm font-semibold tabular-nums">{value}</div></div>; }
 function LegendDot({ tone, label }: { tone: "blue" | "green"; label: string }) { return <span className="inline-flex items-center gap-1.5"><span className={cn("size-2 rounded-full", tone === "blue" ? "bg-blue-600" : "bg-emerald-600")} />{label}</span>; }
@@ -622,7 +670,8 @@ function NodeDot({ status }: { status?: string }) { return status === "completed
 
 function workerTaskLabel(task: JsonRecord): string { if (!Object.keys(task).length) return "未上报"; if (task.running === true) return "运行中"; if (task.cancelled === true) return "已取消"; if (task.done === true) return text(task.error) ? `异常：${text(task.error)}` : "已停止"; return "状态未知"; }
 function nodeStatusLabel(status?: string): string { return ({ completed: "完成", warning: "有警告", failed: "失败", skipped: "跳过", not_reached: "未到达" } as Record<string, string>)[status || ""] || status || "未记录"; }
-function customerLabel(row: Partial<QueueItem>): string { return row.customer_id || row.external_userid || "客户标识未记录"; }
+function customerLabel(row: Partial<QueueItem>): string { return row.customer_name || row.customer_id || row.external_userid || "客户标识未记录"; }
+function idPreview(value?: string): string { const normalized = text(value); if (!normalized) return "未记录"; return normalized.length > 22 ? `${normalized.slice(0, 12)}…${normalized.slice(-6)}` : normalized; }
 function sceneLabel(value: unknown): string { const key = text(value); return SCENE_LABELS[key] || key; }
 function taskScene(task: JsonRecord): unknown { return arrayOfRecords(task.content_source_metadata).find((item) => text(item.scene))?.scene || task.scene; }
 function decisionSummary(detail: RunDetail, decision: JsonRecord): string { return [text(decision.customer_need) && `客户需要：${text(decision.customer_need)}`, text(decision.silence_barrier) && `当前卡点：${text(decision.silence_barrier)}`, text(decision.next_business_action) && `下一步：${text(decision.next_business_action)}`].filter(Boolean).join("；") || detail.reason_label || "本轮已形成可执行唤醒计划。"; }

@@ -23,15 +23,15 @@ def test_outreach_dashboard_builds_funnel_trend_reasons_and_queue(tmp_path) -> N
         "conversation_activity": {"reply_wait_minutes": 6},
     }
     with store.connect() as conn:
-        for conversation_id, customer_id, external_userid, wechat in (
-            ("c1", "customer-1", "ext-1", "sl8003"),
-            ("c2", "customer-2", "ext-2", "sl8003"),
-            ("c3", "customer-3", "ext-3", "sl8003"),
-            ("c4", "customer-4", "ext-4", "sl9000"),
+        for conversation_id, customer_id, external_userid, wechat, user_id, title in (
+            ("c1", "customer-1", "ext-1", "sl8003", "staff-1", "客户甲"),
+            ("c2", "customer-2", "ext-2", "sl8003", "staff-1", "客户乙"),
+            ("c3", "customer-3", "ext-3", "sl8003", "staff-1", "客户丙"),
+            ("c4", "customer-4", "ext-4", "sl9000", "staff-2", "客户丁"),
         ):
             conn.execute(
-                "INSERT INTO conversations (id,customer_id,external_userid,corp_id,wechat,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
-                (conversation_id, customer_id, external_userid, "corp", wechat, start, end),
+                "INSERT INTO conversations (id,customer_id,external_userid,corp_id,user_id,wechat,title,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (conversation_id, customer_id, external_userid, "corp", user_id, wechat, title, start, end),
             )
         conn.execute(
             "INSERT INTO messages (id,conversation_id,role,content,created_at) VALUES (?,?,?,?,?)",
@@ -96,6 +96,19 @@ def test_outreach_dashboard_builds_funnel_trend_reasons_and_queue(tmp_path) -> N
     ]
     assert result["queue"][0]["workflow_run_id"] == "run-4"
     assert result["queue"][0]["phase"] == "waiting_first_touch"
+    assert result["queue"][0]["customer_name"] == "客户丁"
+    assert result["queue"][0]["conversation_id"] == "c4"
+    assert result["queue"][0]["user_id"] == "staff-2"
+    assert result["queue"][0]["task_refs"] == [
+        {
+            "task_id": "task-2",
+            "step_index": 1,
+            "status": "pending",
+            "system_msgid": "",
+            "scheduled_at": "2026-09-06T01:00:00+00:00",
+            "sent_at": "",
+        }
+    ]
     assert result["queue"][-1]["last_customer_message"] == "做一次真的能看到效果吗"
     assert any(item["sent"] == 1 and item["reopened"] == 1 for item in result["trend"])
     assert {item["wechat"] for item in result["wechat_breakdown"]} == {"sl8003", "sl9000"}
@@ -103,6 +116,40 @@ def test_outreach_dashboard_builds_funnel_trend_reasons_and_queue(tmp_path) -> N
     scoped = repository.outreach_bi_dashboard(started_from=start, started_to=end, wechat="sl8003")
     assert scoped["funnel"][0]["count"] == 3
     assert {item["wechat"] for item in scoped["wechat_breakdown"]} == {"sl8003"}
+
+
+def test_outreach_dashboard_customer_identity_does_not_cross_wechat(tmp_path) -> None:
+    store = SQLiteStore(Settings(AI_PATHS_DB_PATH=tmp_path / "identity.db", AICS_STORAGE_BACKEND="sqlite"))
+    store.initialize()
+    repository = AppRepository(store)
+    start = "2026-09-06T00:00:00+00:00"
+    end = "2026-09-07T00:00:00+00:00"
+    with store.connect() as conn:
+        for conversation_id, wechat, user_id, title in (
+            ("conversation-a", "sl8003", "staff-a", "账号A客户"),
+            ("conversation-b", "sl9000", "staff-b", "账号B客户"),
+        ):
+            conn.execute(
+                "INSERT INTO conversations (id,customer_id,external_userid,corp_id,user_id,wechat,title,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (conversation_id, "customer-shared", "external-shared", "corp", user_id, wechat, title, start, end),
+            )
+            conn.execute(
+                """INSERT INTO first_day_outreach_runs
+                   (workflow_run_id,corp_id,wechat,customer_id,external_userid,status,reason_code,
+                    input_snapshot_json,workflow_json,started_at,created_at,updated_at)
+                   VALUES (?,?,?,?,?,'blocked','human_mode','{}','{}',?,?,?)""",
+                (f"run-{wechat}", "corp", wechat, "customer-shared", "external-shared", start, start, start),
+            )
+
+    result = repository.outreach_bi_dashboard(started_from=start, started_to=end)
+    by_wechat = {item["wechat"]: item for item in result["queue"]}
+
+    assert by_wechat["sl8003"]["conversation_id"] == "conversation-a"
+    assert by_wechat["sl8003"]["customer_name"] == "账号A客户"
+    assert by_wechat["sl8003"]["user_id"] == "staff-a"
+    assert by_wechat["sl9000"]["conversation_id"] == "conversation-b"
+    assert by_wechat["sl9000"]["customer_name"] == "账号B客户"
+    assert by_wechat["sl9000"]["user_id"] == "staff-b"
 
 
 def test_outreach_dashboard_rejects_ranges_over_31_days(tmp_path) -> None:
