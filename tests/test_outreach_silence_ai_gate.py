@@ -423,7 +423,7 @@ def test_plan_generation_null_failure_gets_one_recovery_retry() -> None:
     ) == 60
 
 
-def test_superseded_provisional_run_gets_one_final_authoritative_refresh() -> None:
+def test_superseded_provisional_run_gets_bounded_authoritative_refreshes() -> None:
     now = datetime.now(timezone.utc)
     existing = {
         "status": "blocked",
@@ -440,7 +440,30 @@ def test_superseded_provisional_run_gets_one_final_authoritative_refresh() -> No
         existing,
         latest_customer_message_at=now.isoformat(),
         now=now,
+    ) == "soft_block_retry:superseded_by_retryable_authoritative_run"
+    existing["retry_count"] = 3
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at=now.isoformat(),
+        now=now,
     ) == ""
+
+
+def test_interrupted_preflight_retry_recovers_after_two_minutes() -> None:
+    now = datetime.now(timezone.utc)
+    existing = {
+        "status": "running",
+        "reason_code": "preflight_retry",
+        "retry_count": 2,
+        "plan_id": "",
+        "updated_at": (now - timedelta(minutes=3)).isoformat(),
+    }
+
+    assert _first_day_existing_run_retry_reason(
+        existing,
+        latest_customer_message_at=now.isoformat(),
+        now=now,
+    ) == "stale_running_retry"
 
 
 def test_authoritative_fingerprint_resumes_failed_run_without_a_plan() -> None:

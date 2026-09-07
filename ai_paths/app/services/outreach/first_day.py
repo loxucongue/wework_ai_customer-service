@@ -81,6 +81,7 @@ OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 FIRST_DAY_SILENCE_TRIGGER_TYPE = "first_day_opened_silence"
 FIRST_DAY_SOP_PLAN_ID = "first_day_opened_silence"
 FIRST_DAY_STALE_RUNNING_RETRY_MINUTES = 15
+FIRST_DAY_PREFLIGHT_RETRY_STALE_MINUTES = 2
 FIRST_DAY_AI_MODE_STATUS_MAX_RETRIES = 3
 FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS = {
     "customer_never_spoke",
@@ -2986,7 +2987,7 @@ def _first_day_existing_run_retry_reason(
         and reason_code in FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS
         and _string(latest_customer_message_at)
         and int(existing_run.get("retry_count") or 0)
-        < (2 if reason_code == "superseded_by_retryable_authoritative_run" else 1)
+        < (3 if reason_code == "superseded_by_retryable_authoritative_run" else 1)
     ):
         return f"soft_block_retry:{reason_code}"
     if status in {"running", "created"} and _string(existing_run.get("plan_id")):
@@ -2998,7 +2999,12 @@ def _first_day_existing_run_retry_reason(
         current = now or datetime.now(timezone.utc)
         if reference and reference.tzinfo is None:
             reference = reference.replace(tzinfo=timezone.utc)
-        if reference and current - reference >= timedelta(minutes=FIRST_DAY_STALE_RUNNING_RETRY_MINUTES):
+        stale_minutes = (
+            FIRST_DAY_PREFLIGHT_RETRY_STALE_MINUTES
+            if reason_code == "preflight_retry"
+            else FIRST_DAY_STALE_RUNNING_RETRY_MINUTES
+        )
+        if reference and current - reference >= timedelta(minutes=stale_minutes):
             return f"stale_{status}_retry"
     return ""
 
