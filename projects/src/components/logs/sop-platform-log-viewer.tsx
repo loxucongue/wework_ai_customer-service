@@ -1,24 +1,20 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlertTriangle,
   BarChart3,
   Bot,
-  CheckCircle2,
   CircleDot,
-  Clock3,
   Database,
   History,
   Inbox,
   RefreshCw,
   Search,
   Send,
-  Timer,
   UserRound,
-  Users,
-  XCircle,
 } from "lucide-react";
 
 type JsonRecord = Record<string, unknown>;
@@ -125,46 +121,6 @@ type Worker = {
   processing_mode?: string;
   quiet_hours?: { enabled?: boolean; start_hour?: number; end_hour?: number };
   counters?: Record<string, number>;
-  timings_ms?: Record<string, LatencySummary>;
-};
-
-type LatencySummary = {
-  count?: number;
-  avg?: number;
-  p50?: number;
-  p90?: number;
-  max?: number;
-  avg_ms?: number | null;
-  p50_ms?: number | null;
-  p90_ms?: number | null;
-  max_ms?: number | null;
-};
-
-type BreakdownItem = { key: string; count: number };
-
-type SopMetrics = {
-  events?: number;
-  tasks?: number;
-  customers?: number;
-  messages_sent?: number;
-  sent?: number;
-  no_send?: number;
-  failed?: number;
-  unfinished?: number;
-  retry_count?: number;
-  terminal_rate?: number;
-  status_breakdown?: BreakdownItem[];
-  reason_breakdown?: BreakdownItem[];
-  wechat_breakdown?: Array<{ wechat: string; tasks: number; customers: number; sent: number; no_send: number; failed: number }>;
-  trend?: Array<{ bucket: string; total: number; sent: number; no_send: number; failed: number; unfinished: number }>;
-  latency?: Record<string, LatencySummary>;
-};
-
-type AnalyticsResult = {
-  range?: { started_from?: string; started_to?: string; timezone?: string };
-  platform_sop?: SopMetrics;
-  freshness?: { latest_platform_sop_at?: string };
-  error?: string;
 };
 
 type ApiResult = {
@@ -211,7 +167,6 @@ const VERSION_OPTIONS = [
 export function SopPlatformLogViewer() {
   const [filters, setFilters] = useState(INITIAL_FILTERS);
   const [data, setData] = useState<ApiResult>({});
-  const [analytics, setAnalytics] = useState<AnalyticsResult>({});
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -227,22 +182,6 @@ export function SopPlatformLogViewer() {
     setError("");
     try {
       const search = new URLSearchParams(filters);
-      const analyticsSearch = new URLSearchParams({
-        started_from: asBeijingIso(filters.date_from),
-        started_to: asBeijingIso(filters.date_to),
-      });
-      if (filters.wechat) analyticsSearch.set("wechat", filters.wechat);
-      const [analyticsResponse, workerResponse] = await Promise.all([
-        fetch(`/api/logs/sop-platform-dashboard?${analyticsSearch.toString()}`, { cache: "no-store" }),
-        fetch("/api/logs/sop-platform-worker", { cache: "no-store" }),
-      ]);
-      const analyticsPayload = (await analyticsResponse.json()) as AnalyticsResult;
-      if (!analyticsResponse.ok) throw new Error(analyticsPayload.error || "加载 SOP 统计失败");
-      setAnalytics(analyticsPayload);
-      if (workerResponse.ok) {
-        const workerPayload = (await workerResponse.json()) as Pick<ApiResult, "worker" | "worker_source" | "worker_error">;
-        setData((current) => ({ ...current, ...workerPayload }));
-      }
       const response = await fetch(`/api/logs/sop-platform-runs?${search.toString()}`, { cache: "no-store" });
       const payload = (await response.json()) as ApiResult;
       if (!response.ok) throw new Error(payload.error || "加载第三方 SOP 日志失败");
@@ -262,13 +201,12 @@ export function SopPlatformLogViewer() {
 
   const summary = data.summary || {};
   const worker = data.worker || {};
-  const sopMetrics = analytics.platform_sop || {};
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-950">
       <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b bg-white px-5 py-3">
         <div>
-          <h1 className="text-lg font-semibold">SOP 运行监控</h1>
+          <h1 className="text-lg font-semibold">SOP 任务日志</h1>
           <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500">
             <span className="inline-flex items-center gap-1.5">
               <span className={`h-2 w-2 rounded-full ${worker.running === true ? "bg-emerald-500" : worker.running === false ? "bg-red-500" : "bg-amber-400"}`} />
@@ -280,15 +218,21 @@ export function SopPlatformLogViewer() {
             <span>最近拉取 {formatTime(worker.last_poll_at)}</span>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm text-white disabled:opacity-60"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          刷新
-        </button>
+        <div className="flex items-center gap-2">
+          <Link href="/analytics/sop" className="inline-flex h-9 items-center gap-2 rounded-md border bg-white px-3 text-sm hover:bg-slate-50">
+            <BarChart3 className="h-4 w-4" />
+            查看运行 BI
+          </Link>
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={loading}
+            className="inline-flex h-9 items-center gap-2 rounded-md bg-slate-950 px-4 text-sm text-white disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            刷新
+          </button>
+        </div>
       </header>
 
       <section className="border-b bg-white px-5 py-3">
@@ -365,8 +309,6 @@ export function SopPlatformLogViewer() {
         {error ? <Notice tone="error">{error}</Notice> : null}
       </section>
 
-      <SopMonitorDashboard metrics={sopMetrics} worker={worker} runs={runs} />
-
       <section className="border-y bg-white px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -417,121 +359,6 @@ export function SopPlatformLogViewer() {
       </section>
     </main>
   );
-}
-
-function SopMonitorDashboard({ metrics, worker, runs }: { metrics: SopMetrics; worker: Worker; runs: RunItem[] }) {
-  const terminal = (metrics.sent || 0) + (metrics.no_send || 0) + (metrics.failed || 0);
-  const hours = buildHourlyStats(metrics.trend, runs);
-  const maxHourTotal = Math.max(1, ...hours.map((item) => item.total));
-  const accounts = metrics.wechat_breakdown || [];
-  const reasons = metrics.reason_breakdown || [];
-  const liveTimings = worker.timings_ms || {};
-
-  return (
-    <>
-      <section className="border-b bg-white px-5 py-5">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold">处理结果总览</h2>
-            <p className="mt-1 text-xs text-slate-500">平台任务、客户和实际消息分别计数；发送只认主动发送接口返回的消息 ID</p>
-          </div>
-          <span className="text-xs text-slate-500">统计范围：筛选时间 · Asia/Shanghai</span>
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          <Kpi label="平台任务" value={metrics.events} detail={`${metrics.customers || 0} 个客户`} icon={<Inbox />} />
-          <Kpi label="本地任务" value={metrics.tasks} detail={`已载入 ${runs.length} 个批次明细`} icon={<BarChart3 />} />
-          <Kpi label="发送完成" value={metrics.sent} detail={`${metrics.messages_sent || 0} 条实际消息`} icon={<CheckCircle2 />} tone="success" />
-          <Kpi label="无需发送" value={metrics.no_send} detail={formatRate(metrics.no_send || 0, terminal)} icon={<XCircle />} tone="warning" />
-          <Kpi label="未完成" value={metrics.unfinished} detail={`当前平台待处理 ${worker.pending_total || 0}`} icon={<Clock3 />} tone={(metrics.unfinished || 0) > 0 ? "warning" : "neutral"} />
-          <Kpi label="异常" value={metrics.failed} detail={`终态率 ${formatPercent(metrics.terminal_rate)}`} icon={<AlertTriangle />} tone={(metrics.failed || 0) > 0 ? "danger" : "neutral"} />
-        </div>
-      </section>
-
-      <section className="grid border-b bg-white xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,.8fr)]">
-        <div className="border-b px-5 py-5 xl:border-b-0 xl:border-r">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold">每小时处理分布</h2>
-            <div className="flex flex-wrap gap-3 text-xs text-slate-500"><Legend color="bg-emerald-500" label="发送" /><Legend color="bg-amber-400" label="无需发送" /><Legend color="bg-blue-500" label="未完成" /><Legend color="bg-red-500" label="异常" /></div>
-          </div>
-          <div className="mt-4 space-y-2.5">
-            {hours.map((item) => (
-              <div key={item.hour} className="grid grid-cols-[34px_minmax(0,1fr)_34px] items-center gap-3 text-xs">
-                <span className="font-mono text-slate-500">{item.hour}</span>
-                <div className="flex h-5 overflow-hidden bg-slate-100" style={{ width: `${Math.max(8, item.total / maxHourTotal * 100)}%` }}>
-                  <span className="bg-emerald-500" style={{ width: `${item.sent / item.total * 100}%` }} title={`发送 ${item.sent}`} />
-                  <span className="bg-amber-400" style={{ width: `${item.noSend / item.total * 100}%` }} title={`无需发送 ${item.noSend}`} />
-                  <span className="bg-blue-500" style={{ width: `${item.unfinished / item.total * 100}%` }} title={`未完成 ${item.unfinished}`} />
-                  <span className="bg-red-500" style={{ width: `${item.failed / item.total * 100}%` }} title={`异常 ${item.failed}`} />
-                </div>
-                <span className="text-right tabular-nums">{item.total}</span>
-              </div>
-            ))}
-            {!hours.length ? <EmptyText>当前范围没有任务</EmptyText> : null}
-          </div>
-        </div>
-        <div className="px-5 py-5">
-          <h2 className="text-sm font-semibold">无需发送与失败原因</h2>
-          <p className="mt-1 text-xs text-slate-500">用于区分正常业务过滤和真正故障</p>
-          <div className="mt-4 divide-y border-y">
-            {reasons.slice(0, 8).map((item) => (
-              <div key={item.key} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 text-sm">
-                <span className="truncate" title={item.key}>{reasonLabel(item.key)}</span>
-                <strong className="tabular-nums">{item.count}</strong>
-              </div>
-            ))}
-            {!reasons.length ? <EmptyText>没有无需发送或失败记录</EmptyText> : null}
-          </div>
-        </div>
-      </section>
-
-      <section className="grid min-w-0 border-b bg-white xl:grid-cols-[minmax(0,1.05fr)_minmax(0,.95fr)]">
-        <div className="min-w-0 border-b px-5 py-5 xl:border-b-0 xl:border-r">
-          <div className="flex items-center gap-2"><Users className="h-4 w-4 text-slate-500" /><h2 className="text-sm font-semibold">企微账号处理分布</h2></div>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full min-w-[560px] text-left text-xs">
-              <thead className="border-y bg-slate-50 text-slate-500"><tr><th className="px-3 py-2 font-medium">企微号</th><th className="px-3 py-2 text-right font-medium">任务</th><th className="px-3 py-2 text-right font-medium">客户</th><th className="px-3 py-2 text-right font-medium">发送</th><th className="px-3 py-2 text-right font-medium">无需发送</th><th className="px-3 py-2 text-right font-medium">异常</th></tr></thead>
-              <tbody className="divide-y">
-                {accounts.slice(0, 12).map((item) => <tr key={item.wechat}><td className="px-3 py-2.5 font-medium">{item.wechat}</td><td className="px-3 py-2.5 text-right tabular-nums">{item.tasks}</td><td className="px-3 py-2.5 text-right tabular-nums">{item.customers}</td><td className="px-3 py-2.5 text-right tabular-nums text-emerald-700">{item.sent}</td><td className="px-3 py-2.5 text-right tabular-nums text-amber-700">{item.no_send}</td><td className="px-3 py-2.5 text-right tabular-nums text-red-700">{item.failed}</td></tr>)}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div className="min-w-0 px-5 py-5">
-          <div className="flex items-center gap-2"><Timer className="h-4 w-4 text-slate-500" /><h2 className="text-sm font-semibold">链路耗时</h2></div>
-          <p className="mt-1 text-xs text-slate-500">历史列来自数据库；实时列为 worker 本次启动后的最近 500 次采样</p>
-          <div className="mt-4 divide-y border-y">
-            <LatencyRow label="调度后入库" value={metrics.latency?.queue} />
-            <LatencyRow label="本地全流程" value={metrics.latency?.process} />
-            <LatencyRow label="发送链路" value={metrics.latency?.dispatch} />
-            <LatencyRow label="平台消费请求" value={metrics.latency?.consume_request} />
-            <LatencyRow label="会话上下文（实时）" value={liveTimings.context} live />
-            <LatencyRow label="托管发送（实时）" value={liveTimings.send} live />
-            <LatencyRow label="平台拉取（实时）" value={liveTimings.pull} live />
-          </div>
-        </div>
-      </section>
-    </>
-  );
-}
-
-function Kpi({ label, value, detail, icon, tone = "neutral" }: { label: string; value?: number; detail: string; icon: ReactNode; tone?: "neutral" | "success" | "warning" | "danger" }) {
-  const tones = { neutral: "bg-slate-100 text-slate-600", success: "bg-emerald-50 text-emerald-700", warning: "bg-amber-50 text-amber-700", danger: "bg-red-50 text-red-700" };
-  return <div className="min-w-0 border p-3"><div className="flex items-center justify-between gap-2 text-xs text-slate-500"><span>{label}</span><span className={`flex h-7 w-7 items-center justify-center rounded-md [&>svg]:h-4 [&>svg]:w-4 ${tones[tone]}`}>{icon}</span></div><div className="mt-2 text-2xl font-semibold tabular-nums">{value || 0}</div><div className="mt-1 truncate text-xs text-slate-500" title={detail}>{detail}</div></div>;
-}
-
-function LatencyRow({ label, value, live = false }: { label: string; value?: LatencySummary; live?: boolean }) {
-  const count = value?.count || 0;
-  const p50 = live ? value?.p50 : value?.p50_ms;
-  const p90 = live ? value?.p90 : value?.p90_ms;
-  return <div className="grid grid-cols-[minmax(0,1fr)_70px_70px_48px] gap-2 py-2.5 text-xs"><span>{label}</span><span className="text-right tabular-nums">P50 {formatDuration(p50)}</span><span className="text-right tabular-nums">P90 {formatDuration(p90)}</span><span className="text-right text-slate-400">{count}次</span></div>;
-}
-
-function Legend({ color, label }: { color: string; label: string }) {
-  return <span className="inline-flex items-center gap-1.5"><span className={`h-2 w-2 ${color}`} />{label}</span>;
-}
-
-function EmptyText({ children }: { children: ReactNode }) {
-  return <div className="py-5 text-center text-xs text-slate-500">{children}</div>;
 }
 
 function RunDetail({ run }: { run: RunItem }) {
@@ -958,67 +785,6 @@ function beijingTodayRange() {
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   const date = `${values.year}-${values.month}-${values.day}`;
   return { from: `${date}T00:00:00`, to: `${date}T23:59:59` };
-}
-
-function asBeijingIso(value: string) {
-  if (!value) return "";
-  return `${value.length === 16 ? `${value}:00` : value}+08:00`;
-}
-
-function buildHourlyStats(trend: SopMetrics["trend"], runs: RunItem[]) {
-  if (trend?.length) {
-    return trend.map((item) => ({
-      hour: `${String(item.bucket).slice(11, 13)}时`,
-      total: item.total,
-      sent: item.sent,
-      noSend: item.no_send,
-      unfinished: Math.max(0, item.unfinished - item.failed),
-      failed: item.failed,
-    }));
-  }
-  const grouped = new Map<string, { hour: string; total: number; sent: number; noSend: number; unfinished: number; failed: number }>();
-  for (const run of runs) {
-    const match = String(run.occurred_at || "").match(/[ T](\d{2}):/);
-    const hour = match ? `${match[1]}时` : "未知";
-    const item = grouped.get(hour) || { hour, total: 0, sent: 0, noSend: 0, unfinished: 0, failed: 0 };
-    item.total += 1;
-    if (run.status === "completed") item.sent += 1;
-    else if (run.status === "no_send") item.noSend += 1;
-    else if (["pending", "processing", "delivery_pending", "consume_pending"].includes(run.status)) item.unfinished += 1;
-    else if (run.status === "exception") item.failed += 1;
-    grouped.set(hour, item);
-  }
-  return Array.from(grouped.values()).sort((left, right) => left.hour.localeCompare(right.hour));
-}
-
-function reasonLabel(reason: string) {
-  const labels: Record<string, string> = {
-    human_takeover: "人工接管",
-    customer_relation_deleted: "客户关系已失效",
-    sop_task_expired: "任务超过有效期",
-    sop_no_send_duplicate: "已有接待消息，避免重复发送",
-    all_due_groups_filtered: "本轮任务均被策略过滤",
-    account_disabled: "企微账号未启用",
-    reason_unrecorded: "历史原因未记录",
-  };
-  if (labels[reason]) return labels[reason];
-  if (reason.includes("超过") && reason.includes("分钟")) return "任务超过有效期";
-  if (reason.toLowerCase().includes("model http 503")) return "模型服务暂时不可用";
-  return reason || "原因未记录";
-}
-
-function formatRate(value: number, total: number) {
-  return total ? `${(value / total * 100).toFixed(1)}%` : "0.0%";
-}
-
-function formatPercent(value?: number) {
-  return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "-";
-}
-
-function formatDuration(value?: number | null) {
-  if (typeof value !== "number") return "-";
-  if (value < 1000) return `${Math.round(value)}ms`;
-  return `${(value / 1000).toFixed(value >= 10_000 ? 1 : 2)}s`;
 }
 
 function formatTime(value?: string | number) {

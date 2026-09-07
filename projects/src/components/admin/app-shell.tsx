@@ -29,6 +29,7 @@ const groups = [
     label: "监控",
     items: [
       { href: "/", label: "运维总览", icon: BarChart3 },
+      { href: "/analytics/sop", label: "SOP 运行 BI", icon: Archive },
       { href: "/analytics/outreach", label: "主动唤醒", icon: BellRing },
       { href: "/analytics/sales", label: "销售策略 BI", icon: TrendingUp },
     ],
@@ -44,8 +45,8 @@ const groups = [
     label: "触达与日志",
     items: [
       { href: "/logs", label: "AI 运行日志", icon: FileClock },
-      { href: "/logs/sop", label: "SOP 触达日志", icon: History },
-      { href: "/logs/sop-platform", label: "SOP 运行监控", icon: Archive },
+      { href: "/logs/sop-platform", label: "SOP 任务日志", icon: History },
+      { href: "/logs/sop", label: "SOP 底层事件日志", icon: Archive },
       { href: "/logs/outreach-first-day", label: "千人千面日志", icon: Sparkles },
     ],
   },

@@ -135,8 +135,8 @@ export function SopLogViewer() {
   }, [loadDetail, selectedId]);
 
   return (
-    <main className="flex h-screen bg-slate-50 text-slate-950">
-      <aside className="flex w-[430px] min-w-[360px] flex-col border-r bg-white">
+    <main className="flex min-h-screen flex-col bg-slate-50 text-slate-950 lg:h-screen lg:flex-row">
+      <aside className="flex w-full min-w-0 flex-col border-b bg-white lg:h-screen lg:w-[430px] lg:min-w-[360px] lg:border-b-0 lg:border-r">
         <header className="border-b p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <Link href="/logs" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
@@ -155,9 +155,9 @@ export function SopLogViewer() {
           </div>
           <h1 className="flex items-center gap-2 text-lg font-semibold">
             <Send className="h-5 w-5" />
-            SOP 事件日志
+            SOP 底层事件日志
           </h1>
-          <p className="mt-1 text-sm text-slate-500">只读展示历史 SOP 事件与发送记录；旧事件接收入口已下线，不再创建新事件。</p>
+          <p className="mt-1 text-sm text-slate-500">只读展示当前第三方 SOP 与历史接收链共用的底层事件、任务和原始审计记录。</p>
         </header>
 
         <section className="border-b p-4">
@@ -207,7 +207,7 @@ export function SopLogViewer() {
           ) : null}
         </section>
 
-        <section className="min-h-0 flex-1 overflow-y-auto">
+        <section className="max-h-[520px] min-h-0 overflow-y-auto lg:max-h-none lg:flex-1">
           {events.map((event) => (
             <button
               key={eventKey(event)}
@@ -234,11 +234,11 @@ export function SopLogViewer() {
               </div>
             </button>
           ))}
-          {!loading && events.length === 0 ? <div className="p-6 text-sm text-slate-500">暂无 SOP 事件日志。</div> : null}
+          {!loading && events.length === 0 ? <div className="p-6 text-sm text-slate-500">暂无 SOP 底层事件日志。</div> : null}
         </section>
       </aside>
 
-      <section className="min-w-0 flex-1 overflow-y-auto p-6">
+      <section className="min-w-0 flex-1 overflow-y-auto p-4 lg:p-6">
         {selectedEvent ? (
           <SopDetailPanel event={selectedEvent} tasks={detail?.tasks || []} rawPayload={detail?.event?.raw_payload} loading={detailLoading} />
         ) : (
@@ -303,7 +303,7 @@ function SopDetailPanel({
         {event.error && eventHasError(event) ? (
           <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{event.error}</div>
         ) : null}
-        <div className="mt-4 grid grid-cols-4 gap-3 text-sm">
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
           <Metric label="任务" value={taskMetrics.taskCount} />
           <Metric label="已发" value={taskMetrics.sentCount} />
           <Metric label="业务跳过" value={taskMetrics.skippedCount} />
