@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T09:04:49+08:00`
+- verified_at: `2026-09-07T09:30:08+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-003744-5ad40a66`
-- git commit: `5ad40a665713228a7a01ffef3ddc353bc22dbd07`
+- release: `ai-paths-unified-20260907-091339-f8d63e46`
+- git commit: `f8d63e46b883112f786231313dd1f9120a9c8854`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `74eee9d04bedb99c0dc25ef2aaefab2cd96d2d8ef40fdf500a8ff838fd4ae4c0`
@@ -21,7 +21,7 @@
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
 | 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-bi-6ee81405`；`/analytics/sales` 返回 HTTP 200，逼单动作按动作代码汇总 |
 
-三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；共享基础环境仍保留其他角色的全局模型默认值，不能据此推断 V3 Reply 使用 GPT，实际模型仍应以每次 run trace 为准。
+三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
 ## 已核验开关
 
@@ -37,15 +37,15 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=14`、`dead=16`。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=19`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上线前 clean release `ai-paths-unified-20260907-bi-4a926b66`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上线前 clean release `ai-paths-unified-20260907-003744-5ad40a66`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-bi-54a58a58`；环境与 unit 备份位于权限受限的 `/opt/ai-paths/backups/pre-4a926b66/`。
-- 本次后端环境备份位于 `/opt/ai-paths/backups/pre-5ad40a66/`。
+- 本次后端环境备份位于 `/opt/ai-paths/backups/pre-f8d63e46-second/`。
 - 本次无数据库迁移。回滚仍应同时恢复三个后端角色、前端、release 环境标识并重新核验健康。
 
 ## 本次发布观察
@@ -53,6 +53,8 @@
 - V3 唯一回复路由为 `/reply/workflow-compatible-v3`，未注册产品 V1/V2 回复路由。
 - Reply 进程 `/proc/<pid>/environ` 已现场确认 `MODEL_REPLY=deepseek-chat`、`AI_SALES_POLICY_ENABLED=true`；共享基础环境中的其他角色模型值不代表 Reply 实际模型。
 - Nginx 配置检查通过，四个 service 均 `NRestarts=0`。
+- Worker 健康信息已显示沉默唤醒为全账号、1 分钟、`deepseek-chat`、无 fallback，计划扫描和发送执行任务均存活。发布后首批 9 个判断产生 2 个计划并各成功发送第一步，5 个明确人工模式被阻断，1 个重复指纹被阻断，1 个场景合同失败进入有限重试；留存模型均为 DeepSeek，GPT 和“不支持模型”错误为 0。
+- 指定问题客户已经生成两步计划并成功发送第一步；第二步保持 pending，仅在客户继续沉默且发送前平台仍明确为 AI 时执行。1 分钟是进入候选阈值，不是固定发送时刻；首批多节点计划生成和平台/RDS 调用仍有约 1～3 分钟延迟，详见 `KNOWN_ISSUES.md`。
 - 已采用的话术若带有本轮相关、安全且未发送的效果图/视频，会把媒体作为客户可见结构消息直接交付，不再先问“要不要发效果图”；活动价格等已有权威价值也应直接回答。代码只补齐模型已经采用的话术自身媒体，不跨话术或跨主题替模型做销售选择。
 - 指定问题场景 DeepSeek 隔离复现 2/2 通过；20 条真实身份只读矩阵 AI 初评通过率和真人表达通过率均为 95%，许可式素材追问为 0，策略适用样本中的序列/话术采用为 6/6，生产发送和关键写入均为 0。确定性回归为 326 条全部通过。
 - 销售策略 BI 的 9 个只读视图改为同批并发；发布后整页接口三次实测 `4.57s`、`4.20s`、`10.21s`，较发布前约 `23s` 改善，但 MySQL 链路仍存在周期性约 10 秒抖动。
