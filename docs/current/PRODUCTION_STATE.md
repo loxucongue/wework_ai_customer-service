@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T09:30:08+08:00`
+- verified_at: `2026-09-07T10:07:29+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-091339-f8d63e46`
-- git commit: `f8d63e46b883112f786231313dd1f9120a9c8854`
+- release: `ai-paths-unified-20260907-095632-8d333d06`
+- git commit: `8d333d06114ef4ec343f9b8eaca236eefcf3b89f`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `74eee9d04bedb99c0dc25ef2aaefab2cd96d2d8ef40fdf500a8ff838fd4ae4c0`
@@ -19,7 +19,7 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-bi-6ee81405`；`/analytics/sales` 返回 HTTP 200，逼单动作按动作代码汇总 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-095632-8d333d06`；`/analytics/sales` 返回 HTTP 200，展示 V3 策略生效链路 |
 
 三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
@@ -37,16 +37,16 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=19`、`dead=16`。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=20`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上线前 clean release `ai-paths-unified-20260907-003744-5ad40a66`。
-- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-bi-54a58a58`；环境与 unit 备份位于权限受限的 `/opt/ai-paths/backups/pre-4a926b66/`。
-- 本次后端环境备份位于 `/opt/ai-paths/backups/pre-f8d63e46-second/`。
-- 本次无数据库迁移。回滚仍应同时恢复三个后端角色、前端、release 环境标识并重新核验健康。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上线前 clean release `ai-paths-unified-20260907-091339-f8d63e46`。
+- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-bi-6ee81405`；环境与 unit 备份位于 `/opt/ai-paths/backups/pre-8d333d06/`。
+- 数据库已迁移到 `20260907_01`，只增加序列采用、话术采用和采用详情已观测三个字段；旧代码会忽略这些字段，不需要破坏性降级。
+- 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
@@ -57,8 +57,10 @@
 - 指定问题客户已经生成两步计划并成功发送第一步；第二步保持 pending，仅在客户继续沉默且发送前平台仍明确为 AI 时执行。1 分钟是进入候选阈值，不是固定发送时刻；首批多节点计划生成和平台/RDS 调用仍有约 1～3 分钟延迟，详见 `KNOWN_ISSUES.md`。
 - 已采用的话术若带有本轮相关、安全且未发送的效果图/视频，会把媒体作为客户可见结构消息直接交付，不再先问“要不要发效果图”；活动价格等已有权威价值也应直接回答。代码只补齐模型已经采用的话术自身媒体，不跨话术或跨主题替模型做销售选择。
 - 指定问题场景 DeepSeek 隔离复现 2/2 通过；20 条真实身份只读矩阵 AI 初评通过率和真人表达通过率均为 95%，许可式素材追问为 0，策略适用样本中的序列/话术采用为 6/6，生产发送和关键写入均为 0。确定性回归为 326 条全部通过。
-- 销售策略 BI 的 9 个只读视图改为同批并发；发布后整页接口三次实测 `4.57s`、`4.20s`、`10.21s`，较发布前约 `23s` 改善，但 MySQL 链路仍存在周期性约 10 秒抖动。
+- 销售策略 BI 已改为“有效决策 → 卡点 → 序列/话术候选 → Reply 正式采用”的管理链路，移除 7d 排客率。候选和正式采用使用独立字段，历史回填 110 条均有运行快照证据、0 条无法确认；有效客户轮次中旧序列字段的 9 条有 5 条只是候选，正式采用为 4 条，话术正式采用为 2 条。
+- 30 天线上口径为 213 个客户、279 个真实 V3 轮次、23 个有效策略决策；卡点识别率 `9/23=39.1%`、序列正式采用率 `4/9=44.4%`、话术正式采用率 `2/10=20.0%`、正常决策 `16/23=69.6%`。整页接口实测 `4.21s`，9 个并发只读视图无错误。
+- 桌面和 390px 手机真实浏览器验收通过：无控制台错误、无横向溢出、7d 排客率未出现；334 条后端回归、前端类型/Lint/生产构建通过。
 - MySQL/RDS 在发布前后均有间歇性连接超时；当前三个角色健康、SOP 队列和 pending 为 0，但该外部连接风险需继续处理，详见 `KNOWN_ISSUES.md`。
-- 生产根分区使用率已升至 96%、剩余约 1.7 GB；这是当前最高运维风险。本次只清理自身 `/tmp` 评测/部署临时文件，不删除历史 release；后续必须按保留规范先归档再清理，同时保留当前与已验证回滚版本。
+- 生产根分区使用率为 96%、剩余约 1.5 GB；这是当前最高运维风险。本次只清理自身 `/tmp` 评测/部署临时文件，不删除历史 release；后续必须按保留规范先归档再清理，同时保留当前与已验证回滚版本。
 
 每次发布任务都必须重新记录 main SHA、三个角色 release/健康、数据库、worker/outbox、Nginx 和回滚点。超过核验时间后，本页只能作为线索，不能替代现场事实。
