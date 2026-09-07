@@ -913,6 +913,18 @@ def test_concrete_slot_claim_still_requires_available_time_fact(reply: str) -> N
         _validate_appointment_time_facts([{"type": "text", "content": reply}], {})
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "我们早上9点开门，明天这个时间可以的。",
+        "明天下午没问题，您过来就好。",
+    ],
+)
+def test_bare_concrete_time_acceptance_still_requires_available_time_fact(reply: str) -> None:
+    with pytest.raises(ValueError, match="available_time_fact_required"):
+        _validate_appointment_time_facts([{"type": "text", "content": reply}], {})
+
+
 def test_identity_answer_can_naturally_advance_appointment_without_slot_facts() -> None:
     messages = [
         {

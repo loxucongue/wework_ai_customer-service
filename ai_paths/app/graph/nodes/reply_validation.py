@@ -1861,7 +1861,15 @@ def _validate_parallel_business_hours_facts(
     text = _combined_text(messages)
     if not text or not _asserts_business_hours(text):
         return
-    store_facts = _authorized_store_facts_for_validation(state)
+    structured = _structured_facts(state)
+    store_facts = [
+        item
+        for item in structured.get("store_facts") or []
+        if isinstance(item, dict)
+    ]
+    recommended_store = structured.get("recommended_store")
+    if isinstance(recommended_store, dict) and recommended_store:
+        store_facts.append(recommended_store)
     if any(
         isinstance(item, dict)
         and str(item.get("business_hours") or item.get("hours") or "").strip()
@@ -2542,6 +2550,13 @@ def _asserts_time_available(text: str) -> bool:
             "时段已经确认",
         )
     ):
+        return True
+    time_token = r"(?:今天|明天|后天|早上|上午|下午|晚上|\d{1,2}点(?:半|左右)?)"
+    bare_time_available = re.search(
+        rf"{time_token}.{{0,8}}(?:可以(?!协调|吗|么|不|[？?])(?:的|哦|呀)?|没问题(?!吗|么|[？?]))",
+        compact,
+    )
+    if bare_time_available:
         return True
     return bool(
         re.search(

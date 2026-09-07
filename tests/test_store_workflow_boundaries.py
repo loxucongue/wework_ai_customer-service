@@ -278,6 +278,22 @@ def test_customer_arrival_time_does_not_authorize_store_opening_hours() -> None:
         )
 
 
+def test_unrelated_store_catalog_hours_do_not_authorize_current_opening_claim() -> None:
+    state = {
+        "normalized_content": "明天早上9点可以吗",
+        "customer_store_knowledge": {
+            "stores": [{"store_id": "other-store", "business_hours": "09:00-18:00"}]
+        },
+        "evidence_join": {"structured_facts": {"store_facts": [], "recommended_store": {}}},
+    }
+
+    with pytest.raises(ValueError, match="business_hours_fact_required"):
+        _validate_parallel_business_hours_facts(
+            [{"type": "text", "content": "我们早上9点开门。"}],
+            state,
+        )
+
+
 def test_customer_arrival_time_may_remain_a_tentative_intent_without_hours_fact() -> None:
     state = {"normalized_content": "明天早上9点可以吗", "evidence_join": {"structured_facts": {}}}
 
