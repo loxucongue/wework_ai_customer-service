@@ -407,6 +407,73 @@ def test_monitor_evaluates_longest_waiting_customer_first() -> None:
     assert workflow.monitor_status()["state"] == "idle"
 
 
+def test_monitor_preloads_fingerprints_and_avoids_per_candidate_lookup() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    customer_at = (now - timedelta(minutes=3)).isoformat()
+    staff_at = (now - timedelta(minutes=2)).isoformat()
+    candidate = {
+        **_identity(),
+        "candidate_source": "conversation",
+        "last_customer_message_at": customer_at,
+        "latest_outbound_message_at": staff_at,
+        "reply_wait_minutes": 2,
+        "awaiting_customer_reply": True,
+    }
+
+    class SnapshotRepository(_Repository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.find_calls = 0
+            self.active_calls = 0
+
+        def list_first_day_outreach_runs_for_monitor(self, **_: object) -> list[dict[str, object]]:
+            from app.services.outreach.first_day import _conversation_fingerprint
+
+            return [{
+                **_identity(),
+                "workflow_run_id": "known-run",
+                "status": "blocked",
+                "reason_code": "human_mode",
+                "conversation_fingerprint": _conversation_fingerprint(
+                    corp_id="corp-1",
+                    wechat="SL8003",
+                    external_userid="external-1",
+                    customer_id="customer-1",
+                    latest_customer_message_at=customer_at,
+                    latest_staff_message_at=staff_at,
+                ),
+            }]
+
+        def find_first_day_outreach_run_by_fingerprint(self, **_: object) -> dict[str, object]:
+            self.find_calls += 1
+            return {}
+
+        def get_active_outreach_plan_for_customer(self, *_: object, **__: object) -> dict[str, object]:
+            self.active_calls += 1
+            return {}
+
+    repository = SnapshotRepository()
+    workflow = FirstDayWorkflow(
+        repository=repository,
+        model_client=object(),
+        customer_context_service=None,
+        first_day_wechat_allowlist="",
+        planning=_Planning(_StatusClient(), candidates=[candidate]),
+    )
+    result = asyncio.run(
+        workflow.evaluate_first_day_opened_silence_customers(
+            limit=1,
+            silent_minutes=1,
+            eligible_after=(now - timedelta(hours=1)).isoformat(),
+        )
+    )
+
+    assert result["skipped_count"] == 1
+    assert result["skip_reasons"] == {"conversation_fingerprint_already_logged": 1}
+    assert repository.find_calls == 0
+    assert repository.active_calls == 0
+
+
 def test_candidate_uses_newer_conversation_customer_time_over_stale_memory(tmp_path: Path) -> None:
     settings = Settings(
         _env_file=None,

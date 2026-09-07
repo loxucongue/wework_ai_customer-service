@@ -303,6 +303,39 @@ class OutreachRepositoryMixin:
                 return decoded
         return {}
 
+    def list_first_day_outreach_runs_for_monitor(
+        self,
+        *,
+        since: str = "",
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Load recent idempotency rows once for a monitor scan.
+
+        The silence monitor can inspect hundreds of conversations per pass. Looking
+        up the same contact fingerprint with a fresh database round trip for every
+        row is needlessly expensive on a remote MySQL backend, so the monitor uses
+        this bounded snapshot for the cheap preflight check. The authoritative
+        fingerprint is still checked again after the platform conversation refresh.
+        """
+
+        clauses = ["trigger_type='first_day_opened_silence'", "conversation_fingerprint IS NOT NULL"]
+        params: list[Any] = []
+        if _string(since):
+            clauses.append("started_at>=?")
+            params.append(_string(since))
+        params.append(max(1, min(int(limit or 5000), 10000)))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM first_day_outreach_runs
+                WHERE {' AND '.join(clauses)}
+                ORDER BY started_at DESC, workflow_run_id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [self._decode_first_day_outreach_run(dict(row)) for row in rows]
+
     def backfill_first_day_outreach_runs(self) -> dict[str, int]:
         """Create observability rows for first-day plans created before run logging existed."""
         created_count = 0

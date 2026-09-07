@@ -3096,8 +3096,32 @@ class FirstDayWorkflow:
             candidates.extend(sop_candidates)
             candidates = _dedupe_outreach_candidates(candidates)
         stats["candidate_count"] = len(candidates)
+        self._monitor_status["candidate_count"] = len(candidates)
         effective_limit = max(1, int(limit))
         threshold_minutes = max(1, int(silent_minutes))
+
+        run_snapshot_loader = getattr(
+            self.repository,
+            "list_first_day_outreach_runs_for_monitor",
+            None,
+        )
+        preloaded_runs: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+        if callable(run_snapshot_loader):
+            snapshot_rows = await asyncio.to_thread(
+                run_snapshot_loader,
+                since=_string(eligible_after),
+                limit=10000,
+            )
+            for row in snapshot_rows:
+                key = (
+                    _string(row.get("corp_id")),
+                    _string(row.get("wechat")).lower(),
+                    _string(row.get("external_userid")),
+                    _string(row.get("customer_id")),
+                    _string(row.get("conversation_fingerprint")),
+                )
+                if all(key) and key not in preloaded_runs:
+                    preloaded_runs[key] = row
 
         def _first_day_priority(candidate: dict[str, Any]) -> tuple[int, int, float, str]:
             rough_reason = self._rough_first_day_silence_candidate_reason(
@@ -3140,11 +3164,34 @@ class FirstDayWorkflow:
                 }
             else:
                 try:
+                    candidate_fingerprint = _conversation_fingerprint(
+                        corp_id=_string(candidate.get("corp_id")),
+                        wechat=_string(candidate.get("wechat")),
+                        external_userid=_string(candidate.get("external_userid")),
+                        customer_id=_string(candidate.get("customer_id")),
+                        latest_customer_message_at=_string(candidate.get("last_customer_message_at")),
+                        latest_staff_message_at=_string(
+                            candidate.get("latest_outbound_message_at")
+                            or candidate.get("last_staff_message_at")
+                        ),
+                    )
+                    run_key = (
+                        _string(candidate.get("corp_id")),
+                        _string(candidate.get("wechat")).lower(),
+                        _string(candidate.get("external_userid")),
+                        _string(candidate.get("customer_id")),
+                        candidate_fingerprint,
+                    )
                     result = await self._evaluate_first_day_silence_candidate(
                         candidate,
                         silent_minutes=threshold_minutes,
                         auto_activate=auto_activate,
                         eligible_after=eligible_after,
+                        existing_run_hint=(
+                            preloaded_runs.get(run_key, {})
+                            if callable(run_snapshot_loader)
+                            else None
+                        ),
                     )
                 except Exception as exc:
                     result = {
@@ -3180,6 +3227,16 @@ class FirstDayWorkflow:
                     "conversation_fingerprint_already_logged",
                 }:
                     evaluated_budget_used += 1
+            self._monitor_status.update(
+                candidate_count=stats["candidate_count"],
+                evaluated_count=stats["evaluated_count"],
+                created_count=stats["created_count"],
+                rejected_count=stats["rejected_count"],
+                skipped_count=stats["skipped_count"],
+                error_count=stats["error_count"],
+                skip_reasons=dict(stats["skip_reasons"]),
+                last_error=stats["last_error"],
+            )
         stats["last_scan_finished_at"] = utc_now_iso()
         stats["scan_duration_ms"] = round((time.perf_counter() - scan_started) * 1000)
         self._monitor_status = {
@@ -3219,6 +3276,7 @@ class FirstDayWorkflow:
         silent_minutes: int,
         auto_activate: bool,
         eligible_after: str = "",
+        existing_run_hint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         identity = {
             "customer_id": _string(candidate.get("customer_id")),
@@ -3252,15 +3310,6 @@ class FirstDayWorkflow:
         )
         lock = self.planning._plan_lock(identity)
         async with lock:
-            active = await asyncio.to_thread(
-                self.repository.get_active_outreach_plan_for_customer,
-                customer_id,
-                corp_id=identity["corp_id"],
-                wechat=identity["wechat"],
-                external_userid=identity["external_userid"],
-            )
-            if active:
-                return {"status": "skipped", "customer_id": customer_id, "reason": "nonterminal_plan_exists"}
             run_finder = getattr(self.repository, "find_first_day_outreach_run_by_fingerprint", None)
             existing_run = (
                 await asyncio.to_thread(
@@ -3271,8 +3320,8 @@ class FirstDayWorkflow:
                     external_userid=identity["external_userid"],
                     conversation_fingerprint=candidate_fingerprint,
                 )
-                if callable(run_finder)
-                else {}
+                if existing_run_hint is None and callable(run_finder)
+                else dict(existing_run_hint or {})
             )
             retry_reason = _first_day_existing_run_retry_reason(
                 existing_run,
@@ -3286,6 +3335,15 @@ class FirstDayWorkflow:
                     "customer_id": customer_id,
                     "reason": "conversation_fingerprint_already_logged",
                 }
+            active = await asyncio.to_thread(
+                self.repository.get_active_outreach_plan_for_customer,
+                customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+            )
+            if active:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "nonterminal_plan_exists"}
             if existing_run:
                 workflow_run_id = _string(existing_run.get("workflow_run_id"))
                 run_updater = getattr(self.repository, "update_first_day_outreach_run", None)
