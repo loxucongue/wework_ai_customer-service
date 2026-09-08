@@ -56,6 +56,10 @@ type Identity = {
   customer_add_wechat_id?: string;
   conversation_id?: string;
   customer_name?: string;
+  customer_ids?: string[];
+  user_ids?: string[];
+  customer_add_wechat_ids?: string[];
+  conversation_ids?: string[];
 };
 
 type OutreachRecord = {
@@ -72,6 +76,8 @@ type OutreachRecord = {
   created_at: string;
   updated_at?: string;
   event_summary?: string;
+  record_count?: number;
+  cycle_customer_message_at?: string;
   task_summary: TaskSummary;
 };
 
@@ -126,6 +132,9 @@ type OutreachTask = JsonRecord & {
   message_goal?: string;
   actual_send?: boolean;
   reply_messages?: unknown[];
+  content_sources?: unknown[];
+  content_source_metadata?: unknown;
+  before_send_check?: boolean;
 };
 
 type PlanDetail = {
@@ -222,6 +231,10 @@ const REASON_LABELS: Record<string, string> = {
   workflow_failed: "计划生成失败",
   missing_identity: "客户身份不完整",
   activity_followup: "自动策略跟进",
+  first_day_opened_silence: "客户开口后沉默唤醒",
+  outreach_cycle_completed_without_new_customer_reply: "本轮计划已完成，等待客户再次开口",
+  conversation_fingerprint_already_evaluated: "同一轮客户消息已评估",
+  conversation_fingerprint_already_logged: "同一轮客户消息已有记录",
   no_plan: "未生成计划",
 };
 
@@ -543,9 +556,18 @@ function CustomerPanel({ items, selectedContactKey, loading, onSelect }: { items
       {loading && !items.length ? <EmptyState icon={<LoaderCircle className="h-5 w-5 animate-spin" />} text="正在加载客户日志" /> : null}
       {!loading && !items.length ? <EmptyState icon={<Search className="h-5 w-5" />} text="当前筛选范围没有自动触达记录" /> : null}
       {items.map((item) => <button key={item.contact_key} type="button" onClick={() => onSelect(item.contact_key)} className={`block w-full border-b border-zinc-100 px-4 py-3 text-left last:border-b-0 ${item.contact_key === selectedContactKey ? "border-l-2 border-l-blue-600 bg-blue-50 pl-[14px]" : "hover:bg-zinc-50"}`}>
-        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-sm font-semibold">{identityName(item.identity) || "不可归属记录"}</div><div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-zinc-500"><span>{item.identity.wechat || "未记录企微"}</span><span>{item.identity.corp_id || "未记录企业"}</span></div></div><StatusPill status={item.latest_record.status} noPlan={item.latest_record.record_type === "no_plan"} /></div>
+        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="break-all text-sm font-semibold">{identityName(item.identity) || "不可归属记录"}</div>{item.identity.customer_name ? <div className="mt-1 text-xs text-zinc-600">{item.identity.customer_name}</div> : null}</div><CustomerStatusPill item={item} /></div>
+        <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-zinc-200 pt-3 text-xs">
+          <CompactIdentity label="客户 ID" value={identityValues(item.identity.customer_ids, item.identity.customer_id)} />
+          <CompactIdentity label="加微 ID" value={identityValues(item.identity.customer_add_wechat_ids, item.identity.customer_add_wechat_id)} />
+          <CompactIdentity label="外部联系人" value={item.identity.external_userid || "未记录"} />
+          <CompactIdentity label="接待人员" value={identityValues(item.identity.user_ids, item.identity.user_id)} />
+          <CompactIdentity label="企微" value={item.identity.wechat || "未记录"} />
+          <CompactIdentity label="企业" value={item.identity.corp_id || "未记录"} />
+          <div className="col-span-2"><CompactIdentity label="会话 ID" value={identityValues(item.identity.conversation_ids, item.identity.conversation_id)} /></div>
+        </div>
         <div className="mt-3 grid grid-cols-3 gap-2 text-xs"><SummaryValue label="计划" value={String(item.plan_count)} /><SummaryValue label="已处理" value={`${item.task_summary.handled}/${item.task_summary.total}`} /><SummaryValue label="实际发送" value={String(item.task_summary.sent)} /></div>
-        <div className="mt-2 truncate text-xs text-zinc-600">{item.next_task?.scheduled_at ? `下一任务：${formatTime(item.next_task.scheduled_at)}` : item.no_plan_count ? `未生成计划 ${item.no_plan_count} 次` : "当前无待执行任务"}</div>
+        <div className="mt-2 truncate text-xs text-zinc-600">{item.next_task?.scheduled_at ? `下一任务：${formatTime(item.next_task.scheduled_at)}` : item.no_plan_count ? `另有 ${item.no_plan_count} 次扫描未建计划` : "当前无待执行任务"}</div>
       </button>)}
     </div>
   </section>;
@@ -553,20 +575,24 @@ function CustomerPanel({ items, selectedContactKey, loading, onSelect }: { items
 
 function TimelinePanel({ customer, detail, loading, selectedPlanId, onSelectPlan }: { customer: CustomerItem | null; detail: CustomerDetail | null; loading: boolean; selectedPlanId: string; onSelectPlan: (planId: string) => void }) {
   const history = detail?.history || [];
+  const plans = history.filter((record) => record.record_type === "plan");
+  const evaluations = history.filter((record) => record.record_type === "no_plan");
   return <section className="min-w-0 border border-zinc-200 bg-white">
-    <PanelHeader icon={<CalendarClock className="h-4 w-4" />} title="客户计划时间线" subtitle={customer ? `${identityName(customer.identity) || "不可归属记录"} · ${customer.identity.wechat || "未记录企微"}` : "选择一位客户后查看"} />
+    <PanelHeader icon={<CalendarClock className="h-4 w-4" />} title="客户触达记录" subtitle={customer ? `真实计划 ${plans.length} 个 · 未建计划评估 ${evaluations.length} 次` : "选择一位客户后查看"} />
     <div className="max-h-[720px] overflow-y-auto p-3">
       {loading ? <EmptyState icon={<LoaderCircle className="h-5 w-5 animate-spin" />} text="正在加载客户计划" /> : null}
       {!loading && !customer ? <EmptyState icon={<UsersRound className="h-5 w-5" />} text="从左侧选择客户" /> : null}
       {!loading && customer && !history.length ? <EmptyState icon={<CircleSlash2 className="h-5 w-5" />} text="筛选范围内没有可展示的计划" /> : null}
-      {history.map((record) => <TimelineRecord key={record.record_id} record={record} selected={record.plan_id === selectedPlanId} onSelect={onSelectPlan} />)}
+      {plans.length ? <div className="mb-2 text-xs font-medium text-zinc-500">真实创建的计划</div> : null}
+      {plans.map((record) => <TimelineRecord key={record.record_id} record={record} selected={record.plan_id === selectedPlanId} onSelect={onSelectPlan} />)}
+      {evaluations.length ? <NoPlanEvaluations records={evaluations} /> : null}
     </div>
   </section>;
 }
 
 function TimelineRecord({ record, selected, onSelect }: { record: OutreachRecord; selected: boolean; onSelect: (planId: string) => void }) {
   const selectable = record.record_type === "plan" && Boolean(record.plan_id);
-  const content = <><div className="flex items-start justify-between gap-2"><div className="min-w-0"><div className="truncate text-sm font-semibold">{record.record_type === "no_plan" ? "未生成计划" : SOURCE_LABELS[record.source_type] || record.source_type}</div><div className="mt-1 text-xs text-zinc-500">{formatTime(record.created_at)}</div></div><StatusPill status={record.status} noPlan={record.record_type === "no_plan"} /></div><div className="mt-3 text-sm leading-5 text-zinc-700">{record.plan_goal || reasonLabel(record.reason_code) || record.event_summary || "未记录业务摘要"}</div><div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-600"><span>任务 {record.task_summary.total}</span><span>实际发送 {record.task_summary.sent}</span><span>已消费 {record.task_summary.consumed}</span><span>失败 {record.task_summary.failed}</span></div>{record.reason_code ? <div className="mt-2 text-xs text-zinc-500">原因：{reasonLabel(record.reason_code)}</div> : null}</>;
+  const content = <><div className="flex items-start justify-between gap-2"><div className="min-w-0"><div className="truncate text-sm font-semibold">{record.record_type === "no_plan" ? "未生成计划" : SOURCE_LABELS[record.source_type] || record.source_type}</div><div className="mt-1 text-xs text-zinc-500">计划创建：{formatTime(record.created_at)}</div></div><StatusPill status={record.status} noPlan={record.record_type === "no_plan"} /></div>{record.cycle_customer_message_at ? <div className="mt-2 border-l-2 border-blue-500 bg-blue-50 px-2 py-1.5 text-xs text-blue-900">本轮客户最后开口：{formatTime(record.cycle_customer_message_at)}</div> : null}<div className="mt-3 text-sm leading-5 text-zinc-700">{record.plan_goal || reasonLabel(record.reason_code) || record.event_summary || "未记录业务摘要"}</div><div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-600"><span>任务 {record.task_summary.total}</span><span>实际发送 {record.task_summary.sent}</span><span>已消费 {record.task_summary.consumed}</span><span>失败 {record.task_summary.failed}</span></div>{record.reason_code ? <div className="mt-2 text-xs text-zinc-500">原因：{reasonLabel(record.reason_code)}</div> : null}</>;
   const className = `w-full border p-3 text-left ${selected ? "border-blue-500 bg-blue-50" : "border-zinc-200 bg-white"}`;
   if (!selectable) return <div className={`${className} mb-3 opacity-80`}>{content}</div>;
   return <button type="button" onClick={() => onSelect(record.plan_id || "")} className={`${className} mb-3 hover:border-zinc-400`}>{content}</button>;
@@ -604,8 +630,22 @@ function IdentityFacts({ identity }: { identity: Identity }) {
 function TaskCard({ task }: { task: OutreachTask }) {
   const sentVerified = task.actual_send === true;
   const status = text(task.status);
-  const message = taskMessagePreview(task);
-  return <article className="border border-zinc-200 p-3"><div className="flex items-start justify-between gap-3"><div><div className="text-sm font-semibold">第 {number(task.step_index, 0)} 步</div><div className="mt-1 text-xs text-zinc-500">计划时间 {formatTime(text(task.scheduled_at))}</div></div><TaskStatusPill status={status} verified={sentVerified} /></div><div className="mt-3 grid gap-2 text-xs sm:grid-cols-2"><Fact label="实际时间" value={formatTime(text(task.sent_at))} /><Fact label="发送结果" value={sentVerified ? "已记录平台消息 ID" : status === "sent" ? "状态已发送，待核验" : taskOutcome(status)} /></div>{message ? <div className="mt-3 border-l-2 border-blue-500 bg-blue-50 px-3 py-2 text-sm leading-6 text-zinc-800">{message}</div> : null}{text(task.error_message) ? <div className="mt-3 border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">失败原因：{text(task.error_message)}</div> : null}</article>;
+  const messages = taskMessageItems(task);
+  return <article className="border border-zinc-200 p-3"><div className="flex items-start justify-between gap-3"><div><div className="text-sm font-semibold">第 {number(task.step_index, 0)} 步</div><div className="mt-1 text-xs text-zinc-500">计划时间 {formatTime(text(task.scheduled_at))}</div></div><TaskStatusPill status={status} verified={sentVerified} /></div><div className="mt-3 grid gap-2 text-xs sm:grid-cols-2"><Fact label="任务 ID" value={text(task.id) || "未记录"} /><Fact label="平台消息 ID" value={text(task.system_msgid) || "未记录"} /><Fact label="实际时间" value={formatTime(text(task.sent_at))} /><Fact label="发送结果" value={sentVerified ? "已记录平台消息 ID" : status === "sent" ? "状态已发送，待核验" : taskOutcome(status)} /><Fact label="任务目标" value={text(task.message_goal) || "未记录"} /><Fact label="发送前复核" value={task.before_send_check ? "需要" : "未要求"} /><div className="sm:col-span-2"><Fact label="内容来源" value={taskSourceSummary(task)} /></div></div>{messages.length ? <section className="mt-3 space-y-2"><div className="text-xs font-medium text-zinc-500">本任务生成/发送的内容</div>{messages.map((message, index) => <TaskMessage key={`${message.type}-${index}`} message={message} />)}</section> : <div className="mt-3 border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-500">没有保存可展示的客户可见内容。</div>}{text(task.error_message) ? <div className="mt-3 border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">失败原因：{text(task.error_message)}</div> : null}</article>;
+}
+
+function NoPlanEvaluations({ records }: { records: OutreachRecord[] }) {
+  const groups = groupNoPlanRecords(records);
+  const total = records.reduce((sum, record) => sum + Math.max(1, number(record.record_count, 1)), 0);
+  return <details className="mt-4 border border-zinc-200 bg-zinc-50"><summary className="cursor-pointer px-3 py-2 text-sm font-medium text-zinc-700">扫描/评估但未建计划：{total} 次 <span className="font-normal text-zinc-500">（不等于创建计划）</span></summary><div className="space-y-2 border-t border-zinc-200 p-3">{groups.map((group) => <div key={group.key} className="bg-white p-3 text-xs"><div className="font-medium text-zinc-800">{reasonLabel(group.reasonCode)}</div><div className="mt-1 text-zinc-500">{group.count} 次 · {formatTime(group.firstAt)} 至 {formatTime(group.latestAt)}</div></div>)}</div></details>;
+}
+
+type TaskMessageItem = { type: string; text: string; url: string };
+
+function TaskMessage({ message }: { message: TaskMessageItem }) {
+  const mediaLabel = message.type === "image" ? "图片" : message.type === "video" ? "视频" : message.type === "file" ? "文件" : "结构化消息";
+  if (message.text) return <div className="border-l-2 border-blue-500 bg-blue-50 px-3 py-2 text-sm leading-6 text-zinc-800">{message.text}</div>;
+  return <div className="border border-zinc-200 bg-white px-3 py-2 text-sm"><span className="font-medium text-zinc-800">{mediaLabel}</span>{message.url ? <a href={message.url} target="_blank" rel="noreferrer" className="ml-2 text-blue-700 underline underline-offset-2">查看素材</a> : <span className="ml-2 text-zinc-500">已记录，未保存可预览地址</span>}</div>;
 }
 
 function AuditEvent({ event }: { event: JsonRecord }) {
@@ -616,9 +656,11 @@ function PanelHeader({ icon, title, subtitle }: { icon: ReactNode; title: string
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="min-w-0 text-xs text-zinc-600"><span>{label}</span><span className="mt-1 block">{children}</span></label>; }
 function SelectField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: string[][] }) { return <Field label={label}><select value={value} onChange={(event) => onChange(event.target.value)} className={inputClassName}><option value="">全部</option>{options.map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></Field>; }
 function SummaryValue({ label, value }: { label: string; value: string }) { return <div><div className="text-zinc-500">{label}</div><div className="mt-0.5 font-semibold tabular-nums text-zinc-900">{value}</div></div>; }
+function CompactIdentity({ label, value }: { label: string; value: string }) { return <div className="min-w-0"><div className="text-zinc-500">{label}</div><div className="mt-0.5 break-all leading-4 text-zinc-800">{value || "未记录"}</div></div>; }
 function Fact({ label, value }: { label: string; value: string }) { return <div><div className="text-zinc-500">{label}</div><div className="mt-1 break-words text-zinc-800">{value || "-"}</div></div>; }
 function EmptyState({ icon, text }: { icon: ReactNode; text: string }) { return <div className="flex min-h-40 flex-col items-center justify-center gap-2 p-5 text-center text-sm text-zinc-500">{icon}<span>{text}</span></div>; }
 function StatusPill({ status, noPlan = false }: { status: string; noPlan?: boolean }) { const tone = noPlan || status === "blocked" || status === "cancelled" ? "bg-amber-100 text-amber-800" : status === "failed" ? "bg-red-100 text-red-700" : status === "completed" || status === "sent" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"; return <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-medium ${tone}`}>{noPlan ? "未生成" : planStatusLabel(status)}</span>; }
+function CustomerStatusPill({ item }: { item: CustomerItem }) { if (item.next_task || item.task_summary.pending + item.task_summary.processing > 0) return <StatusPill status="active" />; if (item.plan_count > 0 && item.task_summary.total > 0 && item.task_summary.handled >= item.task_summary.total) return <StatusPill status="completed" />; if (item.plan_count > 0) return <StatusPill status="generated" />; return <StatusPill status={item.latest_record.status} noPlan />; }
 function TaskStatusPill({ status, verified }: { status: string; verified: boolean }) { const tone = verified ? "bg-emerald-100 text-emerald-700" : status === "sent" ? "bg-amber-100 text-amber-800" : status === "failed" || status === "check_failed" ? "bg-red-100 text-red-700" : status === "pending" || status === "checking" || status === "sending" ? "bg-blue-100 text-blue-700" : "bg-zinc-100 text-zinc-700"; return <span className={`rounded-full px-2 py-1 text-xs font-medium ${tone}`}>{verified ? "已发送" : taskOutcome(status)}</span>; }
 
 const inputClassName = "h-9 w-full min-w-0 rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600";
@@ -630,7 +672,10 @@ function planStatusLabel(status: string): string { return PLAN_STATUS_LABELS[sta
 function taskOutcome(status: string): string { return TASK_STATUS_LABELS[status] || status || "未记录"; }
 function reasonLabel(reason: string): string { return REASON_LABELS[reason] || reason || "未记录"; }
 function formatTime(value: string): string { if (!value) return "-"; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false }); }
-function text(value: unknown): string { return value == null ? "" : String(value).trim(); }
+function text(value: unknown): string { return typeof value === "string" ? value.trim() : typeof value === "number" || typeof value === "boolean" ? String(value) : ""; }
 function number(value: unknown, fallback: number): number { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback; }
 function pretty(value: unknown): string { try { return JSON.stringify(value, null, 2); } catch { return String(value); } }
-function taskMessagePreview(task: OutreachTask): string { const messages = Array.isArray(task.reply_messages) ? task.reply_messages : []; const first = messages[0]; if (typeof first === "string") return first.trim(); if (first && typeof first === "object" && !Array.isArray(first)) { const record = first as JsonRecord; return text(record.content) || text(record.text) || text(record.message); } return ""; }
+function identityValues(values: string[] | undefined, fallback?: string): string { const unique = [...new Set([...(values || []), fallback || ""].map((value) => text(value)).filter(Boolean))]; return unique.length ? unique.join(" / ") : "未记录"; }
+function taskSourceSummary(task: OutreachTask): string { const sources = Array.isArray(task.content_sources) ? task.content_sources : []; const labels = sources.map((source) => { if (typeof source === "string") return source.trim(); if (!source || typeof source !== "object" || Array.isArray(source)) return ""; const record = source as JsonRecord; return text(record.name) || text(record.title) || text(record.source_id) || text(record.id) || text(record.type); }).filter(Boolean); return labels.length ? labels.join("、") : sources.length ? `${sources.length} 个结构化来源` : "未记录"; }
+function taskMessageItems(task: OutreachTask): TaskMessageItem[] { const messages = Array.isArray(task.reply_messages) ? task.reply_messages : []; return messages.map((message): TaskMessageItem | null => { if (typeof message === "string") return message.trim() ? { type: "text", text: message.trim(), url: "" } : null; if (!message || typeof message !== "object" || Array.isArray(message)) return null; const record = message as JsonRecord; const content = record.content && typeof record.content === "object" && !Array.isArray(record.content) ? record.content as JsonRecord : {}; const directContent = text(record.content); const messageText = text(content.text) || text(content.content) || directContent || text(record.text) || text(record.message); const url = text(content.url) || text(content.media_url) || text(record.url) || text(record.media_url); return { type: text(record.type) || (url ? "media" : "text"), text: messageText, url }; }).filter((message): message is TaskMessageItem => Boolean(message)); }
+function groupNoPlanRecords(records: OutreachRecord[]): Array<{ key: string; reasonCode: string; count: number; firstAt: string; latestAt: string }> { const groups = new Map<string, { key: string; reasonCode: string; count: number; firstAt: string; latestAt: string }>(); for (const record of records) { const key = `${record.source_type}|${record.reason_code}`; const count = Math.max(1, number(record.record_count, 1)); const existing = groups.get(key); if (!existing) { groups.set(key, { key, reasonCode: record.reason_code, count, firstAt: record.created_at, latestAt: record.created_at }); continue; } existing.count += count; if (record.created_at < existing.firstAt) existing.firstAt = record.created_at; if (record.created_at > existing.latestAt) existing.latestAt = record.created_at; } return [...groups.values()].sort((left, right) => right.latestAt.localeCompare(left.latestAt)); }

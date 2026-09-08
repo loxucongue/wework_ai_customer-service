@@ -102,6 +102,9 @@ def test_customer_logs_group_automatic_plans_and_keep_wechat_scope(tmp_path) -> 
         source_snapshot={
             "conversation_id": "conversation-1",
             "customer_add_wechat_id": "relation-1",
+            "conversation_activity": {
+                "latest_customer_message_at": "2026-09-06T00:58:00+00:00",
+            },
         },
     )
     _insert_task(
@@ -225,6 +228,10 @@ def test_customer_logs_group_automatic_plans_and_keep_wechat_scope(tmp_path) -> 
     assert sl8003_item["task_summary"]["sent"] == 1
     assert sl8003_item["task_summary"]["sent_without_message_id"] == 1
     assert sl8003_item["next_task"]["task_id"] == "next-task"
+    assert sl8003_item["identity"]["customer_ids"] == ["customer-a"]
+    assert sl8003_item["identity"]["user_ids"] == ["operator-1"]
+    assert sl8003_item["identity"]["customer_add_wechat_ids"] == ["relation-1"]
+    assert sl8003_item["identity"]["conversation_ids"] == ["conversation-1"]
     assert all(item["latest_record"]["plan_id"] != "manual-plan" for item in result["items"])
 
     history = repository.get_outreach_customer_log(
@@ -239,6 +246,10 @@ def test_customer_logs_group_automatic_plans_and_keep_wechat_scope(tmp_path) -> 
         "auto_approved",
     }
     assert all(record.get("plan_id") != "manual-plan" for record in history["history"])
+    assert history["identity"]["customer_add_wechat_id"] == "relation-1"
+    assert history["identity"]["conversation_id"] == "conversation-1"
+    first_day_record = next(record for record in history["history"] if record.get("plan_id") == "first-day")
+    assert first_day_record["cycle_customer_message_at"] == "2026-09-06T00:58:00+00:00"
 
     verified_detail = repository.get_outreach_customer_log_plan(sl8003_item["contact_key"], "first-day")
     unverified_detail = repository.get_outreach_customer_log_plan(sl8003_item["contact_key"], "auto-approved")
@@ -380,6 +391,7 @@ def test_customer_log_list_aggregates_repeated_no_plan_events_without_losing_cou
     assert result["metrics"]["no_plan_count"] == 3
     assert len(result["items"]) == 1
     assert result["items"][0]["no_plan_count"] == 3
+    assert result["items"][0]["identity"]["customer_ids"] == ["customer-b", "customer-a"]
 
     detail = repository.get_outreach_customer_log(
         result["items"][0]["contact_key"],
@@ -391,3 +403,4 @@ def test_customer_log_list_aggregates_repeated_no_plan_events_without_losing_cou
         "event:rejected-2",
         "event:rejected-1",
     ]
+    assert detail["identity"]["customer_ids"] == ["customer-b", "customer-a"]
