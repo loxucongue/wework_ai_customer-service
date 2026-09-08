@@ -10,7 +10,6 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from app.config import get_settings
-from app.services.customer_context import CustomerContextService
 from app.services.customer_relation import (
     customer_relation_is_deleted,
     normalize_customer_relation,
@@ -3044,7 +3043,9 @@ class FirstDayWorkflow:
     ) -> None:
         self.repository = repository
         self.model_client = model_client
-        self.customer_context_service = customer_context_service
+        # Kept for runtime constructor compatibility. First-day silence is
+        # intentionally conversation-driven and never loads order data.
+        _ = customer_context_service
         self.first_day_wechat_allowlist = first_day_wechat_allowlist
         self.planning = planning
         self._monitor_status: dict[str, Any] = {
@@ -3901,35 +3902,6 @@ class FirstDayWorkflow:
                 wechat=identity["wechat"],
                 external_userid=identity["external_userid"],
             )
-            customer_context = await self._load_monitor_customer_context(
-                identity=identity,
-                memory=local_context.get("memory") or {},
-            )
-            order_gate = personalized_order_eligibility(customer_context)
-            if not order_gate.get("available"):
-                await _update_run(
-                    status="failed",
-                    reason_code="order_context_unavailable",
-                    final_decision="retry_pending",
-                    error_node="customer_context",
-                    error_type="OrderContextUnavailable",
-                    error_message=_string(order_gate.get("reason")),
-                    finished_at=utc_now_iso(),
-                )
-                return {"status": "skipped", "customer_id": customer_id, "reason": "order_context_unavailable"}
-            if not order_gate.get("eligible"):
-                order_reason = _string(order_gate.get("reason")) or "order_not_eligible"
-                await _update_run(
-                    status="blocked",
-                    reason_code=order_reason,
-                    final_decision="no_plan",
-                    finished_at=utc_now_iso(),
-                )
-                return {
-                    "status": "skipped",
-                    "customer_id": customer_id,
-                    "reason": order_reason,
-                }
             source_context = {
                 "memory": local_context.get("memory") or {},
                 "recent_messages": messages[-50:],
@@ -3945,7 +3917,6 @@ class FirstDayWorkflow:
                     ),
                     "awaiting_customer_reply": True,
                 },
-                "customer_context": customer_context,
                 "conversation_id": conversation_id,
                 "ai_mode_gate": ai_mode_gate,
             }
@@ -4008,28 +3979,6 @@ class FirstDayWorkflow:
                 "plan_id": plan_id,
                 "result": result,
             }
-
-    async def _load_monitor_customer_context(
-        self,
-        *,
-        identity: dict[str, Any],
-        memory: dict[str, Any],
-    ) -> dict[str, Any]:
-        if self.customer_context_service is None:
-            return {}
-        request_context = {
-            "customer_id": identity.get("customer_id"),
-            "corp_id": identity.get("corp_id"),
-            "wechat": identity.get("wechat"),
-            "external_userid": identity.get("external_userid"),
-            "user_id": identity.get("user_id"),
-        }
-        return await asyncio.to_thread(
-            self.customer_context_service.load,
-            customer_id=_string(identity.get("customer_id")),
-            memory=memory,
-            request_context=request_context,
-        )
 
     def monitor_status(self) -> dict[str, Any]:
         return dict(self._monitor_status)
