@@ -12,6 +12,7 @@ from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.deepseek_semantic_client import DeepSeekSemanticClient
+from app.services.dingtalk_robot_client import DingTalkRobotClient
 from app.services.follow_knowledge_client import FollowKnowledgeClient
 from app.services.memory_store import CustomerMemoryStore
 from app.services.message_delivery import MessageDeliveryService
@@ -28,6 +29,7 @@ from app.services.sales_strategy_service import SalesStrategyService
 from app.services.service_rule_data_client import ServiceRuleDataClient
 from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.sop.delivery_compatibility import SopDeliveryCompatibilityService
+from app.services.sop_failure_alert_service import SopFailureAlertService
 from app.services.sop_objection_material_service import SopObjectionMaterialService
 from app.services.sop_platform_client import SopPlatformClient
 from app.services.sop_platform_task_service import SopPlatformTaskService
@@ -247,6 +249,12 @@ def build_control_services(settings: Settings) -> ControlServices:
         sales_strategy_service=sales_strategy_service,
     )
     sop_platform_client = SopPlatformClient(settings)
+    sop_failure_alert_client = DingTalkRobotClient(settings)
+    sop_failure_alert_service = SopFailureAlertService(
+        settings=settings,
+        repository=repository,
+        client=sop_failure_alert_client,
+    )
     sop_platform_task_service = SopPlatformTaskService(
         settings=settings,
         repository=repository,
@@ -255,6 +263,7 @@ def build_control_services(settings: Settings) -> ControlServices:
         model_client=model_client,
         customer_context_service=customer_context_service,
         objection_material_service=sop_objection_material_service,
+        failure_alert_service=sop_failure_alert_service,
     )
     return ControlServices(
         storage_store=storage_store,
@@ -287,6 +296,7 @@ def build_control_services(settings: Settings) -> ControlServices:
             coze_client,
             outreach_system_client,
             sop_platform_client,
+            sop_failure_alert_client,
         ),
         _platform_agent_client=platform_agent_client,
     )
@@ -320,6 +330,12 @@ def build_worker_services(settings: Settings) -> WorkerServices:
         follow_knowledge_client=follow_knowledge_client,
     )
     sop_platform_client = SopPlatformClient(settings)
+    sop_failure_alert_client = DingTalkRobotClient(settings)
+    sop_failure_alert_service = SopFailureAlertService(
+        settings=settings,
+        repository=repository,
+        client=sop_failure_alert_client,
+    )
     service_rule_data_service = _build_service_rule_data_worker(settings, repository)
     return WorkerServices(
         storage_store=storage_store,
@@ -334,6 +350,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
             model_client=model_client,
             customer_context_service=customer_context_service,
             objection_material_service=sop_objection_material_service,
+            failure_alert_service=sop_failure_alert_service,
         ),
         store_snapshot_service=store_snapshot_service,
         strategy_outcome_provider=PlatformOrderOutcomeProvider(
@@ -349,6 +366,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
             coze_client,
             outreach_system_client,
             sop_platform_client,
+            sop_failure_alert_client,
             service_rule_data_service.client,
             follow_knowledge_client,
         ),

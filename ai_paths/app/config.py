@@ -177,6 +177,25 @@ class Settings(BaseSettings):
         default=30,
         alias="SOP_PLATFORM_QUIET_FIRST_ADD_GRACE_MINUTES",
     )
+    sop_failure_alert_enabled: bool = Field(default=False, alias="SOP_FAILURE_ALERT_ENABLED")
+    sop_failure_alert_webhook_url: str = Field(
+        default="",
+        alias="SOP_FAILURE_ALERT_WEBHOOK_URL",
+        repr=False,
+    )
+    sop_failure_alert_signing_secret: str = Field(
+        default="",
+        alias="SOP_FAILURE_ALERT_SIGNING_SECRET",
+        repr=False,
+    )
+    sop_failure_alert_timeout_seconds: float = Field(
+        default=5.0,
+        alias="SOP_FAILURE_ALERT_TIMEOUT_SECONDS",
+    )
+    sop_failure_alert_retry_batch_size: int = Field(
+        default=20,
+        alias="SOP_FAILURE_ALERT_RETRY_BATCH_SIZE",
+    )
     model_json_max_tokens: int = 2048
     model_text_max_tokens: int = 2048
     memory_dir: Path = Path("logs/memory")
@@ -419,6 +438,11 @@ class Settings(BaseSettings):
                 raise ValueError("SOP_PLATFORM_PULL_ENABLED=true requires SOP_PLATFORM_BASE_URL")
             if not str(self.outreach_system_base_url or "").strip() or not str(self.outreach_system_token or "").strip():
                 raise ValueError("SOP_PLATFORM_PULL_ENABLED=true requires OUTREACH_SYSTEM_BASE_URL and OUTREACH_SYSTEM_TOKEN")
+        if self.sop_failure_alert_enabled:
+            if not str(self.sop_failure_alert_webhook_url or "").strip():
+                raise ValueError("SOP_FAILURE_ALERT_ENABLED=true requires SOP_FAILURE_ALERT_WEBHOOK_URL")
+            if not str(self.sop_failure_alert_signing_secret or "").strip():
+                raise ValueError("SOP_FAILURE_ALERT_ENABLED=true requires SOP_FAILURE_ALERT_SIGNING_SECRET")
         if role is RuntimeRole.WORKER and self.service_rule_data_enabled:
             if not str(self.service_rule_data_base_url or "").strip() or not str(self.service_rule_data_token or "").strip():
                 raise ValueError("SERVICE_RULE_DATA_ENABLED=true requires SERVICE_RULE_DATA_BASE_URL and SERVICE_RULE_DATA_TOKEN for worker")

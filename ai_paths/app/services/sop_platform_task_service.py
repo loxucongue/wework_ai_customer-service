@@ -303,6 +303,7 @@ class SopPlatformTaskService:
         model_client: Any,
         customer_context_service: Any,
         objection_material_service: Any | None = None,
+        failure_alert_service: Any | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -311,6 +312,7 @@ class SopPlatformTaskService:
         self.model_client = model_client
         self.customer_context_service = customer_context_service
         self.objection_material_service = objection_material_service
+        self.failure_alert_service = failure_alert_service
         self._locks: dict[str, asyncio.Lock] = {}
         queue_size = max(1, int(getattr(settings, "sop_platform_queue_size", 24) or 24))
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=queue_size)
@@ -366,9 +368,13 @@ class SopPlatformTaskService:
                     result = await self.poll_once()
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     self._counters["poll_loop_error"] += 1
                     logger.exception("Third-party SOP polling iteration failed; worker will continue")
+                    await self._alert_system_failure(
+                        phase="poll_pending_and_content",
+                        reason=_alert_exception_reason(exc),
+                    )
                     result = {
                         "pending_count": self._pending_total,
                         "enqueued_count": 0,
@@ -544,6 +550,10 @@ class SopPlatformTaskService:
         if incomplete:
             self._last_poll_error = "pending_page_incomplete"
             self._counters["pending_page_incomplete"] += 1
+            await self._alert_system_failure(
+                phase="poll_pending_page",
+                reason="pending_page_incomplete",
+            )
             return {
                 "pending_count": self._pending_total,
                 "enqueued_count": 0,
@@ -565,6 +575,15 @@ class SopPlatformTaskService:
                 "Third-party SOP due triggers have no matching full message groups: %s",
                 [_task_id(task) for task in unresolved_content_triggers],
             )
+            await asyncio.gather(*(
+                self._alert_task_failure(
+                    task=trigger,
+                    status="send_failed",
+                    reason="pending_content_lookup_missing",
+                    phase="load_sop_messages",
+                )
+                for trigger in unresolved_content_triggers
+            ))
             quiet_unresolved_triggers = [
                 trigger
                 for trigger in unresolved_content_triggers
@@ -606,9 +625,15 @@ class SopPlatformTaskService:
             async with persistence_semaphore:
                 try:
                     await asyncio.to_thread(self._ensure_local_task, task, status=status)
-                except Exception:
+                except Exception as exc:
                     self._counters["persistence_error"] += 1
                     logger.exception("Unable to persist pulled third-party SOP task: %s", _task_id(task))
+                    await self._alert_task_failure(
+                        task=task,
+                        status="send_failed",
+                        reason=_alert_exception_reason(exc),
+                        phase="persist_pulled_task",
+                    )
                     return None
             return task
 
@@ -707,11 +732,27 @@ class SopPlatformTaskService:
                 else:
                     result = await self.process_task(queue_item)
                 self._record_result(result)
+                await self._alert_result(
+                    result,
+                    tasks=[*batch_tasks, *trigger_tasks],
+                    phase="queue_process",
+                )
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 self._counters["retry"] += 1
                 logger.exception("Third-party SOP customer batch failed and remains recoverable: %s", task_ids)
+                failed_task_id = task_ids[0] if task_ids else "unknown"
+                await self._alert_task_failure(
+                    task=next(
+                        (task for task in [*batch_tasks, *trigger_tasks] if _task_id(task) == failed_task_id),
+                        {},
+                    ),
+                    task_id=failed_task_id,
+                    status="send_failed",
+                    reason=_alert_exception_reason(exc),
+                    phase="queue_process_exception",
+                )
             finally:
                 self._observe("task", time.perf_counter() - started)
                 for task_id in task_ids:
@@ -724,12 +765,21 @@ class SopPlatformTaskService:
                 await self.process_recoveries()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 self._counters["recovery_error"] += 1
                 logger.exception("Third-party SOP recovery iteration failed")
+                await self._alert_system_failure(
+                    phase="recovery_iteration",
+                    reason=_alert_exception_reason(exc),
+                )
             await asyncio.sleep(max(1.0, float(self.settings.sop_platform_poll_seconds)))
 
     async def process_recoveries(self) -> int:
+        if self.failure_alert_service is not None:
+            try:
+                await self.failure_alert_service.retry_pending()
+            except Exception as exc:
+                logger.error("Third-party SOP alert retry iteration failed: type=%s", type(exc).__name__)
         if _in_configured_quiet_hours(settings=self.settings):
             self._counters["quiet_recovery_blocked"] += 1
             return 0
@@ -766,6 +816,12 @@ class SopPlatformTaskService:
                     status="platform_failed",
                     error="missing_platform_task_payload",
                 )
+                await self._alert_task_failure(
+                    task_id=(event_id.split(":", 1)[1] if event_id.startswith("platform_sop_task:") else event_id),
+                    status="send_failed",
+                    reason="missing_platform_task_payload",
+                    phase="recovery_load_payload",
+                )
                 return 0
             # The platform keeps unconsumed tasks in the pending feed, so an
             # orphan can remain queued or in flight indefinitely. Recovery must
@@ -787,6 +843,7 @@ class SopPlatformTaskService:
                     else:
                         result = await self.process_task(task, recovery_status=recovery_status)
                     self._record_result(result)
+                    await self._alert_result(result, tasks=[task], phase="recovery_process")
                     if not result.get("processed"):
                         self._schedule_recovery_backoff(
                             event_id,
@@ -824,6 +881,12 @@ class SopPlatformTaskService:
                         )
                         self._reserved_prefix_ids.add(_task_id(task))
                         self._counters["platform_terminal_reconciled"] += 1
+                        await self._alert_task_failure(
+                            task=task,
+                            status="completed_without_send",
+                            reason=_alert_exception_reason(exc),
+                            phase="recovery_platform_terminal",
+                        )
                         return 0
                     self._schedule_recovery_backoff(
                         event_id,
@@ -832,6 +895,12 @@ class SopPlatformTaskService:
                         retry_count=int(event.get("retry_count") or 0),
                     )
                     logger.exception("Third-party SOP recovery failed and was deferred: %s", event_id)
+                    await self._alert_task_failure(
+                        task=task,
+                        status="send_failed",
+                        reason=_alert_exception_reason(exc),
+                        phase="recovery_exception",
+                    )
                     return 0
 
         if not events:
@@ -1706,14 +1775,17 @@ class SopPlatformTaskService:
                 "send_response": send_result,
             }
 
+        # Persist confirmed send evidence before any downstream consume or
+        # strategy-data callback. A later callback failure must not make the
+        # recovery path treat an already-sent customer message as unsent.
+        self.repository.update_sop_send_task(
+            local_task_id,
+            status="sent",
+            send_payload=audit,
+            send_response=send_result,
+            sent_at=utc_now_iso(),
+        )
         if _in_configured_quiet_hours(settings=self.settings):
-            self.repository.update_sop_send_task(
-                local_task_id,
-                status="sent",
-                send_payload=audit,
-                send_response=send_result,
-                sent_at=utc_now_iso(),
-            )
             self.repository.update_sop_event_status(
                 f"platform_sop_task:{selected_id}",
                 status="platform_batch_consume_pending",
@@ -1740,13 +1812,7 @@ class SopPlatformTaskService:
             phase="finalize_consume_and_rule_data",
             started=phase_started,
         )
-        self.repository.update_sop_send_task(
-            local_task_id,
-            status="sent",
-            send_payload=audit,
-            send_response=send_result,
-            sent_at=utc_now_iso(),
-        )
+        self.repository.update_sop_send_task(local_task_id, status="sent", send_payload=audit)
         self._release_sequence_reservations(selected_id=selected_id, audit=audit)
         return {
             "processed": True,
@@ -2653,7 +2719,24 @@ class SopPlatformTaskService:
             raise ValueError("task_id is required")
         lock = self._locks.setdefault(clean_task_id, asyncio.Lock())
         async with lock:
-            return await self._admin_resend_task_locked(clean_task_id)
+            try:
+                result = await self._admin_resend_task_locked(clean_task_id)
+                await self._alert_result(
+                    result,
+                    tasks=[self._platform_task_from_local(clean_task_id)],
+                    phase="manual_resend",
+                )
+                return result
+            except Exception as exc:
+                if "already sent or sending" not in str(exc):
+                    await self._alert_task_failure(
+                        task=self._platform_task_from_local(clean_task_id),
+                        task_id=clean_task_id,
+                        status="send_failed",
+                        reason=_alert_exception_reason(exc),
+                        phase="manual_resend_exception",
+                    )
+                raise
 
     async def _admin_resend_task_locked(self, task_id: str) -> dict[str, Any]:
         event_id = f"platform_sop_task:{task_id}"
@@ -2860,6 +2943,58 @@ class SopPlatformTaskService:
         elif status == "platform_send_uncertain":
             self._counters["send_uncertain"] += 1
             logger.error("Third-party SOP send result is uncertain: %s", result.get("task_id"))
+
+    async def _alert_result(
+        self,
+        result: dict[str, Any],
+        *,
+        tasks: list[dict[str, Any]],
+        phase: str,
+    ) -> None:
+        if self.failure_alert_service is None:
+            return
+        try:
+            await self.failure_alert_service.notify_result(result, tasks=tasks, phase=phase)
+        except Exception as exc:
+            logger.error(
+                "Third-party SOP failure alert classification failed: task_id=%s type=%s",
+                result.get("task_id"),
+                type(exc).__name__,
+            )
+
+    async def _alert_task_failure(
+        self,
+        *,
+        task: dict[str, Any] | None = None,
+        task_id: str = "",
+        status: str,
+        reason: str,
+        phase: str,
+    ) -> None:
+        if self.failure_alert_service is None:
+            return
+        try:
+            await self.failure_alert_service.notify_task_failure(
+                task=task,
+                task_id=task_id,
+                status=status,
+                reason=reason,
+                phase=phase,
+            )
+        except Exception as exc:
+            logger.error(
+                "Third-party SOP failure alert persistence failed: task_id=%s type=%s",
+                task_id or _task_id(task or {}),
+                type(exc).__name__,
+            )
+
+    async def _alert_system_failure(self, *, phase: str, reason: str) -> None:
+        if self.failure_alert_service is None:
+            return
+        try:
+            await self.failure_alert_service.notify_system_failure(phase=phase, reason=reason)
+        except Exception as exc:
+            logger.error("Third-party SOP system alert failed: phase=%s type=%s", phase, type(exc).__name__)
 
     def _remember_terminal(self, task_id: str) -> None:
         if not task_id or task_id in self._terminal_ids:
@@ -3497,12 +3632,17 @@ class SopPlatformTaskService:
                 error=str(dispatch.get("error_message") or status),
             )
             if platform_task_id and platform_task:
-                await self._handle_batch_send_failure(
+                failure_result = await self._handle_batch_send_failure(
                     platform_task=platform_task,
                     selected_task_id=platform_task_id,
                     local_task_id=local_task_id,
                     audit=audit,
                     error=RuntimeError(str(dispatch.get("error_message") or status)),
+                )
+                await self._alert_result(
+                    failure_result,
+                    tasks=[platform_task],
+                    phase="message_delivery_callback",
                 )
             elif event_id:
                 self.repository.update_sop_send_task(
@@ -3517,8 +3657,21 @@ class SopPlatformTaskService:
                     status="platform_batch_send_retry",
                     error=str(dispatch.get("error_message") or status),
                 )
+                await self._alert_task_failure(
+                    task_id=platform_task_id or event_id,
+                    status="send_failed",
+                    reason=str(dispatch.get("error_message") or status),
+                    phase="message_delivery_callback",
+                )
             return
         if status != "send_succeeded":
+            await self._alert_task_failure(
+                task=platform_task,
+                task_id=platform_task_id or event_id,
+                status="send_failed",
+                reason=f"unexpected_delivery_callback_status:{status or 'empty'}",
+                phase="message_delivery_callback",
+            )
             return
         self.repository.update_sop_send_task(
             local_task_id,
@@ -5324,6 +5477,11 @@ def _dedupe_identifier_items(items: list[dict[str, Any]]) -> list[dict[str, str]
         seen.add(marker)
         output.append({"key": key, "value": value, "source": source})
     return output
+
+
+def _alert_exception_reason(exc: Exception) -> str:
+    state = str(getattr(exc, "state", "") or "").strip()
+    return f"{type(exc).__name__}:{state}" if state else type(exc).__name__
 
 
 def _record_task_id(record: dict[str, Any]) -> str:

@@ -128,15 +128,29 @@
 ## 第三方 SOP 平台
 
 - 合同文档：`docs/contracts/third-party-sop-v3.md`
+- 单任务执行文档：`docs/runbooks/THIRD_PARTY_SOP_SINGLE_TASK_EXECUTION.md`
 - 配置：
   - `SOP_PLATFORM_BASE_URL`
   - `SOP_PLATFORM_TOKEN`
   - `SERVICE_RULE_DATA_BASE_URL`
   - `SERVICE_RULE_DATA_TOKEN`
+  - `SOP_FAILURE_ALERT_ENABLED`
+  - `SOP_FAILURE_ALERT_WEBHOOK_URL`
+  - `SOP_FAILURE_ALERT_SIGNING_SECRET`
+  - `SOP_FAILURE_ALERT_TIMEOUT_SECONDS`
+  - `SOP_FAILURE_ALERT_RETRY_BATCH_SIZE`
 - 读写性质：混合；消费任务、发送、终态回传与策略数据回传均有外部状态影响。
 - 运行边界：
   - SOP 任务终态必须回传策略数据。
   - 消息送达回调不能替代 SOP 消费或策略数据回传。
+  - 未取得真实发送成功证据的任务统一视为失败并发送钉钉预警；预警失败不改变任务状态。
+
+### 钉钉自定义机器人：SOP 失败预警
+
+- 代码客户端：`ai_paths/app/services/dingtalk_robot_client.py`
+- 读写性质：发送群机器人 Markdown 消息。
+- 鉴权：Webhook access token 与加签 secret 仅来自服务器环境变量；签名参数为毫秒时间戳和 HMAC-SHA256 结果。
+- 运行边界：不得记录或回传 Webhook、access token、加签 secret；告警内容不得包含客户消息正文和完整外部联系人标识。
 
 ## 模型供应商
 

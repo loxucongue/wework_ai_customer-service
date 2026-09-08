@@ -49,6 +49,7 @@
 - [消息送达回调](contracts/message-delivery-callback.md)
 - [客户身份合同](contracts/customer-identity.md)
 - [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
+- [第三方 SOP 单任务执行与失败预警](runbooks/THIRD_PARTY_SOP_SINGLE_TASK_EXECUTION.md)
 - [主动唤醒 BI 观测合同](contracts/outreach-analytics.md)
 - [任务工作流](runbooks/TASK_WORKFLOW.md)
 - [生产发布前检查清单](runbooks/PRE_RELEASE_CHECKLIST.md)
