@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-08T15:06:00+08:00`
+- verified_at: `2026-09-08T15:11:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260908-150330-34d543de`
-- git commit: `34d543de5a80a0c4a78b667d278539bbf26c0c1e`
+- release: `ai-paths-unified-20260908-150804-ff35bbab`
+- git commit: `ff35bbab6312bd44164110239e25fd77b25a84bc`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -45,13 +45,14 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260908-144742-18123aa1`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260908-150330-34d543de`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-143732-305163fe`。
 - 数据库已迁移到 `20260907_02`，新增兼容的 `aics_customer_identity_links`；发布前 AICS 20 张表、841,130 行的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-44fcd568-20260907-201840/aics-before-20260907_02.sql.gz`，SHA-256 为 `481b853b31b244fa8e307a31f3be632ef46904ca3ea7692fdfc3da1e4a23439c`。旧代码会忽略新表，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-08 15:11 发布并核验固定首次加微 SOP 开口阻断：control/reply/worker 统一运行 clean `main@ff35bbab6312bd44164110239e25fd77b25a84bc`，release 为 `ai-paths-unified-20260908-150804-ff35bbab`，三个角色 `/health` 的 release、完整 SHA、`dirty=false` 和配置版本一致，四个 unit active、`NRestarts=0`。`add_wecom` 在批处理首次判断、旧恢复路径、发送失败重试和最终发送前均以权威会话硬阻断加微后的真实客户回复；企微自动开场白不计为开口，会话缺字段或时间不可靠时保守不发。全仓 508 条测试及 Ruff 通过；生产隔离复现任务 `82349` 的 12:53 客户回复命中 `customer_replied_after_add`，自动开场白样例未误拦，部署后新增 SOP 发送为 0。V3 无鉴权 401、V2 404、管理页 200、回调未配置时 503、Nginx 配置通过；无数据库迁移、无前端变更。统一后端回滚点为 `ai-paths-unified-20260908-150330-34d543de`。
 - 2026-09-08 15:06 发布并核验第三方 SOP 失败预警排除项：客户关系已删除、人工接管和发送结果未确认不再算发送失败，也不发送钉钉预警；三者仍保留发送阻断、顺序保护和恢复审计。明确发送拒绝、真实接口异常、异常回调及其他 13 类可处理失败继续预警。control/reply/worker 统一运行 clean `main@34d543de5a80a0c4a78b667d278539bbf26c0c1e`，三个 unit active 且 `NRestarts=0`；生产分类矩阵现场验证三类排除均为 true、真实发送失败为 false，原有告警总数保持 9 条且全部 `alert_sent`，发布后未新增排除类告警。全仓 498 条测试及 Ruff 通过；无数据库迁移、无客户测试发送，统一回滚点为 `ai-paths-unified-20260908-144742-18123aa1`。
 - 2026-09-08 14:50 发布并核验第三方 SOP 单任务失败预警，任务 release 为 clean `main@c727169f819e4d5f54e73d192a8068a27d79d51d`；随后统一发布的 `main@18123aa11f116ae759c44f892def1299bc945532` 是其后代并完整包含本次 SOP 修复。control/reply/worker 当前统一运行后一版本，三个 unit 均 active 且 `NRestarts=0`。没有真实发送成功证据的任务统一持久化告警并投递钉钉；已有发送证据而消费或策略回传失败时禁止重复发送和误报“未发生”。生产告警事件 9 条均为 `alert_sent`，错误 0；其中包含一次明确标注的合成发布验证。上线核验同时修复了 SOP 顺序判断从 8 月起遗留的模型覆盖参数不兼容，并在生产做了不触发客户消息的专用 DeepSeek 隔离调用，返回 `pass`。启动顺序锁恢复从最多 501 次数据库往返收敛为一次查询。全仓 484 条测试及 Ruff 通过；无数据库迁移、无前端变更，当前统一回滚点为 `ai-paths-unified-20260908-144408-c727169f`。
 - 2026-09-08 14:54 发布并核验主动唤醒客户日志修复：control/reply/worker 与管理前端统一为 clean `main@18123aa11f116ae759c44f892def1299bc945532`，四个 unit active、`NRestarts=0`，V3 无鉴权为 401、产品 V2 路由为 404、Nginx 配置通过。指定客户在 06:30～09:10 实际为 3 个计划、6 次未建计划评估、4 个任务和 4 次真实发送；三轮前分别有客户在 06:57、08:21、08:45 重新开口。页面现已分开真实计划与扫描评估、显示完整可用身份及每轮客户开口锚点，并正确展示结构化文本/图片任务，不再出现 `[object Object]`；历史未留存加微 ID 显示“未记录”。484 条后端回归、前端类型/Lint/生产构建及桌面/390px 生产浏览器验收通过，无数据库迁移、模型调用或测试发送。统一回滚点为后端 `c727169f` 和前端 `305163fe` release。
