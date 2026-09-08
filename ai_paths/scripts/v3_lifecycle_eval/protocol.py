@@ -191,6 +191,18 @@ def _recursive_pairs(value: Any, prefix: str = "") -> Iterable[tuple[str, Any]]:
             yield from _recursive_pairs(child, f"{prefix}[{index}]")
 
 
+def _has_arrival_convenience_fact(facts: dict[str, Any]) -> bool:
+    """Return whether authoritative inputs explicitly support a queue/wait claim."""
+
+    for path, value in _recursive_pairs(facts):
+        if not any(marker in path for marker in ("queue", "wait")):
+            continue
+        normalized = str(value or "").strip().lower()
+        if normalized and normalized not in {"none", "unknown", "false", "0", "未记录", "未知"}:
+            return True
+    return False
+
+
 def appointment_state(sample: dict[str, Any], facts: dict[str, Any]) -> str:
     if str(sample.get("appointment_id") or "").strip() or str(sample.get("appointment_time") or "").strip():
         return "confirmed"
@@ -216,6 +228,21 @@ def expected_contract(
 ) -> dict[str, Any]:
     content = str(sample.get("content") or "")
     prior = prior_structured_summary(prior_deliveries)
+    prior_events = [
+        *prior_delivery_events(prior_deliveries),
+        *[
+            item
+            for item in sample.get("source_history_events") or []
+            if isinstance(item, dict)
+        ],
+    ]
+    prior_event_types = {
+        str(item.get("event_type") or "")
+        for item in prior_events
+        if isinstance(item, dict)
+    }
+    effect_delivered = "case_image_sent" in prior_event_types
+    activity_delivered = "activity_intro_image_sent" in prior_event_types
     address_request = _contains_any(
         content,
         ("地址", "定位", "导航", "路线", "怎么走", "在哪", "位置", "再发", "没收到"),
@@ -237,6 +264,8 @@ def expected_contract(
         and appointment == "not_confirmed"
         and not safety_pause
         and not deferred
+        and effect_delivered
+        and activity_delivered
     )
     return {
         "appointment_state": appointment,
@@ -245,6 +274,8 @@ def expected_contract(
         "current_is_store_detail_question": store_detail,
         "safety_or_health_pause": safety_pause,
         "deferred": deferred,
+        "effect_evidence_delivered": effect_delivered,
+        "activity_offer_delivered": activity_delivered,
         "should_bridge_to_booking": should_bridge_booking,
     }
 
@@ -281,6 +312,17 @@ def hard_assertions(
                     "reason": "门店已确认且客户尚未预约；回答门店细节后没有明确说明下一步是预约或保留名额。",
                 }
             )
+    unsupported_arrival_claim = _contains_any(
+        reply,
+        ("到店不用等", "不用等太久", "少等待", "免排队", "优先接待"),
+    )
+    if unsupported_arrival_claim and not _has_arrival_convenience_fact(facts):
+        failures.append(
+            {
+                "code": "unsupported_arrival_convenience_claim",
+                "reason": "没有权威排队或接待事实，却承诺了不用等、少等待、免排队或优先接待。",
+            }
+        )
     explicit_exit = _contains_any(
         str(sample.get("content") or ""),
         ("别联系", "别发了", "不要联系", "不要再发", "取消接收", "不再打扰"),

@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_runs_conversation_id ON runs(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_customer_id ON runs(customer_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at);
 
 CREATE TABLE IF NOT EXISTS node_traces (
     id TEXT PRIMARY KEY,

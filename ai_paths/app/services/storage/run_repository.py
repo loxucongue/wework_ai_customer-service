@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
+import zlib
 
 from app.graph.planner.runtime_plan import planner_task_views
 from app.graph.planner.runtime_plan import planner_public_route
@@ -22,6 +25,235 @@ from app.services.run_observability import (
 
 
 class RunRepositoryMixin:
+    def save_v3_reply_core(
+        self,
+        *,
+        conversation_id: str,
+        final_state: dict[str, Any],
+        reply_messages: list[dict[str, Any]],
+        token_usage: dict[str, Any],
+        deferred_payload: dict[str, Any],
+    ) -> None:
+        """Persist the customer-visible reply and a durable finalization job.
+
+        This is the only persistence required before returning the V3 response.
+        The worker later expands traces, BI, shadow plans and callbacks from the
+        payload.  Keeping both writes in one transaction prevents a visible
+        reply from losing its recoverable audit job.
+        """
+
+        request_id = str(final_state.get("request_id") or "")
+        if not request_id:
+            raise ValueError("request_id is required")
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            existing = conn.execute(
+                "SELECT output_snapshot, created_at FROM runs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            output_snapshot = loads_dict(existing["output_snapshot"]) if existing else {}
+            started_at = str(
+                output_snapshot.get("runtime_started_at")
+                or (existing["created_at"] if existing else "")
+                or now
+            )
+            output_snapshot.update(
+                {
+                    "runtime_status": "completed",
+                    "runtime_phase": "reply_return_ready",
+                    "runtime_started_at": started_at,
+                    "runtime_updated_at": now,
+                    "runtime_processing_finished_at": now,
+                    "reply_messages": reply_messages,
+                    "reply_source": str(final_state.get("reply_source") or ""),
+                    "decision_status": str(final_state.get("decision_status") or ""),
+                    "realtime_intent": final_state.get("realtime_intent", {}),
+                    "emotion_decision": final_state.get("emotion_decision", {}),
+                    "closing_decision": final_state.get("closing_decision", {}),
+                    "cardpoint_decision": final_state.get("cardpoint_decision", {}),
+                    "post_reply_finalization": {
+                        "status": "pending",
+                        "attempts": 0,
+                        "next_retry_at": "",
+                        "enqueued_at": now,
+                        "updated_at": now,
+                        "last_error": "",
+                    },
+                    # This temporary payload is removed after finalization and is
+                    # stripped from all admin API responses while it is pending.
+                    "post_reply_payload": deferred_payload,
+                }
+            )
+            duration_ms = _elapsed_ms(started_at, now)
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET output_snapshot=?, duration_ms=?, token_usage=?, error=?
+                    WHERE request_id=?
+                    """,
+                    (
+                        dumps(output_snapshot),
+                        duration_ms,
+                        dumps(token_usage),
+                        dumps(final_state.get("errors") or []) if final_state.get("errors") else "",
+                        request_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO runs
+                        (request_id, conversation_id, customer_id, input_snapshot, output_snapshot,
+                         intents, tags, duration_ms, token_usage, error, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        request_id,
+                        conversation_id,
+                        str(final_state.get("customer_id") or ""),
+                        dumps({}),
+                        dumps(output_snapshot),
+                        dumps([]),
+                        dumps([]),
+                        duration_ms,
+                        dumps(token_usage),
+                        dumps(final_state.get("errors") or []) if final_state.get("errors") else "",
+                        started_at,
+                    ),
+                )
+            if reply_messages:
+                content = "\n".join(
+                    str(item.get("content") or "")
+                    for item in reply_messages
+                    if isinstance(item, dict)
+                )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO messages
+                        (id, conversation_id, request_id, role, content, file_image, reply_messages, created_at)
+                    VALUES (?, ?, ?, 'assistant', ?, '', ?, ?)
+                    """,
+                    (
+                        str(uuid5(NAMESPACE_URL, f"v3-assistant:{request_id}")),
+                        conversation_id,
+                        request_id,
+                        content,
+                        dumps(reply_messages),
+                        now,
+                    ),
+                )
+
+    def claim_v3_reply_finalizations(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        stale_before = (now - timedelta(minutes=5)).isoformat()
+        recent_cutoff = (now - timedelta(days=7)).isoformat()
+        claimed: list[dict[str, Any]] = []
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT request_id, conversation_id, output_snapshot, token_usage
+                FROM runs
+                WHERE created_at >= ?
+                  AND output_snapshot LIKE '%"post_reply_finalization"%'
+                  AND (
+                       output_snapshot LIKE '%"status": "pending"%'
+                    OR output_snapshot LIKE '%"status":"pending"%'
+                    OR output_snapshot LIKE '%"status": "error"%'
+                    OR output_snapshot LIKE '%"status":"error"%'
+                    OR output_snapshot LIKE '%"status": "processing"%'
+                    OR output_snapshot LIKE '%"status":"processing"%'
+                  )
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (recent_cutoff, max(1, min(int(limit or 10), 100))),
+            ).fetchall()
+            for row in rows:
+                output = loads_dict(row["output_snapshot"])
+                job = output.get("post_reply_finalization")
+                payload = _decode_post_reply_payload(output.get("post_reply_payload"))
+                if not isinstance(job, dict) or not isinstance(payload, dict):
+                    continue
+                status = str(job.get("status") or "")
+                updated_at = str(job.get("updated_at") or "")
+                if status == "processing" and updated_at and updated_at > stale_before:
+                    continue
+                if status not in {"pending", "error", "processing"}:
+                    continue
+                next_retry_at = str(job.get("next_retry_at") or "")
+                if next_retry_at and next_retry_at > now.isoformat():
+                    continue
+                job["status"] = "processing"
+                job["updated_at"] = now.isoformat()
+                output["post_reply_finalization"] = job
+                conn.execute(
+                    "UPDATE runs SET output_snapshot=? WHERE request_id=?",
+                    (dumps(output), str(row["request_id"] or "")),
+                )
+                claimed.append(
+                    {
+                        "request_id": str(row["request_id"] or ""),
+                        "conversation_id": str(row["conversation_id"] or ""),
+                        "final_state": payload,
+                        "token_usage": loads_dict(row["token_usage"]),
+                    }
+                )
+        return claimed
+
+    def finish_v3_reply_finalization(
+        self,
+        *,
+        request_id: str,
+        error: str = "",
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT output_snapshot FROM runs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if not row:
+                return
+            output = loads_dict(row["output_snapshot"])
+            job = output.get("post_reply_finalization")
+            if not isinstance(job, dict):
+                job = {}
+            attempts = int(job.get("attempts") or 0) + (1 if error else 0)
+            if error:
+                retry_seconds = min(300, 2 ** min(attempts, 8))
+                job.update(
+                    {
+                        "status": "failed" if attempts >= 6 else "error",
+                        "attempts": attempts,
+                        "next_retry_at": (now + timedelta(seconds=retry_seconds)).isoformat(),
+                        "updated_at": now.isoformat(),
+                        "last_error": str(error)[:1000],
+                    }
+                )
+            else:
+                enqueued_at = str(job.get("enqueued_at") or "")
+                job.update(
+                    {
+                        "status": "completed",
+                        "attempts": attempts,
+                        "next_retry_at": "",
+                        "updated_at": now.isoformat(),
+                        "finished_at": now.isoformat(),
+                        "duration_ms": (
+                            _elapsed_ms(enqueued_at, now.isoformat()) if enqueued_at else 0
+                        ),
+                        "last_error": "",
+                    }
+                )
+                output.pop("post_reply_payload", None)
+                output["runtime_phase"] = "completed"
+            output["post_reply_finalization"] = job
+            conn.execute(
+                "UPDATE runs SET output_snapshot=? WHERE request_id=?",
+                (dumps(output), request_id),
+            )
+
     def save_platform_protocol_run(
         self,
         *,
@@ -324,20 +556,43 @@ class RunRepositoryMixin:
                 for key in (
                     "http_request_ingress_id",
                     "http_request_started_at",
+                    "http_response_finished_at",
+                    "http_duration_ms",
                     "http_response_body",
                     "http_response_reply_messages",
+                    "runtime_finished_at",
+                    "runtime_processing_finished_at",
+                    "post_reply_finalization",
+                    "post_reply_payload",
                 ):
                     if key in existing_output and key not in output_snapshot:
                         output_snapshot[key] = existing_output[key]
                 started_at = str(existing_output.get("runtime_started_at") or existing["created_at"] or "")
             finished_at = utc_now_iso()
-            duration_ms = _elapsed_ms(started_at, finished_at) if started_at else trace_duration_ms
+            processing_finished_at = str(
+                existing_output.get("runtime_processing_finished_at")
+                or output_snapshot.get("runtime_processing_finished_at")
+                or ""
+            )
+            duration_ms = (
+                int(existing_output.get("http_duration_ms") or 0)
+                or (
+                    _elapsed_ms(started_at, processing_finished_at)
+                    if started_at and processing_finished_at
+                    else (_elapsed_ms(started_at, finished_at) if started_at else trace_duration_ms)
+                )
+            )
+            customer_finished_at = str(
+                existing_output.get("http_response_finished_at")
+                or existing_output.get("runtime_finished_at")
+                or finished_at
+            )
             output_snapshot = {
                 "runtime_status": "completed_with_errors" if errors else "completed",
                 "runtime_phase": "completed",
                 "runtime_started_at": started_at or finished_at,
                 "runtime_updated_at": finished_at,
-                "runtime_finished_at": finished_at,
+                "runtime_finished_at": customer_finished_at,
                 **output_snapshot,
                 "interface_version": str(
                     existing_output.get("interface_version") or interface_version
@@ -429,7 +684,11 @@ class RunRepositoryMixin:
             stored_ingress_id = str(output_snapshot.get("http_request_ingress_id") or "")
             if not ingress_id or stored_ingress_id != str(ingress_id):
                 return False
-            processing_finished_at = str(output_snapshot.get("runtime_finished_at") or "")
+            processing_finished_at = str(
+                output_snapshot.get("runtime_processing_finished_at")
+                or output_snapshot.get("runtime_finished_at")
+                or ""
+            )
             if processing_finished_at:
                 output_snapshot["runtime_processing_finished_at"] = processing_finished_at
             effective_duration_ms = max(int(row["duration_ms"] or 0), max(0, int(duration_ms or 0)))
@@ -586,6 +845,7 @@ class RunRepositoryMixin:
                 if isinstance(decoded_run.get("output_snapshot"), dict)
                 else {}
             )
+            output_snapshot.pop("post_reply_payload", None)
             callback = (
                 output_snapshot.get("strategy_data_callback")
                 if isinstance(output_snapshot.get("strategy_data_callback"), dict)
@@ -714,9 +974,15 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
         "http_response_body",
         "http_response_reply_messages",
         "runtime_processing_finished_at",
+        "post_reply_finalization",
+        "post_reply_payload",
     ):
         if key in output_snapshot:
-            stored[key] = compact(output_snapshot[key])
+            stored[key] = (
+                output_snapshot[key]
+                if key == "post_reply_payload"
+                else compact(output_snapshot[key])
+            )
     observability = output_snapshot.get("observability_v3")
     if isinstance(observability, dict) and observability:
         # The projection is already bounded and scrubbed by its builder. Do not
@@ -724,6 +990,21 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
         # entries and would hide the complete visible conversation.
         stored["observability_v3"] = observability
     return stored
+
+
+def _decode_post_reply_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    if str(value.get("encoding") or "") != "zlib+base64+json":
+        return value
+    encoded = str(value.get("data") or "")
+    if not encoded:
+        return {}
+    try:
+        raw = zlib.decompress(base64.b64decode(encoded, validate=True)).decode("utf-8")
+    except (ValueError, OSError, UnicodeDecodeError):
+        return {}
+    return loads_dict(raw)
 
 
 def _compact_order_state_snapshot(final_state: dict[str, Any]) -> dict[str, Any]:
@@ -774,9 +1055,10 @@ def _run_list_view(run: dict[str, Any]) -> dict[str, Any]:
     run = dict(run)
     run["business_summary"] = _business_summary_for_run(run)
     output = run.get("output_snapshot")
-    if isinstance(output, dict) and "observability_v3" in output:
+    if isinstance(output, dict):
         output = dict(output)
         output.pop("observability_v3", None)
+        output.pop("post_reply_payload", None)
         run["output_snapshot"] = output
     for key in list(run):
         if key.startswith("usage_") or key == "contact_wechat":
@@ -796,6 +1078,20 @@ def _business_summary_for_run(run: dict[str, Any]) -> dict[str, Any]:
     input_snapshot = run.get("input_snapshot") if isinstance(run.get("input_snapshot"), dict) else {}
     usage_present = any(run.get(key) is not None for key in ("usage_intent_code", "usage_decision_status"))
     sequence_candidates = knowledge.get("matched_sequences") if isinstance(knowledge.get("matched_sequences"), list) else []
+    reply_source = str(output.get("reply_source") or "")
+    if reply_source == "platform_superseded":
+        response_kind = "superseded"
+    elif reply_source in {
+        "ignored_platform_auto_message",
+        "platform_recalled_message",
+    } or reply_source.startswith("platform_protocol"):
+        response_kind = "protocol_filtered"
+    elif reply_source == "human_takeover_guard":
+        response_kind = "human_takeover"
+    elif "fallback" in reply_source or output.get("fallback_source"):
+        response_kind = "failure_fallback"
+    else:
+        response_kind = "business_reply"
     return {
         "wechat": str(run.get("contact_wechat") or input_snapshot.get("wechat") or ""),
         "intent_code": str(run.get("usage_intent_code") or intent.get("type") or ""),
@@ -820,6 +1116,8 @@ def _business_summary_for_run(run: dict[str, Any]) -> dict[str, Any]:
         ),
         "delivery_status": str(run.get("usage_delivery_status") or ""),
         "usage_event_recorded": usage_present,
+        "response_kind": response_kind,
+        "post_reply_finalization": output.get("post_reply_finalization", {}),
     }
 
 

@@ -274,10 +274,7 @@ def _reuse_already_delivered_store_delivery(
     cards instead of sending the same store IDs again.
     """
 
-    if not _is_v3_state(state) or str(resolution.get("status") or "") not in {
-        "send_single",
-        "send_multiple",
-    }:
+    if not _is_v3_state(state):
         return resolution
     destination = (
         resolution.get("destination_resolution")
@@ -288,6 +285,48 @@ def _reuse_already_delivered_store_delivery(
     detail_kind = str(
         resolution.get("requested_detail_kind") or destination.get("detail_kind") or ""
     ).strip()
+    sent_summary = sent_message_summary_for_model(state)
+    incomplete_detail_status = str(resolution.get("status") or "") in {
+            "need_location",
+            "need_location_confirmation",
+            "ambiguous_location",
+            "search_incomplete",
+        }
+    if incomplete_detail_status and request_kind == "store_detail":
+        anchor = (
+            sent_summary.get("store_anchor_fact")
+            if isinstance(sent_summary.get("store_anchor_fact"), dict)
+            else {}
+        )
+        anchor_store_id = str(anchor.get("store_id") or "").strip()
+        if str(anchor.get("status") or "") == "eligible" and anchor_store_id:
+            if detail_kind not in {"address", "navigation"}:
+                return {
+                    **resolution,
+                    "status": "reuse_confirmed_store",
+                    "outcome": "resolved",
+                    "resolution_status": "reuse_confirmed_store",
+                    "clarification_required": False,
+                    "clarification_would_change_result": False,
+                    "delivery_store_ids": [],
+                    "already_delivered_store_ids": [anchor_store_id],
+                    "delivery_mode": "none",
+                    "reason": f"store_detail_reuses_latest_delivered_store:{detail_kind or 'other'}",
+                }
+            return {
+                **resolution,
+                "status": "send_single",
+                "outcome": "resolved",
+                "resolution_status": "send_single",
+                "clarification_required": False,
+                "clarification_would_change_result": False,
+                "delivery_store_ids": [anchor_store_id],
+                "already_delivered_store_ids": [anchor_store_id],
+                "delivery_mode": legacy_delivery_mode("send_single"),
+                "reason": "explicit_address_rerequest_reuses_latest_delivered_store",
+            }
+    if str(resolution.get("status") or "") not in {"send_single", "send_multiple"}:
+        return resolution
     if request_kind == "store_detail" and detail_kind in {"address", "navigation"}:
         return resolution
     delivery_ids = [
@@ -297,7 +336,6 @@ def _reuse_already_delivered_store_delivery(
     ]
     if not delivery_ids:
         return resolution
-    sent_summary = sent_message_summary_for_model(state)
     sent_ids = {
         str(item or "").strip()
         for item in sent_summary.get("store_address_sent_by_store_id", [])

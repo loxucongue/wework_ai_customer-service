@@ -169,11 +169,10 @@ def _link_adopted_script_media(payload: dict[str, Any], state: AgentState) -> st
         return ""
     policy = payload.get("policy_decision") if isinstance(payload.get("policy_decision"), dict) else {}
     intent = policy.get("realtime_intent") if isinstance(policy.get("realtime_intent"), dict) else {}
-    emotion = policy.get("emotion_decision") if isinstance(policy.get("emotion_decision"), dict) else {}
     safety = _normalized_safety_assessment(payload.get("safety_assessment"))
     if (
         str(intent.get("type") or "") == "explicit_exit"
-        or str(emotion.get("flow_action") or "") in {"pause_marketing_turn", "handoff_by_system_rule"}
+        or _hard_pause_from_policy(policy)
         or str(safety.get("status") or "none") != "none"
     ):
         return ""
@@ -1755,6 +1754,29 @@ def _policy_safety_floor(payload: dict[str, Any], state: AgentState) -> str:
     return ""
 
 
+def _hard_pause_from_policy(decision: dict[str, Any]) -> bool:
+    """Only grounded severe emotion or a system handoff can stop this turn.
+
+    ``impatient`` and other pressure-reduction labels may shorten the reply,
+    but they must not suppress explicitly requested facts or media.
+    """
+
+    emotion = (
+        decision.get("emotion_decision")
+        if isinstance(decision.get("emotion_decision"), dict)
+        else {}
+    )
+    flow_action = str(emotion.get("flow_action") or "").strip()
+    if flow_action == "handoff_by_system_rule":
+        return True
+    return (
+        flow_action == "pause_marketing_turn"
+        and str(emotion.get("label") or "").strip() == "angry"
+        and str(emotion.get("confidence") or "").strip() == "high"
+        and bool(emotion.get("evidence_refs"))
+    )
+
+
 def _validate_policy_safety_floor(
     payload: dict[str, Any],
     state: AgentState,
@@ -3071,6 +3093,11 @@ def _reply_repair_hint(error: str) -> str:
         return (
             "action 必须逐字使用 none、ask、offer、payment、registration 之一，并与本轮实际可见消息一致。"
             "不要用自定义枚举，也不要用 registration 表示未付客户参加活动。"
+        )
+    if "store_resolution_send_single_contract_violation" in error:
+        return (
+            "本轮门店工具已经给出唯一 delivery_store_id。保留自然门店说明，并严格输出一个"
+            " store_address，其 store_id 必须逐字等于该 delivery_store_id；不能只说会发地址，也不能改问是否需要。"
         )
     if "invalid_parallel_reply_list_field" in error:
         return (

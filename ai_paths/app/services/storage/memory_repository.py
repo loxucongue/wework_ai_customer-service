@@ -43,7 +43,7 @@ class MemoryRepositoryMixin:
                 SELECT id, event_type, stage, summary, facts, impact, confidence, created_at
                 FROM history_events
                 WHERE customer_id=?
-                ORDER BY created_at ASC
+                ORDER BY created_at DESC
                 LIMIT 100
                 """,
                 (customer_id,),
@@ -72,7 +72,7 @@ class MemoryRepositoryMixin:
                     "confidence": item["confidence"],
                     "event_time": item["created_at"],
                 }
-                for item in events
+                for item in reversed(events)
             ],
         }
 
@@ -106,7 +106,7 @@ class MemoryRepositoryMixin:
                                impact, confidence, created_at
                         FROM history_events
                         WHERE customer_id IN ({placeholders})
-                        ORDER BY customer_id, created_at ASC
+                        ORDER BY customer_id, created_at DESC
                         """,
                         chunk,
                     ).fetchall()
@@ -142,7 +142,9 @@ class MemoryRepositoryMixin:
                 "outreach_status": row["outreach_status"] or "none",
                 "outreach_plan_id": row["outreach_plan_id"] or "",
                 "updated_at": row["updated_at"],
-                "history_events": events_by_customer.get(str(row["customer_id"]), []),
+                "history_events": list(
+                    reversed(events_by_customer.get(str(row["customer_id"]), []))
+                ),
             }
             for row in memory_rows
         }

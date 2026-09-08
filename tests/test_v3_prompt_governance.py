@@ -19,6 +19,13 @@ def test_router_is_retrieval_evidence_not_final_sales_decision() -> None:
     assert "不写客户话术，不决定成交、付款、暂停或最终动作" in prompt
 
 
+def test_prompts_preserve_outstanding_fulfillment_across_merged_messages() -> None:
+    assert "后句催促/问机器人不撤销前句未完成的发图、地址或答题" in V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
+    assert "地址则 store_query=store_detail 并沿用已确认门店" in V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
+    assert "后句催促或问机器人不撤销前句未完成的发图、发地址或答题请求" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "明确再次索要地址允许重发" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
 def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
@@ -31,15 +38,14 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "简单问题默认只发一条文字" in prompt
     assert "回答较长时最多拆成两条自然微信" in prompt
     assert "不要把一个完整句子从中间硬切开" in prompt
-    assert "前后两条各有作用的短微信" in prompt
+    assert "分别答题/解卡和补一个不同价值" in prompt
     assert "禁止客服菜单" in prompt
-    assert "历史相关性是硬门槛" in prompt
-    assert "询价、优惠、效果等新问题本身不构成续接门店的理由" in prompt
+    assert "不要从混乱、冲突、过期或测试历史里恢复旧门店" in prompt
     assert "权威事实、本轮确认、当前可确认、经核验" in prompt
     assert "第一次只解释，不主动输出 payment_collection" in prompt
     assert "任何场景都不得只返回内部决策而漏掉客户回复" in prompt
     assert "不能自造名称" in prompt
-    assert "等时间方便时再聊" in prompt
+    assert "不等于停止销售" in prompt
     assert "不确认广告案例为真" in prompt
     assert "不得说到店还能争取活动价" in prompt
     assert "只是提交到店意向，不等于门店和档期已确认" in prompt
@@ -68,9 +74,9 @@ def test_reply_uses_positive_evidence_before_effect_boundaries() -> None:
     assert '`knowledge_use` 是每轮固定输出的来源记录' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert '"knowledge_use":{"sequence_id":"","step_id":"","script_id":"","reason":""}' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "也可以只选话术" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "本轮没有继续销售的沟通许可" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "候选即使属于同一卡点" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不提活动、付款、定金、名额、档期、登记、到店时间" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不等于停止销售" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "必须继续给一个无需当场决定的真实价值" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得只说“您先忙、有空再联系”就结束" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_reply_requires_safe_directly_relevant_script_for_active_blocker() -> None:
@@ -93,8 +99,27 @@ def test_reply_directly_delivers_available_value_without_permission_gate() -> No
     assert "已经具备且可在本轮直接交付的明确价值，不再向客户索取许可" in prompt
     assert "要不要我发活动价" in prompt
     assert "要不要看效果图" in prompt
-    assert "默认直接交付" in prompt
+    assert "必须同轮交付" in prompt
     assert "先用一条短文字给信心和观看理由，再让素材紧跟在话术下面" in prompt
+    assert "不能只写“我可以发给您”" in prompt
+
+
+def test_reply_connects_store_detail_to_the_true_mainline_stage() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "门店详情不能只回答" in prompt
+    assert "最后一句必须是" in prompt
+    assert "您大概工作日还是周末方便？我帮您做预约登记" in prompt
+    assert "否则补最缺的效果或活动" in prompt
+    assert "行动意愿优先于 next_missing_stage" in prompt
+    assert "不得说可直接到店" in prompt
+
+
+def test_reply_keeps_pure_life_sharing_natural() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "纯祝福、鸡汤、表情或生活分享" in prompt
+    assert "不硬塞价格、活动或预约" in prompt
 
 
 def test_follow_script_media_is_rendered_as_directly_deliverable_asset() -> None:
@@ -187,6 +212,6 @@ def test_reply_always_receives_online_project_scope_boundary() -> None:
 
 
 def test_reply_prompt_handles_generic_store_distrust_before_store_lookup() -> None:
-    assert "有的店是骗子/不靠谱" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不要立刻把话题改成查附近门店" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户只泛称某些店“骗子/不靠谱”" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "本轮唯一正确下一步是先问其遇到了什么" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "候选话术出现这些内容也必须丢弃" in PARALLEL_REPLY_SYSTEM_PROMPT

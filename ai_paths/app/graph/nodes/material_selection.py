@@ -111,6 +111,22 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         if (content_id := str(raw_content_id).strip()) in catalog_by_id
     ]
     sent_messages = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    if sent_messages.get("case_image_sent"):
+        structured_delivered_assets.append(
+            {
+                "ref": "sent_messages:case_image",
+                "content_id": "",
+                "asset_role": "effect_evidence",
+            }
+        )
+    if sent_messages.get("activity_intro_image_sent"):
+        structured_delivered_assets.append(
+            {
+                "ref": "sent_messages:activity_intro",
+                "content_id": "",
+                "asset_role": "activity_offer",
+            }
+        )
     store_delivery = (
         sent_messages.get("store_address_delivery")
         if isinstance(sent_messages.get("store_address_delivery"), dict)
@@ -254,6 +270,11 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         authoritative_paid=bool(registration_fact_status.get("authoritative_paid")),
         protocol_events=protocol_events,
     )
+    mainline_delivery_state = _mainline_delivery_state(
+        structured_delivered_assets=structured_delivered_assets,
+        registration_fact_status=registration_fact_status,
+        payment_channel_availability=payment_channel_availability,
+    )
     reply_evidence = copy.deepcopy(joined)
     reply_shared = (
         reply_evidence.get("shared_context") if isinstance(reply_evidence.get("shared_context"), dict) else {}
@@ -275,6 +296,7 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         "tool_fact_reference_options": tool_fact_reference_options,
         "authoritative_fact_reference_options": authoritative_fact_reference_options,
         "registration_fact_status": registration_fact_status,
+        "mainline_delivery_state": mainline_delivery_state,
         "store_fact_status": store_fact_status,
         "current_turn_structural_constraints": _current_turn_structural_constraints(
             store_fact_status=store_fact_status,
@@ -332,4 +354,52 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
                 "create_work_order arguments={customer_name,mobile,store_id}"
             ),
         },
+    }
+
+
+def _mainline_delivery_state(
+    *,
+    structured_delivered_assets: list[dict[str, Any]],
+    registration_fact_status: dict[str, Any],
+    payment_channel_availability: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose delivered-stage evidence without choosing the next sales action."""
+
+    roles = {
+        str(item.get("asset_role") or "").strip()
+        for item in structured_delivered_assets
+        if isinstance(item, dict) and str(item.get("asset_role") or "").strip()
+    }
+    payment_card = (
+        payment_channel_availability.get("payment_card")
+        if isinstance(payment_channel_availability.get("payment_card"), dict)
+        else {}
+    )
+    effect_delivered = "effect_evidence" in roles
+    activity_delivered = "activity_offer" in roles
+    store_delivered = "address_evidence" in roles
+    appointment_active = bool(registration_fact_status.get("has_active_appointment"))
+    authoritative_paid = bool(registration_fact_status.get("authoritative_paid"))
+    if not effect_delivered:
+        next_missing_stage = "effect_evidence"
+    elif not activity_delivered:
+        next_missing_stage = "activity_offer"
+    elif not store_delivered:
+        next_missing_stage = "store"
+    elif not appointment_active:
+        next_missing_stage = "appointment"
+    elif not authoritative_paid:
+        next_missing_stage = "appointment_deposit"
+    else:
+        next_missing_stage = "complete"
+    return {
+        "effect_evidence_delivered": effect_delivered,
+        "activity_offer_delivered": activity_delivered,
+        "store_address_delivered": store_delivered,
+        "appointment_active": appointment_active,
+        "authoritative_paid": authoritative_paid,
+        "payment_card_available": bool(payment_card.get("available")),
+        "next_missing_stage": next_missing_stage,
+        "source": "delivered_assets_and_authoritative_transaction_facts",
+        "meaning": "事实阶段摘要，不是强制销售动作；先答当前问题，安全边界与当前卡点仍优先",
     }

@@ -20,6 +20,7 @@ from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
     load_candidates,
     refresh_state_tags,
     sample_bucket,
+    _seed_case_memory,
     validate_evaluation_settings,
 )
 from scripts.v3_lifecycle_eval.protocol import (  # noqa: E402
@@ -84,6 +85,46 @@ def test_state_stratification_uses_prior_structured_memory() -> None:
     assert "store_detail_after_card" in rows[0]["state_tags"]
 
 
+def test_runtime_seed_keeps_newest_source_events_over_reconstructed_cards() -> None:
+    captured: dict[str, object] = {}
+
+    class _Memory:
+        def save_update(self, customer_id: str, *, profile_update: dict, event_updates: list) -> None:
+            captured["customer_id"] = customer_id
+            captured["events"] = event_updates
+
+    source_events = [
+        {
+            "event_id": f"source-{index:03d}",
+            "event_type": "case_image_sent" if index == 0 else "other",
+            "facts": {},
+            "event_time": f"2026-09-08T00:{index // 60:02d}:{index % 60:02d}+00:00",
+        }
+        for index in range(100)
+    ]
+    sample = {
+        "corp_id": "corp-1",
+        "wechat": "sl8003",
+        "external_userid": "external-1",
+        "customer_id": "customer-1",
+        "source_history_events": source_events,
+        "prior_deliveries": [
+            {
+                "request_id": "prior-card",
+                "reply_messages": [
+                    {"type": "store_address", "content": {"store_id": "306"}}
+                ],
+            }
+        ],
+    }
+
+    _, events = _seed_case_memory(_Memory(), sample)  # type: ignore[arg-type]
+
+    assert len(events) == 100
+    assert events[0]["event_id"] == "source-000"
+    assert events[-1]["event_id"] == "source-099"
+
+
 def test_candidate_loader_excludes_platform_auto_opening_variant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -116,6 +157,47 @@ def test_candidate_loader_excludes_platform_auto_opening_variant(
     assert [row["source_request_id"] for row in rows] == ["customer"]
 
 
+def test_candidate_loader_excludes_isolated_evaluation_traces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common = {
+        "corp_id": "corp",
+        "wechat": "sl8003",
+        "external_userid": "external",
+        "customer_id": "customer",
+        "content": "想了解一下效果",
+        "reply_source": "main_model",
+    }
+    (tmp_path / "isolated.json").write_text(
+        json.dumps(
+            {
+                **common,
+                "request_id": "isolated",
+                "request_context": {"test_isolated": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "production.json").write_text(
+        json.dumps(
+            {
+                **common,
+                "request_id": "production",
+                "request_context": {"test_isolated": False},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(load_candidates.__globals__, "RUNS_ROOT", tmp_path)
+
+    rows = load_candidates(7)
+
+    assert [row["source_request_id"] for row in rows] == ["production"]
+
+
 def test_metrics_use_conditional_adoption_denominator() -> None:
     judged = {
         "expected_intent": "blocker_expression",
@@ -145,11 +227,20 @@ def test_metrics_use_conditional_adoption_denominator() -> None:
             "case_id": "C3", "reply_source": "reply_failed", "sequence_candidates": ["不能计入"],
             "script_candidates": [], "duration_ms": 140, "judge": {}, "model_names": ["deepseek-chat"],
         },
+        {
+            "case_id": "C4", "reply_source": "human_takeover_guard",
+            "sequence_candidates": [], "script_candidates": [], "duration_ms": 10,
+            "judge": {"skipped": True, "skip_reason": "human_takeover_guard"},
+            "model_names": [],
+        },
     ]
 
     metrics = build_metrics(rows, {"distribution": {}, "audit": {"blocked_attempts": []}})
 
     assert metrics["policy_core_coverage"] == 0.6667
+    assert metrics["completed_count"] == 4
+    assert metrics["evaluable_count"] == 3
+    assert metrics["non_model_terminal_count"] == 1
     assert metrics["adoption_eligible_count"] == 1
     assert metrics["sequence_adopted_count"] == 1
     assert metrics["script_adopted_count"] == 1
@@ -267,6 +358,16 @@ def _prior_store_delivery(store_id: str = "160") -> list[dict[str, object]]:
     ]
 
 
+def _mainline_ready_sample(content: str) -> dict[str, object]:
+    return {
+        "content": content,
+        "source_history_events": [
+            {"event_type": "case_image_sent", "facts": {}},
+            {"event_type": "activity_intro_image_sent", "facts": {}},
+        ],
+    }
+
+
 def test_structured_messages_are_rendered_and_seeded_instead_of_discarded() -> None:
     messages = normalize_visible_messages(_prior_store_delivery()[0]["reply_messages"])
 
@@ -290,7 +391,7 @@ def test_repeated_store_card_is_a_hard_failure_without_explicit_rerequest() -> N
 
     assert result["passed"] is False
     assert "repeated_delivered_store_card" in result["failure_codes"]
-    assert "appointment_goal_not_explicit" in result["failure_codes"]
+    assert "appointment_goal_not_explicit" not in result["failure_codes"]
 
 
 def test_explicit_address_rerequest_allows_same_store_card() -> None:
@@ -307,7 +408,7 @@ def test_explicit_address_rerequest_allows_same_store_card() -> None:
     assert "repeated_delivered_store_card" not in result["failure_codes"]
 
 
-def test_store_detail_for_unbooked_customer_must_name_booking_goal() -> None:
+def test_store_detail_before_mainline_delivery_does_not_force_booking_goal() -> None:
     missing = hard_assertions(
         sample={"content": "停车方便吗"},
         facts={"authoritative_facts": {"orders_and_payment": {"deposit_state": "required_unpaid"}}},
@@ -319,6 +420,42 @@ def test_store_detail_for_unbooked_customer_must_name_booking_goal() -> None:
         facts={"authoritative_facts": {"orders_and_payment": {"deposit_state": "required_unpaid"}}},
         prior_deliveries=_prior_store_delivery(),
         reply_messages=[{"type": "text", "order": 1, "content": "可以停车的，楼下有停车场。您工作日还是周末过来？我帮您预约一下。"}],
+    )
+
+    assert "appointment_goal_not_explicit" not in missing["failure_codes"]
+    assert desired["passed"] is True
+
+
+def test_store_detail_after_mainline_delivery_must_name_booking_goal() -> None:
+    sample = _mainline_ready_sample("\u505c\u8f66\u65b9\u4fbf\u5417")
+    facts = {
+        "authoritative_facts": {
+            "orders_and_payment": {"deposit_state": "required_unpaid"}
+        }
+    }
+    missing = hard_assertions(
+        sample=sample,
+        facts=facts,
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {
+                "type": "text",
+                "order": 1,
+                "content": "\u53ef\u4ee5\u505c\u8f66\uff0c\u5de5\u4f5c\u65e5\u8fd8\u662f\u5468\u672b\u8fc7\u6765\uff1f",
+            }
+        ],
+    )
+    desired = hard_assertions(
+        sample=sample,
+        facts=facts,
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {
+                "type": "text",
+                "order": 1,
+                "content": "\u53ef\u4ee5\u505c\u8f66\uff0c\u60a8\u5468\u672b\u8fc7\u6765\u5417\uff1f\u6211\u5e2e\u60a8\u9884\u7ea6\u3002",
+            }
+        ],
     )
 
     assert "appointment_goal_not_explicit" in missing["failure_codes"]
@@ -334,6 +471,34 @@ def test_confirmed_appointment_does_not_require_another_booking_bridge() -> None
     )
 
     assert "appointment_goal_not_explicit" not in result["failure_codes"]
+
+
+def test_arrival_convenience_claim_without_authority_is_a_hard_failure() -> None:
+    result = hard_assertions(
+        sample={"content": "发位置，可以，明天来"},
+        facts={"authoritative_facts": {"orders_and_payment": {"deposit_state": "required_unpaid"}}},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {"type": "text", "order": 1, "content": "您明天几点方便？我帮您登记，这样到店不用等太久。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "160"}},
+        ],
+    )
+
+    assert "unsupported_arrival_convenience_claim" in result["failure_codes"]
+
+
+def test_arrival_convenience_claim_is_allowed_with_authoritative_queue_fact() -> None:
+    result = hard_assertions(
+        sample={"content": "发位置，可以，明天来"},
+        facts={"authoritative_facts": {"reception": {"wait_policy": "预约后按预约时段优先接待"}}},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {"type": "text", "order": 1, "content": "您明天几点方便？预约后可以按预约时段优先接待。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "160"}},
+        ],
+    )
+
+    assert "unsupported_arrival_convenience_claim" not in result["failure_codes"]
 
 
 def test_deterministic_failure_overrides_positive_ai_judge() -> None:

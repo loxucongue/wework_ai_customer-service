@@ -34,6 +34,10 @@ class WorkerSupervisor:
         if not self.settings.background_workers_enabled:
             logger.info("Background workers are disabled by AI_PATHS_BACKGROUND_WORKERS_ENABLED=false")
             return
+        self._start(
+            "v3_reply_finalization",
+            self.services.v3_reply_finalization_service.run(),
+        )
         if self.settings.sop_platform_pull_enabled:
             self._start("sop_platform_pull", self.services.sop_platform_task_service.run())
         self._start("storage_retention", self._run_storage_retention())

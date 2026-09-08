@@ -32,6 +32,7 @@ from app.graph.nodes.reply_validation import (  # noqa: E402
     _promises_payment_entry,
     _requested_store_scope_regions,
     _validate_appointment_time_facts,
+    _validate_store_resolution_contract,
 )
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission  # noqa: E402
 from app.graph.nodes.reply_context import _ai_sales_policy_for_reply  # noqa: E402
@@ -540,6 +541,10 @@ def test_multiple_customer_visible_questions_are_not_a_quality_gate(action: str)
 
 def test_confirmed_store_does_not_require_a_followup_question() -> None:
     state = _state()
+    state["mainline_delivery_state"] = {
+        "effect_evidence_delivered": True,
+        "activity_offer_delivered": True,
+    }
     state["fact_envelope"] = {
         "structured_facts": {
             "store_resolution_fact": {
@@ -573,6 +578,98 @@ def test_confirmed_store_does_not_require_a_followup_question() -> None:
         {"type": "text", "order": 3, "content": "您大概哪天方便到店？"}
     )
     _validate_policy_reply_consistency(payload, state)
+
+
+def test_confirmed_store_does_not_force_appointment_before_mainline_delivery() -> None:
+    state = _state()
+    state["mainline_delivery_state"] = {
+        "effect_evidence_delivered": False,
+        "activity_offer_delivered": False,
+    }
+    state["fact_envelope"] = {
+        "structured_facts": {
+            "store_resolution_fact": {
+                "status": "send_single",
+                "delivery_store_ids": ["store-306"],
+                "location_evidence": {"confirmation_status": "confirmed"},
+            }
+        }
+    }
+    payload = {
+        "reply_messages": [
+            {"type": "text", "order": 1, "content": "门店地址发您，这边也把活动内容给您讲清楚。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "store-306"}},
+        ],
+        "action": "none",
+        "sales_judgment": {"posture": "answer"},
+        "commit_actions": [],
+        "policy_decision": _valid_decision(),
+    }
+
+    _validate_policy_reply_consistency(payload, state)
+
+
+def test_reused_store_detail_booking_bridge_is_model_judgment_not_quality_gate() -> None:
+    state = _state()
+    state["mainline_delivery_state"] = {
+        "effect_evidence_delivered": True,
+        "activity_offer_delivered": True,
+    }
+    state["fact_envelope"] = {
+        "structured_facts": {
+            "store_resolution_fact": {
+                "status": "reuse_confirmed_store",
+                "already_delivered_store_ids": ["store-306"],
+                "requested_detail_kind": "parking",
+                "destination_resolution": {
+                    "request_kind": "store_detail",
+                    "detail_kind": "parking",
+                },
+            }
+        }
+    }
+    payload = {
+        "reply_messages": [
+            {"type": "text", "order": 1, "content": "可以停车的，楼下就有停车场。"},
+        ],
+        "action": "none",
+        "sales_judgment": {"posture": "answer"},
+        "commit_actions": [],
+        "policy_decision": _valid_decision(),
+    }
+
+    _validate_policy_reply_consistency(payload, state)
+
+    payload["reply_messages"].append(
+        {"type": "text", "order": 2, "content": "您大概工作日还是周末过来呢？我帮您做预约登记。"}
+    )
+    _validate_policy_reply_consistency(payload, state)
+
+
+def test_send_single_store_result_cannot_be_promised_without_store_card() -> None:
+    state = _state()
+    state["fact_envelope"] = {
+        "structured_facts": {
+            "store_resolution_fact": {
+                "status": "send_single",
+                "delivery_store_ids": ["227"],
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="store_resolution_send_single_contract_violation"):
+        _validate_store_resolution_contract(
+            [{"type": "text", "order": 1, "content": "厦门门店地址发您。"}],
+            state,
+        )
+
+    _validate_store_resolution_contract(
+        [
+            {"type": "text", "order": 1, "content": "厦门门店地址发您。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "227"}},
+        ],
+        state,
+    )
 
 
 def test_confirmed_store_does_not_advance_transaction_terminal() -> None:
@@ -1087,7 +1184,7 @@ def test_business_hours_repair_preserves_customer_arrival_intent() -> None:
     assert "早上9点我先作为您的到店时间意向" in hint
 
 
-def test_appointment_fact_failure_recovery_keeps_current_topic() -> None:
+def test_appointment_fact_failure_recovery_helper_keeps_current_topic() -> None:
     result = _appointment_fact_failure_recovery(
         {
             "primary_error": "appointment_confirmation_fact_required",

@@ -131,6 +131,7 @@ runs = Table(
     _time("created_at"),
     Index("idx_aics_runs_conversation_id", "conversation_id", "created_at"),
     Index("idx_aics_runs_customer_id", "customer_id", "created_at"),
+    Index("idx_aics_runs_created_at", "created_at"),
 )
 
 node_traces = Table(

@@ -45,6 +45,7 @@ from app.services.deepseek_semantic_client import DeepSeekSemanticClient  # noqa
 from app.services.follow_knowledge_client import FollowKnowledgeClient  # noqa: E402
 from app.services.model_client import ModelClient  # noqa: E402
 from app.services.memory_store import CustomerMemoryStore  # noqa: E402
+from app.services.outreach_system_client import OutreachSystemClient  # noqa: E402
 from app.services.platform_agent_client import PlatformAgentClient  # noqa: E402
 from app.services.runtime_budget import build_runtime_budget  # noqa: E402
 from app.services.sales_strategy_service import SalesStrategyService  # noqa: E402
@@ -85,6 +86,12 @@ BUCKET_QUOTAS = {
     "time_family": 30, "health": 30, "general": 110,
 }
 VALID_REPLY_SOURCES = {"main_model", "single_targeted_repair_model", "single_full_task_retry_model"}
+NON_MODEL_TERMINAL_SOURCES = {
+    "human_takeover_guard",
+    "ignored_platform_auto_message",
+    "platform_recalled_message",
+    "platform_superseded",
+}
 
 
 def customer_reply_generated(row: dict[str, Any], reply: Any = None) -> bool:
@@ -207,6 +214,10 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
         if any(not _text(raw.get(key)) for key in ("corp_id", "wechat", "external_userid", "customer_id")):
             continue
         context = raw.get("request_context") if isinstance(raw.get("request_context"), dict) else {}
+        # Evaluation traces may exist beside production traces. They are not
+        # real customer identities and must never re-enter the real-sample set.
+        if bool(context.get("test_isolated")):
+            continue
         dedupe = _text(context.get("msgid")) or hashlib.sha256((identity_hash(raw) + content).encode()).hexdigest()
         if dedupe in seen:
             continue
@@ -544,6 +555,7 @@ def build_runtime(settings: Settings, audit: dict[str, Any]) -> dict[str, Any]:
     coze_client = CozeClient(settings)
     model_client = ModelClient(settings)
     platform_client = PlatformAgentClient(settings)
+    outreach_system_client = OutreachSystemClient(settings)
     blocked_platform_methods = (
         "prepay_order",
         "create_work_order",
@@ -560,6 +572,8 @@ def build_runtime(settings: Settings, audit: dict[str, Any]) -> dict[str, Any]:
         setattr(platform_client, name, _block_write(f"platform_agent.{name}", audit))
         installed += 1
     audit["write_methods_installed"] = installed
+    outreach_system_client.send = _block_write("outreach_system.send", audit)  # type: ignore[method-assign]
+    audit["write_methods_installed"] += 1
     customer_context = CustomerContextService(platform_client)
     snapshot = StoreSnapshotService(settings, platform_client)
     store_knowledge = CustomerStoreKnowledgeService(platform_client, snapshot)
@@ -575,6 +589,7 @@ def build_runtime(settings: Settings, audit: dict[str, Any]) -> dict[str, Any]:
         "model_client": model_client, "semantic_client": semantic_client,
         "follow_client": follow_client, "coze_client": coze_client,
         "platform_client": platform_client, "policy": policy,
+        "outreach_system_client": outreach_system_client,
         "customer_context": customer_context,
         "store_knowledge": store_knowledge,
         "store_service": StoreService(platform_client),
@@ -621,9 +636,12 @@ def _seed_case_memory(
     sample: dict[str, Any],
 ) -> tuple[str, list[dict[str, Any]]]:
     scope = customer_scope_from_state(sample)
-    events = list(sample.get("source_history_events") or [])
+    # Reconstructed structured deliveries come first; point-in-time source
+    # events come last so the newest 100-event memory window matches production.
+    # The opposite order evicted recent case/activity facts for noisy accounts.
+    events = list(prior_delivery_events(sample.get("prior_deliveries") or []))
     seen = {str(item.get("event_id") or "") for item in events if isinstance(item, dict)}
-    for event in prior_delivery_events(sample.get("prior_deliveries") or []):
+    for event in sample.get("source_history_events") or []:
         event_id = str(event.get("event_id") or "")
         if event_id and event_id in seen:
             continue
@@ -669,6 +687,7 @@ def build_case_runtime(
         trace_logger=trace_logger,
         repository=repository,
         memory_store=memory_store,
+        outreach_system_client=shared["outreach_system_client"],
         ai_sales_policy_service=shared["policy"],
         sales_strategy_service=shared["sales_strategy"],
         settings=case_settings,
@@ -855,6 +874,11 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
     tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
     store = tool_results.get("resolve_customer_store") or tool_results.get("customer_store_lookup") or {}
     failure = state.get("reply_failure") if isinstance(state.get("reply_failure"), dict) else {}
+    mainline = (
+        state.get("mainline_delivery_state")
+        if isinstance(state.get("mainline_delivery_state"), dict)
+        else {}
+    )
     return {
         "primary_task": _text((decision.get("primary_task") or {}).get("type")),
         "intent": _text(intent.get("type")), "emotion": _text(emotion.get("label")),
@@ -885,6 +909,11 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
         "closing_strategy_adopted": _text(knowledge.get("sequence_id")) in closing_sequence_keys,
         "closing_script_adopted": bool(set(selected_script_ids) & closing_script_ids),
         "store_status": _text(store.get("status") or store.get("match_status")),
+        "mainline_effect_delivered": bool(mainline.get("effect_evidence_delivered")),
+        "mainline_activity_delivered": bool(mainline.get("activity_offer_delivered")),
+        "mainline_store_delivered": bool(mainline.get("store_address_delivered")),
+        "mainline_appointment_active": bool(mainline.get("appointment_active")),
+        "mainline_next_missing_stage": _text(mainline.get("next_missing_stage")),
         "decision_status": _text(state.get("decision_status")),
         "decision_reasons": [_text(item) for item in state.get("decision_reasons") or [] if _text(item)],
         "reply_source": _text(state.get("reply_source")),
@@ -952,7 +981,7 @@ def judge_messages(private: dict[str, Any]) -> list[dict[str, str]]:
     }
     rubric = """你是销售客服质量评审员。只根据给定客户原话、历史和权威事实评估，不补充业务事实。
 输出严格 JSON：{"expected_intent":"7类之一","expected_emotion":"8类之一","pressure_direction_ok":true,"reply_accuracy_score":0,"reply_naturalness_score":0,"mainline_progress_score":0,"follow_sequence_fit_score":null,"closing_fit_score":null,"store_next_step_ok":null,"stale_topic_revival":false,"unsupported_fact":false,"safety_ok":true,"passed":true,"reasons":["简短中文原因"]}
-意图只能是 fact_inquiry、blocker_expression、transaction_progress、information_submission、defer、explicit_exit、normal_exchange。情绪只能是 neutral、curious、enthusiastic、hesitant、cold、defensive、impatient、angry。粗口本身不是愤怒；只有明确针对品牌、服务或接待人员的强烈敌意才是 angry。投诉不等于退订。有未解决卡点时应先解卡并暂停逼单；明确退订必须停止营销。回复必须紧扣本轮话题：若客户本轮没有提地点、门店、路线、到店或预约，却主动续接历史中的具体门店、地区、路线或预约，stale_topic_revival=true、passed=false，且自然度不得高于 5。客户询问某条广告或某个具体案例是否真实时，除非权威事实里有对应案例记录，否则确认“那个案例是真的”、声称有该人的原相机记录或用该案例承诺效果，都属于 unsupported_fact。门店、预约、付款、效果不得脱离权威事实。门店判断以本轮 normalized_tool_facts 中的 store_resolution_fact 为最高优先级；历史订单里出现的门店只说明旧订单关联，不等于客户当前位置、当前确认门店或本轮已有可发送门店，不得用它推翻本轮 no_valid_candidate/clarify_location 结果。必须同时阅读文本、门店卡、付款卡、图片和视频，不能只评文本。门店卡已经送达且客户本轮只问停车或营业时间时，不能重复同一门店卡；客户尚未预约且没有卡点、安全风险或暂缓时，回答后必须明确说明下一步是预约/登记/保留名额，仅问“工作日还是周末”但不说明预约目的，mainline_progress_score不得高于5且passed=false。passed 需要回复准确且自然、压力合适、安全合规，关键事实无虚构。"""
+意图只能是 fact_inquiry、blocker_expression、transaction_progress、information_submission、defer、explicit_exit、normal_exchange。情绪只能是 neutral、curious、enthusiastic、hesitant、cold、defensive、impatient、angry。粗口本身不是愤怒；只有明确针对品牌、服务或接待人员的强烈敌意才是 angry。投诉不等于退订。有未解决卡点时应先解卡并暂停逼单；明确退订必须停止营销。回复必须紧扣本轮话题：若客户本轮没有提地点、门店、路线、到店或预约，却主动续接历史中的具体门店、地区、路线或预约，stale_topic_revival=true、passed=false，且自然度不得高于 5。客户询问某条广告或某个具体案例是否真实时，除非权威事实里有对应案例记录，否则确认“那个案例是真的”、声称有该人的原相机记录或用该案例承诺效果，都属于 unsupported_fact。门店、预约、付款、效果不得脱离权威事实。门店判断以本轮 normalized_tool_facts 中的 store_resolution_fact 为最高优先级；历史订单里出现的门店只说明旧订单关联，不等于客户当前位置、当前确认门店或本轮已有可发送门店，不得用它推翻本轮 no_valid_candidate/clarify_location 结果。必须同时阅读文本、门店卡、付款卡、图片和视频，不能只评文本。门店卡已经送达且客户本轮只问停车或营业时间时，不能重复同一门店卡；若确定性生命周期要求表明效果、活动和门店主线均已真实交付、客户尚未预约且没有卡点、安全风险或暂缓，回答后必须明确说明下一步是预约/登记/保留名额，仅问“工作日还是周末”但不说明预约目的，mainline_progress_score不得高于5且passed=false。若效果或活动尚未交付，则应推进最缺的价值环节，不能机械邀约。passed 需要回复准确且自然、压力合适、安全合规，关键事实无虚构。"""
     return [{"role": "system", "content": rubric}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}]
 
 
@@ -980,6 +1009,7 @@ async def close_runtime(runtime: dict[str, Any]) -> None:
     await runtime["semantic_client"].aclose()
     await runtime["follow_client"].aclose()
     await runtime["coze_client"].aclose()
+    await runtime["outreach_system_client"].aclose()
     runtime["platform_client"].close()
 
 
@@ -1203,6 +1233,13 @@ async def judge_phase(args: argparse.Namespace, private_path: Path, rows: list[d
             row = by_case.get(private["case_id"])
             if row is None or row.get("runtime_error"):
                 continue
+            source = _text(row.get("reply_source"))
+            if source in NON_MODEL_TERMINAL_SOURCES:
+                row["judge"] = {
+                    "skipped": True,
+                    "skip_reason": source,
+                }
+                continue
             if not customer_reply_generated(row, private.get("reply")):
                 row["judge"] = {
                     "expected_intent": "",
@@ -1246,44 +1283,55 @@ def percentile(values: list[int], fraction: float) -> int:
 
 def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[str, Any]:
     completed = [row for row in rows if not row.get("runtime_error")]
-    judged = [row for row in completed if row.get("judge")]
-    policy = [row for row in completed if row.get("intent") and row.get("emotion") and row.get("closing_action")]
-    valid = [row for row in completed if customer_reply_generated(row)]
-    valid_model = [row for row in completed if row.get("reply_source") in VALID_REPLY_SOURCES]
+    evaluable = [
+        row
+        for row in completed
+        if _text(row.get("reply_source")) not in NON_MODEL_TERMINAL_SOURCES
+    ]
+    judged = [
+        row
+        for row in evaluable
+        if row.get("judge") and not bool((row.get("judge") or {}).get("skipped"))
+    ]
+    policy = [row for row in evaluable if row.get("intent") and row.get("emotion") and row.get("closing_action")]
+    valid = [row for row in evaluable if customer_reply_generated(row)]
+    valid_model = [row for row in evaluable if row.get("reply_source") in VALID_REPLY_SOURCES]
     eligible = [row for row in valid if row.get("intent") != "explicit_exit" and (row.get("sequence_candidates") or row.get("script_candidates"))]
-    durations = [int(row.get("duration_ms") or 0) for row in completed]
-    graph_durations = [int(row.get("graph_duration_ms") or 0) for row in completed]
-    post_graph_durations = [int(row.get("post_graph_ms") or 0) for row in completed]
-    hard_failures = [code for row in completed for code in row.get("hard_failure_codes") or []]
+    durations = [int(row.get("duration_ms") or 0) for row in evaluable]
+    graph_durations = [int(row.get("graph_duration_ms") or 0) for row in evaluable]
+    post_graph_durations = [int(row.get("post_graph_ms") or 0) for row in evaluable]
+    hard_failures = [code for row in evaluable for code in row.get("hard_failure_codes") or []]
     policy_case_ids = {row.get("case_id") for row in policy}
     judged_policy = [row for row in judged if row.get("case_id") in policy_case_ids]
     return {
         "requested_count": len(rows), "completed_count": len(completed),
+        "evaluable_count": len(evaluable),
+        "non_model_terminal_count": len(completed) - len(evaluable),
         "runtime_error_count": len(rows) - len(completed),
         "valid_customer_reply_count": len(valid), "valid_model_reply_count": len(valid_model),
-        "policy_core_coverage": round(len(policy) / len(completed), 4) if completed else 0,
-        "degraded_count": sum(row.get("decision_status") == "degraded" for row in completed),
-        "decision_reasons": dict(Counter(reason for row in completed for reason in row.get("decision_reasons") or [])),
-        "failure_codes": dict(Counter(row.get("failure_code") or "none" for row in completed)),
+        "policy_core_coverage": round(len(policy) / len(evaluable), 4) if evaluable else 0,
+        "degraded_count": sum(row.get("decision_status") == "degraded" for row in evaluable),
+        "decision_reasons": dict(Counter(reason for row in evaluable for reason in row.get("decision_reasons") or [])),
+        "failure_codes": dict(Counter(row.get("failure_code") or "none" for row in evaluable)),
         "reply_sources": dict(Counter(row.get("reply_source") or "exception" for row in rows)),
-        "sequence_candidate_count": sum(bool(row.get("sequence_candidates")) for row in completed),
-        "script_candidate_count": sum(bool(row.get("script_candidates")) for row in completed),
-        "closing_rule_candidate_count": sum(bool(row.get("closing_rule_candidates")) for row in completed),
-        "closing_strategy_candidate_count": sum(bool(row.get("closing_strategy_candidates")) for row in completed),
-        "closing_script_candidate_count": sum(bool(row.get("closing_script_candidates")) for row in completed),
+        "sequence_candidate_count": sum(bool(row.get("sequence_candidates")) for row in evaluable),
+        "script_candidate_count": sum(bool(row.get("script_candidates")) for row in evaluable),
+        "closing_rule_candidate_count": sum(bool(row.get("closing_rule_candidates")) for row in evaluable),
+        "closing_strategy_candidate_count": sum(bool(row.get("closing_strategy_candidates")) for row in evaluable),
+        "closing_script_candidate_count": sum(bool(row.get("closing_script_candidates")) for row in evaluable),
         "adoption_eligible_count": len(eligible),
         "sequence_adopted_count": sum(bool(row.get("adopted_sequence_id")) for row in eligible),
         "script_adopted_count": sum(bool(row.get("adopted_script_id")) for row in eligible),
-        "closing_strategy_adopted_count": sum(bool(row.get("closing_strategy_adopted")) for row in completed),
-        "closing_script_adopted_count": sum(bool(row.get("closing_script_adopted")) for row in completed),
+        "closing_strategy_adopted_count": sum(bool(row.get("closing_strategy_adopted")) for row in evaluable),
+        "closing_script_adopted_count": sum(bool(row.get("closing_script_adopted")) for row in evaluable),
         "closing_enter_advance_count": sum(row.get("closing_action") in {"enter", "advance"} for row in valid),
         "judge_count": len(judged),
         "ai_judge_pass_rate": round(sum(bool(row["judge"].get("ai_passed", row["judge"].get("passed"))) for row in judged) / len(judged), 4) if judged else 0,
         "judge_pass_rate": round(sum(bool(row["judge"].get("passed")) for row in judged) / len(judged), 4) if judged else 0,
         "hard_failure_count": len(hard_failures),
         "hard_failures": dict(Counter(hard_failures)),
-        "structured_history_case_count": sum(int(row.get("prior_structured_count") or 0) > 0 for row in completed),
-        "prior_store_card_case_count": sum(int(row.get("prior_store_card_count") or 0) > 0 for row in completed),
+        "structured_history_case_count": sum(int(row.get("prior_structured_count") or 0) > 0 for row in evaluable),
+        "prior_store_card_case_count": sum(int(row.get("prior_store_card_count") or 0) > 0 for row in evaluable),
         "human_expression_pass_rate": round(sum(int(row["judge"].get("reply_naturalness_score") or 0) >= 7 and not bool(row["judge"].get("stale_topic_revival")) for row in judged) / len(judged), 4) if judged else 0,
         "stale_topic_revival_count": sum(bool(row["judge"].get("stale_topic_revival")) for row in judged),
         "intent_accuracy_valid_policy": round(sum(row.get("intent") == row["judge"].get("expected_intent") for row in judged_policy) / max(1, len(judged_policy)), 4),
@@ -1297,7 +1345,7 @@ def build_metrics(rows: list[dict[str, Any]], context: dict[str, Any]) -> dict[s
         "post_graph_p95_ms": percentile(post_graph_durations, 0.95),
         "sample_distribution": context.get("distribution") or {},
         "sample_state_distribution": context.get("state_distribution") or {},
-        "model_names": sorted({name for row in completed for name in row.get("model_names") or []}),
+        "model_names": sorted({name for row in evaluable for name in row.get("model_names") or []}),
         "isolation": {
             "commit_graph_constructed": False,
             "public_reply_endpoint_called": False,
@@ -1324,6 +1372,8 @@ CSV_FIELDS = [
     "closing_rule_candidates", "closing_strategy_candidates", "closing_script_candidates",
     "closing_strategy_adopted", "closing_script_adopted",
     "closing_action", "closing_sequence_key", "closing_node_key", "customer_state", "store_status",
+    "mainline_effect_delivered", "mainline_activity_delivered", "mainline_store_delivered",
+    "mainline_appointment_active", "mainline_next_missing_stage",
     "decision_status", "decision_reasons", "failure_category", "failure_code", "failure_reason",
     "pre_graph_ms", "graph_duration_ms", "post_graph_ms", "response_serialize_ms", "lifecycle_duration_ms", "duration_ms", "runtime_error",
     "judge_expected_intent", "judge_expected_emotion", "judge_ai_passed", "judge_passed", "judge_reply_accuracy",
@@ -1369,7 +1419,15 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         writer.writeheader()
         writer.writerows(csv_row(row) for row in rows)
-    failures = [row for row in rows if row.get("runtime_error") or not bool((row.get("judge") or {}).get("passed"))]
+    failures = [
+        row
+        for row in rows
+        if row.get("runtime_error")
+        or (
+            _text(row.get("reply_source")) not in NON_MODEL_TERMINAL_SOURCES
+            and not bool((row.get("judge") or {}).get("passed"))
+        )
+    ]
     lines = ["# 失败与人工复核案例", "", f"共 {len(failures)} 条。", ""]
     for row in failures:
         hard_reason = "；".join(row.get("hard_failure_codes") or [])
@@ -1382,7 +1440,7 @@ def write_outputs(output: Path, rows: list[dict[str, Any]], metrics: dict[str, A
     report = [
         "# V3 全链路 DeepSeek 两阶段隔离评测", "",
         "> 运行与评审已分阶段执行；这是 DeepSeek AI 初评，不是业务确认金标。", "",
-        f"- 样本：{metrics['requested_count']}；运行异常：{metrics['runtime_error_count']}",
+        f"- 样本：{metrics['requested_count']}；可评业务请求：{metrics['evaluable_count']}；人工接管/协议终态：{metrics['non_model_terminal_count']}；运行异常：{metrics['runtime_error_count']}",
         f"- 有效客户回复：{metrics['valid_customer_reply_count']}；其中主模型/单次修复：{metrics['valid_model_reply_count']}",
         f"- 完整意图+情绪+B 单覆盖率：{metrics['policy_core_coverage']:.1%}",
         f"- AI 原始初评通过率：{metrics['ai_judge_pass_rate']:.1%}",

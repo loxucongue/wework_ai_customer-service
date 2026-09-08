@@ -3,6 +3,7 @@ from __future__ import annotations
 from ai_paths.app.graph.nodes.material_selection import parallel_reply_payload
 from ai_paths.app.graph.nodes.reply_admission import validate_model_led_reply_admission
 from ai_paths.app.graph.nodes.reply_nodes import (
+    _hard_pause_from_policy,
     _link_adopted_script_media,
     _materialize_selected_content_media,
 )
@@ -107,6 +108,68 @@ def test_sent_case_urls_are_read_from_shared_authoritative_summary() -> None:
     assert _sent_case_image_urls(state) == [IMAGE_URL]
 
 
+def test_mainline_delivery_uses_append_only_sent_message_facts() -> None:
+    shared = {
+        "schema_version": "shared_context_v2",
+        "conversation": [],
+        "current_message": {"content": "可以停车吗"},
+        "authoritative_facts": {
+            "sent_messages": {
+                "case_image_sent": True,
+                "activity_intro_image_sent": True,
+                "store_address_delivery": {
+                    "batch_confidence": "high",
+                    "request_id": "prior-store-request",
+                    "latest_batch_store_ids": ["306"],
+                },
+            }
+        },
+    }
+    state = {
+        "evidence_join": {
+            "schema_version": "deterministic_evidence_join_v1",
+            "shared_context": shared,
+            "content_candidates": [],
+            "sales_recall": {},
+            "semantic_route": {},
+        }
+    }
+
+    mainline = parallel_reply_payload(state)["mainline_delivery_state"]
+
+    assert mainline["effect_evidence_delivered"] is True
+    assert mainline["activity_offer_delivered"] is True
+    assert mainline["store_address_delivered"] is True
+    assert mainline["next_missing_stage"] == "appointment"
+
+
+def test_mainline_delivery_exposes_first_missing_stage_without_forcing_action() -> None:
+    state = {
+        "evidence_join": {
+            "schema_version": "deterministic_evidence_join_v1",
+            "shared_context": {
+                "schema_version": "shared_context_v2",
+                "conversation": [],
+                "current_message": {"content": "多少钱？"},
+                "authoritative_facts": {
+                    "sent_messages": {
+                        "case_image_sent": True,
+                        "activity_intro_image_sent": False,
+                    }
+                },
+            },
+            "content_candidates": [],
+            "sales_recall": {},
+            "semantic_route": {},
+        }
+    }
+
+    mainline = parallel_reply_payload(state)["mainline_delivery_state"]
+
+    assert mainline["next_missing_stage"] == "activity_offer"
+    assert "不是强制销售动作" in mainline["meaning"]
+
+
 def test_selected_script_media_is_appended_after_customer_visible_text() -> None:
     candidate = script_content_candidates(_knowledge())[0]
     state = _state([candidate])
@@ -193,3 +256,26 @@ def test_distance_script_hold_language_keeps_direct_effect_media_delivery() -> N
     assert materialized == ["follow_script:225:p1"]
     assert [item["type"] for item in messages] == ["text", "image", "video"]
     validate_model_led_reply_admission(messages, state)
+
+
+def test_impatient_is_not_a_hard_marketing_stop_and_does_not_block_requested_media() -> None:
+    candidate = script_content_candidates(_knowledge())[0]
+    state = _state([candidate])
+    policy = {
+        "realtime_intent": {"type": "fact_inquiry"},
+        "emotion_decision": {
+            "label": "impatient",
+            "confidence": "high",
+            "flow_action": "pause_marketing_turn",
+            "evidence_refs": ["current_message"],
+        },
+    }
+    payload = {
+        "selected_content_ids": [],
+        "knowledge_use": {"script_id": "187"},
+        "policy_decision": policy,
+        "safety_assessment": {"status": "none"},
+    }
+
+    assert _hard_pause_from_policy(policy) is False
+    assert _link_adopted_script_media(payload, state) == "follow_script:187:p1"

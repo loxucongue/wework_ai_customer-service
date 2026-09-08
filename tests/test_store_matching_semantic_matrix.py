@@ -23,7 +23,7 @@ from app.prompts.reply_synthesizer import (
 from app.services.store_destination_resolver import resolve_active_store_destination
 
 
-def test_reused_store_detail_prompt_requires_one_related_next_step() -> None:
+def test_reused_store_detail_prompt_uses_mainline_delivery_stage() -> None:
     conclusion = _render_store_resolution_conclusion(
         {
             "status": "reuse_confirmed_store",
@@ -39,12 +39,30 @@ def test_reused_store_detail_prompt_requires_one_related_next_step() -> None:
 
     assert "不得重复发送 store_address" in conclusion
     assert "不得在 text 中复述此前已经交付的完整地址或导航" in conclusion
-    assert "回答详情＋预约时间问题＋预约目的" in conclusion
-    assert "10元预约金锁定" in conclusion
+    assert "效果或活动价值未交付时只补最缺的一项" in conclusion
+    assert "最后一句必须询问一个到店日期" in conclusion
+    assert "我帮您做预约登记" in conclusion
     assert "不得声称预约或名额已经保留成功" in conclusion
-    assert "我先记一下、方便后续登记" in conclusion
     assert "不补道路、门牌和导航描述" in conclusion
     assert "closing_action=none" in conclusion
+
+
+def test_missing_store_detail_fact_forbids_inference_and_unrelated_sales() -> None:
+    conclusion = _render_store_resolution_conclusion(
+        {
+            "status": "reuse_confirmed_store",
+            "already_delivered_store_ids": ["160"],
+            "requested_detail_available": False,
+            "destination_resolution": {
+                "request_kind": "store_detail",
+                "detail_kind": "arrival_guidance",
+            },
+        }
+    )
+
+    assert "本轮所问详情字段未记录" in conclusion
+    assert "不能根据楼栋、地址或其他门店字段推断楼层" in conclusion
+    assert "不要追加与当前问题无关的价格、效果和预约" in conclusion
 
 
 def test_store_selection_continuation_is_visible_to_reply() -> None:
@@ -64,11 +82,12 @@ def test_store_selection_continuation_is_visible_to_reply() -> None:
     assert "information_submission" in rendered
     assert "transaction_progress" in rendered
     assert "仅作证据，不授权动作" in rendered
-    assert "选择具体门店后不再问位置是否方便，只问一个到店日期/时段" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "门店已确定但效果/项目或活动价值尚未可靠交付时" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得直接跳问到店日期" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "closing_decision.action=none" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
-def test_confirmed_named_store_requires_one_arrival_question() -> None:
+def test_confirmed_named_store_defers_arrival_question_until_mainline_ready() -> None:
     conclusion = _render_store_resolution_conclusion(
         {
             "status": "send_single",
@@ -85,10 +104,11 @@ def test_confirmed_named_store_requires_one_arrival_question() -> None:
     )
 
     assert "客户已确认具体门店" in conclusion
-    assert "必须只问一个到店日期或时段" in conclusion
+    assert "三项均已交付后才问一个到店日期或时段" in conclusion
     assert "不得再问位置是否方便" in conclusion
-    assert "不得只讲地址后结束" in conclusion
     assert "不得同时追问预约金或留名额" in conclusion
+    assert "不得在登记后补充不用等、少等待、免排队、优先接待等好处" in conclusion
+    assert "您明天大概几点方便？我帮您做预约登记" in conclusion
 
 
 def _store(

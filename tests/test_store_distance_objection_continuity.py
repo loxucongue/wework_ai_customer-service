@@ -3,9 +3,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.chat_runtime import _store_search_evidence_from_state  # noqa: E402
@@ -508,3 +505,81 @@ def test_explicit_address_request_can_repeat_an_already_delivered_card() -> None
     )
 
     assert unchanged == resolution
+
+
+def test_explicit_address_rerequest_reuses_latest_card_when_no_new_location_exists() -> None:
+    resolution = {
+        "status": "need_location_confirmation",
+        "outcome": "need_clarification",
+        "clarification_required": True,
+        "clarification_would_change_result": True,
+        "delivery_store_ids": [],
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "address",
+            "needs_clarification": True,
+        },
+    }
+
+    reused = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert reused["status"] == "send_single"
+    assert reused["delivery_store_ids"] == ["160"]
+    assert reused["clarification_required"] is False
+    assert reused["reason"] == "explicit_address_rerequest_reuses_latest_delivered_store"
+
+
+def test_explicit_address_rerequest_survives_later_incomplete_distance_result() -> None:
+    resolution = {
+        "status": "search_incomplete",
+        "outcome": "search_incomplete",
+        "delivery_store_ids": [],
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "address",
+        },
+    }
+
+    reused = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert reused["status"] == "send_single"
+    assert reused["delivery_store_ids"] == ["160"]
+
+
+def test_store_detail_survives_incomplete_lookup_without_repeating_card() -> None:
+    resolution = {
+        "status": "search_incomplete",
+        "outcome": "search_incomplete",
+        "delivery_store_ids": [],
+        "requested_detail_available": True,
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "parking",
+        },
+    }
+
+    reused = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert reused["status"] == "reuse_confirmed_store"
+    assert reused["delivery_store_ids"] == []
+    assert reused["already_delivered_store_ids"] == ["160"]
+    assert reused["requested_detail_available"] is True
+    assert reused["reason"] == "store_detail_reuses_latest_delivered_store:parking"

@@ -13,6 +13,8 @@ export type BusinessSummary = {
   fallback_used?: boolean;
   delivery_status?: string;
   usage_event_recorded?: boolean;
+  response_kind?: string;
+  post_reply_finalization?: Record<string, JsonValue>;
 };
 
 export type CustomerIdentity = {
@@ -297,6 +299,20 @@ export type ObservabilityView = {
   knowledge_match?: KnowledgeMatch;
   workflow_nodes?: WorkflowNode[];
   store_workflow?: Record<string, JsonValue>;
+  sales_progress?: {
+    mainline_delivery?: Record<string, JsonValue>;
+    next_missing_stage?: string;
+    effect_asset?: {
+      candidate_count?: number;
+      selected_count?: number;
+      delivered_count?: number;
+      selected_ids?: string[];
+      delivered_ids?: string[];
+    };
+    pause_source?: string;
+    fallback_stage?: string;
+    fallback_reason?: string;
+  };
   data_availability?: {
     business_summary?: string;
     customer_identity?: string;

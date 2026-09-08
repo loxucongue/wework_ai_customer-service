@@ -111,44 +111,22 @@ def create_synthesize_reply_node(
                         )
                         reply_source = "policy_safety_failure_recovery"
                     else:
-                        appointment_recovery = _appointment_fact_failure_recovery(model_call, state)
-                        if appointment_recovery:
-                            messages, safe_payload = appointment_recovery
-                            model_call["validated_json_output"] = safe_payload
-                            warnings.append(
-                                {
-                                    "node": "synthesize_reply",
-                                    "message": "appointment_fact_failure_recovery_used",
-                                    "detail": primary_error[:500],
-                                }
-                            )
-                            reply_source = "appointment_fact_failure_recovery"
-                        elif _store_failure_recovery_eligible(model_call):
-                            messages = _verified_store_delivery_failure_recovery(state)
-                        else:
-                            messages = []
-                    if messages:
-                        if reply_source not in {
-                            "policy_safety_failure_recovery",
-                            "appointment_fact_failure_recovery",
-                        }:
-                            recovery_payload = _verified_store_recovery_observability_payload(
+                        messages = [{"type": "text", "order": 1, "content": "您稍等一下"}]
+                        model_call["validated_json_output"] = (
+                            _fact_failure_recovery_observability_payload(
                                 model_call,
                                 messages,
+                                reason="terminal_reply_failure_fallback",
                             )
-                            if recovery_payload:
-                                model_call["validated_json_output"] = recovery_payload
-                            warnings.append(
-                                {
-                                    "node": "synthesize_reply",
-                                    "message": "verified_store_delivery_failure_recovery_used",
-                                    "detail": primary_error[:500],
-                                }
-                            )
-                            reply_source = "verified_store_delivery_failure_recovery"
-                    else:
-                        messages = []
-                        reply_source = "reply_failed"
+                        )
+                        warnings.append(
+                            {
+                                "node": "synthesize_reply",
+                                "message": "terminal_reply_failure_fallback_used",
+                                "detail": primary_error[:500],
+                            }
+                        )
+                        reply_source = "failure_fallback"
             else:
                 reason = "reply_model_unavailable"
                 errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": reason})
@@ -211,6 +189,11 @@ def create_synthesize_reply_node(
                 "selected_content_ids": reply_metadata.get("selected_content_ids", []),
                 "reply_content_decisions": reply_metadata.get("content_decisions", []),
                 "content_selection_metrics": content_selection_metrics,
+                "mainline_delivery_state": (
+                    parallel_reply_payload(state).get("mainline_delivery_state", {})
+                    if state.get("evidence_join")
+                    else {}
+                ),
                 "reply_observation_metrics": reply_observation_metrics,
                 "reply_action": reply_metadata.get("action", "none"),
                 "reply_action_reason": reply_metadata.get("action_reason", ""),
@@ -402,7 +385,7 @@ def _policy_safety_failure_recovery(
         text = "好的，知道了，之后不再打扰您。"
     elif "policy_decision_schema_invalid" in error_text:
         recovery_kind = "schema_invalid"
-        text = "收到，我先不着急往下推进。您现在最想了解哪一点？我先按您当前的问题说清楚。"
+        text = "您稍等一下"
     else:
         return None
 

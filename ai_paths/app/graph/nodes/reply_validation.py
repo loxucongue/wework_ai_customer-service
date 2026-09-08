@@ -1254,7 +1254,7 @@ def _validate_store_resolution_contract(messages: list[dict[str, Any]], state: d
             raise ValueError(f"store_cards_not_allowed_for_resolution_status:{status}")
         return
     if status == "send_single":
-        if emitted and (len(delivery_ids) != 1 or emitted != delivery_ids):
+        if len(delivery_ids) != 1 or emitted != delivery_ids:
             raise ValueError("store_resolution_send_single_contract_violation")
         return
     if status == "send_multiple":
