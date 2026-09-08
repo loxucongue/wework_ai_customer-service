@@ -361,6 +361,47 @@ def test_v3_timing_middleware_finalizes_after_response_and_preserves_errors() ->
         raise AssertionError("middleware must not suppress route failures")
 
 
+def test_v3_timing_middleware_does_not_hold_protocol_response_for_timing_write() -> None:
+    import threading
+    import time
+
+    completed = threading.Event()
+
+    class SlowRepository:
+        @staticmethod
+        def finalize_run_http_timing(**_values: object) -> None:
+            time.sleep(0.2)
+            completed.set()
+
+    async def response_app(scope: dict[str, object], _receive: object, send: object) -> None:
+        state = scope.setdefault("state", {})
+        state["v3_run_request_id"] = "run-protocol-timing"  # type: ignore[index]
+        state["v3_timing_finalize_background"] = True  # type: ignore[index]
+        await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[operator]
+        await send({"type": "http.response.body", "body": b"{}"})  # type: ignore[operator]
+
+    async def invoke() -> float:
+        middleware = V3RequestTimingMiddleware(response_app, repository=SlowRepository())
+
+        async def send(_message: dict[str, object]) -> None:
+            return None
+
+        async def receive() -> dict[str, object]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        started = time.perf_counter()
+        await middleware(
+            {"type": "http", "method": "POST", "path": "/reply/workflow-compatible-v3"},
+            receive,
+            send,
+        )
+        elapsed = time.perf_counter() - started
+        assert await asyncio.to_thread(completed.wait, 1.0)
+        return elapsed
+
+    assert asyncio.run(invoke()) < 0.1
+
+
 def test_node_debug_payload_masks_credentials_without_removing_business_input() -> None:
     sanitized = sanitize_debug_payload(
         {

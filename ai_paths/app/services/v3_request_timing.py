@@ -8,6 +8,9 @@ from uuid import uuid4
 from app.services.storage.serialization import utc_now_iso
 
 
+_BACKGROUND_FINALIZERS: set[asyncio.Task[None]] = set()
+
+
 class V3RequestTimingMiddleware:
     """Measure the complete V3 HTTP lifecycle without affecting reply semantics."""
 
@@ -42,18 +45,26 @@ class V3RequestTimingMiddleware:
             if response_finished and request_id and callable(finalize):
                 finished_at = utc_now_iso()
                 duration_ms = max(0, int((time.perf_counter() - started_perf) * 1000))
-                try:
-                    await asyncio.to_thread(
-                        finalize,
-                        request_id=request_id,
-                        ingress_id=ingress_id,
-                        started_at=started_at,
-                        finished_at=finished_at,
-                        duration_ms=duration_ms,
-                    )
-                except Exception:
-                    # Observability must never turn a completed customer reply into a 5xx.
-                    pass
+                async def persist_timing() -> None:
+                    try:
+                        await asyncio.to_thread(
+                            finalize,
+                            request_id=request_id,
+                            ingress_id=ingress_id,
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            duration_ms=duration_ms,
+                        )
+                    except Exception:
+                        # Observability must never turn a completed customer reply into a 5xx.
+                        pass
+
+                if bool(state.get("v3_timing_finalize_background")):
+                    task = asyncio.create_task(persist_timing())
+                    _BACKGROUND_FINALIZERS.add(task)
+                    task.add_done_callback(_BACKGROUND_FINALIZERS.discard)
+                else:
+                    await persist_timing()
 
 
 def attach_v3_http_timing(http_request: Any, chat_request: Any) -> None:
