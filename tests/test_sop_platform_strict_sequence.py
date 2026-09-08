@@ -156,3 +156,36 @@ def test_durable_sequence_guard_finds_earlier_unconfirmed_task() -> None:
 
     assert blocker["task_id"] == "earlier"
     assert blocker["event_status"] == "platform_failed"
+
+
+def test_reserved_prefix_restore_uses_one_filtered_joined_query() -> None:
+    class _Repository:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def list_platform_sop_task_records(self, **values: object) -> list[dict[str, object]]:
+            self.calls.append(values)
+            return [
+                {
+                    "event_id": "platform_sop_task:selected",
+                    "event_status": "platform_sequence_blocked",
+                    "platform_task": {"taskId": "selected"},
+                    "send_payload": {
+                        "sequence_reserved_task_ids": ["selected", "later"],
+                        "compat_trigger_task_ids": ["trigger"],
+                    },
+                }
+            ]
+
+    repository = _Repository()
+    service = SopPlatformTaskService.__new__(SopPlatformTaskService)
+    service.repository = repository
+    service._reserved_prefix_ids = set()
+
+    service._restore_reserved_prefix_ids()
+
+    assert len(repository.calls) == 1
+    assert repository.calls[0]["limit"] == 500
+    assert repository.calls[0]["oldest_first"] is True
+    assert "platform_sequence_blocked" in repository.calls[0]["event_statuses"]
+    assert service._reserved_prefix_ids == {"selected", "later", "trigger"}

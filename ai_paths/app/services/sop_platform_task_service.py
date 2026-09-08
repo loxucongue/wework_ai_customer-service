@@ -2280,24 +2280,30 @@ class SopPlatformTaskService:
         }
 
     def _restore_reserved_prefix_ids(self) -> None:
-        events = self.repository.list_sop_events_by_statuses(
-            [
-                "platform_processing",
-                "platform_batch_send_retry",
-                "platform_delivery_pending",
-                "platform_batch_consume_pending",
-                "platform_sequence_blocked",
-                "platform_failed",
-            ],
+        unresolved_statuses = {
+            "platform_processing",
+            "platform_batch_send_retry",
+            "platform_delivery_pending",
+            "platform_batch_consume_pending",
+            "platform_sequence_blocked",
+            "platform_failed",
+        }
+        # The joined repository view restores the same durable event/task
+        # evidence in one query. The old event-list + per-task lookup made a
+        # worker restart perform up to 501 remote DB round trips before its
+        # first platform poll.
+        records = self.repository.list_platform_sop_task_records(
             limit=500,
-            event_type="platform_sop_task",
-            include_deferred=True,
+            event_statuses=sorted(unresolved_statuses),
+            oldest_first=True,
         )
-        for event in events:
-            event_id = str(event.get("event_id") or "")
-            selected_id = event_id.rsplit(":", 1)[-1]
-            local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{selected_id}")
-            audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        for record in records:
+            if str(record.get("event_status") or "") not in unresolved_statuses:
+                continue
+            selected_id = _record_task_id(record)
+            if not selected_id:
+                continue
+            audit = record.get("send_payload") if isinstance(record.get("send_payload"), dict) else {}
             self._reserved_prefix_ids.add(selected_id)
             for value in audit.get("skipped_prefix_task_ids", []) if isinstance(audit.get("skipped_prefix_task_ids"), list) else []:
                 if str(value).strip():

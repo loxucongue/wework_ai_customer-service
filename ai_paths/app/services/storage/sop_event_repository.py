@@ -177,6 +177,8 @@ class SopEventRepositoryMixin:
         wechat: str = "",
         date_from: str = "",
         date_to: str = "",
+        event_statuses: list[str] | None = None,
+        oldest_first: bool = False,
     ) -> list[dict[str, Any]]:
         clauses = ["e.event_type='platform_sop_task'"]
         params: list[Any] = []
@@ -198,7 +200,17 @@ class SopEventRepositoryMixin:
         if date_to:
             clauses.append("e.received_at<=?")
             params.append(str(date_to).strip())
+        clean_event_statuses = [
+            str(status or "").strip()
+            for status in event_statuses or []
+            if str(status or "").strip()
+        ]
+        if clean_event_statuses:
+            placeholders = ",".join("?" for _ in clean_event_statuses)
+            clauses.append(f"e.status IN ({placeholders})")
+            params.extend(clean_event_statuses)
         safe_limit = max(1, min(int(limit or 100), 500))
+        order_sql = "e.updated_at ASC" if oldest_first else "e.received_at DESC"
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -227,7 +239,7 @@ class SopEventRepositoryMixin:
                 FROM sop_events e
                 LEFT JOIN sop_send_tasks t ON t.event_id=e.event_id
                 WHERE {' AND '.join(clauses)}
-                ORDER BY e.received_at DESC
+                ORDER BY {order_sql}
                 LIMIT ?
                 """,
                 [*params, safe_limit],

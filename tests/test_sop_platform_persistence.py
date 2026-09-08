@@ -335,3 +335,41 @@ def test_duplicate_lookup_ignores_unconfirmed_or_sending_attempts(tmp_path) -> N
     )
 
     assert repository.find_sop_send_task_delivery_duplicate("same-content") == {}
+
+
+def test_platform_task_records_can_filter_unresolved_statuses_for_bulk_restore(tmp_path) -> None:
+    settings = Settings(AI_PATHS_DB_PATH=tmp_path / "sop.db", AICS_STORAGE_BACKEND="sqlite")
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    for task_id, status in (("blocked", "platform_sequence_blocked"), ("done", "platform_completed")):
+        event_id = f"platform_sop_task:{task_id}"
+        repository.create_sop_event(
+            {
+                "event_id": event_id,
+                "event_type": "platform_sop_task",
+                "source": "test",
+                "platform_task": {"taskId": task_id},
+            }
+        )
+        repository.create_sop_send_task(
+            event_id=event_id,
+            idempotency_key=f"platform-sop:{task_id}",
+            customer_id="customer",
+            external_userid="external",
+            corp_id="corp",
+            user_id="user",
+            wechat="wechat",
+            sop_pack_id="pack",
+            sop_pack_name="pack",
+            reply_messages=[],
+        )
+        repository.update_sop_event_status(event_id, status=status)
+
+    records = repository.list_platform_sop_task_records(
+        limit=500,
+        event_statuses=["platform_sequence_blocked"],
+        oldest_first=True,
+    )
+
+    assert [record["event_id"] for record in records] == ["platform_sop_task:blocked"]

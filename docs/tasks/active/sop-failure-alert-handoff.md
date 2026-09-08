@@ -30,4 +30,5 @@
 - Real SQLite repository persistence/dedupe check: passed without schema changes.
 - Relevant SOP deterministic tests: 31 passed.
 - Full repository test suite: 480 passed, one existing dependency deprecation warning.
-- Production rollout and one explicitly labeled synthetic DingTalk alert: pending.
+- Initial production rollout reached all three roles and the explicitly labeled synthetic DingTalk alert was stored as `alert_sent`; two real failure alerts also reached `alert_sent`.
+- Rollout inspection found the pre-existing reserved-prefix restore N+1 query delaying the worker's first poll. Replaced up to 501 remote DB round trips with one status-filtered joined query and added repository/restore regression coverage; final rollout verification is pending.
