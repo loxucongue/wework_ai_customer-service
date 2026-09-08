@@ -12,8 +12,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ai_paths"))
 
-from app.services import sop_platform_task_service as sop_module
-from app.services.sop_platform_task_service import (
+from app.services import sop_platform_task_service as sop_module  # noqa: E402
+from app.services.sop_platform_task_service import (  # noqa: E402
     SopPlatformTaskService,
     _conversation_timeline,
     _first_add_customer_reply_guard,
