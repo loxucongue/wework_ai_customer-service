@@ -232,7 +232,7 @@ function localDateTime(daysAgo: number): string {
 }
 
 const DEFAULT_FILTERS: Filters = {
-  started_from: localDateTime(30),
+  started_from: localDateTime(7),
   started_to: localDateTime(0),
   corp_id: "",
   wechat: "",
