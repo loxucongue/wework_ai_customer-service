@@ -376,8 +376,9 @@ def test_manual_resend_cannot_bypass_first_add_reply_guard(monkeypatch: pytest.M
         asyncio.run(service._admin_resend_task_locked("task-1"))
 
 
-def test_queued_recovery_reenters_batch_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_queued_recovery_is_quarantined(monkeypatch: pytest.MonkeyPatch) -> None:
     task = _task()
+    event_updates: list[dict[str, object]] = []
 
     class _Repository:
         def list_sop_events_by_statuses(self, *_args: object, **_kwargs: object) -> list[dict[str, object]]:
@@ -392,6 +393,14 @@ def test_queued_recovery_reenters_batch_path(monkeypatch: pytest.MonkeyPatch) ->
 
         def list_orphaned_platform_sop_events(self, **_kwargs: object) -> list[dict[str, object]]:
             return []
+
+        @staticmethod
+        def get_sop_send_task_by_idempotency_key(_key: str) -> dict[str, object]:
+            return {"id": "local-1", "send_payload": {"processing_mode": "customer_batch_sequence"}}
+
+        @staticmethod
+        def update_sop_event_status(event_id: str, **values: object) -> None:
+            event_updates.append({"event_id": event_id, **values})
 
     service = SopPlatformTaskService.__new__(SopPlatformTaskService)
     service.settings = SimpleNamespace(sop_platform_recovery_batch_size=10, sop_platform_recovery_concurrency=1)
@@ -420,8 +429,91 @@ def test_queued_recovery_reenters_batch_path(monkeypatch: pytest.MonkeyPatch) ->
     service._alert_result = alert
     monkeypatch.setattr(sop_module, "_in_configured_quiet_hours", lambda **_kwargs: False)
 
+    service._reserved_prefix_ids = set()
+    service._counters = Counter()
+
+    recovered = asyncio.run(service.process_recoveries())
+
+    assert recovered == 0
+    assert batch_called is False
+    assert legacy_called is False
+    assert service._reserved_prefix_ids == {"task-1"}
+    assert event_updates == [
+        {
+            "event_id": "platform_sop_task:task-1",
+            "status": "platform_legacy_quarantined",
+            "error": "legacy_execution_disabled",
+        }
+    ]
+
+
+def test_deterministic_queued_recovery_reenters_batch_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = _task()
+
+    class _Repository:
+        def list_sop_events_by_statuses(self, *_args: object, **_kwargs: object) -> list[dict[str, object]]:
+            return [
+                {
+                    "event_id": "platform_sop_task:task-1",
+                    "status": "platform_queued",
+                    "raw_payload": {"platform_task": task},
+                    "retry_count": 0,
+                }
+            ]
+
+        def list_orphaned_platform_sop_events(self, **_kwargs: object) -> list[dict[str, object]]:
+            return []
+
+        @staticmethod
+        def get_sop_send_task_by_idempotency_key(_key: str) -> dict[str, object]:
+            return {"id": "local-1", "send_payload": {"processing_mode": "deterministic_customer_gate"}}
+
+    service = SopPlatformTaskService.__new__(SopPlatformTaskService)
+    service.settings = SimpleNamespace(sop_platform_recovery_batch_size=10, sop_platform_recovery_concurrency=1)
+    service.repository = _Repository()
+    service.failure_alert_service = None
+    service._reserved_prefix_ids = set()
+    service._counters = Counter()
+    batch_called = False
+
+    async def process_batch(batch: dict[str, object]) -> dict[str, object]:
+        nonlocal batch_called
+        batch_called = True
+        assert batch["tasks"] == [task]
+        return {"processed": True, "status": "sent", "task_id": "task-1"}
+
+    async def alert(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    service.process_customer_batch = process_batch
+    service._record_result = lambda _result: None
+    service._alert_result = alert
+    monkeypatch.setattr(sop_module, "_in_configured_quiet_hours", lambda **_kwargs: False)
+
     recovered = asyncio.run(service.process_recoveries())
 
     assert recovered == 1
     assert batch_called is True
-    assert legacy_called is False
+
+
+def test_platform_recovery_does_not_wait_for_failure_alert_retries() -> None:
+    class _Repository:
+        @staticmethod
+        def list_sop_events_by_statuses(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+            return []
+
+        @staticmethod
+        def list_orphaned_platform_sop_events(**_kwargs: object) -> list[dict[str, object]]:
+            return []
+
+    class _FailureAlerts:
+        @staticmethod
+        async def retry_pending() -> int:
+            raise AssertionError("alert retries must run outside platform recovery")
+
+    service = SopPlatformTaskService.__new__(SopPlatformTaskService)
+    service.settings = SimpleNamespace(sop_platform_recovery_batch_size=10, sop_platform_recovery_concurrency=1)
+    service.repository = _Repository()
+    service.failure_alert_service = _FailureAlerts()
+
+    assert asyncio.run(service.process_recoveries()) == 0

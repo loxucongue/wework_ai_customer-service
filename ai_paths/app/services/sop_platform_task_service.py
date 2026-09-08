@@ -329,6 +329,7 @@ class SopPlatformTaskService:
         self._terminal_order: deque[str] = deque()
         self._workers: list[asyncio.Task[None]] = []
         self._recovery_worker: asyncio.Task[None] | None = None
+        self._failure_alert_retry_worker: asyncio.Task[None] | None = None
         self._event_loop_watchdog_worker: asyncio.Task[None] | None = None
         self._running = False
         self._counters: Counter[str] = Counter()
@@ -364,6 +365,11 @@ class SopPlatformTaskService:
             self._recovery_loop(),
             name="sop-platform-recovery",
         )
+        if self.failure_alert_service is not None:
+            self._failure_alert_retry_worker = asyncio.create_task(
+                self._failure_alert_retry_loop(),
+                name="sop-platform-failure-alert-retry",
+            )
         self._event_loop_watchdog_worker = asyncio.create_task(
             self._event_loop_watchdog(),
             name="sop-platform-event-loop-watchdog",
@@ -396,6 +402,8 @@ class SopPlatformTaskService:
             tasks = [*self._workers]
             if self._recovery_worker is not None:
                 tasks.append(self._recovery_worker)
+            if self._failure_alert_retry_worker is not None:
+                tasks.append(self._failure_alert_retry_worker)
             if self._event_loop_watchdog_worker is not None:
                 tasks.append(self._event_loop_watchdog_worker)
             for task in tasks:
@@ -404,6 +412,7 @@ class SopPlatformTaskService:
                 await asyncio.gather(*tasks, return_exceptions=True)
             self._workers = []
             self._recovery_worker = None
+            self._failure_alert_retry_worker = None
             self._event_loop_watchdog_worker = None
 
     async def _event_loop_watchdog(self) -> None:
@@ -703,12 +712,18 @@ class SopPlatformTaskService:
                 )
             await asyncio.sleep(max(1.0, float(self.settings.sop_platform_poll_seconds)))
 
-    async def process_recoveries(self) -> int:
-        if self.failure_alert_service is not None:
+    async def _failure_alert_retry_loop(self) -> None:
+        while True:
             try:
                 await self.failure_alert_service.retry_pending()
-            except Exception as exc:
-                logger.error("Third-party SOP alert retry iteration failed: type=%s", type(exc).__name__)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._counters["failure_alert_retry_error"] += 1
+                logger.exception("Third-party SOP failure alert retry iteration failed")
+            await asyncio.sleep(max(1.0, float(self.settings.sop_platform_poll_seconds)))
+
+    async def process_recoveries(self) -> int:
         events = await asyncio.to_thread(
             self.repository.list_sop_events_by_statuses,
             self.RECOVERY_STATUSES,
@@ -747,6 +762,21 @@ class SopPlatformTaskService:
                     status="send_failed",
                     reason="missing_platform_task_payload",
                     phase="recovery_load_payload",
+                )
+                return 0
+            task_id = _task_id(task)
+            local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
+            local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            processing_mode = str(local_audit.get("processing_mode") or "")
+            if processing_mode not in {"deterministic_customer_gate", "deterministic_task_no_send"}:
+                # Tasks persisted by the removed execution path must never be
+                # replayed through the new direct-send contract. Keep them
+                # reserved for audit/manual reconciliation without sending or
+                # consuming either the platform task or a message msgId.
+                await asyncio.to_thread(
+                    self._quarantine_legacy_recovery,
+                    task_id=task_id,
+                    event_id=event_id,
                 )
                 return 0
             # The platform keeps unconsumed tasks in the pending feed, so an
@@ -886,6 +916,7 @@ class SopPlatformTaskService:
             "platform_sequence_blocked",
             "platform_sequence_waiting",
             "platform_failed",
+            "platform_legacy_quarantined",
         }
         candidates: list[tuple[tuple[float, int, str], dict[str, Any]]] = []
         for record in records:
@@ -937,20 +968,40 @@ class SopPlatformTaskService:
             local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             processing_mode = str(local_audit.get("processing_mode") or "")
             if processing_mode not in {"deterministic_customer_gate", "deterministic_task_no_send"}:
-                return await self._consume_batch_without_send(
-                    [platform_task],
-                    reason="legacy_execution_disabled",
-                    batch_key=_customer_batch_key(platform_task),
-                    biz_type=str(platform_task.get("_aics_biz_type") or "online_service"),
-                    batch_run_id=f"legacy-recovery:{task_id}",
-                    audit_context={"previous_recovery_status": recovery_status},
+                await asyncio.to_thread(
+                    self._quarantine_legacy_recovery,
+                    task_id=task_id,
+                    event_id=f"platform_sop_task:{task_id}",
                 )
+                return {
+                    "processed": False,
+                    "status": "legacy_recovery_quarantined",
+                    "task_id": task_id,
+                    "reason": "legacy_execution_disabled",
+                }
             duplicate_key = _platform_duplicate_send_once_key(platform_task)
             if duplicate_key:
                 content_lock = self._locks.setdefault(f"platform-content:{duplicate_key}", asyncio.Lock())
                 async with content_lock:
                     return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
             return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
+
+    def _quarantine_legacy_recovery(self, *, task_id: str, event_id: str) -> None:
+        reserved_ids = getattr(self, "_reserved_prefix_ids", None)
+        if not isinstance(reserved_ids, set):
+            reserved_ids = set()
+            self._reserved_prefix_ids = reserved_ids
+        reserved_ids.add(task_id)
+        counters = getattr(self, "_counters", None)
+        if isinstance(counters, dict):
+            counters["legacy_recovery_quarantined"] += 1
+        update_event = getattr(getattr(self, "repository", None), "update_sop_event_status", None)
+        if callable(update_event):
+            update_event(
+                event_id,
+                status="platform_legacy_quarantined",
+                error="legacy_execution_disabled",
+            )
 
     async def process_customer_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         tasks = sorted(_batch_tasks(batch), key=_task_batch_sort_key)
@@ -1003,7 +1054,29 @@ class SopPlatformTaskService:
                 batch_run_id=batch_run_id,
             )
         phase_started = time.perf_counter()
-        await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
+        _event, local_task = await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
+        local_task_id = str(local_task.get("id") or "")
+        repository = getattr(self, "repository", None)
+        update_local_task = getattr(repository, "update_sop_send_task", None)
+        if local_task_id and callable(update_local_task):
+            previous_audit = (
+                local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            )
+            await asyncio.to_thread(
+                update_local_task,
+                local_task_id,
+                status="platform_queued",
+                send_payload={
+                    **previous_audit,
+                    "audit_schema_version": 4,
+                    "processing_mode": "deterministic_customer_gate",
+                    "batch_run_id": batch_run_id,
+                    "batch_key": batch_key,
+                    "biz_type": biz_type,
+                    "batch_task_ids": batch_task_ids,
+                },
+                error="",
+            )
         self._log_task_phase(
             task_id=batch_task_ids[0],
             phase="persist_local_tasks",
@@ -2294,6 +2367,7 @@ class SopPlatformTaskService:
             "platform_batch_consume_pending",
             "platform_sequence_blocked",
             "platform_failed",
+            "platform_legacy_quarantined",
         }
         # The joined repository view restores the same durable event/task
         # evidence in one query. The old event-list + per-task lookup made a
@@ -2416,6 +2490,7 @@ class SopPlatformTaskService:
             "error": "",
         }
         consume_results.append(attempt)
+        await asyncio.to_thread(self._persist_consume_audit, task_id=task_id, audit=audit)
         started = time.perf_counter()
         try:
             response = await self.platform_client.consume(
@@ -2428,6 +2503,7 @@ class SopPlatformTaskService:
         except Exception as exc:
             attempt["completed_at"] = utc_now_iso()
             attempt["error"] = f"{type(exc).__name__}: {exc}"
+            await asyncio.to_thread(self._persist_consume_audit, task_id=task_id, audit=audit)
             raise
         finally:
             self._observe("consume", time.perf_counter() - started)
@@ -2439,7 +2515,20 @@ class SopPlatformTaskService:
             response_content_exhausted = response_data.get("contentExhausted", response_data.get("content_exhausted"))
             if isinstance(response_content_exhausted, bool):
                 attempt["content_exhausted"] = response_content_exhausted
+        await asyncio.to_thread(self._persist_consume_audit, task_id=task_id, audit=audit)
         return response
+
+    def _persist_consume_audit(self, *, task_id: str, audit: dict[str, Any]) -> None:
+        repository = getattr(self, "repository", None)
+        load_task = getattr(repository, "get_sop_send_task_by_idempotency_key", None)
+        update_task = getattr(repository, "update_sop_send_task", None)
+        if not callable(load_task) or not callable(update_task):
+            return
+        local_task = load_task(f"platform-sop:{task_id}")
+        local_task_id = str(local_task.get("id") or "") if isinstance(local_task, dict) else ""
+        local_status = str(local_task.get("status") or "") if isinstance(local_task, dict) else ""
+        if local_task_id and local_status:
+            update_task(local_task_id, status=local_status, send_payload=audit)
 
     async def _finalize_batch_prefix(
         self,

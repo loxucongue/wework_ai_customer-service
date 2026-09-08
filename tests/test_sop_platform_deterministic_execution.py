@@ -37,9 +37,9 @@ class _Repository:
         self.local.update({"status": "sending", "send_payload": values["send_payload"]})
         return dict(self.local)
 
-    def update_sop_send_task(self, _task_id: str, **values: Any) -> dict[str, Any]:
-        self.local.update(values)
-        self.task_updates.append(dict(values))
+    def update_sop_send_task(self, _task_id: str, *, status: str, **values: Any) -> dict[str, Any]:
+        self.local.update({"status": status, **values})
+        self.task_updates.append({"status": status, **values})
         return dict(self.local)
 
     def update_sop_event_status(self, event_id: str, **values: Any) -> None:
@@ -297,6 +297,9 @@ def test_consume_retry_reuses_exact_msg_id_without_resending_customer_message() 
     assert len(system.send_calls) == 1
     assert repository.event_updates[-1]["status"] == "platform_complete_pending"
     audit = repository.local["send_payload"]
+    assert len(audit["consume_results"]) == 1
+    assert audit["consume_results"][0]["success"] is False
+    assert audit["consume_results"][0]["messages"] == [{"msgId": "701", "status": 30, "remark": ""}]
 
     terminal_ids = asyncio.run(
         service._finalize_batch_prefix(
@@ -308,13 +311,15 @@ def test_consume_retry_reuses_exact_msg_id_without_resending_customer_message() 
 
     assert terminal_ids == ["101"]
     assert len(system.send_calls) == 1
+    assert len(repository.local["send_payload"]["consume_results"]) == 2
+    assert repository.local["send_payload"]["consume_results"][-1]["success"] is True
     assert [call["messages"] for call in platform.consume_calls] == [
         [{"msgId": "701", "status": 30, "remark": ""}],
         [{"msgId": "701", "status": 30, "remark": ""}],
     ]
 
 
-def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_closed_as_70() -> None:
+def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_quarantined() -> None:
     service, _repository, platform, system, _events = _service()
 
     result = asyncio.run(service.process_task(_task()))
@@ -329,9 +334,16 @@ def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_closed
     legacy_result = asyncio.run(legacy_service.process_task(_task(), recovery_status="platform_processing"))
 
     assert legacy_result["reason"] == "legacy_execution_disabled"
+    assert legacy_result["status"] == "legacy_recovery_quarantined"
+    assert legacy_result["processed"] is False
     assert legacy_system.send_calls == []
     assert "sop_messages" not in legacy_events
-    assert [(call["status"], call.get("messages")) for call in legacy_platform.consume_calls] == [(70, None)]
+    assert legacy_platform.consume_calls == []
+    assert legacy_repository.event_updates[-1] == {
+        "event_id": "platform_sop_task:101",
+        "status": "platform_legacy_quarantined",
+        "error": "legacy_execution_disabled",
+    }
 
 
 def test_manual_resend_is_disabled_to_prevent_implicit_message_consumption() -> None:
