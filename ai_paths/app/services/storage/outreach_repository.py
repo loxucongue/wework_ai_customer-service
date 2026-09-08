@@ -3331,7 +3331,8 @@ class OutreachRepositoryMixin:
                     "sent_at": _string(row["sent_at"]),
                     "reply_messages": decoded.get("reply_messages") or [],
                     "plan_mode": _string(metadata.get("plan_mode")),
-                    "source_id": _string(metadata.get("source_id")),
+                    "source_id": _string(selection.get("selected_mainline_source_id"))
+                    or _string(metadata.get("source_id")),
                     "follow_sequence_id": _string(sequence.get("id")),
                     "follow_sequence_checksum": _string(sequence.get("checksum")),
                     "follow_sequence_node_id": _string(node.get("id")),

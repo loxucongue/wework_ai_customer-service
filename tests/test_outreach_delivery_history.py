@@ -87,6 +87,7 @@ def _insert_sent_task(
                 json.dumps(
                     {
                         "selected_script_id": selected_script_id,
+                        "selected_mainline_source_id": "sop-pack:activity",
                         "value_dimension": "case_proof",
                         "new_information": "new case",
                         "conversion_action": "none",
@@ -126,5 +127,6 @@ def test_recent_outreach_delivery_keeps_wechat_identity_and_selection_progress(t
     assert len(history) == 1
     assert history[0]["task_id"] == "task-a"
     assert history[0]["selected_script_id"] == "script-a"
+    assert history[0]["source_id"] == "sop-pack:activity"
     assert history[0]["follow_sequence_node_id"] == "node-1"
     assert history[0]["value_dimension"] == "case_proof"

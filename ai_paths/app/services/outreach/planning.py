@@ -155,6 +155,52 @@ def _configured_assets_for_source(
     return output
 
 
+def _available_mainline_packs(source_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    delivered_source_ids = {
+        _string(item.get("source_id"))
+        for item in source_snapshot.get("recent_outreach_delivery") or []
+        if isinstance(item, dict) and _string(item.get("source_id"))
+    }
+    delivered_sop_keys = {
+        _string(value)
+        for item in source_snapshot.get("recent_sop_delivery") or []
+        if isinstance(item, dict)
+        for value in (item.get("sop_pack_id"), item.get("sop_category"))
+        if _string(value)
+    }
+    return [
+        dict(pack)
+        for pack in source_snapshot.get("first_day_sop_sequence") or []
+        if isinstance(pack, dict)
+        and _string(pack.get("source_id"))
+        and _string(pack.get("source_id")) not in delivered_source_ids
+        and _string(pack.get("pack_id")) not in delivered_sop_keys
+        and _string(pack.get("sop_category")) not in delivered_sop_keys
+    ]
+
+
+def _allowed_conversion_actions(
+    source_snapshot: dict[str, Any],
+    *,
+    mainline_sources: list[dict[str, Any]],
+) -> list[str]:
+    if mainline_sources:
+        return ["return_mainline"]
+    customer_facts = source_snapshot.get("customer_fact_snapshot") or {}
+    basic_facts = customer_facts.get("basic_facts") if isinstance(customer_facts, dict) else {}
+    store_confirmed = bool(
+        isinstance(basic_facts, dict)
+        and (
+            _string(basic_facts.get("confirmed_store_id"))
+            or _string(basic_facts.get("confirmed_store_name"))
+        )
+    )
+    actions = ["ask_visit_time" if store_confirmed else "ask_store"]
+    if bool((source_snapshot.get("activity_quote_fact") or {}).get("completed")):
+        actions.append("ask_deposit_intent")
+    return actions
+
+
 def _personalized_sequence_plan_error(
     response: dict[str, Any],
     *,
@@ -165,8 +211,8 @@ def _personalized_sequence_plan_error(
             return "rejected personalized plan cannot contain steps"
         return ""
     mode = _string(response.get("plan_mode"))
-    if mode not in {"follow_sequence", "mainline"}:
-        return "personalized plan_mode must be follow_sequence or mainline"
+    if mode not in {"follow_sequence", "mainline", "conversion"}:
+        return "personalized plan_mode must be follow_sequence, mainline, or conversion"
     steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
     if not steps:
         return "personalized plan requires at least one task"
@@ -175,6 +221,8 @@ def _personalized_sequence_plan_error(
         expected_count = _int(selected.get("source_node_count"), 0)
         if expected_count <= 0 or len(steps) != expected_count:
             return "follow sequence node count must equal materialized task count"
+    if mode == "conversion" and len(steps) != 1:
+        return "conversion plan requires exactly one task"
     for index, step in enumerate(steps, start=1):
         if _int(step.get("step"), 0) != index:
             return "personalized plan steps must be contiguous and ordered"
@@ -205,7 +253,7 @@ def _personalized_sequence_plan_error(
             node_ids.append(node_id)
         if len(set(node_ids)) != len(node_ids):
             return "follow sequence task nodes must be unique"
-    else:
+    elif mode == "mainline":
         available = {
             _string(item.get("source_id"))
             for item in source_snapshot.get("first_day_sop_sequence") or []
@@ -216,6 +264,14 @@ def _personalized_sequence_plan_error(
             return "mainline task source is not in the published SOP catalog"
         if len(set(selected_sources)) != len(selected_sources):
             return "mainline task sources must be unique"
+    else:
+        step = steps[0]
+        allowed_actions = _list_strings(step.get("allowed_conversion_actions"))
+        action = _string(step.get("intent"))
+        if not _bool(step.get("conversion_step")) or action not in allowed_actions:
+            return "conversion task action is not allowed"
+        if _string(step.get("source_id")) != f"conversion-action:{action}":
+            return "conversion task source must match its action"
     return ""
 
 
@@ -614,7 +670,7 @@ class PlanGenerator:
                 corp_id=corp_id,
                 wechat=wechat,
                 external_userid=external_userid,
-                hours=72,
+                hours=24 * 30,
             )
         recent_outreach_delivery = []
         recent_outreach_delivery_loader = getattr(self.repository, "recent_outreach_delivery", None)
@@ -730,6 +786,7 @@ class PlanGenerator:
             for item in sequence_result.get("items") or []
             if isinstance(item, dict)
         ]
+        available_mainline_packs = _available_mainline_packs(source_snapshot)
         mainline_sources = [
             {
                 "source_id": _string(item.get("source_id")),
@@ -743,9 +800,13 @@ class PlanGenerator:
                     if isinstance(message, dict) and _string(message.get("type"))
                 ],
             }
-            for item in source_snapshot.get("first_day_sop_sequence") or []
+            for item in available_mainline_packs
             if isinstance(item, dict) and _string(item.get("source_id"))
         ]
+        allowed_conversion_actions = _allowed_conversion_actions(
+            source_snapshot,
+            mainline_sources=mainline_sources,
+        )
         recent_outreach_summary = [
             {
                 "sent_at": _string(item.get("sent_at")),
@@ -778,6 +839,7 @@ class PlanGenerator:
                 for key in ("status", "reason", "declared_total", "usable_total")
             },
             "mainline_sources": mainline_sources,
+            "allowed_conversion_actions": allowed_conversion_actions,
         }
         decision, trace = await self._run_first_day_model_node(
             node="follow_sequence_selector",
@@ -791,6 +853,7 @@ class PlanGenerator:
             sequences=sequences,
             mainline_sources=mainline_sources,
             message_count=len(source_snapshot.get("recent_messages") or []),
+            conversion_actions=allowed_conversion_actions,
         )
         if not decision_error and _string(decision.get("decision_mode")) == "follow_sequence":
             selected_sequence = find_selected_sequence(sequences, decision.get("selected_sequence_id"))
@@ -828,6 +891,7 @@ class PlanGenerator:
                 sequences=sequences,
                 mainline_sources=mainline_sources,
                 message_count=len(source_snapshot.get("recent_messages") or []),
+                conversion_actions=allowed_conversion_actions,
             )
             if not decision_error and _string(decision.get("decision_mode")) == "follow_sequence":
                 selected_sequence = find_selected_sequence(sequences, decision.get("selected_sequence_id"))
@@ -861,6 +925,12 @@ class PlanGenerator:
                 source_snapshot=source_snapshot,
                 decision=decision,
                 sequence=selected,
+            )
+        if _string(decision.get("decision_mode")) == "conversion":
+            return self._build_conversion_plan(
+                source_snapshot=source_snapshot,
+                decision=decision,
+                allowed_conversion_actions=allowed_conversion_actions,
             )
         return self._build_mainline_plan(
             source_snapshot=source_snapshot,
@@ -948,18 +1018,7 @@ class PlanGenerator:
             for text in _reply_texts(item.get("reply_messages"), limit=4)
             if text
         ]
-        used_mainline_source_ids = {
-            _string(item.get("source_id"))
-            for item in recent_outreach_delivery
-            if _string(item.get("source_id"))
-        }
-        delivered_sop_keys = {
-            _string(value)
-            for item in source_snapshot.get("recent_sop_delivery") or []
-            if isinstance(item, dict)
-            for value in (item.get("sop_pack_id"), item.get("sop_category"))
-            if _string(value)
-        }
+        available_mainline_packs = _available_mainline_packs(source_snapshot)
         conversion_mainline_sources = [
             {
                 "source_id": _string(pack.get("source_id")),
@@ -969,13 +1028,12 @@ class PlanGenerator:
                 "purpose": _string(pack.get("purpose")),
                 "texts": _first_day_sop_pack_texts(pack.get("reply_messages") or []),
             }
-            for pack in source_snapshot.get("first_day_sop_sequence") or []
-            if isinstance(pack, dict)
-            and _string(pack.get("source_id"))
-            and _string(pack.get("source_id")) not in used_mainline_source_ids
-            and _string(pack.get("pack_id")) not in delivered_sop_keys
-            and _string(pack.get("sop_category")) not in delivered_sop_keys
+            for pack in available_mainline_packs
         ]
+        allowed_conversion_actions = _allowed_conversion_actions(
+            source_snapshot,
+            mainline_sources=conversion_mainline_sources,
+        )
         reserved_script_ids: set[str] = set()
         steps: list[dict[str, Any]] = []
         script_match_summary: list[dict[str, Any]] = []
@@ -1065,6 +1123,9 @@ class PlanGenerator:
                     "conversion_step": conversion_step,
                     "conversion_goal": conversion_goal if conversion_step else "",
                     "conversion_mainline_sources": conversion_mainline_sources if conversion_step else [],
+                    "allowed_conversion_actions": (
+                        allowed_conversion_actions if conversion_step else ["none"]
+                    ),
                     "content_sources": source_ids,
                     "follow_sequence": {
                         "id": _string(sequence.get("id")),
@@ -1128,6 +1189,81 @@ class PlanGenerator:
             "steps": steps,
         }
 
+    def _build_conversion_plan(
+        self,
+        *,
+        source_snapshot: dict[str, Any],
+        decision: dict[str, Any],
+        allowed_conversion_actions: list[str],
+    ) -> dict[str, Any]:
+        action = _string(decision.get("conversion_action"))
+        if action not in allowed_conversion_actions:
+            raise RuntimeError("first_day_conversion_action_not_allowed")
+        drafts = {
+            "ask_store": "您平时在哪个区活动比较多？我按您方便到店的位置继续安排。",
+            "ask_visit_time": "您大概哪天方便到店？时间可以再协调。",
+            "ask_deposit_intent": "活动和预约金规则已经给您说明了，需要我继续帮您确认锁定名额吗？",
+        }
+        goal = _string((decision.get("customer_mainline") or {}).get("next_business_action"))
+        recent_outreach_texts = [
+            text
+            for item in source_snapshot.get("recent_outreach_delivery") or []
+            if isinstance(item, dict)
+            for text in _reply_texts(item.get("reply_messages"), limit=4)
+            if text
+        ][:12]
+        source_snapshot["conversion_plan_selection"] = {
+            "action": action,
+            "allowed_actions": list(allowed_conversion_actions),
+        }
+        return {
+            "should_create_plan": True,
+            "conversion_stage": "opened_silence",
+            "customer_stage": "opened_silence",
+            "stall_reason": "主线已完成，推进一个低压力成交互动",
+            "customer_psychology": "无明确卡点",
+            "plan_goal": goal or "确认客户下一步到店或锁定名额意向",
+            "plan_arc": "主线完成后的单步成交互动",
+            "plan_mode": "conversion",
+            "steps": [
+                {
+                    "step": 1,
+                    "plan_mode": "conversion",
+                    "scene": "transaction",
+                    "source_id": f"conversion-action:{action}",
+                    "delay_minutes": 0,
+                    "schedule_source": {"trigger_base": "plan_created", "relative_minutes": 0},
+                    "timing_reason": "主线与卡点均已完成后进行一次低压力成交互动",
+                    "urgency_level": "normal",
+                    "no_reply_action": "end_plan",
+                    "no_reply_strategy": "本轮未回复则结束，不连续催促",
+                    "content_mode": "soft_conversion",
+                    "intent": action,
+                    "persuasion_angle": "low_risk_action",
+                    "new_value": goal or "给客户一个清晰且低压力的下一步决策路径",
+                    "avoid_repeating": recent_outreach_texts,
+                    "before_send_check": True,
+                    "message_goal": goal or "确认客户下一步意向",
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": drafts[action]}}
+                    ],
+                    "asset_strategy": "none",
+                    "asset_id": "",
+                    "case_query": "",
+                    "fallback_asset_id": "",
+                    "cta": "只推进一个当前允许的成交互动动作",
+                    "payment_collection_basis": "none",
+                    "payment_collection_evidence": {},
+                    "should_send_payment_collection": False,
+                    "conversion_step": True,
+                    "conversion_goal": goal,
+                    "conversion_mainline_sources": [],
+                    "allowed_conversion_actions": [action],
+                    "content_sources": [f"conversion-action:{action}"],
+                }
+            ],
+        }
+
     def _build_mainline_plan(
         self,
         *,
@@ -1136,9 +1272,16 @@ class PlanGenerator:
     ) -> dict[str, Any]:
         packs = {
             _string(item.get("source_id")): dict(item)
-            for item in source_snapshot.get("first_day_sop_sequence") or []
+            for item in _available_mainline_packs(source_snapshot)
             if isinstance(item, dict) and _string(item.get("source_id"))
         }
+        recent_outreach_texts = [
+            text
+            for history in source_snapshot.get("recent_outreach_delivery") or []
+            if isinstance(history, dict)
+            for text in _reply_texts(history.get("reply_messages"), limit=4)
+            if text
+        ][:12]
         selected = [
             item
             for item in decision.get("mainline_tasks") or []
@@ -1170,7 +1313,7 @@ class PlanGenerator:
                     "intent": _string(pack.get("mapped_scene")) or "mainline",
                     "persuasion_angle": "professionalism",
                     "new_value": _string(item.get("objective")),
-                    "avoid_repeating": [],
+                    "avoid_repeating": recent_outreach_texts,
                     "before_send_check": True,
                     "message_goal": _string(item.get("objective")),
                     "reply_messages": [
@@ -1828,7 +1971,11 @@ class PlanGenerator:
                     ),
                     {},
                 )
-            elif first_day_trigger and plan_mode not in {"follow_sequence", "mainline"}:
+            elif first_day_trigger and plan_mode not in {
+                "follow_sequence",
+                "mainline",
+                "conversion",
+            }:
                 sop_pack = _first_day_sop_pack_for_step(
                     source_snapshot,
                     step_index=index,
@@ -1855,7 +2002,7 @@ class PlanGenerator:
             preserve_sop_pack_messages = bool(
                 sop_pack_messages
                 and not sop_pack_policy_error
-                and plan_mode not in {"follow_sequence", "mainline"}
+                and plan_mode not in {"follow_sequence", "mainline", "conversion"}
             )
             draft_texts = (
                 writer_texts
@@ -1906,7 +2053,7 @@ class PlanGenerator:
                         asset_catalog=asset_catalog,
                         recent_media=recent_media,
                     )
-                    if first_day_trigger
+                    if first_day_trigger and plan_mode != "conversion"
                     else []
                 )
                 primary_asset = primary_resolved_assets[index - 1]
@@ -1977,6 +2124,9 @@ class PlanGenerator:
                     for item in step.get("conversion_mainline_sources") or []
                     if isinstance(item, dict)
                 ],
+                "allowed_conversion_actions": _list_strings(
+                    step.get("allowed_conversion_actions")
+                ),
                 "requested_delay_minutes": schedule["requested_delay_minutes"],
                 "normalized_delay_minutes": schedule["normalized_delay_minutes"],
                 "requested_at": schedule.get("requested_at"),
@@ -1991,6 +2141,8 @@ class PlanGenerator:
                 "source_kind": (
                     "mainline_sop"
                     if sop_pack
+                    else "conversion_action"
+                    if plan_mode == "conversion"
                     else "appointment_blocker"
                     if main_source_id.startswith("appointment-blocker:")
                     else ""

@@ -19,6 +19,7 @@ from app.services.follow_knowledge_client import (  # noqa: E402
 )
 from app.services.outreach.follow_sequence import (  # noqa: E402
     compact_follow_sequence_catalog,
+    follow_sequence_decision_error,
     normalize_follow_sequence_decision,
     normalize_follow_sequence_schedule,
     rank_follow_scripts_for_node,
@@ -27,6 +28,8 @@ from app.services.outreach.follow_sequence import (  # noqa: E402
 )
 from app.services.outreach.planning import (  # noqa: E402
     PlanGenerator,
+    _allowed_conversion_actions,
+    _available_mainline_packs,
     _personalized_sequence_plan_error,
 )
 from app.services.outreach.message import MessageGenerator  # noqa: E402
@@ -292,6 +295,66 @@ def test_sequence_progress_collapses_duplicate_nodes_resumes_and_keeps_conversio
     assert result["completed_node_ids"] == ["n1"]
 
 
+def test_mainline_sources_exclude_actual_outreach_and_sop_delivery() -> None:
+    snapshot = {
+        "first_day_sop_sequence": [
+            {"source_id": "sop-pack:effect", "pack_id": "effect", "sop_category": "effect"},
+            {"source_id": "sop-pack:activity", "pack_id": "activity", "sop_category": "activity"},
+            {"source_id": "sop-pack:process", "pack_id": "process", "sop_category": "process"},
+        ],
+        "recent_outreach_delivery": [{"source_id": "sop-pack:effect"}],
+        "recent_sop_delivery": [{"sop_pack_id": "activity", "sop_category": "activity"}],
+    }
+
+    assert [item["source_id"] for item in _available_mainline_packs(snapshot)] == [
+        "sop-pack:process"
+    ]
+
+
+def test_conversion_actions_follow_mainline_and_customer_facts() -> None:
+    assert _allowed_conversion_actions({}, mainline_sources=[{"source_id": "sop-pack:effect"}]) == [
+        "return_mainline"
+    ]
+    assert _allowed_conversion_actions({}, mainline_sources=[]) == ["ask_store"]
+    assert _allowed_conversion_actions(
+        {
+            "customer_fact_snapshot": {"basic_facts": {"confirmed_store_id": "store-1"}},
+            "activity_quote_fact": {"completed": True},
+        },
+        mainline_sources=[],
+    ) == ["ask_visit_time", "ask_deposit_intent"]
+
+
+def test_selector_accepts_conversion_only_after_mainline_is_complete() -> None:
+    decision = normalize_follow_sequence_decision(
+        {
+            "eligible": True,
+            "hard_boundary": {"active": False, "type": "none", "message_indexes": []},
+            "decision_mode": "conversion",
+            "conversion_action": "ask_visit_time",
+            "checkpoint": {"code": "none", "name": "无卡点", "message_indexes": []},
+            "selected_sequence_id": "",
+            "sequence_match_scope": "none",
+            "mainline_tasks": [],
+        }
+    )
+
+    assert follow_sequence_decision_error(
+        decision,
+        sequences=[],
+        mainline_sources=[],
+        message_count=1,
+        conversion_actions=["ask_visit_time"],
+    ) == ""
+    assert follow_sequence_decision_error(
+        decision,
+        sequences=[],
+        mainline_sources=[{"source_id": "sop-pack:effect"}],
+        message_count=1,
+        conversion_actions=["return_mainline"],
+    ) == "conversion decision must finish remaining mainline sources first"
+
+
 def test_follow_plan_materializes_three_distinct_checkpoint_steps_and_one_conversion_exit() -> None:
     class Catalog:
         available = True
@@ -377,6 +440,41 @@ def test_follow_plan_materializes_three_distinct_checkpoint_steps_and_one_conver
     assert result["steps"][-1]["conversion_goal"] == "确认方便到店的时间"
     assert source_snapshot["follow_sequence_selection"]["catalog_node_count"] == 6
     assert source_snapshot["follow_sequence_selection"]["duplicate_node_ids"] == ["n3"]
+
+
+def test_completed_mainline_builds_one_fact_bounded_conversion_task() -> None:
+    planner = PlanGenerator(
+        repository=object(),
+        model_client=None,
+        system_client=None,
+        customer_context_service=None,
+        precision_qa_playbook_service=None,
+        sop_reply_pack_service=None,
+        coze_client=None,
+        sales_strategy_service=None,
+        follow_knowledge_client=None,
+    )
+    snapshot = {
+        "customer_fact_snapshot": {"basic_facts": {"confirmed_store_name": "重庆江津店"}},
+        "activity_quote_fact": {"completed": False},
+        "recent_outreach_delivery": [],
+    }
+
+    result = planner._build_conversion_plan(
+        source_snapshot=snapshot,
+        decision={
+            "conversion_action": "ask_visit_time",
+            "customer_mainline": {"next_business_action": "确认方便到店的时间"},
+        },
+        allowed_conversion_actions=["ask_visit_time"],
+    )
+
+    assert result["plan_mode"] == "conversion"
+    assert len(result["steps"]) == 1
+    assert result["steps"][0]["conversion_step"] is True
+    assert result["steps"][0]["allowed_conversion_actions"] == ["ask_visit_time"]
+    assert result["steps"][0]["should_send_payment_collection"] is False
+    assert _personalized_sequence_plan_error(result, source_snapshot=snapshot) == ""
 
 
 def test_repeat_policy_checks_later_steps_against_local_outreach_history() -> None:
@@ -594,6 +692,76 @@ def test_follow_sequence_tasks_do_not_require_legacy_scene_analysis() -> None:
     assert len(raw_steps) == 1
     assert len(tasks) == 1
     assert tasks[0]["content_sources"][-3]["outreach_task_metadata"]["follow_sequence"]["id"] == "45"
+
+
+def test_conversion_task_does_not_inherit_legacy_sop_messages_or_assets() -> None:
+    planner = PlanGenerator(
+        repository=object(),
+        model_client=None,
+        system_client=None,
+        customer_context_service=None,
+        precision_qa_playbook_service=None,
+        sop_reply_pack_service=None,
+        coze_client=None,
+        sales_strategy_service=None,
+    )
+    source_snapshot = {
+        "first_day_workflow": {"strategy_decision": {"decision_mode": "conversion"}},
+        "first_day_sop_sequence": [
+            {
+                "source_id": "sop-pack:legacy",
+                "pack_id": "legacy",
+                "reply_messages": [
+                    {"type": "text", "content": {"text": "legacy message"}},
+                    {"type": "image", "content": {"url": "https://example.test/legacy.jpg"}},
+                ],
+            }
+        ],
+        "trigger_context": {"trigger_type": "first_day_opened_silence"},
+        "conversation_activity": {},
+    }
+    response = {
+        "should_create_plan": True,
+        "plan_mode": "conversion",
+        "plan_arc": "continue conversion",
+        "steps": [
+            {
+                "step": 1,
+                "plan_mode": "conversion",
+                "scene": "conversion",
+                "source_id": "conversion-action:ask_store",
+                "delay_minutes": 10,
+                "intent": "ask_store",
+                "message_goal": "confirm the customer's preferred store",
+                "reply_messages": [
+                    {"type": "text", "content": {"text": "Which store is more convenient for you?"}}
+                ],
+                "conversion_step": True,
+                "allowed_conversion_actions": ["ask_store"],
+                "no_reply_action": "end_plan",
+            }
+        ],
+    }
+
+    _, tasks = asyncio.run(
+        planner._materialize_tasks(
+            {
+                "first_day_trigger": True,
+                "asset_catalog": [],
+                "recent_media": {"urls": []},
+                "activity_quote_fact": {},
+                "payment_collection_gate": {},
+                "source_snapshot": source_snapshot,
+            },
+            response,
+        )
+    )
+
+    assert [item["type"] for item in tasks[0]["reply_messages"]] == ["text"]
+    metadata = tasks[0]["content_sources"][-3]["outreach_task_metadata"]
+    assert metadata["source_kind"] == "conversion_action"
+    assert metadata["preserve_sop_pack_messages"] is False
+    assert metadata["resolved_assets"] == []
 
 
 def test_night_active_plan_keeps_all_nodes_inside_customer_40_minute_window() -> None:
@@ -985,13 +1153,14 @@ def test_conversion_step_returns_to_one_real_mainline_source() -> None:
                     "conversion_step": True,
                     "follow_script_candidates": [{"id": "checkpoint-script"}],
                     "follow_script_model_candidates": [{"id": "checkpoint-script"}],
-                    "conversion_mainline_sources": [
+                        "conversion_mainline_sources": [
                         {
                             "source_id": "sop-pack:activity",
                             "mapped_scene": "activity_intro",
                             "texts": ["线上活动内容"],
-                        }
-                    ],
+                            }
+                        ],
+                        "allowed_conversion_actions": ["return_mainline"],
                 }
             }
         ],
@@ -1007,6 +1176,53 @@ def test_conversion_step_returns_to_one_real_mainline_source() -> None:
     assert isinstance(result, dict)
     assert result["selected_mainline_source_id"] == "sop-pack:activity"
     assert result["conversion_action"] == "return_mainline"
+
+
+def test_standalone_conversion_uses_only_the_locked_fact_bounded_action() -> None:
+    class Model:
+        async def chat_json(self, *_: object, **__: object) -> dict[str, object]:
+            return {
+                "reply_messages": [
+                    {"type": "text", "content": {"text": "您大概哪天方便到店？时间可以协调。"}}
+                ],
+                "selected_script_id": "",
+                "script_rejection_reason": "",
+                "selected_mainline_source_id": "",
+                "value_dimension": "visit_time",
+                "new_information": "给出到店时间选择路径",
+                "conversion_action": "ask_visit_time",
+            }
+
+    task = {
+        "customer_id": "customer-1",
+        "corp_id": "corp-1",
+        "wechat": "SL8003",
+        "external_userid": "external-1",
+        "step_index": 1,
+        "message_goal": "确认方便到店的时间",
+        "reply_messages": [{"type": "text", "content": {"text": "询问到店时间"}}],
+        "content_source_metadata": [
+            {
+                "outreach_task_metadata": {
+                    "plan_mode": "conversion",
+                    "conversion_step": True,
+                    "allowed_conversion_actions": ["ask_visit_time"],
+                    "conversion_mainline_sources": [],
+                }
+            }
+        ],
+    }
+
+    result = asyncio.run(
+        MessageGenerator(repository=_MessageRepository(), model_client=Model())._generate_task_messages(
+            task=task,
+            plan={"source_snapshot": {"trigger_context": {"trigger_type": "first_day_opened_silence"}}},
+        )
+    )
+
+    assert isinstance(result, dict)
+    assert result["selected_script_id"] == ""
+    assert result["conversion_action"] == "ask_visit_time"
 
 
 def test_conversion_step_cannot_ask_for_deposit_before_activity_quote() -> None:
@@ -1039,7 +1255,8 @@ def test_conversion_step_cannot_ask_for_deposit_before_activity_quote() -> None:
                     "conversion_step": True,
                     "follow_script_candidates": [{"id": "script-1"}],
                     "follow_script_model_candidates": [{"id": "script-1"}],
-                    "conversion_mainline_sources": [],
+                        "conversion_mainline_sources": [],
+                        "allowed_conversion_actions": ["ask_deposit_intent"],
                 }
             }
         ],

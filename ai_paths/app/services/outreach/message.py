@@ -112,16 +112,17 @@ class MessageGenerator:
             }.intersection(used_script_ids)
         ]
         prompt_task_metadata = dict(task_metadata)
-        if plan_mode == "follow_sequence":
-            prompt_task_metadata["follow_script_candidates"] = [
-                dict(item)
-                for item in task_metadata.get("follow_script_model_candidates") or []
-                if isinstance(item, dict)
-                and not {
-                    _string(item.get("id")).lower(),
-                    _string(item.get("script_code")).lower(),
-                }.intersection(used_script_ids)
-            ]
+        if plan_mode in {"follow_sequence", "conversion"}:
+            if plan_mode == "follow_sequence":
+                prompt_task_metadata["follow_script_candidates"] = [
+                    dict(item)
+                    for item in task_metadata.get("follow_script_model_candidates") or []
+                    if isinstance(item, dict)
+                    and not {
+                        _string(item.get("id")).lower(),
+                        _string(item.get("script_code")).lower(),
+                    }.intersection(used_script_ids)
+                ]
             prompt_task_metadata.pop("follow_script_model_candidates", None)
             prompt_task_metadata["used_script_ids"] = sorted(used_script_ids)
             prompt_task_metadata["used_value_dimensions"] = sorted(used_value_dimensions)
@@ -263,17 +264,31 @@ class MessageGenerator:
                 {},
             )
             last_selection_error = ""
-            if plan_mode == "follow_sequence":
+            if plan_mode in {"follow_sequence", "conversion"}:
                 conversion_mainline_source_ids = {
                     _string(item.get("source_id"))
                     for item in task_metadata.get("conversion_mainline_sources") or []
                     if isinstance(item, dict) and _string(item.get("source_id"))
                 }
-                if selected_script_id and not selected_script:
+                allowed_conversion_actions = {
+                    _string(item)
+                    for item in task_metadata.get("allowed_conversion_actions") or []
+                    if _string(item)
+                }
+                if not allowed_conversion_actions and not _bool(task_metadata.get("conversion_step")):
+                    allowed_conversion_actions = {"none"}
+                if plan_mode == "conversion" and selected_script_id:
+                    last_selection_error = "conversion_cannot_select_checkpoint_script"
+                elif plan_mode == "follow_sequence" and selected_script_id and not selected_script:
                     last_selection_error = "selected_script_id_not_in_candidates"
-                elif follow_script_candidates and not selected_script_id and not script_rejection_reason:
+                elif (
+                    plan_mode == "follow_sequence"
+                    and follow_script_candidates
+                    and not selected_script_id
+                    and not script_rejection_reason
+                ):
                     last_selection_error = "script_selection_or_rejection_reason_required"
-                elif not follow_script_candidates and selected_script_id:
+                elif plan_mode == "follow_sequence" and not follow_script_candidates and selected_script_id:
                     last_selection_error = "script_catalog_empty_cannot_select_script"
                 elif value_dimension not in OUTREACH_VALUE_DIMENSIONS:
                     last_selection_error = "value_dimension_required"
@@ -283,6 +298,8 @@ class MessageGenerator:
                     last_selection_error = "value_dimension_already_used"
                 elif conversion_action not in OUTREACH_CONVERSION_ACTIONS:
                     last_selection_error = "conversion_action_invalid"
+                elif conversion_action not in allowed_conversion_actions:
+                    last_selection_error = "conversion_action_not_allowed_for_current_stage"
                 elif _bool(task_metadata.get("conversion_step")) and conversion_action == "none":
                     last_selection_error = "conversion_step_requires_one_action"
                 elif not _bool(task_metadata.get("conversion_step")) and conversion_action != "none":
@@ -357,7 +374,7 @@ class MessageGenerator:
                         else 2
                     ),
                 )
-                if plan_mode == "follow_sequence":
+                if plan_mode in {"follow_sequence", "conversion"}:
                     return {
                         "reply_messages": generated_messages,
                         "selected_script_id": selected_script_id,
