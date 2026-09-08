@@ -3,9 +3,12 @@ from __future__ import annotations
 from ai_paths.app.graph.nodes.material_selection import parallel_reply_payload
 from ai_paths.app.graph.nodes.reply_admission import validate_model_led_reply_admission
 from ai_paths.app.graph.nodes.reply_nodes import (
+    _hard_pause_from_policy,
     _link_adopted_script_media,
     _materialize_selected_content_media,
+    _validate_required_direct_effect_delivery,
 )
+import pytest
 from ai_paths.app.graph.nodes.semantic_evidence import _sent_case_image_urls
 from ai_paths.app.services.v3_semantic_router_service import script_content_candidates
 
@@ -193,3 +196,48 @@ def test_distance_script_hold_language_keeps_direct_effect_media_delivery() -> N
     assert materialized == ["follow_script:225:p1"]
     assert [item["type"] for item in messages] == ["text", "image", "video"]
     validate_model_led_reply_admission(messages, state)
+
+
+def test_effect_turn_requires_an_available_effect_asset_to_be_selected() -> None:
+    candidate = script_content_candidates(_knowledge())[0]
+    state = _state([candidate])
+    state["evidence_join"]["semantic_route"] = {
+        "relevant_fact_topic_ids": ["effect_evidence"]
+    }
+    payload = {
+        "selected_content_ids": [],
+        "policy_decision": {
+            "realtime_intent": {"type": "fact_inquiry"},
+            "emotion_decision": {"label": "curious", "confidence": "high"},
+        },
+        "safety_assessment": {"status": "none"},
+    }
+
+    with pytest.raises(ValueError, match="direct_effect_media_required"):
+        _validate_required_direct_effect_delivery(payload, state)
+
+    payload["selected_content_ids"] = ["follow_script:187:p1"]
+    _validate_required_direct_effect_delivery(payload, state)
+
+
+def test_impatient_is_not_a_hard_marketing_stop_and_does_not_block_requested_media() -> None:
+    candidate = script_content_candidates(_knowledge())[0]
+    state = _state([candidate])
+    policy = {
+        "realtime_intent": {"type": "fact_inquiry"},
+        "emotion_decision": {
+            "label": "impatient",
+            "confidence": "high",
+            "flow_action": "pause_marketing_turn",
+            "evidence_refs": ["current_message"],
+        },
+    }
+    payload = {
+        "selected_content_ids": [],
+        "knowledge_use": {"script_id": "187"},
+        "policy_decision": policy,
+        "safety_assessment": {"status": "none"},
+    }
+
+    assert _hard_pause_from_policy(policy) is False
+    assert _link_adopted_script_media(payload, state) == "follow_script:187:p1"

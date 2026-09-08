@@ -85,7 +85,7 @@ def test_duplicate_msgid_shares_one_failed_status_lookup_and_one_fallback_run(tm
 
     assert client.calls == 1
     assert first.request_id == second.request_id
-    assert [item.content["text"] for item in first.reply_messages] == ["您稍等一下"]
+    assert [item.content for item in first.reply_messages] == ["您稍等一下"]
     assert first.meta["reply_source"] == "takeover_status_unavailable_fallback"
     with store.connect() as conn:
         assert conn.execute("SELECT COUNT(*) AS c FROM runs").fetchone()["c"] == 1

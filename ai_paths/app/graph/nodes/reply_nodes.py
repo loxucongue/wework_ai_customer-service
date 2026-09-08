@@ -15,6 +15,7 @@ from app.graph.nodes.reply_quality import (
 )
 
 from app.graph.nodes.reply_validation import (
+    _is_case_or_effect_turn,
     _paid_deposit_context,
     _parallel_paid_deposit_context,
     _parallel_shared_context,
@@ -153,6 +154,60 @@ def _validate_selected_content_ids(payload: dict[str, Any], state: AgentState) -
         raise ValueError("selected_content_id_not_selectable:" + ",".join(invalid_ids))
 
 
+def _validate_required_direct_effect_delivery(payload: dict[str, Any], state: AgentState) -> None:
+    """Require Reply to deliver nominated effect evidence in an effect turn.
+
+    Router supplies the semantic topic and Gate supplies the eligible assets;
+    this check only verifies that Reply's chosen output actually fulfils both.
+    """
+
+    policy = payload.get("policy_decision") if isinstance(payload.get("policy_decision"), dict) else {}
+    intent = policy.get("realtime_intent") if isinstance(policy.get("realtime_intent"), dict) else {}
+    safety = _normalized_safety_assessment(payload.get("safety_assessment"))
+    if (
+        str(intent.get("type") or "") == "explicit_exit"
+        or _hard_pause_from_policy(policy)
+        or str(safety.get("status") or "none") != "none"
+    ):
+        return
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    route = joined.get("semantic_route") if isinstance(joined.get("semantic_route"), dict) else {}
+    topics = {
+        str(item or "").strip()
+        for item in route.get("relevant_fact_topic_ids") or []
+        if str(item or "").strip()
+    }
+    if "effect_evidence" not in topics and not _is_case_or_effect_turn(state):
+        return
+    eligible_ids: set[str] = set()
+    for item in joined.get("content_candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        content_id = str(item.get("content_id") or item.get("id") or "").strip()
+        if not content_id or str(item.get("delivery_status") or "").strip() in {"completed", "reference_only"}:
+            continue
+        messages = item.get("messages") if isinstance(item.get("messages"), list) else item.get("media") or []
+        has_media = any(
+            isinstance(message, dict)
+            and str(message.get("type") or "").strip() in {"image", "video"}
+            and _passive_media_url(message).lower().startswith(("http://", "https://"))
+            for message in messages
+        )
+        role = str(item.get("asset_role") or "").strip()
+        constraints = item.get("selection_constraints") if isinstance(item.get("selection_constraints"), dict) else {}
+        if has_media and (role == "effect_evidence" or constraints.get("direct_value_without_permission_gate") is True):
+            eligible_ids.add(content_id)
+    if not eligible_ids:
+        return
+    selected_ids = {
+        str(item or "").strip()
+        for item in payload.get("selected_content_ids") or []
+        if str(item or "").strip()
+    }
+    if not selected_ids.intersection(eligible_ids):
+        raise ValueError("direct_effect_media_required")
+
+
 def _link_adopted_script_media(payload: dict[str, Any], state: AgentState) -> str:
     """Complete media metadata for Reply's chosen script without a new sales decision."""
 
@@ -169,11 +224,10 @@ def _link_adopted_script_media(payload: dict[str, Any], state: AgentState) -> st
         return ""
     policy = payload.get("policy_decision") if isinstance(payload.get("policy_decision"), dict) else {}
     intent = policy.get("realtime_intent") if isinstance(policy.get("realtime_intent"), dict) else {}
-    emotion = policy.get("emotion_decision") if isinstance(policy.get("emotion_decision"), dict) else {}
     safety = _normalized_safety_assessment(payload.get("safety_assessment"))
     if (
         str(intent.get("type") or "") == "explicit_exit"
-        or str(emotion.get("flow_action") or "") in {"pause_marketing_turn", "handoff_by_system_rule"}
+        or _hard_pause_from_policy(policy)
         or str(safety.get("status") or "none") != "none"
     ):
         return ""
@@ -1644,10 +1698,7 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
     emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
     cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
     explicit_exit = str(intent.get("type") or "") == "explicit_exit"
-    pause_marketing = str(emotion.get("flow_action") or "") in {
-        "pause_marketing_turn",
-        "handoff_by_system_rule",
-    }
+    pause_marketing = _hard_pause_from_policy(decision)
     closing = decision.get("closing_decision") if isinstance(decision.get("closing_decision"), dict) else {}
     primary_task = (
         decision.get("primary_task")
@@ -1709,6 +1760,7 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
             not terminal_or_safety_task
             and str(store_resolution.get("status") or "").strip() == "send_single"
             and confirmed_named_store
+            and _mainline_ready_for_appointment(state)
             and question_count == 0
         ):
             raise ValueError("confirmed_store_mainline_question_required")
@@ -1758,6 +1810,17 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         raise ValueError(
             f"policy_decision_{reason}_conflict:" + ",".join(conflicts)
         )
+
+
+def _mainline_ready_for_appointment(state: AgentState) -> bool:
+    delivery = state.get("mainline_delivery_state")
+    if not isinstance(delivery, dict):
+        delivery = parallel_reply_payload(state).get("mainline_delivery_state") or {}
+    return bool(
+        isinstance(delivery, dict)
+        and delivery.get("effect_evidence_delivered")
+        and delivery.get("activity_offer_delivered")
+    )
 
 
 def _validate_closing_script_selection(
@@ -1839,21 +1902,39 @@ def _policy_safety_floor(payload: dict[str, Any], state: AgentState) -> str:
     if not isinstance(decision, dict):
         return ""
     intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
-    emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
     cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
     if str(intent.get("type") or "") == "explicit_exit" and intent.get("evidence_refs"):
         return "explicit_exit"
-    if (
-        str(emotion.get("flow_action") or "")
-        in {"pause_marketing_turn", "handoff_by_system_rule"}
-        and emotion.get("evidence_refs")
-    ):
+    if _hard_pause_from_policy(decision):
         return "pause_marketing"
     if str(cardpoint.get("state") or "") in {"active", "repeated"}:
         category_key = str(cardpoint.get("category_key") or "").strip()
         if category_key:
             return f"active_cardpoint:{category_key}"
     return ""
+
+
+def _hard_pause_from_policy(decision: dict[str, Any]) -> bool:
+    """Only grounded severe emotion or a system handoff can stop this turn.
+
+    ``impatient`` and other pressure-reduction labels may shorten the reply,
+    but they must not suppress explicitly requested facts or media.
+    """
+
+    emotion = (
+        decision.get("emotion_decision")
+        if isinstance(decision.get("emotion_decision"), dict)
+        else {}
+    )
+    flow_action = str(emotion.get("flow_action") or "").strip()
+    if flow_action == "handoff_by_system_rule":
+        return True
+    return (
+        flow_action == "pause_marketing_turn"
+        and str(emotion.get("label") or "").strip() == "angry"
+        and str(emotion.get("confidence") or "").strip() == "high"
+        and bool(emotion.get("evidence_refs"))
+    )
 
 
 def _validate_policy_safety_floor(
@@ -3298,6 +3379,17 @@ def _reply_repair_hint(error: str) -> str:
             "本轮权威门店事实表明客户已确认具体门店，且没有卡点、安全暂停或交易终态。"
             "保留已经正确交付的门店文字和 store_address，只追加一个到店日期或时段问题；"
             "不要再问位置是否方便，不要同时推进预约金或留名额，也不要删除门店卡。"
+        )
+    if "direct_effect_media_required" in error:
+        return (
+            "本轮是效果/信任问题，且输入已有相关、未重复、可直接发送的真实素材。"
+            "保留正确文字，逐字选择 allowed_selected_content_ids 中最相关的一个 ID，写入 selected_content_ids，"
+            "并让对应图片或视频紧跟在短文字后；不要再问客户要不要看，也不要只口头承诺会发。"
+        )
+    if "store_resolution_send_single_contract_violation" in error:
+        return (
+            "本轮门店工具已经给出唯一 delivery_store_id。保留自然门店说明，并严格输出一个"
+            " store_address，其 store_id 必须逐字等于该 delivery_store_id；不能只说会发地址，也不能改问是否需要。"
         )
     if (
         "reply_action_ask_requires_single_question" in error

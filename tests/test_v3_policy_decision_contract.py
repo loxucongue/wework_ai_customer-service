@@ -32,6 +32,7 @@ from app.graph.nodes.reply_validation import (  # noqa: E402
     _promises_payment_entry,
     _requested_store_scope_regions,
     _validate_appointment_time_facts,
+    _validate_store_resolution_contract,
 )
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission  # noqa: E402
 from app.graph.nodes.reply_context import _ai_sales_policy_for_reply  # noqa: E402
@@ -554,6 +555,10 @@ def test_ask_action_repair_hints_preserve_one_mainline_direction() -> None:
 
 def test_confirmed_store_requires_one_visible_mainline_question() -> None:
     state = _state()
+    state["mainline_delivery_state"] = {
+        "effect_evidence_delivered": True,
+        "activity_offer_delivered": True,
+    }
     state["fact_envelope"] = {
         "structured_facts": {
             "store_resolution_fact": {
@@ -588,6 +593,61 @@ def test_confirmed_store_requires_one_visible_mainline_question() -> None:
         {"type": "text", "order": 3, "content": "您大概哪天方便到店？"}
     )
     _validate_policy_reply_consistency(payload, state)
+
+
+def test_confirmed_store_does_not_force_appointment_before_mainline_delivery() -> None:
+    state = _state()
+    state["mainline_delivery_state"] = {
+        "effect_evidence_delivered": False,
+        "activity_offer_delivered": False,
+    }
+    state["fact_envelope"] = {
+        "structured_facts": {
+            "store_resolution_fact": {
+                "status": "send_single",
+                "delivery_store_ids": ["store-306"],
+                "location_evidence": {"confirmation_status": "confirmed"},
+            }
+        }
+    }
+    payload = {
+        "reply_messages": [
+            {"type": "text", "order": 1, "content": "门店地址发您，这边也把活动内容给您讲清楚。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "store-306"}},
+        ],
+        "action": "none",
+        "sales_judgment": {"posture": "answer"},
+        "commit_actions": [],
+        "policy_decision": _valid_decision(),
+    }
+
+    _validate_policy_reply_consistency(payload, state)
+
+
+def test_send_single_store_result_cannot_be_promised_without_store_card() -> None:
+    state = _state()
+    state["fact_envelope"] = {
+        "structured_facts": {
+            "store_resolution_fact": {
+                "status": "send_single",
+                "delivery_store_ids": ["227"],
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="store_resolution_send_single_contract_violation"):
+        _validate_store_resolution_contract(
+            [{"type": "text", "order": 1, "content": "厦门门店地址发您。"}],
+            state,
+        )
+
+    _validate_store_resolution_contract(
+        [
+            {"type": "text", "order": 1, "content": "厦门门店地址发您。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "227"}},
+        ],
+        state,
+    )
 
 
 def test_confirmed_store_does_not_advance_transaction_terminal() -> None:

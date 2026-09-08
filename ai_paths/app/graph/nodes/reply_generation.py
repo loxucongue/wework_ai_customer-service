@@ -33,6 +33,7 @@ from app.graph.nodes.reply_nodes import (
     _validate_parallel_raw_reply_schema,
     _validate_policy_reply_consistency,
     _validate_policy_safety_floor,
+    _validate_required_direct_effect_delivery,
     _validate_selected_content_ids,
 )
 
@@ -211,6 +212,11 @@ def create_synthesize_reply_node(
                 "selected_content_ids": reply_metadata.get("selected_content_ids", []),
                 "reply_content_decisions": reply_metadata.get("content_decisions", []),
                 "content_selection_metrics": content_selection_metrics,
+                "mainline_delivery_state": (
+                    parallel_reply_payload(state).get("mainline_delivery_state", {})
+                    if state.get("evidence_join")
+                    else {}
+                ),
                 "reply_observation_metrics": reply_observation_metrics,
                 "reply_action": reply_metadata.get("action", "none"),
                 "reply_action_reason": reply_metadata.get("action_reason", ""),
@@ -417,16 +423,16 @@ def _policy_safety_failure_recovery(
         or "policy_safety_floor_removed:pause_marketing" in error_text
     ):
         recovery_kind = "pause_marketing"
-        text = "收到，我先不继续推了。您说的情况我记下了。"
+        text = "您稍等一下"
     elif (
         "policy_decision_active_cardpoint_conflict" in error_text
         or "policy_safety_floor_removed:active_cardpoint" in error_text
     ):
         recovery_kind = "active_cardpoint"
-        text = "收到，我先不着急往下推进。您把现在最担心的点告诉我，我先帮您说清楚。"
+        text = "您稍等一下"
     elif "policy_decision_schema_invalid" in error_text:
         recovery_kind = "schema_invalid"
-        text = "收到，我先不着急往下推进。您现在最想了解哪一点？我先按您当前的问题说清楚。"
+        text = "您稍等一下"
     else:
         return None
 
@@ -1007,6 +1013,7 @@ def _validated_parallel_reply_payload(
     _validate_parallel_raw_reply_schema(payload)
     _validate_policy_reply_consistency(payload, state)
     _validate_policy_safety_floor(payload, state, safety_floor)
+    _validate_required_direct_effect_delivery(payload, state)
     validation_state = _reply_validation_state(state, payload)
     messages = validated_model_messages(payload, validation_state)
     messages = _prepare_structural_messages(messages, validation_state, warnings)
