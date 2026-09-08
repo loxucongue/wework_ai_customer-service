@@ -30,12 +30,16 @@ class V3RequestTimingMiddleware:
         state["v3_http_ingress_id"] = ingress_id
         state["v3_http_started_at"] = started_at
         response_finished = False
+        response_finished_at = ""
+        response_finished_perf = 0.0
 
         async def timing_send(message: dict[str, Any]) -> None:
-            nonlocal response_finished
+            nonlocal response_finished, response_finished_at, response_finished_perf
             await send(message)
             if message.get("type") == "http.response.body" and not message.get("more_body", False):
                 response_finished = True
+                response_finished_at = utc_now_iso()
+                response_finished_perf = time.perf_counter()
 
         try:
             await self.app(scope, receive, timing_send)
@@ -43,8 +47,9 @@ class V3RequestTimingMiddleware:
             request_id = str(state.get("v3_run_request_id") or "").strip()
             finalize = getattr(self.repository, "finalize_run_http_timing", None)
             if response_finished and request_id and callable(finalize):
-                finished_at = utc_now_iso()
-                duration_ms = max(0, int((time.perf_counter() - started_perf) * 1000))
+                finished_at = response_finished_at or utc_now_iso()
+                finished_perf = response_finished_perf or time.perf_counter()
+                duration_ms = max(0, int((finished_perf - started_perf) * 1000))
                 async def persist_timing() -> None:
                     try:
                         await asyncio.to_thread(

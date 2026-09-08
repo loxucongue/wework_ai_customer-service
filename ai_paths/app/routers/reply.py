@@ -57,9 +57,9 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
         attach_v3_http_timing(http_request, request)
         attach_request_interface_version(request, "v3")
         if chat_runtime.is_platform_protocol_message(request):
-            response = await chat_runtime.run_platform_reply(
+            response = await chat_runtime.run_platform_protocol_reply(
                 request,
-                background_tasks=None,
+                background_tasks=background_tasks,
             )
             response_body = workflow_response_from_chat(response)
             http_response = JSONResponse(content=response_body)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import asyncio
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -363,7 +364,6 @@ def test_v3_timing_middleware_finalizes_after_response_and_preserves_errors() ->
 
 def test_v3_timing_middleware_does_not_hold_protocol_response_for_timing_write() -> None:
     import threading
-    import time
 
     completed = threading.Event()
 
@@ -400,6 +400,43 @@ def test_v3_timing_middleware_does_not_hold_protocol_response_for_timing_write()
         return elapsed
 
     assert asyncio.run(invoke()) < 0.1
+
+
+def test_v3_timing_middleware_measures_until_body_not_response_background_work() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def finalize_run_http_timing(self, **values: object) -> None:
+            self.calls.append(values)
+
+    repository = Repository()
+
+    async def response_app(scope: dict[str, object], _receive: object, send: object) -> None:
+        scope.setdefault("state", {})["v3_run_request_id"] = "run-body-timing"  # type: ignore[index]
+        await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[operator]
+        await send({"type": "http.response.body", "body": b"{}"})  # type: ignore[operator]
+        await asyncio.sleep(0.2)
+
+    async def invoke() -> float:
+        middleware = V3RequestTimingMiddleware(response_app, repository=repository)
+
+        async def send(_message: dict[str, object]) -> None:
+            return None
+
+        async def receive() -> dict[str, object]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        started = time.perf_counter()
+        await middleware(
+            {"type": "http", "method": "POST", "path": "/reply/workflow-compatible-v3"},
+            receive,
+            send,
+        )
+        return time.perf_counter() - started
+
+    assert asyncio.run(invoke()) >= 0.2
+    assert int(repository.calls[0]["duration_ms"]) < 100
 
 
 def test_node_debug_payload_masks_credentials_without_removing_business_input() -> None:

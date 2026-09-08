@@ -286,6 +286,35 @@ class ChatRuntime:
                     if self._platform_request_tasks.get(request_identity) is task:
                         self._platform_request_tasks.pop(request_identity, None)
 
+    async def run_platform_protocol_reply(
+        self,
+        request: ChatRequest,
+        background_tasks: Any | None = None,
+    ) -> ChatResponse:
+        """Return a protocol no-op before its lightweight audit is committed."""
+
+        request_context = build_request_context(request)
+        protocol_event = _platform_protocol_event(request.content)
+        if protocol_event is None:
+            return await self.run_platform_reply(request, background_tasks)
+        if background_tasks is None:
+            return self._persist_platform_protocol_event(
+                request=request,
+                request_context=request_context,
+                protocol_event=protocol_event,
+            )
+        background_tasks.add_task(
+            self._persist_platform_protocol_event,
+            request=request,
+            request_context=request_context,
+            protocol_event=protocol_event,
+        )
+        return self._build_platform_protocol_response(
+            request=request,
+            request_context=request_context,
+            protocol_event=protocol_event,
+        )
+
     async def _run_platform_reply_once(
         self,
         request: ChatRequest,
@@ -444,12 +473,7 @@ class ChatRuntime:
         request_context: dict[str, Any],
         protocol_event: dict[str, str],
     ) -> ChatResponse:
-        request_identity = _platform_request_identity(request, request_context)
-        request_id = (
-            str(uuid5(NAMESPACE_URL, f"ai-paths:platform-protocol:{request_identity}"))
-            if request_identity
-            else str(uuid4())
-        )
+        request_id = _platform_protocol_request_id(request, request_context)
         request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
         request_context["memory_persist_allowed"] = False
         request_context["platform_protocol_event"] = dict(protocol_event)
@@ -486,6 +510,22 @@ class ChatRuntime:
                 final_state=state,
                 token_usage=model_usage["summary"],
             )
+        return self._build_platform_protocol_response(
+            request=request,
+            request_context=request_context,
+            protocol_event=protocol_event,
+        )
+
+    @staticmethod
+    def _build_platform_protocol_response(
+        *,
+        request: ChatRequest,
+        request_context: dict[str, Any],
+        protocol_event: dict[str, str],
+    ) -> ChatResponse:
+        request_id = _platform_protocol_request_id(request, request_context)
+        conversation_id = conversation_id_from_request(request, request_context)
+        model_usage = collect_model_usage([])
         return ChatResponse(
             request_id=request_id,
             reply_messages=[],
@@ -1417,6 +1457,13 @@ def _platform_request_identity(request: ChatRequest, request_context: dict[str, 
     if not (corp_id and wechat and external_userid):
         return ""
     return f"{corp_id}:wechat:{wechat}:external:{external_userid}:msgid:{msgid}"
+
+
+def _platform_protocol_request_id(request: ChatRequest, request_context: dict[str, Any]) -> str:
+    request_identity = _platform_request_identity(request, request_context)
+    if request_identity:
+        return str(uuid5(NAMESPACE_URL, f"ai-paths:platform-protocol:{request_identity}"))
+    return str(uuid4())
 
 
 def _platform_protocol_event(content: str) -> dict[str, str] | None:

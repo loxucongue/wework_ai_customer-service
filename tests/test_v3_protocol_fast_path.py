@@ -177,6 +177,20 @@ class _RuntimeStub:
             meta={"reply_source": "test"},
         )
 
+    async def run_platform_protocol_reply(
+        self,
+        request: ChatRequest,
+        background_tasks: object | None = None,
+    ) -> ChatResponse:
+        del background_tasks
+        assert self.is_platform_protocol_message(request)
+        self.protocol_calls += 1
+        return ChatResponse(
+            request_id="protocol-request-id",
+            reply_messages=[],
+            meta={"reply_source": "ignored_platform_auto_message"},
+        )
+
 
 class _VoiceStub:
     def __init__(self) -> None:
