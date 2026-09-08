@@ -243,6 +243,9 @@ def test_monitor_reactivates_auto_approved_draft_plan() -> None:
             super().__init__()
             self.runs["run-1"] = {"workflow_run_id": "run-1", "status": "created"}
 
+        def find_first_day_outreach_run_by_fingerprint(self, **_: object) -> dict[str, object]:
+            return dict(self.runs["run-1"])
+
         def get_active_outreach_plan_for_customer(self, *_: object, **__: object) -> dict[str, object]:
             return {
                 "plan": {

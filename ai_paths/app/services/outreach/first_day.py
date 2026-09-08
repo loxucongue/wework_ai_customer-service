@@ -3471,18 +3471,23 @@ class FirstDayWorkflow:
             )
             if not retry_reason and _sop_candidate_requires_platform_refresh(existing_run, candidate):
                 retry_reason = "sop_candidate_requires_platform_refresh"
-            if existing_run and not retry_reason:
-                return {
-                    "status": "skipped",
-                    "customer_id": customer_id,
-                    "reason": "conversation_fingerprint_already_logged",
-                }
-            active = await asyncio.to_thread(
-                self.repository.get_active_outreach_plan_for_customer,
-                customer_id,
-                corp_id=identity["corp_id"],
-                wechat=identity["wechat"],
-                external_userid=identity["external_userid"],
+            existing_status = _string(existing_run.get("status"))
+            should_check_active_plan = (
+                not existing_run
+                or bool(retry_reason)
+                or bool(_string(existing_run.get("plan_id")))
+                or existing_status in {"created", "running", "failed"}
+            )
+            active = (
+                await asyncio.to_thread(
+                    self.repository.get_active_outreach_plan_for_customer,
+                    customer_id,
+                    corp_id=identity["corp_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
+                )
+                if should_check_active_plan
+                else {}
             )
             if active:
                 plan = active.get("plan") if isinstance(active.get("plan"), dict) else {}
@@ -3554,6 +3559,12 @@ class FirstDayWorkflow:
                         "result": activated,
                     }
                 return {"status": "skipped", "customer_id": customer_id, "reason": "nonterminal_plan_exists"}
+            if existing_run and not retry_reason:
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "conversation_fingerprint_already_logged",
+                }
             if existing_run:
                 workflow_run_id = _string(existing_run.get("workflow_run_id"))
                 run_updater = getattr(self.repository, "update_first_day_outreach_run", None)
