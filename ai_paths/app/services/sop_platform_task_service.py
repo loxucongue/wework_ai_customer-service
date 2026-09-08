@@ -1029,7 +1029,7 @@ class SopPlatformTaskService:
         if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
             for task in [*tasks, *trigger_tasks]:
                 await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
-            self._counters["quiet_consumed_without_replay"] += len(tasks)
+            self._counters["quiet_preserved_without_consume"] += len(tasks)
             quiet_hours.update({"blocked": True, "reason": "sop_no_send_quiet_hours"})
             return await self._consume_batch_without_send(
                 tasks,
@@ -1242,6 +1242,7 @@ class SopPlatformTaskService:
         batch_run_id: str,
         decision: dict[str, Any],
         audit_context: dict[str, Any],
+        failure_reason: str = "earliest_group_not_sendable",
     ) -> dict[str, Any]:
         first_task = tasks[0]
         first_task_id = _task_id(first_task)
@@ -1278,7 +1279,7 @@ class SopPlatformTaskService:
             "compat_trigger_task_ids": [_task_id(task) for task in trigger_tasks],
             "sequence_reserved_task_ids": sequence_ids,
             "decision": decision,
-            "reason": "earliest_group_not_sendable",
+            "reason": failure_reason,
             "context": _context_audit(audit_context),
             "consume_results": [],
         }
@@ -1294,7 +1295,7 @@ class SopPlatformTaskService:
                 local_task_id,
                 status="send_failed",
                 send_payload=audit,
-                error="earliest_group_not_sendable",
+                error=failure_reason,
             )
         for task_id in sequence_ids:
             self._reserved_prefix_ids.add(task_id)
@@ -1308,7 +1309,7 @@ class SopPlatformTaskService:
         self._schedule_recovery_backoff(
             f"platform_sop_task:{first_task_id}",
             status="platform_sequence_blocked",
-            error="earliest_group_not_sendable",
+            error=failure_reason,
         )
         self._counters["sequence_blocked_without_consume"] += 1
         return {
@@ -1478,82 +1479,26 @@ class SopPlatformTaskService:
         content_exhausted: bool | None = None,
     ) -> dict[str, Any]:
         trigger_tasks = trigger_tasks or []
-        terminal_tasks = _dedupe_tasks([*tasks, *trigger_tasks])
-        terminal_ids: list[str] = []
-        audit = {
-            "audit_schema_version": 2,
-            "processing_mode": "customer_batch_sequence",
-            "batch_run_id": batch_run_id,
-            "batch_key": batch_key,
-            "biz_type": biz_type,
-            "batch_task_ids": [_task_id(task) for task in tasks],
-            "compat_trigger_task_ids": [_task_id(task) for task in trigger_tasks],
-            "decision": decision or {"selected_task_id": "", "evaluations": []},
-            "reason": reason,
+        blocked_decision = {
+            **(decision or {"selected_task_id": "", "evaluations": []}),
+            "selected_task_id": "",
+            "failure_reason": reason,
+        }
+        blocked_context = {
+            **(audit_context or {}),
             "content_exhausted": content_exhausted,
-            "context": _context_audit(audit_context or {}),
-            "consume_results": [],
+            "sequence_pause_reason": reason,
         }
-        if reason == "sop_no_send_quiet_hours":
-            audit["quiet_hours_archive"] = _quiet_hours_terminal_audit(
-                terminal_tasks,
-                settings=self.settings,
-            )
-        if self.settings.sop_platform_shadow_mode:
-            for task in terminal_tasks:
-                self._mark_local_task(task, status="shadow_no_send", send_payload=audit)
-            return {
-                "processed": True,
-                "status": "shadow_no_send",
-                "task_ids": [_task_id(task) for task in terminal_tasks],
-                "terminal_task_ids": [_task_id(task) for task in terminal_tasks],
-                "decision": audit["decision"],
-            }
-        run_keys = [f"run:{_task_run_id(task)}" if _task_run_id(task) else "run:unknown" for task in terminal_tasks]
-        last_run_indexes = {key: index for index, key in enumerate(run_keys)}
-        for index, task in enumerate(terminal_tasks):
-            task_id = _task_id(task)
-            exhaust_this_task = content_exhausted is True and last_run_indexes[run_keys[index]] == index
-            response = await self._consume_with_audit(
-                task_id=task_id,
-                status=70,
-                remark=reason,
-                content_exhausted=True if exhaust_this_task else None,
-                phase="complete_without_send",
-                audit=audit,
-            )
-            _require_platform_status(response, 70)
-            rule_data = await self._report_terminal_rule_data(
-                task,
-                outcome=reason,
-                sent=False,
-            )
-            audit["consume_results"].append(
-                {
-                    "task_id": task_id,
-                    "status": 70,
-                    "remark": reason,
-                    "content_exhausted": True if exhaust_this_task else None,
-                    "response": response,
-                    "rule_data": rule_data,
-                }
-            )
-            terminal_ids.append(task_id)
-        await asyncio.gather(*(
-            asyncio.to_thread(
-                self.repository.complete_platform_sop_task_without_send,
-                platform_task_id=_task_id(task),
-                send_payload=audit,
-            )
-            for task in terminal_tasks
-        ))
-        return {
-            "processed": True,
-            "status": "completed_without_send",
-            "task_ids": [_task_id(task) for task in terminal_tasks],
-            "terminal_task_ids": terminal_ids,
-            "decision": audit["decision"],
-        }
+        return await self._defer_sequence_blocked(
+            tasks,
+            trigger_tasks=trigger_tasks,
+            batch_key=batch_key,
+            biz_type=biz_type,
+            batch_run_id=batch_run_id,
+            decision=blocked_decision,
+            audit_context=blocked_context,
+            failure_reason=reason,
+        )
 
     async def _send_selected_batch_task(
         self,
@@ -1574,7 +1519,7 @@ class SopPlatformTaskService:
         quiet_hours = _quiet_hours_base_summary(selected_task, settings=self.settings)
         if _in_configured_quiet_hours(settings=self.settings) or quiet_hours.get("in_quiet_hours"):
             quiet_tasks = [*skipped_prefix, selected_task]
-            self._counters["quiet_consumed_without_replay"] += len(quiet_tasks)
+            self._counters["quiet_preserved_without_consume"] += len(quiet_tasks)
             quiet_hours.update({"blocked": True, "reason": "sop_no_send_quiet_hours"})
             return await self._consume_batch_without_send(
                 quiet_tasks,
@@ -2416,28 +2361,6 @@ class SopPlatformTaskService:
                 audit["consume_results"] = consume_results
         if skipped_prefix_task_ids:
             raise RuntimeError("strict SOP sequence forbids consuming an unsent prefix")
-        for task_id in skipped_prefix_task_ids:
-            response = await self._consume_with_audit(
-                task_id=task_id,
-                status=70,
-                remark="superseded_by_later_sendable_group",
-                phase="skip_superseded_prefix",
-                audit=audit if isinstance(audit, dict) else {},
-            )
-            _require_platform_status(response, 70)
-            skipped_task = self._platform_task_from_local(task_id)
-            rule_data = await self._report_terminal_rule_data(
-                skipped_task or {"task_id": task_id},
-                outcome="superseded_by_later_sendable_group",
-                sent=False,
-            )
-            if consume_results and isinstance(consume_results[-1], dict):
-                consume_results[-1]["rule_data"] = rule_data
-            task = skipped_task
-            if task:
-                self._mark_local_task(task, status="completed_without_send", send_payload=audit or {})
-            self.repository.update_sop_event_status(f"platform_sop_task:{task_id}", status="platform_completed")
-            terminal_ids.append(task_id)
         response = await self._consume_with_audit(
             task_id=selected_task_id,
             status=30,
@@ -2472,17 +2395,17 @@ class SopPlatformTaskService:
                 continue
             response = await self._consume_with_audit(
                 task_id=task_id,
-                status=70,
-                remark="content_resolved_from_store_visit_queue",
+                status=30,
+                remark="content_sent_from_store_visit_queue",
                 phase="complete_compat_trigger",
                 audit=audit if isinstance(audit, dict) else {},
             )
-            _require_platform_status(response, 70)
+            _require_platform_status(response, 30)
             compat_task = self._platform_task_from_local(task_id)
             rule_data = await self._report_terminal_rule_data(
                 compat_task or {"task_id": task_id},
-                outcome="content_resolved_from_store_visit_queue",
-                sent=False,
+                outcome="sent",
+                sent=True,
             )
             if consume_results and isinstance(consume_results[-1], dict):
                 consume_results[-1]["rule_data"] = rule_data
@@ -5797,30 +5720,6 @@ def _quiet_hours_terminal_decision(tasks: list[dict[str, Any]]) -> dict[str, Any
         "selected_task_id": "",
         "transition_text": "",
         "decision_source": "deterministic_quiet_hours",
-    }
-
-
-def _quiet_hours_terminal_audit(tasks: list[dict[str, Any]], *, settings: Any) -> dict[str, Any]:
-    start = _bounded_hour(getattr(settings, "sop_platform_quiet_start_hour", 0), default=0)
-    end = _bounded_hour(getattr(settings, "sop_platform_quiet_end_hour", 8), default=8)
-    ordered_tasks = sorted(tasks, key=_task_batch_sort_key)
-    return {
-        "recorded_at": utc_now_iso(),
-        "timezone": "Asia/Shanghai",
-        "window": f"{start:02d}:00-{end:02d}:00",
-        "no_replay": True,
-        "ordered_groups": [
-            {
-                "sequence": index,
-                "task_id": _task_id(task),
-                "scheduled_at": task.get("scheduledAt") or task.get("scheduled_at") or "",
-                "sort_order": task.get("sortOrder") or task.get("sort_order"),
-                "rule_name": task.get("ruleName") or task.get("sceneName") or "",
-                "content_available": bool(_platform_messages(task)),
-                "original_messages": _platform_messages(task),
-            }
-            for index, task in enumerate(ordered_tasks, start=1)
-        ],
     }
 
 
