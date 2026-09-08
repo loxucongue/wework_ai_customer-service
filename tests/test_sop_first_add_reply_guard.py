@@ -150,11 +150,11 @@ def test_batch_opened_customer_never_reaches_model_or_send(monkeypatch: pytest.M
     )
 
     assert result["status"] == "send_failed"
-    assert captured["reason"] == "customer_replied_after_add"
+    assert captured["reason"] == "customer_already_opened"
     assert model_called is False
 
 
-def test_presend_recheck_blocks_reply_that_arrived_after_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_send_path_requires_selected_sop_message_id(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Repository:
         def get_sop_send_task_by_idempotency_key(self, _key: str) -> dict[str, object]:
             return {}
@@ -164,9 +164,6 @@ def test_presend_recheck_blocks_reply_that_arrived_after_decision(monkeypatch: p
     service.repository = _Repository()
     service._counters = Counter()
     send_called = False
-
-    async def guard(*_args: object, **_kwargs: object) -> dict[str, object]:
-        return {"required": True, "blocked": True, "reason": "customer_replied_after_add"}
 
     async def block(tasks: list[dict[str, object]], **kwargs: object) -> dict[str, object]:
         return {
@@ -181,7 +178,6 @@ def test_presend_recheck_blocks_reply_that_arrived_after_decision(monkeypatch: p
         send_called = True
         return {}
 
-    service._load_first_add_send_guard = guard
     service._consume_batch_without_send = block
     service.system_client = SimpleNamespace(send=send)
     monkeypatch.setattr(sop_module, "_in_configured_quiet_hours", lambda **_kwargs: False)
@@ -209,7 +205,7 @@ def test_presend_recheck_blocks_reply_that_arrived_after_decision(monkeypatch: p
         )
     )
 
-    assert result["reason"] == "customer_replied_after_add"
+    assert result["reason"] == "missing_sop_message_id"
     assert send_called is False
 
 

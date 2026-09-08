@@ -6,6 +6,7 @@ import logging
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from app.services.sop_platform_client import SopPlatformClient
 from app.services.outreach_system_client import OutreachSystemClient
@@ -61,3 +62,130 @@ def test_managed_send_phase_log_contains_only_timing_metadata(caplog) -> None:
     assert payload["phase"] == "delivery_prepare"
     assert payload["elapsed_ms"] >= 0
     assert set(payload) == {"task_id", "phase", "elapsed_ms", "result"}
+
+
+def test_consume_can_complete_task_and_exact_message_group_together() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"code": 200, "data": {"status": 30}})
+
+    settings = SimpleNamespace(
+        sop_platform_token="secret-token",
+        sop_platform_base_url="https://platform.example",
+        sop_platform_timeout_seconds=5,
+    )
+    client = SopPlatformClient(settings)
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def exercise() -> None:
+        try:
+            await client.consume(
+                task_id=101,
+                status=30,
+                messages=[{"msgId": "7", "status": 30, "remark": ""}],
+            )
+        finally:
+            await client.aclose()
+
+    asyncio.run(exercise())
+
+    assert captured == {
+        "taskId": 101,
+        "status": 30,
+        "remark": "",
+        "messages": [{"msgId": 7, "status": 30, "remark": ""}],
+    }
+
+
+def test_sop_messages_falls_back_to_first_unconsumed_list_item() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "data": {
+                    "list": [
+                        {"id": 6, "status": 30, "message_content": [{"type": "text", "content": "old"}]},
+                        {"id": 7, "status": 10, "message_content": [{"type": "text", "content": "next"}]},
+                    ]
+                },
+            },
+        )
+
+    settings = SimpleNamespace(
+        sop_platform_token="secret-token",
+        sop_platform_base_url="https://platform.example",
+        sop_platform_timeout_seconds=5,
+        sop_platform_batch_size=100,
+    )
+    client = SopPlatformClient(settings)
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def exercise() -> dict[str, object]:
+        try:
+            return await client.sop_messages(event_log_id=9)
+        finally:
+            await client.aclose()
+
+    page = asyncio.run(exercise())
+
+    assert page["next_item"]["id"] == 7
+
+
+def test_consume_task_70_omits_message_results() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"code": 200, "data": {"status": 70}})
+
+    settings = SimpleNamespace(
+        sop_platform_token="secret-token",
+        sop_platform_base_url="https://platform.example",
+        sop_platform_timeout_seconds=5,
+    )
+    client = SopPlatformClient(settings)
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def exercise() -> None:
+        try:
+            await client.consume(task_id=101, status=70, remark="human_takeover")
+        finally:
+            await client.aclose()
+
+    asyncio.run(exercise())
+
+    assert captured == {"taskId": 101, "status": 70, "remark": "human_takeover"}
+    assert "messages" not in captured
+
+
+@pytest.mark.parametrize(
+    ("status", "messages", "expected"),
+    [
+        (30, None, "exactly one explicit msgId"),
+        (30, [{"msgId": 7, "status": 40}], "message status 30"),
+        (70, [{"msgId": 7, "status": 70}], "must not consume message content"),
+    ],
+)
+def test_consume_rejects_implicit_or_non_sent_message_consumption(
+    status: int,
+    messages: list[dict[str, object]] | None,
+    expected: str,
+) -> None:
+    settings = SimpleNamespace(
+        sop_platform_token="secret-token",
+        sop_platform_base_url="https://platform.example",
+        sop_platform_timeout_seconds=5,
+    )
+    client = SopPlatformClient(settings)
+
+    async def exercise() -> None:
+        try:
+            with pytest.raises(ValueError, match=expected):
+                await client.consume(task_id=101, status=status, messages=messages)
+        finally:
+            await client.aclose()
+
+    asyncio.run(exercise())

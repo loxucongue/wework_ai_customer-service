@@ -26,9 +26,9 @@ class SopPlatformTaskStateError(RuntimeError):
 class SopPlatformClient:
     """Client for the third-party SOP task queue.
 
-    The upstream state contract is 10 (pending), 20 (processing),
-    30 (sent), and 70 (not sent). Status 40 is written by the platform itself
-    and is not accepted by the external consume endpoint.
+    The upstream task-state contract is 10 (pending), 20 (processing),
+    30 (sent), and 70 (not sent). Optional message results use 30 (sent),
+    40 (failed), or 70 (not sent).
     """
 
     def __init__(self, settings: Settings):
@@ -110,9 +110,13 @@ class SopPlatformClient:
                     break
             if not items and isinstance(data.get("nextGroup"), dict):
                 items = [data["nextGroup"]]
-        next_item = data.get("nextGroup") if isinstance(data, dict) and isinstance(data.get("nextGroup"), dict) else None
-        if next_item is None and items:
-            next_item = items[0]
+        next_item = (
+            data.get("nextGroup") if isinstance(data, dict) and isinstance(data.get("nextGroup"), dict) else None
+        )
+        if isinstance(next_item, dict) and not _sop_message_group_is_unconsumed(next_item):
+            next_item = None
+        if next_item is None:
+            next_item = next((item for item in items if _sop_message_group_is_unconsumed(item)), None)
         if not total:
             total = len(items)
         return {
@@ -174,6 +178,7 @@ class SopPlatformClient:
         task_id: str | int,
         status: int,
         remark: str = "",
+        messages: list[dict[str, Any]] | None = None,
         content_exhausted: bool | None = None,
     ) -> dict[str, Any]:
         if status not in {20, 30, 70}:
@@ -183,6 +188,35 @@ class SopPlatformClient:
             "status": status,
             "remark": str(remark or "")[:500],
         }
+        normalized_messages: list[dict[str, Any]] | None = None
+        if messages is not None:
+            normalized_messages = []
+            for raw in messages:
+                if not isinstance(raw, dict):
+                    raise ValueError("platform SOP message result must be an object")
+                msg_id = raw.get("msgId", raw.get("msg_id"))
+                if msg_id is None or str(msg_id).strip() == "":
+                    raise ValueError("platform SOP message result requires msgId")
+                if isinstance(msg_id, str) and msg_id.strip().isdigit():
+                    msg_id = int(msg_id.strip())
+                message_status = int(raw.get("status") or 0)
+                if message_status not in {30, 40, 70}:
+                    raise ValueError("platform SOP message status must be 30, 40, or 70")
+                normalized_messages.append(
+                    {
+                        "msgId": msg_id,
+                        "status": message_status,
+                        "remark": str(raw.get("remark") or "")[:500],
+                    }
+                )
+        if status == 30:
+            if normalized_messages is None or len(normalized_messages) != 1:
+                raise ValueError("successful platform SOP consumption requires exactly one explicit msgId")
+            if normalized_messages[0]["status"] != 30:
+                raise ValueError("successful platform SOP consumption requires message status 30")
+            payload["messages"] = normalized_messages
+        elif normalized_messages:
+            raise ValueError("non-send platform SOP consumption must not consume message content")
         if content_exhausted is not None:
             payload["contentExhausted"] = bool(content_exhausted)
         return await self._request(
@@ -349,7 +383,16 @@ class SopPlatformClient:
                 state = next(
                     (
                         candidate
-                        for candidate in ("已无需发送", "无需发送", "已不发送", "不发送", "已失败", "失败", "已取消", "已完成")
+                        for candidate in (
+                            "已无需发送",
+                            "无需发送",
+                            "已不发送",
+                            "不发送",
+                            "已失败",
+                            "失败",
+                            "已取消",
+                            "已完成",
+                        )
                         if candidate in detail
                     ),
                     "",
@@ -368,6 +411,32 @@ class SopPlatformClient:
     async def aclose(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+
+def _sop_message_group_is_unconsumed(item: dict[str, Any]) -> bool:
+    for key in ("consumed", "isConsumed", "occurred", "isOccurred"):
+        value = item.get(key)
+        if isinstance(value, bool):
+            return not value
+    raw_status = item.get("status", item.get("sendStatus", item.get("consumeStatus")))
+    if isinstance(raw_status, (int, float)):
+        return int(raw_status) not in {30, 40, 70}
+    status = str(raw_status or "").strip().lower().replace("-", "_")
+    if not status:
+        return True
+    return status not in {
+        "30",
+        "40",
+        "70",
+        "sent",
+        "success",
+        "completed",
+        "consumed",
+        "occurred",
+        "failed",
+        "no_send",
+        "skipped",
+    }
 
 
 def service_rule_data_payload(

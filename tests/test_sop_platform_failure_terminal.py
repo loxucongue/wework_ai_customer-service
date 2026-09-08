@@ -31,9 +31,7 @@ def test_terminal_platform_states_are_reconciled_without_retry() -> None:
         assert _platform_task_is_already_no_send(error)
 
     assert not _platform_task_is_already_no_send(RuntimeError("connect timeout"))
-    assert _platform_task_is_already_no_send(
-        SopPlatformTaskStateError(state="无需发送", payload={"code": 400})
-    )
+    assert _platform_task_is_already_no_send(SopPlatformTaskStateError(state="无需发送", payload={"code": 400}))
 
 
 def test_platform_queued_tasks_are_recovered_after_restart() -> None:
@@ -94,9 +92,15 @@ def test_platform_snake_case_messages_pass_preflight_validation() -> None:
 
 
 def test_platform_snake_case_invalid_content_remains_blocked() -> None:
-    assert _platform_message_error({"message_content": [{"msg_type": "file", "media_url": "https://example.com/a"}]}) == "unsupported_message_type"
+    assert (
+        _platform_message_error({"message_content": [{"msg_type": "file", "media_url": "https://example.com/a"}]})
+        == "unsupported_message_type"
+    )
     assert _platform_message_error({"message_content": [{"msg_type": "text", "content_text": ""}]}) == "empty_text"
-    assert _platform_message_error({"message_content": [{"msg_type": "image", "media_url": "not-a-url"}]}) == "invalid_media_url"
+    assert (
+        _platform_message_error({"message_content": [{"msg_type": "image", "media_url": "not-a-url"}]})
+        == "invalid_media_url"
+    )
 
 
 class _Repository:
@@ -141,6 +145,9 @@ def _service() -> tuple[SopPlatformTaskService, _Repository, _Platform]:
     service._reserved_prefix_ids = {"prefix-task", "101", "content-msg-id"}
     service._counters = Counter()
     service._timings = {name: deque(maxlen=500) for name in ("consume", "rule_data")}
+    service._ensure_local_task = lambda task, **_kwargs: ({}, {"id": f"local-{task['taskId']}"})
+    service._remember_terminal = lambda _task_id: None
+    service._log_task_phase = lambda **_kwargs: None
     return service, repository, platform
 
 
@@ -148,7 +155,7 @@ def _task() -> dict[str, object]:
     return {"taskId": "101", "message_content": [{"type": "text", "content": "hello"}]}
 
 
-def test_downstream_409_records_failure_without_consuming_platform_task() -> None:
+def test_downstream_409_consumes_task_70_without_consuming_message() -> None:
     service, repository, platform = _service()
     result = asyncio.run(
         service._handle_batch_send_failure(
@@ -164,17 +171,16 @@ def test_downstream_409_records_failure_without_consuming_platform_task() -> Non
         )
     )
 
-    assert result["status"] == "send_failed"
-    terminal_failure = repository.task_updates[-1]["send_payload"]["terminal_failure"]
-    assert terminal_failure["platform_task_consumed"] is False
-    assert terminal_failure["content_msgids_consumed"] == []
-    assert platform.consume_calls == []
-    assert platform.rule_calls == []
-    assert repository.task_updates[-1]["status"] == "send_failed"
-    assert repository.event_updates[-1]["status"] == "platform_failed"
+    assert result["status"] == "completed_without_send"
+    assert [(call["task_id"], call["status"], call.get("messages")) for call in platform.consume_calls] == [
+        ("101", 70, None)
+    ]
+    assert len(platform.rule_calls) == 1
+    assert repository.task_updates[-1]["status"] == "completed_without_send"
+    assert repository.event_updates[-1]["status"] == "platform_completed"
 
 
-def test_expired_delivery_retry_preserves_task_without_resending_or_consuming() -> None:
+def test_expired_delivery_retry_consumes_task_70_without_resending_or_message_result() -> None:
     service, repository, platform = _service()
     result = asyncio.run(
         service._retry_batch_send(
@@ -192,11 +198,11 @@ def test_expired_delivery_retry_preserves_task_without_resending_or_consuming() 
         )
     )
 
-    assert result["status"] == "send_failed"
-    assert platform.consume_calls == []
-    assert platform.rule_calls == []
-    assert repository.task_updates[-1]["status"] == "send_failed"
-    assert repository.event_updates[-1]["status"] == "platform_failed"
+    assert result["status"] == "completed_without_send"
+    assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
+    assert len(platform.rule_calls) == 1
+    assert repository.task_updates[-1]["status"] == "completed_without_send"
+    assert repository.event_updates[-1]["status"] == "platform_completed"
 
 
 def test_uncertain_or_unidentified_send_never_counts_as_confirmed() -> None:
@@ -229,7 +235,7 @@ def test_historical_retry_request_is_sanitized_before_strict_client_call() -> No
     ) == {"corp_id": "corp", "task_id": "task", "reply_messages": []}
 
 
-def test_transient_failure_starts_bounded_retry_window_without_consuming() -> None:
+def test_transient_send_failure_consumes_task_70_without_message_result() -> None:
     service, repository, platform = _service()
     result = asyncio.run(
         service._handle_batch_send_failure(
@@ -241,12 +247,11 @@ def test_transient_failure_starts_bounded_retry_window_without_consuming() -> No
         )
     )
 
-    assert result["status"] == "processing_retry"
-    assert result["retry"]["first_failure_at"]
-    assert result["retry"]["retry_deadline_at"]
-    assert platform.consume_calls == []
-    assert repository.task_updates[-1]["status"] == "processing_retry"
-    assert repository.event_updates[-1]["status"] == "platform_batch_send_retry"
+    assert result["status"] == "completed_without_send"
+    assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
+    assert len(platform.rule_calls) == 1
+    assert repository.task_updates[-1]["status"] == "completed_without_send"
+    assert repository.event_updates[-1]["status"] == "platform_completed"
 
 
 def test_fixed_content_task_also_expires_ten_minutes_after_schedule() -> None:

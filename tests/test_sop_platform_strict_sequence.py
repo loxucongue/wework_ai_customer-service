@@ -54,20 +54,29 @@ def test_finalize_rejects_unsent_prefix_before_any_platform_consume() -> None:
         )
 
 
-def test_no_send_gate_is_preserved_as_failure_without_platform_consume() -> None:
+def test_no_send_gate_consumes_only_tasks_with_status_70() -> None:
     service = SopPlatformTaskService.__new__(SopPlatformTaskService)
-    captured: dict[str, object] = {}
+    consume_calls: list[dict[str, object]] = []
 
-    async def defer(tasks: list[dict[str, object]], **values: object) -> dict[str, object]:
-        captured.update(values)
-        return {
-            "processed": False,
-            "status": "send_failed",
-            "task_id": tasks[0]["taskId"],
-            "terminal_task_ids": [],
-        }
+    async def consume(**values: object) -> dict[str, object]:
+        consume_calls.append(values)
+        return {"code": 200, "data": {"status": values["status"]}}
 
-    service._defer_sequence_blocked = defer  # type: ignore[method-assign]
+    async def report(*_args: object, **_values: object) -> dict[str, object]:
+        return {"rule_data_response": {"code": 200}}
+
+    class _Repository:
+        def update_sop_send_task(self, *_args: object, **_values: object) -> None:
+            return None
+
+        def update_sop_event_status(self, *_args: object, **_values: object) -> None:
+            return None
+
+    service.repository = _Repository()
+    service._ensure_local_task = lambda task, **_kwargs: ({}, {"id": f"local-{task['taskId']}"})
+    service._consume_with_audit = consume  # type: ignore[method-assign]
+    service._report_terminal_rule_data = report  # type: ignore[method-assign]
+    service._remember_terminal = lambda _task_id: None
     result = asyncio.run(
         service._consume_batch_without_send(
             [{"taskId": "earliest"}],
@@ -79,13 +88,15 @@ def test_no_send_gate_is_preserved_as_failure_without_platform_consume() -> None
         )
     )
 
-    assert result["status"] == "send_failed"
-    assert result["terminal_task_ids"] == []
-    assert captured["failure_reason"] == "human_takeover"
-    assert captured["trigger_tasks"] == [{"taskId": "trigger"}]
+    assert result["status"] == "completed_without_send"
+    assert result["terminal_task_ids"] == ["earliest", "trigger"]
+    assert [(call["task_id"], call["status"], call.get("messages")) for call in consume_calls] == [
+        ("earliest", 70, None),
+        ("trigger", 70, None),
+    ]
 
 
-def test_compat_trigger_is_completed_as_sent_after_confirmed_content_delivery() -> None:
+def test_finalize_consumes_only_selected_task_and_exact_message_id() -> None:
     service = SopPlatformTaskService.__new__(SopPlatformTaskService)
     consume_calls: list[dict[str, object]] = []
 
@@ -111,13 +122,19 @@ def test_compat_trigger_is_completed_as_sent_after_confirmed_content_delivery() 
             selected_task_id="selected",
             skipped_prefix_task_ids=[],
             compat_trigger_task_ids=["trigger"],
-            audit={"consume_results": []},
+            audit={
+                "consume_results": [],
+                "content_message_results": [{"msgId": 9, "status": 30, "remark": ""}],
+            },
         )
     )
 
-    assert terminal_ids == ["selected", "trigger"]
-    assert [call["status"] for call in consume_calls] == [30, 30]
-    assert all(call["status"] != 70 for call in consume_calls)
+    assert terminal_ids == ["selected"]
+    assert len(consume_calls) == 1
+    assert consume_calls[0]["task_id"] == "selected"
+    assert consume_calls[0]["status"] == 30
+    assert consume_calls[0]["messages"] == [{"msgId": 9, "status": 30, "remark": ""}]
+    assert service._reserved_prefix_ids == {"trigger"}
 
 
 def test_durable_sequence_guard_finds_earlier_unconfirmed_task() -> None:
