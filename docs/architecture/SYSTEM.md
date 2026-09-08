@@ -2,7 +2,7 @@
 
 - status: current-code
 - owner: project
-- last_verified: 2026-09-07 Asia/Shanghai at `main@44fcd568`
+- last_verified: 2026-09-08 Asia/Shanghai at `main@7b1c01f7`
 - source_of_truth: 当前 `main` 代码树；精确版本以 `git rev-parse HEAD` 为准
 
 ## 代码结构
