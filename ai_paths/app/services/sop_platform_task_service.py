@@ -162,9 +162,12 @@ Decision hierarchy:
 3. Exact duplicate: no_send only when the full candidate batch has the same
    message types, order, text and media/link URLs as a recently sent full batch.
    Similar topic, similar intent, or non-identical wording is not duplicate.
-4. First-add tasks (`add_wecom`) default to send. Silence, no expressed demand,
-   old resolved store context, ordinary hesitation, or `use_ai_copy=false` are
-   never valid no_send reasons for first-add tasks.
+4. First-add tasks (`add_wecom`) default to send only while the authoritative
+   conversation confirms that the customer has not replied after being added.
+   Any real customer reply after add is a code-enforced no_send boundary; the
+   model cannot override it. A platform automatic opening message is not a real
+   customer reply. Silence, no expressed demand, old resolved store context,
+   ordinary hesitation, or `use_ai_copy=false` are never valid no_send reasons.
 5. If `use_ai_copy=false`, still judge send/no_send. If send, AICS will send
    the original platform messages exactly and ignore rewritten text.
 
@@ -179,7 +182,7 @@ When decision is no_send, include:
 Allowed first-add no_send reason_code values:
 customer_deleted, explicit_stop_contact, complaint_or_refund, health_risk,
 paid_or_appointment_conflict, human_takeover, unresolved_customer_question,
-exact_duplicate, invalid_task.
+customer_replied_after_add, exact_duplicate, invalid_task.
 
 When decision is send, `reason_code` may be omitted or set to `send`.
 Return lowercase valid json only.
@@ -194,6 +197,7 @@ FIRST_ADD_NO_SEND_REASON_CODES = {
     "paid_or_appointment_conflict",
     "human_takeover",
     "unresolved_customer_question",
+    "customer_replied_after_add",
     "exact_duplicate",
     "invalid_task",
 }
@@ -215,6 +219,7 @@ SOP_PLATFORM_BATCH_SYSTEM_PROMPT = """
 10. `evidence_refs` 只能引用输入中真实存在的 `msg_*` 或 `task:*` 引用。
 11. 只返回小写 json，不要 Markdown 或解释。
 12. 每个消息组中的价格、项目、邀约、退款说明、预约金和媒体，都是该任务自己的权威原始事实。不得与任何全局活动报价比较，不得因为不同任务价格或品项不同而判定冲突或跳过。
+13. `add_wecom` 任务只在权威会话确认客户加微后尚未真实回复时才可发送。客户加微后已有任何真实回复时必须 `skip`；企微自动开场白不算客户真实回复。该边界由代码强制执行，模型不得覆盖。
 
 输出：
 {
@@ -830,7 +835,7 @@ class SopPlatformTaskService:
             # from producing a second customer message.
             async with semaphore:
                 try:
-                    if recovery_status == "platform_sequence_blocked":
+                    if recovery_status in {"platform_queued", "platform_sequence_blocked"}:
                         result = await self.process_customer_batch(
                             {
                                 "_aics_customer_batch": True,
@@ -1171,12 +1176,14 @@ class SopPlatformTaskService:
         if not isinstance(data.get("customer_relation"), dict):
             raise RuntimeError("platform customer conversation is missing customer_relation")
         relation = data["customer_relation"]
-        raw_messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        if not isinstance(data.get("messages"), list):
+            raise RuntimeError("platform customer conversation is missing messages")
+        raw_messages = data["messages"]
         timeline = _conversation_timeline(raw_messages)
         timeline_structure = _timeline_structure(timeline)
         base_audit_context.update({
             "timeline_structure": timeline_structure,
-            "customer_opened": bool(timeline_structure.get("customer_message_count")),
+            "customer_opened": _customer_has_opened(timeline),
             "customer_relation": _compact_customer_relation(relation),
         })
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
@@ -1200,6 +1207,23 @@ class SopPlatformTaskService:
                 batch_run_id=batch_run_id,
                 audit_context=base_audit_context,
                 content_exhausted=True,
+            )
+        first_add_guard = _first_add_customer_reply_guard(tasks[0], timeline=timeline)
+        if first_add_guard.get("blocked"):
+            base_audit_context["first_add_reply_guard"] = first_add_guard
+            return await self._consume_batch_without_send(
+                tasks,
+                trigger_tasks=trigger_tasks,
+                reason="customer_replied_after_add",
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                decision={
+                    "selected_task_id": "",
+                    "evaluations": [],
+                    "reason": "customer_replied_after_add",
+                },
+                audit_context=base_audit_context,
             )
         phase_started = time.perf_counter()
         context = await self._load_batch_context(
@@ -1415,6 +1439,71 @@ class SopPlatformTaskService:
             "conversation_timeline": timeline,
             "timeline_structure": _timeline_structure(timeline),
             "business_state": _compact_business_state(customer_context),
+        }
+
+    async def _load_first_add_send_guard(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        identity: dict[str, str],
+    ) -> dict[str, Any]:
+        """Re-read the authoritative conversation immediately before a first-add send."""
+
+        if _task_type(platform_task) != "add_wecom":
+            return {"required": False, "blocked": False}
+        try:
+            conversation = await self.system_client.conversation(
+                **_outreach_system_identity(identity),
+                limit=80,
+            )
+        except Exception as exc:
+            return {
+                "required": True,
+                "blocked": True,
+                "reason": "first_add_conversation_unavailable",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        if not isinstance(data, dict):
+            return {
+                "required": True,
+                "blocked": True,
+                "reason": "first_add_conversation_invalid",
+                "error": "conversation_response_not_object",
+            }
+        relation = data.get("customer_relation")
+        if not isinstance(relation, dict):
+            return {
+                "required": True,
+                "blocked": True,
+                "reason": "first_add_conversation_invalid",
+                "error": "customer_relation_missing",
+            }
+        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+            return {
+                "required": True,
+                "blocked": True,
+                "reason": "customer_relation_deleted",
+                "customer_relation": _compact_customer_relation(relation),
+            }
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            return {
+                "required": True,
+                "blocked": True,
+                "reason": "first_add_conversation_invalid",
+                "error": "messages_missing",
+            }
+        timeline = _conversation_timeline(messages[-80:])
+        reply_guard = _first_add_customer_reply_guard(platform_task, timeline=timeline)
+        return {
+            "required": True,
+            "blocked": bool(reply_guard.get("blocked")),
+            "reason": str(reply_guard.get("reason") or ""),
+            "checked_at": utc_now_iso(),
+            "timeline_structure": _timeline_structure(timeline),
+            "customer_relation": _compact_customer_relation(relation),
+            **({"reply": reply_guard} if reply_guard else {}),
         }
 
     async def _decide_customer_batch(
@@ -1649,6 +1738,27 @@ class SopPlatformTaskService:
                 if str(value).strip()
             )
         )
+        first_add_guard = await self._load_first_add_send_guard(
+            selected_task,
+            identity=identity,
+        )
+        audit["first_add_presend_guard"] = first_add_guard
+        if first_add_guard.get("blocked"):
+            guard_reason = str(first_add_guard.get("reason") or "first_add_conversation_unavailable")
+            return await self._consume_batch_without_send(
+                [selected_task],
+                trigger_tasks=trigger_tasks,
+                reason=guard_reason,
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                decision={
+                    "selected_task_id": "",
+                    "evaluations": [],
+                    "reason": guard_reason,
+                },
+                audit_context={**context, "first_add_presend_guard": first_add_guard},
+            )
         if self.settings.sop_platform_shadow_mode:
             for task in skipped_prefix:
                 self._mark_local_task(task, status="shadow_no_send", send_payload=audit)
@@ -1996,6 +2106,27 @@ class SopPlatformTaskService:
                 "task_id": selected_id,
                 "retry": retry_state,
             }
+        first_add_guard = await self._load_first_add_send_guard(
+            platform_task,
+            identity=identity,
+        )
+        audit["first_add_retry_guard"] = first_add_guard
+        if first_add_guard.get("blocked"):
+            guard_reason = str(first_add_guard.get("reason") or "first_add_conversation_unavailable")
+            return await self._defer_sequence_blocked(
+                [platform_task],
+                trigger_tasks=[],
+                batch_key=str(audit.get("batch_key") or _customer_batch_key(platform_task)),
+                biz_type=str(audit.get("biz_type") or platform_task.get("_aics_biz_type") or "online_service"),
+                batch_run_id=str(audit.get("batch_run_id") or f"retry:{selected_id}"),
+                decision={
+                    "selected_task_id": "",
+                    "evaluations": [],
+                    "reason": guard_reason,
+                },
+                audit_context={"previous_send_audit": audit, "first_add_retry_guard": first_add_guard},
+                failure_reason=guard_reason,
+            )
         self._hold_sequence_reservations(selected_id=selected_id, audit=audit)
         try:
             stored_request = audit.get("request") if isinstance(audit.get("request"), dict) else {}
@@ -3442,9 +3573,22 @@ class SopPlatformTaskService:
                 started = time.perf_counter()
                 context = await self._load_context(platform_task, identity=identity)
                 self._observe("context", time.perf_counter() - started)
-                started = time.perf_counter()
-                decision = await self._decide(platform_task, context=context)
-                self._observe("model", time.perf_counter() - started)
+                first_add_reply_guard = _first_add_customer_reply_guard(
+                    platform_task,
+                    timeline=context.get("conversation_timeline") or [],
+                )
+                if first_add_reply_guard.get("blocked"):
+                    context["first_add_reply_guard"] = first_add_reply_guard
+                    decision = {
+                        "decision": "no_send",
+                        "reason": "customer_replied_after_add",
+                        "reason_code": "customer_replied_after_add",
+                        "reply_messages": [],
+                    }
+                else:
+                    started = time.perf_counter()
+                    decision = await self._decide(platform_task, context=context)
+                    self._observe("model", time.perf_counter() - started)
             if self.settings.sop_platform_shadow_mode:
                 status = f"shadow_{decision['decision']}"
                 self.repository.update_sop_send_task(
@@ -3456,6 +3600,7 @@ class SopPlatformTaskService:
                 return {"processed": True, "status": status, "task_id": task_id, "decision": decision}
 
             if decision["decision"] == "no_send":
+                no_send_reason = str(decision.get("reason") or "legacy_no_send")
                 return await self._defer_sequence_blocked(
                     [platform_task],
                     trigger_tasks=[],
@@ -3465,9 +3610,10 @@ class SopPlatformTaskService:
                     decision={
                         "selected_task_id": "",
                         "evaluations": [],
-                        "reason": str(decision.get("reason") or "legacy_no_send"),
+                        "reason": no_send_reason,
                     },
                     audit_context=context,
+                    failure_reason=no_send_reason,
                 )
             else:
                 send_payload = {
@@ -3513,6 +3659,32 @@ class SopPlatformTaskService:
                         "decision": duplicate_decision,
                         "platform_response": completed,
                     }
+                first_add_presend_guard = await self._load_first_add_send_guard(
+                    platform_task,
+                    identity=identity,
+                )
+                if first_add_presend_guard.get("blocked"):
+                    guard_reason = str(
+                        first_add_presend_guard.get("reason")
+                        or "first_add_conversation_unavailable"
+                    )
+                    return await self._defer_sequence_blocked(
+                        [platform_task],
+                        trigger_tasks=[],
+                        batch_key=_customer_batch_key(platform_task),
+                        biz_type=str(platform_task.get("_aics_biz_type") or "online_service"),
+                        batch_run_id=f"legacy:{task_id}",
+                        decision={
+                            "selected_task_id": "",
+                            "evaluations": [],
+                            "reason": guard_reason,
+                        },
+                        audit_context={
+                            **context,
+                            "first_add_presend_guard": first_add_presend_guard,
+                        },
+                        failure_reason=guard_reason,
+                    )
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="sending",
@@ -3838,10 +4010,14 @@ class SopPlatformTaskService:
             limit=80,
         )
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
-        relation = _compact_customer_relation(
-            data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
-        )
-        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        if not isinstance(data, dict):
+            raise RuntimeError("platform customer conversation response is invalid")
+        if not isinstance(data.get("customer_relation"), dict):
+            raise RuntimeError("platform customer conversation is missing customer_relation")
+        if not isinstance(data.get("messages"), list):
+            raise RuntimeError("platform customer conversation is missing messages")
+        relation = _compact_customer_relation(data["customer_relation"])
+        messages = data["messages"]
         timeline = _conversation_timeline(messages[-80:])
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
             return {
@@ -5919,12 +6095,59 @@ def _compact_management_status(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _customer_has_opened(timeline: list[dict[str, Any]]) -> bool:
-    return any(
-        item.get("role") == "customer"
-        and bool(str(item.get("content") or "").strip())
-        and not is_platform_auto_opening_message(str(item.get("content") or "").strip())
-        for item in timeline
+    return any(_is_real_customer_reply(item) for item in timeline)
+
+
+def _is_real_customer_reply(item: Any) -> bool:
+    if not isinstance(item, dict) or item.get("role") != "customer":
+        return False
+    content = str(item.get("content") or "").strip()
+    return not (content and is_platform_auto_opening_message(content))
+
+
+def _first_add_customer_reply_guard(
+    task: dict[str, Any],
+    *,
+    timeline: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if _task_type(task) != "add_wecom":
+        return {}
+    add_time = (
+        task.get("operateTime")
+        or task.get("operate_time")
+        or task.get("createTime")
+        or task.get("create_time")
     )
+    add_epoch = _parse_epoch(add_time)
+    for item in timeline:
+        if not _is_real_customer_reply(item):
+            continue
+        message_epoch = _parse_epoch(
+            item.get("occurred_at_epoch")
+            or item.get("occurred_at_beijing")
+            or item.get("raw_time")
+        )
+        if add_epoch and message_epoch and message_epoch < add_epoch:
+            continue
+        return {
+            "blocked": True,
+            "reason": "customer_replied_after_add",
+            "task_type": "add_wecom",
+            "add_time": add_time or "",
+            "add_time_confirmed": bool(add_epoch),
+            "reply_time_confirmed": bool(message_epoch),
+            "reply_message_ref": str(item.get("message_ref") or ""),
+            "reply_occurred_at_beijing": str(item.get("occurred_at_beijing") or ""),
+            "reply_message_type": str(item.get("message_type") or ""),
+            "reply_excerpt": str(item.get("content") or "")[:120],
+        }
+    return {
+        "blocked": False,
+        "reason": "no_customer_reply_after_add",
+        "task_type": "add_wecom",
+        "add_time": add_time or "",
+        "add_time_confirmed": bool(add_epoch),
+    }
 
 
 def _is_same_day_unopened(tasks: list[dict[str, Any]], *, timeline: list[dict[str, Any]]) -> bool:
@@ -6110,6 +6333,7 @@ def _conversation_timeline(messages: list[Any]) -> list[dict[str, Any]]:
         if epoch:
             timeline_item.update(
                 {
+                    "occurred_at_epoch": epoch,
                     "occurred_at_beijing": datetime.fromtimestamp(epoch, tz=_BEIJING_TZ).strftime(
                         "%Y-%m-%d %H:%M:%S"
                     ),
