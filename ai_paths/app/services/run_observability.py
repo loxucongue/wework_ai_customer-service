@@ -67,6 +67,7 @@ def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
     selector = _dict(recall.get("selector"))
     knowledge_use = _dict(state.get("reply_knowledge_use"))
     content_metrics = _dict(state.get("content_selection_metrics"))
+    mainline = _dict(state.get("mainline_delivery_state"))
     message_refs = _message_ref_map(state)
     conversation = _conversation_view(state)
     store_summary = _store_summary(state, store_query=store_query)
@@ -211,6 +212,20 @@ def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
                 state.get("reply_content_decisions")
             ),
         },
+        "sales_progress": {
+            "mainline_delivery": mainline,
+            "next_missing_stage": _next_missing_mainline_stage(mainline),
+            "effect_asset": {
+                "candidate_count": int(content_metrics.get("nominated_count") or 0),
+                "selected_count": int(content_metrics.get("adopted_count") or 0),
+                "delivered_count": int(content_metrics.get("delivered_count") or 0),
+                "selected_ids": _string_list(content_metrics.get("adopted_ids")),
+                "delivered_ids": _string_list(content_metrics.get("delivered_ids")),
+            },
+            "pause_source": _pause_source(state),
+            "fallback_stage": _text(state.get("fallback_failure_node")),
+            "fallback_reason": _text(state.get("fallback_violation") or state.get("recovery_reason")),
+        },
         "delivery": _initial_delivery_summary(state),
         "model_usage": compact_model_usage,
         "strategy_callback": _dict(state.get("strategy_data_callback")),
@@ -221,6 +236,37 @@ def build_v3_run_observability(state: dict[str, Any]) -> dict[str, Any]:
             "recovery_attempts": _dict_list(state.get("recovery_attempts"))[:8],
         },
     }
+
+
+def _next_missing_mainline_stage(mainline: dict[str, Any]) -> str:
+    if not mainline.get("effect_evidence_delivered"):
+        return "effect_or_project"
+    if not mainline.get("activity_offer_delivered"):
+        return "activity_value"
+    if not mainline.get("store_address_delivered"):
+        return "store"
+    if not mainline.get("appointment_active"):
+        return "appointment"
+    if not mainline.get("authoritative_paid"):
+        return "deposit"
+    return "completed"
+
+
+def _pause_source(state: dict[str, Any]) -> str:
+    intent = _dict(state.get("realtime_intent"))
+    if _text(intent.get("type")) == "explicit_exit":
+        return "explicit_exit"
+    context = _dict(state.get("request_context"))
+    takeover = _dict(context.get("takeover_guard"))
+    if _text(takeover.get("decision")) == "return_empty":
+        return "human_takeover"
+    safety = _dict(state.get("reply_safety_assessment"))
+    if _text(safety.get("status")) not in {"", "none"}:
+        return "system_risk"
+    emotion = _dict(state.get("emotion_decision"))
+    if _text(emotion.get("label")) in {"angry", "impatient"}:
+        return "model_emotion"
+    return "none"
 
 
 def enrich_v3_run_observability(
@@ -400,6 +446,7 @@ def enrich_admin_observability_v3(
         "adoption_explanation": _knowledge_adoption_explanation(knowledge, checkpoint),
     }
     view["store_workflow"] = _dict(stored.get("store_workflow"))
+    view["sales_progress"] = _dict(stored.get("sales_progress"))
     view["workflow_nodes"] = _workflow_nodes(
         run=run,
         nodes=nodes,

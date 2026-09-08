@@ -371,11 +371,63 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
         <DecisionCard icon={<Send className="size-4 text-emerald-600" />} title="逼单动作" value={decision?.closing?.action_name || "未记录"} meta={[decision?.closing?.sequence_name || decision?.closing?.sequence_key, decision?.closing?.node_name || decision?.closing?.node_key, customerStateLabel(decision?.closing?.customer_state), decision?.closing?.pressure ? `表达压力 ${pressureLabel(decision.closing.pressure)}` : ""].filter(Boolean).join(" · ")} evidence={decision?.closing?.evidence} />
       </section>
 
+      <SalesProgressSection progress={view?.sales_progress} />
       <StrategySection knowledge={knowledge} checkpoint={checkpoint} deliveryStatus={view?.delivery?.status} />
       <WorkflowSection view={view} onOpenNode={onOpenNode} />
       <DeliverySection view={view} />
     </div>
   );
+}
+
+function SalesProgressSection({ progress }: { progress?: ObservabilityView["sales_progress"] }) {
+  if (!progress) return null;
+  const mainline = progress.mainline_delivery || {};
+  const stages: Array<[string, string]> = [
+    ["effect_evidence_delivered", "效果/项目"],
+    ["activity_offer_delivered", "活动价值"],
+    ["store_address_delivered", "门店"],
+    ["appointment_active", "预约"],
+    ["authoritative_paid", "预约金"],
+  ];
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <SectionHeader title="销售主线与交付诊断" subtitle="只按真实已送达内容和权威交易事实计算" />
+      <div className="grid gap-4 border-t border-zinc-100 p-4 lg:grid-cols-[1.5fr_1fr_1fr] sm:p-5">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            {stages.map(([key, label], index) => {
+              const done = Boolean(mainline[key]);
+              return (
+                <div key={key} className="flex items-center gap-2">
+                  <SmallTag tone={done ? "green" : "gray"}>{done ? "已交付" : "未交付"} {label}</SmallTag>
+                  {index < stages.length - 1 ? <ArrowRight className="size-3.5 text-zinc-300" /> : null}
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-xs text-zinc-500">下一缺失环节：{mainlineStageLabel(progress.next_missing_stage)}</p>
+        </div>
+        <div className="rounded-lg bg-zinc-50 p-3 text-xs">
+          <div className="font-medium text-zinc-800">效果素材</div>
+          <div className="mt-2 text-zinc-600">候选 {progress.effect_asset?.candidate_count ?? 0} · 选择 {progress.effect_asset?.selected_count ?? 0} · 实际输出 {progress.effect_asset?.delivered_count ?? 0}</div>
+        </div>
+        <div className="rounded-lg bg-zinc-50 p-3 text-xs">
+          <div className="font-medium text-zinc-800">暂停与兜底</div>
+          <div className="mt-2 text-zinc-600">暂停来源：{pauseSourceLabel(progress.pause_source)}</div>
+          <div className="mt-1 text-zinc-600">兜底节点：{progress.fallback_stage || "无"}</div>
+          {progress.fallback_reason ? <div className="mt-1 line-clamp-2 text-amber-700" title={progress.fallback_reason}>{progress.fallback_reason}</div> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function mainlineStageLabel(value?: string) {
+  return ({ effect_or_project: "效果/项目", activity_value: "活动价值", store: "门店", appointment: "预约", deposit: "预约金", completed: "已完成" } as Record<string, string>)[value || ""] || "未记录";
+}
+
+function pauseSourceLabel(value?: string) {
+  return ({ none: "无", model_emotion: "模型情绪调节", explicit_exit: "明确退订", human_takeover: "人工接管", system_risk: "系统风险" } as Record<string, string>)[value || ""] || value || "未记录";
 }
 
 function IdentitySection({ identity }: { identity: CustomerIdentity }) {
