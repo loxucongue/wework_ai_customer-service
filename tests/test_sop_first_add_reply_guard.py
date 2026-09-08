@@ -142,7 +142,6 @@ def test_batch_opened_customer_never_reaches_model_or_send(monkeypatch: pytest.M
         return {"processed": False, "status": "send_failed", "task_id": tasks[0]["taskId"]}
 
     service._consume_batch_without_send = block
-    monkeypatch.setattr(sop_module, "_platform_task_is_stale", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(sop_module, "_in_configured_quiet_hours", lambda **_kwargs: False)
     monkeypatch.setattr(sop_module, "_quiet_hours_base_summary", lambda *_args, **_kwargs: {})
 

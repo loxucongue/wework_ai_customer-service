@@ -15,7 +15,6 @@ from app.services.sop_platform_task_service import (
     _is_priority_wechat,
     _outreach_system_identity,
     _outreach_send_request,
-    _partition_stale_pending_tasks,
     _platform_message_error,
     _platform_task_is_already_no_send,
     _select_bulk_human_takeover_tasks,
@@ -85,7 +84,7 @@ def test_platform_snake_case_messages_pass_preflight_validation() -> None:
         _task_preflight_no_send_reason(
             task,
             identity=identity,
-            settings=SimpleNamespace(sop_platform_max_task_age_seconds=600, sop_platform_live_not_before=""),
+            settings=SimpleNamespace(sop_platform_live_not_before=""),
         )
         == ""
     )
@@ -254,7 +253,7 @@ def test_transient_send_failure_consumes_task_70_without_message_result() -> Non
     assert repository.event_updates[-1]["status"] == "platform_completed"
 
 
-def test_fixed_content_task_also_expires_ten_minutes_after_schedule() -> None:
+def test_fixed_content_task_is_not_rejected_because_scheduled_time_is_old() -> None:
     task = {
         **_task(),
         "scheduledAt": time.time() - 601,
@@ -272,24 +271,10 @@ def test_fixed_content_task_also_expires_ten_minutes_after_schedule() -> None:
         _task_preflight_no_send_reason(
             task,
             identity=identity,
-            settings=SimpleNamespace(sop_platform_max_task_age_seconds=600, sop_platform_live_not_before=""),
+            settings=SimpleNamespace(sop_platform_live_not_before=""),
         )
-        == "stale_task"
+        == ""
     )
-
-
-def test_stale_pending_tasks_skip_message_content_lookup() -> None:
-    settings = SimpleNamespace(sop_platform_max_task_age_seconds=600)
-    stale, content_lookup = _partition_stale_pending_tasks(
-        [
-            {"task_id": 101, "scheduledAt": time.time() - 601},
-            {"task_id": 102, "scheduledAt": time.time() - 599},
-        ],
-        settings=settings,
-    )
-
-    assert [task["task_id"] for task in stale] == [101]
-    assert [task["task_id"] for task in content_lookup] == [102]
 
 
 def test_bulk_human_takeover_excludes_kept_wechat_and_new_tasks() -> None:
