@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +133,19 @@ def test_failed_finalization_is_persisted_with_retry_delay(tmp_path: Path) -> No
     assert job["status"] == "error"
     assert job["attempts"] == 1
     assert job["next_retry_at"]
+    assert repository.claim_v3_reply_finalizations(limit=5) == []
+
+
+def test_finalization_scan_is_bounded_to_recent_runs(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _enqueue(repository)
+    old_created_at = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE runs SET created_at=? WHERE request_id=?",
+            (old_created_at, "request-1"),
+        )
+
     assert repository.claim_v3_reply_finalizations(limit=5) == []
 
 

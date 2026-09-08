@@ -337,6 +337,7 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_parallel_selected_content_delivery(messages, state),
         lambda: _validate_appointment_time_facts(messages, state),
+        lambda: _validate_parallel_store_detail_facts(messages, state),
         lambda: _validate_store_resolution_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),
@@ -352,6 +353,41 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
                 violations.append(detail)
     if violations:
         raise ValueError("parallel_reply_hard_violations::" + ";;".join(violations))
+
+
+def _validate_parallel_store_detail_facts(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Reject a concrete floor/room answer when the store tool has no such fact."""
+
+    text = _combined_text(messages)
+    if not text or not _asserts_store_floor_or_room(text):
+        return
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    store_facts = [
+        item for item in structured.get("store_facts") or [] if isinstance(item, dict)
+    ]
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        store_facts.append(recommended)
+    has_arrival_fact = any(
+        str(item.get(field) or "").strip()
+        for item in store_facts
+        for field in ("floor", "floor_no", "room", "room_no", "room_number", "arrival_guidance")
+    )
+    if has_arrival_fact:
+        return
+    if (
+        str(resolution.get("requested_detail_kind") or "").strip() == "arrival_guidance"
+        and resolution.get("requested_detail_available") is False
+    ) or not store_facts:
+        raise ValueError("store_arrival_guidance_fact_required")
 
 
 def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -2356,6 +2392,16 @@ def _asserts_business_hours(text: str) -> bool:
     return bool(
         re.search(rf"{time_token}.{{0,14}}(?:开门|营业)", compact)
         or re.search(rf"(?:开门|营业).{{0,14}}{time_token}", compact)
+    )
+
+
+def _asserts_store_floor_or_room(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not any(term in compact for term in ("门店", "店在", "大厦", "楼层", "房间", "前台", "地址")):
+        return False
+    return bool(
+        re.search(r"(?:具体)?(?:在|是|位于)?[一二三四五六七八九十百\d]+(?:楼|层)(?:\d+(?:室|号))?(?![吗呢？?])", compact)
+        or re.search(r"(?:房间|房号|室号)(?:是|在|为)?\d+", compact)
     )
 
 

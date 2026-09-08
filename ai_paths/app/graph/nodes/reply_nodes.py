@@ -3725,6 +3725,8 @@ def _reply_repair_hint(error: str) -> str:
             "没有营业时间工具事实时，不要输出具体营业时间，也不要把客户提出的到店时间改写成门店开门或可接待时间。"
             "可以保留客户的行动意向，例如‘早上9点我先作为您的到店时间意向，具体接待安排以门店确认为准’。"
         )
+    if "store_arrival_guidance_fact_required" in error:
+        return "门店工具没有提供楼层、房间或到楼指引，不得猜测具体楼层或房号；如实说明当前只有地址事实，建议客户到大厦后按现场指引确认。"
     if "store_address_fact_required" in error:
         return "没有门店详情事实时，不要输出具体地址。"
     if "store_availability_fact_required" in error:

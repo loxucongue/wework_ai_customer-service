@@ -17,6 +17,7 @@ from app.graph.nodes.reply_validation import (
     _validate_parallel_appointment_confirmation_facts,
     _validate_parallel_business_hours_facts,
     _validate_parallel_registration_confirmation_facts,
+    _validate_parallel_store_detail_facts,
     _validate_unconfirmed_store_availability_claim,
 )
 from app.services.store_destination_resolver import _structured_current_location_query
@@ -211,6 +212,37 @@ def test_store_location_answer_is_not_treated_as_completed_appointment() -> None
 
     _validate_parallel_appointment_confirmation_facts(
         [{"type": "text", "content": "有，广州这边能直接看。"}],
+        state,
+    )
+
+
+def test_store_floor_claim_requires_authoritative_arrival_fact() -> None:
+    state = {
+        "evidence_join": {
+            "structured_facts": {
+                "store_resolution_fact": {
+                    "requested_detail_kind": "arrival_guidance",
+                    "requested_detail_available": False,
+                },
+                "store_facts": [
+                    {
+                        "store_id": "306",
+                        "store_name": "厦门百星湖里店",
+                        "store_address": "湖里区岐山北二路1000号萤火虫大厦",
+                    }
+                ],
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="store_arrival_guidance_fact_required"):
+        _validate_parallel_store_detail_facts(
+            [{"type": "text", "content": "门店就在萤火虫大厦3楼。"}],
+            state,
+        )
+
+    _validate_parallel_store_detail_facts(
+        [{"type": "text", "content": "当前只查到大厦地址，具体楼层还没有记录。"}],
         state,
     )
 

@@ -147,13 +147,15 @@ class RunRepositoryMixin:
     def claim_v3_reply_finalizations(self, *, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc)
         stale_before = (now - timedelta(minutes=5)).isoformat()
+        recent_cutoff = (now - timedelta(days=7)).isoformat()
         claimed: list[dict[str, Any]] = []
         with self.store.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT request_id, conversation_id, output_snapshot, token_usage
                 FROM runs
-                WHERE output_snapshot LIKE '%"post_reply_finalization"%'
+                WHERE created_at >= ?
+                  AND output_snapshot LIKE '%"post_reply_finalization"%'
                   AND (
                        output_snapshot LIKE '%"status": "pending"%'
                     OR output_snapshot LIKE '%"status":"pending"%'
@@ -165,7 +167,7 @@ class RunRepositoryMixin:
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
-                (max(1, min(int(limit or 10), 100)),),
+                (recent_cutoff, max(1, min(int(limit or 10), 100))),
             ).fetchall()
             for row in rows:
                 output = loads_dict(row["output_snapshot"])

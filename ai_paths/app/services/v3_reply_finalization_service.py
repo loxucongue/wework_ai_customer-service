@@ -27,7 +27,7 @@ class V3ReplyFinalizationService:
         service_rule_data_service: ServiceRuleDataService | None,
         outreach_service: OutreachService | None,
         memory_store: CustomerMemoryStore | None = None,
-        poll_seconds: float = 1.0,
+        poll_seconds: float = 2.0,
         batch_size: int = 10,
     ) -> None:
         self.repository = repository
