@@ -69,6 +69,15 @@ def test_protocol_message_persists_one_lightweight_idempotent_run(tmp_path: Path
     settings = _settings(tmp_path)
     store = SQLiteStore(settings)
     store.initialize()
+    original_connect = store.connect
+    connect_count = 0
+
+    def counted_connect():
+        nonlocal connect_count
+        connect_count += 1
+        return original_connect()
+
+    store.connect = counted_connect  # type: ignore[method-assign]
     repository = AppRepository(store)
     runtime = ChatRuntime(
         full_graph=_FailGraph(),
@@ -96,6 +105,9 @@ def test_protocol_message_persists_one_lightweight_idempotent_run(tmp_path: Path
     assert first.reply_messages == []
     assert first.meta["reply_source"] == "ignored_platform_auto_message"
     assert first.meta["model_usage"] == []
+    # The first request and the after-restart idempotency check each need one
+    # checkout; the in-process duplicate is served from the request cache.
+    assert connect_count == 2
     with store.connect() as conn:
         assert conn.execute("SELECT COUNT(*) AS c FROM runs").fetchone()["c"] == 1
         assert conn.execute("SELECT COUNT(*) AS c FROM node_traces").fetchone()["c"] == 1

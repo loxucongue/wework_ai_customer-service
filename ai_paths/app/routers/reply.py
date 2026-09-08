@@ -62,7 +62,6 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
                 background_tasks=None,
             )
             response_body = workflow_response_from_chat(response)
-            record_http_response(response.request_id, response_body)
             http_response = JSONResponse(content=response_body)
             bind_v3_run_request_id(http_request, response.request_id)
             return http_response
