@@ -1695,7 +1695,6 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         return
     _validate_closing_script_selection(payload, state, decision)
     intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
-    emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
     cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
     explicit_exit = str(intent.get("type") or "") == "explicit_exit"
     pause_marketing = _hard_pause_from_policy(decision)

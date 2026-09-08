@@ -622,11 +622,6 @@ def _validate_parallel_payment_boundaries(messages: list[dict[str, Any]], state:
         if isinstance(state.get("reply_payment_channel_availability"), dict)
         else {}
     )
-    deposit_evidence = (
-        state.get("reply_deposit_evidence")
-        if isinstance(state.get("reply_deposit_evidence"), dict)
-        else {}
-    )
     if not has_payment:
         # Action/payment/safety assessments are explanatory model metadata.
         # They cannot reject a customer-visible answer when no payment card or

@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
-
 from app.chat_runtime import record_reply_memory
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_service import OutreachService
