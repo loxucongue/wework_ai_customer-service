@@ -37,9 +37,9 @@ class _Repository:
         self.local.update({"status": "sending", "send_payload": values["send_payload"]})
         return dict(self.local)
 
-    def update_sop_send_task(self, _task_id: str, **values: Any) -> dict[str, Any]:
-        self.local.update(values)
-        self.task_updates.append(dict(values))
+    def update_sop_send_task(self, _task_id: str, *, status: str, **values: Any) -> dict[str, Any]:
+        self.local.update({"status": status, **values})
+        self.task_updates.append({"status": status, **values})
         return dict(self.local)
 
     def update_sop_event_status(self, event_id: str, **values: Any) -> None:

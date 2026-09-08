@@ -2526,8 +2526,9 @@ class SopPlatformTaskService:
             return
         local_task = load_task(f"platform-sop:{task_id}")
         local_task_id = str(local_task.get("id") or "") if isinstance(local_task, dict) else ""
-        if local_task_id:
-            update_task(local_task_id, send_payload=audit)
+        local_status = str(local_task.get("status") or "") if isinstance(local_task, dict) else ""
+        if local_task_id and local_status:
+            update_task(local_task_id, status=local_status, send_payload=audit)
 
     async def _finalize_batch_prefix(
         self,
