@@ -401,6 +401,9 @@ class TaskExecutor:
                         terminal=True,
                     )
                     return {"ok": True, "status": "skipped", "reason": "customer_replied"}
+                # Planning stays conversation-driven, but every automatic send
+                # must re-check the authoritative order state immediately before
+                # delivery so booked or paid customers are never re-marketed.
                 order_gate = await self._refresh_order_eligibility(task=task, plan=plan)
                 if not order_gate.get("available"):
                     raise RuntimeError(

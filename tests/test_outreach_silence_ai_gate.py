@@ -616,15 +616,10 @@ def test_authoritative_fingerprint_resumes_failed_run_without_a_plan() -> None:
     workflow = FirstDayWorkflow(
         repository=repository,
         model_client=object(),
-        customer_context_service=object(),
+        customer_context_service=None,
         first_day_wechat_allowlist="",
         planning=planning,
     )
-
-    async def load_context(**_: object) -> dict[str, object]:
-        return {"source": "platform_agent", "orders": []}
-
-    workflow._load_monitor_customer_context = load_context  # type: ignore[method-assign]
     result = asyncio.run(
         workflow._evaluate_first_day_silence_candidate(
             {
@@ -644,6 +639,196 @@ def test_authoritative_fingerprint_resumes_failed_run_without_a_plan() -> None:
     assert repository.runs["failed-run"]["status"] == "running"
     assert repository.runs["failed-run"]["retry_count"] == 1
     assert repository.runs["provisional-run"]["reason_code"] == "superseded_by_retryable_authoritative_run"
+
+
+def test_first_day_silence_plan_does_not_load_platform_order_context() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    customer_at = (now - timedelta(minutes=3)).isoformat()
+    staff_at = (now - timedelta(minutes=2)).isoformat()
+
+    class NoOrderContext:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def load(self, **_: object) -> dict[str, object]:
+            self.calls += 1
+            raise AssertionError("first-day silence must not load platform order context")
+
+    class Planning(_Planning):
+        def __init__(self) -> None:
+            super().__init__(_StatusClient())
+            self.source_context: dict[str, object] = {}
+
+        async def refresh_customer_conversation(self, **_: object) -> dict[str, object]:
+            return {
+                "customer_relation": {"available": True, "deleted": False},
+                "conversation_id": "conversation-1",
+                "first_added_at": (now - timedelta(days=1)).isoformat(),
+                "messages": [
+                    {"direction": "customer", "created_at": customer_at},
+                    {"direction": "staff", "created_at": staff_at},
+                ],
+            }
+
+        @staticmethod
+        def _latest_message_time(messages: list[dict[str, object]], *, sender: str) -> str:
+            direction = "customer" if sender == "customer" else "staff"
+            return max(str(item["created_at"]) for item in messages if item["direction"] == direction)
+
+        @staticmethod
+        def _completed_cycle_blocks_auto_plan(**_: object) -> bool:
+            return False
+
+        async def generate_plan(self, **values: object) -> dict[str, object]:
+            self.source_context = dict(values["source_context"])
+            return {"created": True, "plan": {"id": "plan-1"}}
+
+        @staticmethod
+        def _auto_approve_plan(plan_id: str) -> dict[str, object]:
+            return {"plan": {"id": plan_id, "status": "active"}}
+
+    class Repository(_Repository):
+        def has_outreach_evaluation_fingerprint(self, **_: object) -> bool:
+            return False
+
+        def recent_customer_context(self, *_: object, **__: object) -> dict[str, object]:
+            return {"memory": {}}
+
+    order_context = NoOrderContext()
+    planning = Planning()
+    workflow = FirstDayWorkflow(
+        repository=Repository(),
+        model_client=object(),
+        customer_context_service=order_context,
+        first_day_wechat_allowlist="",
+        planning=planning,
+    )
+
+    result = asyncio.run(
+        workflow._evaluate_first_day_silence_candidate(
+            {
+                **_identity(),
+                "last_customer_message_at": customer_at,
+                "last_staff_message_at": staff_at,
+                "latest_outbound_message_at": staff_at,
+            },
+            silent_minutes=1,
+            auto_activate=True,
+            eligible_after=(now - timedelta(hours=1)).isoformat(),
+        )
+    )
+
+    assert result["created"] is True
+    assert order_context.calls == 0
+    assert "customer_context" not in planning.source_context
+
+
+def test_first_day_silence_send_rechecks_and_blocks_terminal_order() -> None:
+    class Planning:
+        async def refresh_customer_conversation(self, **_: object) -> dict[str, object]:
+            return {
+                "messages": [],
+                "conversation_id": "conversation-1",
+                "customer_relation": {"available": True, "deleted": False},
+                "latest_customer_message_at": "",
+            }
+
+        @staticmethod
+        def _customer_replied_after_plan(*_: object) -> bool:
+            return False
+
+    repository = _Repository()
+    executor = TaskExecutor(
+        repository=repository,
+        system_client=_StatusClient(),
+        customer_context_service=None,
+        before_send_retry_seconds=60,
+        first_day_wechat_allowlist="",
+        planning=Planning(),
+        first_day=_FirstDayRecorder(),
+        message=object(),
+    )
+    order_check_calls = 0
+
+    async def terminal_order_check(**_: object) -> dict[str, object]:
+        nonlocal order_check_calls
+        order_check_calls += 1
+        return {"available": True, "eligible": False, "reason": "order_state_changed"}
+
+    executor._refresh_order_eligibility = terminal_order_check  # type: ignore[method-assign]
+    task = {"id": "task-1", "plan_id": "plan-1", "customer_id": "customer-1", "before_send_check": True}
+    result = asyncio.run(
+        executor._check_send_eligibility(
+            {
+                "task_id": "task-1",
+                "task": task,
+                "plan": {
+                    "id": "plan-1",
+                    "source_snapshot": {
+                        "trigger_context": {"trigger_type": "first_day_opened_silence"}
+                    },
+                },
+                "is_first_day_plan": True,
+                "fresh_conversation_messages": [],
+                "send_conversation_id": "conversation-1",
+                "identity": _identity(),
+            }
+        )
+    )
+
+    assert result == {"ok": True, "status": "skipped", "reason": "order_state_changed"}
+    assert order_check_calls == 1
+    assert ("update_plan", ("plan-1", "cancelled")) in repository.actions
+
+
+def test_non_first_day_send_keeps_platform_order_context_check() -> None:
+    class Planning:
+        async def refresh_customer_conversation(self, **_: object) -> dict[str, object]:
+            return {
+                "messages": [],
+                "conversation_id": "conversation-1",
+                "customer_relation": {"available": True, "deleted": False},
+                "latest_customer_message_at": "",
+            }
+
+        @staticmethod
+        def _customer_replied_after_plan(*_: object) -> bool:
+            return False
+
+    executor = TaskExecutor(
+        repository=_Repository(),
+        system_client=_StatusClient(),
+        customer_context_service=None,
+        before_send_retry_seconds=60,
+        first_day_wechat_allowlist="",
+        planning=Planning(),
+        first_day=_FirstDayRecorder(),
+        message=object(),
+    )
+    order_check_calls = 0
+
+    async def eligible_order_check(**_: object) -> dict[str, object]:
+        nonlocal order_check_calls
+        order_check_calls += 1
+        return {"available": True, "eligible": True, "reason": "no_order"}
+
+    executor._refresh_order_eligibility = eligible_order_check  # type: ignore[method-assign]
+    result = asyncio.run(
+        executor._check_send_eligibility(
+            {
+                "task_id": "task-1",
+                "task": {"id": "task-1", "plan_id": "plan-1", "customer_id": "customer-1", "before_send_check": True},
+                "plan": {"id": "plan-1", "source_snapshot": {"trigger_context": {}}},
+                "is_first_day_plan": False,
+                "fresh_conversation_messages": [],
+                "send_conversation_id": "conversation-1",
+                "identity": _identity(),
+            }
+        )
+    )
+
+    assert result is None
+    assert order_check_calls == 1
 
 
 def test_monitor_evaluates_longest_waiting_customer_first() -> None:
