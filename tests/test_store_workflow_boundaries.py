@@ -206,14 +206,29 @@ def test_direct_visit_question_cannot_be_confirmed_without_appointment_fact() ->
         )
 
 
-def test_store_card_does_not_authorize_direct_visit_wording() -> None:
+def test_store_location_answer_is_not_treated_as_completed_appointment() -> None:
     state = {"normalized_content": "广州有门店吗", "evidence_join": {"structured_facts": {}}}
 
-    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
-        _validate_parallel_appointment_confirmation_facts(
-            [{"type": "text", "content": "有，广州这边能直接看。"}],
-            state,
-        )
+    _validate_parallel_appointment_confirmation_facts(
+        [{"type": "text", "content": "有，广州这边能直接看。"}],
+        state,
+    )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "操作前后会用原相机保留对比记录，让您能直接看到自己的变化。",
+        "这张案例图可以直接看出斑点改善的变化。",
+        "视频里能直接看到整个操作过程。",
+        "相关资料已经安排老师整理。",
+    ],
+)
+def test_non_appointment_language_is_not_blocked_by_appointment_guard(reply: str) -> None:
+    _validate_parallel_appointment_confirmation_facts(
+        [{"type": "text", "content": reply}],
+        {"normalized_content": "这是一次的效果吗", "evidence_join": {"structured_facts": {}}},
+    )
 
 
 @pytest.mark.parametrize(

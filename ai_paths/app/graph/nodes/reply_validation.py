@@ -2642,6 +2642,15 @@ def _available_time_fact_supports_availability(item: dict[str, Any]) -> bool:
 
 def _asserts_appointment_confirmed(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
+    standalone_claim = compact.rstrip("，。！？,.!?~～")
+    if standalone_claim in {
+        "已安排",
+        "已经安排",
+        "可以直接到店",
+        "能直接到店",
+        "直接到店即可",
+    }:
+        return True
     time_token = r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}(?:[:：]\d{2}|点(?:半)?))"
     matched = any(
         term in compact
@@ -2661,8 +2670,6 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             "已锁定",
             "已留位",
             "已经留位",
-            "已安排",
-            "已经安排",
             "已安排好",
             "已经安排好",
             "安排好了",
@@ -2674,37 +2681,6 @@ def _asserts_appointment_confirmed(text: str) -> bool:
         )
     )
     if matched:
-        return True
-    if any(
-        term in compact
-        for term in (
-            "随时可来",
-            "随时可以来",
-            "随时能来",
-            "随时来",
-            "今天都能做",
-            "今天可以做",
-            "今天都能接待",
-            "今天可以接待",
-            "今天能接待",
-            "今天可接待",
-            "现在过去来得及",
-            "能直接看",
-            "可以直接看",
-            "能直接到店",
-            "可以直接到店",
-            "直接到店即可",
-            "能直接过去",
-            "可以直接过去",
-            "直接过去看",
-            "直接过去就行",
-            "直接到店就行",
-            "直接来店就行",
-            "按这个地址去就行",
-            "按这个门店地址过去就行",
-            "按门店地址过去就行",
-        )
-    ):
         return True
     if re.search(rf"{time_token}.{{0,8}}(?:过去|到店|过来|来店)(?:也)?(?:可以|没问题|就行|就好|即可)", compact):
         return True
