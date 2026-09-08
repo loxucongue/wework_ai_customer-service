@@ -1488,6 +1488,12 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
         else:
             conclusion = "已查到可发送门店"
         if is_reuse:
+            detail_availability = (
+                "；本轮所问详情字段未记录：只能如实说暂未记录，不能根据楼栋、地址或其他门店字段"
+                "推断楼层、房间、停车、营业时间或到店指引，也不要追加与当前问题无关的价格、效果和预约。"
+                if resolution.get("requested_detail_available") is False
+                else ""
+            )
             return (
                 f"门店最终结论：{conclusion}；匹配层级={scope_match_level or '未标注'}；"
                 "同一目的地的最终门店结果此前已经真实发送，本轮不得重复发送 store_address，"
@@ -1501,6 +1507,7 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
                 "closing_action=none 只表示不进入逼单序列，不表示销售对话无需自然往下接。"
                 "不要同时再讲效果、案例或其他无关主线内容。不能改变本地有店/无店结论。此前门店ID="
                 + _join(store_ids)
+                + detail_availability
             )
         mainline_requirement = (
             "客户已确认具体门店。不得再问位置是否方便；交付门店后参照【销售主线已真实交付到哪里】，"

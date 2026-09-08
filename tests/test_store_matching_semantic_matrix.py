@@ -47,6 +47,24 @@ def test_reused_store_detail_prompt_uses_mainline_delivery_stage() -> None:
     assert "closing_action=none" in conclusion
 
 
+def test_missing_store_detail_fact_forbids_inference_and_unrelated_sales() -> None:
+    conclusion = _render_store_resolution_conclusion(
+        {
+            "status": "reuse_confirmed_store",
+            "already_delivered_store_ids": ["160"],
+            "requested_detail_available": False,
+            "destination_resolution": {
+                "request_kind": "store_detail",
+                "detail_kind": "arrival_guidance",
+            },
+        }
+    )
+
+    assert "本轮所问详情字段未记录" in conclusion
+    assert "不能根据楼栋、地址或其他门店字段推断楼层" in conclusion
+    assert "不要追加与当前问题无关的价格、效果和预约" in conclusion
+
+
 def test_store_selection_continuation_is_visible_to_reply() -> None:
     rendered = _render_semantic_route(
         {
