@@ -2,7 +2,7 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-08T15:33:00+08:00`
+- verified_at: `2026-09-08T15:37:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
@@ -38,7 +38,7 @@
 
 ## Worker 与 outbox
 
-- 第三方 SOP worker 正常运行，启动后立即完成首轮轮询；现场 `queue_depth=0`、`in_flight_count=0`，最近轮询错误为空。第三方仍返回 4 条被既有严格顺序锁保留的待处理任务，worker 不越过前序发送。
+- 第三方 SOP worker 正常运行；现场 `queue_depth=0`、`in_flight_count=1`、`pending_total=8`，最近轮询错误为空。待处理任务继续受既有严格顺序和客户开口保护，worker 不越过前序发送。
 - Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=37`、`dead=16`；发布前后 pending/dead 未增加。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
