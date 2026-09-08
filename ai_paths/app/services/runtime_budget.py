@@ -12,19 +12,35 @@ DEFAULT_MIN_RETRY_REMAINING_SECONDS = 8.0
 
 def build_runtime_budget(settings: Any | None, *, started_monotonic: float | None = None) -> dict[str, Any]:
     started = float(started_monotonic if started_monotonic is not None else time.monotonic())
-    ordinary = _positive_setting(settings, "model_round_timeout_seconds", DEFAULT_ROUND_TIMEOUT_SECONDS)
+    ordinary = _positive_setting(
+        settings,
+        "v3_reply_round_timeout_seconds",
+        _positive_setting(settings, "model_round_timeout_seconds", DEFAULT_ROUND_TIMEOUT_SECONDS),
+    )
     strong = max(
         ordinary,
-        _positive_setting(settings, "model_strong_round_timeout_seconds", DEFAULT_STRONG_ROUND_TIMEOUT_SECONDS),
+        _positive_setting(
+            settings,
+            "v3_reply_strong_round_timeout_seconds",
+            _positive_setting(settings, "model_strong_round_timeout_seconds", DEFAULT_STRONG_ROUND_TIMEOUT_SECONDS),
+        ),
     )
     reserve = min(
         ordinary,
-        _non_negative_setting(settings, "model_reply_reserve_seconds", DEFAULT_REPLY_RESERVE_SECONDS),
+        _non_negative_setting(
+            settings,
+            "v3_reply_reserve_seconds",
+            _non_negative_setting(settings, "model_reply_reserve_seconds", DEFAULT_REPLY_RESERVE_SECONDS),
+        ),
     )
     min_retry = _non_negative_setting(
         settings,
-        "model_min_retry_remaining_seconds",
-        DEFAULT_MIN_RETRY_REMAINING_SECONDS,
+        "v3_reply_min_retry_remaining_seconds",
+        _non_negative_setting(
+            settings,
+            "model_min_retry_remaining_seconds",
+            DEFAULT_MIN_RETRY_REMAINING_SECONDS,
+        ),
     )
     enforced = bool(getattr(settings, "model_round_budget_enforced", False)) if settings is not None else False
     return {

@@ -62,6 +62,7 @@ class FollowKnowledgeClient:
         self._client_loop_id: int | None = None
         self._cache: dict[tuple[Any, ...], _CacheEntry] = {}
         self._cache_lock = asyncio.Lock()
+        self._request_locks: dict[tuple[Any, ...], asyncio.Lock] = {}
         self._closing_catalog_lock = asyncio.Lock()
         self._closing_catalog_last_good: dict[str, Any] = {}
         self._closing_catalog_failure_cache: _CacheEntry | None = None
@@ -78,6 +79,30 @@ class FollowKnowledgeClient:
     async def aclose(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    async def warmup(self) -> dict[str, Any]:
+        """Preload the tenant knowledge snapshot before serving V3 traffic."""
+
+        if not self.available:
+            return {"status": "disabled"}
+        started = time.perf_counter()
+        sequences, taxonomy, closing = await asyncio.gather(
+            self.query_all_sequences(),
+            self.query_script_taxonomy(),
+            self.query_closing_catalog(),
+        )
+        statuses = {
+            str(sequences.get("status") or "error"),
+            str(taxonomy.get("status") or "error"),
+            str(closing.get("status") or "error"),
+        }
+        return {
+            "status": "ok" if statuses == {"ok"} else "degraded",
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "sequence_total": int(sequences.get("total") or 0),
+            "script_total": int(taxonomy.get("script_total") or 0),
+            "closing_sequence_count": int(closing.get("sequence_count") or 0),
+        }
 
     async def query_scripts(
         self,
@@ -564,44 +589,53 @@ class FollowKnowledgeClient:
             cached["cache_hit"] = True
             cached["duration_ms"] = int((time.perf_counter() - started) * 1000)
             return cached
-        try:
-            response = await self._request_with_retry(path, payload)
-            body = _response_body(response)
-            if response.status_code >= 400:
-                raise RuntimeError(f"http_status:{response.status_code}")
-            if not isinstance(body, dict) or int(body.get("code") or 0) != 200:
-                message = _text(body.get("message")) if isinstance(body, dict) else "invalid_response"
-                raise RuntimeError(f"business_error:{message or 'unknown'}")
-            data = body.get("data") if isinstance(body.get("data"), dict) else {}
-            raw_items = [raw for raw in data.get("list") or [] if isinstance(raw, dict)]
-            items = [
-                normalized
-                for raw in raw_items
-                if (normalized := item_normalizer(raw)) is not None
-            ]
-            result = {
-                "schema_version": schema_version,
-                "status": "ok",
-                "source": "follow_knowledge_api",
-                "query": copy.deepcopy(payload),
-                "total": max(0, int(data.get("total") or 0)),
-                "page": max(1, int(data.get("page") or payload["page"])),
-                "page_size": max(1, int(data.get("pageSize") or payload["pageSize"])),
-                "raw_item_count": len(raw_items),
-                "invalid_item_count": max(0, len(raw_items) - len(items)),
-                "items": items,
-                "cache_hit": False,
-                "duration_ms": int((time.perf_counter() - started) * 1000),
-            }
-            await self._store_cache(cache_key, result)
-            return result
-        except Exception as exc:
-            return {
-                **_empty_result(schema_version, f"{type(exc).__name__}: {exc}"),
-                "status": "error",
-                "query": copy.deepcopy(payload),
-                "duration_ms": int((time.perf_counter() - started) * 1000),
-            }
+        request_lock = await self._request_lock(cache_key)
+        async with request_lock:
+            cached = await self._cached(cache_key)
+            if cached is not None:
+                cached["cache_hit"] = True
+                cached["singleflight_wait"] = True
+                cached["duration_ms"] = int((time.perf_counter() - started) * 1000)
+                return cached
+            try:
+                response = await self._request_with_retry(path, payload)
+                body = _response_body(response)
+                if response.status_code >= 400:
+                    raise RuntimeError(f"http_status:{response.status_code}")
+                if not isinstance(body, dict) or int(body.get("code") or 0) != 200:
+                    message = _text(body.get("message")) if isinstance(body, dict) else "invalid_response"
+                    raise RuntimeError(f"business_error:{message or 'unknown'}")
+                data = body.get("data") if isinstance(body.get("data"), dict) else {}
+                raw_items = [raw for raw in data.get("list") or [] if isinstance(raw, dict)]
+                items = [
+                    normalized
+                    for raw in raw_items
+                    if (normalized := item_normalizer(raw)) is not None
+                ]
+                result = {
+                    "schema_version": schema_version,
+                    "status": "ok",
+                    "source": "follow_knowledge_api",
+                    "query": copy.deepcopy(payload),
+                    "total": max(0, int(data.get("total") or 0)),
+                    "page": max(1, int(data.get("page") or payload["page"])),
+                    "page_size": max(1, int(data.get("pageSize") or payload["pageSize"])),
+                    "raw_item_count": len(raw_items),
+                    "invalid_item_count": max(0, len(raw_items) - len(items)),
+                    "items": items,
+                    "cache_hit": False,
+                    "singleflight_wait": False,
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                }
+                await self._store_cache(cache_key, result)
+                return result
+            except Exception as exc:
+                return {
+                    **_empty_result(schema_version, f"{type(exc).__name__}: {exc}"),
+                    "status": "error",
+                    "query": copy.deepcopy(payload),
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                }
 
     async def _query_data_object(
         self,
@@ -627,34 +661,51 @@ class FollowKnowledgeClient:
             cached["cache_hit"] = True
             cached["duration_ms"] = int((time.perf_counter() - started) * 1000)
             return cached
-        try:
-            response = await self._request_with_retry(path, payload)
-            body = _response_body(response)
-            if response.status_code >= 400:
-                raise RuntimeError(f"http_status:{response.status_code}")
-            if not isinstance(body, dict) or int(body.get("code") or 0) != 200:
-                message = _text(body.get("message")) if isinstance(body, dict) else "invalid_response"
-                raise RuntimeError(f"business_error:{message or 'unknown'}")
-            data = body.get("data") if isinstance(body.get("data"), dict) else {}
-            result = {
-                "schema_version": schema_version,
-                "status": "ok",
-                "source": "follow_knowledge_api",
-                **data_normalizer(data),
-                "cache_hit": False,
-                "duration_ms": int((time.perf_counter() - started) * 1000),
-            }
-            await self._store_cache(cache_key, result)
-            return result
-        except Exception as exc:
-            return {
-                "schema_version": schema_version,
-                "status": "error",
-                "source": "follow_knowledge_api",
-                "reason": f"{type(exc).__name__}: {exc}"[:500],
-                "cache_hit": False,
-                "duration_ms": int((time.perf_counter() - started) * 1000),
-            }
+        request_lock = await self._request_lock(cache_key)
+        async with request_lock:
+            cached = await self._cached(cache_key)
+            if cached is not None:
+                cached["cache_hit"] = True
+                cached["singleflight_wait"] = True
+                cached["duration_ms"] = int((time.perf_counter() - started) * 1000)
+                return cached
+            try:
+                response = await self._request_with_retry(path, payload)
+                body = _response_body(response)
+                if response.status_code >= 400:
+                    raise RuntimeError(f"http_status:{response.status_code}")
+                if not isinstance(body, dict) or int(body.get("code") or 0) != 200:
+                    message = _text(body.get("message")) if isinstance(body, dict) else "invalid_response"
+                    raise RuntimeError(f"business_error:{message or 'unknown'}")
+                data = body.get("data") if isinstance(body.get("data"), dict) else {}
+                result = {
+                    "schema_version": schema_version,
+                    "status": "ok",
+                    "source": "follow_knowledge_api",
+                    **data_normalizer(data),
+                    "cache_hit": False,
+                    "singleflight_wait": False,
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                }
+                await self._store_cache(cache_key, result)
+                return result
+            except Exception as exc:
+                return {
+                    "schema_version": schema_version,
+                    "status": "error",
+                    "source": "follow_knowledge_api",
+                    "reason": f"{type(exc).__name__}: {exc}"[:500],
+                    "cache_hit": False,
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                }
+
+    async def _request_lock(self, key: tuple[Any, ...]) -> asyncio.Lock:
+        async with self._cache_lock:
+            lock = self._request_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._request_locks[key] = lock
+            return lock
 
     async def _cached(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
         if self._cache_ttl <= 0:

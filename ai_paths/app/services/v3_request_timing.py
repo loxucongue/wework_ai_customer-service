@@ -45,6 +45,7 @@ class V3RequestTimingMiddleware:
             await self.app(scope, receive, timing_send)
         finally:
             request_id = str(state.get("v3_run_request_id") or "").strip()
+            response_body = state.get("v3_http_response_body")
             finalize = getattr(self.repository, "finalize_run_http_timing", None)
             if response_finished and request_id and callable(finalize):
                 finished_at = response_finished_at or utc_now_iso()
@@ -59,6 +60,7 @@ class V3RequestTimingMiddleware:
                             started_at=started_at,
                             finished_at=finished_at,
                             duration_ms=duration_ms,
+                            response_body=response_body if isinstance(response_body, dict) else None,
                         )
                     except Exception:
                         # Observability must never turn a completed customer reply into a 5xx.
@@ -95,6 +97,14 @@ def bind_v3_run_request_id(http_request: Any, request_id: str) -> None:
     state = getattr(http_request, "state", None)
     if state is not None and request_id:
         setattr(state, "v3_run_request_id", str(request_id))
+
+
+def bind_v3_run_response(http_request: Any, response_body: dict[str, Any]) -> None:
+    """Keep the response in request state until post-response timing persistence."""
+
+    state = getattr(http_request, "state", None)
+    if state is not None:
+        setattr(state, "v3_http_response_body", response_body)
 
 
 def _is_v3_reply_request(scope: dict[str, Any]) -> bool:

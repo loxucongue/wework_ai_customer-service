@@ -81,6 +81,7 @@ class ChatRuntime:
         self._platform_request_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
         self._platform_request_results: dict[str, tuple[float, ChatResponse]] = {}
         self._platform_request_tasks_lock = asyncio.Lock()
+        self._ingress_side_effect_tasks: set[asyncio.Task[dict[str, Any]]] = set()
 
     @staticmethod
     def is_platform_protocol_message(request: ChatRequest) -> bool:
@@ -101,17 +102,27 @@ class ChatRuntime:
                 reason="outreach_system_not_configured",
             )
 
+        guard_started = time.perf_counter()
         try:
-            status = await self._outreach_system_client.conversation_status(
-                corp_id=str(request.corp_id or ""),
-                customer_id=str(request.platform_customer_id or request.customer_id or ""),
-                external_userid=str(request.external_userid or ""),
-                user_id=str(request.user_id or ""),
-                wechat=str(request.wechat or ""),
-                ai_profile_id=str(request_context.get("ai_profile_id") or ""),
-                plan_id=str(request_context.get("plan_id") or ""),
+            timeout_seconds = max(
+                0.5,
+                float(getattr(self._settings, "v3_takeover_timeout_seconds", 3.0) or 3.0),
+            )
+            status = await asyncio.wait_for(
+                self._outreach_system_client.conversation_status(
+                    corp_id=str(request.corp_id or ""),
+                    customer_id=str(request.platform_customer_id or request.customer_id or ""),
+                    external_userid=str(request.external_userid or ""),
+                    user_id=str(request.user_id or ""),
+                    wechat=str(request.wechat or ""),
+                    ai_profile_id=str(request_context.get("ai_profile_id") or ""),
+                    plan_id=str(request_context.get("plan_id") or ""),
+                ),
+                timeout=timeout_seconds,
             )
         except Exception as exc:
+            _record_v3_phase(request_context, "takeover_guard", guard_started)
+            request.request_context = request_context
             return await asyncio.to_thread(
                 self._build_takeover_block_response,
                 request,
@@ -119,6 +130,7 @@ class ChatRuntime:
                 reason="status_query_failed",
                 error=f"{type(exc).__name__}: {exc}"[:500],
             )
+        _record_v3_phase(request_context, "takeover_guard", guard_started)
 
         data = status.get("data") if isinstance(status.get("data"), dict) else {}
         takeover = data.get("takeover") if isinstance(data.get("takeover"), dict) else {}
@@ -138,11 +150,17 @@ class ChatRuntime:
         request_id = str(uuid4())
         request_context["test_isolated"] = False
         request_context["memory_persist_allowed"] = True
-        conversation_id = self._prepare_conversation(request, request_id, request_context)
-        self._start_run_tracking(
+        ingress_result = await asyncio.to_thread(
+            self._prepare_and_start_request,
             request=request,
             request_id=request_id,
-            conversation_id=conversation_id,
+            request_context=request_context,
+        )
+        conversation_id = str(ingress_result.get("conversation_id") or "")
+        await asyncio.to_thread(
+            self._complete_request_ingress_side_effects,
+            request=request,
+            request_id=request_id,
             request_context=request_context,
         )
         state = self._initial_state(request, request_id, request_context)
@@ -197,11 +215,15 @@ class ChatRuntime:
         request_id = str(uuid4())
         request_context["test_isolated"] = False
         request_context["memory_persist_allowed"] = True
-        conversation_id = self._prepare_conversation(request, request_id, request_context)
-        self._start_run_tracking(
+        ingress_result = self._prepare_and_start_request(
             request=request,
             request_id=request_id,
-            conversation_id=conversation_id,
+            request_context=request_context,
+        )
+        conversation_id = str(ingress_result.get("conversation_id") or "")
+        self._complete_request_ingress_side_effects(
+            request=request,
+            request_id=request_id,
             request_context=request_context,
         )
         state = self._initial_state(request, request_id, request_context)
@@ -245,6 +267,11 @@ class ChatRuntime:
             request_context=request_context,
         )
         initial_state = self._initial_state(request, request_id, request_context)
+        initial_state["previous_policy_state"] = await asyncio.to_thread(
+            self._load_previous_policy_state,
+            initial_state,
+            request_id,
+        )
 
         try:
             final_state = await self._invoke_graph_with_budget(self._full_graph, initial_state, phase="full")
@@ -339,23 +366,41 @@ class ChatRuntime:
         takeover_response = await self.run_v3_takeover_guard(request)
         if takeover_response is not None:
             return takeover_response
+        # The guard attaches its authoritative status and timing to the
+        # request. Rebuild the local view before persisting the run.
+        request_context = build_request_context(request)
 
         request_id = str(uuid4())
         request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
         request_context["memory_persist_allowed"] = not request_context["test_isolated"]
-        conversation_id = await asyncio.to_thread(
-            self._prepare_conversation,
-            request,
-            request_id,
-            request_context,
-        )
-        await asyncio.to_thread(
-            self._start_run_tracking,
+        ingress_started = time.perf_counter()
+        ingress_result = await asyncio.to_thread(
+            self._prepare_and_start_request,
             request=request,
             request_id=request_id,
-            conversation_id=conversation_id,
             request_context=request_context,
         )
+        conversation_id = str(ingress_result.get("conversation_id") or "")
+        _record_v3_phase(
+            request_context,
+            "request_ingress_persistence",
+            ingress_started,
+            metadata={
+                "repository_ms": int(ingress_result.get("duration_ms") or 0),
+                "connection_count": int(ingress_result.get("connection_count") or 0),
+            },
+        )
+        ingress_side_effect_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._complete_request_ingress_side_effects,
+                request=request,
+                request_id=request_id,
+                request_context=request_context,
+                record_identity=False,
+            )
+        )
+        self._ingress_side_effect_tasks.add(ingress_side_effect_task)
+        ingress_side_effect_task.add_done_callback(self._ingress_side_effect_tasks.discard)
         decision = (
             await self._platform_reply_coordinator.begin(request, request_id=request_id, request_context=request_context)
             if self._platform_reply_coordinator
@@ -445,6 +490,15 @@ class ChatRuntime:
                 allow_empty_reply=True,
             )
 
+        previous_state_started = time.perf_counter()
+        initial_state["previous_policy_state"] = await asyncio.to_thread(
+            self._load_previous_policy_state,
+            initial_state,
+            request_id,
+        )
+        _record_v3_phase(effective_context, "previous_policy_state", previous_state_started)
+
+        graph_started = time.perf_counter()
         try:
             final_state = await self._run_graph_with_preemption(
                 self._full_graph,
@@ -454,6 +508,7 @@ class ChatRuntime:
             )
         except Exception as exc:
             final_state = self._handle_graph_exception(initial_state, exc)
+        _record_v3_phase(effective_context, "full_graph", graph_started)
         _preserve_reply_control(final_state, initial_state)
         if (
             control_record
@@ -471,7 +526,16 @@ class ChatRuntime:
                 allow_empty_reply=True,
             )
 
+        commit_started = time.perf_counter()
         final_state = await self._commit_after_reply_validation(final_state)
+        _record_v3_phase(effective_context, "commit_graph", commit_started)
+        final_state["v3_phase_timings"] = dict(effective_context.get("v3_phase_timings") or {})
+
+        if ingress_side_effect_task.done():
+            with suppress(Exception):
+                final_state["ingress_side_effects"] = ingress_side_effect_task.result()
+        else:
+            final_state["ingress_side_effects"] = {"status": "running_concurrently"}
 
         final_state["sync_reply_messages"] = list(final_state.get("reply_messages") or [])
         final_state.setdefault("async_final_reply", {"scheduled": False, "status": "not_required"})
@@ -681,6 +745,107 @@ class ChatRuntime:
                 )
         return conversation_id
 
+    def _prepare_and_start_request(
+        self,
+        *,
+        request: ChatRequest,
+        request_id: str,
+        request_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        conversation_id = conversation_id_from_request(request, request_context)
+        prepare = getattr(self._repository, "prepare_v3_request", None)
+        if callable(prepare):
+            return prepare(
+                default_conversation_id=conversation_id,
+                resolve_existing=not bool(
+                    request_context.get("conversation_id") or request_context.get("session_id")
+                ),
+                request=request,
+                request_id=request_id,
+                title=conversation_title(request.content),
+                input_snapshot=_run_tracking_input_snapshot(request, request_context),
+                interface_version=str(request_context.get("interface_version") or "v3"),
+                started_at=str(request_context.get("http_request_started_at") or ""),
+                http_request_ingress_id=str(request_context.get("http_request_ingress_id") or ""),
+            )
+        conversation_id = self._prepare_conversation(request, request_id, request_context)
+        self._start_run_tracking(
+            request=request,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            request_context=request_context,
+        )
+        return {"conversation_id": conversation_id, "duration_ms": 0, "connection_count": 0}
+
+    def _complete_request_ingress_side_effects(
+        self,
+        *,
+        request: ChatRequest,
+        request_id: str,
+        request_context: dict[str, Any],
+        record_identity: bool = True,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        observe_identity = getattr(self._repository, "observe_customer_identity", None)
+        identity_status: dict[str, Any] = {"status": "skipped"}
+        if callable(observe_identity) and record_identity:
+            identity_status = safe_repository_call(
+                observe_identity,
+                corp_id=str(request.corp_id or ""),
+                wechat=str(request.wechat or ""),
+                external_userid=str(request.external_userid or ""),
+                customer_id=str(request.platform_customer_id or request.customer_id or ""),
+                user_id=str(request.user_id or ""),
+                customer_add_wechat_id=str(request.customer_add_wechat_id or ""),
+                source="v3_request",
+            ) or {"status": "unknown"}
+        cancel_status: dict[str, Any] = {"status": "skipped"}
+        cancel_outreach = getattr(self._repository, "cancel_outreach_for_customer_reply", None)
+        if (
+            callable(cancel_outreach)
+            and bool(request_context.get("memory_persist_allowed"))
+            and not bool(request_context.get("test_isolated"))
+            and str(request.wechat or "").strip()
+        ):
+            cancel_status = safe_repository_call(
+                cancel_outreach,
+                customer_id=str(request.customer_id or ""),
+                corp_id=str(request.corp_id or ""),
+                wechat=str(request.wechat or ""),
+                external_userid=str(request.external_userid or ""),
+                request_id=request_id,
+            ) or {"status": "unknown"}
+        return {
+            "status": "completed",
+            "duration_ms": max(0, int((time.perf_counter() - started) * 1000)),
+            "identity": identity_status,
+            "outreach_cancel": cancel_status,
+        }
+
+    def _load_previous_policy_state(self, state: AgentState, request_id: str) -> dict[str, Any]:
+        scope = customer_scope_from_state(state)
+        latest_policy_state = getattr(self._repository, "latest_v3_strategy_state", None)
+        if not callable(latest_policy_state) or not scope.persistence_allowed or bool(state.get("test_isolated")):
+            return {}
+        try:
+            return latest_policy_state(
+                scope.sales_contact_key,
+                exclude_request_id=request_id,
+                corp_id=scope.corp_id,
+                wechat=scope.wechat,
+                external_userid=scope.external_userid,
+                customer_id=scope.customer_id,
+            )
+        except Exception as exc:
+            state.setdefault("warnings", []).append(
+                {
+                    "stage": "previous_policy_state",
+                    "warning": "Previous policy state unavailable; current turn will be decided independently.",
+                    "detail": f"{type(exc).__name__}: {exc}"[:500],
+                }
+            )
+            return {}
+
     async def _invoke_graph_with_budget(
         self,
         graph: Any,
@@ -770,29 +935,6 @@ class ChatRuntime:
         state["global_customer_key"] = scope.global_customer_key
         state["customer_scope"] = scope.as_dict()
         state["previous_policy_state"] = {}
-        latest_policy_state = getattr(self._repository, "latest_v3_strategy_state", None)
-        if (
-            callable(latest_policy_state)
-            and scope.persistence_allowed
-            and not test_isolated
-        ):
-            try:
-                state["previous_policy_state"] = latest_policy_state(
-                    scope.sales_contact_key,
-                    exclude_request_id=request_id,
-                    corp_id=scope.corp_id,
-                    wechat=scope.wechat,
-                    external_userid=scope.external_userid,
-                    customer_id=scope.customer_id,
-                )
-            except Exception as exc:
-                state.setdefault("warnings", []).append(
-                    {
-                        "stage": "previous_policy_state",
-                        "warning": "Previous policy state unavailable; current turn will be decided independently.",
-                        "detail": f"{type(exc).__name__}: {exc}"[:500],
-                    }
-                )
         if self._ai_sales_policy_service is not None:
             try:
                 state["ai_sales_policy"] = self._ai_sales_policy_service.runtime_snapshot()
@@ -2139,3 +2281,24 @@ def _interface_version_from_state(state: AgentState) -> str:
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     version = str(request_context.get("interface_version") or "v3").strip().lower()
     return version if version in {"v1", "v2", "v3"} else "v1"
+
+
+def _record_v3_phase(
+    request_context: dict[str, Any],
+    name: str,
+    started: float,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Record compact customer-path timings without changing decisions."""
+
+    timings = request_context.setdefault("v3_phase_timings", {})
+    if not isinstance(timings, dict):
+        timings = {}
+        request_context["v3_phase_timings"] = timings
+    item = {
+        "duration_ms": max(0, int((time.perf_counter() - started) * 1000)),
+    }
+    if metadata:
+        item.update(compact(metadata, max_chars=1200))
+    timings[str(name or "unknown")] = item

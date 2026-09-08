@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 from typing import Any, Callable
 
@@ -40,7 +41,8 @@ def create_shared_context_node(
                 }
             else:
                 try:
-                    sop_progress = sop_execution_service.reply_chain_sop_progress(
+                    sop_progress = await asyncio.to_thread(
+                        sop_execution_service.reply_chain_sop_progress,
                         _request_from_state(state),
                         request_context=dict(state.get("request_context") or {}),
                     )

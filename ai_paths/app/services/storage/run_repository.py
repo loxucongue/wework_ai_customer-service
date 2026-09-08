@@ -82,6 +82,11 @@ class RunRepositoryMixin:
                     # This temporary payload is removed after finalization and is
                     # stripped from all admin API responses while it is pending.
                     "post_reply_payload": deferred_payload,
+                    "performance": {
+                        "phases": final_state.get("v3_phase_timings")
+                        if isinstance(final_state.get("v3_phase_timings"), dict)
+                        else {},
+                    },
                 }
             )
             duration_ms = _elapsed_ms(started_at, now)
@@ -143,7 +148,6 @@ class RunRepositoryMixin:
                         now,
                     ),
                 )
-
     def claim_v3_reply_finalizations(self, *, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc)
         stale_before = (now - timedelta(minutes=5)).isoformat()
@@ -506,6 +510,9 @@ class RunRepositoryMixin:
             "reply_source": final_state.get("reply_source", ""),
             "reply_control": final_state.get("reply_control", {}),
             "async_final_reply": final_state.get("async_final_reply", {}),
+            "performance": {
+                "phases": final_state.get("v3_phase_timings", {}),
+            },
             "postprocess_changed": bool(final_state.get("postprocess_changed")),
             "postprocess_reasons": final_state.get("postprocess_reasons", []),
             "warnings": final_state.get("warnings", []),
@@ -564,9 +571,27 @@ class RunRepositoryMixin:
                     "runtime_processing_finished_at",
                     "post_reply_finalization",
                     "post_reply_payload",
+                    "performance",
                 ):
                     if key in existing_output and key not in output_snapshot:
                         output_snapshot[key] = existing_output[key]
+                existing_performance = (
+                    existing_output.get("performance")
+                    if isinstance(existing_output.get("performance"), dict)
+                    else {}
+                )
+                current_performance = (
+                    output_snapshot.get("performance")
+                    if isinstance(output_snapshot.get("performance"), dict)
+                    else {}
+                )
+                output_snapshot["performance"] = {
+                    **existing_performance,
+                    **current_performance,
+                    "phases": current_performance.get("phases")
+                    or existing_performance.get("phases")
+                    or {},
+                }
                 started_at = str(existing_output.get("runtime_started_at") or existing["created_at"] or "")
             finished_at = utc_now_iso()
             processing_finished_at = str(
@@ -665,6 +690,7 @@ class RunRepositoryMixin:
         started_at: str,
         finished_at: str,
         duration_ms: int,
+        response_body: dict[str, Any] | None = None,
     ) -> bool:
         """Finalize timing only for the ingress that created this run.
 
@@ -701,6 +727,9 @@ class RunRepositoryMixin:
                     "runtime_updated_at": str(finished_at or output_snapshot.get("runtime_updated_at") or ""),
                 }
             )
+            if isinstance(response_body, dict):
+                output_snapshot["http_response_body"] = response_body
+                output_snapshot["http_response_reply_messages"] = _reply_messages_from_http_response(response_body)
             conn.execute(
                 "UPDATE runs SET output_snapshot=?, duration_ms=? WHERE request_id=?",
                 (dumps(_compact_run_output(output_snapshot)), effective_duration_ms, request_id),
@@ -976,6 +1005,7 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
         "runtime_processing_finished_at",
         "post_reply_finalization",
         "post_reply_payload",
+        "performance",
     ):
         if key in output_snapshot:
             stored[key] = (
