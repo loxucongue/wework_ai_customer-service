@@ -34,6 +34,13 @@ class _ReplyGraph:
         return state
 
 
+class _AiStatusClient:
+    available = True
+
+    async def conversation_status(self, **_kwargs: object) -> dict[str, object]:
+        return {"data": {"takeover": {"mode": "ai", "is_human": False}}}
+
+
 def test_ephemeral_runtime_executes_persistence_and_response_tail(tmp_path: Path) -> None:
     settings = Settings().model_copy(
         update={
@@ -56,6 +63,7 @@ def test_ephemeral_runtime_executes_persistence_and_response_tail(tmp_path: Path
         trace_logger=TraceLogger(settings),
         repository=repository,
         memory_store=memory,
+        outreach_system_client=_AiStatusClient(),  # type: ignore[arg-type]
         settings=settings,
     )
     request = ChatRequest(

@@ -170,6 +170,7 @@ class _RuntimeStub:
                 reply_messages=[],
                 meta={"reply_source": "ignored_platform_auto_message"},
             )
+        await self.run_v3_takeover_guard(request)
         self.normal_calls += 1
         return ChatResponse(
             request_id="normal-request-id",

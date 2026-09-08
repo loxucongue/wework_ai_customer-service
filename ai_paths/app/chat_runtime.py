@@ -39,7 +39,7 @@ from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
 
 
-RUNTIME_SAFE_FALLBACK_TEXT = "抱歉，我这边刚刚没处理好，麻烦您把刚才的问题再发一次。"
+RUNTIME_SAFE_FALLBACK_TEXT = "您稍等一下"
 
 
 class ChatRuntime:
@@ -109,7 +109,8 @@ class ChatRuntime:
                 plan_id=str(request_context.get("plan_id") or ""),
             )
         except Exception as exc:
-            return self._build_takeover_block_response(
+            return await asyncio.to_thread(
+                self._build_takeover_block_response,
                 request,
                 request_context,
                 reason="status_query_failed",
@@ -201,24 +202,24 @@ class ChatRuntime:
             request_context=request_context,
         )
         state = self._initial_state(request, request_id, request_context)
-        state["reply_messages"] = []
-        state["reply_source"] = "takeover_status_fail_closed"
+        state["reply_messages"] = _deterministic_final_fallback_messages(state)
+        state["reply_source"] = "takeover_status_unavailable_fallback"
         state["takeover_guard"] = dict(guard)
         state.setdefault("trace", []).append(
             {
                 "node": "human_takeover_guard",
-                "decision": "no_reply",
+                "decision": "neutral_retry_reply",
                 "reason": reason,
                 "takeover": dict(guard),
             }
         )
-        _set_sync_return(state, "empty", [])
+        _set_sync_return(state, "final_reply", state["reply_messages"])
         return self._persist_and_build_response(
             request=request,
             request_id=request_id,
             conversation_id=conversation_id,
             final_state=state,
-            allow_empty_reply=True,
+            allow_empty_reply=False,
         )
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
@@ -329,11 +330,24 @@ class ChatRuntime:
                 protocol_event=protocol_event,
             )
 
+        # The takeover lookup belongs inside the per-msgid task created by
+        # run_platform_reply. Platform retries must share one status result
+        # instead of creating duplicate runs before idempotency takes effect.
+        takeover_response = await self.run_v3_takeover_guard(request)
+        if takeover_response is not None:
+            return takeover_response
+
         request_id = str(uuid4())
         request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
         request_context["memory_persist_allowed"] = not request_context["test_isolated"]
-        conversation_id = self._prepare_conversation(request, request_id, request_context)
-        self._start_run_tracking(
+        conversation_id = await asyncio.to_thread(
+            self._prepare_conversation,
+            request,
+            request_id,
+            request_context,
+        )
+        await asyncio.to_thread(
+            self._start_run_tracking,
             request=request,
             request_id=request_id,
             conversation_id=conversation_id,
@@ -354,7 +368,8 @@ class ChatRuntime:
             )
             state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
             _set_sync_return(state, "empty", [])
-            return self._persist_and_build_response(
+            return await asyncio.to_thread(
+                self._persist_and_build_response,
                 request=request,
                 request_id=request_id,
                 conversation_id=conversation_id,
@@ -394,7 +409,8 @@ class ChatRuntime:
             _set_sync_return(initial_state, "empty", [])
             if self._platform_reply_coordinator:
                 await self._platform_reply_coordinator.complete(control_record)
-            return self._persist_and_build_response(
+            return await asyncio.to_thread(
+                self._persist_and_build_response,
                 request=request,
                 request_id=request_id,
                 conversation_id=conversation_id,
@@ -417,7 +433,8 @@ class ChatRuntime:
             _set_sync_return(initial_state, "empty", [])
             if self._platform_reply_coordinator:
                 await self._platform_reply_coordinator.complete(control_record)
-            return self._persist_and_build_response(
+            return await asyncio.to_thread(
+                self._persist_and_build_response,
                 request=request,
                 request_id=request_id,
                 conversation_id=conversation_id,
@@ -442,7 +459,8 @@ class ChatRuntime:
         ):
             final_state = self._superseded_state(initial_state, control_record)
             await self._platform_reply_coordinator.complete(control_record)
-            return self._persist_and_build_response(
+            return await asyncio.to_thread(
+                self._persist_and_build_response,
                 request=request,
                 request_id=request_id,
                 conversation_id=conversation_id,
@@ -455,7 +473,8 @@ class ChatRuntime:
         final_state["sync_reply_messages"] = list(final_state.get("reply_messages") or [])
         final_state.setdefault("async_final_reply", {"scheduled": False, "status": "not_required"})
         _set_sync_return(final_state, _sync_return_type(final_state), final_state["sync_reply_messages"])
-        response = self._persist_and_build_response(
+        response = await asyncio.to_thread(
+            self._persist_and_build_response,
             request=request,
             request_id=request_id,
             conversation_id=conversation_id,
@@ -666,7 +685,11 @@ class ChatRuntime:
         *,
         phase: str,
     ) -> AgentState:
-        self._update_run_progress(str(state.get("request_id") or ""), phase)
+        await asyncio.to_thread(
+            self._update_run_progress,
+            str(state.get("request_id") or ""),
+            phase,
+        )
         deadline = graph_deadline_monotonic(
             state,
             phase=phase,

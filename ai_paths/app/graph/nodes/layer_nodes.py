@@ -320,10 +320,34 @@ def create_background_context_layer(
                     },
                 )
             )
-            memory_task = asyncio.to_thread(_timed_call, "memory_load", _load_memory, memory_store, state)
-            identity_task = asyncio.to_thread(_timed_call, "get_customer_info", _load_customer_identity, customer_context_service, state, request_context)
+            memory_task = asyncio.create_task(
+                asyncio.to_thread(_timed_call, "memory_load", _load_memory, memory_store, state)
+            )
+            identity_task = asyncio.create_task(
+                asyncio.to_thread(
+                    _timed_call,
+                    "get_customer_info",
+                    _load_customer_identity,
+                    customer_context_service,
+                    state,
+                    request_context,
+                )
+            )
             memory_result, identity_result = await asyncio.gather(
-                memory_task,
+                _await_timed_background_task(
+                    memory_task,
+                    name="memory_load",
+                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                    timeout_result={
+                        "customer_profile": {},
+                        "customer_basic_info": {},
+                        "history_events": [],
+                        "lifecycle_stage": "",
+                        "saved_memory": {},
+                        "memory_scope_status": "timeout",
+                        "memory_error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                    },
+                ),
                 _await_timed_background_task(
                     identity_task,
                     name="get_customer_info",
@@ -349,15 +373,17 @@ def create_background_context_layer(
                     request_context=scoped_request_context,
                 )
             )
-            customer_task = asyncio.to_thread(
-                _timed_call,
-                "order_index",
-                _load_customer_context_with_identity,
-                customer_context_service,
-                state,
-                saved_memory,
-                request_context,
-                identity,
+            customer_task = asyncio.create_task(
+                asyncio.to_thread(
+                    _timed_call,
+                    "order_index",
+                    _load_customer_context_with_identity,
+                    customer_context_service,
+                    state,
+                    saved_memory,
+                    request_context,
+                    identity,
+                )
             )
             customer_result_timed, conversation_result_timed, sequence_result_timed, taxonomy_result_timed, closing_catalog_result_timed = await asyncio.gather(
                 _await_timed_background_task(

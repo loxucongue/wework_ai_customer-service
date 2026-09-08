@@ -1,0 +1,104 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
+
+from app.chat_runtime import ChatRuntime  # noqa: E402
+from app.config import Settings  # noqa: E402
+from app.schemas import ChatRequest  # noqa: E402
+from app.services.storage import AppRepository, SQLiteStore  # noqa: E402
+from app.services.trace_logger import TraceLogger  # noqa: E402
+
+
+class _FailGraph:
+    async def ainvoke(self, _state: dict[str, object]) -> dict[str, object]:
+        raise AssertionError("status failure or human takeover must not invoke the reply graph")
+
+
+class _StatusClient:
+    available = True
+
+    def __init__(self, *, result: dict[str, object] | None = None, error: Exception | None = None):
+        self.result = result or {}
+        self.error = error
+        self.calls = 0
+
+    async def conversation_status(self, **_kwargs: object) -> dict[str, object]:
+        self.calls += 1
+        await asyncio.sleep(0.02)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _runtime(tmp_path: Path, status_client: _StatusClient) -> tuple[ChatRuntime, SQLiteStore]:
+    settings = Settings().model_copy(
+        update={
+            "service_role": "reply",
+            "aics_storage_backend": "sqlite",
+            "db_path": tmp_path / "state.db",
+            "memory_dir": tmp_path / "memory",
+            "trace_log_dir": tmp_path / "trace",
+            "background_workers_enabled": False,
+        }
+    )
+    store = SQLiteStore(settings)
+    store.initialize()
+    runtime = ChatRuntime(
+        full_graph=_FailGraph(),
+        trace_logger=TraceLogger(settings),
+        repository=AppRepository(store),
+        outreach_system_client=status_client,  # type: ignore[arg-type]
+        settings=settings,
+    )
+    return runtime, store
+
+
+def _request(msgid: str = "same-platform-message") -> ChatRequest:
+    return ChatRequest(
+        content="多少钱？",
+        customer_id="customer-1",
+        corp_id="corp-1",
+        user_id=88,
+        wechat="SL8003",
+        external_userid="external-1",
+        request_context={"interface_version": "v3", "msgid": msgid},
+    )
+
+
+def test_duplicate_msgid_shares_one_failed_status_lookup_and_one_fallback_run(tmp_path: Path) -> None:
+    client = _StatusClient(error=TimeoutError("status unavailable"))
+    runtime, store = _runtime(tmp_path, client)
+
+    async def invoke_twice():
+        return await asyncio.gather(
+            runtime.run_platform_reply(_request()),
+            runtime.run_platform_reply(_request()),
+        )
+
+    first, second = asyncio.run(invoke_twice())
+
+    assert client.calls == 1
+    assert first.request_id == second.request_id
+    assert [item.content["text"] for item in first.reply_messages] == ["您稍等一下"]
+    assert first.meta["reply_source"] == "takeover_status_unavailable_fallback"
+    with store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS c FROM runs").fetchone()["c"] == 1
+
+
+def test_confirmed_human_takeover_still_returns_empty(tmp_path: Path) -> None:
+    client = _StatusClient(
+        result={"data": {"takeover": {"mode": "human", "is_human": True}}}
+    )
+    runtime, _store = _runtime(tmp_path, client)
+
+    response = asyncio.run(runtime.run_platform_reply(_request("human-message")))
+
+    assert client.calls == 1
+    assert response.reply_messages == []
+    assert response.meta["reply_source"] == "human_takeover_guard"

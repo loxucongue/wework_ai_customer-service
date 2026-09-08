@@ -70,13 +70,6 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
             # protocol no-op.
             setattr(http_request.state, "v3_timing_finalize_background", True)
             return http_response
-        takeover_response = await chat_runtime.run_v3_takeover_guard(request)
-        if takeover_response is not None:
-            response_body = workflow_response_from_chat(takeover_response)
-            record_http_response(takeover_response.request_id, response_body)
-            http_response = JSONResponse(content=response_body)
-            bind_v3_run_request_id(http_request, takeover_response.request_id)
-            return http_response
         request = await services.platform_voice_batch_coordinator.prepare(
             request,
             services.voice_transcription_client,
