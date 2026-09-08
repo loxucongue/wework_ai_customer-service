@@ -29,6 +29,7 @@ def _insert_plan(
     customer_id: str = "customer-a",
     external_userid: str = "external-a",
     wechat: str = "SL8003",
+    user_id: str = "",
     status: str = "active",
     created_at: str = "2026-09-06T01:00:00+00:00",
     source_snapshot: dict | None = None,
@@ -37,15 +38,16 @@ def _insert_plan(
         conn.execute(
             """
             INSERT INTO outreach_plans
-                (id,sop_plan_id,customer_id,corp_id,wechat,external_userid,status,plan_goal,
+                (id,sop_plan_id,customer_id,corp_id,user_id,wechat,external_userid,status,plan_goal,
                  source_snapshot,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,'re-engage',?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,'re-engage',?,?,?)
             """,
             (
                 plan_id,
                 sop_plan_id,
                 customer_id,
                 "corp-a",
+                user_id,
                 wechat,
                 external_userid,
                 status,
@@ -95,7 +97,12 @@ def test_customer_logs_group_automatic_plans_and_keep_wechat_scope(tmp_path) -> 
         store,
         plan_id="first-day",
         sop_plan_id="first_day_opened_silence",
+        user_id="operator-1",
         created_at="2026-09-06T01:00:00+00:00",
+        source_snapshot={
+            "conversation_id": "conversation-1",
+            "customer_add_wechat_id": "relation-1",
+        },
     )
     _insert_task(
         store,
@@ -236,6 +243,15 @@ def test_customer_logs_group_automatic_plans_and_keep_wechat_scope(tmp_path) -> 
     verified_detail = repository.get_outreach_customer_log_plan(sl8003_item["contact_key"], "first-day")
     unverified_detail = repository.get_outreach_customer_log_plan(sl8003_item["contact_key"], "auto-approved")
     assert verified_detail["tasks"][0]["actual_send"] is True
+    assert verified_detail["identity"] == {
+        "corp_id": "corp-a",
+        "wechat": "SL8003",
+        "external_userid": "external-a",
+        "customer_id": "customer-a",
+        "user_id": "operator-1",
+        "customer_add_wechat_id": "relation-1",
+        "conversation_id": "conversation-1",
+    }
     assert unverified_detail["tasks"][0]["actual_send"] is False
     assert unverified_detail["technical"]["source_snapshot"]["api_key"] == "[REDACTED]"
     assert repository.get_outreach_customer_log_plan(sl8003_item["contact_key"], "other-wechat") == {}
@@ -278,3 +294,41 @@ def test_customer_logs_keep_incomplete_records_separate_and_validate_range(tmp_p
             started_from="2026-06-01T00:00:00+00:00",
             started_to=END,
         )
+    with pytest.raises(ValueError, match="started_from must be an ISO-8601 datetime"):
+        repository.list_outreach_customer_logs(started_from="not-a-date", started_to=END)
+
+
+def test_customer_log_detail_never_treats_customer_id_as_external_userid(tmp_path) -> None:
+    store, repository = _repository(tmp_path)
+    _insert_plan(
+        store,
+        plan_id="external-scope",
+        sop_plan_id="first_day_opened_silence",
+        customer_id="platform-customer",
+        external_userid="wm-contact",
+        created_at="2026-09-06T01:00:00+00:00",
+    )
+    _insert_plan(
+        store,
+        plan_id="legacy-customer-only",
+        sop_plan_id="first_day_opened_silence",
+        customer_id="wm-contact",
+        external_userid="",
+        created_at="2026-09-06T02:00:00+00:00",
+    )
+
+    result = repository.list_outreach_customer_logs(started_from=START, started_to=END)
+    external_item = next(
+        item for item in result["items"] if item["identity"].get("external_userid") == "wm-contact"
+    )
+    detail = repository.get_outreach_customer_log(
+        external_item["contact_key"],
+        started_from=START,
+        started_to=END,
+    )
+
+    assert [record["plan_id"] for record in detail["history"]] == ["external-scope"]
+    assert repository.get_outreach_customer_log_plan(
+        external_item["contact_key"],
+        "legacy-customer-only",
+    ) == {}

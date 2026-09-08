@@ -84,8 +84,14 @@ _OUTREACH_FAILED_TASK_STATUSES = {"failed", "check_failed", "partial_failed"}
 
 def _outreach_log_window(started_from: str, started_to: str) -> tuple[str, str]:
     now = datetime.now(timezone.utc)
-    start = _parse_iso(started_from) or now - timedelta(days=30)
-    end = _parse_iso(started_to) or now
+    parsed_start = _parse_iso(started_from)
+    parsed_end = _parse_iso(started_to)
+    if started_from and parsed_start is None:
+        raise ValueError("started_from must be an ISO-8601 datetime")
+    if started_to and parsed_end is None:
+        raise ValueError("started_to must be an ISO-8601 datetime")
+    start = parsed_start or now - timedelta(days=30)
+    end = parsed_end or now
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
     if end.tzinfo is None:
@@ -136,12 +142,33 @@ def _outreach_contact_identity(row: dict[str, Any]) -> dict[str, str]:
     identity_value = external_userid or customer_id
     if not corp_id or not wechat or not identity_value:
         return {}
-    return {
+    identity = {
         "corp_id": corp_id,
         "wechat": wechat,
         "external_userid": external_userid,
         "customer_id": customer_id,
     }
+    snapshot = row.get("source_snapshot") if isinstance(row.get("source_snapshot"), dict) else {}
+    if not snapshot and isinstance(row.get("input_snapshot"), dict):
+        snapshot = row["input_snapshot"]
+    trigger_context = (
+        snapshot.get("trigger_context")
+        if isinstance(snapshot.get("trigger_context"), dict)
+        else {}
+    )
+    optional_fields = {
+        "user_id": _string(row.get("user_id"))
+        or _string(snapshot.get("user_id"))
+        or _string(trigger_context.get("user_id")),
+        "customer_add_wechat_id": _string(snapshot.get("customer_add_wechat_id"))
+        or _string(trigger_context.get("customer_add_wechat_id")),
+        "conversation_id": _string(snapshot.get("conversation_id"))
+        or _string(trigger_context.get("conversation_id")),
+        "customer_name": _string(snapshot.get("platform_customer_name"))
+        or _string(trigger_context.get("platform_customer_name")),
+    }
+    identity.update({key: value for key, value in optional_fields.items() if value})
+    return identity
 
 
 def _outreach_contact_key(identity: dict[str, str]) -> str:
@@ -194,9 +221,48 @@ def _outreach_contact_matches(row: dict[str, Any], identity: dict[str, str]) -> 
         return False
     if _string(row_identity.get("wechat")).lower() != _string(identity.get("wechat")).lower():
         return False
-    expected = _string(identity.get("external_userid")).lower() or _string(identity.get("customer_id")).lower()
-    actual = _string(row_identity.get("external_userid")).lower() or _string(row_identity.get("customer_id")).lower()
-    return bool(expected and actual and expected == actual)
+    expected_external = _string(identity.get("external_userid")).lower()
+    actual_external = _string(row_identity.get("external_userid")).lower()
+    if expected_external:
+        return bool(actual_external and actual_external == expected_external)
+    if actual_external:
+        return False
+    expected_customer = _string(identity.get("customer_id")).lower()
+    actual_customer = _string(row_identity.get("customer_id")).lower()
+    return bool(expected_customer and actual_customer and expected_customer == actual_customer)
+
+
+def _outreach_contact_scope_sql(
+    identity: dict[str, str] | None,
+    *,
+    table_alias: str = "",
+) -> tuple[str, tuple[str, ...]]:
+    if not identity:
+        return "", ()
+    prefix = f"{table_alias}." if table_alias else ""
+    corp_id = _string(identity.get("corp_id"))
+    wechat = _string(identity.get("wechat"))
+    external_userid = _string(identity.get("external_userid"))
+    customer_id = _string(identity.get("customer_id"))
+    if not corp_id or not wechat or not (external_userid or customer_id):
+        return " AND 1=0", ()
+    clauses = [
+        f"lower({prefix}corp_id)=lower(?)",
+        f"lower({prefix}wechat)=lower(?)",
+    ]
+    params: list[str] = [corp_id, wechat]
+    if external_userid:
+        clauses.append(f"lower({prefix}external_userid)=lower(?)")
+        params.append(external_userid)
+    else:
+        clauses.extend(
+            [
+                f"{prefix}external_userid=''",
+                f"lower({prefix}customer_id)=lower(?)",
+            ]
+        )
+        params.append(customer_id)
+    return " AND " + " AND ".join(clauses), tuple(params)
 
 
 def _outreach_task_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -944,14 +1010,34 @@ class OutreachRepositoryMixin:
         *,
         started_from: str,
         started_to: str,
+        identity: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         automatic_snapshot = self.store.json_text(
             "source_snapshot", "$.trigger_context.activation_policy"
         )
+        snapshot_plan_type = self.store.json_text("source_snapshot", "$.plan_type")
+        snapshot_trigger_type = self.store.json_text(
+            "source_snapshot", "$.trigger_context.trigger_type"
+        )
+        snapshot_reason_code = self.store.json_text(
+            "source_snapshot", "$.trigger_context.reason_code"
+        )
+        snapshot_workflow_run_id = self.store.json_text(
+            "source_snapshot", "$.workflow_run_id"
+        )
+        contact_sql, contact_params = _outreach_contact_scope_sql(identity)
         with self.store.connect() as conn:
             plan_rows = conn.execute(
                 f"""
-                SELECT * FROM outreach_plans
+                SELECT id, sop_plan_id, customer_id, corp_id, user_id, wechat,
+                       external_userid, status, customer_stage, stall_reason,
+                       customer_psychology, plan_goal, created_at, updated_at,
+                       {snapshot_plan_type} AS snapshot_plan_type,
+                       {snapshot_trigger_type} AS snapshot_trigger_type,
+                       {automatic_snapshot} AS snapshot_activation_policy,
+                       {snapshot_reason_code} AS snapshot_reason_code,
+                       {snapshot_workflow_run_id} AS snapshot_workflow_run_id
+                FROM outreach_plans
                 WHERE created_at>=? AND created_at<=?
                   AND (
                     sop_plan_id='first_day_opened_silence'
@@ -959,18 +1045,23 @@ class OutreachRepositoryMixin:
                     OR sop_plan_id LIKE 'closing_sequence:%'
                     OR {automatic_snapshot}='auto_approved'
                   )
+                  {contact_sql}
                 ORDER BY created_at DESC, id DESC
                 """,
-                (started_from, started_to),
+                (started_from, started_to, *contact_params),
             ).fetchall()
             first_day_rows = conn.execute(
-                """
-                SELECT * FROM first_day_outreach_runs
+                f"""
+                SELECT workflow_run_id, plan_id, corp_id, user_id, wechat,
+                       customer_id, external_userid, trigger_type, status,
+                       reason_code, started_at, finished_at, raw_redacted_at
+                FROM first_day_outreach_runs
                 WHERE plan_id='' AND started_at>=? AND started_at<=?
                   AND trigger_type='first_day_opened_silence'
+                  {contact_sql}
                 ORDER BY started_at DESC, workflow_run_id DESC
                 """,
-                (started_from, started_to),
+                (started_from, started_to, *contact_params),
             ).fetchall()
             placeholders = ",".join("?" for _ in _OUTREACH_NO_PLAN_EVENT_TYPES)
             no_plan_event_rows = conn.execute(
@@ -991,7 +1082,13 @@ class OutreachRepositoryMixin:
                     continue
                 task_rows.extend(
                     conn.execute(
-                        f"SELECT * FROM outreach_tasks WHERE plan_id IN ({','.join('?' for _ in chunk)}) ORDER BY plan_id, step_index ASC",
+                        f"""
+                        SELECT id, plan_id, step_index, scheduled_at, status,
+                               message_goal, sent_at, send_status, system_msgid
+                        FROM outreach_tasks
+                        WHERE plan_id IN ({','.join('?' for _ in chunk)})
+                        ORDER BY plan_id, step_index ASC
+                        """,
                         chunk,
                     ).fetchall()
                 )
@@ -1003,7 +1100,21 @@ class OutreachRepositoryMixin:
 
         records: list[dict[str, Any]] = []
         for plan_row in plan_rows:
-            plan = self._decode_outreach_plan(dict(plan_row))
+            raw_plan = dict(plan_row)
+            raw_plan["source_snapshot"] = dumps(
+                {
+                    "plan_type": _string(raw_plan.pop("snapshot_plan_type", "")),
+                    "workflow_run_id": _string(raw_plan.pop("snapshot_workflow_run_id", "")),
+                    "trigger_context": {
+                        "trigger_type": _string(raw_plan.pop("snapshot_trigger_type", "")),
+                        "activation_policy": _string(
+                            raw_plan.pop("snapshot_activation_policy", "")
+                        ),
+                        "reason_code": _string(raw_plan.pop("snapshot_reason_code", "")),
+                    },
+                }
+            )
+            plan = self._decode_outreach_plan(raw_plan)
             source_type = _outreach_source_type(plan)
             if source_type not in _AUTOMATIC_OUTREACH_SOURCE_TYPES:
                 continue
@@ -1252,7 +1363,11 @@ class OutreachRepositoryMixin:
         start, end = _outreach_log_window(started_from, started_to)
         history = [
             record
-            for record in self._outreach_customer_log_records(started_from=start, started_to=end)
+            for record in self._outreach_customer_log_records(
+                started_from=start,
+                started_to=end,
+                identity=identity,
+            )
             if _outreach_contact_matches(
                 record.get("identity") if isinstance(record.get("identity"), dict) else {},
                 identity,
@@ -1295,6 +1410,7 @@ class OutreachRepositoryMixin:
         source_type = _outreach_source_type(plan)
         if source_type not in _AUTOMATIC_OUTREACH_SOURCE_TYPES or not _outreach_contact_matches(plan, identity):
             return {}
+        plan_identity = _outreach_contact_identity(plan)
         tasks = [self._decode_outreach_task(dict(row)) for row in task_rows]
         events = [self._decode_outreach_event(dict(row)) for row in event_rows]
         for task in tasks:
@@ -1314,7 +1430,7 @@ class OutreachRepositoryMixin:
         return redact_first_day_log_value(
             {
                 "contact_key": contact_key,
-                "identity": identity,
+                "identity": plan_identity,
                 "source_type": source_type,
                 "plan": plan,
                 "reason_code": _outreach_log_reason({**plan, "source_snapshot": source_snapshot}, source_type),

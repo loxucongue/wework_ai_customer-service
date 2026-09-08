@@ -4,7 +4,7 @@
 - owner: Codex
 - base_branch: main
 - base_sha: `73b723354e49c020e09e1b036f9c40bc66bf3e73`
-- production_baseline: pending verification before release
+- production_baseline: `ai-paths-unified-20260908-123216-3fc85db4`
 
 ## 目标
 
@@ -32,7 +32,7 @@
 
 ## 待办
 
-- 审核分支并确认是否合并、部署。
+- 合入 clean main 并发布。
 - 发布后核验新页面只读请求、旧链接跳转、V3 服务和 worker 健康。
 
 ## 已完成
@@ -41,9 +41,13 @@
 - 自动来源限定为首日沉默、自动跟进、自动成交和 `auto_approved`；手工计划排除。
 - 实现 30 天默认、90 天上限、客户身份隔离、无计划事件去重和实际发送凭据校验。
 - 页面迁移到 `/logs/outreach`，旧 `/logs/outreach-first-day` 永久跳转；导航和入口已更新。
+- 审核修复跨类型身份误匹配：有 `external_userid` 的客户详情只匹配同类型外部联系人 ID，不能用同值的旧 `customer_id` 补位。
+- 客户详情查询把销售接触边界下推到 SQL；列表只读取计划和任务的必要列，不传输完整大体积计划快照或话术正文。
+- 计划详情展示客户、外部联系人、加微关系、接待人员、企微、企业和会话 ID；页面业务文案不再把当前沉默唤醒称为“首日”。
 
 ## 验证证据
 
-- `python -m pytest tests/test_outreach_customer_log.py tests/test_outreach_customer_log_api.py tests/test_outreach_dashboard_metrics.py`：7 passed。
-- 前端 TypeScript、ESLint 和生产构建通过。
-- 浏览器已验证桌面/移动布局、筛选、客户展开、计划详情、规则展开保存和旧地址跳转；验收使用本地脱敏模拟数据，不调用生产写接口。
+- 全仓后端回归：470 passed；相关 Ruff 通过。
+- 前端 TypeScript、ESLint 和 Next.js 生产构建通过，共生成 37 个路由。
+- 浏览器已验证 1440px 和 390px 布局、筛选、客户展开、计划详情、七类身份字段和旧地址永久跳转；控制台 0 error/0 warning，验收使用本地脱敏模拟数据，不调用生产写接口。
+- 5,000 个计划、45,000 个任务且计划快照约 100KB 的 SQLite 压力样本：客户列表约 1.58 秒，单客户详情约 0.56 秒；生产 MySQL 仍须发布后只读实测。

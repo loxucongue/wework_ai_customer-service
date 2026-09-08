@@ -48,7 +48,11 @@
 
 - `GET /admin/outreach/dashboard`：按时间、企业和企微号聚合漏斗、趋势、原因、队列、账号分布和数据新鲜度；队列项携带客户、会话、运行、计划和任务的稳定 ID；最大范围 31 天。
 - `GET /admin/outreach/first-day-runs/{workflow_run_id}`：按需读取单次运行、计划、任务、素材、节点和客户上下文。
+- `GET /admin/outreach/customer-logs`：按客户聚合自动沉默、跟进、成交序列和自动批准计划；默认 30 天、最大 90 天，先返回客户级任务与发送摘要。
+- `GET /admin/outreach/customer-logs/{contact_key}`：读取同一销售接触边界内的历史计划和未建计划记录。
+- `GET /admin/outreach/customer-logs/{contact_key}/plans/{plan_id}`：读取单个计划、任务和事件；只有任务 `status=sent` 且存在平台消息 ID 时标记为实际发送。
 - 管理接口使用现有 Bearer 鉴权；前端路径为 `/analytics/outreach`。
+- 客户日志前端路径为 `/logs/outreach`；历史 `/logs/outreach-first-day` 永久跳转到新页面。
 - 看板不新增事实表；运行快照和原始轨迹继续按现有保留策略清理。
 
 ## 风险与解释边界

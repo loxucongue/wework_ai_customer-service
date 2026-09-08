@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   CalendarClock,
-  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -16,12 +15,10 @@ import {
   FileJson2,
   Filter,
   LoaderCircle,
-  MessageSquareText,
   RefreshCw,
   Search,
   Send,
   Settings2,
-  ShieldCheck,
   UsersRound,
   XCircle,
 } from "lucide-react";
@@ -55,6 +52,10 @@ type Identity = {
   wechat?: string;
   external_userid?: string;
   customer_id?: string;
+  user_id?: string;
+  customer_add_wechat_id?: string;
+  conversation_id?: string;
+  customer_name?: string;
 };
 
 type OutreachRecord = {
@@ -176,7 +177,7 @@ const EMPTY_METRICS: Metrics = {
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  first_day: "首日加微沉默唤醒",
+  first_day: "沉默客户唤醒",
   followup_strategy: "自动跟进策略",
   closing_sequence: "自动成交序列",
   auto_approved: "自动审批计划",
@@ -421,7 +422,7 @@ export function OutreachCustomerLogViewer() {
         {metrics.identity_incomplete_count > 0 ? <div className="mt-3 flex gap-2 border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700"><CircleSlash2 className="mt-0.5 h-4 w-4 shrink-0" />{metrics.identity_incomplete_count} 条记录身份不完整，已单独展示，不会与任何客户合并。</div> : null}
         {error ? <div className="mt-3 flex gap-2 border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{error}</div> : null}
 
-        <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(420px,1.1fr)_minmax(380px,0.95fr)_minmax(400px,1fr)]">
+        <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.95fr)_minmax(0,1fr)]">
           <CustomerPanel items={items} selectedContactKey={selectedContactKey} loading={loading} onSelect={(contactKey) => { setSelectedContactKey(contactKey); setSelectedPlanId(""); }} />
           <TimelinePanel customer={selectedCustomer} detail={customerDetail} loading={customerLoading} selectedPlanId={selectedPlanId} onSelectPlan={setSelectedPlanId} />
           <PlanDetailPanel detail={planDetail} loading={planLoading} />
@@ -511,7 +512,7 @@ function OutreachSettingsPanel() {
       {expanded ? <ChevronUp className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
     </button>
     {expanded ? <div className="grid gap-3 border-t border-zinc-200 p-4 md:grid-cols-[1.1fr_0.7fr_1.4fr_auto] md:items-end">
-      <label className="flex h-9 items-center justify-between gap-3 border border-zinc-200 px-3 text-sm"><span>启用首日沉默唤醒</span><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4" /></label>
+      <label className="flex h-9 items-center justify-between gap-3 border border-zinc-200 px-3 text-sm"><span>启用沉默客户唤醒</span><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4" /></label>
       <Field label="沉默分钟数"><input type="number" min={1} max={120} value={silenceMinutes} onChange={(event) => setSilenceMinutes(event.target.value)} className={inputClassName} /></Field>
       <Field label="企微账号范围（留空为全部）"><input value={allowlist} onChange={(event) => setAllowlist(event.target.value)} placeholder="SL8003, DY258" className={inputClassName} /></Field>
       <div className="flex gap-2"><button type="button" title="刷新配置" onClick={() => void loadSettings()} disabled={loading} className={iconButtonClass}><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /></button><button type="button" onClick={() => void save()} disabled={saving || loading} className="h-9 rounded-md bg-zinc-900 px-3 text-sm font-medium text-white disabled:opacity-50">{saving ? "保存中" : "保存"}</button></div>
@@ -578,12 +579,26 @@ function PlanDetailPanel({ detail, loading }: { detail: PlanDetail | null; loadi
   return <section className="min-w-0 border border-zinc-200 bg-white">
     <PanelHeader icon={<ClipboardList className="h-4 w-4" />} title="计划任务详情" subtitle={`${SOURCE_LABELS[detail.source_type] || detail.source_type} · ${reasonLabel(detail.reason_code)}`} />
     <div className="max-h-[720px] overflow-y-auto p-4">
+      <IdentityFacts identity={detail.identity} />
       <section className="border-b border-zinc-200 pb-4"><div className="text-sm font-semibold">{text(plan.plan_goal) || "未记录计划目标"}</div><div className="mt-2 grid gap-2 text-xs sm:grid-cols-2"><Fact label="客户阶段" value={text(plan.customer_stage) || "未记录"} /><Fact label="当前状态" value={planStatusLabel(text(plan.status))} /><Fact label="任务进度" value={`${detail.task_summary.handled}/${detail.task_summary.total} 已处理`} /><Fact label="实际发送" value={`${detail.task_summary.sent} 条`} /></div></section>
       <section className="mt-4"><h3 className="text-sm font-semibold">任务</h3><div className="mt-2 space-y-3">{detail.tasks.length ? detail.tasks.map((task) => <TaskCard key={text(task.id)} task={task} />) : <EmptyState icon={<CircleSlash2 className="h-4 w-4" />} text="该计划没有任务" />}</div></section>
       <section className="mt-5 border-t border-zinc-200 pt-4"><h3 className="text-sm font-semibold">审计时间线</h3><div className="mt-3 space-y-3">{detail.events.length ? detail.events.map((event, index) => <AuditEvent key={`${text(event.id)}-${index}`} event={event} />) : <div className="text-sm text-zinc-500">未记录额外审计事件。</div>}</div></section>
       <details className="mt-5 border-t border-zinc-200 pt-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-medium text-zinc-700"><FileJson2 className="h-4 w-4" />技术记录</summary><p className="mt-2 text-xs leading-5 text-zinc-500">仅用于排查，已沿用后台脱敏结果；不作为业务发送凭据。</p><pre className="mt-3 max-h-80 overflow-auto bg-zinc-950 p-3 text-xs leading-5 text-zinc-100">{pretty({ technical: detail.technical, events: detail.events, task_statuses: detail.tasks.map((task) => ({ id: task.id, status: task.status, send_status: task.send_status, system_msgid: task.system_msgid, error_message: task.error_message })) })}</pre></details>
     </div>
   </section>;
+}
+
+function IdentityFacts({ identity }: { identity: Identity }) {
+  const facts: Array<[string, string | undefined]> = [
+    ["客户 ID", identity.customer_id],
+    ["外部联系人 ID", identity.external_userid],
+    ["加微关系 ID", identity.customer_add_wechat_id],
+    ["接待人员 ID", identity.user_id],
+    ["企微账号", identity.wechat],
+    ["企业 ID", identity.corp_id],
+    ["会话 ID", identity.conversation_id],
+  ];
+  return <section className="mb-4 border-b border-zinc-200 pb-4"><h3 className="text-sm font-semibold">客户身份</h3><div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">{facts.map(([label, value]) => <Fact key={label} label={label} value={value || "未记录"} />)}</div></section>;
 }
 
 function TaskCard({ task }: { task: OutreachTask }) {
