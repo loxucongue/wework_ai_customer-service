@@ -103,5 +103,5 @@
 - 回滚指针：`/opt/ai-paths/previous` 和 `/opt/ai-paths-v3/previous` 均指向 `ai-paths-unified-20260908-092011-ac512d2e`；其上一版为 `ai-paths-unified-20260908-000754-d13b73ae`。
 - 本次无数据库迁移、无前端变更。`MODEL_REPLY=deepseek-chat`，`OUTREACH_DECISION_MODEL=deepseek-chat`，fallback 为空；沉默唤醒仍为全企微、1 分钟、按外部跟进序列节点数生成任务，夜间非活跃顺延、夜间活跃 40 分钟压缩。
 - 修复点：计划主事务已提交后，审计事件、客户状态更新或回读失败不再把计划误标成失败；自动批准的 draft 计划会在重复指纹拦截前恢复；过期节点重排时保留平台相对间隔，不再把 9 个节点压成 8 秒内连发。
-- 指定客户计划 `c11264db-4b83-42ab-9724-21a3b7dc6785` 已从 draft 恢复为 active，并按平台 0/0/2/2/5/5/15/15/30 分钟节点重排；第 1 个任务已发送，计划进入 `waiting`，后续任务仍受发送前 AI/人工、客户新回复、退订、订单终态等校验保护。
+- 指定客户计划 `c11264db-4b83-42ab-9724-21a3b7dc6785` 已从 draft 恢复为 active，并按平台 0/0/2/2/5/5/15/15/30 分钟节点重排；发布后确认前 6 个节点已发送，第 7/8/9 个仍 pending，后续任务仍受发送前 AI/人工、客户新回复、退订、订单终态等校验保护。该密集节奏来自平台序列配置，不是旧版 08:30:00-08:30:08 连发压缩。
 - 生产库当前仍有 7 个普通 draft 计划、16 个非首日 pending/checking 任务；首日沉默唤醒 draft pending 为 0。最近 10 分钟 systemd 日志未见 error/traceback/failed。
