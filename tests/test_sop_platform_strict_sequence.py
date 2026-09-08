@@ -205,4 +205,5 @@ def test_reserved_prefix_restore_uses_one_filtered_joined_query() -> None:
     assert repository.calls[0]["limit"] == 500
     assert repository.calls[0]["oldest_first"] is True
     assert "platform_sequence_blocked" in repository.calls[0]["event_statuses"]
+    assert "platform_legacy_quarantined" in repository.calls[0]["event_statuses"]
     assert service._reserved_prefix_ids == {"selected", "later", "trigger"}

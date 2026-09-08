@@ -758,12 +758,11 @@ class SopPlatformTaskService:
                 # replayed through the new direct-send contract. Keep them
                 # reserved for audit/manual reconciliation without sending or
                 # consuming either the platform task or a message msgId.
-                reserved_ids = getattr(self, "_reserved_prefix_ids", None)
-                if not isinstance(reserved_ids, set):
-                    reserved_ids = set()
-                    self._reserved_prefix_ids = reserved_ids
-                reserved_ids.add(task_id)
-                self._counters["legacy_recovery_quarantined"] += 1
+                await asyncio.to_thread(
+                    self._quarantine_legacy_recovery,
+                    task_id=task_id,
+                    event_id=event_id,
+                )
                 return 0
             # The platform keeps unconsumed tasks in the pending feed, so an
             # orphan can remain queued or in flight indefinitely. Recovery must
@@ -902,6 +901,7 @@ class SopPlatformTaskService:
             "platform_sequence_blocked",
             "platform_sequence_waiting",
             "platform_failed",
+            "platform_legacy_quarantined",
         }
         candidates: list[tuple[tuple[float, int, str], dict[str, Any]]] = []
         for record in records:
@@ -953,12 +953,11 @@ class SopPlatformTaskService:
             local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             processing_mode = str(local_audit.get("processing_mode") or "")
             if processing_mode not in {"deterministic_customer_gate", "deterministic_task_no_send"}:
-                reserved_ids = getattr(self, "_reserved_prefix_ids", None)
-                if not isinstance(reserved_ids, set):
-                    reserved_ids = set()
-                    self._reserved_prefix_ids = reserved_ids
-                reserved_ids.add(task_id)
-                self._counters["legacy_recovery_quarantined"] += 1
+                await asyncio.to_thread(
+                    self._quarantine_legacy_recovery,
+                    task_id=task_id,
+                    event_id=f"platform_sop_task:{task_id}",
+                )
                 return {
                     "processed": False,
                     "status": "legacy_recovery_quarantined",
@@ -971,6 +970,23 @@ class SopPlatformTaskService:
                 async with content_lock:
                     return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
             return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
+
+    def _quarantine_legacy_recovery(self, *, task_id: str, event_id: str) -> None:
+        reserved_ids = getattr(self, "_reserved_prefix_ids", None)
+        if not isinstance(reserved_ids, set):
+            reserved_ids = set()
+            self._reserved_prefix_ids = reserved_ids
+        reserved_ids.add(task_id)
+        counters = getattr(self, "_counters", None)
+        if isinstance(counters, dict):
+            counters["legacy_recovery_quarantined"] += 1
+        update_event = getattr(getattr(self, "repository", None), "update_sop_event_status", None)
+        if callable(update_event):
+            update_event(
+                event_id,
+                status="platform_legacy_quarantined",
+                error="legacy_execution_disabled",
+            )
 
     async def process_customer_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         tasks = sorted(_batch_tasks(batch), key=_task_batch_sort_key)
@@ -2336,6 +2352,7 @@ class SopPlatformTaskService:
             "platform_batch_consume_pending",
             "platform_sequence_blocked",
             "platform_failed",
+            "platform_legacy_quarantined",
         }
         # The joined repository view restores the same durable event/task
         # evidence in one query. The old event-list + per-task lookup made a

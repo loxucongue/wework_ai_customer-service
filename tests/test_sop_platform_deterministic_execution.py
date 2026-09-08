@@ -334,6 +334,11 @@ def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_quaran
     assert legacy_system.send_calls == []
     assert "sop_messages" not in legacy_events
     assert legacy_platform.consume_calls == []
+    assert legacy_repository.event_updates[-1] == {
+        "event_id": "platform_sop_task:101",
+        "status": "platform_legacy_quarantined",
+        "error": "legacy_execution_disabled",
+    }
 
 
 def test_manual_resend_is_disabled_to_prevent_implicit_message_consumption() -> None:

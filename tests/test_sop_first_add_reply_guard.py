@@ -378,6 +378,7 @@ def test_manual_resend_cannot_bypass_first_add_reply_guard(monkeypatch: pytest.M
 
 def test_legacy_queued_recovery_is_quarantined(monkeypatch: pytest.MonkeyPatch) -> None:
     task = _task()
+    event_updates: list[dict[str, object]] = []
 
     class _Repository:
         def list_sop_events_by_statuses(self, *_args: object, **_kwargs: object) -> list[dict[str, object]]:
@@ -396,6 +397,10 @@ def test_legacy_queued_recovery_is_quarantined(monkeypatch: pytest.MonkeyPatch) 
         @staticmethod
         def get_sop_send_task_by_idempotency_key(_key: str) -> dict[str, object]:
             return {"id": "local-1", "send_payload": {"processing_mode": "customer_batch_sequence"}}
+
+        @staticmethod
+        def update_sop_event_status(event_id: str, **values: object) -> None:
+            event_updates.append({"event_id": event_id, **values})
 
     service = SopPlatformTaskService.__new__(SopPlatformTaskService)
     service.settings = SimpleNamespace(sop_platform_recovery_batch_size=10, sop_platform_recovery_concurrency=1)
@@ -433,6 +438,13 @@ def test_legacy_queued_recovery_is_quarantined(monkeypatch: pytest.MonkeyPatch) 
     assert batch_called is False
     assert legacy_called is False
     assert service._reserved_prefix_ids == {"task-1"}
+    assert event_updates == [
+        {
+            "event_id": "platform_sop_task:task-1",
+            "status": "platform_legacy_quarantined",
+            "error": "legacy_execution_disabled",
+        }
+    ]
 
 
 def test_deterministic_queued_recovery_reenters_batch_path(monkeypatch: pytest.MonkeyPatch) -> None:
