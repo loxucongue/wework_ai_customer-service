@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-08T18:25:00+08:00`
+- verified_at: `2026-09-08T19:40:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260908-182248-95079fdf`
-- git commit: `95079fdfffeb9398153e7ca43d59453cefab5666`
+- release: `ai-paths-unified-20260908-192853-46439957`
+- git commit: `4643995727b5c2e7d0e0a901e3f33707ac3cc988`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -30,6 +30,7 @@
 - `AI_CLOSING_CATALOG_SOURCE=external_then_local`
 - `OUTREACH_FIRST_DAY_SILENCE_ENABLED=true`
 - `OUTREACH_FIRST_DAY_SILENCE_MINUTES=1`
+- 第三方 SOP 首次发送不再设置任务年龄窗口；计划时间仅用于排序和审计，延迟任务仍执行实时三项门禁。发送结果未知的恢复等待仍为 `1800` 秒，避免首次调用结果不明时重复发送。
 - 企微 allowlist 为空，表示全部企微号进入候选。
 - 启用水位：`2026-09-05T09:41:20+00:00`；水位前历史沉默不补发。
 - 当前代码仍要求沉默计划前和每次发送前由平台明确确认 AI 模式；人工、未知或状态查询失败均阻断。
@@ -46,13 +47,14 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260908-173813-b21228ae`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260908-182248-95079fdf`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-144742-18123aa1`。
 - 数据库已迁移到 `20260907_02`，新增兼容的 `aics_customer_identity_links`；发布前 AICS 20 张表、841,130 行的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-44fcd568-20260907-201840/aics-before-20260907_02.sql.gz`，SHA-256 为 `481b853b31b244fa8e307a31f3be632ef46904ca3ea7692fdfc3da1e4a23439c`。旧代码会忽略新表，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-08 19:40 发布并核验第三方 SOP 首次发送年龄限制移除：control/reply/worker 统一运行 clean `main@4643995727b5c2e7d0e0a901e3f33707ac3cc988`，release 为 `ai-paths-unified-20260908-192853-46439957`。删除原 `SOP_PLATFORM_MAX_TASK_AGE_SECONDS=1800` 的首次尝试过期判断和生产配置，任务不再因晚于计划时间 30 分钟直接转为无需发送；发送结果未知的 `SOP_PLATFORM_SEND_RETRY_TIMEOUT_SECONDS=1800` 仍保留用于防重。worker 停机期间按冻结清单哈希 `2f261492b7871a61a79bd7591f5ce44cf3232c184d15f0050c0b66ef2b14a792` 精确将 38 条历史积压任务消费为任务 `70` 并完成 38 次策略结果回传，所有消费请求均未传 `messages` 或 `contentExhausted`，主动发送调用和消费 `msgId` 均为 0；冻结集合复查剩余 0。全仓 562 条测试和 Ruff 通过；三个角色健康信息的 release、完整 SHA、`dirty=false` 一致，worker 恢复运行且最新轮询错误为空，发布后 error/warning 日志为空。本次无数据库 schema 或前端变更，统一回滚点为 `ai-paths-unified-20260908-182248-95079fdf`；已写入平台的 38 条任务 `70` 不可由代码回滚。
 - 2026-09-08 18:25 发布并核验 V3 Reply 运行时质量门白名单：control/reply/worker 统一运行 clean `main@95079fdfffeb9398153e7ca43d59453cefab5666`，release 为 `ai-paths-unified-20260908-182248-95079fdf`。运行时只保留结构、素材/图片、收款卡、门店和明确预约完成态五类拦截，另保留明确退订停止营销硬边界；取消问题数量、ask 无问号、选店后必须追问、暂停营销/活动卡点、营业时间、档期、直接到店、普通安排和登记完成措辞拦截。收款卡继续要求客户未付且未声称已付、更早已讲活动价格、每人 10 元且总额只能为 10/20/30/40 元、同轮最多一张；无预约事实时仍拦“已留位、约好了/预约成功、已排客/排客成功”。专项 128 条、全仓 563 条和 Ruff 通过；生产当前代码只读正反断言通过，V3 无鉴权 401、V2 404、管理页 200、Nginx 配置通过，四个 unit active、三个后端 `NRestarts=0`，发布后错误日志为空。Worker `queue_depth=0`、`in_flight_count=0`、`last_poll_error` 为空；平台待处理 31 条为发布前已存在状态，本次未触发模型、客户消息、数据库迁移或业务写接口。统一回滚点为 `ai-paths-unified-20260908-173813-b21228ae`。
 - 2026-09-08 17:47 发布并核验预约事实文本拦截收敛：control/reply/worker 统一运行 clean `main@b21228aeacce813cb54ad019ba54ea18e0fbc61f`，release 为 `ai-paths-unified-20260908-173813-b21228ae`。删除脱离客户问题和业务对象、仅凭“随时来、今天能做、能直接看、可以直接看、直接过去”等普通文字子串判定预约成立的整组规则；客户明确询问能否当天操作或直接到店时的无事实肯定答复，以及“已预约、已锁位、预约成功、可以直接到店”等明确完成态仍需权威预约事实。生产只读断言确认“让您能直接看到自己的变化”和“案例图可以直接看出变化”不再命中预约拦截，明确预约完成态仍命中。全仓 536 条测试通过；V3 无鉴权 401、V2 404、Nginx 配置检查通过，三个后端 unit active 且 `NRestarts=0`，发布后 error 级日志为空。本次无数据库迁移、无前端变更、无模型调用或客户测试发送；统一回滚点为 `ai-paths-unified-20260908-172745-13e37258`。
 - 2026-09-08 17:30 发布并核验第三方 SOP 确定性任务/内容消费链：control/reply/worker 统一运行 clean `main@13e372583a2d90a3cec9c9c119dde9f7788f4ea9`，release 为 `ai-paths-unified-20260908-172745-13e37258`。只有未开口、未删除、AI 托管同时成立才读取 `/sop-messages` 并原样发送第一组；主动发送接口正常返回后，同一次 `/consume` 只提交任务 `30` 和该组唯一 `msgId=30`。所有未调用主动发送的终态只提交任务 `70`，不提交 `messages`。旧执行模式恢复任务持久隔离，不发送、不消费；钉钉失败告警重试与 SOP 恢复已拆为独立循环；消费的请求、响应和异常在每次调用边界持久化，发送成功后消费超时只重试相同 `taskId + msgId`，不重发客户消息。初次发布现场发现真实仓储的审计更新要求保留任务 `status`，已立即停止 worker、修复并重新完成 532 条测试后发布；最终版本最新轮询错误为空，三个后端 unit active 且 `NRestarts=0`，V3 无鉴权 401、V2 404、管理接口无鉴权 401、Nginx 配置检查通过。生产任务 `81342/msgId 37149` 一次发送并一次消费成功；`81866/msgId 37655` 一次发送后消费建连超时，随后只重试消费并成功，发送日志仍为 1 次；未发现重复 msgId。钉钉机器人当前由平台返回 `400102`（机器人停用或未启用），告警保留并退避重试，需群/企业管理员重新启用。无数据库 schema 或前端变更，统一回滚点为 `ai-paths-unified-20260908-172000-37c77316`。
