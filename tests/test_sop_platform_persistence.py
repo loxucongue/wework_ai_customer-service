@@ -185,7 +185,13 @@ def test_successful_send_cannot_be_downgraded_to_no_send(tmp_path) -> None:
         reply_messages=[],
     )
     sent_payload = {"decision": {"decision": "send"}}
-    sent_response = {"data": {"send_status": "accepted", "delivery_status": "platform_accepted"}}
+    sent_response = {
+        "data": {
+            "send_status": "accepted",
+            "delivery_status": "platform_accepted",
+            "system_msgid": "msg-103",
+        }
+    }
     repository.update_sop_send_task(
         task["id"],
         status="sent",
@@ -227,7 +233,10 @@ def test_atomic_no_send_completion_preserves_existing_send_success(tmp_path) -> 
         reply_messages=[],
     )
     repository.update_sop_send_task(
-        task["id"], status="sent", sent_at="2026-09-05T07:07:51+00:00"
+        task["id"],
+        status="sent",
+        send_response={"data": {"delivery_status": "delivered"}},
+        sent_at="2026-09-05T07:07:51+00:00",
     )
 
     repository.complete_platform_sop_task_without_send(
@@ -251,7 +260,11 @@ def test_admin_log_prefers_send_evidence_over_stale_no_send_status() -> None:
                 "decision": {"decision": "no_send", "reason": "invalid_message_content"}
             },
             "send_response": {
-                "data": {"send_status": "accepted", "delivery_status": "platform_accepted"}
+                "data": {
+                    "send_status": "accepted",
+                    "delivery_status": "platform_accepted",
+                    "system_msgid": "msg-80473",
+                }
             },
         },
         platform_visible=False,
@@ -261,3 +274,64 @@ def test_admin_log_prefers_send_evidence_over_stale_no_send_status() -> None:
     assert item["decision"] == "send"
     assert item["bucket"] == "sent"
     assert item["decision_reason"] == "successful_send_evidence"
+
+
+def test_recovery_query_skips_deferred_events_unless_explicitly_requested(tmp_path) -> None:
+    settings = Settings(AI_PATHS_DB_PATH=tmp_path / "sop.db", AICS_STORAGE_BACKEND="sqlite")
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    event_id = "platform_sop_task:deferred"
+    repository.create_sop_event(
+        {"event_id": event_id, "event_type": "platform_sop_task", "source": "test"}
+    )
+    repository.schedule_sop_event_retry(
+        event_id,
+        status="platform_processing_retry",
+        error="temporary",
+        next_retry_at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+    )
+
+    assert repository.list_sop_events_by_statuses(
+        ["platform_processing_retry"], event_type="platform_sop_task"
+    ) == []
+    assert [
+        item["event_id"]
+        for item in repository.list_sop_events_by_statuses(
+            ["platform_processing_retry"],
+            event_type="platform_sop_task",
+            include_deferred=True,
+        )
+    ] == [event_id]
+
+
+def test_duplicate_lookup_ignores_unconfirmed_or_sending_attempts(tmp_path) -> None:
+    settings = Settings(AI_PATHS_DB_PATH=tmp_path / "sop.db", AICS_STORAGE_BACKEND="sqlite")
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    event_id = "platform_sop_task:unknown"
+    repository.create_sop_event(
+        {"event_id": event_id, "event_type": "platform_sop_task", "source": "test"}
+    )
+    task = repository.create_sop_send_task(
+        event_id=event_id,
+        idempotency_key="platform-sop:unknown",
+        send_once_key="same-content",
+        customer_id="customer",
+        external_userid="external",
+        corp_id="corp",
+        user_id="user",
+        wechat="wechat",
+        sop_pack_id="pack",
+        sop_pack_name="pack",
+        reply_messages=[],
+    )
+    repository.update_sop_send_task(
+        task["id"],
+        status="sending",
+        send_response={"data": {"delivery_status": "submission_unknown"}},
+        error="active_send_timeout_unknown_result",
+    )
+
+    assert repository.find_sop_send_task_delivery_duplicate("same-content") == {}

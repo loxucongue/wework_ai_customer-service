@@ -14,12 +14,15 @@ from app.services.sop_platform_task_service import (
     _configured_priority_wechats,
     _is_priority_wechat,
     _outreach_system_identity,
+    _outreach_send_request,
     _partition_stale_pending_tasks,
     _platform_message_error,
     _platform_task_is_already_no_send,
     _select_bulk_human_takeover_tasks,
+    _send_result_requires_confirmation,
     _task_preflight_no_send_reason,
 )
+from app.services.sop_platform_client import SopPlatformTaskStateError
 
 
 def test_terminal_platform_states_are_reconciled_without_retry() -> None:
@@ -28,6 +31,9 @@ def test_terminal_platform_states_are_reconciled_without_retry() -> None:
         assert _platform_task_is_already_no_send(error)
 
     assert not _platform_task_is_already_no_send(RuntimeError("connect timeout"))
+    assert _platform_task_is_already_no_send(
+        SopPlatformTaskStateError(state="无需发送", payload={"code": 400})
+    )
 
 
 def test_platform_queued_tasks_are_recovered_after_restart() -> None:
@@ -142,7 +148,7 @@ def _task() -> dict[str, object]:
     return {"taskId": "101", "message_content": [{"type": "text", "content": "hello"}]}
 
 
-def test_downstream_409_consumes_only_platform_task_and_reports_aggregate_failure() -> None:
+def test_downstream_409_records_failure_without_consuming_platform_task() -> None:
     service, repository, platform = _service()
     result = asyncio.run(
         service._handle_batch_send_failure(
@@ -158,28 +164,17 @@ def test_downstream_409_consumes_only_platform_task_and_reports_aggregate_failur
         )
     )
 
-    assert result["status"] == "completed_without_send"
+    assert result["status"] == "send_failed"
     terminal_failure = repository.task_updates[-1]["send_payload"]["terminal_failure"]
-    assert terminal_failure["platform_consume_completed_at"]
-    assert terminal_failure["local_terminal_recorded_at"]
-    assert terminal_failure["rule_data_requested_at"]
-    assert terminal_failure["rule_data_completed_at"]
-    assert terminal_failure["local_audit_finalized_at"]
-    assert platform.consume_calls == [
-        {
-            "task_id": "101",
-            "status": 70,
-            "remark": "企微聚合平台发送失败，任务已消费且未发送",
-            "content_exhausted": None,
-        }
-    ]
-    assert platform.rule_calls[0]["task_id"] == "101"
-    assert platform.rule_calls[0]["scene_code"] == "wecom_aggregate_send_failed"
-    assert repository.task_updates[-1]["status"] == "completed_without_send"
-    assert repository.event_updates[-1]["status"] == "platform_completed"
+    assert terminal_failure["platform_task_consumed"] is False
+    assert terminal_failure["content_msgids_consumed"] == []
+    assert platform.consume_calls == []
+    assert platform.rule_calls == []
+    assert repository.task_updates[-1]["status"] == "send_failed"
+    assert repository.event_updates[-1]["status"] == "platform_failed"
 
 
-def test_expired_delivery_retry_consumes_task_without_resending_or_consuming_content_ids() -> None:
+def test_expired_delivery_retry_preserves_task_without_resending_or_consuming() -> None:
     service, repository, platform = _service()
     result = asyncio.run(
         service._retry_batch_send(
@@ -197,11 +192,41 @@ def test_expired_delivery_retry_consumes_task_without_resending_or_consuming_con
         )
     )
 
-    assert result["status"] == "completed_without_send"
-    assert [call["task_id"] for call in platform.consume_calls] == ["101"]
-    assert platform.consume_calls[0]["content_exhausted"] is None
-    assert platform.rule_calls[0]["scene_code"] == "sop_send_failed"
-    assert repository.event_updates[-1]["status"] == "platform_completed"
+    assert result["status"] == "send_failed"
+    assert platform.consume_calls == []
+    assert platform.rule_calls == []
+    assert repository.task_updates[-1]["status"] == "send_failed"
+    assert repository.event_updates[-1]["status"] == "platform_failed"
+
+
+def test_uncertain_or_unidentified_send_never_counts_as_confirmed() -> None:
+    assert _send_result_requires_confirmation(
+        {"data": {"delivery_status": "submission_unknown", "callback_required": False}}
+    )
+    assert _send_result_requires_confirmation(
+        {"data": {"delivery_status": "platform_accepted", "callback_required": False}}
+    )
+    assert not _send_result_requires_confirmation(
+        {
+            "data": {
+                "delivery_status": "platform_accepted",
+                "callback_required": False,
+                "system_msgid": "msg-1",
+            }
+        }
+    )
+
+
+def test_historical_retry_request_is_sanitized_before_strict_client_call() -> None:
+    assert _outreach_send_request(
+        {
+            "corp_id": "corp",
+            "task_id": "task",
+            "reply_messages": [],
+            "platform_customer_id": "audit-only",
+            "identity_source": "audit-only",
+        }
+    ) == {"corp_id": "corp", "task_id": "task", "reply_messages": []}
 
 
 def test_transient_failure_starts_bounded_retry_window_without_consuming() -> None:
