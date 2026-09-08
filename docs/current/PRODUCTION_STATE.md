@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-08T17:47:12+08:00`
+- verified_at: `2026-09-08T18:25:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260908-173813-b21228ae`
-- git commit: `b21228aeacce813cb54ad019ba54ea18e0fbc61f`
+- release: `ai-paths-unified-20260908-182248-95079fdf`
+- git commit: `95079fdfffeb9398153e7ca43d59453cefab5666`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -40,19 +40,20 @@
 
 - 第三方 SOP worker 正常运行；现场 `queue_depth=0`、最近轮询错误为空。任务按“未开口、未删除、AI 托管”三个确定性门槛执行，只有三项均满足才读取第一组未消费内容并原样发送；未调用主动发送接口时只消费任务 `70`，不消费 `msgId`。
 - 旧执行模式恢复任务进入本地 `platform_legacy_quarantined`，不调用主动发送或第三方消费接口；发布后首批 10 条隔离完成时 worker 的 `send=0`、`consume=0`。钉钉告警重试已与 SOP 恢复解耦，不再阻塞任务恢复。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=56`、`dead=16`。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=57`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260908-172745-13e37258`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260908-173813-b21228ae`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-144742-18123aa1`。
 - 数据库已迁移到 `20260907_02`，新增兼容的 `aics_customer_identity_links`；发布前 AICS 20 张表、841,130 行的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-44fcd568-20260907-201840/aics-before-20260907_02.sql.gz`，SHA-256 为 `481b853b31b244fa8e307a31f3be632ef46904ca3ea7692fdfc3da1e4a23439c`。旧代码会忽略新表，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-08 18:25 发布并核验 V3 Reply 运行时质量门白名单：control/reply/worker 统一运行 clean `main@95079fdfffeb9398153e7ca43d59453cefab5666`，release 为 `ai-paths-unified-20260908-182248-95079fdf`。运行时只保留结构、素材/图片、收款卡、门店和明确预约完成态五类拦截，另保留明确退订停止营销硬边界；取消问题数量、ask 无问号、选店后必须追问、暂停营销/活动卡点、营业时间、档期、直接到店、普通安排和登记完成措辞拦截。收款卡继续要求客户未付且未声称已付、更早已讲活动价格、每人 10 元且总额只能为 10/20/30/40 元、同轮最多一张；无预约事实时仍拦“已留位、约好了/预约成功、已排客/排客成功”。专项 128 条、全仓 563 条和 Ruff 通过；生产当前代码只读正反断言通过，V3 无鉴权 401、V2 404、管理页 200、Nginx 配置通过，四个 unit active、三个后端 `NRestarts=0`，发布后错误日志为空。Worker `queue_depth=0`、`in_flight_count=0`、`last_poll_error` 为空；平台待处理 31 条为发布前已存在状态，本次未触发模型、客户消息、数据库迁移或业务写接口。统一回滚点为 `ai-paths-unified-20260908-173813-b21228ae`。
 - 2026-09-08 17:47 发布并核验预约事实文本拦截收敛：control/reply/worker 统一运行 clean `main@b21228aeacce813cb54ad019ba54ea18e0fbc61f`，release 为 `ai-paths-unified-20260908-173813-b21228ae`。删除脱离客户问题和业务对象、仅凭“随时来、今天能做、能直接看、可以直接看、直接过去”等普通文字子串判定预约成立的整组规则；客户明确询问能否当天操作或直接到店时的无事实肯定答复，以及“已预约、已锁位、预约成功、可以直接到店”等明确完成态仍需权威预约事实。生产只读断言确认“让您能直接看到自己的变化”和“案例图可以直接看出变化”不再命中预约拦截，明确预约完成态仍命中。全仓 536 条测试通过；V3 无鉴权 401、V2 404、Nginx 配置检查通过，三个后端 unit active 且 `NRestarts=0`，发布后 error 级日志为空。本次无数据库迁移、无前端变更、无模型调用或客户测试发送；统一回滚点为 `ai-paths-unified-20260908-172745-13e37258`。
 - 2026-09-08 17:30 发布并核验第三方 SOP 确定性任务/内容消费链：control/reply/worker 统一运行 clean `main@13e372583a2d90a3cec9c9c119dde9f7788f4ea9`，release 为 `ai-paths-unified-20260908-172745-13e37258`。只有未开口、未删除、AI 托管同时成立才读取 `/sop-messages` 并原样发送第一组；主动发送接口正常返回后，同一次 `/consume` 只提交任务 `30` 和该组唯一 `msgId=30`。所有未调用主动发送的终态只提交任务 `70`，不提交 `messages`。旧执行模式恢复任务持久隔离，不发送、不消费；钉钉失败告警重试与 SOP 恢复已拆为独立循环；消费的请求、响应和异常在每次调用边界持久化，发送成功后消费超时只重试相同 `taskId + msgId`，不重发客户消息。初次发布现场发现真实仓储的审计更新要求保留任务 `status`，已立即停止 worker、修复并重新完成 532 条测试后发布；最终版本最新轮询错误为空，三个后端 unit active 且 `NRestarts=0`，V3 无鉴权 401、V2 404、管理接口无鉴权 401、Nginx 配置检查通过。生产任务 `81342/msgId 37149` 一次发送并一次消费成功；`81866/msgId 37655` 一次发送后消费建连超时，随后只重试消费并成功，发送日志仍为 1 次；未发现重复 msgId。钉钉机器人当前由平台返回 `400102`（机器人停用或未启用），告警保留并退避重试，需群/企业管理员重新启用。无数据库 schema 或前端变更，统一回滚点为 `ai-paths-unified-20260908-172000-37c77316`。
 - 2026-09-08 15:33 审核并合并 [PR #2](https://github.com/loxucongue/wework_ai_customer-service/pull/2)，随后统一发布 clean `main@9e0f24c24741153e03a9f71b816a077b88661288`。沉默唤醒制定计划时不再读取平台订单详情，减少无效远程查询；每个自动任务真实发送前仍强制读取权威订单状态，已预约、已支付、交易终态或查询未知均不发送。客户日志在存在失败任务时优先显示失败，不再被“全部已处理”掩盖；管理员手工重发固定首次加微 SOP 也不能绕过客户已回复保护。全仓 512 条测试、变更范围 Ruff、前端类型/Lint/生产构建、服务器编译和 Nginx 配置均通过；control/reply/worker/frontend active、`NRestarts=0`，三角色 `/health` 的 release、SHA、`dirty=false` 一致，V3 无鉴权 401、V2 404、主动唤醒日志页 200，沉默扫描完成一轮后继续按 5 秒长轮间隔运行且错误为 0，发布后 warning 级日志为空。本次无数据库迁移、模型测试调用或客户测试发送；回滚点为后端 `ai-paths-unified-20260908-150804-ff35bbab`、前端 `frontend-20260908-144742-18123aa1`。

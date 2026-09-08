@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
     "sent": ("sop_sent", "SOP发送成功", "SOP消息已发送"),
     "send_failed": ("sop_send_failed", "SOP发送失败", "SOP消息发送失败"),
-    "stale_task": ("sop_send_failed", "SOP发送失败", "SOP任务超过30分钟发送时限，已消费且未发送"),
     "wecom_aggregate_send_failed": (
         "wecom_aggregate_send_failed",
         "发送失败｜企微聚合平台",
@@ -3410,20 +3409,6 @@ class SopPlatformTaskService:
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
-        if preflight_reason == "stale_task":
-            return await self._complete_batch_send_failure(
-                platform_task=platform_task,
-                selected_task_id=task_id,
-                local_task_id=str(local_task.get("id") or ""),
-                audit={
-                    "audit_schema_version": 2,
-                    "processing_mode": "expired_before_first_attempt",
-                    "consume_results": [],
-                },
-                error=TimeoutError("SOP task exceeded configured send window before first attempt"),
-                outcome="stale_task",
-            )
-
         processing_status = "platform_judging"
         await asyncio.to_thread(self.repository.update_sop_event_status, event_id, status=processing_status)
         await asyncio.to_thread(
@@ -4462,30 +4447,10 @@ def _task_preflight_no_send_reason(
     if not messages and not _has_trusted_ai_copy_source(platform_task):
         return "missing_trusted_platform_content"
     scheduled = _task_scheduled_epoch(platform_task)
-    if _platform_task_is_stale(platform_task, settings=settings):
-        return "stale_task"
     live_not_before = _parse_epoch(getattr(settings, "sop_platform_live_not_before", ""))
     if live_not_before and (not scheduled or scheduled < live_not_before):
         return "pre_cutover_task"
     return ""
-
-
-def _platform_task_is_stale(platform_task: dict[str, Any], *, settings: Any) -> bool:
-    scheduled = _task_scheduled_epoch(platform_task)
-    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 1800) or 0))
-    return bool(scheduled and max_age and time.time() - scheduled > max_age)
-
-
-def _partition_stale_pending_tasks(
-    tasks: list[dict[str, Any]],
-    *,
-    settings: Any,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    stale: list[dict[str, Any]] = []
-    content_lookup: list[dict[str, Any]] = []
-    for task in tasks:
-        (stale if _platform_task_is_stale(task, settings=settings) else content_lookup).append(task)
-    return stale, content_lookup
 
 
 def _select_bulk_human_takeover_tasks(
