@@ -286,6 +286,12 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
     # final Reply only needs the compact scope plus current-turn matched facts.
     # Removing this duplicate bulk does not remove any unique business fact.
     reply_authoritative.pop("raw_visible_store_records", None)
+    # These objects are already present in dedicated top-level fields below.
+    # Keeping a second deep copy in ``evidence`` increased every Reply prompt
+    # without adding facts or permissions.
+    reply_evidence.pop("knowledge_evidence", None)
+    reply_shared.pop("ai_sales_policy", None)
+    reply_shared.pop("previous_policy_state", None)
     return {
         "schema_version": "parallel_reply_input_v2",
         # Put the current turn's compact tool contract before the larger evidence

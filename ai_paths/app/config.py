@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     model_strong_round_timeout_seconds: float = 120.0
     model_reply_reserve_seconds: float = 30.0
     model_min_retry_remaining_seconds: float = 8.0
+    v3_reply_round_timeout_seconds: float = Field(default=35.0, alias="V3_REPLY_ROUND_TIMEOUT_SECONDS")
+    v3_reply_strong_round_timeout_seconds: float = Field(
+        default=45.0,
+        alias="V3_REPLY_STRONG_ROUND_TIMEOUT_SECONDS",
+    )
+    v3_reply_reserve_seconds: float = Field(default=12.0, alias="V3_REPLY_RESERVE_SECONDS")
+    v3_reply_min_retry_remaining_seconds: float = Field(
+        default=4.0,
+        alias="V3_REPLY_MIN_RETRY_REMAINING_SECONDS",
+    )
     model_vision_total_timeout_seconds: float = 15.0
     model_store_destination_total_timeout_seconds: float = 25.0
     model_store_destination_hedge_delay_seconds: float = 3.0
@@ -259,7 +269,7 @@ class Settings(BaseSettings):
     follow_knowledge_base_url: str = Field(default="https://test.api.customer.4ba.cn", alias="FOLLOW_KNOWLEDGE_BASE_URL")
     follow_knowledge_token: str = Field(default="", alias="FOLLOW_KNOWLEDGE_TOKEN", repr=False)
     follow_knowledge_timeout_seconds: float = Field(default=4.0, alias="FOLLOW_KNOWLEDGE_TIMEOUT_SECONDS")
-    follow_knowledge_cache_ttl_seconds: float = Field(default=60.0, alias="FOLLOW_KNOWLEDGE_CACHE_TTL_SECONDS")
+    follow_knowledge_cache_ttl_seconds: float = Field(default=300.0, alias="FOLLOW_KNOWLEDGE_CACHE_TTL_SECONDS")
     closing_catalog_source: str = Field(
         default="external_then_local",
         alias="AI_CLOSING_CATALOG_SOURCE",
@@ -292,6 +302,7 @@ class Settings(BaseSettings):
     outreach_system_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SYSTEM_BASE_URL")
     outreach_system_token: str = Field(default="", alias="OUTREACH_SYSTEM_TOKEN", repr=False)
     outreach_system_timeout_seconds: int = Field(default=12, alias="OUTREACH_SYSTEM_TIMEOUT_SECONDS")
+    v3_takeover_timeout_seconds: float = Field(default=12.0, alias="V3_TAKEOVER_TIMEOUT_SECONDS")
     outreach_system_send_conversation_id_enabled: bool = Field(
         default=False,
         alias="OUTREACH_SYSTEM_SEND_CONVERSATION_ID_ENABLED",

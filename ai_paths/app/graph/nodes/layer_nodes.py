@@ -366,6 +366,8 @@ def create_background_context_layer(
             identity_context = identity.get("request_context") if isinstance(identity, dict) else {}
             scoped_request_context = {**request_context, **identity_context} if isinstance(identity_context, dict) else request_context
             saved_memory = memory.get("saved_memory") if isinstance(memory, dict) else {}
+            # Conversation history and order facts share the platform-validated
+            # customer identity and can safely run in the same network wave.
             conversation_task = asyncio.create_task(
                 _timed_conversation_fetch(
                     state,

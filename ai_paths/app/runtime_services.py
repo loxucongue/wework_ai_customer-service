@@ -55,6 +55,10 @@ class ReplyServices:
     service_rule_data_service: ServiceRuleDataService
     _closers: tuple[Any, ...]
     _platform_agent_client: PlatformAgentClient
+    _follow_knowledge_client: FollowKnowledgeClient
+
+    async def warmup(self) -> dict[str, Any]:
+        return await self._follow_knowledge_client.warmup()
 
     async def aclose(self) -> None:
         await _close_runtime(self.storage_store, self._platform_agent_client, self._closers)
@@ -218,6 +222,7 @@ def build_reply_services(settings: Settings) -> ReplyServices:
             outreach_system_client,
         ),
         _platform_agent_client=platform_agent_client,
+        _follow_knowledge_client=follow_knowledge_client,
     )
 
 

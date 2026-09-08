@@ -13,7 +13,11 @@ from app.services.workflow_compat import (
     workflow_error_response,
     workflow_response_from_chat,
 )
-from app.services.v3_request_timing import attach_v3_http_timing, bind_v3_run_request_id
+from app.services.v3_request_timing import (
+    attach_v3_http_timing,
+    bind_v3_run_request_id,
+    bind_v3_run_response,
+)
 
 from .security import workflow_api_key_dependency
 
@@ -35,15 +39,6 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
     require_workflow_api_key = workflow_api_key_dependency(settings)
     chat_runtime = services.chat_runtime
 
-    def record_http_response(request_id: str, response_body: dict[str, Any]) -> None:
-        try:
-            services.repository.update_run_http_response(
-                request_id=request_id,
-                response_body=response_body,
-            )
-        except Exception:
-            return
-
     async def workflow_reply(
         payload: dict[str, Any],
         *,
@@ -64,6 +59,7 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
             response_body = workflow_response_from_chat(response)
             http_response = JSONResponse(content=response_body)
             bind_v3_run_request_id(http_request, response.request_id)
+            bind_v3_run_response(http_request, response_body)
             # The audit run itself is already committed synchronously.  Only
             # the final wall-clock timing update may finish after the empty
             # response is released, so an RDS timing write cannot delay a
@@ -79,9 +75,13 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
             background_tasks=background_tasks,
         )
         response_body = workflow_response_from_chat(response)
-        record_http_response(response.request_id, response_body)
         http_response = JSONResponse(content=response_body)
         bind_v3_run_request_id(http_request, response.request_id)
+        bind_v3_run_response(http_request, response_body)
+        # The customer-visible result is already durably stored by ChatRuntime.
+        # Persist the redundant HTTP snapshot together with wall-clock timing
+        # only after the response has left the customer path.
+        setattr(http_request.state, "v3_timing_finalize_background", True)
         return http_response
 
     @router.post("/reply/workflow-compatible-v3")
