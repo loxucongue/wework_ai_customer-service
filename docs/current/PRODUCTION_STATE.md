@@ -96,3 +96,12 @@
 - 本次发布 control、reply、worker 和前端均为 clean `main@b4dfc184`，四个 unit 为 active 且 `NRestarts=0`，三个后端 `/health` 的 release/commit 一致；后端 348 条回归、前端类型/Lint/生产构建通过。无数据库迁移，不修改 V3 回复、策略、发送或主动唤醒逻辑。生产根分区使用率为 76%，剩余约 9.3 GB。
 
 每次发布任务都必须重新记录 main SHA、三个角色 release/健康、数据库、worker/outbox、Nginx 和回滚点。超过核验时间后，本页只能作为线索，不能替代现场事实。
+
+## 2026-09-08 09:29 发布快照
+
+- 后端 control/reply/worker 已发布 clean `main@42b27eaede76b329d86880668e6a20ad9aa0dd85`，release 为 `ai-paths-unified-20260908-092900-42b27eae`，三套 `/health` 均返回 `dirty=false` 且 SHA 一致。
+- 回滚指针：`/opt/ai-paths/previous` 和 `/opt/ai-paths-v3/previous` 均指向 `ai-paths-unified-20260908-092011-ac512d2e`；其上一版为 `ai-paths-unified-20260908-000754-d13b73ae`。
+- 本次无数据库迁移、无前端变更。`MODEL_REPLY=deepseek-chat`，`OUTREACH_DECISION_MODEL=deepseek-chat`，fallback 为空；沉默唤醒仍为全企微、1 分钟、按外部跟进序列节点数生成任务，夜间非活跃顺延、夜间活跃 40 分钟压缩。
+- 修复点：计划主事务已提交后，审计事件、客户状态更新或回读失败不再把计划误标成失败；自动批准的 draft 计划会在重复指纹拦截前恢复；过期节点重排时保留平台相对间隔，不再把 9 个节点压成 8 秒内连发。
+- 指定客户计划 `c11264db-4b83-42ab-9724-21a3b7dc6785` 已从 draft 恢复为 active，并按平台 0/0/2/2/5/5/15/15/30 分钟节点重排；第 1 个任务已发送，计划进入 `waiting`，后续任务仍受发送前 AI/人工、客户新回复、退订、订单终态等校验保护。
+- 生产库当前仍有 7 个普通 draft 计划、16 个非首日 pending/checking 任务；首日沉默唤醒 draft pending 为 0。最近 10 分钟 systemd 日志未见 error/traceback/failed。
