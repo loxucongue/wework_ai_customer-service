@@ -361,12 +361,25 @@ def test_customer_log_list_aggregates_repeated_no_plan_events_without_losing_cou
                 """,
                 (event_id, payload, created_at),
             )
+        second_customer_payload = json.loads(payload)
+        second_customer_payload["identity"]["customer_id"] = "customer-b"
+        conn.execute(
+            """
+            INSERT INTO outreach_events
+                (id,plan_id,task_id,customer_id,event_type,event_summary,payload_json,created_at)
+            VALUES ('rejected-3','','','customer-b','plan_rejected','not planned',?,?)
+            """,
+            (
+                json.dumps(second_customer_payload),
+                "2026-09-06T03:00:00+00:00",
+            ),
+        )
 
     result = repository.list_outreach_customer_logs(started_from=START, started_to=END)
 
-    assert result["metrics"]["no_plan_count"] == 2
+    assert result["metrics"]["no_plan_count"] == 3
     assert len(result["items"]) == 1
-    assert result["items"][0]["no_plan_count"] == 2
+    assert result["items"][0]["no_plan_count"] == 3
 
     detail = repository.get_outreach_customer_log(
         result["items"][0]["contact_key"],
@@ -374,6 +387,7 @@ def test_customer_log_list_aggregates_repeated_no_plan_events_without_losing_cou
         started_to=END,
     )
     assert [record["record_id"] for record in detail["history"]] == [
+        "event:rejected-3",
         "event:rejected-2",
         "event:rejected-1",
     ]

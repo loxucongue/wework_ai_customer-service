@@ -171,7 +171,11 @@ def _outreach_contact_identity(row: dict[str, Any]) -> dict[str, str]:
     return identity
 
 
-def _outreach_contact_key(identity: dict[str, str]) -> str:
+def _outreach_contact_key(
+    identity: dict[str, str],
+    *,
+    customer_id_hints: list[str] | None = None,
+) -> str:
     external_userid = _string(identity.get("external_userid")).lower()
     customer_id = _string(identity.get("customer_id")).lower()
     identity_kind, identity_value = (
@@ -179,19 +183,27 @@ def _outreach_contact_key(identity: dict[str, str]) -> str:
         if external_userid
         else ("customer_id", customer_id)
     )
-    raw = json.dumps(
-        [
-            _string(identity.get("corp_id")).lower(),
-            _string(identity.get("wechat")).lower(),
-            identity_kind,
-            identity_value,
-        ],
-        separators=(",", ":"),
-    ).encode("utf-8")
+    values: list[Any] = [
+        _string(identity.get("corp_id")).lower(),
+        _string(identity.get("wechat")).lower(),
+        identity_kind,
+        identity_value,
+    ]
+    hints = sorted(
+        {
+            _string(value)
+            for value in (customer_id_hints or [])
+            if _string(value)
+        },
+        key=str.lower,
+    )
+    if identity_kind == "external_userid" and hints:
+        values.append(hints)
+    raw = json.dumps(values, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _decode_outreach_contact_key(value: str) -> dict[str, str]:
+def _decode_outreach_contact_key(value: str) -> dict[str, Any]:
     if not value:
         return {}
     try:
@@ -199,18 +211,33 @@ def _decode_outreach_contact_key(value: str) -> dict[str, str]:
         decoded = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
     except (ValueError, TypeError, json.JSONDecodeError):
         return {}
-    if not isinstance(decoded, list) or len(decoded) != 4 or not all(isinstance(item, str) for item in decoded):
+    if (
+        not isinstance(decoded, list)
+        or len(decoded) not in {4, 5}
+        or not all(isinstance(item, str) for item in decoded[:4])
+    ):
         return {}
     identity_kind = decoded[2]
     if identity_kind not in {"external_userid", "customer_id"}:
         return {}
-    return _outreach_contact_identity(
+    identity = _outreach_contact_identity(
         {
             "corp_id": decoded[0],
             "wechat": decoded[1],
             identity_kind: decoded[3],
         }
     )
+    if len(decoded) == 5:
+        hints = decoded[4]
+        if not isinstance(hints, list) or not all(
+            isinstance(item, str) for item in hints
+        ):
+            return {}
+        identity["_customer_id_hints"] = sorted(
+            {_string(item) for item in hints if _string(item)},
+            key=str.lower,
+        )
+    return identity
 
 
 def _outreach_contact_matches(row: dict[str, Any], identity: dict[str, str]) -> bool:
@@ -1066,6 +1093,22 @@ class OutreachRepositoryMixin:
                     f" AND lower({event_wechat})=lower(?)"
                 )
                 event_contact_values = [expected_corp_id, expected_wechat]
+                customer_id_hints = identity.get("_customer_id_hints")
+                if isinstance(customer_id_hints, list):
+                    customer_id_hints = [
+                        _string(value)
+                        for value in customer_id_hints
+                        if _string(value)
+                    ]
+                else:
+                    customer_id_hints = []
+                if customer_id_hints:
+                    event_contact_sql += (
+                        " AND e.customer_id IN ("
+                        + ",".join("?" for _ in customer_id_hints)
+                        + ")"
+                    )
+                    event_contact_values.extend(customer_id_hints)
                 if expected_external_userid:
                     event_contact_sql += f" AND lower({event_external_userid})=lower(?)"
                     event_contact_values.append(expected_external_userid)
@@ -1429,10 +1472,31 @@ class OutreachRepositoryMixin:
                 default={},
             )
             latest = customer_records[0] if customer_records else {}
+            latest_identity = (
+                latest.get("identity")
+                if isinstance(latest.get("identity"), dict)
+                else group["identity"]
+            )
+            customer_id_hints: list[str] = []
+            for item in customer_records:
+                record_identity = (
+                    item.get("identity")
+                    if isinstance(item.get("identity"), dict)
+                    else {}
+                )
+                customer_id = _string(record_identity.get("customer_id"))
+                if customer_id:
+                    customer_id_hints.append(customer_id)
+            contact_key = _string(group.get("contact_key"))
+            if group["identity_state"] == "complete":
+                contact_key = _outreach_contact_key(
+                    latest_identity,
+                    customer_id_hints=customer_id_hints,
+                )
             return {
-                "contact_key": group["contact_key"],
+                "contact_key": contact_key,
                 "identity_state": group["identity_state"],
-                "identity": group["identity"],
+                "identity": latest_identity,
                 "latest_at": _string(latest.get("created_at")),
                 "latest_record": {
                     key: latest.get(key, "")
@@ -1541,7 +1605,13 @@ class OutreachRepositoryMixin:
         return redact_first_day_log_value(
             {
                 "contact_key": contact_key,
-                "identity": identity,
+                "identity": history[0].get("identity")
+                if isinstance(history[0].get("identity"), dict)
+                else {
+                    key: value
+                    for key, value in identity.items()
+                    if not key.startswith("_")
+                },
                 "range": {"started_from": start, "started_to": end, "timezone": "Asia/Shanghai"},
                 "history": history,
             }
@@ -1583,7 +1653,10 @@ class OutreachRepositoryMixin:
             "workflow_run_id": workflow_run_id,
         }
         if workflow_run_id:
-            first_day_run = self.get_first_day_outreach_run(workflow_run_id)
+            first_day_run = self.get_first_day_outreach_run(
+                workflow_run_id,
+                include_related=False,
+            )
             if first_day_run:
                 technical["first_day_run"] = first_day_run
         return redact_first_day_log_value(
