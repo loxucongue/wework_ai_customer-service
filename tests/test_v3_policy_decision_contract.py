@@ -1170,7 +1170,7 @@ def test_business_hours_repair_preserves_customer_arrival_intent() -> None:
     assert "早上9点我先作为您的到店时间意向" in hint
 
 
-def test_appointment_fact_failure_recovery_keeps_current_topic() -> None:
+def test_appointment_fact_failure_recovery_helper_keeps_current_topic() -> None:
     result = _appointment_fact_failure_recovery(
         {
             "primary_error": "appointment_confirmation_fact_required",

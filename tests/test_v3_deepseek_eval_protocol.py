@@ -267,6 +267,16 @@ def _prior_store_delivery(store_id: str = "160") -> list[dict[str, object]]:
     ]
 
 
+def _mainline_ready_sample(content: str) -> dict[str, object]:
+    return {
+        "content": content,
+        "source_history_events": [
+            {"event_type": "case_image_sent", "facts": {}},
+            {"event_type": "activity_intro_image_sent", "facts": {}},
+        ],
+    }
+
+
 def test_structured_messages_are_rendered_and_seeded_instead_of_discarded() -> None:
     messages = normalize_visible_messages(_prior_store_delivery()[0]["reply_messages"])
 
@@ -290,7 +300,7 @@ def test_repeated_store_card_is_a_hard_failure_without_explicit_rerequest() -> N
 
     assert result["passed"] is False
     assert "repeated_delivered_store_card" in result["failure_codes"]
-    assert "appointment_goal_not_explicit" in result["failure_codes"]
+    assert "appointment_goal_not_explicit" not in result["failure_codes"]
 
 
 def test_explicit_address_rerequest_allows_same_store_card() -> None:
@@ -307,7 +317,7 @@ def test_explicit_address_rerequest_allows_same_store_card() -> None:
     assert "repeated_delivered_store_card" not in result["failure_codes"]
 
 
-def test_store_detail_for_unbooked_customer_must_name_booking_goal() -> None:
+def test_store_detail_before_mainline_delivery_does_not_force_booking_goal() -> None:
     missing = hard_assertions(
         sample={"content": "停车方便吗"},
         facts={"authoritative_facts": {"orders_and_payment": {"deposit_state": "required_unpaid"}}},
@@ -319,6 +329,42 @@ def test_store_detail_for_unbooked_customer_must_name_booking_goal() -> None:
         facts={"authoritative_facts": {"orders_and_payment": {"deposit_state": "required_unpaid"}}},
         prior_deliveries=_prior_store_delivery(),
         reply_messages=[{"type": "text", "order": 1, "content": "可以停车的，楼下有停车场。您工作日还是周末过来？我帮您预约一下。"}],
+    )
+
+    assert "appointment_goal_not_explicit" not in missing["failure_codes"]
+    assert desired["passed"] is True
+
+
+def test_store_detail_after_mainline_delivery_must_name_booking_goal() -> None:
+    sample = _mainline_ready_sample("\u505c\u8f66\u65b9\u4fbf\u5417")
+    facts = {
+        "authoritative_facts": {
+            "orders_and_payment": {"deposit_state": "required_unpaid"}
+        }
+    }
+    missing = hard_assertions(
+        sample=sample,
+        facts=facts,
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {
+                "type": "text",
+                "order": 1,
+                "content": "\u53ef\u4ee5\u505c\u8f66\uff0c\u5de5\u4f5c\u65e5\u8fd8\u662f\u5468\u672b\u8fc7\u6765\uff1f",
+            }
+        ],
+    )
+    desired = hard_assertions(
+        sample=sample,
+        facts=facts,
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {
+                "type": "text",
+                "order": 1,
+                "content": "\u53ef\u4ee5\u505c\u8f66\uff0c\u60a8\u5468\u672b\u8fc7\u6765\u5417\uff1f\u6211\u5e2e\u60a8\u9884\u7ea6\u3002",
+            }
+        ],
     )
 
     assert "appointment_goal_not_explicit" in missing["failure_codes"]

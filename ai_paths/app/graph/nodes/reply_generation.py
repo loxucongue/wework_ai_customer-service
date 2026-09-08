@@ -112,44 +112,22 @@ def create_synthesize_reply_node(
                         )
                         reply_source = "policy_safety_failure_recovery"
                     else:
-                        appointment_recovery = _appointment_fact_failure_recovery(model_call, state)
-                        if appointment_recovery:
-                            messages, safe_payload = appointment_recovery
-                            model_call["validated_json_output"] = safe_payload
-                            warnings.append(
-                                {
-                                    "node": "synthesize_reply",
-                                    "message": "appointment_fact_failure_recovery_used",
-                                    "detail": primary_error[:500],
-                                }
-                            )
-                            reply_source = "appointment_fact_failure_recovery"
-                        elif _store_failure_recovery_eligible(model_call):
-                            messages = _verified_store_delivery_failure_recovery(state)
-                        else:
-                            messages = []
-                    if messages:
-                        if reply_source not in {
-                            "policy_safety_failure_recovery",
-                            "appointment_fact_failure_recovery",
-                        }:
-                            recovery_payload = _verified_store_recovery_observability_payload(
+                        messages = [{"type": "text", "order": 1, "content": "您稍等一下"}]
+                        model_call["validated_json_output"] = (
+                            _fact_failure_recovery_observability_payload(
                                 model_call,
                                 messages,
+                                reason="terminal_reply_failure_fallback",
                             )
-                            if recovery_payload:
-                                model_call["validated_json_output"] = recovery_payload
-                            warnings.append(
-                                {
-                                    "node": "synthesize_reply",
-                                    "message": "verified_store_delivery_failure_recovery_used",
-                                    "detail": primary_error[:500],
-                                }
-                            )
-                            reply_source = "verified_store_delivery_failure_recovery"
-                    else:
-                        messages = []
-                        reply_source = "reply_failed"
+                        )
+                        warnings.append(
+                            {
+                                "node": "synthesize_reply",
+                                "message": "terminal_reply_failure_fallback_used",
+                                "detail": primary_error[:500],
+                            }
+                        )
+                        reply_source = "failure_fallback"
             else:
                 reason = "reply_model_unavailable"
                 errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": reason})

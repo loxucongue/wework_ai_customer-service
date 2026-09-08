@@ -216,6 +216,21 @@ def expected_contract(
 ) -> dict[str, Any]:
     content = str(sample.get("content") or "")
     prior = prior_structured_summary(prior_deliveries)
+    prior_events = [
+        *prior_delivery_events(prior_deliveries),
+        *[
+            item
+            for item in sample.get("source_history_events") or []
+            if isinstance(item, dict)
+        ],
+    ]
+    prior_event_types = {
+        str(item.get("event_type") or "")
+        for item in prior_events
+        if isinstance(item, dict)
+    }
+    effect_delivered = "case_image_sent" in prior_event_types
+    activity_delivered = "activity_intro_image_sent" in prior_event_types
     address_request = _contains_any(
         content,
         ("地址", "定位", "导航", "路线", "怎么走", "在哪", "位置", "再发", "没收到"),
@@ -237,6 +252,8 @@ def expected_contract(
         and appointment == "not_confirmed"
         and not safety_pause
         and not deferred
+        and effect_delivered
+        and activity_delivered
     )
     return {
         "appointment_state": appointment,
@@ -245,6 +262,8 @@ def expected_contract(
         "current_is_store_detail_question": store_detail,
         "safety_or_health_pause": safety_pause,
         "deferred": deferred,
+        "effect_evidence_delivered": effect_delivered,
+        "activity_offer_delivered": activity_delivered,
         "should_bridge_to_booking": should_bridge_booking,
     }
 
