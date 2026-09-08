@@ -202,6 +202,7 @@ class OutreachSystemClient:
                         "delivery_status": existing_status,
                         "dispatch_id": dispatch_id,
                         "callback_required": callback_required,
+                        "system_msgid": str(dispatch.get("system_msgid") or ""),
                     },
                 }
         try:
@@ -232,9 +233,11 @@ class OutreachSystemClient:
             raise
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         upstream_status = str(data.get("send_status") or result.get("msg") or "")
+        metadata = delivery_response_metadata(result)
         delivery_status = "submission_unknown" if upstream_status == "accepted_no_response" else "platform_accepted"
+        if not callback_required and delivery_status == "platform_accepted" and not metadata["system_msgid"]:
+            delivery_status = "submission_unknown"
         if self._delivery_service and dispatch_id:
-            metadata = delivery_response_metadata(result)
             persist_started = time.perf_counter()
             await asyncio.to_thread(
                 self._delivery_service.record_submission,
@@ -246,7 +249,7 @@ class OutreachSystemClient:
                 error_message="platform send response timed out" if delivery_status == "submission_unknown" else "",
             )
             self._log_managed_send_phase(task_id, "delivery_submission_persist", persist_started)
-            if not callback_required:
+            if not callback_required and delivery_status != "submission_unknown":
                 finalize_started = time.perf_counter()
                 await asyncio.to_thread(self._delivery_service.mark_finalized, dispatch_id)
                 self._log_managed_send_phase(task_id, "delivery_finalize", finalize_started)
@@ -256,6 +259,7 @@ class OutreachSystemClient:
                 "delivery_status": delivery_status,
                 "dispatch_id": dispatch_id,
                 "callback_required": callback_required,
+                "system_msgid": metadata["system_msgid"],
             }
         )
         result["data"] = result_data

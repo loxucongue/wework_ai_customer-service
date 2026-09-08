@@ -110,6 +110,9 @@ class SopPlatformClient:
                     break
             if not items and isinstance(data.get("nextGroup"), dict):
                 items = [data["nextGroup"]]
+        next_item = data.get("nextGroup") if isinstance(data, dict) and isinstance(data.get("nextGroup"), dict) else None
+        if next_item is None and items:
+            next_item = items[0]
         if not total:
             total = len(items)
         return {
@@ -119,6 +122,7 @@ class SopPlatformClient:
             "biz_type": "sop_messages",
             "event_log_id": clean_event_log_id,
             "complete": total <= len(items),
+            "next_item": next_item,
         }
 
     async def _pending_page(
@@ -345,12 +349,12 @@ class SopPlatformClient:
                 state = next(
                     (
                         candidate
-                        for candidate in ("已不发送", "不发送", "已失败", "失败", "已取消", "已完成")
+                        for candidate in ("已无需发送", "无需发送", "已不发送", "不发送", "已失败", "失败", "已取消", "已完成")
                         if candidate in detail
                     ),
                     "",
                 )
-            if state in {"已取消", "已完成", "已失败", "失败", "已不发送", "不发送"}:
+            if state in {"已取消", "已完成", "已失败", "失败", "已无需发送", "无需发送", "已不发送", "不发送"}:
                 raise SopPlatformTaskStateError(state=state, payload=payload)
             raise RuntimeError(f"sop_platform_error: {payload}")
         return payload

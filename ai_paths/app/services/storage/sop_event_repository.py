@@ -141,6 +141,32 @@ class SopEventRepositoryMixin:
             ).fetchone()
         return self._decode_sop_event(dict(row)) if row else {}
 
+    def schedule_sop_event_retry(
+        self,
+        event_id: str,
+        *,
+        status: str,
+        error: str,
+        next_retry_at: str,
+    ) -> dict[str, Any]:
+        """Persist retry backoff without turning an unconsumed SOP task terminal."""
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            conn.execute(
+                """
+                UPDATE sop_events
+                SET status=?, error=?, retry_count=retry_count + 1,
+                    next_retry_at=?, last_retry_error=?, updated_at=?
+                WHERE event_id=?
+                """,
+                (status, error, next_retry_at, error, now, event_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM sop_events WHERE event_id=? OR id=?",
+                (event_id, event_id),
+            ).fetchone()
+        return self._decode_sop_event(dict(row)) if row else {}
+
     def list_platform_sop_task_records(
         self,
         *,
@@ -311,7 +337,7 @@ class SopEventRepositoryMixin:
                     """
                     SELECT *
                     FROM sop_send_tasks
-                    WHERE send_once_key=? AND status IN ('pending','sent')
+                    WHERE send_once_key=? AND status IN ('sent','sent_recovered')
                     ORDER BY created_at ASC
                     LIMIT 1
                     """,
@@ -559,22 +585,29 @@ class SopEventRepositoryMixin:
             exclude_sql = "AND idempotency_key<>?"
             params.append(str(exclude_idempotency_key or "").strip())
         with self.store.connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 f"""
                 SELECT *
                 FROM sop_send_tasks
                 WHERE send_once_key=?
                   {exclude_sql}
-                  AND (
-                    status IN ('sent', 'sending')
-                    OR error='active_send_timeout_unknown_result'
-                  )
+                  AND status IN ('sent', 'sent_recovered')
                 ORDER BY created_at ASC
-                LIMIT 1
+                LIMIT 20
                 """,
                 tuple(params),
-            ).fetchone()
-        return self._decode_sop_send_task(dict(row)) if row else {}
+            ).fetchall()
+        for row in rows:
+            task = self._decode_sop_send_task(dict(row))
+            if _has_successful_send_evidence(
+                status=str(task.get("status") or ""),
+                sent_at=str(task.get("sent_at") or ""),
+                send_response=(
+                    task.get("send_response") if isinstance(task.get("send_response"), dict) else {}
+                ),
+            ):
+                return task
+        return {}
 
     def list_sop_events_by_statuses(
         self,
@@ -582,6 +615,7 @@ class SopEventRepositoryMixin:
         *,
         limit: int = 10,
         event_type: str = "",
+        include_deferred: bool = False,
     ) -> list[dict[str, Any]]:
         clean_statuses = [str(item or "").strip() for item in statuses if str(item or "").strip()]
         if not clean_statuses:
@@ -589,10 +623,13 @@ class SopEventRepositoryMixin:
         placeholders = ",".join("?" for _ in clean_statuses)
         clauses = [f"status IN ({placeholders})"]
         params: list[Any] = list(clean_statuses)
+        if not include_deferred:
+            clauses.append("(COALESCE(next_retry_at, '')='' OR next_retry_at<=?)")
+            params.append(utc_now_iso())
         if event_type:
             clauses.append("event_type=?")
             params.append(str(event_type))
-        params.append(max(1, min(int(limit or 10), 100)))
+        params.append(max(1, min(int(limit or 10), 500)))
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1001,12 +1038,21 @@ def _sop_payload_summary(payload: Any) -> dict[str, Any]:
 
 
 def _has_successful_send_evidence(*, status: str, sent_at: str, send_response: dict[str, Any]) -> bool:
-    if status in {"sent", "sent_recovered"} or sent_at.strip():
-        return True
     data = send_response.get("data") if isinstance(send_response.get("data"), dict) else {}
-    return str(data.get("send_status") or "") in {"accepted", "accepted_no_response"} or str(
-        data.get("delivery_status") or ""
-    ) in {"platform_accepted", "send_succeeded", "delivered"}
+    delivery_status = str(data.get("delivery_status") or "").strip()
+    if delivery_status in {"send_succeeded", "delivered"}:
+        return True
+    if delivery_status == "platform_accepted":
+        return bool(
+            str(
+                data.get("system_msgid")
+                or data.get("systemMsgId")
+                or data.get("msgid")
+                or data.get("msgId")
+                or ""
+            ).strip()
+        )
+    return status == "sent_recovered" and bool(sent_at.strip())
 
 
 def _identity_row(row: dict[str, Any]) -> dict[str, str]:
