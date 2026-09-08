@@ -20,6 +20,7 @@ from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
     load_candidates,
     refresh_state_tags,
     sample_bucket,
+    _seed_case_memory,
     validate_evaluation_settings,
 )
 from scripts.v3_lifecycle_eval.protocol import (  # noqa: E402
@@ -82,6 +83,46 @@ def test_state_stratification_uses_prior_structured_memory() -> None:
 
     assert "prior_store_card" in rows[0]["state_tags"]
     assert "store_detail_after_card" in rows[0]["state_tags"]
+
+
+def test_runtime_seed_keeps_newest_source_events_over_reconstructed_cards() -> None:
+    captured: dict[str, object] = {}
+
+    class _Memory:
+        def save_update(self, customer_id: str, *, profile_update: dict, event_updates: list) -> None:
+            captured["customer_id"] = customer_id
+            captured["events"] = event_updates
+
+    source_events = [
+        {
+            "event_id": f"source-{index:03d}",
+            "event_type": "case_image_sent" if index == 0 else "other",
+            "facts": {},
+            "event_time": f"2026-09-08T00:{index // 60:02d}:{index % 60:02d}+00:00",
+        }
+        for index in range(100)
+    ]
+    sample = {
+        "corp_id": "corp-1",
+        "wechat": "sl8003",
+        "external_userid": "external-1",
+        "customer_id": "customer-1",
+        "source_history_events": source_events,
+        "prior_deliveries": [
+            {
+                "request_id": "prior-card",
+                "reply_messages": [
+                    {"type": "store_address", "content": {"store_id": "306"}}
+                ],
+            }
+        ],
+    }
+
+    _, events = _seed_case_memory(_Memory(), sample)  # type: ignore[arg-type]
+
+    assert len(events) == 100
+    assert events[0]["event_id"] == "source-000"
+    assert events[-1]["event_id"] == "source-099"
 
 
 def test_candidate_loader_excludes_platform_auto_opening_variant(

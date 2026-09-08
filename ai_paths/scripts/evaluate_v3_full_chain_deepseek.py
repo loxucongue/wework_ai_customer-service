@@ -632,9 +632,12 @@ def _seed_case_memory(
     sample: dict[str, Any],
 ) -> tuple[str, list[dict[str, Any]]]:
     scope = customer_scope_from_state(sample)
-    events = list(sample.get("source_history_events") or [])
+    # Reconstructed structured deliveries come first; point-in-time source
+    # events come last so the newest 100-event memory window matches production.
+    # The opposite order evicted recent case/activity facts for noisy accounts.
+    events = list(prior_delivery_events(sample.get("prior_deliveries") or []))
     seen = {str(item.get("event_id") or "") for item in events if isinstance(item, dict)}
-    for event in prior_delivery_events(sample.get("prior_deliveries") or []):
+    for event in sample.get("source_history_events") or []:
         event_id = str(event.get("event_id") or "")
         if event_id and event_id in seen:
             continue
