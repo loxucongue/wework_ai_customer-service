@@ -22,6 +22,132 @@ from app.services.run_observability import (
 
 
 class RunRepositoryMixin:
+    def save_platform_protocol_run(
+        self,
+        *,
+        request_id: str,
+        conversation_id: str,
+        customer_id: str,
+        external_userid: str,
+        corp_id: str,
+        user_id: str,
+        wechat: str,
+        content: str,
+        request_context: dict[str, Any],
+        protocol_event: dict[str, str],
+        token_usage: dict[str, Any],
+    ) -> None:
+        """Persist a protocol-only request with one database checkout.
+
+        Protocol messages never enter the customer conversation or sales graph.
+        Keeping their conversation shell, run and single trace row in one
+        transaction avoids turning a no-op request into several RDS round trips.
+        """
+
+        started_at = str(request_context.get("http_request_started_at") or utc_now_iso())
+        finished_at = utc_now_iso()
+        ingress_id = str(request_context.get("http_request_ingress_id") or "")
+        interface_version = str(
+            request_context.get("interface_version")
+            or request_context.get("api_version")
+            or "v3"
+        ).strip().lower()
+        if interface_version not in {"v1", "v2", "v3"}:
+            interface_version = "v3"
+        reason = str(protocol_event.get("reason") or "platform_protocol_ignored")
+        message_type = str(protocol_event.get("message_type") or "platform_protocol")
+        reply_source = str(protocol_event.get("reply_source") or "platform_protocol_ignored")
+        input_snapshot = {
+            "content": content,
+            "customer_id": customer_id,
+            "corp_id": corp_id,
+            "user_id": user_id,
+            "wechat": wechat,
+            "external_userid": external_userid,
+            "request_context": request_context,
+        }
+        output_snapshot = {
+            "runtime_status": "completed",
+            "runtime_phase": "completed",
+            "runtime_started_at": started_at,
+            "runtime_updated_at": finished_at,
+            "runtime_finished_at": finished_at,
+            "interface_version": interface_version,
+            "reply_chain_mode": str(request_context.get("reply_chain_mode") or ""),
+            "v3_sidecar": bool(request_context.get("v3_sidecar")),
+            "http_request_ingress_id": ingress_id,
+            "http_request_started_at": started_at,
+            "http_response_reply_messages": [],
+            "reply_messages": [],
+            "reply_source": reply_source,
+            "decision_status": "skipped",
+            "decision_reasons": [reason],
+            "platform_protocol_event": dict(protocol_event),
+        }
+        duration_ms = _elapsed_ms(started_at, finished_at)
+        trace_id = f"{request_id}_0"
+        with self.store.connect() as conn:
+            # Protocol events must not update the customer's chat state.  The
+            # shell row only satisfies the run FK when this is the first event
+            # observed for an identity.
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO conversations
+                    (id, customer_id, external_userid, corp_id, user_id, wechat, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    customer_id,
+                    external_userid,
+                    corp_id,
+                    user_id,
+                    wechat,
+                    "",
+                    started_at,
+                    started_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO runs
+                    (request_id, conversation_id, customer_id, input_snapshot, output_snapshot, intents, tags,
+                     duration_ms, token_usage, error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    conversation_id,
+                    customer_id,
+                    dumps(compact(input_snapshot)),
+                    dumps(_compact_run_output(output_snapshot)),
+                    "[]",
+                    "[]",
+                    duration_ms,
+                    dumps(token_usage),
+                    "",
+                    started_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO node_traces
+                    (id, request_id, node_name, input_snapshot, output_snapshot, tool_calls, duration_ms, error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trace_id,
+                    request_id,
+                    "platform_protocol_filter",
+                    dumps({"message_type": message_type}),
+                    dumps({"decision": "no_reply", "reason": reason}),
+                    "[]",
+                    0,
+                    "",
+                    finished_at,
+                ),
+            )
+
     def start_run(
         self,
         *,

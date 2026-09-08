@@ -455,52 +455,41 @@ class ChatRuntime:
         request_context["platform_protocol_event"] = dict(protocol_event)
         request.request_context = request_context
         conversation_id = conversation_id_from_request(request, request_context)
-        safe_repository_call(
-            self._repository.upsert_conversation,
-            conversation_id=conversation_id,
-            request=request,
-            title="",
-        )
-        self._start_run_tracking(
-            request=request,
-            request_id=request_id,
-            conversation_id=conversation_id,
-            request_context=request_context,
-        )
-        state = self._initial_state(request, request_id, request_context)
-        state["reply_messages"] = []
-        state["reply_source"] = protocol_event["reply_source"]
-        state["decision_status"] = "skipped"
-        state["decision_reasons"] = [protocol_event["reason"]]
-        timestamp = utc_now_iso()
-        state.setdefault("trace", []).append(
-            {
-                "node": "platform_protocol_filter",
-                "started_at": timestamp,
-                "finished_at": timestamp,
-                "duration_ms": 0,
-                "input_snapshot": {
-                    "message_type": protocol_event["message_type"],
-                },
-                "output_snapshot": {
-                    "decision": "no_reply",
-                    "reason": protocol_event["reason"],
-                },
-            }
-        )
-        _set_sync_return(state, "empty", [])
-        model_usage = collect_model_usage(state.get("trace", []))
-        log_path = self._trace_logger.write_run(state)
-        safe_repository_call(
-            self._repository.save_run,
-            conversation_id=conversation_id,
-            final_state=state,
-            token_usage=model_usage["summary"],
-        )
+        model_usage = collect_model_usage([])
+        save_protocol_run = getattr(self._repository, "save_platform_protocol_run", None)
+        if callable(save_protocol_run):
+            safe_repository_call(
+                save_protocol_run,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                customer_id=str(request.customer_id or ""),
+                external_userid=str(request.external_userid or ""),
+                corp_id=str(request.corp_id or ""),
+                user_id=str(request.user_id or ""),
+                wechat=str(request.wechat or ""),
+                content=str(request.content or ""),
+                request_context=request_context,
+                protocol_event=protocol_event,
+                token_usage=model_usage["summary"],
+            )
+        else:
+            # Compatibility for narrow repository stubs. Production storage
+            # implements the one-transaction method above.
+            state = self._initial_state(request, request_id, request_context)
+            state["reply_messages"] = []
+            state["reply_source"] = protocol_event["reply_source"]
+            state["decision_status"] = "skipped"
+            state["decision_reasons"] = [protocol_event["reason"]]
+            safe_repository_call(
+                self._repository.save_run,
+                conversation_id=conversation_id,
+                final_state=state,
+                token_usage=model_usage["summary"],
+            )
         return ChatResponse(
             request_id=request_id,
             reply_messages=[],
-            trace_url=str(log_path),
+            trace_url="",
             meta={
                 "model_usage": [],
                 "token_usage": model_usage["summary"],
