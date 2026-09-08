@@ -533,3 +533,26 @@ def test_explicit_address_rerequest_reuses_latest_card_when_no_new_location_exis
     assert reused["delivery_store_ids"] == ["160"]
     assert reused["clarification_required"] is False
     assert reused["reason"] == "explicit_address_rerequest_reuses_latest_delivered_store"
+
+
+def test_explicit_address_rerequest_survives_later_incomplete_distance_result() -> None:
+    resolution = {
+        "status": "search_incomplete",
+        "outcome": "search_incomplete",
+        "delivery_store_ids": [],
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "address",
+        },
+    }
+
+    reused = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert reused["status"] == "send_single"
+    assert reused["delivery_store_ids"] == ["160"]

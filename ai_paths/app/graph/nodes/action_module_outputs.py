@@ -288,7 +288,12 @@ def _reuse_already_delivered_store_delivery(
     sent_summary = sent_message_summary_for_model(state)
     if (
         str(resolution.get("status") or "")
-        in {"need_location", "need_location_confirmation", "ambiguous_location"}
+        in {
+            "need_location",
+            "need_location_confirmation",
+            "ambiguous_location",
+            "search_incomplete",
+        }
         and request_kind == "store_detail"
         and detail_kind in {"address", "navigation"}
     ):
