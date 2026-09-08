@@ -882,12 +882,12 @@ class SopPlatformTaskService:
 
         async def load_status() -> tuple[dict[str, Any], float]:
             started = time.perf_counter()
-            result = await self.system_client.conversation_status(**identity)
+            result = await self.system_client.conversation_status(**_outreach_system_identity(identity))
             return result, started
 
         async def load_conversation() -> tuple[dict[str, Any], float]:
             started = time.perf_counter()
-            result = await self.system_client.conversation(**identity, limit=50)
+            result = await self.system_client.conversation(**_outreach_system_identity(identity), limit=50)
             return result, started
 
         (status_response, status_started), (conversation, conversation_started) = await asyncio.gather(
@@ -1368,7 +1368,7 @@ class SopPlatformTaskService:
         )
         _require_platform_status(claimed, 20)
         send_payload = {
-            **identity,
+            **_outreach_system_identity(identity),
             "plan_id": f"platform-sop-{selected_id}",
             "task_id": f"platform-sop-send-{selected_id}",
             **_platform_send_trace_fields(selected_task),
@@ -1730,7 +1730,7 @@ class SopPlatformTaskService:
         try:
             stored_request = audit.get("request") if isinstance(audit.get("request"), dict) else {}
             send_payload = stored_request or {
-                **identity,
+                **_outreach_system_identity(identity),
                 "plan_id": f"platform-sop-{selected_id}",
                 "task_id": f"platform-sop-send-{selected_id}",
                 **_platform_send_trace_fields(platform_task),
@@ -1842,7 +1842,7 @@ class SopPlatformTaskService:
         if not selected_id or not local_task_id or not final_messages:
             raise RuntimeError("interrupted batch send recovery is missing immutable send facts")
         send_payload = {
-            **identity,
+            **_outreach_system_identity(identity),
             "plan_id": f"platform-sop-{selected_id}",
             "task_id": f"platform-sop-send-{selected_id}",
             **_platform_send_trace_fields(platform_task),
@@ -2453,7 +2453,7 @@ class SopPlatformTaskService:
             decision_reason = f"manual_resend_ai_copy:{decision.get('reason') or ''}"
 
         send_payload = {
-            **identity,
+            **_outreach_system_identity(identity),
             "plan_id": f"platform-sop-{task_id}",
             "task_id": f"platform-sop-send-{task_id}",
             **_platform_send_trace_fields(platform_task),
@@ -2541,7 +2541,10 @@ class SopPlatformTaskService:
         if missing:
             raise RuntimeError(f"task cannot be resent: invalid_identity:{','.join(missing)}")
         try:
-            conversation = await self.system_client.conversation(**identity, limit=1)
+            conversation = await self.system_client.conversation(
+                **_outreach_system_identity(identity),
+                limit=1,
+            )
         except Exception as exc:
             raise RuntimeError(f"manual resend relation check failed: {type(exc).__name__}: {exc}") from exc
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
@@ -2556,7 +2559,10 @@ class SopPlatformTaskService:
         send_payload: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            conversation = await self.system_client.conversation(**identity, limit=30)
+            conversation = await self.system_client.conversation(
+                **_outreach_system_identity(identity),
+                limit=30,
+            )
         except Exception as exc:
             return {"found": False, "error": f"{type(exc).__name__}: {exc}"}
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
@@ -3020,7 +3026,7 @@ class SopPlatformTaskService:
                 )
             else:
                 send_payload = {
-                    **identity,
+                    **_outreach_system_identity(identity),
                     "plan_id": f"platform-sop-{task_id}",
                     "task_id": f"platform-sop-send-{task_id}",
                     **_platform_send_trace_fields(platform_task),
@@ -3370,7 +3376,10 @@ class SopPlatformTaskService:
         missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
         if missing:
             raise RuntimeError(f"platform task missing identity: {','.join(missing)}")
-        conversation = await self.system_client.conversation(**identity, limit=80)
+        conversation = await self.system_client.conversation(
+            **_outreach_system_identity(identity),
+            limit=80,
+        )
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
         relation = _compact_customer_relation(
             data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
@@ -4049,12 +4058,17 @@ def _platform_message_error(platform_task: dict[str, Any]) -> str:
     for item in raw:
         if not isinstance(item, dict):
             return "message_not_object"
-        message_type = str(item.get("type") or "").strip().lower()
+        message_type = str(item.get("type") or item.get("msg_type") or item.get("msgType") or "").strip().lower()
         if message_type not in {"text", "image", "video", "link"}:
             return "unsupported_message_type"
         content = item.get("content")
         if message_type == "text":
-            text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+            text = str(
+                (content.get("text") if isinstance(content, dict) else content)
+                or item.get("content_text")
+                or item.get("contentText")
+                or ""
+            ).strip()
             if not text:
                 return "empty_text"
             continue
@@ -4062,6 +4076,11 @@ def _platform_message_error(platform_task: dict[str, Any]) -> str:
             url = str(content.get("url") or "").strip()
         else:
             url = str(content.get("url") if isinstance(content, dict) else content or "").strip()
+        if not url:
+            url = str(item.get("media_url") or item.get("mediaUrl") or "").strip()
+        if not url:
+            media_urls = _platform_media_urls(item)
+            url = media_urls[0] if media_urls else ""
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return "invalid_media_url"
@@ -4080,6 +4099,15 @@ def _task_identity(task: dict[str, Any]) -> dict[str, str]:
         values = identity.as_legacy_dict()
         values["identity_contract_error"] = str(exc)
         return values
+
+
+def _outreach_system_identity(identity: dict[str, str]) -> dict[str, str]:
+    """Adapt the canonical identity to the legacy Outreach client contract."""
+
+    return {
+        key: str(identity.get(key) or "").strip()
+        for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat")
+    }
 
 
 def _task_id(task: dict[str, Any]) -> str:
