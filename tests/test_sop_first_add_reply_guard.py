@@ -494,3 +494,26 @@ def test_deterministic_queued_recovery_reenters_batch_path(monkeypatch: pytest.M
 
     assert recovered == 1
     assert batch_called is True
+
+
+def test_platform_recovery_does_not_wait_for_failure_alert_retries() -> None:
+    class _Repository:
+        @staticmethod
+        def list_sop_events_by_statuses(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+            return []
+
+        @staticmethod
+        def list_orphaned_platform_sop_events(**_kwargs: object) -> list[dict[str, object]]:
+            return []
+
+    class _FailureAlerts:
+        @staticmethod
+        async def retry_pending() -> int:
+            raise AssertionError("alert retries must run outside platform recovery")
+
+    service = SopPlatformTaskService.__new__(SopPlatformTaskService)
+    service.settings = SimpleNamespace(sop_platform_recovery_batch_size=10, sop_platform_recovery_concurrency=1)
+    service.repository = _Repository()
+    service.failure_alert_service = _FailureAlerts()
+
+    assert asyncio.run(service.process_recoveries()) == 0

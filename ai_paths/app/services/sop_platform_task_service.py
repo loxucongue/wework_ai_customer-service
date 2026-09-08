@@ -329,6 +329,7 @@ class SopPlatformTaskService:
         self._terminal_order: deque[str] = deque()
         self._workers: list[asyncio.Task[None]] = []
         self._recovery_worker: asyncio.Task[None] | None = None
+        self._failure_alert_retry_worker: asyncio.Task[None] | None = None
         self._event_loop_watchdog_worker: asyncio.Task[None] | None = None
         self._running = False
         self._counters: Counter[str] = Counter()
@@ -364,6 +365,11 @@ class SopPlatformTaskService:
             self._recovery_loop(),
             name="sop-platform-recovery",
         )
+        if self.failure_alert_service is not None:
+            self._failure_alert_retry_worker = asyncio.create_task(
+                self._failure_alert_retry_loop(),
+                name="sop-platform-failure-alert-retry",
+            )
         self._event_loop_watchdog_worker = asyncio.create_task(
             self._event_loop_watchdog(),
             name="sop-platform-event-loop-watchdog",
@@ -396,6 +402,8 @@ class SopPlatformTaskService:
             tasks = [*self._workers]
             if self._recovery_worker is not None:
                 tasks.append(self._recovery_worker)
+            if self._failure_alert_retry_worker is not None:
+                tasks.append(self._failure_alert_retry_worker)
             if self._event_loop_watchdog_worker is not None:
                 tasks.append(self._event_loop_watchdog_worker)
             for task in tasks:
@@ -404,6 +412,7 @@ class SopPlatformTaskService:
                 await asyncio.gather(*tasks, return_exceptions=True)
             self._workers = []
             self._recovery_worker = None
+            self._failure_alert_retry_worker = None
             self._event_loop_watchdog_worker = None
 
     async def _event_loop_watchdog(self) -> None:
@@ -703,12 +712,18 @@ class SopPlatformTaskService:
                 )
             await asyncio.sleep(max(1.0, float(self.settings.sop_platform_poll_seconds)))
 
-    async def process_recoveries(self) -> int:
-        if self.failure_alert_service is not None:
+    async def _failure_alert_retry_loop(self) -> None:
+        while True:
             try:
                 await self.failure_alert_service.retry_pending()
-            except Exception as exc:
-                logger.error("Third-party SOP alert retry iteration failed: type=%s", type(exc).__name__)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._counters["failure_alert_retry_error"] += 1
+                logger.exception("Third-party SOP failure alert retry iteration failed")
+            await asyncio.sleep(max(1.0, float(self.settings.sop_platform_poll_seconds)))
+
+    async def process_recoveries(self) -> int:
         events = await asyncio.to_thread(
             self.repository.list_sop_events_by_statuses,
             self.RECOVERY_STATUSES,
