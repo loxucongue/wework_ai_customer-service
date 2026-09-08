@@ -13,7 +13,9 @@ from app.services.sop_platform_task_service import (
     SopPlatformTaskService,
     _configured_priority_wechats,
     _is_priority_wechat,
+    _outreach_system_identity,
     _partition_stale_pending_tasks,
+    _platform_message_error,
     _platform_task_is_already_no_send,
     _select_bulk_human_takeover_tasks,
     _task_preflight_no_send_reason,
@@ -30,6 +32,65 @@ def test_terminal_platform_states_are_reconciled_without_retry() -> None:
 
 def test_platform_queued_tasks_are_recovered_after_restart() -> None:
     assert "platform_queued" in SopPlatformTaskService.RECOVERY_STATUSES
+
+
+def test_outreach_client_identity_excludes_canonical_audit_fields() -> None:
+    assert _outreach_system_identity(
+        {
+            "corp_id": "corp",
+            "customer_id": "12228418",
+            "external_userid": "wm-external",
+            "user_id": "DY258",
+            "wechat": "DY258",
+            "platform_customer_id": "12228418",
+            "platform_user_id": "DY258",
+            "customer_add_wechat_id": "22879512",
+            "platform_customer_id_source": "legacy_customer_id",
+        }
+    ) == {
+        "corp_id": "corp",
+        "customer_id": "12228418",
+        "external_userid": "wm-external",
+        "user_id": "DY258",
+        "wechat": "DY258",
+    }
+
+
+def test_platform_snake_case_messages_pass_preflight_validation() -> None:
+    task = {
+        "message_content": [
+            {"msg_type": "text", "content_text": "介绍项目"},
+            {
+                "msg_type": "image",
+                "media_url": "https://example.com/evidence.png",
+                "media_urls_json": ["https://example.com/evidence.png"],
+            },
+            {"msg_type": "text", "content_text": "您想了解哪方面？"},
+        ]
+    }
+    identity = {
+        "corp_id": "corp",
+        "customer_id": "12228418",
+        "external_userid": "wm-external",
+        "user_id": "DY258",
+        "wechat": "DY258",
+    }
+
+    assert _platform_message_error(task) == ""
+    assert (
+        _task_preflight_no_send_reason(
+            task,
+            identity=identity,
+            settings=SimpleNamespace(sop_platform_max_task_age_seconds=600, sop_platform_live_not_before=""),
+        )
+        == ""
+    )
+
+
+def test_platform_snake_case_invalid_content_remains_blocked() -> None:
+    assert _platform_message_error({"message_content": [{"msg_type": "file", "media_url": "https://example.com/a"}]}) == "unsupported_message_type"
+    assert _platform_message_error({"message_content": [{"msg_type": "text", "content_text": ""}]}) == "empty_text"
+    assert _platform_message_error({"message_content": [{"msg_type": "image", "media_url": "not-a-url"}]}) == "invalid_media_url"
 
 
 class _Repository:
