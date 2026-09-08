@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class SopFailureAlertService:
-    """Durably alert whenever a third-party SOP task lacks send evidence."""
+    """Durably alert actionable third-party SOP send failures."""
 
     EVENT_TYPE = "sop_failure_alert"
     RETRY_STATUSES = ["accepted", "alert_sending", "alert_retry"]
@@ -21,6 +21,17 @@ class SopFailureAlertService:
         "sent",
         "sent_consume_deferred",
         "send_succeeded",
+    }
+    NON_ALERT_STATUSES = {
+        "accepted",
+        "platform_delivery_pending",
+        "platform_send_uncertain",
+    }
+    NON_ALERT_REASON_MARKERS = {
+        "active_send_timeout_unknown_result",
+        "customer_relation_deleted",
+        "delivery_not_confirmed",
+        "human_takeover",
     }
 
     def __init__(self, *, settings: Any, repository: Any, client: Any) -> None:
@@ -43,7 +54,13 @@ class SopFailureAlertService:
         tasks: list[dict[str, Any]] | None = None,
         phase: str,
     ) -> int:
-        if not self.available or self._result_has_send_evidence(result):
+        status = str(result.get("status") or "unknown").strip() or "unknown"
+        reason = _result_reason(result)
+        if (
+            not self.available
+            or self._result_has_send_evidence(result)
+            or self._is_non_alert_outcome(status=status, reason=reason)
+        ):
             return 0
         task_map = {
             _task_id(task): task
@@ -53,8 +70,6 @@ class SopFailureAlertService:
         task_ids = _result_task_ids(result)
         if not task_ids:
             task_ids = ["unknown"]
-        status = str(result.get("status") or "unknown").strip() or "unknown"
-        reason = _result_reason(result)
         sent = 0
         for task_id in task_ids:
             task = task_map.get(task_id, {})
@@ -82,14 +97,16 @@ class SopFailureAlertService:
             return 0
         task = task if isinstance(task, dict) else {}
         clean_task_id = str(task_id or _task_id(task) or "unknown").strip() or "unknown"
+        clean_status = _clean_value(status, fallback="unknown")
+        clean_reason = _clean_value(reason, fallback=clean_status, limit=500)
+        if self._is_non_alert_outcome(status=clean_status, reason=clean_reason):
+            return 0
         if (
             clean_task_id != "unknown"
             and not clean_task_id.startswith("system-")
             and await asyncio.to_thread(self._local_task_has_send_evidence, clean_task_id)
         ):
             return 0
-        clean_status = _clean_value(status, fallback="unknown")
-        clean_reason = _clean_value(reason, fallback=clean_status, limit=500)
         clean_phase = _clean_value(phase, fallback="unknown")
         category = _failure_category(clean_status)
         event_id = _alert_event_id(clean_task_id, category, clean_reason, clean_phase)
@@ -149,6 +166,14 @@ class SopFailureAlertService:
         )
         delivered = 0
         for event in events:
+            if self._event_is_non_alert_outcome(event):
+                await asyncio.to_thread(
+                    self.repository.update_sop_event_status,
+                    str(event.get("event_id") or ""),
+                    status="alert_suppressed",
+                    error="",
+                )
+                continue
             delivered += 1 if await self._deliver_event(event) else 0
         return delivered
 
@@ -200,6 +225,21 @@ class SopFailureAlertService:
     def _result_has_send_evidence(self, result: dict[str, Any]) -> bool:
         status = str(result.get("status") or "").strip()
         return status in self.SEND_CONFIRMED_STATUSES
+
+    def _is_non_alert_outcome(self, *, status: str, reason: str) -> bool:
+        normalized_status = str(status or "").strip().lower()
+        normalized_reason = str(reason or "").strip().lower()
+        if normalized_status in self.NON_ALERT_STATUSES:
+            return True
+        return any(marker in normalized_reason for marker in self.NON_ALERT_REASON_MARKERS)
+
+    def _event_is_non_alert_outcome(self, event: dict[str, Any]) -> bool:
+        payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        alert = payload.get("alert") if isinstance(payload.get("alert"), dict) else {}
+        return self._is_non_alert_outcome(
+            status=str(alert.get("status") or ""),
+            reason=str(alert.get("reason") or ""),
+        )
 
     def _local_task_has_send_evidence(self, task_id: str) -> bool:
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
