@@ -24,11 +24,13 @@ class SopFailureAlertService:
     }
     NON_ALERT_STATUSES = {
         "accepted",
+        "platform_completed",
         "platform_delivery_pending",
         "platform_send_uncertain",
     }
     NON_ALERT_REASON_MARKERS = {
         "active_send_timeout_unknown_result",
+        "customer_already_opened",
         "customer_relation_deleted",
         "delivery_not_confirmed",
         "human_takeover",
@@ -109,7 +111,18 @@ class SopFailureAlertService:
             return 0
         clean_phase = _clean_value(phase, fallback="unknown")
         category = _failure_category(clean_status)
-        event_id = _alert_event_id(clean_task_id, category, clean_reason, clean_phase)
+        existing_loader = getattr(self.repository, "find_sop_failure_alert_by_task_id", None)
+        if callable(existing_loader) and not clean_task_id.startswith("system-"):
+            existing = await asyncio.to_thread(existing_loader, clean_task_id)
+            if isinstance(existing, dict) and existing:
+                return 0
+        event_id = _alert_event_id(clean_task_id, phase=clean_phase)
+        responsibility, responsibility_label = _failure_responsibility(
+            task_id=clean_task_id,
+            reason=clean_reason,
+            phase=clean_phase,
+        )
+        failure_type, failure_type_label = _failure_type(clean_reason)
         payload = {
             "event_id": event_id,
             "event_type": self.EVENT_TYPE,
@@ -121,6 +134,10 @@ class SopFailureAlertService:
                 "task_id": clean_task_id,
                 "status": clean_status,
                 "category": category,
+                "failure_type": failure_type,
+                "failure_type_label": failure_type_label,
+                "responsibility": responsibility,
+                "responsibility_label": responsibility_label,
                 "phase": clean_phase,
                 "reason": clean_reason,
                 "customer_id": _first(task, "customerId", "customer_id", "platformCustomerId"),
@@ -280,10 +297,68 @@ def _failure_category(status: str) -> str:
     return "processing_failed"
 
 
-def _alert_event_id(task_id: str, category: str, reason: str, phase: str) -> str:
-    dedupe_reason = phase if task_id.startswith("system-") else reason
-    digest = hashlib.sha256(f"{task_id}|{category}|{dedupe_reason}".encode("utf-8")).hexdigest()[:24]
+def _alert_event_id(task_id: str, *, phase: str) -> str:
+    lifecycle_key = phase if task_id.startswith("system-") else "sop_execution_failure"
+    digest = hashlib.sha256(f"{task_id}|{lifecycle_key}".encode("utf-8")).hexdigest()[:24]
     return f"sop_failure_alert:{digest}"
+
+
+def _failure_type(reason: str) -> tuple[str, str]:
+    normalized = str(reason or "").strip().lower()
+    if "timeout" in normalized or "timed out" in normalized:
+        return "interface_timeout", "接口超时"
+    if normalized.startswith(("missing_identity", "missing_event_log_id")):
+        return "missing_required_parameter", "任务缺少必填参数"
+    if normalized.startswith("mixed_customer_identity"):
+        return "invalid_task_qualification", "任务身份资格不一致"
+    if normalized.startswith(
+        (
+            "missing_ai_auto_reply",
+            "missing_customer_relation",
+            "missing_conversation_messages",
+            "invalid_conversation",
+        )
+    ):
+        return "qualification_data_incomplete", "发送资格数据不足"
+    if normalized.startswith(("sop_messages_empty", "invalid_sop_message_group", "missing_sop_message_id")):
+        return "invalid_task_content", "第三方任务内容不完整"
+    if "failed" in normalized or "error" in normalized or "rejected" in normalized:
+        return "interface_or_execution_failure", "接口或执行失败"
+    return "processing_failure", "任务处理失败"
+
+
+def _failure_responsibility(*, task_id: str, reason: str, phase: str) -> tuple[str, str]:
+    normalized_reason = str(reason or "").strip().lower()
+    normalized_phase = str(phase or "").strip().lower()
+    if normalized_reason.startswith(
+        (
+            "missing_identity",
+            "mixed_customer_identity",
+            "missing_event_log_id",
+            "sop_messages_",
+            "invalid_sop_message_group",
+            "missing_sop_message_id",
+            "invalid_message_content",
+        )
+    ) or normalized_phase in {"poll_pending_and_content", "platform_consume", "platform_rule_data"}:
+        return "third_party_sop_platform", "第三方 SOP 平台"
+    if normalized_reason.startswith(
+        (
+            "customer_gate_query_failed",
+            "invalid_conversation",
+            "missing_ai_auto_reply",
+            "missing_customer_relation",
+            "missing_conversation_messages",
+        )
+    ):
+        return "aics_customer_state_interface", "我方客户状态/会话接口"
+    if normalized_reason.startswith(("send_interface_", "send_failed", "wecom_")):
+        return "aics_proactive_send_interface", "我方主动发送链路"
+    if normalized_phase.startswith(("persist_", "queue_process_exception", "recovery_iteration")):
+        return "aics_runtime", "我方任务运行服务"
+    if task_id.startswith("system-"):
+        return "pending_confirmation", "待结合接口阶段确认"
+    return "pending_confirmation", "待确认"
 
 
 def _task_id(task: dict[str, Any]) -> str:
@@ -309,6 +384,8 @@ def _render_markdown(alert: dict[str, Any]) -> str:
             "### 第三方 SOP 发送失败预警",
             f"- 任务 ID：{_clean_value(alert.get('task_id'), fallback='unknown')}",
             f"- 状态：{_clean_value(alert.get('status'), fallback='unknown')}",
+            f"- 失败类型：{_clean_value(alert.get('failure_type_label'), fallback='任务处理失败')}",
+            f"- 责任方向：{_clean_value(alert.get('responsibility_label'), fallback='待确认')}",
             f"- 失败阶段：{_clean_value(alert.get('phase'), fallback='unknown')}",
             f"- 失败原因：{_clean_value(alert.get('reason'), fallback='unknown', limit=500)}",
             f"- 客户 ID：{_clean_value(alert.get('customer_id'), fallback='未提供')}",
@@ -317,6 +394,6 @@ def _render_markdown(alert: dict[str, Any]) -> str:
             f"- 发生时间：{_clean_value(alert.get('occurred_at'), fallback='unknown')}",
             f"- 发布版本：{_clean_value(alert.get('release_id'), fallback='unknown')}",
             f"- 告警 ID：{_clean_value(alert.get('alert_id'), fallback='unknown')}",
-            "- 判定原则：未取得真实发送成功证据即按失败告警；任务保持未消费并继续恢复。",
+            "- 处理原则：业务已承接状态不告警；本告警任务保持未消费并继续恢复，后续任务不得越过。",
         ]
     )

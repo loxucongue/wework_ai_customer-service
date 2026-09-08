@@ -52,6 +52,15 @@ SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
 }
 
 
+# These are business outcomes that AICS can fully handle without sending. They
+# are the only deterministic paths allowed to close an upstream task as 70.
+SOP_HANDLED_NO_SEND_REASONS = {
+    "customer_already_opened",
+    "customer_relation_deleted",
+    "human_takeover",
+}
+
+
 SOP_PLATFORM_TASK_SYSTEM_PROMPT = (
     """
 # 1. 角色与任务
@@ -785,7 +794,11 @@ class SopPlatformTaskService:
             # from producing a second customer message.
             async with semaphore:
                 try:
-                    if recovery_status in {"platform_queued", "platform_sequence_blocked"}:
+                    if recovery_status in {
+                        "platform_queued",
+                        "platform_sequence_blocked",
+                        "platform_processing_retry",
+                    }:
                         result = await self.process_customer_batch(
                             {
                                 "_aics_customer_batch": True,
@@ -799,7 +812,7 @@ class SopPlatformTaskService:
                         result = await self.process_task(task, recovery_status=recovery_status)
                     self._record_result(result)
                     await self._alert_result(result, tasks=[task], phase="recovery_process")
-                    if not result.get("processed"):
+                    if not result.get("processed") and not result.get("retry_scheduled"):
                         self._schedule_recovery_backoff(
                             event_id,
                             status=recovery_status,
@@ -836,8 +849,8 @@ class SopPlatformTaskService:
                         self._counters["platform_terminal_reconciled"] += 1
                         await self._alert_task_failure(
                             task=task,
-                            status="completed_without_send",
-                            reason=_alert_exception_reason(exc),
+                            status="send_failed",
+                            reason=f"third_party_task_already_terminal_no_send:{_alert_exception_reason(exc)}",
                             phase="recovery_platform_terminal",
                         )
                         return 0
@@ -1034,7 +1047,7 @@ class SopPlatformTaskService:
         batch_task_ids = [_task_id(item) for item in tasks]
         batch_run_id = f"{biz_type}:{batch_task_ids[0]}"
         if not _batch_identity_is_consistent([task], identity=identity):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="mixed_customer_identity",
                 batch_key=batch_key,
@@ -1045,7 +1058,7 @@ class SopPlatformTaskService:
             key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]
         ]
         if missing:
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason=f"missing_identity:{','.join(missing)}",
                 batch_key=batch_key,
@@ -1098,7 +1111,7 @@ class SopPlatformTaskService:
                 load_conversation(),
             )
         except Exception as exc:
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason=f"customer_gate_query_failed:{type(exc).__name__}",
                 batch_key=batch_key,
@@ -1112,7 +1125,7 @@ class SopPlatformTaskService:
         )
         status_data = status_response.get("data") if isinstance(status_response.get("data"), dict) else status_response
         if not isinstance(status_data, dict):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="invalid_conversation_status",
                 batch_key=batch_key,
@@ -1121,7 +1134,7 @@ class SopPlatformTaskService:
             )
         ai_auto_reply = _conversation_ai_auto_reply(status_data)
         if ai_auto_reply is None:
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="missing_ai_auto_reply",
                 batch_key=batch_key,
@@ -1140,7 +1153,7 @@ class SopPlatformTaskService:
         )
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
         if not isinstance(data, dict):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="invalid_conversation",
                 batch_key=batch_key,
@@ -1149,7 +1162,7 @@ class SopPlatformTaskService:
             )
         relation = normalize_customer_relation(data)
         if not relation.get("available"):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="missing_customer_relation",
                 batch_key=batch_key,
@@ -1158,7 +1171,7 @@ class SopPlatformTaskService:
             )
         base_audit_context["customer_relation"] = _compact_customer_relation(relation)
         if customer_relation_is_deleted(relation):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="customer_relation_deleted",
                 batch_key=batch_key,
@@ -1167,7 +1180,7 @@ class SopPlatformTaskService:
                 audit_context=base_audit_context,
             )
         if ai_auto_reply is False:
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="human_takeover",
                 batch_key=batch_key,
@@ -1176,7 +1189,7 @@ class SopPlatformTaskService:
                 audit_context=base_audit_context,
             )
         if not isinstance(data.get("messages"), list):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="missing_conversation_messages",
                 batch_key=batch_key,
@@ -1194,7 +1207,7 @@ class SopPlatformTaskService:
             }
         )
         if _customer_has_opened(timeline):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="customer_already_opened",
                 batch_key=batch_key,
@@ -1204,7 +1217,7 @@ class SopPlatformTaskService:
             )
         event_log_id = _task_event_log_id(task)
         if not event_log_id:
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="missing_event_log_id",
                 batch_key=batch_key,
@@ -1220,7 +1233,7 @@ class SopPlatformTaskService:
                 wechat=identity["wechat"],
             )
         except Exception as exc:
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason=f"sop_messages_failed:{type(exc).__name__}",
                 batch_key=batch_key,
@@ -1230,7 +1243,7 @@ class SopPlatformTaskService:
             )
         next_group = content_page.get("next_item") if isinstance(content_page, dict) else None
         if not isinstance(next_group, dict):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="sop_messages_empty",
                 batch_key=batch_key,
@@ -1241,7 +1254,7 @@ class SopPlatformTaskService:
         selected_task = _merge_sop_message_group(task, next_group, event_log_id=event_log_id)
         msg_id = str(selected_task.get("_aics_sop_message_wait_msg_id") or "").strip()
         if not msg_id or msg_id == "0" or not _platform_messages(selected_task):
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [task],
                 reason="invalid_sop_message_group",
                 batch_key=batch_key,
@@ -1571,6 +1584,114 @@ class SopPlatformTaskService:
             return False
         return isinstance(result, dict) and str(result.get("status") or "").strip().lower() == "pass"
 
+    async def _finish_batch_without_send(
+        self,
+        tasks: list[dict[str, Any]],
+        *,
+        reason: str,
+        batch_key: str,
+        biz_type: str,
+        batch_run_id: str,
+        decision: dict[str, Any] | None = None,
+        audit_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if reason in SOP_HANDLED_NO_SEND_REASONS:
+            return await self._consume_batch_without_send(
+                tasks,
+                reason=reason,
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                decision=decision,
+                audit_context=audit_context,
+            )
+        return await self._defer_batch_failure(
+            tasks,
+            reason=reason,
+            batch_key=batch_key,
+            biz_type=biz_type,
+            batch_run_id=batch_run_id,
+            decision=decision,
+            audit_context=audit_context,
+        )
+
+    async def _defer_batch_failure(
+        self,
+        tasks: list[dict[str, Any]],
+        *,
+        reason: str,
+        batch_key: str,
+        biz_type: str,
+        batch_run_id: str,
+        decision: dict[str, Any] | None = None,
+        audit_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        task = next((item for item in _dedupe_tasks(tasks) if _task_id(item)), None)
+        if task is None:
+            return {
+                "processed": False,
+                "status": "send_failed",
+                "task_id": "",
+                "terminal_task_ids": [],
+                "reason": reason,
+            }
+        task_id = _task_id(task)
+        event, local_task = await asyncio.to_thread(
+            self._ensure_local_task,
+            task,
+            status="platform_processing_retry",
+        )
+        local_task_id = str(local_task.get("id") or "")
+        existing = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        attempts = existing.get("failure_attempts") if isinstance(existing.get("failure_attempts"), list) else []
+        failure = {
+            "reason": reason,
+            "failed_at": utc_now_iso(),
+            "task_consumed": False,
+            "message_ids_consumed": [],
+        }
+        audit = {
+            **existing,
+            "audit_schema_version": 4,
+            "processing_mode": "deterministic_customer_gate",
+            "batch_run_id": batch_run_id,
+            "batch_key": batch_key,
+            "biz_type": biz_type,
+            "batch_task_ids": [_task_id(item) for item in tasks if _task_id(item)],
+            "terminal_task_status": None,
+            "content_message_results": [],
+            "decision": decision or {"selected_task_id": "", "evaluations": [], "failure_reason": reason},
+            "reason": reason,
+            "context": _context_audit(audit_context or {}),
+            "failure": failure,
+            "failure_attempts": [*attempts[-19:], failure],
+        }
+        if local_task_id:
+            await asyncio.to_thread(
+                self.repository.update_sop_send_task,
+                local_task_id,
+                status="processing_retry",
+                send_payload=audit,
+                error=reason,
+            )
+        self._reserved_prefix_ids.add(task_id)
+        self._schedule_recovery_backoff(
+            f"platform_sop_task:{task_id}",
+            status="platform_processing_retry",
+            error=reason,
+            retry_count=int(event.get("retry_count") or 0),
+        )
+        self._counters["recoverable_failure"] += 1
+        return {
+            "processed": False,
+            "status": "send_failed",
+            "task_id": task_id,
+            "task_ids": [task_id],
+            "terminal_task_ids": [],
+            "reason": reason,
+            "retry_scheduled": True,
+        }
+
     async def _consume_batch_without_send(
         self,
         tasks: list[dict[str, Any]],
@@ -1708,7 +1829,7 @@ class SopPlatformTaskService:
         selected_id = _task_id(selected_task)
         original_messages = _platform_messages(selected_task)
         if not original_messages:
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [selected_task],
                 reason="invalid_sop_message_group",
                 batch_key=batch_key,
@@ -1719,7 +1840,7 @@ class SopPlatformTaskService:
         final_messages = list(original_messages)
         msg_id = str(selected_task.get("_aics_sop_message_wait_msg_id") or "").strip()
         if not msg_id:
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [selected_task],
                 reason="missing_sop_message_id",
                 batch_key=batch_key,
@@ -1794,6 +1915,8 @@ class SopPlatformTaskService:
             "reply_messages": final_messages,
         }
         audit["request"] = send_payload
+        delivery_idempotency_key = f"sop_platform_message:{msg_id}"
+        audit["delivery_idempotency_key"] = delivery_idempotency_key
         phase_started = time.perf_counter()
         local_task = await asyncio.to_thread(
             self.repository.prepare_platform_sop_send,
@@ -1834,7 +1957,7 @@ class SopPlatformTaskService:
                     "batch_key": batch_key,
                     "biz_type": biz_type,
                 },
-                delivery_idempotency_key=f"sop_platform_message:{msg_id}",
+                delivery_idempotency_key=delivery_idempotency_key,
             )
             self._log_task_phase(
                 task_id=selected_id,
@@ -1963,6 +2086,36 @@ class SopPlatformTaskService:
         audit: dict[str, Any],
         error: Exception,
     ) -> dict[str, Any]:
+        if _send_failure_result_is_uncertain(error):
+            failure_error = f"{type(error).__name__}: {error}"
+            uncertain_audit = {
+                **audit,
+                "delivery_uncertain": True,
+                "send_failure": failure_error,
+                "send_failure_at": utc_now_iso(),
+                "terminal_task_status": None,
+            }
+            self.repository.update_sop_send_task(
+                local_task_id,
+                status="sending",
+                send_payload=uncertain_audit,
+                error=failure_error,
+            )
+            self._reserved_prefix_ids.add(selected_task_id)
+            self._schedule_recovery_backoff(
+                f"platform_sop_task:{selected_task_id}",
+                status="platform_send_uncertain",
+                error=failure_error,
+            )
+            self._counters["send_interface_timeout"] += 1
+            return {
+                "processed": False,
+                "status": "send_failed",
+                "task_id": selected_task_id,
+                "terminal_task_ids": [],
+                "reason": f"send_interface_timeout:{type(error).__name__}",
+                "retry_scheduled": True,
+            }
         return await self._complete_batch_send_failure(
             platform_task=platform_task,
             selected_task_id=selected_task_id,
@@ -1983,7 +2136,7 @@ class SopPlatformTaskService:
         outcome: str,
     ) -> dict[str, Any]:
         failure_error = f"{type(error).__name__}: {error}"
-        result = await self._consume_batch_without_send(
+        result = await self._defer_batch_failure(
             [platform_task],
             reason=outcome,
             batch_key=str(audit.get("batch_key") or _customer_batch_key(platform_task)),
@@ -1993,7 +2146,7 @@ class SopPlatformTaskService:
             audit_context={**audit, "send_failure": failure_error, "local_task_id": local_task_id},
         )
         result["error"] = failure_error
-        self._counters["send_failure_consumed_without_content"] += 1
+        self._counters["send_failure_deferred"] += 1
         return result
 
     async def _retry_batch_send(
@@ -2181,6 +2334,7 @@ class SopPlatformTaskService:
         if (
             str(audit.get("processing_mode") or "") == "deterministic_customer_gate"
             and str(audit.get("send_invoked_at") or "").strip()
+            and not bool(audit.get("delivery_uncertain"))
         ):
             return await self._complete_recovered_batch_send(
                 selected_id=selected_id,
@@ -2199,7 +2353,7 @@ class SopPlatformTaskService:
             "reply_messages": final_messages,
         }
         audit["request"] = send_payload
-        delivery_key = f"sop_platform_task:{local_task_id}"
+        delivery_key = str(audit.get("delivery_idempotency_key") or f"sop_platform_task:{local_task_id}")
         dispatch_loader = getattr(self.system_client, "delivery_dispatch", None)
         dispatch = dispatch_loader(delivery_key) if callable(dispatch_loader) else {}
         dispatch_status = str(dispatch.get("status") or "")
@@ -2236,6 +2390,14 @@ class SopPlatformTaskService:
                 "delivery_recovery": existing_delivery,
             }
         if not existing_delivery.get("found"):
+            if bool(audit.get("delivery_uncertain")):
+                return {
+                    "processed": False,
+                    "status": "recovery_waiting",
+                    "task_id": selected_id,
+                    "reason": "delivery_not_confirmed",
+                    "delivery_recovery": existing_delivery,
+                }
             if dispatch_status in {"platform_accepted", "submission_unknown", "sending"}:
                 return {
                     "processed": False,
@@ -2320,9 +2482,10 @@ class SopPlatformTaskService:
             self._counters["platform_already_no_send"] += 1
             return {
                 "processed": True,
-                "status": "completed_without_send",
+                "status": "send_failed",
                 "task_id": selected_id,
                 "terminal_task_ids": [selected_id],
+                "reason": "third_party_task_already_terminal_no_send",
                 "delivery_recovery": recovery,
             }
         recovered_response = {
@@ -3318,7 +3481,7 @@ class SopPlatformTaskService:
         )
         if duplicate_reason:
             self._counters[duplicate_reason] += 1
-            return await self._consume_batch_without_send(
+            return await self._finish_batch_without_send(
                 [platform_task],
                 reason=duplicate_reason,
                 batch_key=_customer_batch_key(platform_task),
@@ -5733,6 +5896,12 @@ def _retryable_delivery_failure(exc: Exception) -> dict[str, Any]:
         "http_status": 0,
         "detail": message[:2000],
     }
+
+
+def _send_failure_result_is_uncertain(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    message = str(exc or "").lower()
+    return "timeout" in name or "timeout" in message or "timed out" in message
 
 
 def _send_result_requires_confirmation(send_result: dict[str, Any]) -> bool:

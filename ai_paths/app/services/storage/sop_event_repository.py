@@ -51,6 +51,25 @@ class SopEventRepositoryMixin:
             ).fetchone()
         return self._decode_sop_event(dict(row)) if row else {}
 
+    def find_sop_failure_alert_by_task_id(self, task_id: str) -> dict[str, Any]:
+        clean_task_id = str(task_id or "").strip()
+        if not clean_task_id:
+            return {}
+        task_expression = self.store.json_text("raw_payload_json", "$.alert.task_id")
+        with self.store.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM sop_events
+                WHERE event_type='sop_failure_alert'
+                  AND {task_expression}=?
+                ORDER BY received_at ASC
+                LIMIT 1
+                """,
+                (clean_task_id,),
+            ).fetchone()
+        return self._decode_sop_event(dict(row)) if row else {}
+
     def list_sop_events(
         self,
         *,

@@ -235,22 +235,27 @@ def test_any_failed_customer_gate_consumes_task_70_without_loading_or_consuming_
     assert len(platform.rule_calls) == 1
 
 
-def test_empty_content_and_send_exception_consume_only_task_70() -> None:
+def test_content_and_send_failures_remain_unconsumed_and_recoverable() -> None:
     empty_service, _repository, empty_platform, empty_system, _events = _service(empty_content=True)
     empty_result = _run(empty_service)
 
     assert empty_result["reason"] == "sop_messages_empty"
+    assert empty_result["status"] == "send_failed"
     assert empty_system.send_calls == []
-    assert [(call["status"], call.get("messages")) for call in empty_platform.consume_calls] == [(70, None)]
+    assert empty_platform.consume_calls == []
+    assert empty_platform.rule_calls == []
 
-    failed_service, _repository, failed_platform, failed_system, _events = _service(
+    failed_service, failed_repository, failed_platform, failed_system, _events = _service(
         send_error=RuntimeError("send rejected")
     )
     failed_result = _run(failed_service)
 
-    assert failed_result["status"] == "completed_without_send"
+    assert failed_result["status"] == "send_failed"
     assert len(failed_system.send_calls) == 1
-    assert [(call["status"], call.get("messages")) for call in failed_platform.consume_calls] == [(70, None)]
+    assert failed_platform.consume_calls == []
+    assert failed_platform.rule_calls == []
+    assert failed_repository.local["status"] == "processing_retry"
+    assert failed_repository.event_updates[-1]["status"] == "platform_processing_retry"
 
 
 def test_polling_does_not_load_sop_messages_before_customer_gates() -> None:
