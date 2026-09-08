@@ -56,6 +56,20 @@ def create_reply_router(settings: Settings, services: ReplyServices) -> APIRoute
             return JSONResponse(status_code=400, content=workflow_error_response(str(exc)))
         attach_v3_http_timing(http_request, request)
         attach_request_interface_version(request, "v3")
+        if chat_runtime.is_platform_protocol_message(request):
+            response = await chat_runtime.run_platform_protocol_reply(
+                request,
+                background_tasks=background_tasks,
+            )
+            response_body = workflow_response_from_chat(response)
+            http_response = JSONResponse(content=response_body)
+            bind_v3_run_request_id(http_request, response.request_id)
+            # The audit run itself is already committed synchronously.  Only
+            # the final wall-clock timing update may finish after the empty
+            # response is released, so an RDS timing write cannot delay a
+            # protocol no-op.
+            setattr(http_request.state, "v3_timing_finalize_background", True)
+            return http_response
         takeover_response = await chat_runtime.run_v3_takeover_guard(request)
         if takeover_response is not None:
             response_body = workflow_response_from_chat(takeover_response)

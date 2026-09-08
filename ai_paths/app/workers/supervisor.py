@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +24,8 @@ class WorkerSupervisor:
             "last_iteration_started_at": "",
             "last_iteration_finished_at": "",
             "last_error": "",
+            "consecutive_failures": 0,
+            "next_delay_seconds": 0.0,
         }
 
     async def start(self) -> None:
@@ -86,6 +89,7 @@ class WorkerSupervisor:
             "decision_model": self.settings.outreach_decision_model,
             "decision_model_fallbacks": self.settings.outreach_decision_model_fallbacks,
             "eligible_after": self.settings.outreach_silence_eligible_after,
+            "monitor_poll_seconds": float(self.settings.outreach_plan_monitor_poll_seconds),
             "daily_plan_limit": None,
             "daily_task_limit": None,
             "task_count_source": "follow_sequence_nodes_or_selected_mainline_sources",
@@ -183,7 +187,9 @@ class WorkerSupervisor:
             await asyncio.sleep(max(60.0, float(self.settings.v3_strategy_analytics_outcome_poll_seconds)))
 
     async def _run_outreach_plan_monitor(self) -> None:
+        consecutive_failures = 0
         while True:
+            iteration_started = time.monotonic()
             self._outreach_monitor_runtime["last_iteration_started_at"] = datetime.now(
                 timezone.utc
             ).isoformat()
@@ -195,17 +201,26 @@ class WorkerSupervisor:
                         auto_activate=self.settings.outreach_plan_monitor_auto_activate,
                         eligible_after=self.settings.outreach_silence_eligible_after,
                     )
+                consecutive_failures = 0
                 self._outreach_monitor_runtime["last_error"] = ""
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                consecutive_failures += 1
                 self._outreach_monitor_runtime["last_error"] = f"{type(exc).__name__}: {exc}"[:500]
                 logger.exception("Outreach plan monitor iteration failed")
             finally:
                 self._outreach_monitor_runtime["last_iteration_finished_at"] = datetime.now(
                     timezone.utc
                 ).isoformat()
-            await asyncio.sleep(max(5.0, float(self.settings.outreach_plan_monitor_poll_seconds)))
+            next_delay = _outreach_monitor_delay_seconds(
+                poll_seconds=float(self.settings.outreach_plan_monitor_poll_seconds),
+                iteration_elapsed_seconds=time.monotonic() - iteration_started,
+                consecutive_failures=consecutive_failures,
+            )
+            self._outreach_monitor_runtime["consecutive_failures"] = consecutive_failures
+            self._outreach_monitor_runtime["next_delay_seconds"] = next_delay
+            await asyncio.sleep(next_delay)
 
     async def _run_outreach_task_executor(self) -> None:
         while True:
@@ -219,3 +234,15 @@ class WorkerSupervisor:
             except Exception:
                 logger.exception("Outreach task executor iteration failed")
             await asyncio.sleep(max(1.0, float(self.settings.outreach_auto_send_poll_seconds)))
+
+
+def _outreach_monitor_delay_seconds(
+    *,
+    poll_seconds: float,
+    iteration_elapsed_seconds: float,
+    consecutive_failures: int,
+) -> float:
+    poll_seconds = max(5.0, float(poll_seconds))
+    if consecutive_failures > 0:
+        return min(60.0, poll_seconds * (2 ** (consecutive_failures - 1)))
+    return max(5.0, poll_seconds - max(0.0, float(iteration_elapsed_seconds)))

@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-07T22:16:39+08:00`
+- verified_at: `2026-09-08T12:39:17+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260907-221233-e738330c`
-- git commit: `e738330c4e68a832d97de4ec4af0ae4c54495aea`
+- release: `ai-paths-unified-20260908-123216-3fc85db4`
+- git commit: `3fc85db46a17662aa47e0903297eb515de13ec43`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -39,19 +39,20 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`，最近轮询错误为空。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=30`、`dead=16`。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=35`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260907-211433-17813a1`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260908-122728-bafdf430`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-152202-b4dfc184`。
 - 数据库已迁移到 `20260907_02`，新增兼容的 `aics_customer_identity_links`；发布前 AICS 20 张表、841,130 行的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-44fcd568-20260907-201840/aics-before-20260907_02.sql.gz`，SHA-256 为 `481b853b31b244fa8e307a31f3be632ef46904ca3ea7692fdfc3da1e4a23439c`。旧代码会忽略新表，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-08 12:39 发布并核验 clean `main@3fc85db46a17662aa47e0903297eb515de13ec43`，release 为 `ai-paths-unified-20260908-123216-3fc85db4`。企业微信固定开场和撤回协议消息在 AI/人工状态、语音、连续消息协调及模型链之前直接返回空回复；审计在同一 FastAPI 请求生命周期的响应后台阶段以单事务写入。生产 10 次协议请求 HTTP P50/P95 为 `1.95/2.17ms`、最大 `78.27ms`，10 条 run 和 10 条 `platform_protocol_filter` 节点全部落库，客户消息、策略采用、主动唤醒、dispatch/outbox 写入均为 0。沉默扫描目标间隔为 15 秒，现场单轮约 32～34 秒，长轮完成后固定等待 5 秒再开始下一轮，连续失败按 15/30/60 秒退避；1 分钟仍是候选资格而不是准点发送承诺。全仓 465 条测试通过；无数据库迁移、无前端变更，control/reply/worker 使用同一 SHA，V1/V2 回复路由为 404，Nginx 配置检查通过，三个 unit 均 active 且 `NRestarts=0`。统一回滚点为 `ai-paths-unified-20260908-122728-bafdf430`。
 - 2026-09-07 22:16 发布并核验 clean `main@e738330c`：距离卡点回复不再复述或放大“远、折腾、麻烦”，而是轻承接后转向技术、效果和案例价值；Reply 使用第三方距离话术时先对候选示例做客户可见表达适配，但保留真实序列、话术和素材 ID。销售可说“先保留活动名额”，真实“已预约/已登记/已排客”仍需权威事实。指定日志 DeepSeek 只读复现采用序列 11、话术 225 并直接交付效果视频，无门店重查、重复门店卡或兜底；全仓 438 条测试通过。本次无数据库迁移、无前端变更；V3 鉴权边界 401、V2 路由 404，四个 unit active 且 `NRestarts=0`，SOP 队列和 pending 为 0，回滚点为 `ai-paths-unified-20260907-211433-17813a1`。
 - 2026-09-07 21:24 发布并核验 clean `main@17813a1`：V3 Router 保留客户提交信息和继续交易的只读证据，Reply 在无活动卡点且交易未终态时回答当前事实后回到一个主线动作；已确认具体门店时只追问一个到店时间方向。结构校验要求 `action=ask` 必须有可见问题、正常销售轮次最多一个问题，并保持退订、人工接管、风险和终态优先。全仓 435 条测试及 Ruff 通过；指定日志生产配置隔离重放交付真实门店卡并只追加一个到店问题，生产写入为 0。发布后合成 V3 HTTP 验证成功且测试数据精确清理；V3 路由鉴权返回 401、V2 路由返回 404，三个后端与前端均 active、`NRestarts=0`，新版本启动后二十分钟无 error 级日志。MySQL 仍为 `20260907_02`，SOP 队列和 pending 均为 0；本次无数据库迁移、无前端变更，回滚点为 `ai-paths-unified-20260907-201840-44fcd568`。
 - 2026-09-07 20:35 发布 clean `main@44fcd568`：逐提交收敛所有 worktree 和远端分支。预约时间边界、直接预约收口已是 main 祖先；身份合同修复完整合入；生产内存治理作为已知问题保留；旧 DeepSeek 评测分支只含过期活跃任务占位且工作区有未提交错字/产物，未覆盖最新版代码。
@@ -105,3 +106,11 @@
 - 修复点：计划主事务已提交后，审计事件、客户状态更新或回读失败不再把计划误标成失败；自动批准的 draft 计划会在重复指纹拦截前恢复；过期节点重排时保留平台相对间隔，不再把 9 个节点压成 8 秒内连发。
 - 指定客户计划 `c11264db-4b83-42ab-9724-21a3b7dc6785` 已从 draft 恢复为 active，并按平台 0/0/2/2/5/5/15/15/30 分钟节点重排；发布后确认前 6 个节点已发送，第 7/8/9 个仍 pending，后续任务仍受发送前 AI/人工、客户新回复、退订、订单终态等校验保护。该密集节奏来自平台序列配置，不是旧版 08:30:00-08:30:08 连发压缩。
 - 生产库当前仍有 7 个普通 draft 计划、16 个非首日 pending/checking 任务；首日沉默唤醒 draft pending 为 0。最近 10 分钟 systemd 日志未见 error/traceback/failed。
+
+## 2026-09-08 11:55 第三方 SOP 运行时热修
+
+- 发布 clean `main@a8f0f63c97ed9e48f8877681bce6cf8eab474b32`，release 为 `ai-paths-unified-20260908-114958-a8f0f63c`；control、reply、worker 三套 `/health` 的 release、完整 SHA、config revision 和 `dirty=false` 一致，三个 unit 均为 active 且 `NRestarts=0`。
+- 修复规范客户身份对象直接展开到旧 Outreach 客户端造成 `platform_customer_id` 非法参数的问题；完整身份继续用于审计和客户边界，客户端调用只接收其合同规定的 5 个兼容字段。
+- 第三方固定消息预检兼容平台实际返回的 `msg_type`、`content_text`、`media_url` 和 `media_urls_json`，同时继续拦截非法类型、空文本和非法媒体 URL。
+- 全仓 457 条确定性测试、相关 Ruff 和服务器离线预检通过。发布后新任务 `82347` 完成会话状态与历史拉取、真实发送、consume `30` 和 service-rule-data 回传；worker `sent=1`、`pending_total=0`、`queue_depth=0`、`in_flight_count=0`、最近轮询错误为空。
+- 未补发或重开历史终态任务；`82344` 仍保持 `completed_without_send/invalid_message_content`。本次无数据库迁移、无前端变更；统一回滚点为 `ai-paths-unified-20260908-092900-42b27eae`。

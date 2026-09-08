@@ -5,7 +5,7 @@ import html
 import time
 from contextlib import suppress
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from app.chat_request_context import (
     build_request_context,
@@ -78,6 +78,10 @@ class ChatRuntime:
         self._platform_request_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
         self._platform_request_results: dict[str, tuple[float, ChatResponse]] = {}
         self._platform_request_tasks_lock = asyncio.Lock()
+
+    @staticmethod
+    def is_platform_protocol_message(request: ChatRequest) -> bool:
+        return _platform_protocol_event(request.content) is not None
 
     async def run_v3_takeover_guard(self, request: ChatRequest) -> ChatResponse | None:
         """Stop V3 before model/tool work when the platform is in human mode."""
@@ -218,8 +222,16 @@ class ChatRuntime:
         )
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
-        request_id = str(uuid4())
         request_context = build_request_context(request)
+        protocol_event = _platform_protocol_event(request.content)
+        if protocol_event is not None:
+            return self._persist_platform_protocol_event(
+                request=request,
+                request_context=request_context,
+                protocol_event=protocol_event,
+            )
+
+        request_id = str(uuid4())
         request_context["memory_persist_allowed"] = False
         conversation_id = self._prepare_conversation(request, request_id, request_context)
         self._start_run_tracking(
@@ -229,25 +241,6 @@ class ChatRuntime:
             request_context=request_context,
         )
         initial_state = self._initial_state(request, request_id, request_context)
-
-        if is_platform_auto_opening_message(request.content):
-            initial_state["reply_messages"] = []
-            initial_state["reply_source"] = "ignored_platform_auto_message"
-            initial_state.setdefault("trace", []).append(
-                {
-                    "node": "platform_protocol_filter",
-                    "decision": "no_reply",
-                    "reason": "platform_auto_opening_ignored",
-                }
-            )
-            _set_sync_return(initial_state, "empty", [])
-            return self._persist_and_build_response(
-                request=request,
-                request_id=request_id,
-                conversation_id=conversation_id,
-                final_state=initial_state,
-                allow_empty_reply=True,
-            )
 
         try:
             final_state = await self._invoke_graph_with_budget(self._full_graph, initial_state, phase="full")
@@ -293,13 +286,50 @@ class ChatRuntime:
                     if self._platform_request_tasks.get(request_identity) is task:
                         self._platform_request_tasks.pop(request_identity, None)
 
+    async def run_platform_protocol_reply(
+        self,
+        request: ChatRequest,
+        background_tasks: Any | None = None,
+    ) -> ChatResponse:
+        """Return a protocol no-op before its lightweight audit is committed."""
+
+        request_context = build_request_context(request)
+        protocol_event = _platform_protocol_event(request.content)
+        if protocol_event is None:
+            return await self.run_platform_reply(request, background_tasks)
+        if background_tasks is None:
+            return self._persist_platform_protocol_event(
+                request=request,
+                request_context=request_context,
+                protocol_event=protocol_event,
+            )
+        background_tasks.add_task(
+            self._persist_platform_protocol_event,
+            request=request,
+            request_context=request_context,
+            protocol_event=protocol_event,
+        )
+        return self._build_platform_protocol_response(
+            request=request,
+            request_context=request_context,
+            protocol_event=protocol_event,
+        )
+
     async def _run_platform_reply_once(
         self,
         request: ChatRequest,
         background_tasks: Any | None = None,
     ) -> ChatResponse:
-        request_id = str(uuid4())
         request_context = build_request_context(request)
+        protocol_event = _platform_protocol_event(request.content)
+        if protocol_event is not None:
+            return self._persist_platform_protocol_event(
+                request=request,
+                request_context=request_context,
+                protocol_event=protocol_event,
+            )
+
+        request_id = str(uuid4())
         request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
         request_context["memory_persist_allowed"] = not request_context["test_isolated"]
         conversation_id = self._prepare_conversation(request, request_id, request_context)
@@ -435,6 +465,81 @@ class ChatRuntime:
         if self._platform_reply_coordinator:
             await self._platform_reply_coordinator.complete(control_record)
         return response
+
+    def _persist_platform_protocol_event(
+        self,
+        *,
+        request: ChatRequest,
+        request_context: dict[str, Any],
+        protocol_event: dict[str, str],
+    ) -> ChatResponse:
+        request_id = _platform_protocol_request_id(request, request_context)
+        request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
+        request_context["memory_persist_allowed"] = False
+        request_context["platform_protocol_event"] = dict(protocol_event)
+        request.request_context = request_context
+        conversation_id = conversation_id_from_request(request, request_context)
+        model_usage = collect_model_usage([])
+        save_protocol_run = getattr(self._repository, "save_platform_protocol_run", None)
+        if callable(save_protocol_run):
+            safe_repository_call(
+                save_protocol_run,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                customer_id=str(request.customer_id or ""),
+                external_userid=str(request.external_userid or ""),
+                corp_id=str(request.corp_id or ""),
+                user_id=str(request.user_id or ""),
+                wechat=str(request.wechat or ""),
+                content=str(request.content or ""),
+                request_context=request_context,
+                protocol_event=protocol_event,
+                token_usage=model_usage["summary"],
+            )
+        else:
+            # Compatibility for narrow repository stubs. Production storage
+            # implements the one-transaction method above.
+            state = self._initial_state(request, request_id, request_context)
+            state["reply_messages"] = []
+            state["reply_source"] = protocol_event["reply_source"]
+            state["decision_status"] = "skipped"
+            state["decision_reasons"] = [protocol_event["reason"]]
+            safe_repository_call(
+                self._repository.save_run,
+                conversation_id=conversation_id,
+                final_state=state,
+                token_usage=model_usage["summary"],
+            )
+        return self._build_platform_protocol_response(
+            request=request,
+            request_context=request_context,
+            protocol_event=protocol_event,
+        )
+
+    @staticmethod
+    def _build_platform_protocol_response(
+        *,
+        request: ChatRequest,
+        request_context: dict[str, Any],
+        protocol_event: dict[str, str],
+    ) -> ChatResponse:
+        request_id = _platform_protocol_request_id(request, request_context)
+        conversation_id = conversation_id_from_request(request, request_context)
+        model_usage = collect_model_usage([])
+        return ChatResponse(
+            request_id=request_id,
+            reply_messages=[],
+            trace_url="",
+            meta={
+                "model_usage": [],
+                "token_usage": model_usage["summary"],
+                "tool_calls": [],
+                "reply_source": protocol_event["reply_source"],
+                "reply_control": {},
+                "conversation_id": conversation_id,
+                "platform_protocol_event": dict(protocol_event),
+            },
+        )
 
     async def _commit_after_reply_validation(self, state: AgentState) -> AgentState:
         if self._commit_graph is None or not state.get("reply_messages"):
@@ -1352,6 +1457,29 @@ def _platform_request_identity(request: ChatRequest, request_context: dict[str, 
     if not (corp_id and wechat and external_userid):
         return ""
     return f"{corp_id}:wechat:{wechat}:external:{external_userid}:msgid:{msgid}"
+
+
+def _platform_protocol_request_id(request: ChatRequest, request_context: dict[str, Any]) -> str:
+    request_identity = _platform_request_identity(request, request_context)
+    if request_identity:
+        return str(uuid5(NAMESPACE_URL, f"ai-paths:platform-protocol:{request_identity}"))
+    return str(uuid4())
+
+
+def _platform_protocol_event(content: str) -> dict[str, str] | None:
+    if is_platform_recalled_message(content):
+        return {
+            "message_type": "customer_message_recalled",
+            "reply_source": "platform_recalled_message",
+            "reason": "customer_message_recalled",
+        }
+    if is_platform_auto_opening_message(content):
+        return {
+            "message_type": "platform_auto_opening",
+            "reply_source": "ignored_platform_auto_message",
+            "reason": "platform_auto_opening_ignored",
+        }
+    return None
 
 
 def _record_sent_case_images(
