@@ -49,10 +49,12 @@
 - `GET /admin/outreach/dashboard`：按时间、企业和企微号聚合漏斗、趋势、原因、队列、账号分布和数据新鲜度；队列项携带客户、会话、运行、计划和任务的稳定 ID；最大范围 31 天。
 - `GET /admin/outreach/first-day-runs/{workflow_run_id}`：按需读取单次运行、计划、任务、素材、节点和客户上下文。
 - `GET /admin/outreach/customer-logs`：按客户聚合自动沉默、跟进、成交序列和自动批准计划；默认 30 天、最大 90 天，先返回客户级任务与发送摘要。
+- 客户列表必须展示当前查询范围内实际留存的客户 ID、加微关系 ID、外部联系人 ID、接待人员 ID、企微、企业和会话 ID；同一销售接触边界内出现过多个平台客户、接待人员、加微关系或会话 ID 时可并列展示，缺失值保持“未记录”。
 - 客户列表中的重复“未生成计划”扫描事件按同一客户、自动来源和原因在只读查询内压缩展示，但 `no_plan_count` 和总量指标仍累计原始事件次数；客户详情继续返回该客户的逐条留存记录。该读优化不得改变计划数、真实发送数或客户身份边界。
 - 列表生成的 `contact_key` 可携带同一外部联系人在当前查询窗口内已确认的平台客户 ID 集合作为数据库索引提示；详情仍必须再次校验 `corp_id + wechat + external_userid`，提示 ID 不能替代外部联系人身份，也不能扩大查询边界。旧四段式 `contact_key` 继续只读兼容。
 - `GET /admin/outreach/customer-logs/{contact_key}`：读取同一销售接触边界内的历史计划和未建计划记录。
-- `GET /admin/outreach/customer-logs/{contact_key}/plans/{plan_id}`：读取单个计划、任务和事件；只有任务 `status=sent` 且存在平台消息 ID 时标记为实际发送。
+- 客户时间线默认只展开具有真实 `plan_id` 的计划；扫描、幂等或本轮已完成等未建计划评估必须单独折叠并明确“不等于创建计划”。每个计划优先显示当轮最后一条客户消息时间，帮助判断多个计划是否属于客户重新开口后的新沉默周期。
+- `GET /admin/outreach/customer-logs/{contact_key}/plans/{plan_id}`：读取单个计划、任务和事件；只有任务 `status=sent` 且存在平台消息 ID 时标记为实际发送。任务正文必须兼容 `reply_messages[].content` 的结构化文本和媒体对象，展示任务 ID、平台消息 ID、目标、内容来源和客户可见内容，不能直接字符串化对象。
 - 管理接口使用现有 Bearer 鉴权；前端路径为 `/analytics/outreach`。
 - 客户日志前端路径为 `/logs/outreach`；历史 `/logs/outreach-first-day` 永久跳转到新页面。
 - 看板不新增事实表；运行快照和原始轨迹继续按现有保留策略清理。
