@@ -7,7 +7,10 @@ from datetime import datetime, time as clock_time, timedelta, timezone
 from typing import Any
 
 
-FOLLOW_SEQUENCE_SELECTOR_PROMPT_VERSION = "opened_silence_follow_sequence_selector_zh_v1"
+FOLLOW_SEQUENCE_SELECTOR_PROMPT_VERSION = "opened_silence_follow_sequence_selector_zh_v2"
+
+MAX_FOLLOW_SEQUENCE_TASKS = 4
+MAX_CHECKPOINT_TASKS_BEFORE_CONVERSION = 3
 
 FOLLOW_SEQUENCE_SELECTOR_PROMPT = """
 # 角色
@@ -17,9 +20,9 @@ FOLLOW_SEQUENCE_SELECTOR_PROMPT = """
 # 决策目标
 1. 先判断是否存在健康风险、明确停止联系、投诉退款、人工接管、当前已预约/已支付、关系删除或会话归属不可靠等硬边界。存在时停止创建计划。
 2. 只有客户本人消息明确表达尚未解决的价格、效果、信任、距离、时间、家人决策、健康顾虑等卡点时，才算“有卡点”。沉默本身、普通询价、客服主动提到某个问题都不是客户卡点。客户明确说明现实时间安排导致近期无法继续（例如工作忙、近期没空、只能以后）属于时间卡点，不能因为语气柔和降为无卡点；只有“考虑一下”但没有给出具体原因时，才按无明确卡点低压换价值。
-3. 有卡点时，必须从 `follow_sequences` 中选择一条最贴近当前原话、阶段和允许推进压力的序列，输出真实 `selected_sequence_id`。不得自造序列或节点。平台没有完全一致的二级场景时，可以选择相同卡点类型中节奏最接近的一条，`sequence_match_scope=checkpoint_type`；此时序列只提供动作节奏，不得把其二级场景名称强加给客户。确实直接匹配时使用 `exact_checkpoint`。
+3. 有卡点时，必须从 `follow_sequences` 中选择一条最贴近当前原话、阶段和允许推进压力的序列，输出真实 `selected_sequence_id`。不得自造序列或节点。平台没有完全一致的二级场景时，可以选择相同卡点类型中节奏最接近的一条，`sequence_match_scope=checkpoint_type`；此时序列只提供动作节奏，不得把其二级场景名称强加给客户。确实直接匹配时使用 `exact_checkpoint`。`recent_outreach_delivery` 中已经实际发送的序列节点和话术都算已完成，不能重新开始同一节点。
 4. 无明确卡点时，`decision_mode=mainline`，从 `mainline_sources` 中选择仍能提供新价值的真实来源。任务数量不限于两步；只选择确实适合继续发送、且没有重复交付的来源。
-5. 不要因为没有支付卡、没有门店或客户说考虑一下就停止。软拒绝应降压换价值，明确退订才停止。
+5. 不要因为没有支付卡、没有门店或客户说考虑一下就停止。软拒绝应降压换价值，明确退订才停止。同一卡点不能连续解释三四次却不给决策路径：计划会由代码压缩为最多三个不重复的解卡节点和一个最终成交承接。最终承接根据已交付事实只推进一个动作：主线尚未完成则回主线；门店未确认则确认门店；门店已确认则询问到店时间；活动价格和预约金规则已经完整交付时才可询问是否锁定名额。不得声称已经预约、已经留名额或已经支付。
 
 # 时间
 - 跟进序列的节点、顺序和时间来自平台，不能改写。
@@ -258,24 +261,32 @@ def rank_follow_scripts_for_node(
     limit: int = 6,
     checkpoint_code: str = "",
     query_text: str = "",
+    exclude_script_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     action_code = _string(node.get("action_code")).lower()
     action_name = _string(node.get("action_name")).lower()
     checkpoint = _string(checkpoint_code).lower()
     query_terms = _retrieval_terms(query_text)
 
+    excluded = {_string(item).lower() for item in exclude_script_ids or set() if _string(item)}
+
     def score(script: dict[str, Any]) -> tuple[int, int, int, int, str]:
         script_action = _string(script.get("action_code")).lower()
         script_action_name = _string(script.get("action_name")).lower()
         return (
-            _script_relevance_score(query_terms, script),
             1 if action_code and script_action == action_code else 0,
             1 if action_name and action_name == script_action_name else 0,
+            _script_relevance_score(query_terms, script),
             _int(script.get("weight")),
             _string(script.get("id") or script.get("script_code")),
         )
 
-    values = [dict(script) for script in scripts if isinstance(script, dict)]
+    values = [
+        dict(script)
+        for script in scripts
+        if isinstance(script, dict)
+        and _string(script.get("id") or script.get("script_code")).lower() not in excluded
+    ]
     cap = max(1, int(limit))
     if not checkpoint:
         return sorted(values, key=score, reverse=True)[:cap]
@@ -324,6 +335,74 @@ def rank_follow_scripts_for_node(
         )
         selected.append({**item, "outreach_match_scope": scope})
     return selected[:cap]
+
+
+def select_uncompleted_follow_sequence_nodes(
+    nodes: list[dict[str, Any]],
+    *,
+    sequence_id: str,
+    checksum: str,
+    recent_outreach_delivery: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Keep distinct published actions, resume progress, then reserve a conversion exit."""
+    completed_node_ids = {
+        _string(item.get("follow_sequence_node_id"))
+        for item in recent_outreach_delivery or []
+        if isinstance(item, dict)
+        and _string(item.get("follow_sequence_id")) == _string(sequence_id)
+        and _string(item.get("follow_sequence_checksum")) == _string(checksum)
+        and _string(item.get("follow_sequence_node_id"))
+    }
+    distinct: list[dict[str, Any]] = []
+    seen_signatures: set[tuple[str, str, str]] = set()
+    duplicate_node_ids: list[str] = []
+    for node in nodes:
+        node_id = _string(node.get("id"))
+        signature = (
+            _string(node.get("action_code")).lower(),
+            _normalize_semantic_label(node.get("action_name")),
+            _normalize_semantic_label(node.get("remark")),
+        )
+        if not any(signature):
+            signature = ("", "", node_id.lower())
+        if signature in seen_signatures:
+            if node_id:
+                duplicate_node_ids.append(node_id)
+            continue
+        seen_signatures.add(signature)
+        if node_id and node_id in completed_node_ids:
+            continue
+        distinct.append(dict(node))
+
+    selected = list(distinct)
+    omitted_node_ids: list[str] = []
+    if len(selected) > MAX_FOLLOW_SEQUENCE_TASKS:
+        selected_ids = {
+            _string(item.get("id"))
+            for item in [
+                *selected[:MAX_CHECKPOINT_TASKS_BEFORE_CONVERSION],
+                selected[-1],
+            ]
+        }
+        omitted_node_ids = [
+            _string(item.get("id"))
+            for item in selected
+            if _string(item.get("id")) not in selected_ids
+        ]
+        selected = [
+            *selected[:MAX_CHECKPOINT_TASKS_BEFORE_CONVERSION],
+            selected[-1],
+        ]
+    return {
+        "nodes": selected,
+        "completed_node_ids": sorted(completed_node_ids),
+        "duplicate_node_ids": duplicate_node_ids,
+        "omitted_node_ids": omitted_node_ids,
+    }
+
+
+def _normalize_semantic_label(value: Any) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", _string(value).lower())
 
 
 def compact_script_for_model(script: dict[str, Any]) -> dict[str, Any]:

@@ -305,6 +305,8 @@ def test_outreach_log_shows_dynamic_follow_sequence_nodes_and_script_selection()
                         "outreach_task_metadata": {
                             "plan_mode": "follow_sequence",
                             "schedule_mode": "night_active_compressed",
+                            "conversion_step": index == 3,
+                            "conversion_goal": "确认方便到店的时间" if index == 3 else "",
                             "follow_sequence_node": {
                                 "id": f"node-{index}",
                                 "action_code": f"act{index:03d}",
@@ -330,6 +332,9 @@ def test_outreach_log_shows_dynamic_follow_sequence_nodes_and_script_selection()
                     "payload": {
                         "selected_script_id": "script-1",
                         "selected_script_name": "话术1",
+                        "value_dimension": "fact_explanation",
+                        "new_information": "补充真实通行时间",
+                        "conversion_action": "none",
                     },
                 }
             )
@@ -348,7 +353,15 @@ def test_outreach_log_shows_dynamic_follow_sequence_nodes_and_script_selection()
     assert summary["planned_task_count"] == 3
     assert len(view["materials"]["steps"]) == 3
     assert view["materials"]["steps"][0]["selected_script"]["id"] == "script-1"
+    assert view["materials"]["steps"][0]["message_decision"] == {
+        "value_dimension": "fact_explanation",
+        "new_information": "补充真实通行时间",
+        "conversion_action": "none",
+        "mainline_source_id": "",
+    }
     assert view["materials"]["steps"][2]["follow_sequence_node"]["id"] == "node-3"
+    assert view["materials"]["steps"][2]["conversion_step"] is True
+    assert view["materials"]["steps"][2]["conversion_goal"] == "确认方便到店的时间"
 
 
 def test_prompts_bind_visual_language_to_actual_delivery_contract() -> None:

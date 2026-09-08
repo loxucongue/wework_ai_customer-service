@@ -181,6 +181,8 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
                 "schedule_mode": _string(task_metadata.get("schedule_mode")),
                 "requested_at": _string(task_metadata.get("requested_at")),
                 "scheduled_at": _string(task.get("scheduled_at")),
+                "conversion_step": bool(task_metadata.get("conversion_step")),
+                "conversion_goal": _string(task_metadata.get("conversion_goal")),
                 "follow_sequence_node": {
                     "id": _string(follow_node.get("id")),
                     "action_code": _string(follow_node.get("action_code")),
@@ -202,6 +204,14 @@ def build_first_day_run_observability(run: dict[str, Any]) -> dict[str, Any]:
                     "code": _string(script_selection.get("selected_script_code")),
                     "name": _string(script_selection.get("selected_script_name")),
                     "rejection_reason": _string(script_selection.get("script_rejection_reason")),
+                },
+                "message_decision": {
+                    "value_dimension": _string(script_selection.get("value_dimension")),
+                    "new_information": _string(script_selection.get("new_information")),
+                    "conversion_action": _string(script_selection.get("conversion_action")),
+                    "mainline_source_id": _string(
+                        script_selection.get("selected_mainline_source_id")
+                    ),
                 },
                 "delivery_state": (
                     "sent"

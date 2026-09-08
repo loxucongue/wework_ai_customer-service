@@ -3253,6 +3253,97 @@ class OutreachRepositoryMixin:
             for row in rows
         ]
 
+    def recent_outreach_delivery(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+        hours: int = 24 * 30,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if not _string(wechat):
+            return []
+        since = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat()
+        identity_sql, identity_params = _strict_identity_match(
+            external_userid=external_userid,
+            customer_id=customer_id,
+            table_alias="p",
+        )
+        safe_limit = max(1, min(int(limit), 200))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT t.id, t.plan_id, t.step_index, t.sent_at,
+                       t.reply_messages_json, t.content_sources
+                FROM outreach_tasks t
+                JOIN outreach_plans p ON p.id=t.plan_id
+                WHERE t.status='sent'
+                  AND t.system_msgid<>''
+                  AND t.sent_at>=?
+                  AND p.corp_id=?
+                  AND lower(p.wechat)=lower(?)
+                  AND {identity_sql}
+                ORDER BY t.sent_at DESC
+                LIMIT ?
+                """,
+                (since, corp_id, wechat, *identity_params, safe_limit),
+            ).fetchall()
+            task_ids = [_string(row["id"]) for row in rows if _string(row["id"])]
+            plan_ids = sorted({_string(row["plan_id"]) for row in rows if _string(row["plan_id"])})
+            event_rows = []
+            if task_ids and plan_ids:
+                plan_placeholders = ",".join("?" for _ in plan_ids)
+                task_placeholders = ",".join("?" for _ in task_ids)
+                event_rows = conn.execute(
+                    f"""
+                    SELECT task_id, payload_json, created_at
+                    FROM outreach_events
+                    WHERE plan_id IN ({plan_placeholders})
+                      AND task_id IN ({task_placeholders})
+                      AND event_type='task_follow_script_selected'
+                    ORDER BY created_at DESC
+                    """,
+                    (*plan_ids, *task_ids),
+                ).fetchall()
+        selections: dict[str, dict[str, Any]] = {}
+        for row in event_rows:
+            task_id = _string(row["task_id"])
+            if task_id and task_id not in selections:
+                selections[task_id] = loads_dict(row["payload_json"])
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            decoded = self._decode_outreach_task(dict(row))
+            metadata: dict[str, Any] = {}
+            for item in decoded.get("content_source_metadata") or []:
+                if isinstance(item, dict) and isinstance(item.get("outreach_task_metadata"), dict):
+                    metadata = dict(item["outreach_task_metadata"])
+                    break
+            sequence = metadata.get("follow_sequence") if isinstance(metadata.get("follow_sequence"), dict) else {}
+            node = metadata.get("follow_sequence_node") if isinstance(metadata.get("follow_sequence_node"), dict) else {}
+            selection = selections.get(_string(row["id"]), {})
+            output.append(
+                {
+                    "task_id": _string(row["id"]),
+                    "plan_id": _string(row["plan_id"]),
+                    "step_index": _int(row["step_index"]),
+                    "sent_at": _string(row["sent_at"]),
+                    "reply_messages": decoded.get("reply_messages") or [],
+                    "plan_mode": _string(metadata.get("plan_mode")),
+                    "source_id": _string(metadata.get("source_id")),
+                    "follow_sequence_id": _string(sequence.get("id")),
+                    "follow_sequence_checksum": _string(sequence.get("checksum")),
+                    "follow_sequence_node_id": _string(node.get("id")),
+                    "selected_script_id": _string(selection.get("selected_script_id")),
+                    "selected_script_code": _string(selection.get("selected_script_code")),
+                    "value_dimension": _string(selection.get("value_dimension")),
+                    "new_information": _string(selection.get("new_information")),
+                    "conversion_action": _string(selection.get("conversion_action")),
+                }
+            )
+        return output
+
     def outreach_sent_today_count(
         self,
         *,
