@@ -110,6 +110,40 @@ def test_sent_case_urls_are_read_from_shared_authoritative_summary() -> None:
     assert _sent_case_image_urls(state) == [IMAGE_URL]
 
 
+def test_mainline_delivery_uses_append_only_sent_message_facts() -> None:
+    shared = {
+        "schema_version": "shared_context_v2",
+        "conversation": [],
+        "current_message": {"content": "可以停车吗"},
+        "authoritative_facts": {
+            "sent_messages": {
+                "case_image_sent": True,
+                "activity_intro_image_sent": True,
+                "store_address_delivery": {
+                    "batch_confidence": "high",
+                    "request_id": "prior-store-request",
+                    "latest_batch_store_ids": ["306"],
+                },
+            }
+        },
+    }
+    state = {
+        "evidence_join": {
+            "schema_version": "deterministic_evidence_join_v1",
+            "shared_context": shared,
+            "content_candidates": [],
+            "sales_recall": {},
+            "semantic_route": {},
+        }
+    }
+
+    mainline = parallel_reply_payload(state)["mainline_delivery_state"]
+
+    assert mainline["effect_evidence_delivered"] is True
+    assert mainline["activity_offer_delivered"] is True
+    assert mainline["store_address_delivered"] is True
+
+
 def test_selected_script_media_is_appended_after_customer_visible_text() -> None:
     candidate = script_content_candidates(_knowledge())[0]
     state = _state([candidate])

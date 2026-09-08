@@ -111,6 +111,22 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         if (content_id := str(raw_content_id).strip()) in catalog_by_id
     ]
     sent_messages = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    if sent_messages.get("case_image_sent"):
+        structured_delivered_assets.append(
+            {
+                "ref": "sent_messages:case_image",
+                "content_id": "",
+                "asset_role": "effect_evidence",
+            }
+        )
+    if sent_messages.get("activity_intro_image_sent"):
+        structured_delivered_assets.append(
+            {
+                "ref": "sent_messages:activity_intro",
+                "content_id": "",
+                "asset_role": "activity_offer",
+            }
+        )
     store_delivery = (
         sent_messages.get("store_address_delivery")
         if isinstance(sent_messages.get("store_address_delivery"), dict)
