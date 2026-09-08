@@ -1756,10 +1756,25 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
             ).strip()
             == "confirmed"
         )
+        store_status = str(store_resolution.get("status") or "").strip()
+        request_kind = str(destination.get("request_kind") or "").strip()
+        detail_kind = str(
+            store_resolution.get("requested_detail_kind")
+            or destination.get("detail_kind")
+            or ""
+        ).strip()
+        confirmed_store_context = bool(
+            (store_status == "send_single" and confirmed_named_store)
+            or (
+                store_status == "reuse_confirmed_store"
+                and store_resolution.get("already_delivered_store_ids")
+                and request_kind in {"store_detail", "reuse_store"}
+                and detail_kind not in {"address", "navigation"}
+            )
+        )
         if (
             not terminal_or_safety_task
-            and str(store_resolution.get("status") or "").strip() == "send_single"
-            and confirmed_named_store
+            and confirmed_store_context
             and _mainline_ready_for_appointment(state)
             and question_count == 0
         ):

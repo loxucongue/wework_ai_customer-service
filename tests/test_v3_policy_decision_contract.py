@@ -624,6 +624,44 @@ def test_confirmed_store_does_not_force_appointment_before_mainline_delivery() -
     _validate_policy_reply_consistency(payload, state)
 
 
+def test_reused_store_detail_requires_booking_bridge_when_mainline_is_ready() -> None:
+    state = _state()
+    state["mainline_delivery_state"] = {
+        "effect_evidence_delivered": True,
+        "activity_offer_delivered": True,
+    }
+    state["fact_envelope"] = {
+        "structured_facts": {
+            "store_resolution_fact": {
+                "status": "reuse_confirmed_store",
+                "already_delivered_store_ids": ["store-306"],
+                "requested_detail_kind": "parking",
+                "destination_resolution": {
+                    "request_kind": "store_detail",
+                    "detail_kind": "parking",
+                },
+            }
+        }
+    }
+    payload = {
+        "reply_messages": [
+            {"type": "text", "order": 1, "content": "可以停车的，楼下就有停车场。"},
+        ],
+        "action": "none",
+        "sales_judgment": {"posture": "answer"},
+        "commit_actions": [],
+        "policy_decision": _valid_decision(),
+    }
+
+    with pytest.raises(ValueError, match="confirmed_store_mainline_question_required"):
+        _validate_policy_reply_consistency(payload, state)
+
+    payload["reply_messages"].append(
+        {"type": "text", "order": 2, "content": "您大概工作日还是周末过来呢？我帮您做预约登记。"}
+    )
+    _validate_policy_reply_consistency(payload, state)
+
+
 def test_send_single_store_result_cannot_be_promised_without_store_card() -> None:
     state = _state()
     state["fact_envelope"] = {

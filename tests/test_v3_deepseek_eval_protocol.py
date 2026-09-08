@@ -145,11 +145,20 @@ def test_metrics_use_conditional_adoption_denominator() -> None:
             "case_id": "C3", "reply_source": "reply_failed", "sequence_candidates": ["不能计入"],
             "script_candidates": [], "duration_ms": 140, "judge": {}, "model_names": ["deepseek-chat"],
         },
+        {
+            "case_id": "C4", "reply_source": "human_takeover_guard",
+            "sequence_candidates": [], "script_candidates": [], "duration_ms": 10,
+            "judge": {"skipped": True, "skip_reason": "human_takeover_guard"},
+            "model_names": [],
+        },
     ]
 
     metrics = build_metrics(rows, {"distribution": {}, "audit": {"blocked_attempts": []}})
 
     assert metrics["policy_core_coverage"] == 0.6667
+    assert metrics["completed_count"] == 4
+    assert metrics["evaluable_count"] == 3
+    assert metrics["non_model_terminal_count"] == 1
     assert metrics["adoption_eligible_count"] == 1
     assert metrics["sequence_adopted_count"] == 1
     assert metrics["script_adopted_count"] == 1

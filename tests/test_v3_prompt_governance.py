@@ -19,6 +19,13 @@ def test_router_is_retrieval_evidence_not_final_sales_decision() -> None:
     assert "不写客户话术，不决定成交、付款、暂停或最终动作" in prompt
 
 
+def test_prompts_preserve_outstanding_fulfillment_across_merged_messages() -> None:
+    assert "后句催促/问机器人不撤销前句未完成的发图、地址或答题" in V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
+    assert "地址则 store_query=store_detail 并沿用已确认门店" in V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
+    assert "后句催促或问机器人不撤销前句未完成的发图、发地址或答题请求" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "明确再次索要地址允许重发" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
 def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
