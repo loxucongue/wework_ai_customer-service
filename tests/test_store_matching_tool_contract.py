@@ -252,6 +252,40 @@ def test_destination_hint_is_parsed_by_model_instead_of_short_circuiting() -> No
     assert resolution["poi_query"] == "大华国际"
 
 
+def test_store_detail_address_field_is_normalized_when_model_leaves_it_none() -> None:
+    model = _FakeDestinationModel(
+        {
+            "request_kind": "store_detail",
+            "destination_query": "",
+            "destination_precision": "unknown",
+            "administrative_context": {},
+            "poi_query": "",
+            "destination_subject": "unknown",
+            "named_store": "",
+            "detail_kind": "none",
+            "candidate_interpretations": [],
+            "evidence_refs": ["current_message"],
+            "superseded_location_refs": [],
+            "confidence": "low",
+            "needs_clarification": True,
+            "geocode_before_clarification": False,
+            "reason": "客户在索要位置，但没有提供新的地点",
+        }
+    )
+
+    resolution = asyncio.run(
+        resolve_active_store_destination(
+            model_client=model,
+            state={"content": "发位置"},
+            tool={"purpose": "store_detail"},
+        )
+    )
+
+    assert resolution["resolver_status"] == "ok"
+    assert resolution["request_kind"] == "store_detail"
+    assert resolution["detail_kind"] == "address"
+
+
 def test_invalid_primary_destination_output_uses_valid_fallback_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

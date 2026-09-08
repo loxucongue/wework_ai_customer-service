@@ -70,6 +70,15 @@ async def resolve_active_store_destination(
         valid_refs=valid_refs,
         customer_refs=customer_refs,
     )
+    # Keep the model responsible for the request kind, while normalizing a
+    # concrete store field that it left as ``none``.  This is the same narrow
+    # fact-field fallback used when parsing fails; it is not a sales decision.
+    if (
+        normalized.get("request_kind") == "store_detail"
+        and normalized.get("detail_kind") == "none"
+        and fallback.get("detail_kind") != "none"
+    ):
+        normalized["detail_kind"] = fallback["detail_kind"]
     if violations:
         fallback_client = _fallback_only_model_client(model_client)
         if fallback_client is not None:
