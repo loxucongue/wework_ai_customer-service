@@ -2916,7 +2916,19 @@ class SopPlatformTaskService:
         if preflight_reason and preflight_reason != "pre_cutover_task":
             raise RuntimeError(f"task cannot be resent: {preflight_reason}")
 
-        await self._manual_resend_relation_guard(identity)
+        if _task_type(platform_task) == "add_wecom":
+            first_add_guard = await self._load_first_add_send_guard(
+                platform_task,
+                identity=identity,
+            )
+            if first_add_guard.get("blocked"):
+                guard_reason = str(
+                    first_add_guard.get("reason")
+                    or "first_add_conversation_unavailable"
+                )
+                raise RuntimeError(f"task cannot be resent: {guard_reason}")
+        else:
+            await self._manual_resend_relation_guard(identity)
         messages = _manual_resend_messages(local_task, platform_task)
         decision_reason = "manual_resend"
         context: dict[str, Any] = {

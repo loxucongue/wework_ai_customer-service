@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter, deque
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "ai_paths"))
 
 from app.services import sop_platform_task_service as sop_module
 from app.services.sop_platform_task_service import (
@@ -344,6 +350,34 @@ def test_batch_retry_rechecks_conversation_before_resending(monkeypatch: pytest.
 
     assert result["reason"] == "customer_replied_after_add"
     assert send_called is False
+
+
+def test_manual_resend_cannot_bypass_first_add_reply_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Repository:
+        @staticmethod
+        def get_sop_event(_event_id: str) -> dict[str, object]:
+            return {
+                "status": "platform_sequence_blocked",
+                "raw_payload": {"platform_task": _task()},
+            }
+
+        @staticmethod
+        def get_sop_send_task_by_idempotency_key(_key: str) -> dict[str, object]:
+            return {"id": "local-1", "status": "send_failed", "send_payload": {}}
+
+    service = SopPlatformTaskService.__new__(SopPlatformTaskService)
+    service.repository = _Repository()
+    service.settings = SimpleNamespace()
+    service._find_earlier_unresolved_sequence_task = lambda *_args, **_kwargs: {}
+
+    async def blocked_guard(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"required": True, "blocked": True, "reason": "customer_replied_after_add"}
+
+    service._load_first_add_send_guard = blocked_guard
+    monkeypatch.setattr(sop_module, "_task_preflight_no_send_reason", lambda *_args, **_kwargs: "")
+
+    with pytest.raises(RuntimeError, match="customer_replied_after_add"):
+        asyncio.run(service._admin_resend_task_locked("task-1"))
 
 
 def test_queued_recovery_reenters_batch_path(monkeypatch: pytest.MonkeyPatch) -> None:
