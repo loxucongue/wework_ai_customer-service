@@ -2490,6 +2490,7 @@ class SopPlatformTaskService:
             "error": "",
         }
         consume_results.append(attempt)
+        await asyncio.to_thread(self._persist_consume_audit, task_id=task_id, audit=audit)
         started = time.perf_counter()
         try:
             response = await self.platform_client.consume(
@@ -2502,6 +2503,7 @@ class SopPlatformTaskService:
         except Exception as exc:
             attempt["completed_at"] = utc_now_iso()
             attempt["error"] = f"{type(exc).__name__}: {exc}"
+            await asyncio.to_thread(self._persist_consume_audit, task_id=task_id, audit=audit)
             raise
         finally:
             self._observe("consume", time.perf_counter() - started)
@@ -2513,7 +2515,19 @@ class SopPlatformTaskService:
             response_content_exhausted = response_data.get("contentExhausted", response_data.get("content_exhausted"))
             if isinstance(response_content_exhausted, bool):
                 attempt["content_exhausted"] = response_content_exhausted
+        await asyncio.to_thread(self._persist_consume_audit, task_id=task_id, audit=audit)
         return response
+
+    def _persist_consume_audit(self, *, task_id: str, audit: dict[str, Any]) -> None:
+        repository = getattr(self, "repository", None)
+        load_task = getattr(repository, "get_sop_send_task_by_idempotency_key", None)
+        update_task = getattr(repository, "update_sop_send_task", None)
+        if not callable(load_task) or not callable(update_task):
+            return
+        local_task = load_task(f"platform-sop:{task_id}")
+        local_task_id = str(local_task.get("id") or "") if isinstance(local_task, dict) else ""
+        if local_task_id:
+            update_task(local_task_id, send_payload=audit)
 
     async def _finalize_batch_prefix(
         self,

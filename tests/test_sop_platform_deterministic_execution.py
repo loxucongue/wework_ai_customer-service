@@ -297,6 +297,9 @@ def test_consume_retry_reuses_exact_msg_id_without_resending_customer_message() 
     assert len(system.send_calls) == 1
     assert repository.event_updates[-1]["status"] == "platform_complete_pending"
     audit = repository.local["send_payload"]
+    assert len(audit["consume_results"]) == 1
+    assert audit["consume_results"][0]["success"] is False
+    assert audit["consume_results"][0]["messages"] == [{"msgId": "701", "status": 30, "remark": ""}]
 
     terminal_ids = asyncio.run(
         service._finalize_batch_prefix(
@@ -308,6 +311,8 @@ def test_consume_retry_reuses_exact_msg_id_without_resending_customer_message() 
 
     assert terminal_ids == ["101"]
     assert len(system.send_calls) == 1
+    assert len(repository.local["send_payload"]["consume_results"]) == 2
+    assert repository.local["send_payload"]["consume_results"][-1]["success"] is True
     assert [call["messages"] for call in platform.consume_calls] == [
         [{"msgId": "701", "status": 30, "remark": ""}],
         [{"msgId": "701", "status": 30, "remark": ""}],
