@@ -171,6 +171,57 @@ def _outreach_contact_identity(row: dict[str, Any]) -> dict[str, str]:
     return identity
 
 
+def _merged_outreach_log_identity(
+    records: list[dict[str, Any]],
+    *,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Keep the newest identity while retaining older, strictly scoped IDs."""
+
+    identities = [
+        record.get("identity")
+        for record in records
+        if isinstance(record.get("identity"), dict) and record.get("identity")
+    ]
+    merged: dict[str, Any] = {
+        key: value
+        for key, value in (fallback or {}).items()
+        if not str(key).startswith("_") and value
+    }
+    for identity in identities:
+        for key in (
+            "corp_id",
+            "wechat",
+            "external_userid",
+            "customer_id",
+            "user_id",
+            "customer_add_wechat_id",
+            "conversation_id",
+            "customer_name",
+        ):
+            value = _string(identity.get(key))
+            if value and not _string(merged.get(key)):
+                merged[key] = value
+
+    for singular, plural in (
+        ("customer_id", "customer_ids"),
+        ("user_id", "user_ids"),
+        ("customer_add_wechat_id", "customer_add_wechat_ids"),
+        ("conversation_id", "conversation_ids"),
+    ):
+        values: list[str] = []
+        for identity in identities:
+            value = _string(identity.get(singular))
+            if value and value not in values:
+                values.append(value)
+        fallback_value = _string(merged.get(singular))
+        if fallback_value and fallback_value not in values:
+            values.append(fallback_value)
+        if values:
+            merged[plural] = values
+    return merged
+
+
 def _outreach_contact_key(
     identity: dict[str, str],
     *,
@@ -1053,6 +1104,30 @@ class OutreachRepositoryMixin:
         snapshot_workflow_run_id = self.store.json_text(
             "source_snapshot", "$.workflow_run_id"
         )
+        snapshot_customer_add_wechat_id = self.store.json_text(
+            "source_snapshot", "$.customer_add_wechat_id"
+        )
+        snapshot_trigger_customer_add_wechat_id = self.store.json_text(
+            "source_snapshot", "$.trigger_context.customer_add_wechat_id"
+        )
+        snapshot_conversation_id = self.store.json_text(
+            "source_snapshot", "$.conversation_id"
+        )
+        snapshot_trigger_conversation_id = self.store.json_text(
+            "source_snapshot", "$.trigger_context.conversation_id"
+        )
+        snapshot_platform_customer_name = self.store.json_text(
+            "source_snapshot", "$.platform_customer_name"
+        )
+        snapshot_trigger_platform_customer_name = self.store.json_text(
+            "source_snapshot", "$.trigger_context.platform_customer_name"
+        )
+        snapshot_latest_customer_message_at = self.store.json_text(
+            "source_snapshot", "$.conversation_activity.latest_customer_message_at"
+        )
+        snapshot_fact_last_customer_message_at = self.store.json_text(
+            "source_snapshot", "$.customer_fact_snapshot.last_customer_message_at"
+        )
         contact_sql, contact_params = _outreach_contact_scope_sql(identity)
         event_identity_json = self.store.json_text("e.payload_json", "$.identity")
         event_trigger_context_json = self.store.json_text(
@@ -1129,7 +1204,15 @@ class OutreachRepositoryMixin:
                        {snapshot_trigger_type} AS snapshot_trigger_type,
                        {automatic_snapshot} AS snapshot_activation_policy,
                        {snapshot_reason_code} AS snapshot_reason_code,
-                       {snapshot_workflow_run_id} AS snapshot_workflow_run_id
+                       {snapshot_workflow_run_id} AS snapshot_workflow_run_id,
+                       {snapshot_customer_add_wechat_id} AS snapshot_customer_add_wechat_id,
+                       {snapshot_trigger_customer_add_wechat_id} AS snapshot_trigger_customer_add_wechat_id,
+                       {snapshot_conversation_id} AS snapshot_conversation_id,
+                       {snapshot_trigger_conversation_id} AS snapshot_trigger_conversation_id,
+                       {snapshot_platform_customer_name} AS snapshot_platform_customer_name,
+                       {snapshot_trigger_platform_customer_name} AS snapshot_trigger_platform_customer_name,
+                       {snapshot_latest_customer_message_at} AS snapshot_latest_customer_message_at,
+                       {snapshot_fact_last_customer_message_at} AS snapshot_fact_last_customer_message_at
                 FROM outreach_plans
                 WHERE created_at>=? AND created_at<=?
                   AND (
@@ -1244,16 +1327,44 @@ class OutreachRepositoryMixin:
         records: list[dict[str, Any]] = []
         for plan_row in plan_rows:
             raw_plan = dict(plan_row)
+            latest_customer_message_at = _string(
+                raw_plan.pop("snapshot_latest_customer_message_at", "")
+            )
+            fact_last_customer_message_at = _string(
+                raw_plan.pop("snapshot_fact_last_customer_message_at", "")
+            )
+            cycle_customer_message_at = (
+                latest_customer_message_at or fact_last_customer_message_at
+            )
             raw_plan["source_snapshot"] = dumps(
                 {
                     "plan_type": _string(raw_plan.pop("snapshot_plan_type", "")),
                     "workflow_run_id": _string(raw_plan.pop("snapshot_workflow_run_id", "")),
+                    "customer_add_wechat_id": _string(
+                        raw_plan.pop("snapshot_customer_add_wechat_id", "")
+                    ),
+                    "conversation_id": _string(raw_plan.pop("snapshot_conversation_id", "")),
+                    "platform_customer_name": _string(
+                        raw_plan.pop("snapshot_platform_customer_name", "")
+                    ),
+                    "conversation_activity": {
+                        "latest_customer_message_at": cycle_customer_message_at,
+                    },
                     "trigger_context": {
                         "trigger_type": _string(raw_plan.pop("snapshot_trigger_type", "")),
                         "activation_policy": _string(
                             raw_plan.pop("snapshot_activation_policy", "")
                         ),
                         "reason_code": _string(raw_plan.pop("snapshot_reason_code", "")),
+                        "customer_add_wechat_id": _string(
+                            raw_plan.pop("snapshot_trigger_customer_add_wechat_id", "")
+                        ),
+                        "conversation_id": _string(
+                            raw_plan.pop("snapshot_trigger_conversation_id", "")
+                        ),
+                        "platform_customer_name": _string(
+                            raw_plan.pop("snapshot_trigger_platform_customer_name", "")
+                        ),
                     },
                 }
             )
@@ -1279,6 +1390,7 @@ class OutreachRepositoryMixin:
                     "plan_goal": _string(plan.get("plan_goal")),
                     "customer_stage": _string(plan.get("customer_stage")),
                     "customer_psychology": _string(plan.get("customer_psychology")),
+                    "cycle_customer_message_at": cycle_customer_message_at,
                     "created_at": _string(plan.get("created_at")),
                     "updated_at": _string(plan.get("updated_at")),
                     "task_summary": _outreach_task_summary(tasks),
@@ -1472,10 +1584,9 @@ class OutreachRepositoryMixin:
                 default={},
             )
             latest = customer_records[0] if customer_records else {}
-            latest_identity = (
-                latest.get("identity")
-                if isinstance(latest.get("identity"), dict)
-                else group["identity"]
+            latest_identity = _merged_outreach_log_identity(
+                customer_records,
+                fallback=group["identity"],
             )
             customer_id_hints: list[str] = []
             for item in customer_records:
@@ -1605,13 +1716,14 @@ class OutreachRepositoryMixin:
         return redact_first_day_log_value(
             {
                 "contact_key": contact_key,
-                "identity": history[0].get("identity")
-                if isinstance(history[0].get("identity"), dict)
-                else {
+                "identity": _merged_outreach_log_identity(
+                    history,
+                    fallback={
                     key: value
                     for key, value in identity.items()
                     if not key.startswith("_")
-                },
+                    },
+                ),
                 "range": {"started_from": start, "started_to": end, "timezone": "Asia/Shanghai"},
                 "history": history,
             }
