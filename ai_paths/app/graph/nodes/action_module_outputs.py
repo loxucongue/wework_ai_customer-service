@@ -286,17 +286,13 @@ def _reuse_already_delivered_store_delivery(
         resolution.get("requested_detail_kind") or destination.get("detail_kind") or ""
     ).strip()
     sent_summary = sent_message_summary_for_model(state)
-    if (
-        str(resolution.get("status") or "")
-        in {
+    incomplete_detail_status = str(resolution.get("status") or "") in {
             "need_location",
             "need_location_confirmation",
             "ambiguous_location",
             "search_incomplete",
         }
-        and request_kind == "store_detail"
-        and detail_kind in {"address", "navigation"}
-    ):
+    if incomplete_detail_status and request_kind == "store_detail":
         anchor = (
             sent_summary.get("store_anchor_fact")
             if isinstance(sent_summary.get("store_anchor_fact"), dict)
@@ -304,6 +300,19 @@ def _reuse_already_delivered_store_delivery(
         )
         anchor_store_id = str(anchor.get("store_id") or "").strip()
         if str(anchor.get("status") or "") == "eligible" and anchor_store_id:
+            if detail_kind not in {"address", "navigation"}:
+                return {
+                    **resolution,
+                    "status": "reuse_confirmed_store",
+                    "outcome": "resolved",
+                    "resolution_status": "reuse_confirmed_store",
+                    "clarification_required": False,
+                    "clarification_would_change_result": False,
+                    "delivery_store_ids": [],
+                    "already_delivered_store_ids": [anchor_store_id],
+                    "delivery_mode": "none",
+                    "reason": f"store_detail_reuses_latest_delivered_store:{detail_kind or 'other'}",
+                }
             return {
                 **resolution,
                 "status": "send_single",

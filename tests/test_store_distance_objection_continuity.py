@@ -556,3 +556,30 @@ def test_explicit_address_rerequest_survives_later_incomplete_distance_result() 
 
     assert reused["status"] == "send_single"
     assert reused["delivery_store_ids"] == ["160"]
+
+
+def test_store_detail_survives_incomplete_lookup_without_repeating_card() -> None:
+    resolution = {
+        "status": "search_incomplete",
+        "outcome": "search_incomplete",
+        "delivery_store_ids": [],
+        "requested_detail_available": True,
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "parking",
+        },
+    }
+
+    reused = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert reused["status"] == "reuse_confirmed_store"
+    assert reused["delivery_store_ids"] == []
+    assert reused["already_delivered_store_ids"] == ["160"]
+    assert reused["requested_detail_available"] is True
+    assert reused["reason"] == "store_detail_reuses_latest_delivered_store:parking"
