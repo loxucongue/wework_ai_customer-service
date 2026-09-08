@@ -194,6 +194,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 const PLAN_STATUS_LABELS: Record<string, string> = {
   active: "执行中",
+  generated: "已生成计划",
   created: "已生成",
   completed: "已完成",
   cancelled: "已取消",
@@ -660,7 +661,7 @@ function CompactIdentity({ label, value }: { label: string; value: string }) { r
 function Fact({ label, value }: { label: string; value: string }) { return <div><div className="text-zinc-500">{label}</div><div className="mt-1 break-words text-zinc-800">{value || "-"}</div></div>; }
 function EmptyState({ icon, text }: { icon: ReactNode; text: string }) { return <div className="flex min-h-40 flex-col items-center justify-center gap-2 p-5 text-center text-sm text-zinc-500">{icon}<span>{text}</span></div>; }
 function StatusPill({ status, noPlan = false }: { status: string; noPlan?: boolean }) { const tone = noPlan || status === "blocked" || status === "cancelled" ? "bg-amber-100 text-amber-800" : status === "failed" ? "bg-red-100 text-red-700" : status === "completed" || status === "sent" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"; return <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-medium ${tone}`}>{noPlan ? "未生成" : planStatusLabel(status)}</span>; }
-function CustomerStatusPill({ item }: { item: CustomerItem }) { if (item.next_task?.scheduled_at || item.task_summary.pending + item.task_summary.processing > 0) return <StatusPill status="active" />; if (item.plan_count > 0 && item.task_summary.total > 0 && item.task_summary.handled >= item.task_summary.total) return <StatusPill status="completed" />; if (item.plan_count > 0) return <StatusPill status="generated" />; return <StatusPill status={item.latest_record.status} noPlan />; }
+function CustomerStatusPill({ item }: { item: CustomerItem }) { if (item.next_task?.scheduled_at || item.task_summary.pending + item.task_summary.processing > 0) return <StatusPill status="active" />; if (item.task_summary.failed > 0) return <StatusPill status="failed" />; if (item.plan_count > 0 && item.task_summary.total > 0 && item.task_summary.handled >= item.task_summary.total) return <StatusPill status="completed" />; if (item.plan_count > 0) return <StatusPill status="generated" />; return <StatusPill status={item.latest_record.status} noPlan />; }
 function TaskStatusPill({ status, verified }: { status: string; verified: boolean }) { const tone = verified ? "bg-emerald-100 text-emerald-700" : status === "sent" ? "bg-amber-100 text-amber-800" : status === "failed" || status === "check_failed" ? "bg-red-100 text-red-700" : status === "pending" || status === "checking" || status === "sending" ? "bg-blue-100 text-blue-700" : "bg-zinc-100 text-zinc-700"; return <span className={`rounded-full px-2 py-1 text-xs font-medium ${tone}`}>{verified ? "已发送" : taskOutcome(status)}</span>; }
 
 const inputClassName = "h-9 w-full min-w-0 rounded-md border border-zinc-200 bg-white px-2 text-sm text-zinc-900 outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600";
