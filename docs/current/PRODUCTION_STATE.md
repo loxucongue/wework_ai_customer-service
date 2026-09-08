@@ -114,3 +114,12 @@
 - 第三方固定消息预检兼容平台实际返回的 `msg_type`、`content_text`、`media_url` 和 `media_urls_json`，同时继续拦截非法类型、空文本和非法媒体 URL。
 - 全仓 457 条确定性测试、相关 Ruff 和服务器离线预检通过。发布后新任务 `82347` 完成会话状态与历史拉取、真实发送、consume `30` 和 service-rule-data 回传；worker `sent=1`、`pending_total=0`、`queue_depth=0`、`in_flight_count=0`、最近轮询错误为空。
 - 未补发或重开历史终态任务；`82344` 仍保持 `completed_without_send/invalid_message_content`。本次无数据库迁移、无前端变更；统一回滚点为 `ai-paths-unified-20260908-092900-42b27eae`。
+
+## 2026-09-08 13:19 第三方 SOP 严格顺序发布
+
+- 发布 clean `main@2b7d70910c2da4d93a64f459a992dc29a4300316`，release 为 `ai-paths-unified-20260908-131434-2b7d7091`；control、reply、worker 三套 `/health` 的 release、完整 SHA、config revision 和 `dirty=false` 一致，三个 unit 均为 active 且 `NRestarts=0`。
+- 同一销售接触档案只允许处理最早内容。前序未确认发送时，模型不发、发送失败或未知、人工接管、客户删除、夜间拦截等全部记录失败并保留内容；运行代码不再主动写平台 `70`，也不能消费未发送前序后跳发后序。
+- 发送超时或仅返回受理但没有消息 ID 时等待送达回调或会话中的相同发送证据；配对触发节点只有在内容真实发送后才与内容节点一起回传 `30`。恢复查询使用持久化退避，重启后继续保留顺序阻塞。
+- 发布后连续两次只读核验为 `pending_total=0`、`queued_count=0`、`in_flight_count=0`、`last_poll_error` 为空，发送和消费计数均为 0；历史未发任务没有补发或消费，86 个历史任务 ID 仅恢复为顺序阻塞。Worker 最近 300 行错误日志无 traceback。
+- 全仓 479 条确定性测试通过，变更范围 Ruff、服务器编译和模块导入通过。V3 路由无鉴权返回 401，产品 V2 路由返回 404，管理接口无鉴权返回 401；Nginx 配置检查通过。本次无数据库迁移，生产根分区使用率 81%、剩余约 7.3 GB。
+- 统一回滚点为 `ai-paths-unified-20260908-131037-bb86bc3b`；回滚后必须同步恢复 control/reply/worker 三个角色和两个环境文件的 release 元数据。
