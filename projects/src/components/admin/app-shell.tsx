@@ -47,7 +47,7 @@ const groups = [
       { href: "/logs", label: "AI 运行日志", icon: FileClock },
       { href: "/logs/sop-platform", label: "SOP 任务日志", icon: History },
       { href: "/logs/sop", label: "SOP 底层事件日志", icon: Archive },
-      { href: "/logs/outreach-first-day", label: "千人千面日志", icon: Sparkles },
+      { href: "/logs/outreach", label: "沉默唤醒日志", icon: Sparkles },
     ],
   },
   {

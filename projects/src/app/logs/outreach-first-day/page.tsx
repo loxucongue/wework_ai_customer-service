@@ -1,5 +1,5 @@
-import { FirstDayOutreachLogViewer } from "@/components/logs/first-day-outreach-log-viewer";
+import { permanentRedirect } from "next/navigation";
 
 export default function FirstDayOutreachLogsPage() {
-  return <FirstDayOutreachLogViewer />;
+  permanentRedirect("/logs/outreach");
 }

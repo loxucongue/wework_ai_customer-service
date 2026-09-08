@@ -459,7 +459,7 @@ function QueuePanel({ rows, total, loading, selectedId, onSelect, onConfig }: { 
     <section className="overflow-hidden rounded-md border bg-white shadow-sm">
       <div className="flex flex-col justify-between gap-3 border-b px-4 py-4 sm:flex-row sm:items-center">
         <div><h2 className="text-sm font-semibold">当前唤醒队列</h2><p className="mt-1 text-xs text-zinc-500">当前范围共 {formatNumber(total)} 条，点击记录查看客户身份、完整 ID、判断和计划。</p></div>
-        <div className="flex flex-wrap gap-2"><Button variant="default" size="sm" asChild><Link href="/logs/outreach-first-day"><FileClock className="size-4" />查看全部运行记录</Link></Button><Button variant="outline" size="sm" onClick={onConfig}><Settings2 className="size-4" />查看配置</Button></div>
+        <div className="flex flex-wrap gap-2"><Button variant="default" size="sm" asChild><Link href="/logs/outreach"><FileClock className="size-4" />查看全部运行记录</Link></Button><Button variant="outline" size="sm" onClick={onConfig}><Settings2 className="size-4" />查看配置</Button></div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[1280px] text-left text-sm">
@@ -610,7 +610,7 @@ function RuntimeDialog({ open, onOpenChange, data, state }: { open: boolean; onO
     <div className={cn("rounded-md border p-3 text-sm", state.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : state.tone === "warning" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-red-200 bg-red-50 text-red-900")}><div className="font-semibold">{state.label}</div><p className="mt-1 text-xs leading-5">{state.detail}</p></div>
     <div className="divide-y rounded-md border text-sm"><ConfigRow label="后台配置" configured={settings.enabled ? "已启用" : "已关闭"} effective={runtime.enabled === true ? "Worker 已启用" : runtime.enabled === false ? "Worker 未启用" : "Worker 未上报"} /><ConfigRow label="沉默候选阈值" configured={`${settings.silence_minutes ?? "未记录"} 分钟`} effective={`${runtime.threshold_minutes ?? "未上报"}${runtime.threshold_minutes != null ? " 分钟" : ""}`} /><ConfigRow label="账号范围" configured={settings.wechat_allowlist?.length ? settings.wechat_allowlist.join("、") : "全部企微号"} effective={runtime.wechat_scope === "all" ? "全部企微号" : runtime.wechat_scope === "allowlist" ? "指定账号" : "未上报"} /><ConfigRow label="客户边界" configured="仅 AI 接待；加微时间不限" effective="发送前再次检查接待、回复、订单与退订状态" /><ConfigRow label="计划模型" configured="由 Worker 配置决定" effective={text(runtime.decision_model) || "未上报"} /><ConfigRow label="计划扫描" configured="后台持续执行" effective={workerTaskLabel(record(tasks.outreach_plan_monitor))} /><ConfigRow label="消息执行" configured="到达计划时间后执行" effective={workerTaskLabel(record(tasks.outreach_task_executor))} /><ConfigRow label="最后扫描" configured="—" effective={formatTime(record(runtime.monitor).last_iteration_finished_at)} /></div>
     <div className="rounded-md bg-zinc-50 p-3 text-xs leading-5 text-zinc-600"><strong className="text-zinc-900">注意：</strong>1 分钟是进入候选判断的最低沉默阈值，不是保证 1 分钟后一定发送。系统还要确认 AI 接待、客户未回复、未成交、未退订，并由模型生成安全的触达计划。</div>
-    <div className="flex justify-end"><Button asChild><Link href="/logs/outreach-first-day">查看和修改运行配置</Link></Button></div>
+    <div className="flex justify-end"><Button asChild><Link href="/logs/outreach">查看和修改运行配置</Link></Button></div>
   </DialogContent></Dialog>;
 }
 

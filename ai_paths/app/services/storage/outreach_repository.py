@@ -59,6 +59,260 @@ def _string(value: Any) -> str:
     return str(value).strip()
 
 
+_AUTOMATIC_OUTREACH_SOURCE_TYPES = {
+    "first_day",
+    "followup_strategy",
+    "closing_sequence",
+    "auto_approved",
+}
+_OUTREACH_NO_PLAN_EVENT_TYPES = {
+    "plan_rejected",
+    "plan_skipped_customer_deleted",
+    "plan_skipped_customer_relation_unavailable",
+}
+_OUTREACH_PENDING_TASK_STATUSES = {"pending"}
+_OUTREACH_PROCESSING_TASK_STATUSES = {"checking", "sending"}
+_OUTREACH_CONSUMED_TASK_STATUSES = {
+    "skipped",
+    "cancelled",
+    "completed_without_send",
+    "shadow_no_send",
+    "shadowed",
+}
+_OUTREACH_FAILED_TASK_STATUSES = {"failed", "check_failed", "partial_failed"}
+
+
+def _outreach_log_window(started_from: str, started_to: str) -> tuple[str, str]:
+    now = datetime.now(timezone.utc)
+    start = _parse_iso(started_from) or now - timedelta(days=30)
+    end = _parse_iso(started_to) or now
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    start = start.astimezone(timezone.utc)
+    end = end.astimezone(timezone.utc)
+    if start >= end:
+        raise ValueError("started_from must be earlier than started_to")
+    if end - start > timedelta(days=90):
+        raise ValueError("outreach customer log range cannot exceed 90 days")
+    return start.isoformat(), end.isoformat()
+
+
+def _outreach_source_type(plan: dict[str, Any]) -> str:
+    sop_plan_id = _string(plan.get("sop_plan_id")).lower()
+    if sop_plan_id == "first_day_opened_silence":
+        return "first_day"
+    if sop_plan_id.startswith("followup_strategy:"):
+        return "followup_strategy"
+    if sop_plan_id.startswith("closing_sequence:"):
+        return "closing_sequence"
+    snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+    plan_type = _string(snapshot.get("plan_type"))
+    if plan_type in {"followup_strategy", "closing_sequence"}:
+        return plan_type
+    trigger_context = snapshot.get("trigger_context") if isinstance(snapshot.get("trigger_context"), dict) else {}
+    if _string(trigger_context.get("trigger_type")) == "first_day_opened_silence":
+        return "first_day"
+    if _string(trigger_context.get("activation_policy")) == "auto_approved":
+        return "auto_approved"
+    return ""
+
+
+def _outreach_event_source_type(payload: dict[str, Any]) -> str:
+    trigger_context = payload.get("trigger_context") if isinstance(payload.get("trigger_context"), dict) else {}
+    if _string(trigger_context.get("trigger_type")) == "first_day_opened_silence":
+        return "first_day"
+    if _string(trigger_context.get("activation_policy")) == "auto_approved":
+        return "auto_approved"
+    return ""
+
+
+def _outreach_contact_identity(row: dict[str, Any]) -> dict[str, str]:
+    corp_id = _string(row.get("corp_id"))
+    wechat = _string(row.get("wechat"))
+    external_userid = _string(row.get("external_userid"))
+    customer_id = _string(row.get("customer_id"))
+    identity_value = external_userid or customer_id
+    if not corp_id or not wechat or not identity_value:
+        return {}
+    return {
+        "corp_id": corp_id,
+        "wechat": wechat,
+        "external_userid": external_userid,
+        "customer_id": customer_id,
+    }
+
+
+def _outreach_contact_key(identity: dict[str, str]) -> str:
+    external_userid = _string(identity.get("external_userid")).lower()
+    customer_id = _string(identity.get("customer_id")).lower()
+    identity_kind, identity_value = (
+        ("external_userid", external_userid)
+        if external_userid
+        else ("customer_id", customer_id)
+    )
+    raw = json.dumps(
+        [
+            _string(identity.get("corp_id")).lower(),
+            _string(identity.get("wechat")).lower(),
+            identity_kind,
+            identity_value,
+        ],
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_outreach_contact_key(value: str) -> dict[str, str]:
+    if not value:
+        return {}
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(decoded, list) or len(decoded) != 4 or not all(isinstance(item, str) for item in decoded):
+        return {}
+    identity_kind = decoded[2]
+    if identity_kind not in {"external_userid", "customer_id"}:
+        return {}
+    return _outreach_contact_identity(
+        {
+            "corp_id": decoded[0],
+            "wechat": decoded[1],
+            identity_kind: decoded[3],
+        }
+    )
+
+
+def _outreach_contact_matches(row: dict[str, Any], identity: dict[str, str]) -> bool:
+    row_identity = _outreach_contact_identity(row)
+    if not row_identity or not identity:
+        return False
+    if _string(row_identity.get("corp_id")).lower() != _string(identity.get("corp_id")).lower():
+        return False
+    if _string(row_identity.get("wechat")).lower() != _string(identity.get("wechat")).lower():
+        return False
+    expected = _string(identity.get("external_userid")).lower() or _string(identity.get("customer_id")).lower()
+    actual = _string(row_identity.get("external_userid")).lower() or _string(row_identity.get("customer_id")).lower()
+    return bool(expected and actual and expected == actual)
+
+
+def _outreach_task_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    next_task: dict[str, Any] = {}
+    for task in tasks:
+        status = _string(task.get("status")) or "unknown"
+        counts[status] = counts.get(status, 0) + 1
+        if status in _OUTREACH_PENDING_TASK_STATUSES | _OUTREACH_PROCESSING_TASK_STATUSES:
+            candidate = {
+                "task_id": _string(task.get("id")),
+                "plan_id": _string(task.get("plan_id")),
+                "step_index": _int(task.get("step_index"), 0),
+                "status": status,
+                "scheduled_at": _string(task.get("scheduled_at")),
+                "message_goal": _string(task.get("message_goal")),
+            }
+            if not next_task or (
+                candidate["scheduled_at"],
+                candidate["step_index"],
+                candidate["task_id"],
+            ) < (
+                next_task.get("scheduled_at", ""),
+                next_task.get("step_index", 0),
+                next_task.get("task_id", ""),
+            ):
+                next_task = candidate
+    sent = sum(
+        1
+        for task in tasks
+        if _string(task.get("status")) == "sent" and _string(task.get("system_msgid"))
+    )
+    sent_without_message_id = sum(
+        1
+        for task in tasks
+        if _string(task.get("status")) == "sent" and not _string(task.get("system_msgid"))
+    )
+    consumed = sum(counts.get(status, 0) for status in _OUTREACH_CONSUMED_TASK_STATUSES)
+    failed = sum(counts.get(status, 0) for status in _OUTREACH_FAILED_TASK_STATUSES)
+    pending = sum(counts.get(status, 0) for status in _OUTREACH_PENDING_TASK_STATUSES)
+    processing = sum(counts.get(status, 0) for status in _OUTREACH_PROCESSING_TASK_STATUSES)
+    return {
+        "total": len(tasks),
+        "handled": max(0, len(tasks) - pending - processing),
+        "sent": sent,
+        "sent_without_message_id": sent_without_message_id,
+        "consumed": consumed,
+        "failed": failed,
+        "pending": pending,
+        "processing": processing,
+        "status_counts": counts,
+        "next_task": next_task,
+    }
+
+
+def _outreach_log_reason(plan: dict[str, Any], source_type: str) -> str:
+    snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+    trigger_context = snapshot.get("trigger_context") if isinstance(snapshot.get("trigger_context"), dict) else {}
+    return (
+        _string(trigger_context.get("reason_code"))
+        or _string(trigger_context.get("trigger_type"))
+        or _string(plan.get("stall_reason"))
+        or source_type
+    )
+
+
+def _outreach_record_matches_filters(
+    record: dict[str, Any],
+    *,
+    identity_query: str,
+    customer_id: str,
+    external_userid: str,
+    corp_id: str,
+    wechat: str,
+    source_type: str,
+    plan_status: str,
+    task_status: str,
+    reason_code: str,
+    identity_state: str,
+) -> bool:
+    identity = record.get("identity") if isinstance(record.get("identity"), dict) else {}
+    complete = bool(identity)
+    if identity_state == "complete" and not complete:
+        return False
+    if identity_state == "incomplete" and complete:
+        return False
+    if identity_query and identity_query not in {
+        _string(identity.get("customer_id")),
+        _string(identity.get("external_userid")),
+    }:
+        return False
+    if customer_id and _string(identity.get("customer_id")) != customer_id:
+        return False
+    if external_userid and _string(identity.get("external_userid")) != external_userid:
+        return False
+    if corp_id and _string(identity.get("corp_id")) != corp_id:
+        return False
+    if wechat and _string(identity.get("wechat")).lower() != wechat.lower():
+        return False
+    if source_type and _string(record.get("source_type")) != source_type:
+        return False
+    if plan_status:
+        if plan_status == "no_plan":
+            if _string(record.get("record_type")) != "no_plan":
+                return False
+        elif _string(record.get("record_type")) != "plan" or _string(record.get("status")) != plan_status:
+            return False
+    if task_status:
+        task_counts = record.get("task_summary", {}).get("status_counts", {}) if isinstance(record.get("task_summary"), dict) else {}
+        if not isinstance(task_counts, dict) or not int(task_counts.get(task_status, 0) or 0):
+            return False
+    if reason_code and reason_code.lower() not in _string(record.get("reason_code")).lower():
+        return False
+    return True
+
+
 def _strict_identity_match(
     *,
     external_userid: str,
@@ -684,6 +938,392 @@ class OutreachRepositoryMixin:
             result["events"] = []
         result["observability_view"] = build_first_day_run_observability(result)
         return redact_first_day_log_value(result)
+
+    def _outreach_customer_log_records(
+        self,
+        *,
+        started_from: str,
+        started_to: str,
+    ) -> list[dict[str, Any]]:
+        automatic_snapshot = self.store.json_text(
+            "source_snapshot", "$.trigger_context.activation_policy"
+        )
+        with self.store.connect() as conn:
+            plan_rows = conn.execute(
+                f"""
+                SELECT * FROM outreach_plans
+                WHERE created_at>=? AND created_at<=?
+                  AND (
+                    sop_plan_id='first_day_opened_silence'
+                    OR sop_plan_id LIKE 'followup_strategy:%'
+                    OR sop_plan_id LIKE 'closing_sequence:%'
+                    OR {automatic_snapshot}='auto_approved'
+                  )
+                ORDER BY created_at DESC, id DESC
+                """,
+                (started_from, started_to),
+            ).fetchall()
+            first_day_rows = conn.execute(
+                """
+                SELECT * FROM first_day_outreach_runs
+                WHERE plan_id='' AND started_at>=? AND started_at<=?
+                  AND trigger_type='first_day_opened_silence'
+                ORDER BY started_at DESC, workflow_run_id DESC
+                """,
+                (started_from, started_to),
+            ).fetchall()
+            placeholders = ",".join("?" for _ in _OUTREACH_NO_PLAN_EVENT_TYPES)
+            no_plan_event_rows = conn.execute(
+                f"""
+                SELECT * FROM outreach_events
+                WHERE plan_id='' AND created_at>=? AND created_at<=?
+                  AND event_type IN ({placeholders})
+                ORDER BY created_at DESC, id DESC
+                """,
+                (started_from, started_to, *_OUTREACH_NO_PLAN_EVENT_TYPES),
+            ).fetchall()
+
+            task_rows: list[Any] = []
+            plan_ids = [_string(row["id"]) for row in plan_rows if _string(row["id"])]
+            for offset in range(0, len(plan_ids), 500):
+                chunk = plan_ids[offset : offset + 500]
+                if not chunk:
+                    continue
+                task_rows.extend(
+                    conn.execute(
+                        f"SELECT * FROM outreach_tasks WHERE plan_id IN ({','.join('?' for _ in chunk)}) ORDER BY plan_id, step_index ASC",
+                        chunk,
+                    ).fetchall()
+                )
+
+        tasks_by_plan: dict[str, list[dict[str, Any]]] = {}
+        for task_row in task_rows:
+            task = self._decode_outreach_task(dict(task_row))
+            tasks_by_plan.setdefault(_string(task.get("plan_id")), []).append(task)
+
+        records: list[dict[str, Any]] = []
+        for plan_row in plan_rows:
+            plan = self._decode_outreach_plan(dict(plan_row))
+            source_type = _outreach_source_type(plan)
+            if source_type not in _AUTOMATIC_OUTREACH_SOURCE_TYPES:
+                continue
+            tasks = tasks_by_plan.get(_string(plan.get("id")), [])
+            records.append(
+                {
+                    "record_id": f"plan:{_string(plan.get('id'))}",
+                    "record_type": "plan",
+                    "plan_id": _string(plan.get("id")),
+                    "workflow_run_id": _string(
+                        (plan.get("source_snapshot") or {}).get("workflow_run_id")
+                        if isinstance(plan.get("source_snapshot"), dict)
+                        else ""
+                    ),
+                    "identity": _outreach_contact_identity(plan),
+                    "source_type": source_type,
+                    "status": _string(plan.get("status")),
+                    "reason_code": _outreach_log_reason(plan, source_type),
+                    "plan_goal": _string(plan.get("plan_goal")),
+                    "customer_stage": _string(plan.get("customer_stage")),
+                    "customer_psychology": _string(plan.get("customer_psychology")),
+                    "created_at": _string(plan.get("created_at")),
+                    "updated_at": _string(plan.get("updated_at")),
+                    "task_summary": _outreach_task_summary(tasks),
+                }
+            )
+
+        first_day_run_ids: set[str] = set()
+        for run_row in first_day_rows:
+            run = self._decode_first_day_outreach_run(dict(run_row))
+            workflow_run_id = _string(run.get("workflow_run_id"))
+            first_day_run_ids.add(workflow_run_id)
+            records.append(
+                {
+                    "record_id": f"run:{workflow_run_id}",
+                    "record_type": "no_plan",
+                    "plan_id": "",
+                    "workflow_run_id": workflow_run_id,
+                    "identity": _outreach_contact_identity(run),
+                    "source_type": "first_day",
+                    "status": _string(run.get("status")) or "blocked",
+                    "reason_code": _string(run.get("reason_code")) or "no_plan",
+                    "plan_goal": "",
+                    "customer_stage": "",
+                    "customer_psychology": "",
+                    "created_at": _string(run.get("started_at")),
+                    "updated_at": _string(run.get("finished_at")) or _string(run.get("started_at")),
+                    "task_summary": _outreach_task_summary([]),
+                    "raw_redacted_at": _string(run.get("raw_redacted_at")),
+                }
+            )
+
+        for event_row in no_plan_event_rows:
+            event = self._decode_outreach_event(dict(event_row))
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            workflow_run_id = _string(payload.get("workflow_run_id"))
+            if workflow_run_id and workflow_run_id in first_day_run_ids:
+                continue
+            source_type = _outreach_event_source_type(payload)
+            if source_type not in _AUTOMATIC_OUTREACH_SOURCE_TYPES:
+                continue
+            identity_payload = payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
+            records.append(
+                {
+                    "record_id": f"event:{_string(event.get('id'))}",
+                    "record_type": "no_plan",
+                    "plan_id": "",
+                    "workflow_run_id": workflow_run_id,
+                    "identity": _outreach_contact_identity(identity_payload),
+                    "source_type": source_type,
+                    "status": "blocked",
+                    "reason_code": _string(payload.get("reason")) or _string(event.get("event_type")) or "no_plan",
+                    "plan_goal": "",
+                    "customer_stage": "",
+                    "customer_psychology": "",
+                    "created_at": _string(event.get("created_at")),
+                    "updated_at": _string(event.get("created_at")),
+                    "event_summary": _string(event.get("event_summary")),
+                    "task_summary": _outreach_task_summary([]),
+                }
+            )
+        return records
+
+    def list_outreach_customer_logs(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str = "",
+        started_from: str = "",
+        started_to: str = "",
+        identity_query: str = "",
+        customer_id: str = "",
+        external_userid: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        source_type: str = "",
+        plan_status: str = "",
+        task_status: str = "",
+        reason_code: str = "",
+        identity_state: str = "",
+    ) -> dict[str, Any]:
+        start, end = _outreach_log_window(started_from, started_to)
+        filters = {
+            "identity_query": identity_query,
+            "customer_id": customer_id,
+            "external_userid": external_userid,
+            "corp_id": corp_id,
+            "wechat": wechat,
+            "source_type": source_type,
+            "plan_status": plan_status,
+            "task_status": task_status,
+            "reason_code": reason_code,
+            "identity_state": identity_state,
+        }
+        records = [
+            record
+            for record in self._outreach_customer_log_records(started_from=start, started_to=end)
+            if _outreach_record_matches_filters(record, **filters)
+        ]
+        grouped: dict[str, dict[str, Any]] = {}
+        unscoped_items: list[dict[str, Any]] = []
+        for record in records:
+            identity = record.get("identity") if isinstance(record.get("identity"), dict) else {}
+            if not identity:
+                unscoped_items.append(
+                    {
+                        "contact_key": _string(record.get("record_id")),
+                        "identity_state": "incomplete",
+                        "identity": {},
+                        "records": [record],
+                    }
+                )
+                continue
+            contact_key = _outreach_contact_key(identity)
+            group = grouped.setdefault(
+                contact_key,
+                {
+                    "contact_key": contact_key,
+                    "identity_state": "complete",
+                    "identity": identity,
+                    "records": [],
+                },
+            )
+            group["records"].append(record)
+
+        def build_customer_item(group: dict[str, Any]) -> dict[str, Any]:
+            customer_records = list(group["records"])
+            customer_records.sort(
+                key=lambda item: (_string(item.get("created_at")), _string(item.get("record_id"))),
+                reverse=True,
+            )
+            summaries = [item.get("task_summary") for item in customer_records if isinstance(item.get("task_summary"), dict)]
+            task_summary = {
+                key: sum(_int(summary.get(key)) for summary in summaries)
+                for key in ("total", "handled", "sent", "sent_without_message_id", "consumed", "failed", "pending", "processing")
+            }
+            next_tasks = [
+                summary.get("next_task")
+                for summary in summaries
+                if isinstance(summary.get("next_task"), dict) and summary.get("next_task")
+            ]
+            next_task = min(
+                next_tasks,
+                key=lambda item: (
+                    _string(item.get("scheduled_at")),
+                    _int(item.get("step_index")),
+                    _string(item.get("task_id")),
+                ),
+                default={},
+            )
+            latest = customer_records[0] if customer_records else {}
+            return {
+                "contact_key": group["contact_key"],
+                "identity_state": group["identity_state"],
+                "identity": group["identity"],
+                "latest_at": _string(latest.get("created_at")),
+                "latest_record": {
+                    key: latest.get(key, "")
+                    for key in ("record_id", "record_type", "plan_id", "source_type", "status", "reason_code", "plan_goal", "created_at")
+                },
+                "plan_count": sum(item.get("record_type") == "plan" for item in customer_records),
+                "no_plan_count": sum(item.get("record_type") == "no_plan" for item in customer_records),
+                "task_summary": task_summary,
+                "next_task": next_task,
+            }
+
+        customer_items = [build_customer_item(group) for group in grouped.values()]
+        customer_items.extend(build_customer_item(item) for item in unscoped_items)
+        customer_items.sort(
+            key=lambda item: (_string(item.get("latest_at")), _string(item.get("contact_key"))),
+            reverse=True,
+        )
+        cursor_value = self._decode_first_day_cursor(cursor)
+        if cursor_value:
+            customer_items = [
+                item
+                for item in customer_items
+                if (
+                    _string(item.get("latest_at")),
+                    _string(item.get("contact_key")),
+                ) < cursor_value
+            ]
+        page_size = max(1, min(int(limit or 50), 200))
+        has_more = len(customer_items) > page_size
+        items = customer_items[:page_size]
+        next_cursor = ""
+        if has_more and items:
+            next_cursor = self._encode_first_day_cursor(
+                _string(items[-1].get("latest_at")),
+                _string(items[-1].get("contact_key")),
+            )
+        metrics = {
+            "customer_count": len(grouped),
+            "identity_incomplete_count": len(unscoped_items),
+            "plan_count": sum(item.get("record_type") == "plan" for item in records),
+            "no_plan_count": sum(item.get("record_type") == "no_plan" for item in records),
+            "task_count": sum(_int(record.get("task_summary", {}).get("total")) for record in records if isinstance(record.get("task_summary"), dict)),
+            "sent_count": sum(_int(record.get("task_summary", {}).get("sent")) for record in records if isinstance(record.get("task_summary"), dict)),
+            "sent_without_message_id_count": sum(_int(record.get("task_summary", {}).get("sent_without_message_id")) for record in records if isinstance(record.get("task_summary"), dict)),
+            "consumed_count": sum(_int(record.get("task_summary", {}).get("consumed")) for record in records if isinstance(record.get("task_summary"), dict)),
+            "pending_count": sum(_int(record.get("task_summary", {}).get("pending")) for record in records if isinstance(record.get("task_summary"), dict)),
+            "processing_count": sum(_int(record.get("task_summary", {}).get("processing")) for record in records if isinstance(record.get("task_summary"), dict)),
+            "failed_count": sum(_int(record.get("task_summary", {}).get("failed")) for record in records if isinstance(record.get("task_summary"), dict)),
+        }
+        return redact_first_day_log_value(
+            {
+                "range": {"started_from": start, "started_to": end, "timezone": "Asia/Shanghai"},
+                "filters": filters,
+                "metrics": metrics,
+                "items": items,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+            }
+        )
+
+    def get_outreach_customer_log(
+        self,
+        contact_key: str,
+        *,
+        started_from: str = "",
+        started_to: str = "",
+    ) -> dict[str, Any]:
+        identity = _decode_outreach_contact_key(contact_key)
+        if not identity:
+            return {}
+        start, end = _outreach_log_window(started_from, started_to)
+        history = [
+            record
+            for record in self._outreach_customer_log_records(started_from=start, started_to=end)
+            if _outreach_contact_matches(
+                record.get("identity") if isinstance(record.get("identity"), dict) else {},
+                identity,
+            )
+        ]
+        if not history:
+            return {}
+        history.sort(
+            key=lambda item: (_string(item.get("created_at")), _string(item.get("record_id"))),
+            reverse=True,
+        )
+        return redact_first_day_log_value(
+            {
+                "contact_key": contact_key,
+                "identity": identity,
+                "range": {"started_from": start, "started_to": end, "timezone": "Asia/Shanghai"},
+                "history": history,
+            }
+        )
+
+    def get_outreach_customer_log_plan(
+        self,
+        contact_key: str,
+        plan_id: str,
+    ) -> dict[str, Any]:
+        identity = _decode_outreach_contact_key(contact_key)
+        if not identity or not plan_id:
+            return {}
+        with self.store.connect() as conn:
+            plan_row = conn.execute("SELECT * FROM outreach_plans WHERE id=?", (plan_id,)).fetchone()
+            if not plan_row:
+                return {}
+            task_rows = conn.execute(
+                "SELECT * FROM outreach_tasks WHERE plan_id=? ORDER BY step_index ASC", (plan_id,)
+            ).fetchall()
+            event_rows = conn.execute(
+                "SELECT * FROM outreach_events WHERE plan_id=? ORDER BY created_at ASC LIMIT 200", (plan_id,)
+            ).fetchall()
+        plan = self._decode_outreach_plan(dict(plan_row))
+        source_type = _outreach_source_type(plan)
+        if source_type not in _AUTOMATIC_OUTREACH_SOURCE_TYPES or not _outreach_contact_matches(plan, identity):
+            return {}
+        tasks = [self._decode_outreach_task(dict(row)) for row in task_rows]
+        events = [self._decode_outreach_event(dict(row)) for row in event_rows]
+        for task in tasks:
+            task["actual_send"] = bool(
+                _string(task.get("status")) == "sent" and _string(task.get("system_msgid"))
+            )
+        source_snapshot = plan.pop("source_snapshot", {})
+        workflow_run_id = _string(source_snapshot.get("workflow_run_id")) if isinstance(source_snapshot, dict) else ""
+        technical: dict[str, Any] = {
+            "source_snapshot": source_snapshot,
+            "workflow_run_id": workflow_run_id,
+        }
+        if workflow_run_id:
+            first_day_run = self.get_first_day_outreach_run(workflow_run_id)
+            if first_day_run:
+                technical["first_day_run"] = first_day_run
+        return redact_first_day_log_value(
+            {
+                "contact_key": contact_key,
+                "identity": identity,
+                "source_type": source_type,
+                "plan": plan,
+                "reason_code": _outreach_log_reason({**plan, "source_snapshot": source_snapshot}, source_type),
+                "task_summary": _outreach_task_summary(tasks),
+                "tasks": tasks,
+                "events": events,
+                "technical": technical,
+            }
+        )
 
     def prune_first_day_outreach_runs(
         self,

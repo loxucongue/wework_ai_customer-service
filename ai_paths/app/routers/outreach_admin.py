@@ -249,6 +249,80 @@ def create_outreach_admin_router(
             failed=failed,
         )
 
+    @router.get("/admin/outreach/customer-logs", dependencies=[Depends(require_api_key)])
+    async def outreach_customer_logs(
+        limit: int = 50,
+        cursor: str = "",
+        started_from: str = "",
+        started_to: str = "",
+        identity_query: str = "",
+        customer_id: str = "",
+        external_userid: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        source_type: str = "",
+        plan_status: str = "",
+        task_status: str = "",
+        reason_code: str = "",
+        identity_state: str = "",
+    ) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                services.repository.list_outreach_customer_logs,
+                limit=limit,
+                cursor=cursor,
+                started_from=started_from,
+                started_to=started_to,
+                identity_query=identity_query,
+                customer_id=customer_id,
+                external_userid=external_userid,
+                corp_id=corp_id,
+                wechat=wechat,
+                source_type=source_type,
+                plan_status=plan_status,
+                task_status=task_status,
+                reason_code=reason_code,
+                identity_state=identity_state,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get(
+        "/admin/outreach/customer-logs/{contact_key}/plans/{plan_id}",
+        dependencies=[Depends(require_api_key)],
+    )
+    async def outreach_customer_log_plan(contact_key: str, plan_id: str) -> dict[str, Any]:
+        detail = await asyncio.to_thread(
+            services.repository.get_outreach_customer_log_plan,
+            contact_key,
+            plan_id,
+        )
+        if not detail:
+            raise HTTPException(status_code=404, detail="outreach plan log not found")
+        return detail
+
+    @router.get(
+        "/admin/outreach/customer-logs/{contact_key}",
+        dependencies=[Depends(require_api_key)],
+    )
+    async def outreach_customer_log(
+        contact_key: str,
+        started_from: str = "",
+        started_to: str = "",
+    ) -> dict[str, Any]:
+        try:
+            detail = await asyncio.to_thread(
+                services.repository.get_outreach_customer_log,
+                contact_key,
+                started_from=started_from,
+                started_to=started_to,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not detail:
+            raise HTTPException(status_code=404, detail="outreach customer log not found")
+        return detail
+
     @router.get("/admin/outreach/dashboard", dependencies=[Depends(require_api_key)])
     async def outreach_dashboard(
         started_from: str = "",
