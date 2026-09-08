@@ -473,6 +473,34 @@ def test_confirmed_appointment_does_not_require_another_booking_bridge() -> None
     assert "appointment_goal_not_explicit" not in result["failure_codes"]
 
 
+def test_arrival_convenience_claim_without_authority_is_a_hard_failure() -> None:
+    result = hard_assertions(
+        sample={"content": "发位置，可以，明天来"},
+        facts={"authoritative_facts": {"orders_and_payment": {"deposit_state": "required_unpaid"}}},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {"type": "text", "order": 1, "content": "您明天几点方便？我帮您登记，这样到店不用等太久。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "160"}},
+        ],
+    )
+
+    assert "unsupported_arrival_convenience_claim" in result["failure_codes"]
+
+
+def test_arrival_convenience_claim_is_allowed_with_authoritative_queue_fact() -> None:
+    result = hard_assertions(
+        sample={"content": "发位置，可以，明天来"},
+        facts={"authoritative_facts": {"reception": {"wait_policy": "预约后按预约时段优先接待"}}},
+        prior_deliveries=_prior_store_delivery(),
+        reply_messages=[
+            {"type": "text", "order": 1, "content": "您明天几点方便？预约后可以按预约时段优先接待。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "160"}},
+        ],
+    )
+
+    assert "unsupported_arrival_convenience_claim" not in result["failure_codes"]
+
+
 def test_deterministic_failure_overrides_positive_ai_judge() -> None:
     merged = merge_ai_judge(
         {"passed": True, "reasons": ["整体自然"]},

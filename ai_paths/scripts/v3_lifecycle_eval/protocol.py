@@ -191,6 +191,18 @@ def _recursive_pairs(value: Any, prefix: str = "") -> Iterable[tuple[str, Any]]:
             yield from _recursive_pairs(child, f"{prefix}[{index}]")
 
 
+def _has_arrival_convenience_fact(facts: dict[str, Any]) -> bool:
+    """Return whether authoritative inputs explicitly support a queue/wait claim."""
+
+    for path, value in _recursive_pairs(facts):
+        if not any(marker in path for marker in ("queue", "wait", "arrival", "reception")):
+            continue
+        normalized = str(value or "").strip().lower()
+        if normalized and normalized not in {"none", "unknown", "false", "0", "未记录", "未知"}:
+            return True
+    return False
+
+
 def appointment_state(sample: dict[str, Any], facts: dict[str, Any]) -> str:
     if str(sample.get("appointment_id") or "").strip() or str(sample.get("appointment_time") or "").strip():
         return "confirmed"
@@ -300,6 +312,17 @@ def hard_assertions(
                     "reason": "门店已确认且客户尚未预约；回答门店细节后没有明确说明下一步是预约或保留名额。",
                 }
             )
+    unsupported_arrival_claim = _contains_any(
+        reply,
+        ("到店不用等", "不用等太久", "少等待", "免排队", "优先接待"),
+    )
+    if unsupported_arrival_claim and not _has_arrival_convenience_fact(facts):
+        failures.append(
+            {
+                "code": "unsupported_arrival_convenience_claim",
+                "reason": "没有权威排队或接待事实，却承诺了不用等、少等待、免排队或优先接待。",
+            }
+        )
     explicit_exit = _contains_any(
         str(sample.get("content") or ""),
         ("别联系", "别发了", "不要联系", "不要再发", "取消接收", "不再打扰"),
