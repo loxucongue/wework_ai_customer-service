@@ -214,6 +214,10 @@ def load_candidates(days: int) -> list[dict[str, Any]]:
         if any(not _text(raw.get(key)) for key in ("corp_id", "wechat", "external_userid", "customer_id")):
             continue
         context = raw.get("request_context") if isinstance(raw.get("request_context"), dict) else {}
+        # Evaluation traces may exist beside production traces. They are not
+        # real customer identities and must never re-enter the real-sample set.
+        if bool(context.get("test_isolated")):
+            continue
         dedupe = _text(context.get("msgid")) or hashlib.sha256((identity_hash(raw) + content).encode()).hexdigest()
         if dedupe in seen:
             continue

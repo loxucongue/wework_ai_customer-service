@@ -157,6 +157,47 @@ def test_candidate_loader_excludes_platform_auto_opening_variant(
     assert [row["source_request_id"] for row in rows] == ["customer"]
 
 
+def test_candidate_loader_excludes_isolated_evaluation_traces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    common = {
+        "corp_id": "corp",
+        "wechat": "sl8003",
+        "external_userid": "external",
+        "customer_id": "customer",
+        "content": "想了解一下效果",
+        "reply_source": "main_model",
+    }
+    (tmp_path / "isolated.json").write_text(
+        json.dumps(
+            {
+                **common,
+                "request_id": "isolated",
+                "request_context": {"test_isolated": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "production.json").write_text(
+        json.dumps(
+            {
+                **common,
+                "request_id": "production",
+                "request_context": {"test_isolated": False},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(load_candidates.__globals__, "RUNS_ROOT", tmp_path)
+
+    rows = load_candidates(7)
+
+    assert [row["source_request_id"] for row in rows] == ["production"]
+
+
 def test_metrics_use_conditional_adoption_denominator() -> None:
     judged = {
         "expected_intent": "blocker_expression",
