@@ -336,11 +336,10 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
         lambda: _validate_parallel_payment_boundaries(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_parallel_selected_content_delivery(messages, state),
-        lambda: _validate_appointment_time_facts(messages, state),
-        lambda: _validate_parallel_store_detail_facts(messages, state),
         lambda: _validate_store_resolution_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),
+        lambda: _validate_parallel_appointment_confirmation_facts(messages, state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
     violations: list[str] = []
@@ -353,41 +352,6 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
                 violations.append(detail)
     if violations:
         raise ValueError("parallel_reply_hard_violations::" + ";;".join(violations))
-
-
-def _validate_parallel_store_detail_facts(
-    messages: list[dict[str, Any]],
-    state: dict[str, Any],
-) -> None:
-    """Reject a concrete floor/room answer when the store tool has no such fact."""
-
-    text = _combined_text(messages)
-    if not text or not _asserts_store_floor_or_room(text):
-        return
-    structured = _structured_facts(state)
-    resolution = (
-        structured.get("store_resolution_fact")
-        if isinstance(structured.get("store_resolution_fact"), dict)
-        else {}
-    )
-    store_facts = [
-        item for item in structured.get("store_facts") or [] if isinstance(item, dict)
-    ]
-    recommended = structured.get("recommended_store")
-    if isinstance(recommended, dict):
-        store_facts.append(recommended)
-    has_arrival_fact = any(
-        str(item.get(field) or "").strip()
-        for item in store_facts
-        for field in ("floor", "floor_no", "room", "room_no", "room_number", "arrival_guidance")
-    )
-    if has_arrival_fact:
-        return
-    if (
-        str(resolution.get("requested_detail_kind") or "").strip() == "arrival_guidance"
-        and resolution.get("requested_detail_available") is False
-    ) or not store_facts:
-        raise ValueError("store_arrival_guidance_fact_required")
 
 
 def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -597,74 +561,31 @@ def _validate_parallel_payment_boundaries(messages: list[dict[str, Any]], state:
         if isinstance(item, dict) and str(item.get("type") or "") == "payment_collection"
     ]
     has_payment = bool(payment_messages)
-    reply_action = str(state.get("reply_action") or "none")
+    if not has_payment:
+        return
+    if _parallel_paid_deposit_context(state):
+        raise ValueError("payment_collection_blocked_by_paid_deposit_context")
     payment_assessment = (
         state.get("reply_payment_assessment")
         if isinstance(state.get("reply_payment_assessment"), dict)
         else {}
     )
-    payment_status = str(payment_assessment.get("status") or "unknown")
-    payment_channel = str(state.get("reply_payment_channel") or "").strip()
-    channel_explicit = bool(state.get("reply_payment_channel_explicit"))
-    if not payment_channel:
-        # Compatibility for pre-channel fixtures and in-flight model retries.
-        # This maps an existing structural status; it does not read prose or
-        # decide which payment path the customer intended.
-        payment_channel = (
-            "payment_card"
-            if payment_status == "payment_request" and has_payment
-            else "transfer"
-            if payment_status == "manual_transfer"
-            else "none"
-        )
-    availability = (
-        state.get("reply_payment_channel_availability")
-        if isinstance(state.get("reply_payment_channel_availability"), dict)
-        else {}
-    )
-    if not has_payment:
-        # Action/payment/safety assessments are explanatory model metadata.
-        # They cannot reject a customer-visible answer when no payment card or
-        # write is actually being executed.
-        return
-    if channel_explicit and payment_channel == "payment_card":
-        channel_fact = availability.get("payment_card")
-        if isinstance(channel_fact, dict) and channel_fact.get("available") is False:
-            raise ValueError("payment_channel_unavailable:payment_card")
-    if payment_status in {"manual_transfer", "unverified_paid_claim"}:
-        allowed_actions = {"none", "ask", "offer"} if payment_status == "manual_transfer" else {"none", "ask"}
-        if reply_action not in allowed_actions or has_payment:
-            raise ValueError(f"payment_assessment_blocks_payment_collection:{payment_status}")
-    if channel_explicit and payment_status == "manual_transfer" and payment_channel not in {"transfer", "red_packet"}:
-        raise ValueError("manual_transfer_requires_manual_payment_channel")
-    if channel_explicit and payment_status == "unverified_paid_claim" and payment_channel != "none":
-        raise ValueError("unverified_paid_claim_requires_no_channel")
-    if _parallel_paid_deposit_context(state):
-        raise ValueError("payment_collection_blocked_by_paid_deposit_context")
-    safety = state.get("reply_safety_assessment")
-    safety_status = str(safety.get("status") or "none") if isinstance(safety, dict) else "none"
-    if safety_status in {"health_risk", "complaint_refund", "explicit_reject"}:
-        # This does not parse customer prose. It enforces Reply's own explicit
-        # safety conclusion only when the same output also emits a payment
-        # card. Missing or malformed assessment metadata never blocks a reply.
-        raise ValueError(f"payment_collection_blocked_by_{safety_status}")
+    if str(payment_assessment.get("status") or "") == "unverified_paid_claim":
+        raise ValueError("payment_collection_blocked_by_customer_paid_claim")
     party = state.get("reply_party_size_assessment")
     party_status = str(party.get("status") or "unknown") if isinstance(party, dict) else "unknown"
-    party_refs = party.get("evidence_refs") if isinstance(party, dict) else []
     if party_status == "over_limit":
         raise ValueError("payment_participant_count_confirm_required")
     payment_content = payment_messages[0].get("content") if payment_messages else {}
     payment_amount = int(payment_content.get("amount") or 0) if isinstance(payment_content, dict) else 0
+    if payment_amount not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
+        raise ValueError("invalid_parallel_payment_collection_amount")
     if party_status == "known":
-        if not party_refs:
-            raise ValueError("payment_party_size_requires_customer_evidence")
         expected_amount = payment_amount_for_party_size(party.get("party_size") if isinstance(party, dict) else None)
         if expected_amount is None or payment_amount != expected_amount:
             raise ValueError("payment_collection_amount_conflicts_with_party_size_assessment")
     elif payment_amount != 10:
         raise ValueError("multi_person_payment_requires_known_party_size_assessment")
-    if channel_explicit and payment_channel != "payment_card":
-        raise ValueError("payment_request_requires_payment_card_channel")
 
 
 def _validate_parallel_claimed_deposit_evidence(
@@ -699,17 +620,6 @@ def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
         for item in evidence.get("offer_prior_turn_refs") or []
         if str(item).strip()
     }
-    supporting_key = str(evidence.get("supporting_key") or "").strip()
-    supporting_refs = {
-        str(item).strip()
-        for item in evidence.get("supporting_refs") or []
-        if str(item).strip()
-    }
-    action_refs = {
-        str(item).strip()
-        for item in evidence.get("current_intent_refs") or []
-        if str(item).strip()
-    }
     shared = _parallel_shared_context(state)
     conversation = [item for item in shared.get("conversation") or [] if isinstance(item, dict)]
     prior_assistant_refs = {
@@ -726,11 +636,6 @@ def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
         if isinstance(content_indexes.get("available_sop"), dict)
         else {}
     )
-    content_catalog_by_id = {
-        str(item.get("content_id") or "").strip(): item
-        for item in content_catalog.get("sop_packs") or []
-        if isinstance(item, dict) and str(item.get("content_id") or "").strip()
-    }
     activity_offer_ids = {
         str(item.get("content_id") or "").strip()
         for item in content_catalog.get("sop_packs") or []
@@ -743,48 +648,12 @@ def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
         for item in progress.get("completed_pack_ids") or []
         if str(item).strip() in activity_offer_ids
     }
-    supporting_completed_refs = {
-        f"sop_completed:{str(item).strip()}"
-        for item in progress.get("completed_pack_ids") or []
-        if (content_catalog_item := content_catalog_by_id.get(str(item).strip()))
-        and str(content_catalog_item.get("asset_role") or "").strip()
-        in {"effect_evidence", "objection_support"}
-    }
-    sent_messages = (
-        facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
-    )
-    store_delivery = (
-        sent_messages.get("store_address_delivery")
-        if isinstance(sent_messages.get("store_address_delivery"), dict)
-        else {}
-    )
-    store_delivery_request_id = str(store_delivery.get("request_id") or "").strip()
-    store_delivery_ids = [
-        str(item).strip()
-        for item in store_delivery.get("latest_batch_store_ids") or []
-        if str(item).strip()
-    ]
-    structured_store_delivery_refs = (
-        {f"store_delivery:{store_delivery_request_id}"}
-        if str(store_delivery.get("batch_confidence") or "").strip() == "high"
-        and store_delivery_request_id
-        and store_delivery_ids
-        else set()
-    )
     valid_offer_refs = prior_assistant_refs | completed_refs
     if (
         not offer_refs
         or not offer_refs.issubset(valid_offer_refs)
     ):
         raise ValueError("payment_collection_requires_prior_activity_evidence")
-    if supporting_key not in {"address", "effect", "objection"}:
-        raise ValueError("payment_collection_requires_supporting_sales_key")
-    if not supporting_refs or not supporting_refs.issubset(
-        prior_assistant_refs | supporting_completed_refs | structured_store_delivery_refs
-    ):
-        raise ValueError("payment_collection_requires_prior_supporting_key_evidence")
-    if "current_message" not in action_refs:
-        raise ValueError("payment_collection_requires_current_action_signal_evidence")
 
 
 def _parallel_shared_context(state: dict[str, Any]) -> dict[str, Any]:
@@ -1778,12 +1647,6 @@ def _validate_parallel_appointment_confirmation_facts(
         for item in messages
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     ]
-    if (
-        _customer_asks_direct_visit_or_today_service(state)
-        and not _has_parallel_appointment_confirmation_fact(state)
-        and any(text and _affirmatively_answers_direct_visit_or_today_service(text) for text in text_items)
-    ):
-        raise ValueError("appointment_confirmation_fact_required")
     if not any(text and _asserts_appointment_confirmed(text) for text in text_items):
         return
     if _has_parallel_appointment_confirmation_fact(state):
@@ -2390,16 +2253,6 @@ def _asserts_business_hours(text: str) -> bool:
     )
 
 
-def _asserts_store_floor_or_room(text: str) -> bool:
-    compact = re.sub(r"\s+", "", str(text or ""))
-    if not any(term in compact for term in ("门店", "店在", "大厦", "楼层", "房间", "前台", "地址")):
-        return False
-    return bool(
-        re.search(r"(?:具体)?(?:在|是|位于)?[一二三四五六七八九十百\d]+(?:楼|层)(?:\d+(?:室|号))?(?![吗呢？?])", compact)
-        or re.search(r"(?:房间|房号|室号)(?:是|在|为)?\d+", compact)
-    )
-
-
 def _asserts_address(text: str) -> bool:
     if any(term in text for term in ("地址是", "地址在", "位于")) and any(term in text for term in ("门店", "店", "导航", "地址")):
         return True
@@ -2683,74 +2536,27 @@ def _available_time_fact_supports_availability(item: dict[str, Any]) -> bool:
 
 def _asserts_appointment_confirmed(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
-    standalone_claim = compact.rstrip("，。！？,.!?~～")
-    if standalone_claim in {
-        "已安排",
-        "已经安排",
-        "可以直接到店",
-        "能直接到店",
-        "直接到店即可",
-    }:
-        return True
-    time_token = r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}(?:[:：]\d{2}|点(?:半)?))"
-    matched = any(
+    return any(
         term in compact
         for term in (
-            "已为您约好",
-            "已经为您约好",
-            "已帮您约好",
-            "已经帮您约好",
-            "已预约好",
-            "已经预约好",
-            "已预约",
-            "已经预约",
-            "已约好",
-            "已经约好",
-            "已为您锁定",
-            "已经为您锁定",
-            "已锁定",
             "已留位",
             "已经留位",
-            "已安排好",
-            "已经安排好",
-            "安排好了",
+            "已为您留位",
+            "已经为您留位",
+            "已帮您留位",
+            "已经帮您留位",
+            "预约好了",
+            "约好了",
+            "已预约好",
+            "已经预约好",
+            "已约好",
+            "已经约好",
+            "已预约",
+            "已经预约",
+            "预约成功",
             "已排客",
             "已经排客",
             "排客成功",
-            "预约好了",
-            "准时等您",
-        )
-    )
-    if matched:
-        return True
-    if re.search(rf"{time_token}.{{0,8}}(?:过去|到店|过来|来店)(?:也)?(?:可以|没问题|就行|就好|即可)", compact):
-        return True
-    hold_terms = ("先留着", "帮你留着", "帮您留着", "给你留着", "给您留着", "留好", "预留", "帮你记上", "帮您记上", "先记上")
-    if any(term in compact for term in hold_terms) and (
-        re.search(time_token, compact) or any(term in compact for term in ("时段", "档期", "到店时间"))
-    ):
-        return True
-    if re.search(r"(?:给|帮)?[你您]?.{0,4}改到.{0,10}(?:了|安排好)", compact):
-        return True
-    if re.search(r"(?:我)?(?:给|帮)[你您]?.{0,6}(?:按.{0,8})?(?:改|调|换)(?:到|成|过去)", compact) and not any(
-        term in compact for term in ("确认后", "您确认", "你确认", "要改吗", "是否改", "可以帮")
-    ):
-        return True
-    change_match = re.search(rf"(?:改|调|换)(?:成|到)?{time_token}", compact)
-    if change_match and any(term in compact for term in ("可以", "好的", "行", "到店", "过来", "就行", "没问题")):
-        local_context = compact[max(0, change_match.start() - 6) : change_match.end() + 6]
-        if not any(term in local_context for term in ("确认要", "是否", "要不要", "吗", "？", "?")):
-            return True
-    if re.search(rf"按{time_token}(?:到店|过来|来店|来就行)", compact):
-        return True
-    if re.search(r"(?:我)?(?:帮|给)[你您]?.{0,4}按.{0,12}安排(?:好)?了", compact):
-        return True
-    if re.search(rf"(?:能帮[你您]?|可以帮[你您]?|帮[你您]?|给[你您]?).{{0,4}}留(?:下|住)?{time_token}", compact):
-        return True
-    return bool(
-        re.search(
-            r"锁(?:定|住)?(?:具体)?(?:到店)?(?:时段|时间|今天|明天|后天|上午|下午|晚上|\d{1,2}点)",
-            compact,
         )
     )
 

@@ -1221,10 +1221,8 @@ def _structured_delivery_options(joined: dict[str, Any], *, state: AgentState) -
             "source": "system_payment_collection_contract",
             "constraints": [
                 "this_is_structural_permission_not_a_sales_recommendation",
-                "reply_must_find_current_customer_payment_action_signal",
-                "payment_rule_question_alone_is_not_an_action_signal",
-                "reply_must_choose_action_payment",
-                "reply_must_provide_deposit_evidence",
+                "customer_must_not_already_be_paid_or_claim_paid",
+                "reply_must_cite_prior_activity_and_price_delivery",
                 "reply_must_choose_exactly_one_amount_from_customer_party_size_evidence",
                 "same_turn_max_one_payment_collection",
             ],

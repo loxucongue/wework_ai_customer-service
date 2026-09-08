@@ -33,7 +33,6 @@ from app.graph.nodes.reply_nodes import (
     _validate_parallel_raw_reply_schema,
     _validate_policy_reply_consistency,
     _validate_policy_safety_floor,
-    _validate_required_direct_effect_delivery,
     _validate_selected_content_ids,
 )
 
@@ -262,16 +261,6 @@ def _policy_correction_codes(model_call: dict[str, Any] | None) -> list[str]:
         or "policy_safety_floor_removed:explicit_exit" in error_text
     ):
         codes.append("explicit_exit_same_turn_sales_conflict")
-    if (
-        "policy_decision_pause_marketing_conflict" in error_text
-        or "policy_safety_floor_removed:pause_marketing" in error_text
-    ):
-        codes.append("pause_marketing_same_turn_sales_conflict")
-    if (
-        "policy_decision_active_cardpoint_conflict" in error_text
-        or "policy_safety_floor_removed:active_cardpoint" in error_text
-    ):
-        codes.append("active_cardpoint_same_turn_sales_conflict")
     if "policy_decision_schema_invalid" in error_text:
         codes.append("policy_decision_schema_repaired")
     return codes
@@ -319,8 +308,6 @@ def _reply_failure_diagnostic(model_call: dict[str, Any] | None) -> dict[str, An
         category = "fact_validation"
     patterns = (
         ("policy_decision_explicit_exit_conflict", "policy_explicit_exit_conflict", "policy_safety"),
-        ("policy_decision_pause_marketing_conflict", "policy_pause_marketing_conflict", "policy_safety"),
-        ("policy_decision_active_cardpoint_conflict", "policy_active_cardpoint_conflict", "policy_safety"),
         ("policy_safety_floor_removed", "policy_safety_floor_removed", "policy_safety"),
         ("policy_decision_schema_invalid", "policy_schema_invalid", "policy_contract"),
         ("parking_fact_required", "parking_fact_required", "fact_validation"),
@@ -396,18 +383,6 @@ def _policy_safety_failure_recovery(
     ):
         recovery_kind = "explicit_exit"
         text = "好的，知道了，之后不再打扰您。"
-    elif (
-        "policy_decision_pause_marketing_conflict" in error_text
-        or "policy_safety_floor_removed:pause_marketing" in error_text
-    ):
-        recovery_kind = "pause_marketing"
-        text = "您稍等一下"
-    elif (
-        "policy_decision_active_cardpoint_conflict" in error_text
-        or "policy_safety_floor_removed:active_cardpoint" in error_text
-    ):
-        recovery_kind = "active_cardpoint"
-        text = "您稍等一下"
     elif "policy_decision_schema_invalid" in error_text:
         recovery_kind = "schema_invalid"
         text = "您稍等一下"
@@ -991,7 +966,6 @@ def _validated_parallel_reply_payload(
     _validate_parallel_raw_reply_schema(payload)
     _validate_policy_reply_consistency(payload, state)
     _validate_policy_safety_floor(payload, state, safety_floor)
-    _validate_required_direct_effect_delivery(payload, state)
     validation_state = _reply_validation_state(state, payload)
     messages = validated_model_messages(payload, validation_state)
     messages = _prepare_structural_messages(messages, validation_state, warnings)
