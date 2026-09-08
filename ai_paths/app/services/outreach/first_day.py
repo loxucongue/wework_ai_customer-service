@@ -3485,6 +3485,74 @@ class FirstDayWorkflow:
                 external_userid=identity["external_userid"],
             )
             if active:
+                plan = active.get("plan") if isinstance(active.get("plan"), dict) else {}
+                source_snapshot = (
+                    plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+                )
+                trigger_context = (
+                    source_snapshot.get("trigger_context")
+                    if isinstance(source_snapshot.get("trigger_context"), dict)
+                    else {}
+                )
+                plan_id = _string(plan.get("id"))
+                if (
+                    auto_activate
+                    and plan_id
+                    and _string(plan.get("status")) == "draft"
+                    and _is_first_day_opened_silence_trigger(trigger_context)
+                    and _string(trigger_context.get("activation_policy")) == "auto_approved"
+                ):
+                    try:
+                        activated = await asyncio.to_thread(self.planning._auto_approve_plan, plan_id)
+                    except Exception as exc:
+                        run_id = _string(source_snapshot.get("workflow_run_id")) or _string(
+                            existing_run.get("workflow_run_id")
+                        )
+                        if run_id and callable(getattr(self.repository, "update_first_day_outreach_run", None)):
+                            await asyncio.to_thread(
+                                self.repository.update_first_day_outreach_run,
+                                run_id,
+                                status="created",
+                                reason_code="plan_auto_approve_retry_pending",
+                                final_decision="send_pending",
+                                error_node="plan_auto_approve",
+                                error_type=type(exc).__name__,
+                                error_message=str(exc)[:4000],
+                                next_retry_at=(
+                                    datetime.now(timezone.utc) + timedelta(seconds=60)
+                                ).isoformat(),
+                            )
+                        return {
+                            "status": "error",
+                            "customer_id": customer_id,
+                            "reason": "plan_auto_approve_failed",
+                            "plan_id": plan_id,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    run_id = _string(source_snapshot.get("workflow_run_id")) or _string(
+                        existing_run.get("workflow_run_id")
+                    )
+                    if run_id and callable(getattr(self.repository, "update_first_day_outreach_run", None)):
+                        await asyncio.to_thread(
+                            self.repository.update_first_day_outreach_run,
+                            run_id,
+                            status="created",
+                            reason_code="draft_plan_reactivated",
+                            final_decision="send_pending",
+                            error_node="",
+                            error_type="",
+                            error_message="",
+                            finished_at="",
+                            next_retry_at="",
+                        )
+                    return {
+                        "status": "evaluated",
+                        "customer_id": customer_id,
+                        "created": True,
+                        "reason": "draft_plan_reactivated",
+                        "plan_id": plan_id,
+                        "result": activated,
+                    }
                 return {"status": "skipped", "customer_id": customer_id, "reason": "nonterminal_plan_exists"}
             if existing_run:
                 workflow_run_id = _string(existing_run.get("workflow_run_id"))
@@ -3904,8 +3972,24 @@ class FirstDayWorkflow:
             if not plan_id:
                 raise RuntimeError("first_day_silence_plan_missing_id")
             if auto_activate:
-                activated = self.planning._auto_approve_plan(plan_id)
-                result = {**result, **activated, "auto_approved": True}
+                try:
+                    activated = await asyncio.to_thread(self.planning._auto_approve_plan, plan_id)
+                    result = {**result, **activated, "auto_approved": True}
+                except Exception as exc:
+                    await _update_run(
+                        status="created",
+                        reason_code="plan_auto_approve_retry_pending",
+                        final_decision="send_pending",
+                        error_node="plan_auto_approve",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc)[:4000],
+                        next_retry_at=(datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+                    )
+                    result = {
+                        **result,
+                        "auto_approved": False,
+                        "auto_approve_warning": f"{type(exc).__name__}: {exc}",
+                    }
             return {
                 "status": "evaluated",
                 "customer_id": customer_id,

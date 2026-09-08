@@ -1426,6 +1426,7 @@ class OutreachRepositoryMixin:
         now = utc_now_iso()
         plan_id = str(uuid4())
         task_ids: list[str] = []
+        created_tasks: list[dict[str, Any]] = []
         with self.store.connect() as conn:
             conn.execute(
                 """
@@ -1455,6 +1456,18 @@ class OutreachRepositoryMixin:
             for index, task in enumerate(tasks, start=1):
                 task_id = str(uuid4())
                 task_ids.append(task_id)
+                stored_task = {
+                    **dict(task),
+                    "id": task_id,
+                    "plan_id": plan_id,
+                    "customer_id": customer_id,
+                    "step_index": int(task.get("step_index") or index),
+                    "scheduled_at": str(task.get("scheduled_at") or now),
+                    "status": "pending",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                created_tasks.append(stored_task)
                 conn.execute(
                     """
                     INSERT INTO outreach_tasks
@@ -1492,25 +1505,31 @@ class OutreachRepositoryMixin:
                         workflow_run_id,
                     ),
                 )
-        self.add_outreach_event(
-            plan_id=plan_id,
-            task_id="",
-            customer_id=customer_id,
-            event_type="plan_created",
-            event_summary="AI generated outreach plan",
-            payload=source_snapshot,
-        )
+        try:
+            self.add_outreach_event(
+                plan_id=plan_id,
+                task_id="",
+                customer_id=customer_id,
+                event_type="plan_created",
+                event_summary="AI generated outreach plan",
+                payload=source_snapshot,
+            )
+        except Exception:
+            pass
         observe_identity = getattr(self, "observe_customer_identity", None)
         if callable(observe_identity):
-            observe_identity(
-                corp_id=corp_id,
-                wechat=wechat,
-                external_userid=external_userid,
-                customer_id=customer_id,
-                user_id=user_id,
-                customer_add_wechat_id=_string(source_snapshot.get("customer_add_wechat_id")),
-                source="outreach_plan",
-            )
+            try:
+                observe_identity(
+                    corp_id=corp_id,
+                    wechat=wechat,
+                    external_userid=external_userid,
+                    customer_id=customer_id,
+                    user_id=user_id,
+                    customer_add_wechat_id=_string(source_snapshot.get("customer_add_wechat_id")),
+                    source="outreach_plan",
+                )
+            except Exception:
+                pass
         scope = build_customer_scope(
             corp_id=corp_id,
             wechat=wechat,
@@ -1518,8 +1537,34 @@ class OutreachRepositoryMixin:
             customer_id=customer_id,
         )
         if scope.persistence_allowed:
-            self.update_customer_outreach_state(scope.sales_contact_key, outreach_status="draft", outreach_plan_id=plan_id)
-        return self.get_outreach_plan(plan_id)
+            try:
+                self.update_customer_outreach_state(scope.sales_contact_key, outreach_status="draft", outreach_plan_id=plan_id)
+            except Exception:
+                pass
+        try:
+            return self.get_outreach_plan(plan_id)
+        except Exception:
+            return {
+                "plan": {
+                    "id": plan_id,
+                    "sop_plan_id": sop_plan_id,
+                    "customer_id": customer_id,
+                    "corp_id": corp_id,
+                    "user_id": user_id,
+                    "wechat": wechat,
+                    "external_userid": external_userid,
+                    "status": "draft",
+                    "customer_stage": customer_stage,
+                    "stall_reason": stall_reason,
+                    "customer_psychology": customer_psychology,
+                    "plan_goal": plan_goal,
+                    "source_snapshot": source_snapshot,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+                "tasks": created_tasks,
+                "events": [],
+            }
 
     def get_outreach_plan(self, plan_id: str) -> dict[str, Any]:
         with self.store.connect() as conn:
@@ -1839,12 +1884,30 @@ class OutreachRepositoryMixin:
                 customer_id=plan["customer_id"],
             )
             if scope.persistence_allowed:
-                self.update_customer_outreach_state(
-                    scope.sales_contact_key,
-                    outreach_status=status,
-                    outreach_plan_id=plan_id if status not in {"cancelled", "completed"} else "",
-                )
-        return self.get_outreach_plan(plan_id)
+                try:
+                    self.update_customer_outreach_state(
+                        scope.sales_contact_key,
+                        outreach_status=status,
+                        outreach_plan_id=plan_id if status not in {"cancelled", "completed"} else "",
+                    )
+                except Exception:
+                    pass
+        try:
+            return self.get_outreach_plan(plan_id)
+        except Exception:
+            return {
+                "plan": {
+                    "id": plan_id,
+                    "status": status,
+                    "customer_id": str(plan["customer_id"] or "") if plan else "",
+                    "corp_id": str(plan["corp_id"] or "") if plan else "",
+                    "wechat": str(plan["wechat"] or "") if plan else "",
+                    "external_userid": str(plan["external_userid"] or "") if plan else "",
+                    "updated_at": now,
+                },
+                "tasks": [],
+                "events": [],
+            }
 
     def skip_remaining_outreach_tasks(
         self,
