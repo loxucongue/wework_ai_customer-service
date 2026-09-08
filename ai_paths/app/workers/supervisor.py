@@ -96,7 +96,9 @@ class WorkerSupervisor:
             "monitor_poll_seconds": float(self.settings.outreach_plan_monitor_poll_seconds),
             "daily_plan_limit": None,
             "daily_task_limit": None,
-            "task_count_source": "follow_sequence_nodes_or_selected_mainline_sources",
+            "task_count_source": (
+                "follow_sequence_nodes_or_selected_mainline_sources_or_conversion_action"
+            ),
             "quiet_hours": {
                 "start": getattr(self.settings, "outreach_quiet_hours_start", "22:00"),
                 "end": getattr(self.settings, "outreach_quiet_hours_end", "08:00"),

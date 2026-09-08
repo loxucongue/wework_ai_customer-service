@@ -1610,6 +1610,8 @@ def _first_day_history_texts(plan: dict[str, Any], context: dict[str, Any]) -> l
             continue
         output.extend(_message_visible_texts(message))
     output.extend(_nested_sop_texts(source_snapshot.get("recent_sop_delivery")))
+    output.extend(_nested_sop_texts(source_snapshot.get("recent_outreach_delivery")))
+    output.extend(_nested_sop_texts(context.get("recent_outreach_delivery")))
     return list(dict.fromkeys(text for text in output if _normalize_repeat_text(text)))
 
 
@@ -1630,8 +1632,6 @@ def _first_day_message_policy_error(
     for term in FIRST_DAY_UNSUPPORTED_STORE_ACTIONS:
         if term in visible_text:
             return "first_day_unsupported_store_action", term
-    if step_index != 1:
-        return "", ""
     candidates = [visible_text, *texts]
     for candidate in candidates:
         normalized_candidate = _normalize_repeat_text(candidate)

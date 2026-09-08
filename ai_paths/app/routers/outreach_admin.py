@@ -120,7 +120,9 @@ def _settings_response(settings: Settings) -> dict[str, Any]:
         "contact_age_limited": False,
         "daily_plan_limit": None,
         "daily_task_limit": None,
-        "task_count_source": "follow_sequence_nodes_or_selected_mainline_sources",
+        "task_count_source": (
+            "follow_sequence_nodes_or_selected_mainline_sources_or_conversion_action"
+        ),
         "quiet_hours": {
             "start": settings.outreach_quiet_hours_start,
             "end": settings.outreach_quiet_hours_end,
