@@ -314,7 +314,7 @@ def test_consume_retry_reuses_exact_msg_id_without_resending_customer_message() 
     ]
 
 
-def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_closed_as_70() -> None:
+def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_quarantined() -> None:
     service, _repository, platform, system, _events = _service()
 
     result = asyncio.run(service.process_task(_task()))
@@ -329,9 +329,11 @@ def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_closed
     legacy_result = asyncio.run(legacy_service.process_task(_task(), recovery_status="platform_processing"))
 
     assert legacy_result["reason"] == "legacy_execution_disabled"
+    assert legacy_result["status"] == "legacy_recovery_quarantined"
+    assert legacy_result["processed"] is False
     assert legacy_system.send_calls == []
     assert "sop_messages" not in legacy_events
-    assert [(call["status"], call.get("messages")) for call in legacy_platform.consume_calls] == [(70, None)]
+    assert legacy_platform.consume_calls == []
 
 
 def test_manual_resend_is_disabled_to_prevent_implicit_message_consumption() -> None:

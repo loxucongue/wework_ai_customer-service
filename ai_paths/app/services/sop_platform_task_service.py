@@ -749,6 +749,22 @@ class SopPlatformTaskService:
                     phase="recovery_load_payload",
                 )
                 return 0
+            task_id = _task_id(task)
+            local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
+            local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            processing_mode = str(local_audit.get("processing_mode") or "")
+            if processing_mode not in {"deterministic_customer_gate", "deterministic_task_no_send"}:
+                # Tasks persisted by the removed execution path must never be
+                # replayed through the new direct-send contract. Keep them
+                # reserved for audit/manual reconciliation without sending or
+                # consuming either the platform task or a message msgId.
+                reserved_ids = getattr(self, "_reserved_prefix_ids", None)
+                if not isinstance(reserved_ids, set):
+                    reserved_ids = set()
+                    self._reserved_prefix_ids = reserved_ids
+                reserved_ids.add(task_id)
+                self._counters["legacy_recovery_quarantined"] += 1
+                return 0
             # The platform keeps unconsumed tasks in the pending feed, so an
             # orphan can remain queued or in flight indefinitely. Recovery must
             # still inspect its durable dispatch. The task lock, delivery
@@ -937,14 +953,18 @@ class SopPlatformTaskService:
             local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             processing_mode = str(local_audit.get("processing_mode") or "")
             if processing_mode not in {"deterministic_customer_gate", "deterministic_task_no_send"}:
-                return await self._consume_batch_without_send(
-                    [platform_task],
-                    reason="legacy_execution_disabled",
-                    batch_key=_customer_batch_key(platform_task),
-                    biz_type=str(platform_task.get("_aics_biz_type") or "online_service"),
-                    batch_run_id=f"legacy-recovery:{task_id}",
-                    audit_context={"previous_recovery_status": recovery_status},
-                )
+                reserved_ids = getattr(self, "_reserved_prefix_ids", None)
+                if not isinstance(reserved_ids, set):
+                    reserved_ids = set()
+                    self._reserved_prefix_ids = reserved_ids
+                reserved_ids.add(task_id)
+                self._counters["legacy_recovery_quarantined"] += 1
+                return {
+                    "processed": False,
+                    "status": "legacy_recovery_quarantined",
+                    "task_id": task_id,
+                    "reason": "legacy_execution_disabled",
+                }
             duplicate_key = _platform_duplicate_send_once_key(platform_task)
             if duplicate_key:
                 content_lock = self._locks.setdefault(f"platform-content:{duplicate_key}", asyncio.Lock())
@@ -1003,7 +1023,29 @@ class SopPlatformTaskService:
                 batch_run_id=batch_run_id,
             )
         phase_started = time.perf_counter()
-        await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
+        _event, local_task = await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
+        local_task_id = str(local_task.get("id") or "")
+        repository = getattr(self, "repository", None)
+        update_local_task = getattr(repository, "update_sop_send_task", None)
+        if local_task_id and callable(update_local_task):
+            previous_audit = (
+                local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            )
+            await asyncio.to_thread(
+                update_local_task,
+                local_task_id,
+                status="platform_queued",
+                send_payload={
+                    **previous_audit,
+                    "audit_schema_version": 4,
+                    "processing_mode": "deterministic_customer_gate",
+                    "batch_run_id": batch_run_id,
+                    "batch_key": batch_key,
+                    "biz_type": biz_type,
+                    "batch_task_ids": batch_task_ids,
+                },
+                error="",
+            )
         self._log_task_phase(
             task_id=batch_task_ids[0],
             phase="persist_local_tasks",
