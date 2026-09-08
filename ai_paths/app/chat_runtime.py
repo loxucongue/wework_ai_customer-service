@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import html
+import json
 import time
+import zlib
 from contextlib import suppress
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -858,35 +861,61 @@ class ChatRuntime:
                 final_state,
                 customer_id=str(final_state.get("sales_contact_key") or ""),
             )
+        deferred_finalization = False
+        log_path: Any = ""
         if reply_messages and not bool(final_state.get("test_isolated")):
-            safe_repository_call(
-                self._repository.add_assistant_message,
-                conversation_id=conversation_id,
-                request_id=request_id,
-                reply_messages=reply_message_dicts,
-            )
-            if _memory_persistence_allowed(final_state):
-                self._record_reply_memory(
-                    final_state=final_state,
-                    reply_messages=reply_message_dicts,
-                )
-            if self._service_rule_data_service:
+            save_reply_core = getattr(self._repository, "save_v3_reply_core", None)
+            if callable(save_reply_core):
                 try:
-                    final_state["strategy_data_callback"] = (
-                        self._service_rule_data_service.enqueue_customer_open(final_state)
+                    save_reply_core(
+                        conversation_id=conversation_id,
+                        final_state=final_state,
+                        reply_messages=reply_message_dicts,
+                        token_usage=model_usage["summary"],
+                        deferred_payload=_deferred_state_payload(final_state),
                     )
-                except Exception as exc:
-                    final_state["strategy_data_callback"] = {
-                        "status": "error",
-                        "reason": f"{type(exc).__name__}: {exc}"[:500],
+                    deferred_finalization = True
+                    final_state["post_reply_finalization"] = {
+                        "status": "pending",
+                        "mode": "durable_worker",
                     }
+                except Exception as exc:
                     final_state.setdefault("warnings", []).append(
                         {
-                            "node": "strategy_data_callback",
-                            "message": "strategy_data_callback_enqueue_failed",
+                            "node": "post_reply_finalization",
+                            "message": "durable_finalization_enqueue_failed",
                             "detail": f"{type(exc).__name__}: {exc}",
                         }
                     )
+            if not deferred_finalization:
+                if _memory_persistence_allowed(final_state):
+                    self._record_reply_memory(
+                        final_state=final_state,
+                        reply_messages=reply_message_dicts,
+                    )
+                safe_repository_call(
+                    self._repository.add_assistant_message,
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                    reply_messages=reply_message_dicts,
+                )
+                if self._service_rule_data_service:
+                    try:
+                        final_state["strategy_data_callback"] = (
+                            self._service_rule_data_service.enqueue_customer_open(final_state)
+                        )
+                    except Exception as exc:
+                        final_state["strategy_data_callback"] = {
+                            "status": "error",
+                            "reason": f"{type(exc).__name__}: {exc}"[:500],
+                        }
+                        final_state.setdefault("warnings", []).append(
+                            {
+                                "node": "strategy_data_callback",
+                                "message": "strategy_data_callback_enqueue_failed",
+                                "detail": f"{type(exc).__name__}: {exc}",
+                            }
+                        )
         elif reply_messages:
             final_state["case_image_send_record"] = {
                 "status": "skipped",
@@ -895,7 +924,7 @@ class ChatRuntime:
                     [message for message in reply_messages if message.type == "image"]
                 ),
             }
-        if self._outreach_service is not None:
+        if not deferred_finalization and self._outreach_service is not None:
             try:
                 final_state["closing_sequence_shadow"] = self._outreach_service.record_closing_sequence_shadow(
                     final_state
@@ -912,26 +941,27 @@ class ChatRuntime:
                         "warning": "Closing sequence shadow audit failed; no delayed customer message was sent.",
                     }
                 )
-        log_path = self._trace_logger.write_run(final_state)
-        safe_repository_call(
-            self._repository.save_run,
-            conversation_id=conversation_id,
-            final_state=final_state,
-            token_usage=model_usage["summary"],
-        )
-        try:
-            final_state["v3_strategy_usage_event"] = self._repository.record_v3_strategy_usage(
+        if not deferred_finalization:
+            log_path = self._trace_logger.write_run(final_state)
+            safe_repository_call(
+                self._repository.save_run,
                 conversation_id=conversation_id,
                 final_state=final_state,
+                token_usage=model_usage["summary"],
             )
-        except Exception as exc:
-            final_state.setdefault("warnings", []).append(
-                {
-                    "node": "v3_strategy_analytics",
-                    "message": "usage_event_persistence_failed",
-                    "detail": f"{type(exc).__name__}: {exc}",
-                }
-            )
+            try:
+                final_state["v3_strategy_usage_event"] = self._repository.record_v3_strategy_usage(
+                    conversation_id=conversation_id,
+                    final_state=final_state,
+                )
+            except Exception as exc:
+                final_state.setdefault("warnings", []).append(
+                    {
+                        "node": "v3_strategy_analytics",
+                        "message": "usage_event_persistence_failed",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
 
         return ChatResponse(
             request_id=request_id,
@@ -985,6 +1015,7 @@ class ChatRuntime:
                 "sop_gate": final_state.get("sop_gate", {}),
                 "strategy_data_callback": final_state.get("strategy_data_callback", {}),
                 "follow_knowledge_callback": final_state.get("follow_knowledge_callback", {}),
+                "post_reply_finalization": final_state.get("post_reply_finalization", {}),
                 "conversation_id": conversation_id,
             },
         )
@@ -995,71 +1026,11 @@ class ChatRuntime:
         final_state: AgentState,
         reply_messages: list[dict[str, Any]],
     ) -> None:
-        memory_store = self._memory_store
-        customer_id = str(final_state.get("sales_contact_key") or "")
-        if memory_store is None or not customer_id:
-            return
-        # All mutations below belong to the same visible reply.  Persisting
-        # them as one memory snapshot preserves their semantics while avoiding
-        # repeated remote load/save round trips on the synchronous response path.
-        with memory_store.write_batch(customer_id):
-            _record_authoritative_payment_fact(
-                memory_store,
-                final_state,
-                customer_id=customer_id,
-            )
-            _record_sent_case_images(
-                memory_store,
-                final_state,
-                customer_id=customer_id,
-                reply_messages=reply_messages,
-            )
-            _record_activity_intro_image(
-                memory_store,
-                final_state,
-                customer_id=customer_id,
-                reply_messages=reply_messages,
-                send_mode="sync",
-            )
-            _record_visible_store_facts(
-                memory_store,
-                final_state,
-                customer_id=customer_id,
-                reply_messages=reply_messages,
-            )
-            try:
-                _record_reply_model_observation(
-                    memory_store,
-                    final_state,
-                    customer_id=customer_id,
-                )
-            except Exception as exc:
-                final_state.setdefault("warnings", []).append(
-                    {
-                        "node": "reply_model_observation",
-                        "message": "observation_persistence_failed",
-                        "detail": f"{type(exc).__name__}: {exc}",
-                    }
-                )
-            try:
-                _record_follow_knowledge_match(
-                    memory_store,
-                    final_state,
-                    customer_id=customer_id,
-                )
-                _record_follow_knowledge_usage(
-                    memory_store,
-                    final_state,
-                    customer_id=customer_id,
-                )
-            except Exception as exc:
-                final_state.setdefault("warnings", []).append(
-                    {
-                        "node": "follow_knowledge_usage",
-                        "message": "knowledge_usage_persistence_failed",
-                        "detail": f"{type(exc).__name__}: {exc}",
-                    }
-                )
+        record_reply_memory(
+            self._memory_store,
+            final_state=final_state,
+            reply_messages=reply_messages,
+        )
 
     def _save_state(self, conversation_id: str, state: AgentState) -> None:
         self._trace_logger.write_run(state)
@@ -1069,6 +1040,59 @@ class ChatRuntime:
             final_state=state,
             token_usage=collect_model_usage(state.get("trace", []))["summary"],
         )
+
+
+def record_reply_memory(
+    memory_store: CustomerMemoryStore | None,
+    *,
+    final_state: AgentState,
+    reply_messages: list[dict[str, Any]],
+) -> None:
+    customer_id = str(final_state.get("sales_contact_key") or "")
+    if memory_store is None or not customer_id:
+        return
+    with memory_store.write_batch(customer_id):
+        _record_authoritative_payment_fact(memory_store, final_state, customer_id=customer_id)
+        _record_sent_case_images(
+            memory_store,
+            final_state,
+            customer_id=customer_id,
+            reply_messages=reply_messages,
+        )
+        _record_activity_intro_image(
+            memory_store,
+            final_state,
+            customer_id=customer_id,
+            reply_messages=reply_messages,
+            send_mode="sync",
+        )
+        _record_visible_store_facts(
+            memory_store,
+            final_state,
+            customer_id=customer_id,
+            reply_messages=reply_messages,
+        )
+        try:
+            _record_reply_model_observation(memory_store, final_state, customer_id=customer_id)
+        except Exception as exc:
+            final_state.setdefault("warnings", []).append(
+                {
+                    "node": "reply_model_observation",
+                    "message": "observation_persistence_failed",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        try:
+            _record_follow_knowledge_match(memory_store, final_state, customer_id=customer_id)
+            _record_follow_knowledge_usage(memory_store, final_state, customer_id=customer_id)
+        except Exception as exc:
+            final_state.setdefault("warnings", []).append(
+                {
+                    "node": "follow_knowledge_usage",
+                    "message": "knowledge_usage_persistence_failed",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
 
 
 def _image_urls_from_request(request: ChatRequest, request_context: dict[str, Any]) -> list[str]:
@@ -1111,7 +1135,41 @@ def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, 
     state["fallback_retry_count"] = len(state.get("recovery_attempts") or [])
     state["fallback_violation"] = str(state.get("recovery_reason") or "")[:500]
     state["fallback_remaining_budget"] = runtime_budget_snapshot(state, tier="reply")
-    return [{"type": "text", "order": 1, "content": {"text": RUNTIME_SAFE_FALLBACK_TEXT}}]
+    return [{"type": "text", "order": 1, "content": RUNTIME_SAFE_FALLBACK_TEXT}]
+
+
+def _deferred_state_payload(state: AgentState) -> dict[str, Any]:
+    """Return a JSON-safe, credential-scrubbed copy for durable finalization."""
+
+    secret_fragments = ("token", "authorization", "api_key", "apikey", "password", "secret")
+
+    def scrub(value: Any, key: str = "") -> Any:
+        normalized_key = key.lower()
+        if any(fragment in normalized_key for fragment in secret_fragments):
+            return "[redacted]"
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if value.startswith("data:image/") and ";base64," in value:
+                return f"[base64 image omitted: {len(value)} chars]"
+            return value[:100000]
+        if isinstance(value, dict):
+            return {str(item_key): scrub(item_value, str(item_key)) for item_key, item_value in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [scrub(item) for item in value]
+        return str(value)
+
+    scrubbed = scrub(state)
+    if not isinstance(scrubbed, dict):
+        return {}
+    # A serialization round trip proves the job can survive a process restart.
+    raw = json.dumps(scrubbed, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed = zlib.compress(raw, level=6)
+    return {
+        "encoding": "zlib+base64+json",
+        "uncompressed_bytes": len(raw),
+        "data": base64.b64encode(compressed).decode("ascii"),
+    }
 
 
 def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:

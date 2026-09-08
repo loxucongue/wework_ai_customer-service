@@ -255,9 +255,13 @@ class CustomerMemoryStore:
         data["updated_at"] = now
         events = data.setdefault("history_events", [])
         if isinstance(events, list):
-            events.append(
-                {
-                    "event_id": f"case_image_sent_{request_id or uuid4()}",
+            event_id = f"case_image_sent_{request_id or uuid4()}"
+            if not any(
+                isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+                for item in events
+            ):
+                events.append({
+                    "event_id": event_id,
                     "event_type": "case_image_sent",
                     "event_time": now,
                     "facts": {
@@ -267,8 +271,7 @@ class CustomerMemoryStore:
                         "interface_version": _normalized_interface_version(interface_version),
                     },
                     "source": "reply_delivery",
-                }
-            )
+                })
             data["history_events"] = events[-100:]
         self._persist(customer_id, data)
         return {
@@ -660,15 +663,18 @@ class CustomerMemoryStore:
         data["updated_at"] = now
         events = data.setdefault("history_events", [])
         if isinstance(events, list):
-            events.append(
-                {
-                    "event_id": f"{event_type}_{facts.get('store_id') or store_name}_{request_id or uuid4()}",
+            event_id = f"{event_type}_{facts.get('store_id') or store_name}_{request_id or uuid4()}"
+            if not any(
+                isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+                for item in events
+            ):
+                events.append({
+                    "event_id": event_id,
                     "event_type": event_type,
                     "event_time": now,
                     "facts": facts,
                     "source": "store_tool" if event_type == "store_matched" else "reply_delivery",
-                }
-            )
+                })
             data["history_events"] = events[-100:]
 
         self._persist(customer_id, data)

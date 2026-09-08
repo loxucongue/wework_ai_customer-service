@@ -119,6 +119,8 @@ def test_protocol_message_persists_one_lightweight_idempotent_run(tmp_path: Path
     run = detail["run"]
     assert run["output_snapshot"]["reply_source"] == "ignored_platform_auto_message"
     assert detail["node_traces"][0]["node_name"] == "platform_protocol_filter"
+    listed = repository.list_runs(limit=10)[0]
+    assert listed["business_summary"]["response_kind"] == "protocol_filtered"
 
 
 def test_recalled_message_uses_same_lightweight_path(tmp_path: Path) -> None:

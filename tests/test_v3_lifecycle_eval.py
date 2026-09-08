@@ -14,6 +14,7 @@ from app.schemas import ChatRequest  # noqa: E402
 from app.services.memory_store import CustomerMemoryStore  # noqa: E402
 from app.services.storage import AppRepository, SQLiteStore  # noqa: E402
 from app.services.trace_logger import TraceLogger  # noqa: E402
+from app.services.v3_reply_finalization_service import V3ReplyFinalizationService  # noqa: E402
 from app.services.workflow_compat import workflow_response_from_chat  # noqa: E402
 from scripts.evaluate_v3_full_chain_deepseek import TimedGraph, ephemeral_counts  # noqa: E402
 
@@ -79,6 +80,15 @@ def test_ephemeral_runtime_executes_persistence_and_response_tail(tmp_path: Path
     public_body = workflow_response_from_chat(response)
     repository.update_run_http_response(request_id=response.request_id, response_body=public_body)
     json.dumps(public_body, ensure_ascii=False)
+    pending = repository.get_run(response.request_id)["run"]["output_snapshot"]
+    assert pending["post_reply_finalization"]["status"] == "pending"
+    finalizer = V3ReplyFinalizationService(
+        repository=repository,
+        trace_logger=TraceLogger(settings),
+        service_rule_data_service=None,
+        outreach_service=None,
+    )
+    assert finalizer.process_batch() == {"claimed": 1, "completed": 1, "failed": 0}
     counts = ephemeral_counts(store)
 
     assert response.request_id in graph.final_by_request
@@ -87,5 +97,6 @@ def test_ephemeral_runtime_executes_persistence_and_response_tail(tmp_path: Path
     assert counts["v3_strategy_usage_events"] == 1
     run = repository.get_run(response.request_id)["run"]
     assert run["output_snapshot"]["runtime_status"] == "completed"
+    assert run["output_snapshot"]["post_reply_finalization"]["status"] == "completed"
     assert public_body["data"]["reply_messages"][0]["type"] == "text"
     assert graph.timing_by_request[response.request_id]["graph_duration_ms"] >= 0

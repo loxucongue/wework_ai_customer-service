@@ -40,6 +40,7 @@ from app.services.store_snapshot_service import StoreSnapshotService
 from app.services.trace_logger import TraceLogger
 from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.v3_strategy_outcome_service import PlatformOrderOutcomeProvider
+from app.services.v3_reply_finalization_service import V3ReplyFinalizationService
 from app.services.v3_sop_execution_service import SopExecutionService as V3SopExecutionService
 from app.services.voice_transcription import DoubaoAsrClient
 
@@ -93,6 +94,7 @@ class WorkerServices:
     sop_platform_task_service: SopPlatformTaskService
     store_snapshot_service: StoreSnapshotService
     strategy_outcome_provider: PlatformOrderOutcomeProvider
+    v3_reply_finalization_service: V3ReplyFinalizationService
     _closers: tuple[Any, ...]
     _platform_agent_client: PlatformAgentClient
 
@@ -304,6 +306,8 @@ def build_control_services(settings: Settings) -> ControlServices:
 
 def build_worker_services(settings: Settings) -> WorkerServices:
     storage_store, repository = _build_repository(settings)
+    trace_logger = TraceLogger(settings)
+    memory_store = CustomerMemoryStore(settings, repository)
     message_delivery_service = MessageDeliveryService(settings, repository)
     model_client = ModelClient(settings)
     outreach_model_client = _build_outreach_model_client(settings)
@@ -337,11 +341,19 @@ def build_worker_services(settings: Settings) -> WorkerServices:
         client=sop_failure_alert_client,
     )
     service_rule_data_service = _build_service_rule_data_worker(settings, repository)
+    v3_reply_finalization_service = V3ReplyFinalizationService(
+        repository=repository,
+        trace_logger=trace_logger,
+        service_rule_data_service=service_rule_data_service,
+        outreach_service=outreach_service,
+        memory_store=memory_store,
+    )
     return WorkerServices(
         storage_store=storage_store,
         repository=repository,
         outreach_service=outreach_service,
         service_rule_data_service=service_rule_data_service,
+        v3_reply_finalization_service=v3_reply_finalization_service,
         sop_platform_task_service=SopPlatformTaskService(
             settings=settings,
             repository=repository,
