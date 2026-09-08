@@ -401,39 +401,39 @@ class TaskExecutor:
                         terminal=True,
                     )
                     return {"ok": True, "status": "skipped", "reason": "customer_replied"}
-                # First-day silence is conversation-driven and intentionally
-                # skips the platform order read; other automatic plans retain it.
-                if not is_first_day_plan:
-                    order_gate = await self._refresh_order_eligibility(task=task, plan=plan)
-                    if not order_gate.get("available"):
-                        raise RuntimeError(
-                            f"before_send_order_check_unavailable: {order_gate.get('reason') or 'unknown'}"
-                        )
-                    if not order_gate.get("eligible"):
-                        self.repository.update_outreach_task(task_id, status="skipped")
-                        self.repository.skip_remaining_outreach_tasks(
-                            str(task["plan_id"]),
-                            reason="customer_order_state_changed",
-                            exclude_task_id=task_id,
-                        )
-                        self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
-                        self.repository.add_outreach_event(
-                            plan_id=str(task["plan_id"]),
-                            task_id=task_id,
-                            customer_id=str(task["customer_id"]),
-                            event_type="task_skipped_order_state_changed",
-                            event_summary="Customer order state changed before outreach execution",
-                            payload=order_gate,
-                        )
-                        self.first_day._sync_first_day_run_for_task(
-                            plan=plan,
-                            task=task,
-                            status="cancelled",
-                            reason_code="order_state_changed",
-                            final_decision="cancelled",
-                            terminal=True,
-                        )
-                        return {"ok": True, "status": "skipped", "reason": "order_state_changed"}
+                # Planning stays conversation-driven, but every automatic send
+                # must re-check the authoritative order state immediately before
+                # delivery so booked or paid customers are never re-marketed.
+                order_gate = await self._refresh_order_eligibility(task=task, plan=plan)
+                if not order_gate.get("available"):
+                    raise RuntimeError(
+                        f"before_send_order_check_unavailable: {order_gate.get('reason') or 'unknown'}"
+                    )
+                if not order_gate.get("eligible"):
+                    self.repository.update_outreach_task(task_id, status="skipped")
+                    self.repository.skip_remaining_outreach_tasks(
+                        str(task["plan_id"]),
+                        reason="customer_order_state_changed",
+                        exclude_task_id=task_id,
+                    )
+                    self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+                    self.repository.add_outreach_event(
+                        plan_id=str(task["plan_id"]),
+                        task_id=task_id,
+                        customer_id=str(task["customer_id"]),
+                        event_type="task_skipped_order_state_changed",
+                        event_summary="Customer order state changed before outreach execution",
+                        payload=order_gate,
+                    )
+                    self.first_day._sync_first_day_run_for_task(
+                        plan=plan,
+                        task=task,
+                        status="cancelled",
+                        reason_code="order_state_changed",
+                        final_decision="cancelled",
+                        terminal=True,
+                    )
+                    return {"ok": True, "status": "skipped", "reason": "order_state_changed"}
             except Exception as exc:
                 message = f"{type(exc).__name__}: {exc}"
                 self.repository.reschedule_outreach_task(

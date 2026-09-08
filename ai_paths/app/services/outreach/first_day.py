@@ -3043,8 +3043,9 @@ class FirstDayWorkflow:
     ) -> None:
         self.repository = repository
         self.model_client = model_client
-        # Kept for runtime constructor compatibility. First-day silence is
-        # intentionally conversation-driven and never loads order data.
+        # Kept for runtime constructor compatibility. First-day plan generation
+        # is conversation-driven; the executor still validates the authoritative
+        # order state immediately before each automatic send.
         _ = customer_context_service
         self.first_day_wechat_allowlist = first_day_wechat_allowlist
         self.planning = planning

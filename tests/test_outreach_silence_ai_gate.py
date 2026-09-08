@@ -723,15 +723,7 @@ def test_first_day_silence_plan_does_not_load_platform_order_context() -> None:
     assert "customer_context" not in planning.source_context
 
 
-def test_first_day_silence_send_does_not_load_platform_order_context() -> None:
-    class NoOrderContext:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def load(self, **_: object) -> dict[str, object]:
-            self.calls += 1
-            raise AssertionError("first-day silence send must not load platform order context")
-
+def test_first_day_silence_send_rechecks_and_blocks_terminal_order() -> None:
     class Planning:
         async def refresh_customer_conversation(self, **_: object) -> dict[str, object]:
             return {
@@ -745,17 +737,25 @@ def test_first_day_silence_send_does_not_load_platform_order_context() -> None:
         def _customer_replied_after_plan(*_: object) -> bool:
             return False
 
-    order_context = NoOrderContext()
+    repository = _Repository()
     executor = TaskExecutor(
-        repository=_Repository(),
+        repository=repository,
         system_client=_StatusClient(),
-        customer_context_service=order_context,
+        customer_context_service=None,
         before_send_retry_seconds=60,
         first_day_wechat_allowlist="",
         planning=Planning(),
         first_day=_FirstDayRecorder(),
         message=object(),
     )
+    order_check_calls = 0
+
+    async def terminal_order_check(**_: object) -> dict[str, object]:
+        nonlocal order_check_calls
+        order_check_calls += 1
+        return {"available": True, "eligible": False, "reason": "order_state_changed"}
+
+    executor._refresh_order_eligibility = terminal_order_check  # type: ignore[method-assign]
     task = {"id": "task-1", "plan_id": "plan-1", "customer_id": "customer-1", "before_send_check": True}
     result = asyncio.run(
         executor._check_send_eligibility(
@@ -776,8 +776,9 @@ def test_first_day_silence_send_does_not_load_platform_order_context() -> None:
         )
     )
 
-    assert result is None
-    assert order_context.calls == 0
+    assert result == {"ok": True, "status": "skipped", "reason": "order_state_changed"}
+    assert order_check_calls == 1
+    assert ("update_plan", ("plan-1", "cancelled")) in repository.actions
 
 
 def test_non_first_day_send_keeps_platform_order_context_check() -> None:
