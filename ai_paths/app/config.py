@@ -323,7 +323,7 @@ class Settings(BaseSettings):
     outreach_auto_send_poll_seconds: float = Field(default=5.0, alias="OUTREACH_AUTO_SEND_POLL_SECONDS")
     outreach_auto_send_batch_size: int = Field(default=20, alias="OUTREACH_AUTO_SEND_BATCH_SIZE")
     outreach_before_send_retry_seconds: int = Field(default=60, alias="OUTREACH_BEFORE_SEND_RETRY_SECONDS")
-    outreach_plan_monitor_poll_seconds: float = Field(default=60.0, alias="OUTREACH_PLAN_MONITOR_POLL_SECONDS")
+    outreach_plan_monitor_poll_seconds: float = Field(default=15.0, alias="OUTREACH_PLAN_MONITOR_POLL_SECONDS")
     outreach_plan_monitor_batch_size: int = Field(default=5, alias="OUTREACH_PLAN_MONITOR_BATCH_SIZE")
     outreach_plan_monitor_auto_activate: bool = Field(
         default=True,
