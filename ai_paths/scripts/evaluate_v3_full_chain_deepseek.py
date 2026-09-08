@@ -45,6 +45,7 @@ from app.services.deepseek_semantic_client import DeepSeekSemanticClient  # noqa
 from app.services.follow_knowledge_client import FollowKnowledgeClient  # noqa: E402
 from app.services.model_client import ModelClient  # noqa: E402
 from app.services.memory_store import CustomerMemoryStore  # noqa: E402
+from app.services.outreach_system_client import OutreachSystemClient  # noqa: E402
 from app.services.platform_agent_client import PlatformAgentClient  # noqa: E402
 from app.services.runtime_budget import build_runtime_budget  # noqa: E402
 from app.services.sales_strategy_service import SalesStrategyService  # noqa: E402
@@ -544,6 +545,7 @@ def build_runtime(settings: Settings, audit: dict[str, Any]) -> dict[str, Any]:
     coze_client = CozeClient(settings)
     model_client = ModelClient(settings)
     platform_client = PlatformAgentClient(settings)
+    outreach_system_client = OutreachSystemClient(settings)
     blocked_platform_methods = (
         "prepay_order",
         "create_work_order",
@@ -560,6 +562,8 @@ def build_runtime(settings: Settings, audit: dict[str, Any]) -> dict[str, Any]:
         setattr(platform_client, name, _block_write(f"platform_agent.{name}", audit))
         installed += 1
     audit["write_methods_installed"] = installed
+    outreach_system_client.send = _block_write("outreach_system.send", audit)  # type: ignore[method-assign]
+    audit["write_methods_installed"] += 1
     customer_context = CustomerContextService(platform_client)
     snapshot = StoreSnapshotService(settings, platform_client)
     store_knowledge = CustomerStoreKnowledgeService(platform_client, snapshot)
@@ -575,6 +579,7 @@ def build_runtime(settings: Settings, audit: dict[str, Any]) -> dict[str, Any]:
         "model_client": model_client, "semantic_client": semantic_client,
         "follow_client": follow_client, "coze_client": coze_client,
         "platform_client": platform_client, "policy": policy,
+        "outreach_system_client": outreach_system_client,
         "customer_context": customer_context,
         "store_knowledge": store_knowledge,
         "store_service": StoreService(platform_client),
@@ -669,6 +674,7 @@ def build_case_runtime(
         trace_logger=trace_logger,
         repository=repository,
         memory_store=memory_store,
+        outreach_system_client=shared["outreach_system_client"],
         ai_sales_policy_service=shared["policy"],
         sales_strategy_service=shared["sales_strategy"],
         settings=case_settings,
@@ -980,6 +986,7 @@ async def close_runtime(runtime: dict[str, Any]) -> None:
     await runtime["semantic_client"].aclose()
     await runtime["follow_client"].aclose()
     await runtime["coze_client"].aclose()
+    await runtime["outreach_system_client"].aclose()
     runtime["platform_client"].close()
 
 
