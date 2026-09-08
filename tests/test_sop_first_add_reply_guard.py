@@ -183,7 +183,7 @@ def test_send_path_requires_selected_sop_message_id(monkeypatch: pytest.MonkeyPa
         send_called = True
         return {}
 
-    service._consume_batch_without_send = block
+    service._defer_batch_failure = block
     service.system_client = SimpleNamespace(send=send)
     monkeypatch.setattr(sop_module, "_in_configured_quiet_hours", lambda **_kwargs: False)
     monkeypatch.setattr(sop_module, "_quiet_hours_base_summary", lambda *_args, **_kwargs: {})

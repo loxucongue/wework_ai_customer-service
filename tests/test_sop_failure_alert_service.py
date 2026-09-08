@@ -14,16 +14,27 @@ class _Repository:
         self.created: list[dict[str, Any]] = []
         self.updated: list[tuple[str, str, str]] = []
         self.retry_events: list[dict[str, Any]] = []
+        self.alerts_by_task: dict[str, dict[str, Any]] = {}
 
     def create_sop_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        alert = payload.get("alert") if isinstance(payload.get("alert"), dict) else {}
+        task_id = str(alert.get("task_id") or "")
+        if task_id in self.alerts_by_task:
+            return {**self.alerts_by_task[task_id], "created": False}
         self.created.append(payload)
-        return {**payload, "raw_payload": payload, "created": True, "retry_count": 0}
+        event = {**payload, "raw_payload": payload, "created": True, "retry_count": 0}
+        if task_id:
+            self.alerts_by_task[task_id] = event
+        return event
 
     def update_sop_event_status(self, event_id: str, *, status: str, error: str = "") -> None:
         self.updated.append((event_id, status, error))
 
     def get_sop_send_task_by_idempotency_key(self, _key: str) -> dict[str, Any]:
         return {}
+
+    def find_sop_failure_alert_by_task_id(self, task_id: str) -> dict[str, Any]:
+        return dict(self.alerts_by_task.get(task_id) or {})
 
     def list_sop_events_by_statuses(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return list(self.retry_events)
@@ -58,6 +69,9 @@ def _service() -> tuple[SopFailureAlertService, _Repository, _Client]:
         {"status": "accepted"},
         {"status": "platform_delivery_pending"},
         {"status": "platform_send_uncertain"},
+        {"status": "completed_without_send", "reason": "customer_already_opened"},
+        {"status": "platform_completed"},
+        {"status": "send_failed", "reason": "customer_already_opened"},
         {"status": "recovery_waiting", "reason": "delivery_not_confirmed"},
     ],
 )
@@ -119,6 +133,69 @@ def test_actionable_send_failure_still_creates_and_delivers_alert() -> None:
     assert len(repository.created) == 1
     assert len(client.sent) == 1
     assert repository.updated[-1][1] == "alert_sent"
+    assert "责任方向：我方主动发送链路" in client.sent[0][1]
+
+
+@pytest.mark.parametrize(
+    ("reason", "phase", "failure_type", "responsibility"),
+    [
+        ("send_interface_timeout:TimeoutError", "queue_process", "接口超时", "我方主动发送链路"),
+        ("missing_identity:corp_id", "queue_process", "任务缺少必填参数", "第三方 SOP 平台"),
+        ("sop_messages_empty", "queue_process", "第三方任务内容不完整", "第三方 SOP 平台"),
+        (
+            "customer_gate_query_failed:ConnectTimeout",
+            "queue_process",
+            "接口超时",
+            "我方客户状态/会话接口",
+        ),
+    ],
+)
+def test_alert_classifies_failure_type_and_responsibility(
+    reason: str,
+    phase: str,
+    failure_type: str,
+    responsibility: str,
+) -> None:
+    service, _repository, client = _service()
+
+    delivered = asyncio.run(
+        service.notify_task_failure(
+            task_id=f"task-{reason}",
+            status="send_failed",
+            reason=reason,
+            phase=phase,
+        )
+    )
+
+    assert delivered == 1
+    assert f"失败类型：{failure_type}" in client.sent[0][1]
+    assert f"责任方向：{responsibility}" in client.sent[0][1]
+
+
+def test_same_task_is_alerted_only_once_across_reason_and_phase_changes() -> None:
+    service, repository, client = _service()
+
+    first = asyncio.run(
+        service.notify_task_failure(
+            task_id="task-1",
+            status="send_failed",
+            reason="send_interface_timeout:TimeoutError",
+            phase="queue_process",
+        )
+    )
+    second = asyncio.run(
+        service.notify_task_failure(
+            task_id="task-1",
+            status="send_failed",
+            reason="completed_without_send",
+            phase="recovery_process",
+        )
+    )
+
+    assert first == 1
+    assert second == 0
+    assert len(repository.created) == 1
+    assert len(client.sent) == 1
 
 
 def test_retry_worker_suppresses_preexisting_excluded_alert() -> None:
