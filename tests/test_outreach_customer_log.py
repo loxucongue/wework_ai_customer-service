@@ -332,3 +332,48 @@ def test_customer_log_detail_never_treats_customer_id_as_external_userid(tmp_pat
         external_item["contact_key"],
         "legacy-customer-only",
     ) == {}
+
+
+def test_customer_log_list_aggregates_repeated_no_plan_events_without_losing_count(tmp_path) -> None:
+    store, repository = _repository(tmp_path)
+    payload = json.dumps(
+        {
+            "identity": {
+                "corp_id": "corp-a",
+                "wechat": "SL8003",
+                "customer_id": "customer-a",
+                "external_userid": "external-a",
+            },
+            "trigger_context": {"activation_policy": "auto_approved"},
+            "reason": "no_eligible_source",
+        }
+    )
+    with store.connect() as conn:
+        for event_id, created_at in (
+            ("rejected-1", "2026-09-06T01:00:00+00:00"),
+            ("rejected-2", "2026-09-06T02:00:00+00:00"),
+        ):
+            conn.execute(
+                """
+                INSERT INTO outreach_events
+                    (id,plan_id,task_id,customer_id,event_type,event_summary,payload_json,created_at)
+                VALUES (?,'','','customer-a','plan_rejected','not planned',?,?)
+                """,
+                (event_id, payload, created_at),
+            )
+
+    result = repository.list_outreach_customer_logs(started_from=START, started_to=END)
+
+    assert result["metrics"]["no_plan_count"] == 2
+    assert len(result["items"]) == 1
+    assert result["items"][0]["no_plan_count"] == 2
+
+    detail = repository.get_outreach_customer_log(
+        result["items"][0]["contact_key"],
+        started_from=START,
+        started_to=END,
+    )
+    assert [record["record_id"] for record in detail["history"]] == [
+        "event:rejected-2",
+        "event:rejected-1",
+    ]

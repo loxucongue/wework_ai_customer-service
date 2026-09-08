@@ -1011,6 +1011,7 @@ class OutreachRepositoryMixin:
         started_from: str,
         started_to: str,
         identity: dict[str, str] | None = None,
+        aggregate_no_plan_events: bool = False,
     ) -> list[dict[str, Any]]:
         automatic_snapshot = self.store.json_text(
             "source_snapshot", "$.trigger_context.activation_policy"
@@ -1026,6 +1027,55 @@ class OutreachRepositoryMixin:
             "source_snapshot", "$.workflow_run_id"
         )
         contact_sql, contact_params = _outreach_contact_scope_sql(identity)
+        event_identity_json = self.store.json_text("e.payload_json", "$.identity")
+        event_trigger_context_json = self.store.json_text(
+            "e.payload_json", "$.trigger_context"
+        )
+        event_trigger_type = self.store.json_text(
+            "e.payload_json", "$.trigger_context.trigger_type"
+        )
+        event_activation_policy = self.store.json_text(
+            "e.payload_json", "$.trigger_context.activation_policy"
+        )
+        event_reason = self.store.json_text("e.payload_json", "$.reason")
+        event_workflow_run_id = self.store.json_text(
+            "e.payload_json", "$.workflow_run_id"
+        )
+        event_contact_sql = ""
+        event_contact_params: tuple[str, ...] = ()
+        if identity:
+            event_corp_id = self.store.json_text("e.payload_json", "$.identity.corp_id")
+            event_wechat = self.store.json_text("e.payload_json", "$.identity.wechat")
+            event_external_userid = self.store.json_text(
+                "e.payload_json", "$.identity.external_userid"
+            )
+            event_customer_id = self.store.json_text(
+                "e.payload_json", "$.identity.customer_id"
+            )
+            expected_corp_id = _string(identity.get("corp_id"))
+            expected_wechat = _string(identity.get("wechat"))
+            expected_external_userid = _string(identity.get("external_userid"))
+            expected_customer_id = _string(identity.get("customer_id"))
+            if not expected_corp_id or not expected_wechat or not (
+                expected_external_userid or expected_customer_id
+            ):
+                event_contact_sql = " AND 1=0"
+            else:
+                event_contact_sql = (
+                    f" AND lower({event_corp_id})=lower(?)"
+                    f" AND lower({event_wechat})=lower(?)"
+                )
+                event_contact_values = [expected_corp_id, expected_wechat]
+                if expected_external_userid:
+                    event_contact_sql += f" AND lower({event_external_userid})=lower(?)"
+                    event_contact_values.append(expected_external_userid)
+                else:
+                    event_contact_sql += (
+                        f" AND COALESCE({event_external_userid},'')=''"
+                        f" AND lower({event_customer_id})=lower(?)"
+                    )
+                    event_contact_values.append(expected_customer_id)
+                event_contact_params = tuple(event_contact_values)
         with self.store.connect() as conn:
             plan_rows = conn.execute(
                 f"""
@@ -1064,15 +1114,65 @@ class OutreachRepositoryMixin:
                 (started_from, started_to, *contact_params),
             ).fetchall()
             placeholders = ",".join("?" for _ in _OUTREACH_NO_PLAN_EVENT_TYPES)
-            no_plan_event_rows = conn.execute(
-                f"""
-                SELECT * FROM outreach_events
-                WHERE plan_id='' AND created_at>=? AND created_at<=?
-                  AND event_type IN ({placeholders})
-                ORDER BY created_at DESC, id DESC
-                """,
-                (started_from, started_to, *_OUTREACH_NO_PLAN_EVENT_TYPES),
-            ).fetchall()
+            if aggregate_no_plan_events:
+                no_plan_event_rows = conn.execute(
+                    f"""
+                    SELECT {event_identity_json} AS identity_json,
+                           {event_trigger_context_json} AS trigger_context_json,
+                           {event_reason} AS reason,
+                           e.event_type,
+                           COUNT(*) AS record_count,
+                           MAX(e.id) AS latest_id,
+                           MAX(e.created_at) AS latest_at
+                    FROM outreach_events e
+                    WHERE e.plan_id='' AND e.created_at>=? AND e.created_at<=?
+                      AND e.event_type IN ({placeholders})
+                      AND (
+                        {event_trigger_type}='first_day_opened_silence'
+                        OR {event_activation_policy}='auto_approved'
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM first_day_outreach_runs first_day
+                        WHERE first_day.workflow_run_id={event_workflow_run_id}
+                          AND first_day.workflow_run_id!=''
+                          AND first_day.plan_id=''
+                          AND first_day.started_at>=?
+                          AND first_day.started_at<=?
+                          AND first_day.trigger_type='first_day_opened_silence'
+                      )
+                      {event_contact_sql}
+                    GROUP BY {event_identity_json},
+                             {event_trigger_context_json},
+                             {event_reason},
+                             e.event_type
+                    ORDER BY latest_at DESC, latest_id DESC
+                    """,
+                    (
+                        started_from,
+                        started_to,
+                        *_OUTREACH_NO_PLAN_EVENT_TYPES,
+                        started_from,
+                        started_to,
+                        *event_contact_params,
+                    ),
+                ).fetchall()
+            else:
+                no_plan_event_rows = conn.execute(
+                    f"""
+                    SELECT e.* FROM outreach_events e
+                    WHERE e.plan_id='' AND e.created_at>=? AND e.created_at<=?
+                      AND e.event_type IN ({placeholders})
+                      {event_contact_sql}
+                    ORDER BY e.created_at DESC, e.id DESC
+                    """,
+                    (
+                        started_from,
+                        started_to,
+                        *_OUTREACH_NO_PLAN_EVENT_TYPES,
+                        *event_contact_params,
+                    ),
+                ).fetchall()
 
             task_rows: list[Any] = []
             plan_ids = [_string(row["id"]) for row in plan_rows if _string(row["id"])]
@@ -1168,6 +1268,45 @@ class OutreachRepositoryMixin:
             )
 
         for event_row in no_plan_event_rows:
+            if aggregate_no_plan_events:
+                aggregated_event = dict(event_row)
+                identity_payload = loads_dict(aggregated_event.get("identity_json"))
+                trigger_context = loads_dict(
+                    aggregated_event.get("trigger_context_json")
+                )
+                payload = {
+                    "identity": identity_payload,
+                    "trigger_context": trigger_context,
+                    "reason": _string(aggregated_event.get("reason")),
+                }
+                source_type = _outreach_event_source_type(payload)
+                if source_type not in _AUTOMATIC_OUTREACH_SOURCE_TYPES:
+                    continue
+                records.append(
+                    {
+                        "record_id": f"event-group:{_string(aggregated_event.get('latest_id'))}",
+                        "record_type": "no_plan",
+                        "record_count": max(
+                            1,
+                            _int(aggregated_event.get("record_count"), 1),
+                        ),
+                        "plan_id": "",
+                        "workflow_run_id": "",
+                        "identity": _outreach_contact_identity(identity_payload),
+                        "source_type": source_type,
+                        "status": "blocked",
+                        "reason_code": _string(payload.get("reason"))
+                        or _string(aggregated_event.get("event_type"))
+                        or "no_plan",
+                        "plan_goal": "",
+                        "customer_stage": "",
+                        "customer_psychology": "",
+                        "created_at": _string(aggregated_event.get("latest_at")),
+                        "updated_at": _string(aggregated_event.get("latest_at")),
+                        "task_summary": _outreach_task_summary([]),
+                    }
+                )
+                continue
             event = self._decode_outreach_event(dict(event_row))
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
             workflow_run_id = _string(payload.get("workflow_run_id"))
@@ -1231,7 +1370,11 @@ class OutreachRepositoryMixin:
         }
         records = [
             record
-            for record in self._outreach_customer_log_records(started_from=start, started_to=end)
+            for record in self._outreach_customer_log_records(
+                started_from=start,
+                started_to=end,
+                aggregate_no_plan_events=True,
+            )
             if _outreach_record_matches_filters(record, **filters)
         ]
         grouped: dict[str, dict[str, Any]] = {}
@@ -1295,8 +1438,16 @@ class OutreachRepositoryMixin:
                     key: latest.get(key, "")
                     for key in ("record_id", "record_type", "plan_id", "source_type", "status", "reason_code", "plan_goal", "created_at")
                 },
-                "plan_count": sum(item.get("record_type") == "plan" for item in customer_records),
-                "no_plan_count": sum(item.get("record_type") == "no_plan" for item in customer_records),
+                "plan_count": sum(
+                    max(1, _int(item.get("record_count"), 1))
+                    for item in customer_records
+                    if item.get("record_type") == "plan"
+                ),
+                "no_plan_count": sum(
+                    max(1, _int(item.get("record_count"), 1))
+                    for item in customer_records
+                    if item.get("record_type") == "no_plan"
+                ),
                 "task_summary": task_summary,
                 "next_task": next_task,
             }
@@ -1329,8 +1480,16 @@ class OutreachRepositoryMixin:
         metrics = {
             "customer_count": len(grouped),
             "identity_incomplete_count": len(unscoped_items),
-            "plan_count": sum(item.get("record_type") == "plan" for item in records),
-            "no_plan_count": sum(item.get("record_type") == "no_plan" for item in records),
+            "plan_count": sum(
+                max(1, _int(item.get("record_count"), 1))
+                for item in records
+                if item.get("record_type") == "plan"
+            ),
+            "no_plan_count": sum(
+                max(1, _int(item.get("record_count"), 1))
+                for item in records
+                if item.get("record_type") == "no_plan"
+            ),
             "task_count": sum(_int(record.get("task_summary", {}).get("total")) for record in records if isinstance(record.get("task_summary"), dict)),
             "sent_count": sum(_int(record.get("task_summary", {}).get("sent")) for record in records if isinstance(record.get("task_summary"), dict)),
             "sent_without_message_id_count": sum(_int(record.get("task_summary", {}).get("sent_without_message_id")) for record in records if isinstance(record.get("task_summary"), dict)),
