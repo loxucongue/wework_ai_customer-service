@@ -75,8 +75,8 @@ async def resolve_active_store_destination(
     # fact-field fallback used when parsing fails; it is not a sales decision.
     if (
         normalized.get("request_kind") == "store_detail"
-        and normalized.get("detail_kind") == "none"
         and fallback.get("detail_kind") != "none"
+        and normalized.get("detail_kind") != fallback.get("detail_kind")
     ):
         normalized["detail_kind"] = fallback["detail_kind"]
     if violations:

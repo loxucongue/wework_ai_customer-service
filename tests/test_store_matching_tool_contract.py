@@ -286,6 +286,41 @@ def test_store_detail_address_field_is_normalized_when_model_leaves_it_none() ->
     assert resolution["detail_kind"] == "address"
 
 
+def test_current_floor_question_overrides_address_inside_quoted_context() -> None:
+    model = _FakeDestinationModel(
+        {
+            "request_kind": "store_detail",
+            "destination_query": "厦门百星湖里店",
+            "destination_precision": "poi",
+            "administrative_context": {"province": "福建省", "city": "厦门市"},
+            "poi_query": "厦门百星湖里店",
+            "destination_subject": "customer",
+            "named_store": "厦门百星湖里店",
+            "detail_kind": "address",
+            "candidate_interpretations": [],
+            "evidence_refs": ["current_message"],
+            "superseded_location_refs": [],
+            "confidence": "high",
+            "needs_clarification": False,
+            "geocode_before_clarification": True,
+            "reason": "引用内容包含地址",
+        }
+    )
+    content = "「门店在湖里区岐山北二路1000号萤火虫大厦。」\n几楼呢"
+
+    resolution = asyncio.run(
+        resolve_active_store_destination(
+            model_client=model,
+            state={"content": content},
+            tool={"purpose": "store_detail"},
+        )
+    )
+
+    assert resolution["resolver_status"] == "ok"
+    assert resolution["request_kind"] == "store_detail"
+    assert resolution["detail_kind"] == "arrival_guidance"
+
+
 def test_invalid_primary_destination_output_uses_valid_fallback_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

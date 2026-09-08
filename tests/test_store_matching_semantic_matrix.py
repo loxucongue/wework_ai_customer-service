@@ -40,7 +40,8 @@ def test_reused_store_detail_prompt_uses_mainline_delivery_stage() -> None:
     assert "不得重复发送 store_address" in conclusion
     assert "不得在 text 中复述此前已经交付的完整地址或导航" in conclusion
     assert "效果或活动价值未交付时只补最缺的一项" in conclusion
-    assert "才询问一个到店日期或工作日/周末偏好" in conclusion
+    assert "最后一句必须询问一个到店日期" in conclusion
+    assert "我帮您做预约登记" in conclusion
     assert "不得声称预约或名额已经保留成功" in conclusion
     assert "不补道路、门牌和导航描述" in conclusion
     assert "closing_action=none" in conclusion
