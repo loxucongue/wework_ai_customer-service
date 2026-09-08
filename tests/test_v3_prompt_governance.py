@@ -104,6 +104,14 @@ def test_reply_directly_delivers_available_value_without_permission_gate() -> No
     assert "不能只写“我可以发给您”" in prompt
 
 
+def test_reply_connects_store_detail_to_the_true_mainline_stage() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "门店详情不能只回答" in prompt
+    assert "您大概工作日还是周末方便？我帮您做预约登记" in prompt
+    assert "否则补最缺的效果或活动" in prompt
+
+
 def test_follow_script_media_is_rendered_as_directly_deliverable_asset() -> None:
     candidate = {
         "content_id": "follow_script:187:p1",
