@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-08T12:39:17+08:00`
+- verified_at: `2026-09-08T14:00:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260908-123216-3fc85db4`
-- git commit: `3fc85db46a17662aa47e0903297eb515de13ec43`
+- release: `ai-paths-unified-20260908-135308-883b183b`
+- git commit: `883b183b05c0aaec8d3c3809678c3c92454d9494`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -19,7 +19,7 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260907-201840-44fcd568`；身份名称和兼容字段已同步 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260908-134359-e7db3e09`；主动唤醒客户日志页已上线 |
 
 三个后端角色均由同一 clean main SHA 构建。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
@@ -39,19 +39,20 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行，现场 `queue_depth=0`、`pending_total=0`、`in_flight_count=0`，最近轮询错误为空。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=35`、`dead=16`。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=37`、`dead=16`；发布前后 pending/dead 未增加。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260908-122728-bafdf430`。
-- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260907-152202-b4dfc184`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向上一 clean release `ai-paths-unified-20260908-133518-ca45890c`。
+- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-133518-ca45890c`。
 - 数据库已迁移到 `20260907_02`，新增兼容的 `aics_customer_identity_links`；发布前 AICS 20 张表、841,130 行的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-44fcd568-20260907-201840/aics-before-20260907_02.sql.gz`，SHA-256 为 `481b853b31b244fa8e307a31f3be632ef46904ca3ea7692fdfc3da1e4a23439c`。旧代码会忽略新表，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-08 14:00 发布并核验主动唤醒客户日志：后端 control/reply/worker 使用同一 clean `main@883b183b05c0aaec8d3c3809678c3c92454d9494`，前端使用只包含已验证页面代码的 `e7db3e09` 构建；四个 unit 均 active 且 `NRestarts=0`。新 `/logs/outreach` 以销售接触档案聚合客户、计划、任务和真实发送证据，旧 `/logs/outreach-first-day` 永久跳转；手工计划排除，只有平台消息 ID 的成功任务计入实际发送。审核修复了外部联系人 ID 与旧客户 ID 跨类型误配、列表大对象读取、重复未建计划事件放大和历史多平台客户 ID 下钻漏读。全仓 480 条后端回归、Ruff、前端 TypeScript/ESLint/生产构建和 1440px/390px 浏览器验收通过。生产只读热态实测：近 7 天列表约 1.70～2.11 秒、客户详情 1.34 秒、计划详情 2.43 秒；30 天历史列表仍约 18.22 秒，因此页面默认 7 天并保留按需 30/90 天查询。本次无数据库迁移、无模型调用、无客户发送或业务写入；回滚点为 `ca45890c` 对应的后端与前端 release。
 - 2026-09-08 12:39 发布并核验 clean `main@3fc85db46a17662aa47e0903297eb515de13ec43`，release 为 `ai-paths-unified-20260908-123216-3fc85db4`。企业微信固定开场和撤回协议消息在 AI/人工状态、语音、连续消息协调及模型链之前直接返回空回复；审计在同一 FastAPI 请求生命周期的响应后台阶段以单事务写入。生产 10 次协议请求 HTTP P50/P95 为 `1.95/2.17ms`、最大 `78.27ms`，10 条 run 和 10 条 `platform_protocol_filter` 节点全部落库，客户消息、策略采用、主动唤醒、dispatch/outbox 写入均为 0。沉默扫描目标间隔为 15 秒，现场单轮约 32～34 秒，长轮完成后固定等待 5 秒再开始下一轮，连续失败按 15/30/60 秒退避；1 分钟仍是候选资格而不是准点发送承诺。全仓 465 条测试通过；无数据库迁移、无前端变更，control/reply/worker 使用同一 SHA，V1/V2 回复路由为 404，Nginx 配置检查通过，三个 unit 均 active 且 `NRestarts=0`。统一回滚点为 `ai-paths-unified-20260908-122728-bafdf430`。
 - 2026-09-07 22:16 发布并核验 clean `main@e738330c`：距离卡点回复不再复述或放大“远、折腾、麻烦”，而是轻承接后转向技术、效果和案例价值；Reply 使用第三方距离话术时先对候选示例做客户可见表达适配，但保留真实序列、话术和素材 ID。销售可说“先保留活动名额”，真实“已预约/已登记/已排客”仍需权威事实。指定日志 DeepSeek 只读复现采用序列 11、话术 225 并直接交付效果视频，无门店重查、重复门店卡或兜底；全仓 438 条测试通过。本次无数据库迁移、无前端变更；V3 鉴权边界 401、V2 路由 404，四个 unit active 且 `NRestarts=0`，SOP 队列和 pending 为 0，回滚点为 `ai-paths-unified-20260907-211433-17813a1`。
 - 2026-09-07 21:24 发布并核验 clean `main@17813a1`：V3 Router 保留客户提交信息和继续交易的只读证据，Reply 在无活动卡点且交易未终态时回答当前事实后回到一个主线动作；已确认具体门店时只追问一个到店时间方向。结构校验要求 `action=ask` 必须有可见问题、正常销售轮次最多一个问题，并保持退订、人工接管、风险和终态优先。全仓 435 条测试及 Ruff 通过；指定日志生产配置隔离重放交付真实门店卡并只追加一个到店问题，生产写入为 0。发布后合成 V3 HTTP 验证成功且测试数据精确清理；V3 路由鉴权返回 401、V2 路由返回 404，三个后端与前端均 active、`NRestarts=0`，新版本启动后二十分钟无 error 级日志。MySQL 仍为 `20260907_02`，SOP 队列和 pending 均为 0；本次无数据库迁移、无前端变更，回滚点为 `ai-paths-unified-20260907-201840-44fcd568`。
