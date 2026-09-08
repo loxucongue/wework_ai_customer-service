@@ -26,7 +26,10 @@ from app.runtime_services import _build_outreach_model_client  # noqa: E402
 from app.services.customer_scope import build_customer_scope  # noqa: E402
 from app.services.storage.repositories import AppRepository  # noqa: E402
 from app.services.storage.sqlite_store import SQLiteStore  # noqa: E402
-from app.workers.supervisor import WorkerSupervisor  # noqa: E402
+from app.workers.supervisor import (  # noqa: E402
+    WorkerSupervisor,
+    _outreach_monitor_delay_seconds,
+)
 
 
 class _StatusClient:
@@ -976,6 +979,7 @@ def test_worker_health_exposes_silence_monitor_configuration() -> None:
         outreach_decision_model="deepseek-chat",
         outreach_decision_model_fallbacks="",
         outreach_silence_eligible_after="2026-09-05T09:41:20+00:00",
+        outreach_plan_monitor_poll_seconds=15,
     )
     outreach_service = SimpleNamespace(
         monitor_status=lambda: {"state": "idle", "candidate_count": 3, "last_error": ""}
@@ -989,7 +993,44 @@ def test_worker_health_exposes_silence_monitor_configuration() -> None:
     assert status["threshold_minutes"] == 1
     assert status["wechat_scope"] == "all"
     assert status["decision_model"] == "deepseek-chat"
+    assert status["monitor_poll_seconds"] == 15
     assert status["monitor"]["state"] == "idle"  # type: ignore[index]
+
+
+def test_outreach_monitor_success_uses_start_to_start_cadence() -> None:
+    assert _outreach_monitor_delay_seconds(
+        poll_seconds=15,
+        iteration_elapsed_seconds=2,
+        consecutive_failures=0,
+    ) == 13
+    assert _outreach_monitor_delay_seconds(
+        poll_seconds=15,
+        iteration_elapsed_seconds=40,
+        consecutive_failures=0,
+    ) == 5
+
+
+def test_outreach_monitor_failures_back_off_to_sixty_seconds() -> None:
+    assert _outreach_monitor_delay_seconds(
+        poll_seconds=15,
+        iteration_elapsed_seconds=1,
+        consecutive_failures=1,
+    ) == 15
+    assert _outreach_monitor_delay_seconds(
+        poll_seconds=15,
+        iteration_elapsed_seconds=1,
+        consecutive_failures=2,
+    ) == 30
+    assert _outreach_monitor_delay_seconds(
+        poll_seconds=15,
+        iteration_elapsed_seconds=1,
+        consecutive_failures=3,
+    ) == 60
+    assert _outreach_monitor_delay_seconds(
+        poll_seconds=15,
+        iteration_elapsed_seconds=1,
+        consecutive_failures=8,
+    ) == 60
 
 
 def test_sop_discovery_refresh_retries_only_once() -> None:
