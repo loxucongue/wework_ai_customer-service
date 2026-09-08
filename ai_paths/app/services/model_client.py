@@ -132,10 +132,18 @@ class ModelClient:
         temperature: float = 0.0,
         deadline_monotonic: float | None = None,
         max_parallel_candidates: int | None = None,
+        model_names_override: list[str] | None = None,
+        api_key_override: str = "",
+        base_url_override: str = "",
+        request_body_overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if not self.available:
+        if not self.available and not api_key_override:
             raise RuntimeError("No model API key configured")
-        models = self._model_names(tier)
+        models = (
+            list(dict.fromkeys(str(item or "").strip() for item in model_names_override if str(item or "").strip()))
+            if model_names_override is not None
+            else self._model_names(tier)
+        )
         request_started_at = time.monotonic()
         deadline = self._resolve_deadline(tier, deadline_monotonic)
 
@@ -152,6 +160,8 @@ class ModelClient:
             if self.settings.model_provider.lower() == "aliyun":
                 payload["enable_thinking"] = False
             self._apply_provider_extensions(payload)
+            if request_body_overrides:
+                payload.update(request_body_overrides)
             return payload
 
         async def consume(raw: dict[str, Any]) -> dict[str, Any]:
@@ -168,6 +178,8 @@ class ModelClient:
                     failure_label="All JSON model candidates failed",
                     deadline_monotonic=deadline,
                     max_parallel_candidates=max_parallel_candidates,
+                    api_key_override=api_key_override,
+                    base_url_override=base_url_override,
                 ),
                 deadline_monotonic=deadline,
                 deadline_seconds=deadline_seconds,
@@ -190,6 +202,8 @@ class ModelClient:
                         failure_label="All JSON no-response-format model candidates failed",
                         deadline_monotonic=deadline,
                         max_parallel_candidates=max_parallel_candidates,
+                        api_key_override=api_key_override,
+                        base_url_override=base_url_override,
                     ),
                     deadline_monotonic=deadline,
                     deadline_seconds=max(0.0, deadline - request_started_at),
@@ -401,6 +415,8 @@ class ModelClient:
         failure_label: str,
         deadline_monotonic: float | None = None,
         max_parallel_candidates: int | None = None,
+        api_key_override: str = "",
+        base_url_override: str = "",
     ) -> T:
         if not models:
             raise RuntimeError(f"{failure_label}: no model candidates")
@@ -486,7 +502,14 @@ class ModelClient:
 
         async def run_one(index: int, model: str) -> tuple[T, dict[str, Any]]:
             payload = build_payload(model)
-            raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=list(errors))
+            raw = await self._post_chat(
+                payload,
+                tier=tier,
+                fallback_index=index,
+                errors=list(errors),
+                api_key_override=api_key_override,
+                base_url_override=base_url_override,
+            )
             usage = dict(self.last_usage or {})
             return await consume(raw), usage
 
@@ -576,13 +599,23 @@ class ModelClient:
         tier: ModelTier,
         fallback_index: int,
         errors: list[str],
+        api_key_override: str = "",
+        base_url_override: str = "",
     ) -> dict[str, Any]:
         model = str(payload.get("model") or "")
         if self._uses_anthropic_messages_api(model):
-            return await self._post_anthropic_messages(payload, tier=tier, fallback_index=fallback_index, errors=errors)
-        url = f"{self._base_url(model).rstrip('/')}/chat/completions"
+            return await self._post_anthropic_messages(
+                payload,
+                tier=tier,
+                fallback_index=fallback_index,
+                errors=errors,
+                api_key_override=api_key_override,
+                base_url_override=base_url_override,
+            )
+        base_url = base_url_override or self._base_url(model)
+        url = f"{base_url.rstrip('/')}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self._api_key(model)}",
+            "Authorization": f"Bearer {api_key_override or self._api_key(model)}",
             "Content-Type": "application/json; charset=utf-8",
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -614,11 +647,21 @@ class ModelClient:
         tier: ModelTier,
         fallback_index: int,
         errors: list[str],
+        api_key_override: str = "",
+        base_url_override: str = "",
     ) -> dict[str, Any]:
         model = str(payload.get("model") or "")
-        url = self._anthropic_messages_url(model)
+        if base_url_override:
+            normalized_base_url = base_url_override.rstrip("/")
+            url = (
+                f"{normalized_base_url}/messages"
+                if normalized_base_url.endswith("/v1")
+                else f"{normalized_base_url}/v1/messages"
+            )
+        else:
+            url = self._anthropic_messages_url(model)
         headers = {
-            "Authorization": f"Bearer {self._api_key(model)}",
+            "Authorization": f"Bearer {api_key_override or self._api_key(model)}",
             "anthropic-version": self.settings.anthropic_version,
             "Content-Type": "application/json; charset=utf-8",
         }
