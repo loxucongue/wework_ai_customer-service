@@ -140,6 +140,34 @@ def test_mainline_delivery_uses_append_only_sent_message_facts() -> None:
     assert mainline["effect_evidence_delivered"] is True
     assert mainline["activity_offer_delivered"] is True
     assert mainline["store_address_delivered"] is True
+    assert mainline["next_missing_stage"] == "appointment"
+
+
+def test_mainline_delivery_exposes_first_missing_stage_without_forcing_action() -> None:
+    state = {
+        "evidence_join": {
+            "schema_version": "deterministic_evidence_join_v1",
+            "shared_context": {
+                "schema_version": "shared_context_v2",
+                "conversation": [],
+                "current_message": {"content": "多少钱？"},
+                "authoritative_facts": {
+                    "sent_messages": {
+                        "case_image_sent": True,
+                        "activity_intro_image_sent": False,
+                    }
+                },
+            },
+            "content_candidates": [],
+            "sales_recall": {},
+            "semantic_route": {},
+        }
+    }
+
+    mainline = parallel_reply_payload(state)["mainline_delivery_state"]
+
+    assert mainline["next_missing_stage"] == "activity_offer"
+    assert "不是强制销售动作" in mainline["meaning"]
 
 
 def test_selected_script_media_is_appended_after_customer_visible_text() -> None:

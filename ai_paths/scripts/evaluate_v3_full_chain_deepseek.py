@@ -870,6 +870,11 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
     tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
     store = tool_results.get("resolve_customer_store") or tool_results.get("customer_store_lookup") or {}
     failure = state.get("reply_failure") if isinstance(state.get("reply_failure"), dict) else {}
+    mainline = (
+        state.get("mainline_delivery_state")
+        if isinstance(state.get("mainline_delivery_state"), dict)
+        else {}
+    )
     return {
         "primary_task": _text((decision.get("primary_task") or {}).get("type")),
         "intent": _text(intent.get("type")), "emotion": _text(emotion.get("label")),
@@ -900,6 +905,11 @@ def decision_summary(state: dict[str, Any]) -> dict[str, Any]:
         "closing_strategy_adopted": _text(knowledge.get("sequence_id")) in closing_sequence_keys,
         "closing_script_adopted": bool(set(selected_script_ids) & closing_script_ids),
         "store_status": _text(store.get("status") or store.get("match_status")),
+        "mainline_effect_delivered": bool(mainline.get("effect_evidence_delivered")),
+        "mainline_activity_delivered": bool(mainline.get("activity_offer_delivered")),
+        "mainline_store_delivered": bool(mainline.get("store_address_delivered")),
+        "mainline_appointment_active": bool(mainline.get("appointment_active")),
+        "mainline_next_missing_stage": _text(mainline.get("next_missing_stage")),
         "decision_status": _text(state.get("decision_status")),
         "decision_reasons": [_text(item) for item in state.get("decision_reasons") or [] if _text(item)],
         "reply_source": _text(state.get("reply_source")),
@@ -1358,6 +1368,8 @@ CSV_FIELDS = [
     "closing_rule_candidates", "closing_strategy_candidates", "closing_script_candidates",
     "closing_strategy_adopted", "closing_script_adopted",
     "closing_action", "closing_sequence_key", "closing_node_key", "customer_state", "store_status",
+    "mainline_effect_delivered", "mainline_activity_delivered", "mainline_store_delivered",
+    "mainline_appointment_active", "mainline_next_missing_stage",
     "decision_status", "decision_reasons", "failure_category", "failure_code", "failure_reason",
     "pre_graph_ms", "graph_duration_ms", "post_graph_ms", "response_serialize_ms", "lifecycle_duration_ms", "duration_ms", "runtime_error",
     "judge_expected_intent", "judge_expected_emotion", "judge_ai_passed", "judge_passed", "judge_reply_accuracy",

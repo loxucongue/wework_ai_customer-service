@@ -375,13 +375,31 @@ def _mainline_delivery_state(
         if isinstance(payment_channel_availability.get("payment_card"), dict)
         else {}
     )
+    effect_delivered = "effect_evidence" in roles
+    activity_delivered = "activity_offer" in roles
+    store_delivered = "address_evidence" in roles
+    appointment_active = bool(registration_fact_status.get("has_active_appointment"))
+    authoritative_paid = bool(registration_fact_status.get("authoritative_paid"))
+    if not effect_delivered:
+        next_missing_stage = "effect_evidence"
+    elif not activity_delivered:
+        next_missing_stage = "activity_offer"
+    elif not store_delivered:
+        next_missing_stage = "store"
+    elif not appointment_active:
+        next_missing_stage = "appointment"
+    elif not authoritative_paid:
+        next_missing_stage = "appointment_deposit"
+    else:
+        next_missing_stage = "complete"
     return {
-        "effect_evidence_delivered": "effect_evidence" in roles,
-        "activity_offer_delivered": "activity_offer" in roles,
-        "store_address_delivered": "address_evidence" in roles,
-        "appointment_active": bool(registration_fact_status.get("has_active_appointment")),
-        "authoritative_paid": bool(registration_fact_status.get("authoritative_paid")),
+        "effect_evidence_delivered": effect_delivered,
+        "activity_offer_delivered": activity_delivered,
+        "store_address_delivered": store_delivered,
+        "appointment_active": appointment_active,
+        "authoritative_paid": authoritative_paid,
         "payment_card_available": bool(payment_card.get("available")),
+        "next_missing_stage": next_missing_stage,
         "source": "delivered_assets_and_authoritative_transaction_facts",
-        "meaning": "事实证据，不是强制销售动作；客户当前问题仍优先",
+        "meaning": "事实阶段摘要，不是强制销售动作；先答当前问题，安全边界与当前卡点仍优先",
     }
