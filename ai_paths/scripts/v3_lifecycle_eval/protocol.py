@@ -195,7 +195,7 @@ def _has_arrival_convenience_fact(facts: dict[str, Any]) -> bool:
     """Return whether authoritative inputs explicitly support a queue/wait claim."""
 
     for path, value in _recursive_pairs(facts):
-        if not any(marker in path for marker in ("queue", "wait", "arrival", "reception")):
+        if not any(marker in path for marker in ("queue", "wait")):
             continue
         normalized = str(value or "").strip().lower()
         if normalized and normalized not in {"none", "unknown", "false", "0", "未记录", "未知"}:

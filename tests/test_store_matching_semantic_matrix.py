@@ -88,7 +88,8 @@ def test_confirmed_named_store_defers_arrival_question_until_mainline_ready() ->
     assert "三项均已交付后才问一个到店日期或时段" in conclusion
     assert "不得再问位置是否方便" in conclusion
     assert "不得同时追问预约金或留名额" in conclusion
-    assert "不得补充不用等、少等待、免排队、优先接待等好处" in conclusion
+    assert "不得在登记后补充不用等、少等待、免排队、优先接待等好处" in conclusion
+    assert "您明天大概几点方便？我帮您做预约登记" in conclusion
 
 
 def _store(
