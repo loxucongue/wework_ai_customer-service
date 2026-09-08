@@ -44,6 +44,7 @@
 ## 专项文档
 
 - [V3 Reply 质量与全链路评测规范](standards/V3_REPLY_EVALUATION.md)
+- [V3 Reply 运行时质量门合同](contracts/v3-reply-admission.md)
 - [AI 销售策略运行合同](contracts/sales-strategy.md)
 - [V3 意图、情绪与路由合同](contracts/v3-intent-emotion-routing.md)
 - [消息送达回调](contracts/message-delivery-callback.md)

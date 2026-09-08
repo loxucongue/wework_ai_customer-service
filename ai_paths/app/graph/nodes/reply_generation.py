@@ -278,16 +278,6 @@ def _policy_correction_codes(model_call: dict[str, Any] | None) -> list[str]:
         or "policy_safety_floor_removed:explicit_exit" in error_text
     ):
         codes.append("explicit_exit_same_turn_sales_conflict")
-    if (
-        "policy_decision_pause_marketing_conflict" in error_text
-        or "policy_safety_floor_removed:pause_marketing" in error_text
-    ):
-        codes.append("pause_marketing_same_turn_sales_conflict")
-    if (
-        "policy_decision_active_cardpoint_conflict" in error_text
-        or "policy_safety_floor_removed:active_cardpoint" in error_text
-    ):
-        codes.append("active_cardpoint_same_turn_sales_conflict")
     if "policy_decision_schema_invalid" in error_text:
         codes.append("policy_decision_schema_repaired")
     return codes
@@ -335,8 +325,6 @@ def _reply_failure_diagnostic(model_call: dict[str, Any] | None) -> dict[str, An
         category = "fact_validation"
     patterns = (
         ("policy_decision_explicit_exit_conflict", "policy_explicit_exit_conflict", "policy_safety"),
-        ("policy_decision_pause_marketing_conflict", "policy_pause_marketing_conflict", "policy_safety"),
-        ("policy_decision_active_cardpoint_conflict", "policy_active_cardpoint_conflict", "policy_safety"),
         ("policy_safety_floor_removed", "policy_safety_floor_removed", "policy_safety"),
         ("policy_decision_schema_invalid", "policy_schema_invalid", "policy_contract"),
         ("parking_fact_required", "parking_fact_required", "fact_validation"),
@@ -412,18 +400,6 @@ def _policy_safety_failure_recovery(
     ):
         recovery_kind = "explicit_exit"
         text = "好的，知道了，之后不再打扰您。"
-    elif (
-        "policy_decision_pause_marketing_conflict" in error_text
-        or "policy_safety_floor_removed:pause_marketing" in error_text
-    ):
-        recovery_kind = "pause_marketing"
-        text = "收到，我先不继续推了。您说的情况我记下了。"
-    elif (
-        "policy_decision_active_cardpoint_conflict" in error_text
-        or "policy_safety_floor_removed:active_cardpoint" in error_text
-    ):
-        recovery_kind = "active_cardpoint"
-        text = "收到，我先不着急往下推进。您把现在最担心的点告诉我，我先帮您说清楚。"
     elif "policy_decision_schema_invalid" in error_text:
         recovery_kind = "schema_invalid"
         text = "收到，我先不着急往下推进。您现在最想了解哪一点？我先按您当前的问题说清楚。"

@@ -1601,11 +1601,12 @@ def _normalized_policy_decision(
 
 
 def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentState) -> None:
-    """Reject model outputs whose structures contradict their own safety decision.
+    """Reject only explicit opt-out replies that still try to sell.
 
-    This does not infer intent from customer text.  It only checks that Reply's
-    structured customer action agrees with Reply's structured policy decision,
-    so the existing single repair can correct a self-contradictory output.
+    Policy-decision schema and selected-script provenance are structural/content
+    integrity gates.  Ordinary sales posture, blocker handling, question count,
+    and next-step selection remain the model's responsibility and are not
+    admission gates.
     """
 
     normalized = _normalized_policy_decision(payload.get("policy_decision"), state=state)
@@ -1641,79 +1642,12 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         return
     _validate_closing_script_selection(payload, state, decision)
     intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
-    emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
-    cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
     explicit_exit = str(intent.get("type") or "") == "explicit_exit"
-    pause_marketing = str(emotion.get("flow_action") or "") in {
-        "pause_marketing_turn",
-        "handoff_by_system_rule",
-    }
-    closing = decision.get("closing_decision") if isinstance(decision.get("closing_decision"), dict) else {}
-    primary_task = (
-        decision.get("primary_task")
-        if isinstance(decision.get("primary_task"), dict)
-        else {}
-    )
-    active_cardpoint = (
-        str(cardpoint.get("state") or "") in {"active", "repeated"}
-        or str(closing.get("customer_state") or "") == "new_blocker"
-    )
-    terminal_or_safety_task = str(primary_task.get("type") or "") in {
-        "risk",
-        "human_takeover",
-        "hard_stop",
-        "transaction_terminal",
-    } or str(closing.get("customer_state") or "") in {
-        "hard_stop",
-        "transaction_terminal_or_handoff",
-    }
-    reply_action = _reply_action_from_payload(payload)
-    messages = payload.get("reply_messages") if isinstance(payload.get("reply_messages"), list) else []
-    if not explicit_exit and not pause_marketing and not active_cardpoint:
-        question_count = sum(
-            str(item.get("content") or "").count("？")
-            + str(item.get("content") or "").count("?")
-            for item in messages
-            if isinstance(item, dict) and str(item.get("type") or "").strip() == "text"
-        )
-        if question_count > 1:
-            raise ValueError("reply_visible_question_limit_exceeded")
-        if reply_action == "ask" and question_count == 0:
-            raise ValueError("reply_action_ask_requires_visible_question")
-        structured = _structured_facts(state)
-        store_resolution = (
-            structured.get("store_resolution_fact")
-            if isinstance(structured.get("store_resolution_fact"), dict)
-            else {}
-        )
-        destination = (
-            store_resolution.get("destination_resolution")
-            if isinstance(store_resolution.get("destination_resolution"), dict)
-            else {}
-        )
-        location_evidence = (
-            store_resolution.get("location_evidence")
-            if isinstance(store_resolution.get("location_evidence"), dict)
-            else {}
-        )
-        confirmed_named_store = bool(
-            str(destination.get("named_store") or "").strip()
-            and str(
-                destination.get("confirmation_status")
-                or location_evidence.get("confirmation_status")
-                or ""
-            ).strip()
-            == "confirmed"
-        )
-        if (
-            not terminal_or_safety_task
-            and str(store_resolution.get("status") or "").strip() == "send_single"
-            and confirmed_named_store
-            and question_count == 0
-        ):
-            raise ValueError("confirmed_store_mainline_question_required")
+    if not explicit_exit:
         return
 
+    reply_action = _reply_action_from_payload(payload)
+    messages = payload.get("reply_messages") if isinstance(payload.get("reply_messages"), list) else []
     sales = _normalized_sales_judgment(payload.get("sales_judgment"))
     structured_sales_types = {
         str(item.get("type") or "").strip()
@@ -1723,40 +1657,17 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
     commit_actions = [item for item in payload.get("commit_actions") or [] if isinstance(item, dict)]
 
     conflicts: list[str] = []
-    if explicit_exit or pause_marketing:
-        if sales.get("posture") in {"advance", "switch"}:
-            conflicts.append("sales_posture")
-    # For an active blocker, the normalized closing decision, customer-visible
-    # action, structured messages and commit actions are authoritative.  The
-    # compact sales posture is an observation label; rejecting an otherwise
-    # safe blocker-solving reply solely because it says ``advance`` discarded
-    # useful follow-up knowledge. Explicit exit and pause-marketing remain
-    # strict above because any advance label conflicts with their final state.
-    allowed_actions = (
-        {"none"}
-        if explicit_exit
-        else {"none", "ask"}
-        if pause_marketing
-        else {"none", "ask", "offer"}
-    )
-    if reply_action not in allowed_actions:
+    if sales.get("posture") in {"advance", "switch"}:
+        conflicts.append("sales_posture")
+    if reply_action != "none":
         conflicts.append("reply_action")
-    if structured_sales_types and (
-        explicit_exit or pause_marketing or "payment_collection" in structured_sales_types
-    ):
+    if structured_sales_types:
         conflicts.append("structured_sales_message")
     if commit_actions:
         conflicts.append("commit_actions")
     if conflicts:
-        reason = (
-            "explicit_exit"
-            if explicit_exit
-            else "pause_marketing"
-            if pause_marketing
-            else "active_cardpoint"
-        )
         raise ValueError(
-            f"policy_decision_{reason}_conflict:" + ",".join(conflicts)
+            "policy_decision_explicit_exit_conflict:" + ",".join(conflicts)
         )
 
 
@@ -1832,27 +1743,15 @@ def _validate_closing_script_selection(
 
 
 def _policy_safety_floor(payload: dict[str, Any], state: AgentState) -> str:
-    """Capture only grounded, model-declared safety state for a repair attempt."""
+    """Preserve only a grounded explicit opt-out across a repair attempt."""
 
     normalized = _normalized_policy_decision(payload.get("policy_decision"), state=state)
     decision = normalized.get("policy_decision")
     if not isinstance(decision, dict):
         return ""
     intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
-    emotion = decision.get("emotion_decision") if isinstance(decision.get("emotion_decision"), dict) else {}
-    cardpoint = decision.get("cardpoint_decision") if isinstance(decision.get("cardpoint_decision"), dict) else {}
     if str(intent.get("type") or "") == "explicit_exit" and intent.get("evidence_refs"):
         return "explicit_exit"
-    if (
-        str(emotion.get("flow_action") or "")
-        in {"pause_marketing_turn", "handoff_by_system_rule"}
-        and emotion.get("evidence_refs")
-    ):
-        return "pause_marketing"
-    if str(cardpoint.get("state") or "") in {"active", "repeated"}:
-        category_key = str(cardpoint.get("category_key") or "").strip()
-        if category_key:
-            return f"active_cardpoint:{category_key}"
     return ""
 
 
@@ -1866,13 +1765,6 @@ def _validate_policy_safety_floor(
     current_floor = _policy_safety_floor(payload, state)
     if safety_floor == "explicit_exit" and current_floor != "explicit_exit":
         raise ValueError("policy_safety_floor_removed:explicit_exit")
-    if safety_floor == "pause_marketing" and current_floor not in {
-        "pause_marketing",
-        "explicit_exit",
-    }:
-        raise ValueError("policy_safety_floor_removed:pause_marketing")
-    if safety_floor.startswith("active_cardpoint:") and current_floor != safety_floor:
-        raise ValueError("policy_safety_floor_removed:active_cardpoint")
 
 def _policy_string_list(value: Any, *, limit: int) -> list[str]:
     if not isinstance(value, list):
@@ -2611,10 +2503,7 @@ def _reply_structural_repair_guard(
                 "required_non_text_messages": non_text_messages,
             }
         )
-    if (
-        "registration_confirmation_fact_required" in error
-        or "appointment_confirmation_fact_required" in error
-    ):
+    if "appointment_confirmation_fact_required" in error:
         immutable_fields = {
             key: previous_payload.get(key)
             for key in (
@@ -2632,89 +2521,28 @@ def _reply_structural_repair_guard(
         ]
         tasks.append(
             {
-                "violation": "unverified_registration_or_appointment_wording",
+                "violation": "unverified_appointment_completion_wording",
                 "instruction": (
-                    "只修正客户可见 text 中把尚未登记或预约写成已经预约成功、已经安排、"
-                    "已经登记完成的事实错误。销售表达‘我先帮您留着活动名额’不属于系统完成态，不要删除；"
-                    "不得索要已付登记信息，不得重新审理销售动作。"
+                    "只修正客户可见 text 中无权威事实却宣称已经留位、已经约好/预约成功或"
+                    "已经排客/排客成功的完成态；不得扩展修改普通安排、时间、到店或登记措辞，"
+                    "也不得重新审理销售动作。"
                 ),
                 "immutable_fields": immutable_fields,
                 "required_non_text_messages": non_text_messages,
             }
         )
-    if "payment_collection_requires_prior_supporting_key_evidence" in error:
-        deposit = (
-            previous_payload.get("deposit_evidence")
-            if isinstance(previous_payload.get("deposit_evidence"), dict)
-            else {}
-        )
-        allowed_refs = {
-            str(item or "").strip()
-            for item in validation_context.get("prior_assistant_message_refs") or []
-            if str(item or "").strip()
-        }
-        delivery_options = [
-            {
-                "ref": str(item.get("ref") or "").strip(),
-                "role": str(item.get("role") or "").strip().lower(),
-                "content": str(item.get("content") or ""),
-            }
-            for item in validation_context.get("prior_message_options") or []
-            if isinstance(item, dict)
-            and str(item.get("role") or "").strip().lower() in {"assistant", "staff", "ai"}
-            and str(item.get("ref") or "").strip() in allowed_refs
-        ]
-        tasks.append(
-            {
-                "violation": "missing_prior_supporting_delivery_reference",
-                "previous_supporting_key": str(deposit.get("supporting_key") or "").strip(),
-                "previous_supporting_refs": [
-                    str(item or "").strip()
-                    for item in deposit.get("supporting_refs") or []
-                    if str(item or "").strip()
-                ],
-                "allowed_prior_delivery_options": delivery_options,
-                "structured_delivered_assets": (
-                    validation_context.get("structured_delivered_assets") or []
-                ),
-                "choice_keep_payment": (
-                    "由你阅读历史交付；仅当更早客服消息或结构化已完成资产确实交付了"
-                    " previous_supporting_key 对应维度时，把真实 ref 加入 supporting_refs，"
-                    "并保持其余合法付款结构。客户无需另行确认该交付。"
-                ),
-                "choice_cancel_payment": {
-                    "when": "没有任何更早的真实交付证据",
-                    "action": "改为真实的非付款动作",
-                    "selected_content_ids": [],
-                    "deposit_evidence": {
-                        "offer_prior_turn_refs": [],
-                        "supporting_key": "",
-                        "supporting_refs": [],
-                        "current_intent_refs": [],
-                    },
-                    "payment_collection": "删除",
-                },
-            }
-        )
-
     repair_payment_assessment = (
         previous_payload.get("payment_assessment")
         if isinstance(previous_payload.get("payment_assessment"), dict)
         else {}
     )
     repair_payment_status = str(repair_payment_assessment.get("status") or "").strip()
-    repair_payment_channel = str(repair_payment_assessment.get("payment_channel") or "").strip()
-    if repair_payment_status in {"manual_transfer", "unverified_paid_claim"}:
+    if repair_payment_status == "unverified_paid_claim":
         tasks.append(
             {
-                "violation": "non_card_payment_status_requires_structural_cleanup",
+                "violation": "customer_paid_claim_requires_card_removal",
                 "payment_status": repair_payment_status,
-                "payment_channel": repair_payment_channel or (
-                    "none" if repair_payment_status == "unverified_paid_claim" else "transfer | red_packet"
-                ),
                 "required_structure": {
-                    "action": "none 或确实需要客户补截图时 ask",
-                    "selected_content_ids": [],
                     "deposit_evidence": {
                         "offer_prior_turn_refs": [],
                         "supporting_key": "",
@@ -2722,12 +2550,10 @@ def _reply_structural_repair_guard(
                         "current_intent_refs": [],
                     },
                     "payment_collection": "禁止",
-                    "sales_assessment.dimension_decision": "stay | switch | pause | close",
                 },
                 "instruction": (
-                    "保持模型已经判断的具体支付状态和客户已选择的人工付款渠道，只清除小程序卡及冲突成交结构；"
-                    "红包不得静默改成转账，未核验已付声明的 payment_channel 必须为 none。"
-                    "客户可见 text 必须自然回答客户，不能原样复制 current_message。"
+                    "客户已经声称付过预约金，本轮不得重复发送收款卡；保留该判断并自然核对，"
+                    "只清除 payment_collection 和对应发卡证据。"
                 ),
             }
         )
@@ -2856,45 +2682,12 @@ def _reply_structural_repair_guard(
                 "previous_payment_messages": previous_payment_messages,
                 "previous_deposit_evidence": deposit,
                 "choice_keep_payment": (
-                    "仅当重新阅读 current_message 后仍是合法 payment_request 且硬事实允许时，"
-                    "保持 action=payment、完整 deposit_evidence，并输出且只输出一张 payment_collection。"
+                    "仅当客户未支付也未声称已付、更早对话已经讲过活动和价格、"
+                    "金额按每人10元且为10/20/30/40元之一时，保留且只输出一张 payment_collection。"
                 ),
                 "choice_cancel_payment": (
-                    "若支付位置应改为 manual_transfer/unverified_paid_claim 或命中硬禁区，"
-                    "同时撤销 payment、删除 payment_collection、清空 deposit_evidence 和冲突候选；"
-                    "不得只修文字后丢卡，也不得只留卡而清空证据。"
-                ),
-            }
-        )
-
-    assessment = (
-        previous_payload.get("payment_assessment")
-        if isinstance(previous_payload.get("payment_assessment"), dict)
-        else {}
-    )
-    supporting_delivery_violation = (
-        "payment_collection_requires_prior_supporting_key_evidence" in error
-    )
-    if (
-        str(assessment.get("status") or "").strip() == "payment_request"
-        and not supporting_delivery_violation
-    ):
-        tasks.append(
-            {
-                "violation": "payment_request_decision_must_remain_structurally_consistent",
-                "instruction": (
-                    "先重新阅读 current_message。若它仍是普通报名、预约、付款请求或索要小程序收款卡，"
-                    "必须保留 payment_assessment.status=payment_request；不得改成 none 来逃避结构修复。"
-                    "此时若原 deposit_evidence 经引用修复后完整，就必须保持 action=payment，"
-                    "并输出且只输出一张 payment_collection。可以放弃某个内容资产及其图片，"
-                    "但不能同时放弃独立合法的付款动作。只有原文实际是人工转账、无权威已付声明，"
-                    "或输入存在硬禁区时，才允许改成对应状态并成组撤销付款结构。"
-                ),
-                "previous_payment_assessment": assessment,
-                "previous_deposit_evidence": (
-                    previous_payload.get("deposit_evidence")
-                    if isinstance(previous_payload.get("deposit_evidence"), dict)
-                    else {}
+                    "若客户已付/声称已付、没有更早活动价格引用或人数金额不符合规则，"
+                    "删除 payment_collection 并清空对应 deposit_evidence。"
                 ),
             }
         )
@@ -3260,18 +3053,9 @@ def _reply_repair_hint(error: str) -> str:
     aggregate_marker = "parallel_reply_hard_violations::"
     if aggregate_marker in error:
         raw = error.split(aggregate_marker, 1)[1]
-        combined_asset_deposit_error = (
-            "selected_content_delivery_missing" in raw
-            and "payment_collection_requires_prior_supporting_key_evidence" in raw
-        )
-        hints: list[str] = [_reply_repair_hint(raw)] if combined_asset_deposit_error else []
+        hints: list[str] = []
         for violation in (item.strip() for item in raw.split(";;")):
             if not violation:
-                continue
-            if combined_asset_deposit_error and (
-                "selected_content_delivery_missing" in violation
-                or "payment_collection_requires_prior_supporting_key_evidence" in violation
-            ):
                 continue
             hint = _reply_repair_hint(violation)
             if hint and hint not in hints:
@@ -3287,25 +3071,6 @@ def _reply_repair_hint(error: str) -> str:
         return (
             "action 必须逐字使用 none、ask、offer、payment、registration 之一，并与本轮实际可见消息一致。"
             "不要用自定义枚举，也不要用 registration 表示未付客户参加活动。"
-        )
-    if "reply_action_ask_requires_visible_question" in error:
-        return (
-            "你声明了 action=ask，但客户可见 text 没有实际问题。保留原有正确回答和销售判断，"
-            "只补上本轮唯一、能推动真实下一步的问题，并用一个问号结尾；不要增加第二个销售方向。"
-        )
-    if "confirmed_store_mainline_question_required" in error:
-        return (
-            "本轮权威门店事实表明客户已确认具体门店，且没有卡点、安全暂停或交易终态。"
-            "保留已经正确交付的门店文字和 store_address，只追加一个到店日期或时段问题；"
-            "不要再问位置是否方便，不要同时推进预约金或留名额，也不要删除门店卡。"
-        )
-    if (
-        "reply_action_ask_requires_single_question" in error
-        or "reply_visible_question_limit_exceeded" in error
-    ):
-        return (
-            "你声明了 action=ask，但客户可见 text 同时出现了多个问题。保留最符合当前主任务的一个问题，"
-            "删除其他问句；不要把留名额、预约金、门店和到店时间同时推进。"
         )
     if "invalid_parallel_reply_list_field" in error:
         return (
@@ -3339,46 +3104,6 @@ def _reply_repair_hint(error: str) -> str:
             "输入没有权威已付事实，payment_assessment 不能使用 authoritative_paid。"
             "客户普通文字称已转好只能用 unverified_paid_claim 并引用客户原话；同时不得发卡、不得进入 registration。"
         )
-    if "payment_assessment_blocks_payment_collection" in error:
-        return (
-            "你已经把本轮支付位置判断为 manual_transfer 或 unverified_paid_claim，但输出仍在发小程序卡或执行 payment。"
-            "必须保持该真实判断：action 改为 none 或确有必要时 ask，selected_content_ids=[]，删除 payment_collection 和候选图片，"
-            "并把 deposit_evidence 精确清空为 "
-            "{\"offer_prior_turn_refs\":[],\"supporting_key\":\"\",\"supporting_refs\":[],\"current_intent_refs\":[]}。"
-            "人工转账或红包只说明客户明确选择的那个渠道，不能同时给多个付款方案；待核对声明的 payment_channel 使用 none，"
-            "只说明核对付款记录或请客户补成功截图。"
-        )
-    if "payment_collection_requires_payment_request_assessment" in error:
-        return (
-            "payment_collection 只能与 payment_assessment.status=payment_request 一致。"
-            "重新根据客户原话判断：索要小程序收款卡、明确问报名/预约/付款可用 payment_request；"
-            "明确人工转账必须用 manual_transfer + transfer，明确红包必须用 manual_transfer + red_packet；"
-            "普通文字称已转好或红包已发但无权威事实必须用 unverified_paid_claim + none。"
-            "不要为了保留卡片把后两类改写成 payment_request；若不是小程序付款请求，就撤销 payment、清空候选和 deposit_evidence。"
-        )
-    if "manual_transfer_requires_manual_payment_channel" in error:
-        return (
-            "payment_assessment.status=manual_transfer 时必须保留客户明确选择的唯一人工渠道："
-            "转账使用 payment_channel=transfer，微信红包使用 payment_channel=red_packet。"
-            "不得同时说明两个渠道，不得发送 payment_collection，也不得把红包静默改成转账。"
-        )
-    if "unverified_paid_claim_requires_no_channel" in error:
-        return (
-            "客户普通文字声称已经转账或已经发红包仍只是待核对声明。"
-            "保持 payment_assessment.status=unverified_paid_claim，payment_channel 改为 none；"
-            "不得发卡、不得重复提供付款渠道、不得声称到账或进入已付登记。"
-        )
-    if "payment_card_requires_payment_request_assessment" in error:
-        return (
-            "payment_channel=payment_card 只能与 payment_assessment.status=payment_request、action=payment "
-            "和同轮唯一一张 payment_collection 成组出现。只修复这组结构一致性，不新增成交事实。"
-        )
-    if "payment_request_requires_payment_collection" in error:
-        return (
-            "你已明确输出 payment_assessment.status=payment_request 且 payment_channel=payment_card，"
-            "必须同轮输出唯一一张 payment_collection；若重新阅读完整历史后判断当前并非付款行动信号，"
-            "则由 Reply 一并撤销 payment_request、payment_card、payment action 和 deposit_evidence，不能留下半套付款结构。"
-        )
     if "registration_action_requires_authoritative_paid_assessment" in error:
         return (
             "registration 只允许 payment_assessment.status=authoritative_paid，且输入必须真实存在 payment_fact:authoritative_paid。"
@@ -3400,17 +3125,6 @@ def _reply_repair_hint(error: str) -> str:
             "delivery_status=completed 的历史素材不能声明为本轮采用；客户没有明确要求重发时也不要承诺再次发送。"
             "请删除错误中的不可选 ID；仍可使用聊天和权威业务事实自行回答。"
         )
-    if "invalid_reply_deposit_supporting_key" in error or "payment_collection_requires_supporting_sales_key" in error:
-        return (
-            "这次错误说明 supporting_key 枚举或其证据不合法。修复前先按 payment_assessment 的信息特异性重新阅读"
-            "原始 current_message：普通文字称已经付好/转好属于待核对声明，明确选择人工转账属于 manual_transfer，"
-            "二者都优先于一般 payment_request，并且都必须清空 deposit_evidence、候选和小程序卡。"
-            "若原文复核后仍是一般付款请求，才保留 payment_request 和支付动作，只修正证据。"
-            "只有实际发送 payment_collection 时才填写 deposit_evidence。supporting_key 只能是 address、effect、"
-            "objection 之一，并且要与 supporting_refs 所引用的历史承接一致；时间、忙碌、改天、观望或费用顾虑"
-            "都属于 objection 维度，不能自造 time/refusal/price 等枚举。若历史没有真实成立的另一把钥匙，就取消本轮发卡并清空 deposit_evidence；"
-            "若证据存在且支付位置复核仍为 payment_request，只修正 supporting_key 和 supporting_refs，不改写客户可见支付方式。"
-        )
     if "payment_collection_requires_prior_activity_evidence" in error:
         return (
             "你决定发卡，但 offer_prior_turn_refs 没有引用更早轮次中由客服讲清活动与268元价格的消息，"
@@ -3418,43 +3132,6 @@ def _reply_repair_hint(error: str) -> str:
             " prior_assistant_message_refs 中的更早客服原文，或 structured_prior_activity_refs 中的结构化活动交付引用。"
             "这些列表只证明来源和时间；你必须重新阅读原文，确认它确实讲清活动，不能把案例、门店或普通寒暄误当活动介绍。"
             "如果不存在，就取消本轮 payment_collection 和 action=payment，只先讲活动。"
-        )
-    if (
-        "selected_content_delivery_missing" in error
-        and "payment_collection_requires_prior_supporting_key_evidence" in error
-    ):
-        return (
-            "组合修复：上一版已经同时声明采用内容资产和发送预约金，但结构素材与预约金证据没有一次补齐。"
-            "先重新阅读 current_message 并按支付位置的信息特异性核对上一版 payment_assessment：已付/转好待核对声明和"
-            "人工转账选择优先于一般 payment_request，不能为了补候选素材而保留错误的小程序通道。只有复核后仍是"
-            "一般付款请求或明确索要收款卡，才保留上一版 payment_request 和支付动作；不要把真实索要收款卡误改成人工转账。"
-            "再用 validation_context.prior_message_options 和 structured_delivered_assets 核对更早真实交付，"
-            "由你判断哪条客服消息或已完成资产属于 address、effect 或 objection；若另一把钥匙确实已交付，"
-            "supporting_refs 引用对应客服消息或结构资产即可，不要求客户另行确认。"
-            "然后二选一：如果继续采用 selected_content_ids 中的候选，严格按"
-            " content_candidate_delivery_requirements 一次输出它要求的全部 image/video/store_address/"
-            "payment_collection，并补齐 content_asset:<id>；如果不采用整套候选，就删除该 ID，但仍可在真实证据"
-            "成立时保留 action=payment、自然文字和一张 payment_collection。若历史没有真实交付另一把钥匙，"
-            "则取消 payment、清空 deposit_evidence，改为补最有价值的缺口。当前未权威已付时，不得改成"
-            " registration，也不得声称已经登记或已经留好名额。提交前一次性复核所有原错误，不要只修第一项。"
-        )
-    if "payment_collection_requires_prior_supporting_key_evidence" in error:
-        return (
-            "你决定发卡，但 supporting_refs 尚未证明地址、效果或卡点排疑中的另一把钥匙已在更早轮次真实交付。"
-            "补证据前必须先由你重新阅读 current_message 核对支付位置：已付/转好待核对声明和人工转账选择优先于"
-            "一般 payment_request；若上一版把更具体的支付位置误归成 payment_request，应纠正状态、撤销小程序卡并清空"
-            " deposit_evidence。只有复核后仍是一般付款请求或明确索要收款卡，这才是单纯证据引用修复，此时必须保留"
-            " payment_request 和支付通道，不得把‘把收款卡发我/发卡给我’改写成人工转账。"
-            "如果上一版 sales_judgment 已确认该维度更早完成交付，且本次唯一相关错误只是缺少引用，"
-            "本次 repair 不得重新审理该业务结论，也不得仅因漏写 ref 改成 offer、pause 或取消收款卡；应从"
-            " validation_context.prior_message_options 或 structured_delivered_assets 中找到真实的更早交付 ref，"
-            "并追加到原 supporting_refs。current_message 只证明本轮行动，不能替代另一把钥匙的历史交付。"
-            "只有历史中确实不存在任何对应的真实交付时，才取消本轮发卡，先补最有价值的一把钥匙。"
-        )
-    if "payment_collection_requires_current_action_signal_evidence" in error:
-        return (
-            "你决定发卡时，current_intent_refs 必须包含 current_message，证明本轮客户明确在问付款/报名、同意参加"
-            "或同意留名额；如果当前消息没有行动信号，就取消 payment_collection 和 action=payment。"
         )
     if "deposit_evidence_requires_payment_action" in error:
         return (
@@ -3680,10 +3357,9 @@ def _reply_repair_hint(error: str) -> str:
         )
     if "appointment_confirmation_fact_required" in error:
         return (
-            "客户自己提出下午过去、开车过去、姓名或手机号，只是到店意向和信息提交，不代表预约成立。"
-            "没有 appointment_created/confirmed 事实时，不要复述为‘好的，您下午直接来’，也不要说已留位、已安排、已登记。"
-            "改为‘您说的早上9点我先作为到店时间意向，具体接待安排以门店确认为准’；若缺门店位置，只问一个城市、区县或地标。"
-            "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。"
+            "没有 appointment_created/confirmed 事实时，只删除或改写‘已留位/已经留位’、"
+            "‘约好了/已预约/预约成功’、‘已排客/排客成功’这些明确预约完成态。"
+            "普通安排、客户时间意向、直接到店或登记措辞不是本错误的修改范围；保留其他客户可见内容和销售判断。"
         )
     if "too_many_appointment_time_options" in error:
         return "档期回复最多只能给 1 个推荐时间和 1 个备选时间。请基于 recommended_slot 和 backup_slots 重写，不要列完整时间表。"

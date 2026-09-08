@@ -418,7 +418,7 @@ def test_explicit_exit_conflict_takes_priority_over_generic_ask_shape() -> None:
         _validate_policy_reply_consistency(payload, _state())
 
 
-def test_pause_marketing_emotion_rejects_same_turn_advance() -> None:
+def test_pause_marketing_emotion_is_model_judgment_not_quality_gate() -> None:
     decision = _valid_decision()
     decision["emotion_decision"] = {
         "label": "angry",
@@ -435,8 +435,7 @@ def test_pause_marketing_emotion_rejects_same_turn_advance() -> None:
         "policy_decision": decision,
     }
 
-    with pytest.raises(ValueError, match="policy_decision_pause_marketing_conflict"):
-        _validate_policy_reply_consistency(payload, _state())
+    _validate_policy_reply_consistency(payload, _state())
 
 
 def test_pause_without_started_closing_sequence_is_valid() -> None:
@@ -486,7 +485,7 @@ def test_active_cardpoint_posture_label_does_not_discard_safe_reply() -> None:
     _validate_policy_reply_consistency(payload, _state())
 
 
-def test_active_cardpoint_still_rejects_structured_payment_action() -> None:
+def test_active_cardpoint_is_not_a_policy_quality_gate() -> None:
     decision = _valid_decision()
     decision["closing_decision"].update(
         {"action": "pause", "sequence_key": "none", "node_key": "", "customer_state": "new_blocker", "pressure": "low"}
@@ -497,11 +496,10 @@ def test_active_cardpoint_still_rejects_structured_payment_action() -> None:
         "policy_decision": decision,
     }
 
-    with pytest.raises(ValueError, match="policy_decision_active_cardpoint_conflict"):
-        _validate_policy_reply_consistency(payload, _state())
+    _validate_policy_reply_consistency(payload, _state())
 
 
-def test_ask_action_requires_one_customer_visible_question() -> None:
+def test_ask_action_question_shape_is_model_judgment_not_quality_gate() -> None:
     payload = {
         "reply_messages": [
             {
@@ -516,8 +514,7 @@ def test_ask_action_requires_one_customer_visible_question() -> None:
         "policy_decision": _valid_decision(),
     }
 
-    with pytest.raises(ValueError, match="reply_action_ask_requires_visible_question"):
-        _validate_policy_reply_consistency(payload, _state())
+    _validate_policy_reply_consistency(payload, _state())
 
     payload["reply_messages"][0]["content"] = (
         "门店地址和营业时间发您，您大概哪天方便到店？"
@@ -526,7 +523,7 @@ def test_ask_action_requires_one_customer_visible_question() -> None:
 
 
 @pytest.mark.parametrize("action", ["ask", "offer", "none"])
-def test_safe_reply_rejects_multiple_customer_visible_questions(action: str) -> None:
+def test_multiple_customer_visible_questions_are_not_a_quality_gate(action: str) -> None:
     payload = {
         "reply_messages": [
             {"type": "text", "order": 1, "content": "您周末方便吗？"},
@@ -538,21 +535,10 @@ def test_safe_reply_rejects_multiple_customer_visible_questions(action: str) -> 
         "policy_decision": _valid_decision(),
     }
 
-    with pytest.raises(ValueError, match="reply_visible_question_limit_exceeded"):
-        _validate_policy_reply_consistency(payload, _state())
+    _validate_policy_reply_consistency(payload, _state())
 
 
-def test_ask_action_repair_hints_preserve_one_mainline_direction() -> None:
-    missing = _reply_repair_hint("reply_action_ask_requires_visible_question")
-    multiple = _reply_repair_hint("reply_visible_question_limit_exceeded")
-
-    assert "唯一" in missing
-    assert "保留原有正确回答" in missing
-    assert "保留最符合当前主任务的一个问题" in multiple
-    assert "同时推进" in multiple
-
-
-def test_confirmed_store_requires_one_visible_mainline_question() -> None:
+def test_confirmed_store_does_not_require_a_followup_question() -> None:
     state = _state()
     state["fact_envelope"] = {
         "structured_facts": {
@@ -581,8 +567,7 @@ def test_confirmed_store_requires_one_visible_mainline_question() -> None:
         "policy_decision": _valid_decision(),
     }
 
-    with pytest.raises(ValueError, match="confirmed_store_mainline_question_required"):
-        _validate_policy_reply_consistency(payload, state)
+    _validate_policy_reply_consistency(payload, state)
 
     payload["reply_messages"].append(
         {"type": "text", "order": 3, "content": "您大概哪天方便到店？"}
@@ -619,14 +604,6 @@ def test_confirmed_store_does_not_advance_transaction_terminal() -> None:
     }
 
     _validate_policy_reply_consistency(payload, state)
-
-
-def test_confirmed_store_repair_hint_keeps_delivery_and_one_arrival_question() -> None:
-    hint = _reply_repair_hint("confirmed_store_mainline_question_required")
-
-    assert "保留已经正确交付的门店文字和 store_address" in hint
-    assert "只追加一个到店日期或时段问题" in hint
-    assert "不要再问位置是否方便" in hint
 
 
 def test_reply_failure_diagnostic_redacts_provider_and_contract_errors() -> None:
@@ -672,9 +649,9 @@ def test_reply_failure_diagnostic_redacts_provider_and_contract_errors() -> None
 def test_parallel_reply_repair_includes_specific_fact_instruction_and_preserves_policy() -> None:
     repaired = _reply_retry_messages(
         [{"role": "user", "content": "原始事实"}],
-        ValueError("parallel_reply_hard_violations::registration_confirmation_fact_required"),
+        ValueError("parallel_reply_hard_violations::appointment_confirmation_fact_required"),
         previous_payload={
-            "reply_messages": [{"type": "text", "content": "已经给您登记好了"}],
+            "reply_messages": [{"type": "text", "content": "已经给您预约好了"}],
             "policy_decision": _valid_decision(),
         },
         validation_context={
@@ -684,8 +661,8 @@ def test_parallel_reply_repair_includes_specific_fact_instruction_and_preserves_
     )
 
     contract_text = str(repaired[-1]["content"])
-    assert "不能说系统已经登记完成或报名完成" in contract_text
-    assert "我先帮您留着/保留活动名额’不属于系统完成态" in contract_text
+    assert "已留位/已经留位" in contract_text
+    assert "普通安排、客户时间意向、直接到店或登记措辞不是本错误的修改范围" in contract_text
     assert "policy_decision 不是本次错误来源时必须原样保留" in contract_text
 
 
@@ -1143,8 +1120,9 @@ def test_reply_prompt_marks_active_closing_provenance_as_runtime_required() -> N
     assert '"evidence_refs":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "这些是运行必需字段，不是 BI 可选项" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert '"offer_prior_turn_refs":[]' in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert '"supporting_key":"address|effect|objection"' in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不能只填其中一部分" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '"supporting_key":""' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "其余 deposit_evidence 字段可留空" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "金额按每人10元且只允许10/20/30/40元" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize(

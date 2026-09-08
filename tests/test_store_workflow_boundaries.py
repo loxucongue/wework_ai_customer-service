@@ -196,14 +196,13 @@ def test_unmatched_store_query_may_ask_for_location_detail() -> None:
     )
 
 
-def test_direct_visit_question_cannot_be_confirmed_without_appointment_fact() -> None:
+def test_direct_visit_answer_is_not_an_appointment_completion_gate() -> None:
     state = {"normalized_content": "今天可以做吗", "evidence_join": {"structured_facts": {}}}
 
-    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
-        _validate_parallel_appointment_confirmation_facts(
-            [{"type": "text", "content": "可以的，直接到店就行。"}],
-            state,
-        )
+    _validate_parallel_appointment_confirmation_facts(
+        [{"type": "text", "content": "可以的，直接到店就行。"}],
+        state,
+    )
 
 
 def test_store_location_answer_is_not_treated_as_completed_appointment() -> None:
@@ -236,13 +235,10 @@ def test_non_appointment_language_is_not_blocked_by_appointment_guard(reply: str
     [
         "已预约。",
         "已经帮您约好了。",
-        "已安排。",
-        "已经帮您安排好了。",
         "已经留位。",
-        "明天下午准时等您。",
-        "可以直接到店。",
-        "今天直接过去就行。",
-        "您和姐姐明天早上9点过来就好。",
+        "预约成功。",
+        "已经排客。",
+        "排客成功。",
     ],
 )
 def test_appointment_completion_claims_still_require_authoritative_fact(reply: str) -> None:
@@ -251,6 +247,24 @@ def test_appointment_completion_claims_still_require_authoritative_fact(reply: s
             [{"type": "text", "content": reply}],
             {"normalized_content": "明天下午", "evidence_join": {"structured_facts": {}}},
         )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "已安排。",
+        "已经帮您安排好了。",
+        "明天下午准时等您。",
+        "可以直接到店。",
+        "今天直接过去就行。",
+        "您和姐姐明天早上9点过来就好。",
+    ],
+)
+def test_non_completion_appointment_language_is_not_a_quality_gate(reply: str) -> None:
+    _validate_parallel_appointment_confirmation_facts(
+        [{"type": "text", "content": reply}],
+        {"normalized_content": "明天下午", "evidence_join": {"structured_facts": {}}},
+    )
 
 
 @pytest.mark.parametrize("reply", ["已登记。", "已经帮您登记好了。", "登记完成。"])
