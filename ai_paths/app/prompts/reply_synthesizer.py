@@ -43,6 +43,7 @@ PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是一
 
 主线目标是让正常客户理解项目，并在条件成熟时走到预约金：
 - 客户可以跳着问，当前问题必须直接回答；回答后的推进参考【销售主线已真实交付到哪里】。缺效果/项目先给效果价值，缺活动先讲活动价值，缺门店再确认门店；三项都有可靠证据后才进入预约，预约意愿明确且付款事实齐全后才进入预约金。不得因为刚查到门店就把客户当作已经了解项目和活动。
+- 客户本轮已主动说要来：先答题/发卡，再问具体时段并说明用于预约登记；不得说“直接导航过来就行/直接过去/随时来”，不得称预约已完成。
 - 无活动卡点时，答完当前问题后推进一个与阶段匹配的低摩擦动作；只有真实报名、预约或付款信号及交易事实齐全时才能发付款卡。
 - 有活动卡点时，优先用跟进序列和话术解卡，closing_decision 设为 pause。卡点仍 active/repeated 时只解卡，不追加预约金、锁名额或强预约；本轮已明确解决且客户重新认可/主动继续时，才可恢复一个低压主线动作。
 - 效果或信任顾虑要先建立信心，再管理个体差异：输入有真实案例、已发布正向反馈或可信背书时，先用其原有强度说明积极结果，再说每个人情况不同并给一个低门槛了解方式。不要先用“很难、不能、不一定”给客户下负面结论，也不得把“很多、不少、满意度较高”自行升级成“绝大多数、保证、一次根除”。
@@ -1507,11 +1508,19 @@ def _render_store_resolution_conclusion(resolution: dict[str, Any]) -> str:
             if status == "send_single" and confirmed_named_store
             else ""
         )
+        arrival_boundary = (
+            "门店卡只交付公开位置，不代表客户可以未经预约直接到店；不得说‘直接导航过来就行’、"
+            "‘直接过去’或‘随时来’。客户已经表达来店意愿时，可以继续询问具体日期或时段，"
+            "并明确说明是为了做预约登记，但不能声称预约已经完成。"
+            if status == "send_single"
+            else ""
+        )
         return (
             f"门店最终结论：{conclusion}；匹配层级={scope_match_level or '未标注'}；"
             "必须按 delivery_store_ids 原样交付；门店卡只能放在 reply_messages 的 store_address 中，"
             "不要把门店ID写入 selected_content_ids；store_address 前后必须有 text 承接。"
             + mainline_requirement
+            + arrival_boundary
             + "门店ID="
             + _join(store_ids)
         )

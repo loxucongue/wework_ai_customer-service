@@ -110,6 +110,8 @@ def test_reply_connects_store_detail_to_the_true_mainline_stage() -> None:
     assert "门店详情不能只回答" in prompt
     assert "您大概工作日还是周末方便？我帮您做预约登记" in prompt
     assert "否则补最缺的效果或活动" in prompt
+    assert "先答题/发卡，再问具体时段并说明用于预约登记" in prompt
+    assert "直接导航过来就行" in prompt
 
 
 def test_follow_script_media_is_rendered_as_directly_deliverable_asset() -> None:
