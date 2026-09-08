@@ -459,7 +459,7 @@ def normalize_follow_sequence_schedule(
         _parse_iso((source_snapshot.get("conversation_activity") or {}).get("latest_staff_message_at")) or now
     )
     latest_customer = _parse_iso((source_snapshot.get("conversation_activity") or {}).get("latest_customer_message_at"))
-    requested: list[datetime] = []
+    raw_requested: list[datetime] = []
     for item in steps:
         schedule = item.get("schedule_source") if isinstance(item.get("schedule_source"), dict) else {}
         trigger_base = _string(schedule.get("trigger_base")).lower()
@@ -476,10 +476,15 @@ def normalize_follow_sequence_schedule(
         else:
             delay = max(0, _int(schedule.get("relative_minutes"), _int(item.get("delay_minutes"))))
             base = latest_staff.astimezone(timezone.utc) if trigger_base == "last_reply" else now
-            scheduled = max(now, base + timedelta(minutes=delay))
-        if requested and scheduled <= requested[-1]:
-            scheduled = requested[-1] + timedelta(seconds=1)
-        requested.append(scheduled)
+            scheduled = base + timedelta(minutes=delay)
+        if raw_requested and scheduled <= raw_requested[-1]:
+            scheduled = raw_requested[-1] + timedelta(seconds=1)
+        raw_requested.append(scheduled)
+
+    requested = list(raw_requested)
+    if requested and requested[0] < now:
+        stale_shift = now - requested[0]
+        requested = [value + stale_shift for value in requested]
 
     start_clock = _parse_clock(quiet_start) or clock_time(22, 0)
     end_clock = _parse_clock(quiet_end) or clock_time(8, 0)

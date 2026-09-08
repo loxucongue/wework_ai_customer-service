@@ -237,6 +237,63 @@ def test_plan_generation_stops_before_conversation_or_model_when_customer_is_hum
     assert repository.runs["run-1"]["final_decision"] == "no_plan"
 
 
+def test_monitor_reactivates_auto_approved_draft_plan() -> None:
+    class DraftRepository(_Repository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.runs["run-1"] = {"workflow_run_id": "run-1", "status": "created"}
+
+        def get_active_outreach_plan_for_customer(self, *_: object, **__: object) -> dict[str, object]:
+            return {
+                "plan": {
+                    "id": "plan-1",
+                    "status": "draft",
+                    "source_snapshot": {
+                        "workflow_run_id": "run-1",
+                        "trigger_context": {
+                            "trigger_type": "first_day_opened_silence",
+                            "activation_policy": "auto_approved",
+                        },
+                    },
+                },
+                "tasks": [{"id": "task-1", "status": "pending"}],
+            }
+
+    class Planning(_Planning):
+        @staticmethod
+        def _auto_approve_plan(plan_id: str) -> dict[str, object]:
+            return {"plan": {"id": plan_id, "status": "active"}}
+
+    repository = DraftRepository()
+    workflow = FirstDayWorkflow(
+        repository=repository,
+        model_client=object(),
+        customer_context_service=None,
+        first_day_wechat_allowlist="",
+        planning=Planning(_StatusClient()),
+    )
+    candidate = {
+        **_identity(),
+        "last_customer_message_at": "2026-09-05T09:00:00+00:00",
+        "last_staff_message_at": "2026-09-05T09:02:00+00:00",
+        "latest_outbound_message_at": "2026-09-05T09:02:00+00:00",
+    }
+
+    result = asyncio.run(
+        workflow._evaluate_first_day_silence_candidate(
+            candidate,
+            silent_minutes=1,
+            auto_activate=True,
+            eligible_after="2026-09-05T09:00:30+00:00",
+        )
+    )
+
+    assert result["status"] == "evaluated"
+    assert result["created"] is True
+    assert result["reason"] == "draft_plan_reactivated"
+    assert repository.runs["run-1"]["reason_code"] == "draft_plan_reactivated"
+
+
 def test_send_rechecks_ai_mode_and_cancels_human_plan_without_delivery() -> None:
     repository = _Repository()
     client = _StatusClient(mode="human")

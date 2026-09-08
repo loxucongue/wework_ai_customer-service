@@ -459,6 +459,84 @@ def test_inactive_night_plan_moves_the_first_node_to_morning_and_preserves_gap()
     assert {item["schedule_mode"] for item in schedule} == {"quiet_hours_deferred"}
 
 
+def test_quiet_hours_overdue_follow_sequence_preserves_node_offsets() -> None:
+    now = datetime(2026, 9, 7, 16, 30, tzinfo=timezone.utc)  # 00:30 Beijing
+    latest_staff = datetime(2026, 9, 7, 13, 0, tzinfo=timezone.utc)
+    schedule = normalize_follow_sequence_schedule(
+        now.isoformat(),
+        [
+            {"delay_minutes": 0, "schedule_source": {"trigger_base": "last_reply", "relative_minutes": 0}},
+            {"delay_minutes": 30, "schedule_source": {"trigger_base": "last_reply", "relative_minutes": 30}},
+            {"delay_minutes": 180, "schedule_source": {"trigger_base": "last_reply", "relative_minutes": 180}},
+        ],
+        source_snapshot={
+            "conversation_activity": {
+                "latest_customer_message_at": (latest_staff - timedelta(minutes=10)).isoformat(),
+                "latest_staff_message_at": latest_staff.isoformat(),
+            }
+        },
+    )
+    first = datetime.fromisoformat(schedule[0]["scheduled_at"])
+    second = datetime.fromisoformat(schedule[1]["scheduled_at"])
+    third = datetime.fromisoformat(schedule[2]["scheduled_at"])
+    assert first.astimezone(timezone(timedelta(hours=8))).strftime("%H:%M") == "08:30"
+    assert second - first == timedelta(minutes=30)
+    assert third - first == timedelta(minutes=180)
+    assert {item["schedule_mode"] for item in schedule} == {"quiet_hours_deferred"}
+
+
+def test_generate_plan_recovers_after_committed_plan_post_commit_error() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.updates: list[dict[str, object]] = []
+
+        @staticmethod
+        def get_first_day_outreach_run(
+            workflow_run_id: str,
+            *,
+            include_related: bool = False,
+        ) -> dict[str, object]:
+            return {
+                "workflow_run_id": workflow_run_id,
+                "status": "running",
+                "retry_count": 0,
+                "plan_id": "plan-committed",
+            }
+
+        def update_first_day_outreach_run(self, _workflow_run_id: str, **changes: object) -> None:
+            self.updates.append(changes)
+
+    repository = Repository()
+    planner = PlanGenerator(
+        repository=repository,
+        model_client=None,
+        system_client=None,
+        customer_context_service=None,
+        precision_qa_playbook_service=None,
+        sop_reply_pack_service=None,
+        coze_client=None,
+        sales_strategy_service=None,
+    )
+
+    async def fail_after_commit(**_: object) -> dict[str, object]:
+        raise RuntimeError("post commit readback failed")
+
+    planner._build_plan = fail_after_commit  # type: ignore[method-assign]
+    result = asyncio.run(
+        planner.generate_plan(
+            customer_id="customer-1",
+            corp_id="corp-1",
+            wechat="SL8003",
+            external_userid="external-1",
+            workflow_run_id="run-1",
+        )
+    )
+
+    assert result["created"] is True
+    assert result["plan"]["id"] == "plan-committed"
+    assert any(update.get("reason_code") == "plan_created_with_post_commit_warning" for update in repository.updates)
+
+
 class _CaptureRepository:
     def __init__(self) -> None:
         self.tasks: list[dict[str, object]] = []

@@ -363,10 +363,35 @@ class PlanGenerator:
             )
         except Exception as exc:
             if workflow_run_id:
-                current = self.repository.get_first_day_outreach_run(
-                    workflow_run_id,
-                    include_related=False,
-                ) or {}
+                try:
+                    current = self.repository.get_first_day_outreach_run(
+                        workflow_run_id,
+                        include_related=False,
+                    ) or {}
+                except Exception:
+                    current = {}
+                committed_plan_id = _string(current.get("plan_id"))
+                if committed_plan_id:
+                    try:
+                        self.repository.update_first_day_outreach_run(
+                            workflow_run_id,
+                            status="created",
+                            reason_code="plan_created_with_post_commit_warning",
+                            final_decision="send_pending",
+                            error_node="plan_post_commit",
+                            error_type=type(exc).__name__,
+                            error_message=str(exc)[:4000],
+                            finished_at="",
+                            next_retry_at="",
+                        )
+                    except Exception:
+                        pass
+                    return {
+                        "created": True,
+                        "plan": {"id": committed_plan_id},
+                        "tasks": [],
+                        "post_commit_warning": f"{type(exc).__name__}: {exc}",
+                    }
                 retry_count = int(current.get("retry_count") or 0)
                 retry_delay = _first_day_full_retry_delay_seconds(str(exc), retry_count)
                 terminal = {"blocked", "sent", "cancelled", "completed"}
@@ -387,10 +412,13 @@ class PlanGenerator:
             raise
         finally:
             if workflow_run_id:
-                self.repository.update_first_day_outreach_run(
-                    workflow_run_id,
-                    duration_ms=round((time.perf_counter() - started) * 1000),
-                )
+                try:
+                    self.repository.update_first_day_outreach_run(
+                        workflow_run_id,
+                        duration_ms=round((time.perf_counter() - started) * 1000),
+                    )
+                except Exception:
+                    pass
 
     async def _build_plan(
         self,
@@ -1564,8 +1592,10 @@ class PlanGenerator:
             recorded_workflow["summary"] = source_snapshot.get("first_day_workflow") or {}
             updates: dict[str, Any] = {
                 "plan_id": _string(plan.get("id")),
-                "first_task_id": _string((created_tasks[0] if created_tasks else {}).get("id")),
-                "second_task_id": _string((created_tasks[1] if len(created_tasks) > 1 else {}).get("id")),
+                "first_task_id": _string((created_tasks[0] if created_tasks else {}).get("id"))
+                or _string(current_run.get("first_task_id")),
+                "second_task_id": _string((created_tasks[1] if len(created_tasks) > 1 else {}).get("id"))
+                or _string(current_run.get("second_task_id")),
                 "first_scene": _string((raw_steps[0] if raw_steps else {}).get("scene")),
                 "second_scene": _string((raw_steps[1] if len(raw_steps) > 1 else {}).get("scene")),
                 "input_snapshot_json": source_snapshot,
@@ -2950,15 +2980,20 @@ class PlanGenerator:
         return lock
 
     def _auto_approve_plan(self, plan_id: str) -> dict[str, Any]:
-        customer_id = self._plan_customer_id(plan_id)
-        self.repository.add_outreach_event(
-            plan_id=plan_id,
-            task_id="",
-            customer_id=customer_id,
-            event_type="plan_auto_approved",
-            event_summary="Personalized outreach plan auto-approved and queued",
-        )
-        return self.repository.update_outreach_plan_status(plan_id, "active")
+        activated = self.repository.update_outreach_plan_status(plan_id, "active")
+        plan = activated.get("plan") if isinstance(activated.get("plan"), dict) else {}
+        customer_id = _string(plan.get("customer_id")) or self._plan_customer_id(plan_id)
+        try:
+            self.repository.add_outreach_event(
+                plan_id=plan_id,
+                task_id="",
+                customer_id=customer_id,
+                event_type="plan_auto_approved",
+                event_summary="Personalized outreach plan auto-approved and queued",
+            )
+        except Exception:
+            pass
+        return activated
 
     def _plan_customer_id(self, plan_id: str) -> str:
         detail = self.repository.get_outreach_plan(plan_id)
