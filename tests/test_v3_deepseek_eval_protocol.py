@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 
 from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
+    _build_case_sop_execution_service,
+    _case_settings,
     build_metrics,
     choose_samples,
     compact_facts,
@@ -22,6 +24,7 @@ from scripts.evaluate_v3_full_chain_deepseek import (  # noqa: E402
     sample_bucket,
     _seed_case_memory,
     validate_evaluation_settings,
+    verify_source_absence,
 )
 from scripts.v3_lifecycle_eval.protocol import (  # noqa: E402
     hard_assertions,
@@ -55,6 +58,30 @@ def test_stratified_samples_are_deterministic_and_interleaved() -> None:
     assert len(first) == 120
     assert sum(distribution.values()) == 120
     assert len({row["bucket"] for row in first[:20]}) > 1
+
+
+def test_source_absence_audit_accepts_pre_schema_readonly_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AICS_STORAGE_BACKEND", "sqlite")
+    monkeypatch.setenv("AI_PATHS_DB_PATH", str(tmp_path / "legacy-source.db"))
+    audit = {"source_read_queries": 0}
+
+    verify_source_absence(["eval-request-1"], audit)
+
+    assert audit["production_absence"] == {
+        "runs": 0,
+        "v3_strategy_usage_events": 0,
+        "message_dispatches": 0,
+        "strategy_data_outbox": 0,
+    }
+    assert set(audit["production_absence_unavailable_tables"]) == {
+        "runs",
+        "v3_strategy_usage_events",
+        "message_dispatches",
+        "strategy_data_outbox",
+    }
 
 
 def test_store_detail_questions_are_sampled_as_store_scenarios() -> None:
@@ -328,6 +355,69 @@ def test_full_chain_evaluation_fails_when_knowledge_token_is_missing() -> None:
 
     with pytest.raises(RuntimeError, match="FOLLOW_KNOWLEDGE_TOKEN"):
         validate_evaluation_settings(settings)
+
+
+def test_full_chain_case_settings_enable_the_approved_content_overlay(tmp_path: Path) -> None:
+    class _Settings:
+        sop_reply_packs_path = tmp_path / "missing-sop.json"
+        model_led_objection_playbook_path = tmp_path / "missing-playbook.json"
+        sop_chat_gate_total_timeout_seconds = 15.0
+
+        def model_copy(self, *, update: dict[str, object]):
+            return SimpleNamespace(**update)
+
+    case_settings = _case_settings(_Settings(), tmp_path)  # type: ignore[arg-type]
+
+    assert case_settings.sop_reply_packs_path.name == "sop_reply_packs.json"
+    assert case_settings.sop_reply_packs_overlay_path.name == "sop_asset_overlay.json"
+    assert case_settings.sop_reply_packs_overlay_path.is_file()
+
+
+def test_full_chain_case_settings_preserve_existing_business_content(tmp_path: Path) -> None:
+    shared_sop = tmp_path / "shared-sop.json"
+    shared_playbook = tmp_path / "shared-playbook.json"
+    shared_sop.write_text("{}", encoding="utf-8")
+    shared_playbook.write_text("{}", encoding="utf-8")
+
+    class _Settings:
+        sop_reply_packs_path = shared_sop
+        model_led_objection_playbook_path = shared_playbook
+        sop_chat_gate_total_timeout_seconds = 15.0
+
+        def model_copy(self, *, update: dict[str, object]):
+            return SimpleNamespace(**update)
+
+    case_settings = _case_settings(_Settings(), tmp_path / "case")  # type: ignore[arg-type]
+
+    assert case_settings.sop_reply_packs_path == shared_sop
+    assert case_settings.model_led_objection_playbook_path == shared_playbook
+    assert case_settings.sop_reply_packs_overlay_path.name == "sop_asset_overlay.json"
+
+
+def test_full_chain_case_runtime_has_real_effect_and_activity_assets(tmp_path: Path) -> None:
+    class _Settings:
+        sop_reply_packs_path = tmp_path / "missing-sop.json"
+        model_led_objection_playbook_path = tmp_path / "missing-playbook.json"
+        sop_chat_gate_total_timeout_seconds = 15.0
+
+        def model_copy(self, *, update: dict[str, object]):
+            return SimpleNamespace(
+                sop_chat_gate_total_timeout_seconds=self.sop_chat_gate_total_timeout_seconds,
+                **update,
+            )
+
+    case_settings = _case_settings(_Settings(), tmp_path / "case")  # type: ignore[arg-type]
+    service = _build_case_sop_execution_service(
+        case_settings=case_settings,  # type: ignore[arg-type]
+        repository=SimpleNamespace(),  # type: ignore[arg-type]
+        memory_store=SimpleNamespace(),  # type: ignore[arg-type]
+        shared={"model_client": SimpleNamespace(), "customer_context": SimpleNamespace()},
+    )
+
+    assets = service.reply_chain_available_assets()
+    by_role = {item["asset_role"]: item for item in assets}
+    assert by_role["effect_evidence"]["media"]
+    assert by_role["activity_offer"]["media"]
 
 
 def test_judge_uses_current_store_resolution_over_historical_order_store() -> None:

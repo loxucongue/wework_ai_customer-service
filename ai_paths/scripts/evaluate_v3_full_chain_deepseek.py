@@ -45,15 +45,20 @@ from app.services.deepseek_semantic_client import DeepSeekSemanticClient  # noqa
 from app.services.follow_knowledge_client import FollowKnowledgeClient  # noqa: E402
 from app.services.model_client import ModelClient  # noqa: E402
 from app.services.memory_store import CustomerMemoryStore  # noqa: E402
+from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService  # noqa: E402
 from app.services.outreach_system_client import OutreachSystemClient  # noqa: E402
 from app.services.platform_agent_client import PlatformAgentClient  # noqa: E402
 from app.services.runtime_budget import build_runtime_budget  # noqa: E402
 from app.services.sales_strategy_service import SalesStrategyService  # noqa: E402
+from app.services.sop_reply_pack_service import SopReplyPackService  # noqa: E402
 from app.services.store_service import StoreService  # noqa: E402
 from app.services.store_snapshot_service import StoreSnapshotService  # noqa: E402
 from app.services.trace_logger import TraceLogger  # noqa: E402
 from app.services.v3_semantic_router_service import V3SemanticRouterService  # noqa: E402
-from app.services.v3_sop_execution_service import is_platform_auto_opening_message  # noqa: E402
+from app.services.v3_sop_execution_service import (  # noqa: E402
+    SopExecutionService,
+    is_platform_auto_opening_message,
+)
 from app.services.storage import AppRepository, SQLiteStore, build_store  # noqa: E402
 from app.services.storage.serialization import loads_dict  # noqa: E402
 from app.services.workflow_compat import workflow_response_from_chat  # noqa: E402
@@ -428,6 +433,7 @@ def verify_source_absence(request_ids: list[str], audit: dict[str, Any]) -> None
         audit["production_absence"] = counts
         return
     source_store = build_store(Settings())
+    unavailable_tables: list[str] = []
 
     def count_value(row: Any) -> int:
         if isinstance(row, dict):
@@ -437,40 +443,56 @@ def verify_source_absence(request_ids: list[str], audit: dict[str, Any]) -> None
         except (IndexError, KeyError, TypeError):
             return 0
 
+    def execute_count(conn: Any, *, table: str, sql: str, params: list[Any]) -> int:
+        try:
+            return count_value(conn.execute(sql, params).fetchone())
+        except Exception as exc:
+            # Older read-only SQLite snapshots can legitimately predate one or
+            # more audit tables.  A missing table proves that this source could
+            # not contain an evaluation row; connection and query failures must
+            # still fail the isolation audit.
+            detail = str(exc).lower()
+            if "no such table" not in detail and "doesn't exist" not in detail:
+                raise
+            if table not in unavailable_tables:
+                unavailable_tables.append(table)
+            return 0
+
     try:
         with source_store.connect() as conn:
             for offset in range(0, len(clean_ids), 100):
                 chunk = clean_ids[offset : offset + 100]
                 placeholders = ",".join("?" for _ in chunk)
-                counts["runs"] += count_value(
-                    conn.execute(
-                        f"SELECT COUNT(*) FROM runs WHERE request_id IN ({placeholders})",
-                        chunk,
-                    ).fetchone()
+                counts["runs"] += execute_count(
+                    conn,
+                    table="runs",
+                    sql=f"SELECT COUNT(*) FROM runs WHERE request_id IN ({placeholders})",
+                    params=chunk,
                 )
-                counts["v3_strategy_usage_events"] += count_value(
-                    conn.execute(
-                        f"SELECT COUNT(*) FROM v3_strategy_usage_events WHERE request_id IN ({placeholders})",
-                        chunk,
-                    ).fetchone()
+                counts["v3_strategy_usage_events"] += execute_count(
+                    conn,
+                    table="v3_strategy_usage_events",
+                    sql=f"SELECT COUNT(*) FROM v3_strategy_usage_events WHERE request_id IN ({placeholders})",
+                    params=chunk,
                 )
-                counts["message_dispatches"] += count_value(
-                    conn.execute(
-                        f"SELECT COUNT(*) FROM message_dispatches WHERE source_request_id IN ({placeholders})",
-                        chunk,
-                    ).fetchone()
+                counts["message_dispatches"] += execute_count(
+                    conn,
+                    table="message_dispatches",
+                    sql=f"SELECT COUNT(*) FROM message_dispatches WHERE source_request_id IN ({placeholders})",
+                    params=chunk,
                 )
                 like_clause = " OR ".join("payload_json LIKE ?" for _ in chunk)
-                counts["strategy_data_outbox"] += count_value(
-                    conn.execute(
-                        f"SELECT COUNT(*) FROM strategy_data_outbox WHERE {like_clause}",
-                        [f"%{item}%" for item in chunk],
-                    ).fetchone()
+                counts["strategy_data_outbox"] += execute_count(
+                    conn,
+                    table="strategy_data_outbox",
+                    sql=f"SELECT COUNT(*) FROM strategy_data_outbox WHERE {like_clause}",
+                    params=[f"%{item}%" for item in chunk],
                 )
                 audit["source_read_queries"] += 4
     finally:
         source_store.close()
     audit["production_absence"] = counts
+    audit["production_absence_unavailable_tables"] = unavailable_tables
     if any(counts.values()):
         raise RuntimeError("evaluation request ids unexpectedly found in production: " + json.dumps(counts))
 
@@ -621,12 +643,31 @@ class TimedGraph:
 
 
 def _case_settings(settings: Settings, case_dir: Path) -> Settings:
+    configured_sop_path = Path(getattr(settings, "sop_reply_packs_path", "") or "")
+    configured_playbook_path = Path(
+        getattr(settings, "model_led_objection_playbook_path", "") or ""
+    )
     return settings.model_copy(
         update={
             "trace_log_dir": case_dir / "trace",
             "db_path": case_dir / "state.db",
             "memory_dir": case_dir / "memory",
             "store_snapshot_path": case_dir / "store_snapshot.json",
+            # A full-chain evaluation must load the same approved content
+            # metadata as production.  Leaving the optional overlay unset turns
+            # every pack into generic supporting content and invalidates effect
+            # material coverage results.
+            "sop_reply_packs_path": (
+                configured_sop_path
+                if configured_sop_path.is_file()
+                else ROOT / "config" / "sop_reply_packs.json"
+            ),
+            "sop_reply_packs_overlay_path": ROOT / "config" / "sop_asset_overlay.json",
+            "model_led_objection_playbook_path": (
+                configured_playbook_path
+                if configured_playbook_path.is_file()
+                else ROOT / "config" / "model_led_objection_playbook.json"
+            ),
         }
     )
 
@@ -658,6 +699,28 @@ def _seed_case_memory(
     return scope.sales_contact_key, events
 
 
+def _build_case_sop_execution_service(
+    *,
+    case_settings: Settings,
+    repository: AppRepository,
+    memory_store: CustomerMemoryStore,
+    shared: dict[str, Any],
+) -> SopExecutionService:
+    """Build the read-only content provider that production's V3 graph uses."""
+
+    return SopExecutionService(
+        repository=repository,
+        sop_reply_pack_service=SopReplyPackService(case_settings),
+        model_client=shared["model_client"],
+        memory_store=memory_store,
+        customer_context_service=shared["customer_context"],
+        chat_gate_total_timeout_seconds=case_settings.sop_chat_gate_total_timeout_seconds,
+        model_led_objection_playbook_service=ModelLedObjectionPlaybookService(
+            case_settings.model_led_objection_playbook_path
+        ),
+    )
+
+
 def build_case_runtime(
     *,
     settings: Settings,
@@ -672,12 +735,19 @@ def build_case_runtime(
     memory_store = CustomerMemoryStore(case_settings, repository)
     sales_contact_key, seed_events = _seed_case_memory(memory_store, sample)
     trace_logger = TraceLogger(case_settings)
+    sop_execution_service = _build_case_sop_execution_service(
+        case_settings=case_settings,
+        repository=repository,
+        memory_store=memory_store,
+        shared=shared,
+    )
     graph = build_reply_graphs(
         shared["coze_client"], trace_logger, shared["model_client"], memory_store=memory_store,
         customer_context_service=shared["customer_context"],
         customer_store_knowledge_service=shared["store_knowledge"],
         store_service=shared["store_service"], outreach_send_client=None,
-        platform_agent_client=shared["platform_client"], sop_execution_service=None,
+        platform_agent_client=shared["platform_client"],
+        sop_execution_service=sop_execution_service,
         semantic_router_service=shared["semantic_router"], sales_strategy_service=shared["sales_strategy"],
     ).full_graph
     timed_graph = TimedGraph(graph)
