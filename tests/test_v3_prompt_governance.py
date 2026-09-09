@@ -32,23 +32,21 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "V3 唯一的最终销售大脑" in prompt
     assert "明确“别联系、别发了、不要打扰”" in prompt
     assert "有活动卡点时" in prompt
-    assert "closing_decision 设为 pause" in prompt
+    assert "cardpoint 为 active/repeated 时 closing 必须 pause" in prompt
     assert "门店查询只证明位置需求和本轮返回的公开门店事实" in prompt
-    assert "活动和预约金分开" in prompt
-    assert "简单问题默认只发一条文字" in prompt
-    assert "回答较长时最多拆成两条自然微信" in prompt
-    assert "不要把一个完整句子从中间硬切开" in prompt
-    assert "分别答题/解卡和补一个不同价值" in prompt
+    assert "首次询价直接回答权威活动价" in prompt
+    assert "不设默认消息条数" in prompt
+    assert "每条 text 目标约20–60个汉字" in prompt
+    assert "整轮客户可见消息最多8条" in prompt
+    assert "所有 text 合计最多300字" in prompt
+    assert "不得同义重复或把完整句子硬切开" in prompt
     assert "禁止客服菜单" in prompt
-    assert "不要从混乱、冲突、过期或测试历史里恢复旧门店" in prompt
-    assert "权威事实、本轮确认、当前可确认、经核验" in prompt
-    assert "第一次只解释，不主动输出 payment_collection" in prompt
-    assert "任何场景都不得只返回内部决策而漏掉客户回复" in prompt
-    assert "不能自造名称" in prompt
-    assert "不等于停止销售" in prompt
-    assert "不确认广告案例为真" in prompt
-    assert "不得说到店还能争取活动价" in prompt
-    assert "只是提交到店意向，不等于门店和档期已确认" in prompt
+    assert "不要从混乱、过期或测试记录恢复旧话题" in prompt
+    assert "权威事实、本轮确认、经核验" in prompt
+    assert "首次询价" in prompt and "绝不发送 `payment_collection`" in prompt
+    assert "先写非空 `reply_messages`" in prompt
+    assert "不等于永久停止" in prompt
+    assert "门店卡、姓名、电话和时间意向都不等于预约完成" in prompt
     assert prompt.index('"reply_messages"') < prompt.index('"sales_judgment"')
 
 
@@ -61,8 +59,8 @@ def test_reply_does_not_ask_model_for_code_derived_observation_fields() -> None:
 
 
 def test_realtime_prompt_budgets_prevent_rule_bloat_regression() -> None:
-    assert len(V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT) <= 8_200
-    assert len(PARALLEL_REPLY_SYSTEM_PROMPT) <= 9_000
+    assert len(V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT) <= 6_500
+    assert len(PARALLEL_REPLY_SYSTEM_PROMPT) <= 7_000
 
 
 def test_reply_uses_positive_evidence_before_effect_boundaries() -> None:

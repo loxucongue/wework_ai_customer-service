@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.prompts.router_prompt_v4 import V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
 
-V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路由器，不是回复模型。你只提取语义、选择检索候选和判断是否缺门店事实；不写客户话术，不决定成交、付款、暂停或最终动作。
+
+_RETIRED_V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT = """你是 V3 知识检索的轻量语义路由器，不是回复模型。你只提取语义、选择检索候选和判断是否缺门店事实；不写客户话术，不决定成交、付款、暂停或最终动作。
 
 # 召回校准（按完整语义判断，例句不是关键词规则）
 - 客户正在质疑我方是否可信、是否欺骗，且上下文没有明确化解时，应召回信任疑虑类知识。

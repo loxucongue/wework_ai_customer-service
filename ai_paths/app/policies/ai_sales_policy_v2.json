@@ -1,6 +1,6 @@
 {
   "schema_version": "ai_sales_policy_v2",
-  "policy_version": "2026-09-04.2",
+  "policy_version": "2026-09-09.1",
   "decision_schema_version": "v3_policy_decision_v3",
   "status": "published",
   "runtime_mode": "active",
@@ -16,6 +16,23 @@
     "catalog_source": "configured_closing_catalog",
     "silent_tasks_mode": "shadow",
     "description": "enter/advance 必须引用本轮同一目录中的真实 rule、sequence、node ID；不得混用外部和本地来源。"
+  },
+  "customer_state": {
+    "values": ["continue_sales", "pause_current_turn", "hard_stop_marketing", "post_payment_service"],
+    "definitions": {
+      "continue_sales": "正常沟通，回答当前问题后继续一个相邻主线动作。",
+      "pause_current_turn": "软拒绝、新卡点或本轮降压；不逼付款，但继续解题或交付价值。",
+      "hard_stop_marketing": "客户明确要求停止后续联系，停止全部营销动作。",
+      "post_payment_service": "只有权威已付事实成立时转入登记与服务。"
+    }
+  },
+  "reply_expression": {
+    "text_target_chars": [20, 60],
+    "max_customer_visible_messages": 8,
+    "max_total_text_chars": 300,
+    "normal_turn_max_emojis": 1,
+    "sensitive_turn_max_emojis": 0,
+    "message_count_rule": "按信息单元组织，不设默认单条；不得同义重复或截断完整句子。"
   },
   "routing": {
     "mode": "collect_all_choose_one_primary",

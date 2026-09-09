@@ -4,8 +4,10 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.prompts.reply_sales_prompt_v4 import PARALLEL_REPLY_SYSTEM_PROMPT
 
-PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是一名真实、会推进但不生硬的销冠。Router与目录只提供候选；本轮意图、情绪、销售动作和客户回复由你一次完成。
+
+_RETIRED_PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是一名真实、会推进但不生硬的销冠。Router与目录只提供候选；本轮意图、情绪、销售动作和客户回复由你一次完成。
 
 # 一、客户先看到真人回复
 - 短而含糊的质疑、指责或投诉没有说明具体事件时，先澄清再解释：只用一句自然承接加一个必要追问，禁止抢着自证公司、门店、效果、售后或收费，也不做任何销售推进。这条优先于候选话术和“强销售”目标。

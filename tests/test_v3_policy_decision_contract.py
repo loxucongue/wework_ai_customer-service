@@ -367,7 +367,8 @@ def test_explicit_exit_forces_hard_stop_and_complete() -> None:
     assert result["closing_decision"]["action"] == "complete"
     assert result["closing_decision"]["node_key"] == ""
     assert result["closing_decision"]["trigger"] == "none"
-    assert result["closing_decision"]["customer_state"] == "hard_stop"
+    assert result["closing_decision"]["customer_state"] == "hard_stop_marketing"
+    assert result["closing_decision"]["legacy_customer_state"] == "hard_stop"
     assert result["closing_decision"]["pressure"] == "none"
     assert "explicit_exit_requires_hard_stop" in result["decision_reasons"]
     assert "explicit_exit_requires_complete" in result["decision_reasons"]
@@ -1027,7 +1028,7 @@ def test_lower_pressure_emotion_also_limits_closing_pressure() -> None:
     result = _normalized_policy_decision(raw, state=_external_closing_state())
 
     assert result["emotion_decision"]["pressure"] == "low"
-    assert result["closing_decision"]["action"] == "enter"
+    assert result["closing_decision"]["action"] == "pause"
     assert result["closing_decision"]["pressure"] == "low"
     assert "emotion_requires_lower_closing_pressure" in result["decision_reasons"]
 

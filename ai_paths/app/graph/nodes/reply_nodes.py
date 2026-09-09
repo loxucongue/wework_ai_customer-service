@@ -14,6 +14,11 @@ from app.graph.nodes.reply_quality import (
     collect_reply_soft_warnings,
 )
 
+from app.graph.nodes.reply_presentation import (
+    compact_reply_message_format,
+    reply_presentation_violations,
+)
+
 from app.graph.nodes.reply_validation import (
     _paid_deposit_context,
     _parallel_paid_deposit_context,
@@ -355,6 +360,11 @@ def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
     messages = payload.get("reply_messages")
     if not isinstance(messages, list) or not messages:
         raise ValueError("Model JSON missing reply_messages")
+    messages = compact_reply_message_format(messages)
+    payload["reply_messages"] = messages
+    presentation_violations = reply_presentation_violations(messages)
+    if presentation_violations:
+        raise ValueError(";;".join(presentation_violations))
     allowed_types = {
         "text",
         "image",
@@ -466,6 +476,10 @@ def _prepare_structural_messages(
                     "message": "store_delivery_materialized_from_tool_fact",
                 }
             )
+        prepared = compact_reply_message_format(prepared)
+        presentation_violations = reply_presentation_violations(prepared)
+        if presentation_violations:
+            raise ValueError(";;".join(presentation_violations))
         return _renumber(prepared)
     prepared = _filter_unsupported_media(messages, state, warnings)
     prepared = append_activity_intro_image(prepared, state, warnings)
@@ -480,6 +494,10 @@ def _prepare_structural_messages(
     for warning in warnings:
         if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
             warning.setdefault("node", "synthesize_reply")
+    prepared = compact_reply_message_format(prepared)
+    presentation_violations = reply_presentation_violations(prepared)
+    if presentation_violations:
+        raise ValueError(";;".join(presentation_violations))
     return prepared
 
 def _materialize_selected_content_media(
@@ -1002,6 +1020,33 @@ def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
     posture = str(raw.get("posture") or "answer").strip()
     if posture not in {"answer", "advance", "switch", "pause", "close"}:
         posture = "answer"
+    next_action_raw = (
+        raw.get("next_sales_action")
+        if isinstance(raw.get("next_sales_action"), dict)
+        else {}
+    )
+    next_action_type = str(next_action_raw.get("type") or "").strip()
+    allowed_next_actions = {
+        "keep_open",
+        "ask_missing_fact",
+        "deliver_value",
+        "send_effect_material",
+        "send_store",
+        "explain_activity",
+        "invite_booking",
+        "send_payment",
+        "post_payment_service",
+        "stop",
+    }
+    next_sales_action = (
+        {
+            "type": next_action_type,
+            "target_stage": str(next_action_raw.get("target_stage") or "").strip()[:120],
+            "reason": str(next_action_raw.get("reason") or "").strip()[:300],
+        }
+        if next_action_type in allowed_next_actions
+        else {}
+    )
     return {
         "customer_goal": str(raw.get("customer_goal") or "")[:500],
         "primary_objective": str(raw.get("primary_objective") or "")[:500],
@@ -1009,8 +1054,69 @@ def _normalized_sales_judgment(value: Any) -> dict[str, Any]:
             raw.get("customer_friction_observation") or ""
         )[:500],
         "posture": posture,
+        "next_sales_action": next_sales_action,
         "reason": str(raw.get("reason") or "")[:500],
     }
+
+
+_CUSTOMER_STATE_V4 = {
+    "continue_sales",
+    "pause_current_turn",
+    "hard_stop_marketing",
+    "post_payment_service",
+}
+
+_LEGACY_CUSTOMER_STATE_MAP = {
+    "engaged": "continue_sales",
+    "none": "continue_sales",
+    "hesitant": "pause_current_turn",
+    "soft_reject": "pause_current_turn",
+    "not_buying_now": "pause_current_turn",
+    "new_blocker": "pause_current_turn",
+    "hard_stop": "hard_stop_marketing",
+    "transaction_terminal_or_handoff": "post_payment_service",
+}
+
+
+def _normalized_customer_state(
+    value: Any,
+    *,
+    authoritative_paid: bool,
+) -> tuple[str, str]:
+    """Return the v4 state and an optional normalization reason.
+
+    Old model values remain readable during a rolling deployment.  The new
+    post-payment state is deliberately fact-gated: a model label never creates
+    a paid order or authorizes service handling by itself.
+    """
+
+    raw = str(value or "").strip()
+    if not raw:
+        return "continue_sales", "missing_closing_customer_state"
+    normalized = _LEGACY_CUSTOMER_STATE_MAP.get(raw, raw)
+    if normalized not in _CUSTOMER_STATE_V4:
+        return "continue_sales", "invalid_closing_customer_state"
+    # Legacy aliases are expected during a rolling deployment and must not
+    # inflate the degraded-rate metric by themselves.
+    reason = ""
+    if normalized == "post_payment_service" and not authoritative_paid:
+        return "pause_current_turn", "post_payment_service_requires_authoritative_paid"
+    return normalized, reason
+
+
+def _legacy_customer_state(
+    state: str,
+    *,
+    active_blocker: bool = False,
+) -> str:
+    if state == "hard_stop_marketing":
+        return "hard_stop"
+    if state == "post_payment_service":
+        return "transaction_terminal_or_handoff"
+    if state == "pause_current_turn":
+        return "new_blocker" if active_blocker else "soft_reject"
+    return "engaged"
+
 
 def _normalized_policy_decision(
     value: Any,
@@ -1381,20 +1487,19 @@ def _normalized_policy_decision(
             node_key = ""
             constraint_reasons.append("closing_delayed_node_not_realtime")
             degrade("closing_delayed_node_not_realtime")
+    customer_state, customer_state_reason = _normalized_customer_state(
+        closing_raw.get("customer_state"),
+        authoritative_paid=bool(_parallel_paid_deposit_context(runtime_state)),
+    )
+    if customer_state_reason:
+        degrade(customer_state_reason)
     closing_decision = {
         "action": action,
         "sequence_key": sequence_key,
         "node_key": node_key,
         "trigger": closing_trigger,
-        "customer_state": checked_enum(
-            closing_raw.get("customer_state"),
-            {
-                "engaged", "hesitant", "soft_reject", "not_buying_now", "hard_stop",
-                "new_blocker", "transaction_terminal_or_handoff", "none",
-            },
-            "none",
-            field="closing_customer_state",
-        ),
+        "customer_state": customer_state,
+        "legacy_customer_state": _legacy_customer_state(customer_state),
         "pressure": checked_enum(
             closing_raw.get("pressure"),
             {"normal", "low", "none"},
@@ -1445,17 +1550,17 @@ def _normalized_policy_decision(
         if closing_decision["pressure"] == "normal":
             closing_decision["pressure"] = "low"
             degrade("defer_requires_lower_pressure")
-    if closing_decision["customer_state"] == "new_blocker":
-        if closing_decision["action"] != "pause":
+    if closing_decision["customer_state"] == "pause_current_turn":
+        if closing_decision["action"] in {"enter", "advance", "fallback"}:
             closing_decision["action"] = "pause"
             closing_decision["node_key"] = ""
-            degrade("new_blocker_requires_pause")
+            degrade("pause_current_turn_cannot_advance_closing")
         if closing_decision["pressure"] == "normal":
             closing_decision["pressure"] = "low"
-            degrade("new_blocker_requires_lower_pressure")
+            degrade("pause_current_turn_requires_lower_pressure")
     if closing_decision["customer_state"] in {
-        "not_buying_now",
-        "transaction_terminal_or_handoff",
+        "hard_stop_marketing",
+        "post_payment_service",
     }:
         if closing_decision["action"] != "complete":
             closing_decision["action"] = "complete"
@@ -1468,8 +1573,9 @@ def _normalized_policy_decision(
         if emotion_decision.get("pressure") == "normal":
             emotion_decision["pressure"] = "low"
             degrade("emotion_requires_lower_pressure")
-        if closing_decision.get("pressure") == "normal":
-            closing_decision["pressure"] = "low"
+        if str(closing_raw.get("pressure") or "").strip().lower() == "normal":
+            if closing_decision.get("pressure") == "normal":
+                closing_decision["pressure"] = "low"
             degrade("emotion_requires_lower_closing_pressure")
     elif emotion_decision.get("flow_action") in {"pause_marketing_turn", "handoff_by_system_rule"}:
         if emotion_decision.get("pressure") != "none":
@@ -1533,6 +1639,10 @@ def _normalized_policy_decision(
         if router_has_current_friction and external_category_key
         else {}
     )
+    closing_decision["legacy_customer_state"] = _legacy_customer_state(
+        str(closing_decision.get("customer_state") or "continue_sales"),
+        active_blocker=str(cardpoint_decision.get("state") or "") in {"active", "repeated"},
+    )
     if (
         router_has_current_friction
         and cardpoint_decision.get("state") != "resolved"
@@ -1567,7 +1677,10 @@ def _normalized_policy_decision(
     if realtime_intent.get("type") == "explicit_exit":
         if primary_task.get("type") != "hard_stop":
             degrade("explicit_exit_requires_hard_stop")
-        if closing_decision.get("action") != "complete" or closing_decision.get("customer_state") != "hard_stop":
+        if (
+            closing_decision.get("action") != "complete"
+            or closing_decision.get("customer_state") != "hard_stop_marketing"
+        ):
             degrade("explicit_exit_requires_complete")
         primary_task = task(
             {"type": "hard_stop", "goal": "停止自动营销", "basis": realtime_intent.get("basis") or []},
@@ -1579,7 +1692,8 @@ def _normalized_policy_decision(
                 "action": "complete",
                 "node_key": "",
                 "trigger": "none",
-                "customer_state": "hard_stop",
+                "customer_state": "hard_stop_marketing",
+                "legacy_customer_state": "hard_stop",
                 "pressure": "none",
             }
         )
@@ -1639,6 +1753,34 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         )
     if not isinstance(decision, dict) or not decision:
         return
+    primary_task = (
+        decision.get("primary_task")
+        if isinstance(decision.get("primary_task"), dict)
+        else {}
+    )
+    closing = (
+        decision.get("closing_decision")
+        if isinstance(decision.get("closing_decision"), dict)
+        else {}
+    )
+    safety = _normalized_safety_assessment(payload.get("safety_assessment"))
+    payment = _normalized_payment_assessment(payload.get("payment_assessment"))
+    sensitive_turn = (
+        str(primary_task.get("type") or "")
+        in {"risk", "human_takeover", "hard_stop", "transaction_terminal"}
+        or str(closing.get("customer_state") or "")
+        in {"hard_stop_marketing", "post_payment_service"}
+        or str(safety.get("status") or "none") != "none"
+        or str(payment.get("status") or "")
+        in {"manual_transfer", "unverified_paid_claim", "authoritative_paid"}
+    )
+    if sensitive_turn:
+        presentation_violations = reply_presentation_violations(
+            payload.get("reply_messages"),
+            sensitive_turn=True,
+        )
+        if presentation_violations:
+            raise ValueError(";;".join(presentation_violations))
     _validate_closing_script_selection(payload, state, decision)
     intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
     explicit_exit = str(intent.get("type") or "") == "explicit_exit"
@@ -1963,11 +2105,23 @@ async def _chat_json_with_deadline(
     tier: str,
     deadline_monotonic: float,
 ) -> dict[str, Any]:
+    system_text = next(
+        (
+            str(item.get("content") or "")
+            for item in messages
+            if isinstance(item, dict) and str(item.get("role") or "") == "system"
+        ),
+        "",
+    )
+    # The sales Reply gets a small amount of lexical variation so consecutive
+    # customers do not receive the same rigid template. Exact JSON/fact repair
+    # stays deterministic. This changes expression only, never Router or facts.
+    temperature = 0.0 if "修复器" in system_text else 0.15
     try:
         return await model_client.chat_json(
             messages,
             tier=tier,
-            temperature=0.0,
+            temperature=temperature,
             deadline_monotonic=deadline_monotonic,
         )
     except TypeError as exc:
@@ -3084,6 +3238,21 @@ def _reply_repair_hint(error: str) -> str:
                 hints.append(hint)
         if hints:
             return "本次输出同时违反多项硬事实或结构合同，必须在同一个新 JSON 中全部修正：" + " ".join(hints)
+    if "reply_presentation_message_limit_exceeded" in error:
+        return (
+            "客户可见消息总数超过8条。保留当前问题的直接答案、一个最相关价值和一个下一动作，"
+            "合并属于同一信息单元的短句；不得删除必需的门店卡、素材或付款结构。"
+        )
+    if "reply_presentation_text_limit_exceeded" in error:
+        return (
+            "客户可见文字总量超过300字。删除重复、套话和无关历史，只保留当前答案、必要依据与一个下一动作；"
+            "不能截断完整句子，也不能删除真实限制条件。"
+        )
+    if "reply_presentation_emoji_limit_exceeded" in error:
+        return (
+            "表情使用超过本轮边界。普通销售轮最多保留1个自然轻表情；健康风险、投诉退款、退订、"
+            "人工接管和付款核验轮删除全部表情，保持克制。"
+        )
     if "Model JSON missing reply_messages" in error or "Model reply_messages are empty" in error:
         return (
             "reply_messages 不能缺失或为空。即使 Gate 没有候选、工具没有结果或你决定暂停推进，也必须根据当前消息、"
