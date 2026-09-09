@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.chat_runtime import _store_search_evidence_from_state  # noqa: E402
@@ -244,6 +246,83 @@ def test_distance_prompt_reframes_without_repeating_negative_objection() -> None
     assert "马上把注意力转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "正向社会证明可以说“专程过来/花一两个小时过来”" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "我先帮您留着/保留活动名额" in PARALLEL_REPLY_SYSTEM_PROMPT
+
+
+def test_terminal_distance_objection_rejects_negative_restatement_and_same_city_requery() -> None:
+    state = {
+        "evidence_join": {
+            "schema_version": "reply_chain_evidence_join_v1",
+            "semantic_route": {
+                "current_friction": {
+                    "status": "explicit",
+                    "checkpoint_code": "cp9",
+                    "checkpoint_tag_name": "店太远了，不愿意过来",
+                }
+            },
+            "sales_recall": {
+                "sequence_candidates": [
+                    {
+                        "sequence_id": "45",
+                        "sequence_name": "距离异议转价值",
+                        "checkpoint_name": "店太远了，不愿意过来",
+                    }
+                ]
+            },
+            "shared_context": {
+                "authoritative_facts": {
+                    "sent_messages": {
+                        "latest_store_recommendation": {
+                            "store_search_evidence": {
+                                "city": "长沙市",
+                                "candidate_search_complete": True,
+                                "recommendation_final_for_destination": True,
+                                "clarification_would_change_result": False,
+                                "recommended_store_id": "160",
+                            }
+                        }
+                    }
+                }
+            },
+        },
+        "reply_sales_judgment": {
+            "next_sales_action": {
+                "type": "deliver_value",
+                "target_stage": "appointment",
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="terminal_store_distance_objection_restates_negative"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "理解您觉得有点远，来回确实挺折腾的。"}],
+            state,
+        )
+
+    with pytest.raises(ValueError, match="terminal_store_distance_objection_same_city_requery"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "那没关系呀，您告诉我大概在哪个位置，我再看看。"}],
+            state,
+        )
+
+    validate_model_led_reply_admission(
+        [
+            {
+                "type": "text",
+                "content": "那没关系呀，我们不少客户会专程花一两个小时过来，主要还是看中技术和效果。您平时还有其他方便去的城市吗？",
+            }
+        ],
+        state,
+    )
+
+
+def test_distance_repair_hints_remove_same_city_loop_and_negative_restatement() -> None:
+    from app.graph.nodes.reply_nodes import _reply_repair_hint
+
+    restatement = _reply_repair_hint("terminal_store_distance_objection_restates_negative")
+    requery = _reply_repair_hint("terminal_store_distance_objection_same_city_requery")
+
+    assert "不得再次出现‘距离、远、折腾、麻烦’" in restatement
+    assert "删除询问地铁站、路口、楼栋、具体位置" in requery
 
 
 def test_distance_candidate_examples_are_adapted_before_reply_prompt() -> None:

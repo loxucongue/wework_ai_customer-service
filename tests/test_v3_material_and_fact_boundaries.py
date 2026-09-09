@@ -8,6 +8,7 @@ import pytest
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
 from app.graph.nodes.reply_nodes import (
     _parallel_generic_reply_repair_messages,
+    _repair_policy_skeleton,
     _reply_repair_hint,
 )
 from app.graph.nodes.reply_validation import _validate_parallel_reply_consistency
@@ -17,6 +18,9 @@ from app.graph.nodes.sales_fact_validation import (
 )
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.services.material_fingerprint import (
+    _FINGERPRINT_CACHE,
+    _FINGERPRINT_FAILURE_CACHE,
+    _FINGERPRINT_INFLIGHT,
     diversify_material_candidates,
     fingerprint_media_bytes,
     media_fingerprints_match,
@@ -78,6 +82,33 @@ def test_same_image_on_different_urls_is_removed() -> None:
 
     assert [item["content_id"] for item in result["candidates"]] == ["case-a"]
     assert result["audit"]["duplicate_media_removed"] == 1
+
+
+def test_timed_out_fingerprint_task_releases_single_flight_and_caches_late_result() -> None:
+    url = "https://cdn.example/late.png"
+    _FINGERPRINT_CACHE.pop(url, None)
+    _FINGERPRINT_FAILURE_CACHE.pop(url, None)
+    _FINGERPRINT_INFLIGHT.pop(url, None)
+
+    async def fetcher(value: str) -> bytes:
+        assert value == url
+        await asyncio.sleep(0.08)
+        return PNG_BYTES
+
+    async def scenario() -> None:
+        first = await diversify_material_candidates(
+            [_image_candidate("late", url, relevance="direct")],
+            fetcher=fetcher,
+            total_budget_seconds=0.05,
+        )
+        assert first["audit"]["fallback_used"] is True
+        assert url in _FINGERPRINT_INFLIGHT
+        await asyncio.sleep(0.06)
+        await asyncio.sleep(0)
+        assert url not in _FINGERPRINT_INFLIGHT
+        assert url in _FINGERPRINT_CACHE
+
+    asyncio.run(scenario())
 
 
 def test_recent_material_only_loses_to_fresh_candidate_in_same_semantic_tier() -> None:
@@ -154,6 +185,7 @@ def test_recent_script_and_high_similarity_are_penalized_not_deleted() -> None:
         ("脸和手一起做只要268元。", "offer_face_hand_total_268_conflict"),
         ("脸部和手部都是268元。", "offer_face_hand_price_scope_ambiguous"),
         ("周年庆活动是268元，针对脸部和手部的斑点都适用。", "offer_face_hand_price_scope_ambiguous"),
+        ("268元就能改善脸部和手部的斑点。", "offer_face_hand_price_scope_ambiguous"),
         ("第二次再做也是268元。", "offer_repeat_visit_268_unverified"),
     ],
 )
@@ -368,6 +400,68 @@ def test_every_visible_rewrite_rebuilds_sales_judgment_with_visible_text() -> No
     assert "reply_messages" not in assistant_payload
     assert "sales_judgment" not in assistant_payload
     assert "policy_decision" in assistant_payload
+
+
+def test_visible_identity_repair_removes_stale_policy_prose_and_lists_hard_exclusions() -> None:
+    repaired_messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "当前客户消息：你发我看看啊，你是机器人吗"}],
+        ValueError(
+            "reply_admission_violations::customer_visible_placeholder_fact;;"
+            "customer_visible_false_human_identity_claim"
+        ),
+        previous_payload={
+            "reply_messages": [{"type": "text", "content": "我是真人客服，XX市门店发您。"}],
+            "sales_judgment": {"next_sales_action": {"type": "send_store"}},
+            "policy_decision": {
+                "primary_task": {
+                    "type": "answer_current_question",
+                    "goal": "继续旧厦门门店话题",
+                    "basis": ["旧门店"],
+                },
+                "realtime_intent": {"type": "fact_inquiry", "confidence": "high"},
+                "emotion_decision": {"label": "impatient", "pressure": "low"},
+                "closing_decision": {
+                    "action": "none",
+                    "customer_state": "continue_sales",
+                    "trigger": "none",
+                },
+            },
+        },
+        validation_context={
+            "mainline_delivery_state": {
+                "next_missing_stage": "effect_evidence",
+                "allowed_next_sales_action_types": ["deliver_value", "send_effect_material"],
+            }
+        },
+    )
+
+    previous = repaired_messages[-2]["content"]
+    contract = repaired_messages[-1]["content"]
+    assert "继续旧厦门门店话题" not in previous
+    assert "旧门店" not in previous
+    assert "\"type\":\"answer_current_question\"" in previous
+    assert "我不是机器人" in contract
+    assert "XX市" in contract
+
+
+def test_repair_policy_skeleton_retains_only_enums_and_ids() -> None:
+    value = _repair_policy_skeleton(
+        {
+            "primary_task": {"type": "answer_current_question", "goal": "旧话题", "basis": ["x"]},
+            "realtime_intent": {"type": "fact_inquiry", "confidence": "high"},
+            "emotion_decision": {"label": "neutral", "pressure": "normal", "reason": "旧说明"},
+            "closing_decision": {
+                "action": "none",
+                "sequence_key": "none",
+                "customer_state": "continue_sales",
+                "reason": "旧节点说明",
+            },
+        }
+    )
+
+    assert value["primary_task"] == {"type": "answer_current_question"}
+    assert "reason" not in value["emotion_decision"]
+    assert "reason" not in value["closing_decision"]
 
 
 def test_store_address_promise_without_card_is_an_admission_violation() -> None:

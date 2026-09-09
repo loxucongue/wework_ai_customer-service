@@ -61,6 +61,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         lambda: validate_sales_price_fact_boundaries(messages),
         lambda: _validate_mainline_sales_action(state),
         lambda: _validate_customer_visible_mainline_boundary(messages, state),
+        lambda: _validate_terminal_store_distance_objection(messages, state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
     for check in checks:
@@ -139,6 +140,140 @@ def _validate_mainline_sales_action(state: dict[str, Any]) -> None:
             "next_sales_action_exceeds_delivered_mainline:"
             f"{action_type}:{mainline.get('next_missing_stage') or ''}"
         )
+
+
+def _validate_terminal_store_distance_objection(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Keep a completed same-city recommendation from looping on location.
+
+    Router owns whether the current turn is a distance objection. This check
+    only combines that structured decision with the persisted store-search
+    boundary; it never classifies customer prose or chooses a sales response.
+    """
+
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    route = joined.get("semantic_route") if isinstance(joined.get("semantic_route"), dict) else {}
+    if not _route_has_distance_objection(route, joined):
+        return
+    recommendation = _latest_store_recommendation(joined)
+    if not _recommendation_is_terminal(recommendation):
+        return
+    if recommendation.get("clarification_would_change_result") is True:
+        return
+
+    sales = (
+        state.get("reply_sales_judgment")
+        if isinstance(state.get("reply_sales_judgment"), dict)
+        else {}
+    )
+    next_action = (
+        sales.get("next_sales_action")
+        if isinstance(sales.get("next_sales_action"), dict)
+        else {}
+    )
+    if str(next_action.get("type") or "").strip() in {"ask_missing_fact", "send_store"}:
+        raise ValueError("terminal_store_distance_objection_same_city_requery")
+
+    text = re.sub(
+        r"\s+",
+        "",
+        "\n".join(
+            message_content_text(item.get("content"))
+            for item in messages
+            if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+        ),
+    )
+    if not text:
+        return
+    if any(marker in text for marker in ("距离", "太远", "有点远", "确实远", "折腾", "麻烦")):
+        raise ValueError("terminal_store_distance_objection_restates_negative")
+    if re.search(
+        r"(?:告诉|说|发|回复)(?:我|这边)?[^。！？!?]{0,10}(?:哪个位置|在哪里|在哪儿|哪边|地铁站|路口|楼栋|几号)",
+        text,
+    ):
+        raise ValueError("terminal_store_distance_objection_same_city_requery")
+
+
+def _route_has_distance_objection(route: dict[str, Any], joined: dict[str, Any]) -> bool:
+    friction = route.get("current_friction") if isinstance(route.get("current_friction"), dict) else {}
+    if str(friction.get("status") or "none").strip() == "none":
+        return False
+    checkpoint = route.get("checkpoint") if isinstance(route.get("checkpoint"), dict) else {}
+    recall = joined.get("sales_recall") if isinstance(joined.get("sales_recall"), dict) else {}
+    structured_labels: list[str] = [
+        str(friction.get(key) or "")
+        for key in (
+            "checkpoint_code",
+            "checkpoint_type_name",
+            "checkpoint_tag_name",
+            "summary",
+        )
+    ]
+    structured_labels.extend(
+        str(checkpoint.get(key) or "")
+        for key in ("primary_code", "primary_name", "primary_tag_name", "reason")
+    )
+    for sequence in recall.get("sequence_candidates") or []:
+        if not isinstance(sequence, dict):
+            continue
+        structured_labels.extend(
+            str(sequence.get(key) or "")
+            for key in ("sequence_name", "checkpoint_code", "checkpoint_name")
+        )
+    for candidate in recall.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        checkpoint_type = (
+            candidate.get("checkpoint_type")
+            if isinstance(candidate.get("checkpoint_type"), dict)
+            else {}
+        )
+        checkpoint_tag = (
+            candidate.get("checkpoint_tag")
+            if isinstance(candidate.get("checkpoint_tag"), dict)
+            else {}
+        )
+        structured_labels.extend(
+            [
+                str(candidate.get("checkpoint_code") or ""),
+                str(checkpoint_type.get("name") or ""),
+                str(checkpoint_tag.get("name") or ""),
+            ]
+        )
+    catalog_text = " ".join(structured_labels).lower()
+    return any(marker in catalog_text for marker in ("distance", "距离", "店太远", "路程远", "太远"))
+
+
+def _latest_store_recommendation(joined: dict[str, Any]) -> dict[str, Any]:
+    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
+    facts = (
+        shared.get("authoritative_facts")
+        if isinstance(shared.get("authoritative_facts"), dict)
+        else {}
+    )
+    sent = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    recommendation = (
+        sent.get("latest_store_recommendation")
+        if isinstance(sent.get("latest_store_recommendation"), dict)
+        else {}
+    )
+    evidence = (
+        recommendation.get("store_search_evidence")
+        if isinstance(recommendation.get("store_search_evidence"), dict)
+        else recommendation
+    )
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def _recommendation_is_terminal(value: dict[str, Any]) -> bool:
+    if value.get("recommendation_final_for_destination") is True:
+        return True
+    return bool(
+        value.get("candidate_search_complete") is True
+        and (value.get("recommended_store_id") or value.get("delivery_store_ids") or value.get("store_ids"))
+    )
 
 
 def _validate_customer_visible_mainline_boundary(

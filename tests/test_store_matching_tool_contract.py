@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.graph.nodes import action_nodes
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
+from app.prompts.store_destination_resolver import STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
 from app.services.driving_route_service import parse_driving_route_workflow_result, rerank_stores_by_driving_route
 from app.services.store_destination_resolver import (
     _is_generic_store_detail_hint,
@@ -31,6 +32,12 @@ class _FakeGeocodeClient:
         assert workflow_id == "fake-geocode"
         assert parameters.get("address")
         return {"data": [self._geocode]}
+
+
+def test_destination_prompt_resolves_deictic_send_request_from_latest_customer_location() -> None:
+    assert "你发我看看/发我看看啊/快发我" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+    assert "同时引用 current_message 和该客户 message_ref" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
+    assert "不会撤销客户紧邻的“发地址/发我看看”请求" in STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT
 
 
 class _FakeDestinationModel:

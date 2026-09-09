@@ -2459,6 +2459,8 @@ def _parallel_generic_reply_repair_messages(
         "paused_turn_cannot_advance_transaction",
         "invalid_parallel_reply_message_content:",
         "store_address_text_without_card",
+        "terminal_store_distance_objection_restates_negative",
+        "terminal_store_distance_objection_same_city_requery",
         "offer_face_hand_price_scope_ambiguous",
         "offer_face_hand_total_268_conflict",
         "offer_268_full_face_claim_conflict",
@@ -2598,6 +2600,23 @@ def _parallel_generic_reply_repair_messages(
             ),
         },
     }
+    if any("customer_visible_false_human_identity_claim" in item for item in violations):
+        repair_contract["customer_visible_identity_repair"] = {
+            "rule": "不要回答自己是否真人、人工、机器人或 AI；自然承接催促后，只处理客户紧邻的真实业务请求",
+            "forbidden_fragments": [
+                "我不是机器人",
+                "我不是AI",
+                "我是真人",
+                "我是真人客服",
+                "我是人工",
+                "人工客服",
+            ],
+        }
+    if any("customer_visible_placeholder_fact" in item for item in violations):
+        repair_contract["customer_visible_placeholder_repair"] = {
+            "rule": "没有真实地点就询问一个真正缺失的城市或地区，不得输出任何模板占位事实",
+            "forbidden_fragments": ["XX市", "XX区", "某市", "某区", "示例地址"],
+        }
     evidence_messages = [
         item
         for item in messages
@@ -2617,6 +2636,20 @@ def _parallel_generic_reply_repair_messages(
             if "sales_judgment" in repair_previous_payload:
                 repair_previous_payload.pop("sales_judgment", None)
                 removed_invalid_fields.append("sales_judgment")
+        if any(
+            marker in violation
+            for violation in violations
+            for marker in (
+                "customer_visible_placeholder_fact",
+                "customer_visible_false_human_identity_claim",
+                "store_address_text_without_card",
+                "invalid_parallel_reply_message_content:",
+            )
+        ):
+            policy = repair_previous_payload.get("policy_decision")
+            if isinstance(policy, dict):
+                repair_previous_payload["policy_decision"] = _repair_policy_skeleton(policy)
+                removed_invalid_fields.append("policy_decision.free_text")
     repair_contract["previous_invalid_fields_removed"] = removed_invalid_fields
     previous_output = (
         [
@@ -2647,6 +2680,48 @@ def _parallel_generic_reply_repair_messages(
             "content": "这是一次事实与结构最小修复，不是重新制定销售策略。" + json_dumps(repair_contract),
         },
     ]
+
+
+def _repair_policy_skeleton(value: dict[str, Any]) -> dict[str, Any]:
+    """Retain policy enums and IDs without stale free-text anchors."""
+
+    output: dict[str, Any] = {}
+    primary = value.get("primary_task") if isinstance(value.get("primary_task"), dict) else {}
+    if str(primary.get("type") or "").strip():
+        output["primary_task"] = {"type": str(primary.get("type") or "").strip()}
+    intent = value.get("realtime_intent") if isinstance(value.get("realtime_intent"), dict) else {}
+    if intent:
+        output["realtime_intent"] = {
+            key: copy.deepcopy(intent[key])
+            for key in ("type", "secondary_types", "confidence", "evidence_refs")
+            if key in intent
+        }
+    emotion = value.get("emotion_decision") if isinstance(value.get("emotion_decision"), dict) else {}
+    if emotion:
+        output["emotion_decision"] = {
+            key: copy.deepcopy(emotion[key])
+            for key in ("label", "confidence", "pressure", "flow_action", "evidence_refs")
+            if key in emotion
+        }
+    closing = value.get("closing_decision") if isinstance(value.get("closing_decision"), dict) else {}
+    if closing:
+        output["closing_decision"] = {
+            key: copy.deepcopy(closing[key])
+            for key in (
+                "action",
+                "rule_ids",
+                "sequence_key",
+                "node_key",
+                "trigger",
+                "customer_state",
+                "pressure",
+                "satisfied_prerequisite_ids",
+                "blocking_taboo_ids",
+                "evidence_refs",
+            )
+            if key in closing
+        }
+    return output
 
 def _legacy_parallel_generic_reply_repair_messages(
     messages: list[dict[str, Any]],
@@ -3515,6 +3590,18 @@ def _reply_repair_hint(error: str) -> str:
             "‘马上发地址/位置’等承诺，并按当前工具事实回答或追问一个真正缺失的信息。"
             "工具结果为 search_incomplete 时，不得从旧门店卡、历史订单或 Router 摘要恢复门店事实。"
         )
+    if "terminal_store_distance_objection_restates_negative" in error:
+        return (
+            "当前城市门店推荐已经完成。第一句只用‘那没关系呀/没事的’轻承接，"
+            "不得再次出现‘距离、远、折腾、麻烦’等加重顾虑的说法；"
+            "立即用本轮已召回且安全的话术把注意力转到技术、效果、案例和是否值得。"
+        )
+    if "terminal_store_distance_objection_same_city_requery" in error:
+        return (
+            "当前城市门店推荐已经完成，继续追问同城位置不会产生更近结果。"
+            "删除询问地铁站、路口、楼栋、具体位置或再次发店的内容，不要承诺重新匹配更近门店；"
+            "用距离卡点话术提供价值。客户再次明确拒绝当前城市门店时，最多询问是否有其他方便前往的城市。"
+        )
     if "case_image_structure_required_when_reply_promises_delivery" in error:
         return (
             "上一版承诺找、挑、选或发送效果图，却没有交付真实 image。"
@@ -3548,7 +3635,8 @@ def _reply_repair_hint(error: str) -> str:
     if "customer_visible_false_human_identity_claim" in error:
         return (
             "上一版对客户谎称自己不是机器人或是真人客服。删除这类身份断言，包括所有‘真人、人工、不是机器人、不是AI’表达，"
-            "也不要换一种方式解释身份。客户催促时可直接说‘我在的，这就发您看’，然后完成紧邻尚未交付的请求。"
+            "也不要换一种方式解释身份。客户催促时只做一句自然承接，然后完成紧邻尚未交付的请求；"
+            "只有本轮存在允许交付的真实图片或门店卡时，文字才可以声称会发送对应内容。"
             "不得借机恢复无关门店、价格或预约话题；对象确实无法确定时只追问一个必要信息。"
         )
     if "invalid_parallel_reply_action" in error:

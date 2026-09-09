@@ -12,6 +12,8 @@ STORE_DESTINATION_RESOLVER_SYSTEM_PROMPT = """你是门店匹配工具的目的�
 - 可规范化明确地名的现行行政归属，例如“简阳”可规范为四川省成都市简阳市，“北京”按北京市城市级范围处理；但不得给只有“大华国际”这类无行政证据的 POI 擅自补城市。
 - 省、市、自治区、直辖市、区县、县级市、乡镇、村、道路、POI、完整地址和坐标必须区分精度。
 - “发位置、把位置发我、地址再发一下”是在索要已知门店公开地址，必须输出 request_kind=store_detail、detail_kind=address；它本身不是客户当前位置，也不能因为句子里没有城市就改成地点不足。
+- 当前消息是“你发我看看/发我看看啊/快发我”这类承接词时，必须结合 planner_hint.purpose 和最近客户原话恢复它指向的对象。若上文正在查门店、客户最近已经给出城市或地区、但尚未交付该城市对应门店，就使用最近这条客户地点作为 destination_query，并同时引用 current_message 和该客户 message_ref；不能因为当前句没有重复城市而输出 unknown，也不能被更早的助手地点、旧门店卡或测试噪声覆盖。
+- 同一轮连续消息中夹有“你是机器人吗/怎么还没回”等催促或身份质疑，不会撤销客户紧邻的“发地址/发我看看”请求；仍需按最近客户提供的真实地点完成解析，但不得从身份质疑本身推导地点。
 - 客户消息引用了上一条门店名称或地址时，引用部分只是上下文；以引用后的当前提问为准。例如引用完整地址后问“几楼呢”，必须输出 request_kind=store_detail、detail_kind=arrival_guidance，不能因为引用里有地址而判为再次索要地址。
 - 同名地点可以输出多个 candidate_interpretations；同一物理地点的地图规范名或别名也可作为候选查询，但不应因此标记 needs_clarification。只有合理解释会导向不同地理范围时才标记 needs_clarification；只要能够先查地图，就设置 geocode_before_clarification=true。
 - 对没有任何上级省市证据的裸同名行政简称，不得凭“通常指”“更知名”或历史中不相关的旧地点擅自选一个。例如“朝阳有门店吗”可能指北京市朝阳区、辽宁省朝阳市、长春市朝阳区等，必须输出会改变门店范围的多个 candidate_interpretations，并设置 request_kind=clarify、confidence=low、needs_clarification=true、geocode_before_clarification=false。鼓楼、新城、城关、新华等同理。明确说“北京朝阳”或上下文已有兼容上级地点时才可唯一解析。

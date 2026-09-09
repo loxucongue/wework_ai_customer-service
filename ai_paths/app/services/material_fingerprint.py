@@ -279,23 +279,51 @@ async def _fingerprint_url(url: str, *, fetcher: MediaFetcher) -> dict[str, Any]
     if task is None:
         task = asyncio.create_task(_fetch_and_fingerprint(url, fetcher=fetcher))
         _FINGERPRINT_INFLIGHT[url] = task
+        task.add_done_callback(
+            lambda completed, *, cache_key=url: _finalize_fingerprint_task(
+                cache_key,
+                completed,
+            )
+        )
     try:
         result = await asyncio.shield(task)
     finally:
         if task.done() and _FINGERPRINT_INFLIGHT.get(url) is task:
             _FINGERPRINT_INFLIGHT.pop(url, None)
+    _remember_fingerprint_result(url, result)
+    return result
+
+
+def _finalize_fingerprint_task(
+    url: str,
+    task: asyncio.Task[dict[str, Any]],
+) -> None:
+    """Release single-flight ownership even when the original waiter timed out."""
+
+    if _FINGERPRINT_INFLIGHT.get(url) is task:
+        _FINGERPRINT_INFLIGHT.pop(url, None)
+    if task.cancelled():
+        _remember_fingerprint_result(url, {})
+        return
+    try:
+        result = task.result()
+    except BaseException:
+        result = {}
+    _remember_fingerprint_result(url, result)
+
+
+def _remember_fingerprint_result(url: str, result: dict[str, Any]) -> None:
     if result:
         _FINGERPRINT_FAILURE_CACHE.pop(url, None)
         _FINGERPRINT_CACHE[url] = (time.monotonic(), copy.deepcopy(result))
         _FINGERPRINT_CACHE.move_to_end(url)
         while len(_FINGERPRINT_CACHE) > FINGERPRINT_CACHE_MAX_ITEMS:
             _FINGERPRINT_CACHE.popitem(last=False)
-    else:
-        _FINGERPRINT_FAILURE_CACHE[url] = time.monotonic()
-        if len(_FINGERPRINT_FAILURE_CACHE) > FINGERPRINT_CACHE_MAX_ITEMS:
-            oldest = min(_FINGERPRINT_FAILURE_CACHE.items(), key=lambda item: item[1])[0]
-            _FINGERPRINT_FAILURE_CACHE.pop(oldest, None)
-    return result
+        return
+    _FINGERPRINT_FAILURE_CACHE[url] = time.monotonic()
+    if len(_FINGERPRINT_FAILURE_CACHE) > FINGERPRINT_CACHE_MAX_ITEMS:
+        oldest = min(_FINGERPRINT_FAILURE_CACHE.items(), key=lambda item: item[1])[0]
+        _FINGERPRINT_FAILURE_CACHE.pop(oldest, None)
 
 
 async def _fetch_and_fingerprint(url: str, *, fetcher: MediaFetcher) -> dict[str, Any]:
