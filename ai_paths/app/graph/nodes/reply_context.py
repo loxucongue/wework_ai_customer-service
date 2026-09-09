@@ -466,6 +466,8 @@ def _sent_sop_like_categories(state: AgentState, *, sent_message_summary: dict[s
         categories.append("store_address")
     if sent_message_summary.get("activity_intro_image_sent"):
         categories.append("activity_intro")
+    if sent_message_summary.get("case_image_sent"):
+        categories.append("effect_case")
     for event in state.get("history_events") or []:
         if not isinstance(event, dict):
             continue
@@ -473,7 +475,11 @@ def _sent_sop_like_categories(state: AgentState, *, sent_message_summary: dict[s
         if event_type in {"store_matched", "store_address_sent"}:
             categories.append("store_address")
         elif event_type == "case_image_sent":
-            categories.append("effect_case")
+            facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+            raw_roles = facts.get("asset_roles")
+            roles = raw_roles if isinstance(raw_roles, list) else ["effect_evidence"]
+            if "effect_evidence" in {str(item or "").strip() for item in roles}:
+                categories.append("effect_case")
         elif event_type == "activity_intro_image_sent":
             categories.append("activity_intro")
         elif event_type == "offer_explained":

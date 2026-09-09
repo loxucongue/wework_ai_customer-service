@@ -227,10 +227,22 @@ class CustomerMemoryStore:
         document_ids: list[str],
         request_id: str = "",
         image_urls: list[str] | None = None,
+        asset_roles: list[str] | None = None,
         interface_version: str = "v1",
     ) -> dict[str, Any]:
         clean_ids = [str(item).strip() for item in document_ids if str(item).strip()]
         clean_urls = [str(item).strip() for item in image_urls or [] if str(item).strip()]
+        # Historical callers created this event only for genuine case/effect
+        # evidence and did not provide role metadata. Preserve that meaning;
+        # an explicit empty list remains available for a known non-effect asset.
+        raw_roles = ["effect_evidence"] if asset_roles is None else asset_roles
+        clean_roles = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in raw_roles
+                if str(item).strip() in {"effect_evidence", "sales_reference"}
+            )
+        )
         if not clean_ids and not clean_urls:
             return {
                 "status": "skipped",
@@ -267,6 +279,7 @@ class CustomerMemoryStore:
                     "facts": {
                         "document_ids": clean_ids,
                         "image_urls": clean_urls,
+                        "asset_roles": clean_roles,
                         "request_id": request_id,
                         "interface_version": _normalized_interface_version(interface_version),
                     },
@@ -278,6 +291,7 @@ class CustomerMemoryStore:
             "status": "recorded",
             "document_ids": clean_ids,
             "image_urls": clean_urls,
+            "asset_roles": clean_roles,
             "total_sent_case_document_ids": len(portrait.get("sent_case_document_ids") or []),
         }
 
@@ -374,6 +388,53 @@ class CustomerMemoryStore:
         data["history_events"] = events[-100:]
         self._persist(customer_id, data)
         return {"status": "recorded", "event_id": event_id}
+
+    def record_sales_stage_delivered(
+        self,
+        customer_id: str,
+        *,
+        stage: str,
+        action_type: str,
+        request_id: str = "",
+        interface_version: str = "v3",
+    ) -> dict[str, Any]:
+        clean_stage = str(stage or "").strip()
+        clean_action = str(action_type or "").strip()
+        if clean_stage not in {"activity_offer"} or clean_action != "explain_activity":
+            return {"status": "skipped", "reason": "unsupported_sales_stage_delivery"}
+        version = _normalized_interface_version(interface_version)
+        data = self.load(customer_id)
+        now = self._now()
+        event_type = f"{version}_sales_stage_delivered"
+        event_id = f"{event_type}_{request_id or uuid4()}"
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        if not any(
+            isinstance(item, dict) and str(item.get("event_id") or "") == event_id
+            for item in events
+        ):
+            events.append(
+                {
+                    "event_id": event_id,
+                    "event_type": event_type,
+                    "event_time": now,
+                    "facts": {
+                        "stage": clean_stage,
+                        "action_type": clean_action,
+                        "request_id": str(request_id or ""),
+                        "interface_version": version,
+                    },
+                    "source": "reply_delivery",
+                    "confidence": 1.0,
+                }
+            )
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        data["history_events"] = events[-100:]
+        self._persist(customer_id, data)
+        return {"status": "recorded", "event_id": event_id, "stage": clean_stage}
 
     def record_follow_knowledge_usage(
         self,

@@ -23,6 +23,7 @@ from app.services.payment_collection import (
 from app.services.customer_payment_state import is_paid_deposit_state
 from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
 from app.services.store_fact_integrity import store_fact_is_valid
+from app.services.store_fact_followup import unique_delivery_store_id
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "human_handoff_notice", "payment_collection", "store_address"}
@@ -1852,14 +1853,69 @@ def _validate_paid_only_store_guidance(
         if state.get("evidence_join")
         else _paid_deposit_context(state)
     )
-    if paid:
-        return
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    known_stores = _known_store_records_for_validation(state)
+    authorized_store_id = unique_delivery_store_id(resolution) if paid else ""
+    authorized_store = next(
+        (
+            store
+            for store in known_stores
+            if str(store.get("store_id") or store.get("id") or "").strip()
+            == authorized_store_id
+        ),
+        None,
+    )
     text = _combined_text(messages)
     if not text:
         return
     compact = re.sub(r"\s+", "", text)
+    private_compact = compact
+    for store in known_stores:
+        for key in ("parking", "parking_name", "parking_address"):
+            parking_fact = re.sub(r"\s+", "", str(store.get(key) or ""))
+            if len(parking_fact) >= 2:
+                private_compact = private_compact.replace(parking_fact, "")
 
-    for store in _known_store_records_for_validation(state):
+    if isinstance(authorized_store, dict):
+        residual = private_compact
+        floor = str(authorized_store.get("floor") or "").strip()
+        room = str(authorized_store.get("room") or "").strip()
+        arrival = re.sub(r"\s+", "", str(authorized_store.get("arrival_guidance") or ""))
+        reception = re.sub(r"\s+", "", str(authorized_store.get("reception") or ""))
+        if floor:
+            floor_pattern = re.escape(floor)
+            if re.fullmatch(r"[B负]?\d+", floor, flags=re.IGNORECASE):
+                floor_pattern = rf"{floor_pattern}(?:楼|层)"
+            residual = re.sub(floor_pattern, "", residual, flags=re.IGNORECASE)
+        if room:
+            room_pattern = re.escape(room)
+            if room.isdigit():
+                room_pattern = rf"(?:房间|房号|房间号)?{room_pattern}(?:室|房|号房)"
+            residual = re.sub(room_pattern, "", residual, flags=re.IGNORECASE)
+        for value in (arrival, reception):
+            if len(value) >= 2:
+                residual = residual.replace(value, "")
+        for store in known_stores:
+            if store is authorized_store:
+                continue
+            for key in ("floor", "room", "arrival_guidance", "reception"):
+                value = re.sub(r"\s+", "", str(store.get(key) or ""))
+                if (
+                    len(value) >= 2
+                    and value not in {floor, room, arrival, reception}
+                    and value in private_compact
+                ):
+                    raise ValueError("paid_store_arrival_guidance_required")
+        if _contains_private_arrival_guidance_shape(residual):
+            raise ValueError("paid_store_arrival_guidance_required")
+        return
+
+    for store in known_stores:
         floor = str(store.get("floor") or "").strip()
         room = str(store.get("room") or "").strip()
         arrival = str(store.get("arrival_guidance") or "").strip()
@@ -1868,19 +1924,24 @@ def _validate_paid_only_store_guidance(
             floor_pattern = re.escape(floor)
             if re.fullmatch(r"[B负]?\d+", floor, flags=re.IGNORECASE):
                 floor_pattern = rf"{floor_pattern}(?:楼|层)"
-            if re.search(floor_pattern, compact, flags=re.IGNORECASE):
+            if re.search(floor_pattern, private_compact, flags=re.IGNORECASE):
                 raise ValueError("paid_store_arrival_guidance_required")
         if room:
             room_pattern = re.escape(room)
             if room.isdigit():
                 room_pattern = rf"(?:房间)?{room_pattern}(?:室|房|号房)"
-            if re.search(room_pattern, compact, flags=re.IGNORECASE):
+            if re.search(room_pattern, private_compact, flags=re.IGNORECASE):
                 raise ValueError("paid_store_arrival_guidance_required")
-        if arrival and len(arrival) >= 2 and re.sub(r"\s+", "", arrival) in compact:
+        if arrival and len(arrival) >= 2 and re.sub(r"\s+", "", arrival) in private_compact:
             raise ValueError("paid_store_arrival_guidance_required")
-        if reception and len(reception) >= 2 and re.sub(r"\s+", "", reception) in compact:
+        if reception and len(reception) >= 2 and re.sub(r"\s+", "", reception) in private_compact:
             raise ValueError("paid_store_arrival_guidance_required")
 
+    if _contains_private_arrival_guidance_shape(private_compact):
+        raise ValueError("paid_store_arrival_guidance_required")
+
+
+def _contains_private_arrival_guidance_shape(compact: str) -> bool:
     clauses = [
         clause
         for clause in re.split(r"[，。！？；,.!?;]+", compact)
@@ -1893,9 +1954,9 @@ def _validate_paid_only_store_guidance(
     )
     store_subjects = ("门店", "店里", "店在", "地址", "位置", "到店", "到了", "电梯", "楼梯")
     if any(floor_or_room.search(clause) and any(term in clause for term in store_subjects) for clause in clauses):
-        raise ValueError("paid_store_arrival_guidance_required")
+        return True
     if re.search(r"(?:房间|房号|房间号)?\d{2,4}(?:室|号房)", compact):
-        raise ValueError("paid_store_arrival_guidance_required")
+        return True
     if any(
         term in compact
         for term in (
@@ -1909,7 +1970,8 @@ def _validate_paid_only_store_guidance(
             "接待老师",
         )
     ):
-        raise ValueError("paid_store_arrival_guidance_required")
+        return True
+    return False
 
 
 def _validate_unconfirmed_store_availability_claim(

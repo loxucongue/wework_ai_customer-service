@@ -32,6 +32,30 @@ ARRIVAL_FACT_KEYS = (
 )
 
 
+def unique_delivery_store_id(store_resolution_fact: dict[str, Any] | None) -> str:
+    """Return the only store authorized by a completed single-store decision."""
+
+    resolution = store_resolution_fact if isinstance(store_resolution_fact, dict) else {}
+    status = str(resolution.get("status") or "").strip()
+    raw_ids = (
+        resolution.get("delivery_store_ids")
+        if status == "send_single"
+        else resolution.get("already_delivered_store_ids")
+        if status == "reuse_confirmed_store"
+        else []
+    )
+    delivery_ids = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in raw_ids or []
+            if str(item or "").strip()
+        )
+    )
+    if status not in {"send_single", "reuse_confirmed_store"}:
+        return ""
+    return delivery_ids[0] if len(delivery_ids) == 1 else ""
+
+
 def build_store_fact_followup(
     *,
     store_resolution_fact: dict[str, Any] | None,
@@ -53,18 +77,7 @@ def build_store_fact_followup(
         for item in rows
         if str(item.get("store_id") or item.get("id") or "").strip()
     }
-    delivery_ids = list(
-        dict.fromkeys(
-            str(item or "").strip()
-            for item in resolution.get("delivery_store_ids") or []
-            if str(item or "").strip()
-        )
-    )
-    unique_store_id = (
-        delivery_ids[0]
-        if str(resolution.get("status") or "").strip() == "send_single" and len(delivery_ids) == 1
-        else ""
-    )
+    unique_store_id = unique_delivery_store_id(resolution)
     unique_store = copy.deepcopy(by_id.get(unique_store_id) or {})
     detail_kind = str(
         requested_detail_kind

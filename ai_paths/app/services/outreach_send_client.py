@@ -31,6 +31,16 @@ class OutreachSendClient:
     def available(self) -> bool:
         return bool(self._base_url.strip("/") and self._token)
 
+    @property
+    def delivery_enabled(self) -> bool:
+        """Recovery sends require durable, callback-confirmed delivery tracking."""
+
+        return bool(
+            self._delivery_service
+            and self._delivery_service.enabled
+            and self._delivery_service.callback_required
+        )
+
     async def aclose(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
@@ -76,6 +86,28 @@ class OutreachSendClient:
         if not reply_messages:
             return {"status": "skipped", "reason": "empty_reply_messages"}
 
+        identity = {
+            key: payload.get(key)
+            for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat")
+        }
+        if self._delivery_service:
+            try:
+                self._delivery_service.assert_proactive_send_allowed(identity)
+            except Exception as exc:
+                # This guard is intentionally adjacent to the side effect.  A
+                # stale worker preflight must never override a newer explicit
+                # stop-contact fact or an unreadable customer boundary.
+                return {
+                    "status": "skipped",
+                    "reason": str(exc or "proactive_send_guard_failed")[:1000],
+                }
+
+        if source_kind == "v3_reply_recovery" and not self.delivery_enabled:
+            return {
+                "status": "skipped",
+                "reason": "recovery_delivery_callback_required",
+            }
+
         dispatch_id = ""
         callback_required = False
         if self._delivery_service and self._delivery_service.enabled:
@@ -85,7 +117,7 @@ class OutreachSendClient:
                 source_request_id=source_request_id or request_id,
                 source_task_id=source_task_id or request_id,
                 conversation_id=conversation_id,
-                identity={key: payload.get(key) for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat")},
+                identity=identity,
                 plan_id=str(payload.get("plan_id") or ""),
                 task_id=str(payload.get("task_id") or ""),
                 reply_messages=reply_messages,
@@ -101,18 +133,20 @@ class OutreachSendClient:
                 payload["callback_url"] = prepared["callback_url"]
             existing_status = str(dispatch.get("status") or "")
             if not bool(dispatch.get("created")) and existing_status in {
+                "submitting",
                 "platform_accepted",
                 "submission_unknown",
                 "sending",
                 "send_succeeded",
                 "send_failed",
                 "partial_failed",
+                "submission_failed",
             }:
                 result_status = (
                     "sent"
                     if existing_status == "send_succeeded"
                     else "failed"
-                    if existing_status in {"send_failed", "partial_failed"}
+                    if existing_status in {"send_failed", "partial_failed", "submission_failed"}
                     else "accepted"
                 )
                 return {
@@ -127,6 +161,14 @@ class OutreachSendClient:
                     "payload_message_count": len(reply_messages),
                     "send_payload": payload,
                 }
+
+            # Persist the ambiguous in-flight boundary before issuing the
+            # non-idempotent HTTP request.  A process crash after this point is
+            # reconciled by callback/status lookup and must never blind-resend.
+            self._delivery_service.record_submission(
+                dispatch_id,
+                status="submitting",
+            )
 
         try:
             response = await self._request_with_retry(
@@ -153,16 +195,21 @@ class OutreachSendClient:
                 "send_payload": payload,
             }
         except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            ambiguous = not isinstance(
+                exc,
+                (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout),
+            )
+            delivery_status = "submission_unknown" if ambiguous else "submission_failed"
             if self._delivery_service and dispatch_id:
                 self._delivery_service.record_submission(
                     dispatch_id,
-                    status="submission_failed",
+                    status=delivery_status,
                     error_code=type(exc).__name__,
                     error_message=str(exc),
                 )
             return {
-                "status": "failed",
-                "delivery_status": "submission_failed",
+                "status": "accepted" if ambiguous and callback_required else "failed",
+                "delivery_status": delivery_status,
                 "dispatch_id": dispatch_id,
                 "error": f"{type(exc).__name__}: {exc}",
                 "payload_message_count": len(reply_messages),
@@ -302,6 +349,12 @@ class OutreachSendClient:
                 raise
             except (httpx.ConnectTimeout, httpx.ConnectError, httpx.NetworkError, httpx.RemoteProtocolError, httpx.PoolTimeout) as exc:
                 last_exc = exc
+                if non_idempotent_send:
+                    # A transport error can occur after bytes reached the
+                    # platform.  Retrying a send POST here risks duplicate
+                    # customer messages; the delivery callback/status path is
+                    # the only safe reconciliation mechanism.
+                    raise
                 if attempt < (_REQUEST_RETRY_ATTEMPTS - 1):
                     await asyncio.sleep(_REQUEST_RETRY_BACKOFF_SECONDS * (attempt + 1))
                     continue

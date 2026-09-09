@@ -62,10 +62,16 @@ def _recent_asset_deliveries(events: list[dict[str, Any]]) -> list[dict[str, Any
         if event_type not in supported:
             continue
         facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        image_urls = [
+            str(item or "").strip()
+            for item in facts.get("image_urls") or []
+            if str(item or "").strip()
+        ]
         identity = str(
             facts.get("sop_pack_id")
             or facts.get("store_id")
             or facts.get("image_url")
+            or "|".join(image_urls)
             or facts.get("request_id")
             or ""
         ).strip()
@@ -85,6 +91,23 @@ def _recent_asset_deliveries(events: list[dict[str, Any]]) -> list[dict[str, Any
             if part
         )
         facts = latest.get("facts") if isinstance(latest.get("facts"), dict) else {}
+        last_delivery_facts = {
+            key: facts.get(key)
+            for key in (
+                "sop_pack_id",
+                "message_types",
+                "store_id",
+                "image_url",
+                "image_urls",
+                "asset_roles",
+                "amount",
+                "request_id",
+                "store_search_evidence",
+            )
+            if facts.get(key) not in (None, "", [], {})
+        }
+        if event_type == "case_image_sent" and not isinstance(facts.get("asset_roles"), list):
+            last_delivery_facts["asset_roles"] = ["effect_evidence"]
         output.append(
             {
                 "event_type": event_type,
@@ -96,20 +119,7 @@ def _recent_asset_deliveries(events: list[dict[str, Any]]) -> list[dict[str, Any
                     or latest.get("timestamp")
                     or ""
                 ),
-                "last_delivery_facts": {
-                    key: facts.get(key)
-                    for key in (
-                        "sop_pack_id",
-                        "message_types",
-                        "store_id",
-                        "image_url",
-                        "image_urls",
-                        "amount",
-                        "request_id",
-                        "store_search_evidence",
-                    )
-                    if facts.get(key) not in (None, "", [], {})
-                },
+                "last_delivery_facts": last_delivery_facts,
                 "source_refs": [f"history_event:{source_ref}"],
             }
         )

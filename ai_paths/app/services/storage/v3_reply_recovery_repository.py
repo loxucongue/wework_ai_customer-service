@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
-from app.services.storage.serialization import dumps, loads_dict, utc_now_iso
+from app.services.storage.serialization import dumps, loads_dict, loads_list, utc_now_iso
 from app.services.v3_reply_recovery import (
     GENERATION_STATUS_FALLBACK_PENDING,
     GENERATION_STATUS_MANUAL_REVIEW,
@@ -176,11 +177,56 @@ class V3ReplyRecoveryRepositoryMixin:
         lease_until = (parsed_now + timedelta(seconds=max(30, int(lease_seconds)))).isoformat()
         claimed: list[dict[str, Any]] = []
         with self.store.connect() as conn:
+            # A claimed row is a lease, not a permanent state.  If a worker
+            # dies before it creates a dispatch, another worker may reclaim it
+            # until the attempt budget is exhausted.  Once a dispatch exists,
+            # however, its submission may already have reached the platform;
+            # expiry must escalate for reconciliation rather than blind-send.
+            expired = conn.execute(
+                """
+                SELECT request_id, recovery_attempts, recovery_dispatch_id
+                FROM runs
+                WHERE generation_status=?
+                  AND recovery_next_at<>'' AND recovery_next_at<=?
+                """,
+                (GENERATION_STATUS_RECOVERY_CLAIMED, now_value),
+            ).fetchall()
+            for raw in expired:
+                row = dict(raw)
+                attempts = int(row["recovery_attempts"] or 0)
+                dispatch_id = str(row["recovery_dispatch_id"] or "").strip()
+                if not dispatch_id and attempts < max(1, int(max_attempts)):
+                    continue
+                reason = (
+                    "recovery_delivery_confirmation_timeout"
+                    if dispatch_id
+                    else "recovery_claim_lease_exhausted"
+                )
+                updated = conn.execute(
+                    """
+                    UPDATE runs
+                    SET generation_status=?, recovery_kind='manual_review',
+                        recovery_next_at='', recovery_error=?
+                    WHERE request_id=? AND generation_status=?
+                      AND recovery_attempts=? AND recovery_next_at<=?
+                    """,
+                    (
+                        GENERATION_STATUS_MANUAL_REVIEW,
+                        reason,
+                        str(row["request_id"] or ""),
+                        GENERATION_STATUS_RECOVERY_CLAIMED,
+                        attempts,
+                        now_value,
+                    ),
+                )
+                if int(updated.rowcount or 0):
+                    _clear_recovery_payload(conn, str(row["request_id"] or ""))
+
             rows = conn.execute(
                 """
                 SELECT request_id, generation_status, recovery_attempts, recovery_next_at
                 FROM runs
-                WHERE generation_status IN (?, ?)
+                WHERE (generation_status=? OR (generation_status=? AND recovery_dispatch_id=''))
                   AND recovery_attempts<?
                   AND (recovery_next_at='' OR recovery_next_at<=?)
                 ORDER BY recovery_next_at ASC, created_at ASC
@@ -200,9 +246,9 @@ class V3ReplyRecoveryRepositoryMixin:
                     """
                     UPDATE runs
                     SET generation_status=?, recovery_attempts=recovery_attempts+1,
-                        recovery_next_at=?, recovery_error=''
+                        recovery_next_at=?
                     WHERE request_id=? AND generation_status=? AND recovery_attempts=?
-                      AND recovery_next_at=?
+                      AND recovery_next_at=? AND recovery_dispatch_id=''
                     """,
                     (
                         GENERATION_STATUS_RECOVERY_CLAIMED,
@@ -262,7 +308,7 @@ class V3ReplyRecoveryRepositoryMixin:
                 _clear_recovery_payload(conn, clean_request_id)
         return {"updated": 1, "status": status, "exhausted": exhausted}
 
-    def complete_v3_fallback_recovery(
+    def stage_v3_fallback_recovery_delivery(
         self,
         *,
         request_id: str,
@@ -270,26 +316,44 @@ class V3ReplyRecoveryRepositoryMixin:
         dispatch_id: str,
         response_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Persist the generated answer while waiting for a delivery receipt.
+
+        Platform acceptance is not delivery.  This method deliberately keeps
+        the run in ``recovery_claimed``; only a ``send_succeeded`` callback may
+        transition it to ``recovered``.
+        """
+
         clean_request_id = str(request_id or "").strip()
         with self.store.connect() as conn:
             row = conn.execute(
                 """
-                SELECT response_id, recovery_kind, recovery_dispatch_id, output_snapshot
-                FROM runs WHERE request_id=? AND generation_status IN (?, ?)
+                SELECT generation_status, response_id, recovery_kind,
+                       recovery_dispatch_id, output_snapshot
+                FROM runs WHERE request_id=? AND generation_status IN (?, ?, ?)
                 LIMIT 1
                 """,
                 (
                     clean_request_id,
                     GENERATION_STATUS_RECOVERY_CLAIMED,
                     GENERATION_STATUS_FALLBACK_PENDING,
+                    GENERATION_STATUS_RECOVERED,
                 ),
             ).fetchone()
             if row is None:
                 return {"updated": 0, "status": "not_recoverable"}
+            current_status = str(row["generation_status"] or "")
             current_dispatch_id = str(row["recovery_dispatch_id"] or "").strip()
             clean_dispatch_id = str(dispatch_id or "").strip()
+            if not clean_dispatch_id:
+                return {"updated": 0, "status": "missing_dispatch_id"}
             if current_dispatch_id and current_dispatch_id != clean_dispatch_id:
                 return {"updated": 0, "status": "dispatch_mismatch"}
+            if current_status == GENERATION_STATUS_RECOVERED:
+                return {
+                    "updated": 0,
+                    "status": GENERATION_STATUS_RECOVERED,
+                    "duplicate": True,
+                }
             recovery_kind = str(row["recovery_kind"] or "recovery")
             stable_messages = stable_v3_reply_messages(
                 reply_messages,
@@ -298,10 +362,9 @@ class V3ReplyRecoveryRepositoryMixin:
             )
             output = loads_dict(row["output_snapshot"])
             output["recovery_reply_messages"] = stable_messages
-            output["runtime_status"] = "completed"
-            output["runtime_phase"] = "recovery_completed"
+            output["runtime_status"] = "processing"
+            output["runtime_phase"] = "recovery_delivery_pending"
             output["runtime_updated_at"] = utc_now_iso()
-            output.pop("v3_recovery_payload", None)
             snapshot = dict(response_snapshot) if isinstance(response_snapshot, dict) else {}
             if snapshot:
                 snapshot["reply_messages"] = stable_messages
@@ -314,13 +377,13 @@ class V3ReplyRecoveryRepositoryMixin:
             updated = conn.execute(
                 """
                 UPDATE runs
-                SET generation_status=?, recovery_next_at='', recovery_dispatch_id=?,
-                    recovery_error='', output_snapshot=?
+                SET generation_status=?, recovery_dispatch_id=?,
+                    recovery_error='awaiting_send_succeeded_callback', output_snapshot=?
                 WHERE request_id=? AND generation_status IN (?, ?)
                   AND (recovery_dispatch_id='' OR recovery_dispatch_id=?)
                 """,
                 (
-                    GENERATION_STATUS_RECOVERED,
+                    GENERATION_STATUS_RECOVERY_CLAIMED,
                     clean_dispatch_id,
                     dumps(output),
                     clean_request_id,
@@ -333,9 +396,26 @@ class V3ReplyRecoveryRepositoryMixin:
                 return {"updated": 0, "status": "not_recoverable"}
         return {
             "updated": int(updated.rowcount or 0),
-            "status": GENERATION_STATUS_RECOVERED,
+            "status": "delivery_pending",
             "reply_messages": stable_messages,
         }
+
+    def complete_v3_fallback_recovery(
+        self,
+        *,
+        request_id: str,
+        reply_messages: list[dict[str, Any]],
+        dispatch_id: str,
+        response_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Compatibility entry point; acceptance now only stages delivery."""
+
+        return self.stage_v3_fallback_recovery_delivery(
+            request_id=request_id,
+            reply_messages=reply_messages,
+            dispatch_id=dispatch_id,
+            response_snapshot=response_snapshot,
+        )
 
     def finalize_v3_recovery_delivery(
         self,
@@ -347,10 +427,9 @@ class V3ReplyRecoveryRepositoryMixin:
     ) -> dict[str, Any]:
         """CAS the terminal receipt onto the recovery run that created it.
 
-        A callback can race the worker between platform acceptance and
-        ``complete_v3_fallback_recovery``.  An empty recovery_dispatch_id is
-        therefore linkable only while the run is still actively recoverable;
-        a different non-empty dispatch ID is always a conflict.
+        A callback can race the worker before it stages the accepted dispatch.
+        The durable dispatch itself is therefore authoritative evidence for
+        the generated messages.  Only ``send_succeeded`` reaches recovered.
         """
 
         clean_request_id = str(request_id or "").strip()
@@ -371,7 +450,8 @@ class V3ReplyRecoveryRepositoryMixin:
         with self.store.connect() as conn:
             row = conn.execute(
                 """
-                SELECT generation_status, recovery_dispatch_id, recovery_error, output_snapshot
+                SELECT generation_status, recovery_dispatch_id, recovery_error,
+                       response_id, recovery_kind, conversation_id, output_snapshot
                 FROM runs WHERE request_id=? LIMIT 1
                 """,
                 (clean_request_id,),
@@ -404,15 +484,36 @@ class V3ReplyRecoveryRepositoryMixin:
                 "finalized_at": now,
             }
             if clean_status == "send_succeeded":
+                stable_messages = _recovery_messages_for_dispatch(
+                    conn,
+                    output=output,
+                    dispatch_id=clean_dispatch_id,
+                    response_id=str(row["response_id"] or ""),
+                    recovery_kind=str(row["recovery_kind"] or "recovery"),
+                )
+                if not stable_messages:
+                    return {
+                        "found": True,
+                        "updated": 0,
+                        "status": "state_conflict",
+                        "reason": "recovery delivery has no persisted reply messages",
+                    }
+                output["recovery_reply_messages"] = stable_messages
+                output["runtime_status"] = "completed"
+                output["runtime_phase"] = "recovery_completed"
+                output["runtime_updated_at"] = now
+                output.pop("v3_recovery_payload", None)
                 updated = conn.execute(
                     """
                     UPDATE runs
-                    SET recovery_dispatch_id=COALESCE(NULLIF(recovery_dispatch_id, ''), ?),
-                        output_snapshot=?
+                    SET generation_status=?, recovery_next_at='',
+                        recovery_dispatch_id=COALESCE(NULLIF(recovery_dispatch_id, ''), ?),
+                        recovery_error='', output_snapshot=?
                     WHERE request_id=? AND generation_status=?
                       AND (recovery_dispatch_id='' OR recovery_dispatch_id=?)
                     """,
                     (
+                        GENERATION_STATUS_RECOVERED,
                         clean_dispatch_id,
                         dumps(output),
                         clean_request_id,
@@ -420,7 +521,16 @@ class V3ReplyRecoveryRepositoryMixin:
                         clean_dispatch_id,
                     ),
                 )
-                status = current_status
+                status = GENERATION_STATUS_RECOVERED
+                if int(updated.rowcount or 0):
+                    _insert_recovered_assistant_message(
+                        conn,
+                        request_id=clean_request_id,
+                        conversation_id=str(row["conversation_id"] or ""),
+                        dispatch_id=clean_dispatch_id,
+                        reply_messages=stable_messages,
+                        created_at=now,
+                    )
             elif current_status in active_states:
                 output.pop("v3_recovery_payload", None)
                 reason = f"recovery_dispatch_{clean_status}"
@@ -648,6 +758,66 @@ def _clear_recovery_payload(conn: Any, request_id: str) -> None:
     conn.execute(
         "UPDATE runs SET output_snapshot=? WHERE request_id=?",
         (dumps(output), request_id),
+    )
+
+
+def _recovery_messages_for_dispatch(
+    conn: Any,
+    *,
+    output: dict[str, Any],
+    dispatch_id: str,
+    response_id: str,
+    recovery_kind: str,
+) -> list[dict[str, Any]]:
+    messages = (
+        list(output.get("recovery_reply_messages") or [])
+        if isinstance(output.get("recovery_reply_messages"), list)
+        else []
+    )
+    if not messages:
+        dispatch = conn.execute(
+            "SELECT reply_messages_json FROM message_dispatches WHERE id=? LIMIT 1",
+            (dispatch_id,),
+        ).fetchone()
+        if dispatch is not None:
+            messages = loads_list(dispatch["reply_messages_json"])
+    return stable_v3_reply_messages(
+        [item for item in messages if isinstance(item, dict)],
+        response_id=response_id,
+        recovery_kind=recovery_kind,
+    )
+
+
+def _insert_recovered_assistant_message(
+    conn: Any,
+    *,
+    request_id: str,
+    conversation_id: str,
+    dispatch_id: str,
+    reply_messages: list[dict[str, Any]],
+    created_at: str,
+) -> None:
+    if not conversation_id or not reply_messages:
+        return
+    content = "\n".join(
+        str(item.get("content") or "")
+        for item in reply_messages
+        if isinstance(item, dict)
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO messages
+            (id, conversation_id, request_id, role, content, file_image, reply_messages, created_at)
+        VALUES (?, ?, ?, 'assistant', ?, '', ?, ?)
+        """,
+        (
+            str(uuid5(NAMESPACE_URL, f"v3-recovery-assistant:{request_id}:{dispatch_id}")),
+            conversation_id,
+            request_id,
+            content,
+            dumps(reply_messages),
+            created_at,
+        ),
     )
 
 

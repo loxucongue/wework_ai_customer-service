@@ -187,6 +187,52 @@ def test_lightweight_run_detail_keeps_node_headers_and_loads_raw_node_on_demand(
     assert repository.get_run_node_trace(request_id="run-without-bi", node_id="node-1") == {}
 
 
+def test_run_list_exposes_terminal_no_reply_and_failure_fallback_kinds(tmp_path: Path) -> None:
+    settings = Settings(AI_PATHS_DB_PATH=tmp_path / "response-kinds.db", AICS_STORAGE_BACKEND="sqlite")
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    now = "2026-09-09T08:00:00+00:00"
+    sources = {
+        "run-human": "human_takeover_guard",
+        "run-protocol": "ignored_platform_auto_message",
+        "run-superseded": "platform_superseded",
+        "run-fallback": "takeover_status_unavailable_fallback",
+    }
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO conversations "
+            "(id, customer_id, external_userid, corp_id, wechat, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("conversation-kinds", "customer-1", "external-1", "corp-1", "sl8003", now, now),
+        )
+        for request_id, reply_source in sources.items():
+            conn.execute(
+                "INSERT INTO runs "
+                "(request_id, conversation_id, customer_id, input_snapshot, output_snapshot, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    request_id,
+                    "conversation-kinds",
+                    "customer-1",
+                    json.dumps({"content": "测试"}, ensure_ascii=False),
+                    json.dumps({"reply_source": reply_source}, ensure_ascii=False),
+                    now,
+                ),
+            )
+
+    kinds = {
+        row["request_id"]: row["business_summary"]["response_kind"]
+        for row in repository.list_runs(limit=10)
+    }
+    assert kinds == {
+        "run-human": "human_takeover",
+        "run-protocol": "protocol_filtered",
+        "run-superseded": "superseded",
+        "run-fallback": "failure_fallback",
+    }
+
+
 def test_http_lifecycle_timing_uses_ingress_identity_and_full_duration(tmp_path: Path) -> None:
     settings = Settings(AI_PATHS_DB_PATH=tmp_path / "timing.db", AICS_STORAGE_BACKEND="sqlite")
     store = SQLiteStore(settings)
@@ -460,7 +506,13 @@ def test_run_log_admin_endpoints_forward_filters_and_lazy_load_node() -> None:
 
         def list_runs(self, **filters: object) -> list[dict[str, object]]:
             self.list_filters = filters
-            return [{"request_id": "run-1", "business_summary": {"intent_code": "fact_inquiry"}}]
+            return [{
+                "request_id": "run-1",
+                "business_summary": {
+                    "intent_code": "fact_inquiry",
+                    "response_kind": "human_takeover",
+                },
+            }]
 
         def get_run(self, request_id: str, *, include_debug: bool = True) -> dict[str, object]:
             self.include_debug = include_debug
@@ -523,6 +575,7 @@ def test_run_log_admin_endpoints_forward_filters_and_lazy_load_node() -> None:
 
     list_response = client.get("/admin/runs", params={"sequence_adopted": "true", "node_failed": "false"})
     assert list_response.status_code == 200
+    assert list_response.json()["items"][0]["business_summary"]["response_kind"] == "human_takeover"
     assert repository.list_filters["sequence_adopted"] is True
     assert repository.list_filters["node_failed"] is False
 

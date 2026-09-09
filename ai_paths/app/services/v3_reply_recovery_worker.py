@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 _FALLBACK_TEXTS = {"您稍等一下"}
-_RECONCILABLE_DELIVERY_STATUSES = {
+_PENDING_DELIVERY_STATUSES = {
+    "submitting",
     "platform_accepted",
     "submission_unknown",
     "sending",
-    "send_succeeded",
 }
 _TERMINAL_FAILED_DELIVERY_STATUSES = {"send_failed", "partial_failed"}
 
@@ -48,6 +48,7 @@ class V3ReplyRecoveryWorker:
         system_client: Any,
         send_client: Any,
         customer_context_service: Any,
+        delivery_finalizer: Any | None = None,
         settings: Any,
     ) -> None:
         self.repository = repository
@@ -55,6 +56,7 @@ class V3ReplyRecoveryWorker:
         self.system_client = system_client
         self.send_client = send_client
         self.customer_context_service = customer_context_service
+        self.delivery_finalizer = delivery_finalizer
         self.settings = settings
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -195,6 +197,17 @@ class V3ReplyRecoveryWorker:
             return reconciled
 
         request_context = dict(request.request_context or {})
+        customer_scope = build_customer_scope(
+            corp_id=identity.get("corp_id"),
+            wechat=identity.get("wechat"),
+            external_userid=identity.get("external_userid"),
+            customer_id=identity.get("customer_id"),
+            user_id=identity.get("user_id"),
+        )
+        sales_stage_record = _sales_stage_record_from_response(
+            response_payload,
+            stable_messages,
+        )
         try:
             send_result = await self.send_client.send_reply_messages(
                 request_id=request_id,
@@ -214,6 +227,9 @@ class V3ReplyRecoveryWorker:
                     "original_request_id": request_id,
                     "recovery_attempt": int(claim.get("recovery_attempts") or 0),
                     "recovery_kind": str(claim.get("recovery_kind") or ""),
+                    "memory_persist_allowed": bool(customer_scope.persistence_allowed),
+                    "sales_contact_key": customer_scope.sales_contact_key,
+                    "sales_stage_record": sales_stage_record,
                 },
                 delivery_idempotency_key=delivery_key,
             )
@@ -226,12 +242,14 @@ class V3ReplyRecoveryWorker:
         send_status = str(send_result.get("status") or "").strip().lower()
         delivery_status = str(send_result.get("delivery_status") or "").strip().lower()
         dispatch_id = str(send_result.get("dispatch_id") or "").strip()
-        if dispatch_id and (
-            send_status in {"accepted", "sent"}
-            or delivery_status in _RECONCILABLE_DELIVERY_STATUSES
-            or bool(send_result.get("duplicate_dispatch"))
-        ):
-            return await self._complete(
+        if dispatch_id and delivery_status == "send_succeeded":
+            return await self._confirm_delivery(
+                request_id=request_id,
+                dispatch_id=dispatch_id,
+                duplicate=bool(send_result.get("duplicate_dispatch")),
+            )
+        if dispatch_id and delivery_status in _PENDING_DELIVERY_STATUSES:
+            return await self._await_delivery(
                 request_id=request_id,
                 reply_messages=stable_messages,
                 dispatch_id=dispatch_id,
@@ -239,9 +257,18 @@ class V3ReplyRecoveryWorker:
                 duplicate=bool(send_result.get("duplicate_dispatch")),
             )
         if send_status == "skipped":
+            reason = str(send_result.get("reason") or "unknown")
+            if reason == "explicit_stop_contact":
+                return await self._apply_gate(request_id, _gate("cancel", reason))
             return await self._manual_review(
                 request_id,
-                "recovery_send_contract_blocked:" + str(send_result.get("reason") or "unknown"),
+                "recovery_send_contract_blocked:" + reason,
+            )
+        if dispatch_id:
+            return await self._manual_review(
+                request_id,
+                "recovery_delivery_unconfirmed:"
+                + str(send_result.get("error") or delivery_status or send_status or "unknown"),
             )
         return await self._retry_or_exhaust(
             claim,
@@ -410,22 +437,39 @@ class V3ReplyRecoveryWorker:
             return None
         status = str(dispatch.get("status") or "").strip().lower()
         if status in _TERMINAL_FAILED_DELIVERY_STATUSES:
-            return await self._manual_review(request_id, f"recovery_dispatch_{status}")
-        if status not in _RECONCILABLE_DELIVERY_STATUSES:
-            return None
+            return await self._finalize_failed_dispatch(
+                request_id=request_id,
+                dispatch_id=str(dispatch.get("id") or dispatch.get("dispatch_id") or "").strip(),
+                status=status,
+            )
         dispatch_id = str(dispatch.get("id") or dispatch.get("dispatch_id") or "").strip()
         messages = dispatch.get("reply_messages") if isinstance(dispatch.get("reply_messages"), list) else []
         if not dispatch_id or not messages:
             return await self._manual_review(request_id, "recovery_dispatch_evidence_incomplete")
-        return await self._complete(
-            request_id=request_id,
-            reply_messages=messages,
-            dispatch_id=dispatch_id,
-            response_payload={},
-            duplicate=True,
+        if status == "send_succeeded":
+            return await self._confirm_delivery(
+                request_id=request_id,
+                dispatch_id=dispatch_id,
+                duplicate=True,
+            )
+        if status in _PENDING_DELIVERY_STATUSES:
+            return await self._await_delivery(
+                request_id=request_id,
+                reply_messages=messages,
+                dispatch_id=dispatch_id,
+                response_payload={},
+                duplicate=True,
+            )
+        # ``created`` from a previous process is intentionally ambiguous: old
+        # releases did not persist ``submitting`` before the HTTP side effect.
+        # Unknown/submission-failed states likewise require reconciliation,
+        # never another customer send.
+        return await self._manual_review(
+            request_id,
+            f"recovery_dispatch_ambiguous:{status or 'unknown'}",
         )
 
-    async def _complete(
+    async def _await_delivery(
         self,
         *,
         request_id: str,
@@ -436,18 +480,102 @@ class V3ReplyRecoveryWorker:
     ) -> dict[str, Any]:
         snapshot = dict(response_payload)
         snapshot.setdefault("request_id", request_id)
-        result = await _thread_call(
+        stage = getattr(
+            self.repository,
+            "stage_v3_fallback_recovery_delivery",
             self.repository.complete_v3_fallback_recovery,
+        )
+        result = await _thread_call(
+            stage,
             request_id=request_id,
             reply_messages=reply_messages,
             dispatch_id=dispatch_id,
             response_snapshot=snapshot,
         )
+        status = str(result.get("status") or "")
+        if status == "recovered":
+            return {
+                "status": "recovered",
+                "request_id": request_id,
+                "dispatch_id": dispatch_id,
+                "duplicate_dispatch": duplicate,
+                "repository": result,
+            }
+        if status != "delivery_pending":
+            return {
+                "status": "state_conflict",
+                "request_id": request_id,
+                "dispatch_id": dispatch_id,
+                "reason": status or "recovery_delivery_stage_failed",
+                "repository": result,
+            }
         return {
-            "status": "recovered",
+            "status": "delivery_pending",
             "request_id": request_id,
             "dispatch_id": dispatch_id,
             "duplicate_dispatch": duplicate,
+            "repository": result,
+        }
+
+    async def _confirm_delivery(
+        self,
+        *,
+        request_id: str,
+        dispatch_id: str,
+        duplicate: bool,
+    ) -> dict[str, Any]:
+        if self.delivery_finalizer is not None:
+            dispatch = await _thread_call(self.repository.get_message_dispatch, dispatch_id)
+            if not isinstance(dispatch, dict) or not dispatch:
+                dispatch = {
+                    "id": dispatch_id,
+                    "source_kind": "v3_reply_recovery",
+                    "source_request_id": request_id,
+                    "status": "send_succeeded",
+                }
+            else:
+                dispatch = {**dispatch, "status": "send_succeeded"}
+            result = await _thread_call(self.delivery_finalizer.finalize, dispatch)
+        else:
+            result = await _thread_call(
+                self.repository.finalize_v3_recovery_delivery,
+                request_id=request_id,
+                dispatch_id=dispatch_id,
+                delivery_status="send_succeeded",
+                error="",
+            )
+        status = str(result.get("status") or "")
+        return {
+            "status": "recovered" if status == "recovered" else "state_conflict",
+            "request_id": request_id,
+            "dispatch_id": dispatch_id,
+            "duplicate_dispatch": duplicate,
+            "reason": "" if status == "recovered" else str(result.get("reason") or status),
+            "repository": result,
+        }
+
+    async def _finalize_failed_dispatch(
+        self,
+        *,
+        request_id: str,
+        dispatch_id: str,
+        status: str,
+    ) -> dict[str, Any]:
+        if not dispatch_id:
+            return await self._manual_review(request_id, "recovery_dispatch_evidence_incomplete")
+        result = await _thread_call(
+            self.repository.finalize_v3_recovery_delivery,
+            request_id=request_id,
+            dispatch_id=dispatch_id,
+            delivery_status=status,
+            error=f"recovery_dispatch_{status}",
+        )
+        actual = str(result.get("status") or "")
+        return {
+            "status": "manual_review" if actual == "manual_review" else "state_conflict",
+            "request_id": request_id,
+            "dispatch_id": dispatch_id,
+            "reason": f"recovery_dispatch_{status}",
             "repository": result,
         }
 
@@ -520,7 +648,8 @@ def _delivery_tracking_enabled(send_client: Any) -> bool:
         return explicit
     service = getattr(send_client, "_delivery_service", None)
     enabled = getattr(service, "enabled", None)
-    return bool(enabled) if isinstance(enabled, bool) else False
+    callback_required = getattr(service, "callback_required", None)
+    return bool(enabled and callback_required)
 
 
 def _chat_response_payload(response: Any) -> dict[str, Any]:
@@ -552,6 +681,37 @@ def _usable_reply_messages(messages: list[dict[str, Any]]) -> bool:
         if text:
             visible.append(text)
     return bool(visible) and not (len(visible) == 1 and visible[0] in _FALLBACK_TEXTS)
+
+
+def _sales_stage_record_from_response(
+    response: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Project a delivered text stage from Reply's normalized decision only."""
+
+    if not any(
+        str(item.get("type") or "").strip() == "text"
+        and str(item.get("content") or "").strip()
+        for item in messages
+        if isinstance(item, dict)
+    ):
+        return {}
+    meta = response.get("meta") if isinstance(response.get("meta"), dict) else {}
+    judgment = (
+        meta.get("reply_sales_judgment")
+        if isinstance(meta.get("reply_sales_judgment"), dict)
+        else {}
+    )
+    next_action = (
+        judgment.get("next_sales_action")
+        if isinstance(judgment.get("next_sales_action"), dict)
+        else {}
+    )
+    action_type = str(next_action.get("type") or "").strip()
+    target_stage = str(next_action.get("target_stage") or "").strip()
+    if action_type != "explain_activity" or target_stage != "activity_offer":
+        return {}
+    return {"stage": "activity_offer", "action_type": "explain_activity"}
 
 
 def _contains_base64_placeholder(value: Any) -> bool:

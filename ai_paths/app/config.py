@@ -463,6 +463,22 @@ class Settings(BaseSettings):
             raise ValueError("worker role requires AI_PATHS_BACKGROUND_WORKERS_ENABLED=true")
         if self.message_delivery_callback_required and not str(self.message_delivery_callback_token or "").strip():
             raise ValueError("MESSAGE_DELIVERY_CALLBACK_REQUIRED=true requires MESSAGE_DELIVERY_CALLBACK_TOKEN")
+        if self.v3_reply_recovery_enabled:
+            if not self.message_delivery_callback_required:
+                raise ValueError(
+                    "V3_REPLY_RECOVERY_ENABLED=true requires "
+                    "MESSAGE_DELIVERY_CALLBACK_REQUIRED=true"
+                )
+            if not str(self.message_delivery_callback_public_url or "").strip():
+                raise ValueError(
+                    "V3_REPLY_RECOVERY_ENABLED=true requires "
+                    "MESSAGE_DELIVERY_CALLBACK_PUBLIC_URL"
+                )
+            if not str(self.message_delivery_callback_token or "").strip():
+                raise ValueError(
+                    "V3_REPLY_RECOVERY_ENABLED=true requires "
+                    "MESSAGE_DELIVERY_CALLBACK_TOKEN"
+                )
         if self.sop_platform_pull_enabled:
             if role is not RuntimeRole.WORKER:
                 raise ValueError("SOP_PLATFORM_PULL_ENABLED=true is only valid for the worker role")

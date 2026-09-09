@@ -136,25 +136,22 @@ def test_visible_booking_is_blocked_when_customer_state_forbids_current_sales_ad
         )
 
 
-def test_active_friction_and_paused_turn_cannot_advance_booking() -> None:
+def test_router_friction_does_not_veto_reply_but_paused_turn_cannot_advance_booking() -> None:
     mainline = _mainline(
         roles=("effect_evidence", "activity_offer", "address_evidence"),
         friction="explicit",
     )
-    assert "invite_booking" not in mainline["allowed_next_sales_action_types"]
-    with pytest.raises(ValueError, match="exceeds_delivered_mainline"):
-        _validate_mainline_sales_action(_state(mainline, action="invite_booking"))
+    assert mainline["friction_active"] is True
+    assert "invite_booking" in mainline["allowed_next_sales_action_types"]
+    _validate_mainline_sales_action(_state(mainline, action="invite_booking"))
 
-    permissive = _mainline(
-        roles=("effect_evidence", "activity_offer", "address_evidence")
-    )
     with pytest.raises(ValueError, match="paused_turn_cannot_advance"):
         _validate_mainline_sales_action(
-            _state(permissive, action="invite_booking", customer_state="pause_current_turn")
+            _state(mainline, action="invite_booking", customer_state="pause_current_turn")
         )
 
 
-def test_payment_requires_real_action_signal_and_available_card() -> None:
+def test_payment_action_availability_uses_real_card_not_router_signal() -> None:
     without_signal = _mainline(
         roles=("effect_evidence", "activity_offer", "address_evidence"),
         appointment_active=True,
@@ -167,8 +164,10 @@ def test_payment_requires_real_action_signal_and_available_card() -> None:
         signals=("explicit_booking_request",),
     )
 
-    assert "send_payment" not in without_signal["allowed_next_sales_action_types"]
+    assert "send_payment" in without_signal["allowed_next_sales_action_types"]
     assert "send_payment" in with_signal["allowed_next_sales_action_types"]
+    assert without_signal["explicit_booking_request"] is False
+    assert with_signal["explicit_booking_request"] is True
     assert "explicit_booking_request" in CURRENT_INTENT_CONTINUATION_SIGNALS
 
 

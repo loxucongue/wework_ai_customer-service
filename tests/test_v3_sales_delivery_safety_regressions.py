@@ -24,6 +24,23 @@ from app.services.store_fact_followup import build_store_fact_followup  # noqa: 
 
 
 def _store_evidence(*, paid: bool = False) -> dict:
+    structured_facts = {
+        "store_facts": [
+            {
+                "store_id": "store-1",
+                "store_name": "厦门门店",
+                "store_address": "厦门市思明区测试路1号",
+                "floor": "3",
+                "room": "301",
+                "arrival_guidance": "出电梯左转",
+                "reception": "到店联系王老师",
+            }
+        ],
+        "store_resolution_fact": {
+            "status": "send_single",
+            "delivery_store_ids": ["store-1"],
+        },
+    }
     return {
         "evidence_join": {
             "shared_context": {
@@ -36,24 +53,8 @@ def _store_evidence(*, paid: bool = False) -> dict:
                     }
                 },
             },
-            "structured_facts": {
-                "store_facts": [
-                    {
-                        "store_id": "store-1",
-                        "store_name": "厦门门店",
-                        "store_address": "厦门市思明区测试路1号",
-                        "floor": "3",
-                        "room": "301",
-                        "arrival_guidance": "出电梯左转",
-                        "reception": "到店联系王老师",
-                    }
-                ],
-                "store_resolution_fact": {
-                    "status": "send_single",
-                    "delivery_store_ids": ["store-1"],
-                },
-            },
-            "normalized_tool_facts": {"structured_facts": {}},
+            "structured_facts": structured_facts,
+            "normalized_tool_facts": {"structured_facts": structured_facts},
             "content_candidates": [],
         },
         "reply_selected_content_ids": [],
@@ -94,10 +95,13 @@ def test_hard_stop_does_not_materialize_store_card_and_rejects_sales_structures(
         )
 
 
-def test_hard_health_or_complaint_cannot_materialize_selected_media() -> None:
+@pytest.mark.parametrize("safety_status", ["health_risk", "complaint_refund"])
+def test_hard_health_or_complaint_cannot_materialize_selected_media(
+    safety_status: str,
+) -> None:
     state = _store_evidence()
     state["reply_safety_assessment"] = {
-        "status": "health_risk",
+        "status": safety_status,
         "evidence_refs": ["current_message"],
     }
     state["reply_selected_content_ids"] = ["effect-1"]
@@ -108,6 +112,49 @@ def test_hard_health_or_complaint_cannot_materialize_selected_media() -> None:
             state,
             [],
         )
+
+
+def test_generic_trust_risk_can_materialize_selected_real_evidence() -> None:
+    state = _store_evidence()
+    state["evidence_join"]["structured_facts"]["store_resolution_fact"] = {}
+    state["evidence_join"]["content_candidates"] = [
+        {
+            "content_id": "trust-effect-1",
+            "delivery_status": "available",
+            "messages": [
+                {
+                    "type": "image",
+                    "content": "https://example.com/trust-effect.png",
+                }
+            ],
+        }
+    ]
+    state["reply_policy_decision"] = {
+        "primary_task": {"type": "risk", "goal": "处理普通信任质疑"},
+        "realtime_intent": {"type": "blocker_expression", "confidence": "high"},
+        "closing_decision": {
+            "action": "pause",
+            "customer_state": "continue_sales",
+            "pressure": "low",
+        },
+    }
+    state["reply_safety_assessment"] = {"status": "none", "evidence_refs": []}
+    state["reply_selected_content_ids"] = ["trust-effect-1"]
+
+    messages = _prepare_structural_messages(
+        [{"type": "text", "content": "您可以先看看我们实际做过的改善案例。"}],
+        state,
+        [],
+    )
+
+    assert messages == [
+        {"type": "text", "content": "您可以先看看我们实际做过的改善案例。", "order": 1},
+        {
+            "type": "image",
+            "content": "https://example.com/trust-effect.png",
+            "order": 2,
+        },
+    ]
 
 
 def test_unpaid_store_guidance_is_hidden_from_prompt_and_rejected_in_reply() -> None:
@@ -136,6 +183,23 @@ def test_unpaid_store_guidance_is_hidden_from_prompt_and_rejected_in_reply() -> 
         )
 
 
+def test_authoritative_parking_floor_remains_public_before_payment() -> None:
+    state = _store_evidence(paid=False)
+    store = state["evidence_join"]["structured_facts"]["store_facts"][0]
+    store["parking"] = "负一层停车场"
+
+    _validate_paid_only_store_guidance(
+        [{"type": "text", "content": "可以停车的，车可以停在负一层停车场。"}],
+        state,
+    )
+
+    with pytest.raises(ValueError, match="paid_store_arrival_guidance_required"):
+        _validate_paid_only_store_guidance(
+            [{"type": "text", "content": "门店在负二层，到了联系老师。"}],
+            state,
+        )
+
+
 def test_paid_store_guidance_remains_available() -> None:
     state = _store_evidence(paid=True)
     evidence = {
@@ -157,6 +221,102 @@ def test_paid_store_guidance_remains_available() -> None:
         [{"type": "text", "content": "门店在3楼301室，出电梯左转。"}],
         state,
     )
+
+
+def test_paid_reused_confirmed_store_guidance_remains_available() -> None:
+    state = _store_evidence(paid=True)
+    resolution = state["evidence_join"]["structured_facts"]["store_resolution_fact"]
+    resolution.update(
+        {
+            "status": "reuse_confirmed_store",
+            "delivery_store_ids": [],
+            "already_delivered_store_ids": ["store-1"],
+        }
+    )
+    evidence = {
+        "normalized_tool_facts": {
+            "structured_facts": state["evidence_join"]["structured_facts"],
+        }
+    }
+
+    rendered = _render_tool_facts(
+        evidence,
+        json_dumps=lambda value: json.dumps(value, ensure_ascii=False),
+        authoritative_paid=True,
+    )
+
+    assert "floor=3" in rendered
+    assert "room=301" in rendered
+    assert "出电梯左转" in rendered
+    _validate_paid_only_store_guidance(
+        [{"type": "text", "content": "门店在3楼301室，出电梯左转。"}],
+        state,
+    )
+
+
+def test_paid_unique_store_rejects_other_or_invented_private_guidance() -> None:
+    state = _store_evidence(paid=True)
+    state["evidence_join"]["structured_facts"]["store_facts"].append(
+        {
+            "store_id": "store-2",
+            "store_name": "厦门二店",
+            "store_address": "厦门市湖里区测试路2号",
+            "floor": "8",
+            "room": "802",
+            "arrival_guidance": "出电梯右转",
+            "reception": "到店联系李老师",
+        }
+    )
+
+    with pytest.raises(ValueError, match="paid_store_arrival_guidance_required"):
+        _validate_paid_only_store_guidance(
+            [{"type": "text", "content": "您到厦门二店8楼802室，出电梯右转。"}],
+            state,
+        )
+    with pytest.raises(ValueError, match="paid_store_arrival_guidance_required"):
+        _validate_paid_only_store_guidance(
+            [{"type": "text", "content": "您到5楼501室。"}],
+            state,
+        )
+
+
+def test_paid_but_unresolved_store_guidance_is_hidden_and_rejected() -> None:
+    state = _store_evidence(paid=True)
+    structured = state["evidence_join"]["structured_facts"]
+    structured["store_facts"].append(
+        {
+            "store_id": "store-2",
+            "store_name": "厦门二店",
+            "store_address": "厦门市湖里区测试路2号",
+            "floor": "8",
+            "room": "802",
+            "arrival_guidance": "出电梯右转",
+            "reception": "到店联系李老师",
+        }
+    )
+    structured["store_resolution_fact"] = {
+        "status": "clarify_location",
+        "delivery_store_ids": [],
+    }
+    evidence = {"normalized_tool_facts": {"structured_facts": structured}}
+
+    rendered = _render_tool_facts(
+        evidence,
+        json_dumps=lambda value: json.dumps(value, ensure_ascii=False),
+        authoritative_paid=True,
+    )
+
+    assert "厦门市思明区测试路1号" in rendered
+    assert "厦门市湖里区测试路2号" in rendered
+    assert "出电梯左转" not in rendered
+    assert "出电梯右转" not in rendered
+    assert "room=301" not in rendered
+    assert "room=802" not in rendered
+    with pytest.raises(ValueError, match="paid_store_arrival_guidance_required"):
+        _validate_paid_only_store_guidance(
+            [{"type": "text", "content": "先到3楼301室，出电梯左转。"}],
+            state,
+        )
 
 
 def test_store_fact_followup_withholds_paid_only_detail_before_payment() -> None:

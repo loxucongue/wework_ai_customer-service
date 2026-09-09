@@ -9,6 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
 from sqlalchemy.dialects.mysql import LONGTEXT, VARCHAR
+from sqlalchemy.types import TypeEngine
 
 
 revision = "20260909_01"
@@ -17,17 +18,27 @@ branch_labels = None
 depends_on = None
 
 
+def _varchar(length: int) -> TypeEngine:
+    """Keep the production MySQL type while allowing SQLite migration tests."""
+
+    return sa.String(length).with_variant(VARCHAR(length), "mysql")
+
+
+def _longtext() -> TypeEngine:
+    return sa.Text().with_variant(LONGTEXT(), "mysql")
+
+
 _COLUMNS = (
-    sa.Column("generation_key", VARCHAR(64), nullable=True),
-    sa.Column("response_id", VARCHAR(64), nullable=True),
-    sa.Column("generation_status", VARCHAR(32), nullable=False, server_default=""),
-    sa.Column("recovery_kind", VARCHAR(64), nullable=False, server_default=""),
+    sa.Column("generation_key", _varchar(64), nullable=True),
+    sa.Column("response_id", _varchar(64), nullable=True),
+    sa.Column("generation_status", _varchar(32), nullable=False, server_default=""),
+    sa.Column("recovery_kind", _varchar(64), nullable=False, server_default=""),
     sa.Column("recovery_attempts", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("recovery_next_at", VARCHAR(40), nullable=False, server_default=""),
-    sa.Column("recovery_dispatch_id", VARCHAR(191), nullable=False, server_default=""),
+    sa.Column("recovery_next_at", _varchar(40), nullable=False, server_default=""),
+    sa.Column("recovery_dispatch_id", _varchar(191), nullable=False, server_default=""),
     sa.Column(
         "recovery_error",
-        LONGTEXT(),
+        _longtext(),
         nullable=False,
         server_default=sa.text("('')"),
     ),
@@ -82,11 +93,19 @@ def upgrade() -> None:
         indexes=existing_indexes,
         uniques=existing_uniques,
     ):
-        op.create_unique_constraint(
-            "uq_aics_runs_generation_key",
-            table_name,
-            ["generation_key"],
-        )
+        if bind.dialect.name == "sqlite":
+            op.create_index(
+                "uq_aics_runs_generation_key",
+                table_name,
+                ["generation_key"],
+                unique=True,
+            )
+        else:
+            op.create_unique_constraint(
+                "uq_aics_runs_generation_key",
+                table_name,
+                ["generation_key"],
+            )
     if not _assert_index_compatible(
         index_name="uq_aics_runs_response_id",
         columns=("response_id",),
@@ -94,11 +113,19 @@ def upgrade() -> None:
         indexes=existing_indexes,
         uniques=existing_uniques,
     ):
-        op.create_unique_constraint(
-            "uq_aics_runs_response_id",
-            table_name,
-            ["response_id"],
-        )
+        if bind.dialect.name == "sqlite":
+            op.create_index(
+                "uq_aics_runs_response_id",
+                table_name,
+                ["response_id"],
+                unique=True,
+            )
+        else:
+            op.create_unique_constraint(
+                "uq_aics_runs_response_id",
+                table_name,
+                ["response_id"],
+            )
     if not _assert_index_compatible(
         index_name="idx_aics_runs_generation_recovery",
         columns=("generation_status", "recovery_next_at", "created_at"),

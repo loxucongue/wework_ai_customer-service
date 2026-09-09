@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,13 +16,17 @@ sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 
 from app.graph.nodes.reply_nodes import (  # noqa: E402
     _chat_json_with_deadline,
+    _model_reply_presentation_limits,
     _normalized_policy_decision,
+    _validate_parallel_raw_reply_schema,
+    _validate_policy_reply_consistency,
 )
 from app.graph.nodes.reply_presentation import (  # noqa: E402
     compact_reply_message_format,
     reply_presentation_metrics,
     reply_presentation_violations,
 )
+from app.prompts.reply_synthesizer import build_parallel_reply_messages  # noqa: E402
 
 
 def _policy_state(*, paid: bool = False) -> dict[str, Any]:
@@ -106,6 +113,89 @@ def test_presentation_hard_bounds_and_emoji_boundaries_are_explicit() -> None:
     assert reply_presentation_violations(long_text) == [
         "reply_presentation_text_limit_exceeded:301"
     ]
+
+
+def test_presentation_bounds_accept_runtime_configuration() -> None:
+    five_messages = [{"type": "text", "content": str(index)} for index in range(5)]
+    sixty_chars = [{"type": "text", "content": "a" * 60}]
+
+    assert reply_presentation_violations(five_messages, max_messages=5) == []
+    assert reply_presentation_violations(five_messages, max_messages=4) == [
+        "reply_presentation_message_limit_exceeded:5"
+    ]
+    assert reply_presentation_violations(sixty_chars, max_text_chars=60) == []
+    assert reply_presentation_violations(sixty_chars, max_text_chars=59) == [
+        "reply_presentation_text_limit_exceeded:60"
+    ]
+
+
+def test_model_settings_flow_into_parallel_reply_schema_limits() -> None:
+    client = SimpleNamespace(
+        settings=SimpleNamespace(
+            v3_reply_max_messages=5,
+            v3_reply_max_text_chars=120,
+        )
+    )
+    limits = _model_reply_presentation_limits(client)
+    payload = {
+        "reply_messages": [
+            {"type": "text", "content": f"message-{index}"}
+            for index in range(5)
+        ]
+    }
+
+    _validate_parallel_raw_reply_schema(
+        payload,
+        {"_reply_presentation_limits": limits},
+    )
+
+    with pytest.raises(ValueError, match="reply_presentation_message_limit_exceeded:5"):
+        _validate_parallel_raw_reply_schema(
+            {"reply_messages": copy.deepcopy(payload["reply_messages"])},
+            {"_reply_presentation_limits": {**limits, "max_messages": 4}},
+        )
+
+
+def test_sensitive_policy_validation_uses_runtime_presentation_limits() -> None:
+    payload = {
+        "reply_messages": [
+            {"type": "text", "content": f"message-{index}"}
+            for index in range(9)
+        ],
+        "policy_decision": _decision("continue_sales"),
+    }
+    payload["policy_decision"]["primary_task"] = {
+        "type": "risk",
+        "goal": "处理当前风险",
+    }
+    state = _policy_state()
+    state["_reply_presentation_limits"] = {
+        "max_messages": 10,
+        "max_text_chars": 500,
+    }
+
+    _validate_parallel_raw_reply_schema(payload, state)
+    _validate_policy_reply_consistency(payload, state)
+
+    state["_reply_presentation_limits"]["max_messages"] = 8
+    with pytest.raises(ValueError, match="reply_presentation_message_limit_exceeded:9"):
+        _validate_policy_reply_consistency(payload, state)
+
+
+def test_primary_prompt_receives_runtime_presentation_limits() -> None:
+    messages = build_parallel_reply_messages(
+        {
+            "presentation_limits": {
+                "max_messages": 10,
+                "max_text_chars": 500,
+            }
+        },
+        json_dumps=lambda value: json.dumps(value, ensure_ascii=False),
+    )
+
+    assert "本轮客户可见输出上限" in messages[1]["content"]
+    assert "max_messages：10" in messages[1]["content"]
+    assert "max_text_chars：500" in messages[1]["content"]
 
 
 def test_four_customer_states_and_legacy_aliases_normalize_compatibly() -> None:

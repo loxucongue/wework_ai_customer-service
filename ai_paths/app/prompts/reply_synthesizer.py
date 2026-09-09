@@ -5,6 +5,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.prompts.reply_sales_prompt_v4 import PARALLEL_REPLY_SYSTEM_PROMPT
+from app.services.store_fact_followup import unique_delivery_store_id
 
 
 _RETIRED_PARALLEL_REPLY_SYSTEM_PROMPT = """你是 V3 唯一的最终销售大脑，是一名真实、会推进但不生硬的销冠。Router与目录只提供候选；本轮意图、情绪、销售动作和客户回复由你一次完成。
@@ -123,6 +124,10 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
     reference_aliases = build_reply_reference_aliases(payload)
     sections = [
         _section("当前时间", time_text or "未提供"),
+        _section(
+            "本轮客户可见输出上限",
+            _render_compact_status(payload.get("presentation_limits") or {}),
+        ),
         _section(
             "本轮销售动作硬合同（客户可见文字也必须遵守）",
             _render_mainline_execution_contract(payload.get("mainline_delivery_state") or {}),
@@ -1279,6 +1284,9 @@ def _render_tool_facts(
         for item in resolution.get("delivery_store_ids") or []
         if str(item).strip()
     ]
+    private_guidance_store_id = (
+        unique_delivery_store_id(resolution) if authoritative_paid else ""
+    )
     lines: list[str] = []
     store_conclusion = _render_store_resolution_conclusion(resolution)
     if store_conclusion:
@@ -1400,9 +1408,17 @@ def _render_tool_facts(
             "arrival_guidance",
             "reception",
         )
+        store_id = str(store.get("store_id") or store.get("id") or "").strip()
+        include_private_guidance = bool(
+            private_guidance_store_id and store_id == private_guidance_store_id
+        )
         compact_store = _pick(
             store,
-            *(public_store_keys + paid_arrival_keys if authoritative_paid else public_store_keys),
+            *(
+                public_store_keys + paid_arrival_keys
+                if include_private_guidance
+                else public_store_keys
+            ),
         )
         lines.append("门店：" + "；".join(_flatten_pairs(compact_store)))
     for label, key in (

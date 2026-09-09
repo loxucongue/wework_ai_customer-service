@@ -15,6 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 from app.config import Settings  # noqa: E402
 from app.routers.callbacks import create_callbacks_router  # noqa: E402
 from app.services.message_delivery import MessageDeliveryService  # noqa: E402
+from app.services.memory_store import CustomerMemoryStore  # noqa: E402
 from app.services.storage import AppRepository, SQLiteStore  # noqa: E402
 from app.services.storage.serialization import dumps  # noqa: E402
 from app.services.v3_reply_recovery_delivery import (  # noqa: E402
@@ -79,6 +80,7 @@ def _prepare_dispatch(
     *,
     request_id: str,
     message_count: int = 1,
+    source_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     prepared = delivery.prepare_dispatch(
         source_channel="v3_reply_recovery",
@@ -99,7 +101,7 @@ def _prepare_dispatch(
             {"type": "text", "order": index + 1, "content": f"recovery-{index + 1}"}
             for index in range(message_count)
         ],
-        source_context={"original_request_id": request_id},
+        source_context=source_context or {"original_request_id": request_id},
         idempotency_key=f"v3-recovery:{request_id}",
     )
     delivery.record_submission(prepared["dispatch_id"], status="platform_accepted")
@@ -114,7 +116,10 @@ def _client(
     services = SimpleNamespace(
         repository=repository,
         message_delivery_service=delivery,
-        v3_reply_recovery_delivery_finalizer=V3ReplyRecoveryDeliveryFinalizer(repository),
+        v3_reply_recovery_delivery_finalizer=V3ReplyRecoveryDeliveryFinalizer(
+            repository,
+            CustomerMemoryStore(settings, repository),
+        ),
     )
     app = FastAPI()
     app.include_router(create_callbacks_router(settings, services))
@@ -145,9 +150,9 @@ def _callback(
     )
 
 
-def test_success_callback_keeps_recovery_completed_and_is_idempotent(tmp_path: Path) -> None:
+def test_success_callback_is_the_only_completion_and_is_idempotent(tmp_path: Path) -> None:
     settings, repository, delivery = _stack(tmp_path)
-    _seed_run(repository, request_id="request-success", generation_status="recovered")
+    _seed_run(repository, request_id="request-success", generation_status="recovery_claimed")
     dispatch = _prepare_dispatch(delivery, request_id="request-success")
     with repository.store.connect() as conn:
         conn.execute(
@@ -177,11 +182,105 @@ def test_success_callback_keeps_recovery_completed_and_is_idempotent(tmp_path: P
     assert run["generation_status"] == "recovered"
     stored = repository.get_run("request-success")["run"]
     assert stored["output_snapshot"]["v3_recovery_delivery"]["status"] == "send_succeeded"
+    with repository.store.connect() as conn:
+        messages = conn.execute(
+            "SELECT role, content FROM messages WHERE request_id='request-success' ORDER BY created_at"
+        ).fetchall()
+    assert [(row["role"], row["content"]) for row in messages] == [("assistant", "recovery-1")]
 
 
-def test_terminal_failure_callback_moves_recovered_run_to_manual_review(tmp_path: Path) -> None:
+def test_success_callback_records_declared_activity_stage_once(tmp_path: Path) -> None:
     settings, repository, delivery = _stack(tmp_path)
-    _seed_run(repository, request_id="request-failed", generation_status="recovered")
+    request_id = "request-stage"
+    sales_contact_key = "sales-contact-stage"
+    _seed_run(repository, request_id=request_id, generation_status="recovery_claimed")
+    dispatch = _prepare_dispatch(
+        delivery,
+        request_id=request_id,
+        source_context={
+            "original_request_id": request_id,
+            "memory_persist_allowed": True,
+            "sales_contact_key": sales_contact_key,
+            "sales_stage_record": {
+                "stage": "activity_offer",
+                "action_type": "explain_activity",
+            },
+        },
+    )
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE runs SET recovery_dispatch_id=? WHERE request_id=?",
+            (dispatch["id"], request_id),
+        )
+    client = _client(settings, repository, delivery)
+
+    first = _callback(
+        client,
+        event_id="event-stage",
+        dispatch=dispatch,
+        status="send_succeeded",
+    )
+    duplicate = _callback(
+        client,
+        event_id="event-stage",
+        dispatch=dispatch,
+        status="send_succeeded",
+    )
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 200
+    memory = CustomerMemoryStore(settings, repository).load(sales_contact_key)
+    stage_events = [
+        item
+        for item in memory.get("history_events") or []
+        if item.get("event_type") == "v3_sales_stage_delivered"
+    ]
+    assert len(stage_events) == 1
+    assert stage_events[0]["facts"]["stage"] == "activity_offer"
+
+
+def test_failed_callback_never_records_sales_stage(tmp_path: Path) -> None:
+    settings, repository, delivery = _stack(tmp_path)
+    request_id = "request-stage-failed"
+    sales_contact_key = "sales-contact-stage-failed"
+    _seed_run(repository, request_id=request_id, generation_status="recovery_claimed")
+    dispatch = _prepare_dispatch(
+        delivery,
+        request_id=request_id,
+        source_context={
+            "original_request_id": request_id,
+            "memory_persist_allowed": True,
+            "sales_contact_key": sales_contact_key,
+            "sales_stage_record": {
+                "stage": "activity_offer",
+                "action_type": "explain_activity",
+            },
+        },
+    )
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE runs SET recovery_dispatch_id=? WHERE request_id=?",
+            (dispatch["id"], request_id),
+        )
+
+    response = _callback(
+        _client(settings, repository, delivery),
+        event_id="event-stage-failed",
+        dispatch=dispatch,
+        status="send_failed",
+    )
+
+    assert response.status_code == 200
+    memory = CustomerMemoryStore(settings, repository).load(sales_contact_key)
+    assert not any(
+        item.get("event_type") == "v3_sales_stage_delivered"
+        for item in memory.get("history_events") or []
+    )
+
+
+def test_terminal_failure_callback_moves_active_run_to_manual_review(tmp_path: Path) -> None:
+    settings, repository, delivery = _stack(tmp_path)
+    _seed_run(repository, request_id="request-failed", generation_status="recovery_claimed")
     dispatch = _prepare_dispatch(delivery, request_id="request-failed")
     with repository.store.connect() as conn:
         conn.execute(

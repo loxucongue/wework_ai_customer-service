@@ -76,14 +76,18 @@ def reply_presentation_violations(
     messages: Any,
     *,
     sensitive_turn: bool = False,
+    max_messages: int = MAX_CUSTOMER_VISIBLE_MESSAGES,
+    max_text_chars: int = MAX_CUSTOMER_VISIBLE_TEXT_CHARS,
 ) -> list[str]:
     metrics = reply_presentation_metrics(messages)
     violations: list[str] = []
-    if metrics["message_count"] > MAX_CUSTOMER_VISIBLE_MESSAGES:
+    safe_max_messages = max(1, int(max_messages or MAX_CUSTOMER_VISIBLE_MESSAGES))
+    safe_max_text_chars = max(1, int(max_text_chars or MAX_CUSTOMER_VISIBLE_TEXT_CHARS))
+    if metrics["message_count"] > safe_max_messages:
         violations.append(
             f"reply_presentation_message_limit_exceeded:{metrics['message_count']}"
         )
-    if metrics["text_chars"] > MAX_CUSTOMER_VISIBLE_TEXT_CHARS:
+    if metrics["text_chars"] > safe_max_text_chars:
         violations.append(
             f"reply_presentation_text_limit_exceeded:{metrics['text_chars']}"
         )

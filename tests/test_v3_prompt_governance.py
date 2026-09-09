@@ -41,8 +41,7 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "首次询价直接回答权威活动价" in prompt
     assert "不设默认消息条数" in prompt
     assert "每条 text 目标约20–60个汉字" in prompt
-    assert "整轮客户可见消息最多8条" in prompt
-    assert "所有 text 合计最多300字" in prompt
+    assert "整轮严格遵守输入中的“本轮客户可见输出上限”" in prompt
     assert "不得同义重复或把完整句子硬切开" in prompt
     assert "禁止客服菜单" in prompt
     assert "不要从混乱、过期或测试记录恢复旧话题" in prompt
@@ -263,5 +262,8 @@ def test_reply_always_receives_online_project_scope_boundary() -> None:
 
 def test_reply_prompt_handles_generic_store_distrust_before_store_lookup() -> None:
     assert "客户只泛称某些店“骗子/不靠谱”" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "本轮唯一正确下一步是先问其遇到了什么" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "候选话术出现这些内容也必须丢弃" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不把普通信任质疑升级为投诉或停止营销" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "先交付一个最相关的真实信任证据或效果素材" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "没有任何可用事实或素材时才只问其具体遇到了什么" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "候选话术仅在含无依据事实时丢弃" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "本轮唯一正确下一步是先问其遇到了什么" not in PARALLEL_REPLY_SYSTEM_PROMPT

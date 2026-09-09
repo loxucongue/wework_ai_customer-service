@@ -900,6 +900,11 @@ class ChatRuntime:
             meta={
                 "reply_source": str(final_state.get("reply_source") or ""),
                 "decision_status": str(final_state.get("decision_status") or ""),
+                "reply_sales_judgment": (
+                    final_state.get("reply_sales_judgment")
+                    if isinstance(final_state.get("reply_sales_judgment"), dict)
+                    else {}
+                ),
                 "v3_recovery_execution": True,
             },
         )
@@ -1206,6 +1211,29 @@ class ChatRuntime:
             final_state.pop("follow_knowledge_callback", None)
         reply_messages = [ReplyMessage(**message) for message in raw_reply_messages]
         reply_message_dicts = [message.model_dump() for message in reply_messages]
+        # Persist the exact public response metadata before returning.  A later
+        # retry can be handled by another process, so rebuilding metadata from
+        # the compact run state would otherwise lose follow knowledge and other
+        # workflow-compatible fields even though the original HTTP response was
+        # complete.
+        response_meta = _chat_response_meta(
+            final_state,
+            model_usage=model_usage,
+            conversation_id=conversation_id,
+            response_id=response_id,
+            replayed=False,
+        )
+        response_snapshot = {
+            "request_id": request_id,
+            "response_id": response_id,
+            "replayed": False,
+            "reply_messages": reply_message_dicts,
+            "scene": str(route_result.get("scene", "")),
+            "intent": str(route_result.get("intent", "")),
+            "subflow": str(route_result.get("subflow", "")),
+            "trace_url": None,
+            "meta": response_meta,
+        }
         if not persistence_completed and (
             not bool(final_state.get("test_isolated"))
             and _memory_persistence_allowed(final_state)
@@ -1227,6 +1255,7 @@ class ChatRuntime:
                         reply_messages=reply_message_dicts,
                         token_usage=model_usage["summary"],
                         deferred_payload=_deferred_state_payload(final_state),
+                        response_snapshot=response_snapshot,
                     )
                     deferred_finalization = True
                     final_state["post_reply_finalization"] = {
@@ -1318,6 +1347,13 @@ class ChatRuntime:
                     }
                 )
 
+        response_meta = _chat_response_meta(
+            final_state,
+            model_usage=model_usage,
+            conversation_id=conversation_id,
+            response_id=response_id,
+            replayed=False,
+        )
         return ChatResponse(
             request_id=request_id,
             response_id=response_id,
@@ -1327,60 +1363,7 @@ class ChatRuntime:
             intent=str(route_result.get("intent", "")),
             subflow=str(route_result.get("subflow", "")),
             trace_url=str(log_path),
-            meta={
-                "tool_result_keys": list((final_state.get("tool_results") or {}).keys()),
-                "profile_update": final_state.get("profile_update", {}),
-                "event_updates": final_state.get("event_updates", []),
-                "image_info": final_state.get("image_info", {}),
-                "memory_error": final_state.get("memory_error"),
-                "customer_context": final_state.get("customer_context", {}),
-                "customer_context_error": final_state.get("customer_context_error"),
-                "customer_store_knowledge": _customer_store_knowledge_meta(final_state.get("customer_store_knowledge")),
-                "case_image_send_record": final_state.get("case_image_send_record", {}),
-                "store_fact_memory_record": final_state.get("store_fact_memory_record", {}),
-                "model_usage": model_usage["calls"],
-                "token_usage": model_usage["summary"],
-                "tool_calls": collect_tool_calls(final_state.get("trace", [])),
-                "planner_source": final_state.get("planner_source", ""),
-                "planner_decision": final_state.get("planner_decision", ""),
-                "planner_stage": final_state.get("planner_stage", ""),
-                "planner_sub_rule_id": final_state.get("planner_sub_rule_id", ""),
-                "conversion_stage": final_state.get("conversion_stage", ""),
-                "customer_type": final_state.get("customer_type", ""),
-                "main_blocker": final_state.get("main_blocker", ""),
-                "next_step": final_state.get("next_step", ""),
-                "policy_id": final_state.get("policy_id", ""),
-                "policy_family_id": final_state.get("policy_family_id", ""),
-                "exact_policy_id": final_state.get("exact_policy_id", ""),
-                "policy_match_level": final_state.get("policy_match_level", ""),
-                "policy_version": final_state.get("policy_version", ""),
-                "reply_source": final_state.get("reply_source", ""),
-                "reply_action": final_state.get("reply_action", "none"),
-                "reply_action_reason": final_state.get("reply_action_reason", ""),
-                "reply_sales_judgment": final_state.get("reply_sales_judgment", {}),
-                "reply_knowledge_use": final_state.get("reply_knowledge_use", {}),
-                "reply_deposit_evidence": final_state.get("reply_deposit_evidence", {}),
-                "selected_content_ids": final_state.get("selected_content_ids", []),
-                "reply_content_decisions": final_state.get("reply_content_decisions", []),
-                "content_selection_metrics": final_state.get("content_selection_metrics", {}),
-                "parallel_branch_metrics": final_state.get("parallel_branch_metrics", {}),
-                "fallback_source": final_state.get("fallback_source", ""),
-                "postprocess_changed": bool(final_state.get("postprocess_changed")),
-                "postprocess_reasons": final_state.get("postprocess_reasons", []),
-                "async_final_reply": final_state.get("async_final_reply", {}),
-                "reply_control": final_state.get("reply_control", {}),
-                "sop_gate": final_state.get("sop_gate", {}),
-                "strategy_data_callback": final_state.get("strategy_data_callback", {}),
-                "follow_knowledge_callback": final_state.get("follow_knowledge_callback", {}),
-                "post_reply_finalization": final_state.get("post_reply_finalization", {}),
-                "persistence_metrics": final_state.get("persistence_metrics", {}),
-                "conversation_id": conversation_id,
-                "response_id": response_id,
-                "replayed": False,
-                "generation_status": str(final_state.get("generation_status") or ""),
-                "recovery_kind": str(final_state.get("recovery_kind") or ""),
-                "recovery_next_at": str(final_state.get("recovery_next_at") or ""),
-            },
+            meta=response_meta,
         )
 
     def _record_reply_memory(
@@ -1430,6 +1413,12 @@ def record_reply_memory(
             send_mode="sync",
         )
         _record_visible_store_facts(
+            memory_store,
+            final_state,
+            customer_id=customer_id,
+            reply_messages=reply_messages,
+        )
+        _record_mainline_stage_delivery(
             memory_store,
             final_state,
             customer_id=customer_id,
@@ -1517,6 +1506,79 @@ def _copy_generation_context_to_state(
             state[key] = value
 
 
+def _chat_response_meta(
+    final_state: AgentState,
+    *,
+    model_usage: dict[str, Any],
+    conversation_id: str,
+    response_id: str,
+    replayed: bool,
+) -> dict[str, Any]:
+    """Build the public ChatResponse metadata from one completed state.
+
+    This projection is used both for the live response and the durable replay
+    snapshot.  Keeping one builder prevents cross-process retries from losing
+    workflow metadata such as adopted follow sequences or scripts.
+    """
+
+    return {
+        "tool_result_keys": list((final_state.get("tool_results") or {}).keys()),
+        "profile_update": final_state.get("profile_update", {}),
+        "event_updates": final_state.get("event_updates", []),
+        "image_info": final_state.get("image_info", {}),
+        "memory_error": final_state.get("memory_error"),
+        "customer_context": final_state.get("customer_context", {}),
+        "customer_context_error": final_state.get("customer_context_error"),
+        "customer_store_knowledge": _customer_store_knowledge_meta(
+            final_state.get("customer_store_knowledge")
+        ),
+        "case_image_send_record": final_state.get("case_image_send_record", {}),
+        "store_fact_memory_record": final_state.get("store_fact_memory_record", {}),
+        "model_usage": model_usage["calls"],
+        "token_usage": model_usage["summary"],
+        "tool_calls": collect_tool_calls(final_state.get("trace", [])),
+        "planner_source": final_state.get("planner_source", ""),
+        "planner_decision": final_state.get("planner_decision", ""),
+        "planner_stage": final_state.get("planner_stage", ""),
+        "planner_sub_rule_id": final_state.get("planner_sub_rule_id", ""),
+        "conversion_stage": final_state.get("conversion_stage", ""),
+        "customer_type": final_state.get("customer_type", ""),
+        "main_blocker": final_state.get("main_blocker", ""),
+        "next_step": final_state.get("next_step", ""),
+        "policy_id": final_state.get("policy_id", ""),
+        "policy_family_id": final_state.get("policy_family_id", ""),
+        "exact_policy_id": final_state.get("exact_policy_id", ""),
+        "policy_match_level": final_state.get("policy_match_level", ""),
+        "policy_version": final_state.get("policy_version", ""),
+        "reply_source": final_state.get("reply_source", ""),
+        "reply_action": final_state.get("reply_action", "none"),
+        "reply_action_reason": final_state.get("reply_action_reason", ""),
+        "reply_sales_judgment": final_state.get("reply_sales_judgment", {}),
+        "reply_knowledge_use": final_state.get("reply_knowledge_use", {}),
+        "reply_deposit_evidence": final_state.get("reply_deposit_evidence", {}),
+        "selected_content_ids": final_state.get("selected_content_ids", []),
+        "reply_content_decisions": final_state.get("reply_content_decisions", []),
+        "content_selection_metrics": final_state.get("content_selection_metrics", {}),
+        "parallel_branch_metrics": final_state.get("parallel_branch_metrics", {}),
+        "fallback_source": final_state.get("fallback_source", ""),
+        "postprocess_changed": bool(final_state.get("postprocess_changed")),
+        "postprocess_reasons": final_state.get("postprocess_reasons", []),
+        "async_final_reply": final_state.get("async_final_reply", {}),
+        "reply_control": final_state.get("reply_control", {}),
+        "sop_gate": final_state.get("sop_gate", {}),
+        "strategy_data_callback": final_state.get("strategy_data_callback", {}),
+        "follow_knowledge_callback": final_state.get("follow_knowledge_callback", {}),
+        "post_reply_finalization": final_state.get("post_reply_finalization", {}),
+        "persistence_metrics": final_state.get("persistence_metrics", {}),
+        "conversation_id": conversation_id,
+        "response_id": response_id,
+        "replayed": replayed,
+        "generation_status": str(final_state.get("generation_status") or ""),
+        "recovery_kind": str(final_state.get("recovery_kind") or ""),
+        "recovery_next_at": str(final_state.get("recovery_next_at") or ""),
+    }
+
+
 def _replayed_chat_response(response: ChatResponse) -> ChatResponse:
     meta = dict(response.meta or {})
     meta["replayed"] = True
@@ -1550,18 +1612,19 @@ def _chat_response_from_generation(result: dict[str, Any]) -> ChatResponse:
 
 
 def _generation_wait_fallback(request_id: str, response_id: str) -> ChatResponse:
-    messages = stable_v3_reply_messages(
-        [{"type": "text", "order": 1, "content": RUNTIME_SAFE_FALLBACK_TEXT}],
-        response_id=response_id,
-    )
+    # Another process still owns this generation.  Returning a customer-visible
+    # fallback here would create a second message while the owner may shortly
+    # return the real reply.  The workflow-compatible response deliberately has
+    # no customer payload; a later retry replays the durable owner result.
     return ChatResponse(
         request_id=request_id,
         response_id=response_id,
         replayed=True,
-        reply_messages=[ReplyMessage(**item) for item in messages],
+        reply_messages=[],
         trace_url="",
         meta={
             "reply_source": "generation_in_progress",
+            "response_kind": "generation_in_progress",
             "replayed": True,
             "generation_status": GENERATION_STATUS_GENERATING,
         },
@@ -2026,6 +2089,7 @@ def _record_sent_case_images(
             customer_id,
             document_ids=record["document_ids"],
             image_urls=record["image_urls"],
+            asset_roles=(record.get("asset_roles") if "asset_roles" in record else None),
             request_id=str(state.get("request_id") or ""),
             interface_version=_interface_version_from_state(state),
         )
@@ -2048,6 +2112,7 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
     matched_content_ids: list[str] = []
     matched_script_ids: list[str] = []
     matched_script_codes: list[str] = []
+    matched_asset_roles: list[str] = []
     for image_url in image_urls:
         normalized_url = _normalize_url(image_url)
         doc_id = case_by_url.get(normalized_url, "")
@@ -2055,6 +2120,11 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
         if doc_id:
             if doc_id not in matched_ids:
                 matched_ids.append(doc_id)
+            # An explicitly selected content asset owns the semantic role for
+            # this URL. A sales-reference image can share a generic case URL
+            # without falsely advancing the effect-evidence stage.
+            if not selected_asset and "effect_evidence" not in matched_asset_roles:
+                matched_asset_roles.append("effect_evidence")
         for record_id in selected_asset.get("record_ids") or []:
             if record_id not in matched_ids:
                 matched_ids.append(record_id)
@@ -2066,6 +2136,9 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
             for value in selected_asset.get(key) or []:
                 if value not in target:
                     target.append(value)
+        for role in selected_asset.get("asset_roles") or []:
+            if role and role not in matched_asset_roles:
+                matched_asset_roles.append(role)
         if doc_id or selected_asset:
             matched_urls.append(image_url)
         else:
@@ -2079,6 +2152,7 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
         "matched_content_ids": matched_content_ids,
         "matched_script_ids": matched_script_ids,
         "matched_script_codes": matched_script_codes,
+        "asset_roles": matched_asset_roles,
         "selected_effect_asset_ids": sorted(
             {
                 content_id
@@ -2286,6 +2360,56 @@ def _record_reply_model_observation(
             )
             or "v3"
         ),
+    )
+
+
+def _record_mainline_stage_delivery(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+    reply_messages: list[dict[str, Any]],
+) -> None:
+    """Persist a model-declared stage only after its visible reply exists.
+
+    This does not infer sales meaning from keywords.  V3 Reply is the sole
+    semantic decision-maker; code records only its normalized action together
+    with the fact that a customer-visible text response was produced.  Effect,
+    store, appointment and payment stages continue to require their dedicated
+    structured delivery or authoritative transaction facts.
+    """
+
+    if not memory_store or not state.get("evidence_join") or not customer_id:
+        return
+    if not any(
+        isinstance(item, dict)
+        and str(item.get("type") or "").strip() == "text"
+        and str(item.get("content") or "").strip()
+        for item in reply_messages
+    ):
+        return
+    judgment = (
+        state.get("reply_sales_judgment")
+        if isinstance(state.get("reply_sales_judgment"), dict)
+        else {}
+    )
+    next_action = (
+        judgment.get("next_sales_action")
+        if isinstance(judgment.get("next_sales_action"), dict)
+        else {}
+    )
+    action_type = str(next_action.get("type") or "").strip()
+    target_stage = str(next_action.get("target_stage") or "").strip()
+    stage_by_action = {"explain_activity": "activity_offer"}
+    stage = stage_by_action.get(action_type, "")
+    if not stage or target_stage != stage:
+        return
+    memory_store.record_sales_stage_delivered(
+        customer_id,
+        stage=stage,
+        action_type=action_type,
+        request_id=str(state.get("request_id") or ""),
+        interface_version=_interface_version_from_state(state),
     )
 
 

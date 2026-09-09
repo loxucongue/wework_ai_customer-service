@@ -236,7 +236,10 @@ def build_control_services(settings: Settings) -> ControlServices:
     message_delivery_service = MessageDeliveryService(settings, repository)
     memory_store = CustomerMemoryStore(settings, repository)
     async_reply_delivery_finalizer = AsyncReplyDeliveryFinalizer(repository, memory_store)
-    v3_reply_recovery_delivery_finalizer = V3ReplyRecoveryDeliveryFinalizer(repository)
+    v3_reply_recovery_delivery_finalizer = V3ReplyRecoveryDeliveryFinalizer(
+        repository,
+        memory_store,
+    )
     model_client = ModelClient(settings)
     outreach_model_client = _build_outreach_model_client(settings)
     coze_client = CozeClient(settings)
@@ -420,6 +423,11 @@ def build_worker_services(settings: Settings) -> WorkerServices:
         settings=settings,
     )
     if settings.v3_reply_recovery_enabled:
+        if not message_delivery_service.callback_required:
+            raise RuntimeError(
+                "V3_REPLY_RECOVERY_ENABLED=true requires "
+                "MESSAGE_DELIVERY_CALLBACK_REQUIRED=true"
+            )
         if not message_delivery_service.enabled:
             raise RuntimeError(
                 "V3_REPLY_RECOVERY_ENABLED=true requires message delivery tracking"
@@ -434,6 +442,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
         system_client=outreach_system_client,
         send_client=outreach_send_client,
         customer_context_service=recovery_customer_context_service,
+        delivery_finalizer=V3ReplyRecoveryDeliveryFinalizer(repository, memory_store),
         settings=settings,
     )
     return WorkerServices(

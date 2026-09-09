@@ -19,6 +19,7 @@ from app.graph.nodes.reply_nodes import (
     _chat_json_with_deadline,
     _link_adopted_script_media,
     _model_budget_seconds,
+    _model_reply_presentation_limits,
     _parallel_content_selection_metrics,
     _parallel_reply_repair_context,
     _policy_safety_floor,
@@ -78,10 +79,14 @@ def create_synthesize_reply_node(
                 pass
             elif model_reply_ready and model_client is not None:
                 try:
+                    reply_state = dict(state)
+                    reply_state["_reply_presentation_limits"] = (
+                        _model_reply_presentation_limits(model_client)
+                    )
                     messages, model_call, reply_source = await _run_reply_model_pipeline(
-                        state=state,
+                        state=reply_state,
                         model_client=model_client,
-                        model_messages=reply_messages_for_model(state),
+                        model_messages=reply_messages_for_model(reply_state),
                         validated_model_messages=validated_model_messages,
                         debug_message_contents=debug_message_contents,
                         warnings=warnings,
@@ -807,6 +812,7 @@ async def _run_model_led_reply_pipeline(
             "runtime_budget": runtime_budget_snapshot(state, tier=tier),
         },
     }
+    presentation_limits = _model_reply_presentation_limits(model_client)
 
     primary_error: Exception
     if primary_deadline is not None and primary_deadline <= started_at + 1.0:
@@ -827,6 +833,7 @@ async def _run_model_led_reply_pipeline(
                 payload=payload,
                 validated_model_messages=validated_model_messages,
                 warnings=warnings,
+                presentation_limits=presentation_limits,
             )
             model_call["validated_json_output"] = payload
             model_call["draft_messages"] = debug_message_contents(messages)
@@ -912,6 +919,7 @@ async def _run_model_led_reply_pipeline(
             validated_model_messages=validated_model_messages,
             warnings=warnings,
             safety_floor=safety_floor,
+            presentation_limits=presentation_limits,
         )
         model_call["validated_json_output"] = repair_payload
     except Exception as repair_error:
@@ -944,6 +952,7 @@ def _validated_parallel_reply_payload(
     validated_model_messages: Callable[..., list[dict[str, Any]]],
     warnings: list[dict[str, Any]],
     safety_floor: str = "",
+    presentation_limits: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     restore_reply_output_references(payload, parallel_reply_payload(state))
     linked_content_id = _link_adopted_script_media(payload, state)
@@ -963,10 +972,16 @@ def _validated_parallel_reply_payload(
                 "message": "selected_content_media_placeholder_resolved",
             }
         )
-    _validate_parallel_raw_reply_schema(payload)
-    _validate_policy_reply_consistency(payload, state)
-    _validate_policy_safety_floor(payload, state, safety_floor)
-    validation_state = _reply_validation_state(state, payload)
+    validation_limits = dict(presentation_limits or {})
+    policy_validation_state = dict(state)
+    policy_validation_state["_reply_presentation_limits"] = validation_limits
+    _validate_parallel_raw_reply_schema(
+        payload,
+        policy_validation_state,
+    )
+    _validate_policy_reply_consistency(payload, policy_validation_state)
+    _validate_policy_safety_floor(payload, policy_validation_state, safety_floor)
+    validation_state = _reply_validation_state(policy_validation_state, payload)
     messages = validated_model_messages(payload, validation_state)
     messages = _prepare_structural_messages(messages, validation_state, warnings)
     validate_model_led_reply_admission(messages, validation_state)

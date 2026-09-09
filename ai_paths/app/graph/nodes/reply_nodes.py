@@ -319,7 +319,41 @@ def _reply_reference_set(value: Any) -> set[str]:
     visit(value)
     return refs
 
-def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
+def _reply_presentation_limits(state: dict[str, Any] | None = None) -> dict[str, int]:
+    raw = (
+        state.get("_reply_presentation_limits")
+        if isinstance(state, dict) and isinstance(state.get("_reply_presentation_limits"), dict)
+        else {}
+    )
+    return {
+        "max_messages": max(1, int(raw.get("max_messages") or 8)),
+        "max_text_chars": max(1, int(raw.get("max_text_chars") or 300)),
+    }
+
+
+def _model_reply_presentation_limits(model_client: ModelClient) -> dict[str, int]:
+    settings = getattr(model_client, "settings", None)
+    try:
+        max_messages = min(20, max(1, int(getattr(settings, "v3_reply_max_messages", 8))))
+    except (TypeError, ValueError):
+        max_messages = 8
+    try:
+        max_text_chars = min(
+            2000,
+            max(50, int(getattr(settings, "v3_reply_max_text_chars", 300))),
+        )
+    except (TypeError, ValueError):
+        max_text_chars = 300
+    return {
+        "max_messages": max_messages,
+        "max_text_chars": max_text_chars,
+    }
+
+
+def _validate_parallel_raw_reply_schema(
+    payload: dict[str, Any],
+    state: dict[str, Any] | None = None,
+) -> None:
     """Reject lossy compatibility before customer-visible normalization."""
 
     sales_judgment = payload.get("sales_judgment")
@@ -363,7 +397,10 @@ def _validate_parallel_raw_reply_schema(payload: dict[str, Any]) -> None:
         raise ValueError("Model JSON missing reply_messages")
     messages = compact_reply_message_format(messages)
     payload["reply_messages"] = messages
-    presentation_violations = reply_presentation_violations(messages)
+    presentation_violations = reply_presentation_violations(
+        messages,
+        **_reply_presentation_limits(state),
+    )
     if presentation_violations:
         raise ValueError(";;".join(presentation_violations))
     allowed_types = {
@@ -467,6 +504,7 @@ def _prepare_structural_messages(
         presentation_violations = reply_presentation_violations(
             prepared,
             sensitive_turn=True,
+            **_reply_presentation_limits(state),
         )
         if presentation_violations:
             raise ValueError(";;".join(presentation_violations))
@@ -505,7 +543,10 @@ def _prepare_structural_messages(
                 }
             )
         prepared = compact_reply_message_format(prepared)
-        presentation_violations = reply_presentation_violations(prepared)
+        presentation_violations = reply_presentation_violations(
+            prepared,
+            **_reply_presentation_limits(state),
+        )
         if presentation_violations:
             raise ValueError(";;".join(presentation_violations))
         _validate_paid_only_store_guidance(prepared, state)
@@ -524,7 +565,10 @@ def _prepare_structural_messages(
         if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
             warning.setdefault("node", "synthesize_reply")
     prepared = compact_reply_message_format(prepared)
-    presentation_violations = reply_presentation_violations(prepared)
+    presentation_violations = reply_presentation_violations(
+        prepared,
+        **_reply_presentation_limits(state),
+    )
     if presentation_violations:
         raise ValueError(";;".join(presentation_violations))
     _validate_paid_only_store_guidance(prepared, state)
@@ -554,7 +598,7 @@ def _policy_blocks_sales_delivery(state: AgentState) -> bool:
     )
     return (
         str(intent.get("type") or "") == "explicit_exit"
-        or str(primary.get("type") or "") in {"hard_stop", "human_takeover", "risk"}
+        or str(primary.get("type") or "") in {"hard_stop", "human_takeover"}
         or str(closing.get("customer_state") or "") == "hard_stop_marketing"
         or str(safety.get("status") or "") in {"health_risk", "complaint_refund"}
     )
@@ -1858,6 +1902,7 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         presentation_violations = reply_presentation_violations(
             payload.get("reply_messages"),
             sensitive_turn=True,
+            **_reply_presentation_limits(state),
         )
         if presentation_violations:
             raise ValueError(";;".join(presentation_violations))
@@ -2486,6 +2531,7 @@ def _parallel_generic_reply_repair_messages(
             "保留未冲突的事实解释、客户可见内容和销售判断。"
         ),
         "targeted_repair_instructions": targeted_repair_instructions,
+        "presentation_limits": validation_context.get("presentation_limits") or {},
         "allowed_next_sales_action_types": allowed_next_action_types,
         "mandatory_mainline_correction": (
             {
@@ -3162,6 +3208,7 @@ def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
         "content_candidate_delivery_requirements": candidate_requirements,
         "authoritative_paid": bool(_parallel_paid_deposit_context(state)),
         "mainline_delivery_state": payload.get("mainline_delivery_state") or {},
+        "presentation_limits": payload.get("presentation_limits") or {},
     }
 
 def _reply_model_tier(state: AgentState) -> str:
@@ -3408,12 +3455,12 @@ def _reply_repair_hint(error: str) -> str:
             return "本次输出同时违反多项硬事实或结构合同，必须在同一个新 JSON 中全部修正：" + " ".join(hints)
     if "reply_presentation_message_limit_exceeded" in error:
         return (
-            "客户可见消息总数超过8条。保留当前问题的直接答案、一个最相关价值和一个下一动作，"
+            "客户可见消息总数超过本轮配置上限。保留当前问题的直接答案、一个最相关价值和一个下一动作，"
             "合并属于同一信息单元的短句；不得删除必需的门店卡、素材或付款结构。"
         )
     if "reply_presentation_text_limit_exceeded" in error:
         return (
-            "客户可见文字总量超过300字。删除重复、套话和无关历史，只保留当前答案、必要依据与一个下一动作；"
+            "客户可见文字总量超过本轮配置上限。删除重复、套话和无关历史，只保留当前答案、必要依据与一个下一动作；"
             "不能截断完整句子，也不能删除真实限制条件。"
         )
     if "reply_presentation_emoji_limit_exceeded" in error:

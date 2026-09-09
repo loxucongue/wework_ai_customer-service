@@ -9,6 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
 from sqlalchemy.dialects.mysql import LONGTEXT, VARCHAR
+from sqlalchemy.types import TypeEngine
 
 
 revision = "20260909_02"
@@ -18,6 +19,18 @@ depends_on = None
 
 
 TABLE_NAME = "aics_internal_work_items"
+
+
+def _varchar(length: int) -> TypeEngine:
+    """Keep the production MySQL type while allowing SQLite migration tests."""
+
+    return sa.String(length).with_variant(VARCHAR(length), "mysql")
+
+
+def _longtext() -> TypeEngine:
+    return sa.Text().with_variant(LONGTEXT(), "mysql")
+
+
 INDEX_SPECS = (
     (
         "uq_aics_internal_work_items_idempotency",
@@ -139,37 +152,37 @@ def upgrade() -> None:
 
     op.create_table(
         TABLE_NAME,
-        sa.Column("id", VARCHAR(191), primary_key=True, nullable=False),
-        sa.Column("idempotency_key", VARCHAR(191), nullable=False),
-        sa.Column("work_type", VARCHAR(64), nullable=False),
-        sa.Column("status", VARCHAR(32), nullable=False, server_default="pending"),
-        sa.Column("store_id", VARCHAR(191), nullable=False, server_default=""),
-        sa.Column("detail_kind", VARCHAR(64), nullable=False, server_default=""),
+        sa.Column("id", _varchar(191), primary_key=True, nullable=False),
+        sa.Column("idempotency_key", _varchar(191), nullable=False),
+        sa.Column("work_type", _varchar(64), nullable=False),
+        sa.Column("status", _varchar(32), nullable=False, server_default="pending"),
+        sa.Column("store_id", _varchar(191), nullable=False, server_default=""),
+        sa.Column("detail_kind", _varchar(64), nullable=False, server_default=""),
         sa.Column(
             "missing_fact_keys_json",
-            LONGTEXT(),
+            _longtext(),
             nullable=False,
             server_default=sa.text("('[]')"),
         ),
-        sa.Column("source_request_id", VARCHAR(191), nullable=False, server_default=""),
-        sa.Column("conversation_id", VARCHAR(191), nullable=False, server_default=""),
-        sa.Column("corp_id", VARCHAR(191), nullable=False, server_default=""),
-        sa.Column("wechat", VARCHAR(191), nullable=False, server_default=""),
-        sa.Column("external_userid", VARCHAR(191), nullable=False, server_default=""),
-        sa.Column("customer_id", VARCHAR(191), nullable=False, server_default=""),
+        sa.Column("source_request_id", _varchar(191), nullable=False, server_default=""),
+        sa.Column("conversation_id", _varchar(191), nullable=False, server_default=""),
+        sa.Column("corp_id", _varchar(191), nullable=False, server_default=""),
+        sa.Column("wechat", _varchar(191), nullable=False, server_default=""),
+        sa.Column("external_userid", _varchar(191), nullable=False, server_default=""),
+        sa.Column("customer_id", _varchar(191), nullable=False, server_default=""),
         sa.Column("occurrence_count", sa.Integer(), nullable=False, server_default="1"),
-        sa.Column("first_seen_at", VARCHAR(40), nullable=False),
-        sa.Column("last_seen_at", VARCHAR(40), nullable=False),
-        sa.Column("resolved_at", VARCHAR(40), nullable=False, server_default=""),
-        sa.Column("resolved_by", VARCHAR(191), nullable=False, server_default=""),
+        sa.Column("first_seen_at", _varchar(40), nullable=False),
+        sa.Column("last_seen_at", _varchar(40), nullable=False),
+        sa.Column("resolved_at", _varchar(40), nullable=False, server_default=""),
+        sa.Column("resolved_by", _varchar(191), nullable=False, server_default=""),
         sa.Column(
-            "resolution_note", LONGTEXT(), nullable=False, server_default=sa.text("('')")
+            "resolution_note", _longtext(), nullable=False, server_default=sa.text("('')")
         ),
         sa.Column(
-            "payload_json", LONGTEXT(), nullable=False, server_default=sa.text("('{}')")
+            "payload_json", _longtext(), nullable=False, server_default=sa.text("('{}')")
         ),
-        sa.Column("created_at", VARCHAR(40), nullable=False),
-        sa.Column("updated_at", VARCHAR(40), nullable=False),
+        sa.Column("created_at", _varchar(40), nullable=False),
+        sa.Column("updated_at", _varchar(40), nullable=False),
         sa.UniqueConstraint(
             "idempotency_key", name="uq_aics_internal_work_items_idempotency"
         ),

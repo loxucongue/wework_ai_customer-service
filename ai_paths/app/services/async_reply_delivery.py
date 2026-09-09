@@ -41,6 +41,11 @@ class AsyncReplyDeliveryFinalizer:
                 sales_contact_key,
                 document_ids=case_record.get("document_ids") or [],
                 image_urls=case_record.get("image_urls") or [],
+                asset_roles=(
+                    case_record.get("asset_roles")
+                    if "asset_roles" in case_record
+                    else None
+                ),
                 request_id=str(dispatch.get("source_request_id") or ""),
             )
         activity_record = (
@@ -54,6 +59,19 @@ class AsyncReplyDeliveryFinalizer:
                 image_url=str(activity_record.get("image_url") or ""),
                 request_id=str(dispatch.get("source_request_id") or ""),
                 send_mode=str(activity_record.get("send_mode") or "async"),
+            )
+        sales_stage_record = (
+            context.get("sales_stage_record")
+            if isinstance(context.get("sales_stage_record"), dict)
+            else {}
+        )
+        if sales_stage_record:
+            self.memory_store.record_sales_stage_delivered(
+                sales_contact_key,
+                stage=str(sales_stage_record.get("stage") or ""),
+                action_type=str(sales_stage_record.get("action_type") or ""),
+                request_id=str(dispatch.get("source_request_id") or ""),
+                interface_version="v3",
             )
         store_record = context.get("store_fact_record") if isinstance(context.get("store_fact_record"), dict) else {}
         for item in store_record.get("records") or []:

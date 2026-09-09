@@ -119,10 +119,14 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
                 "asset_role": "effect_evidence",
             }
         )
-    if sent_messages.get("activity_intro_image_sent"):
+    if sent_messages.get("activity_intro_image_sent") or sent_messages.get("activity_offer_sent"):
         structured_delivered_assets.append(
             {
-                "ref": "sent_messages:activity_intro",
+                "ref": (
+                    "sent_messages:activity_offer"
+                    if sent_messages.get("activity_offer_sent")
+                    else "sent_messages:activity_intro"
+                ),
                 "content_id": "",
                 "asset_role": "activity_offer",
             }
@@ -295,6 +299,10 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
     reply_shared.pop("previous_policy_state", None)
     return {
         "schema_version": "parallel_reply_input_v2",
+        "presentation_limits": copy.deepcopy(
+            state.get("_reply_presentation_limits")
+            or {"max_messages": 8, "max_text_chars": 300}
+        ),
         # Put the current turn's compact tool contract before the larger evidence
         # envelope. This changes no business decision; it prevents authoritative
         # tool results from being buried behind pre-tool content candidates.
@@ -427,17 +435,19 @@ def _mainline_delivery_state(
         "send_store",
         "explain_activity",
     }
-    if not friction_active and next_missing_stage in {
+    # Router observations are retrieval evidence, not permission to advance or
+    # a veto over Reply.  Make actions available from durable delivery/payment
+    # facts only; Reply still chooses one action and the downstream admission
+    # gates validate its current customer state, payment evidence and safety.
+    if next_missing_stage in {
         "appointment",
         "appointment_deposit",
         "complete",
     }:
         allowed_actions.add("invite_booking")
     if (
-        not friction_active
-        and next_missing_stage in {"appointment", "appointment_deposit", "complete"}
+        next_missing_stage in {"appointment", "appointment_deposit", "complete"}
         and bool(payment_card.get("available"))
-        and "explicit_booking_request" in continuation_signals
     ):
         allowed_actions.add("send_payment")
     if authoritative_paid:

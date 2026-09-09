@@ -27,6 +27,8 @@ from app.services.storage.v3_strategy_analytics_repository import _usage_event_f
 from app.services.v3_reply_recovery import (
     GENERATION_STATUS_COMPLETED,
     GENERATION_STATUS_FALLBACK_PENDING,
+    GENERATION_STATUS_MANUAL_REVIEW,
+    GENERATION_STATUS_RECOVERED,
     decode_v3_recovery_payload,
     encode_v3_recovery_payload,
     stable_v3_reply_messages,
@@ -399,7 +401,7 @@ class RunRepositoryMixin:
                     """
                     UPDATE runs
                     SET response_id=COALESCE(response_id, ?), generation_status=?,
-                        recovery_kind=?, recovery_next_at=?, recovery_error='', output_snapshot=?,
+                        recovery_kind=?, recovery_next_at=?, recovery_error=?, output_snapshot=?,
                         duration_ms=?, token_usage=?, error=?
                     WHERE request_id=?
                     """,
@@ -409,6 +411,11 @@ class RunRepositoryMixin:
                         str(final_state.get("recovery_kind") or ""),
                         (
                             str(final_state.get("recovery_next_at") or "")
+                            if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
+                            else ""
+                        ),
+                        (
+                            str(final_state.get("recovery_error") or "")[:4000]
                             if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
                             else ""
                         ),
@@ -424,10 +431,10 @@ class RunRepositoryMixin:
                     """
                     INSERT INTO runs
                         (request_id, conversation_id, customer_id, generation_key, response_id,
-                         generation_status, recovery_kind, recovery_next_at,
+                         generation_status, recovery_kind, recovery_next_at, recovery_error,
                          input_snapshot, output_snapshot, intents, tags,
                          duration_ms, token_usage, error, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         request_id,
@@ -439,6 +446,11 @@ class RunRepositoryMixin:
                         str(final_state.get("recovery_kind") or ""),
                         (
                             str(final_state.get("recovery_next_at") or "")
+                            if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
+                            else ""
+                        ),
+                        (
+                            str(final_state.get("recovery_error") or "")[:4000]
                             if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
                             else ""
                         ),
@@ -507,7 +519,8 @@ class RunRepositoryMixin:
                 (recent_cutoff, max(1, min(int(limit or 10), 100))),
             ).fetchall()
             for row in rows:
-                output = loads_dict(row["output_snapshot"])
+                original_output_snapshot = str(row["output_snapshot"] or "")
+                output = loads_dict(original_output_snapshot)
                 job = output.get("post_reply_finalization")
                 payload = _decode_post_reply_payload(output.get("post_reply_payload"))
                 if not isinstance(job, dict) or not isinstance(payload, dict):
@@ -524,10 +537,19 @@ class RunRepositoryMixin:
                 job["status"] = "processing"
                 job["updated_at"] = now.isoformat()
                 output["post_reply_finalization"] = job
-                conn.execute(
-                    "UPDATE runs SET output_snapshot=? WHERE request_id=?",
-                    (dumps(output), str(row["request_id"] or "")),
+                updated = conn.execute(
+                    """
+                    UPDATE runs SET output_snapshot=?
+                    WHERE request_id=? AND output_snapshot=?
+                    """,
+                    (
+                        dumps(output),
+                        str(row["request_id"] or ""),
+                        original_output_snapshot,
+                    ),
                 )
+                if int(updated.rowcount or 0) != 1:
+                    continue
                 claimed.append(
                     {
                         "request_id": str(row["request_id"] or ""),
@@ -899,12 +921,13 @@ class RunRepositoryMixin:
             "observability_v3": build_v3_run_observability(final_state),
         }
         with self.store.connect() as conn:
+            lock_suffix = " FOR UPDATE" if getattr(self.store, "dialect", "") == "mysql" else ""
             existing = conn.execute(
-                """
+                f"""
                 SELECT output_snapshot, created_at, generation_key, response_id,
                        generation_status, recovery_kind, recovery_attempts,
                        recovery_next_at, recovery_dispatch_id, recovery_error
-                FROM runs WHERE request_id=?
+                FROM runs WHERE request_id=?{lock_suffix}
                 """,
                 (request_id,),
             ).fetchone()
@@ -915,7 +938,7 @@ class RunRepositoryMixin:
                 # ``start_run`` owns the HTTP ingress identity.  The final graph
                 # snapshot must not erase it; otherwise the response middleware
                 # cannot attach the real end-to-end duration to the run.
-                for key in (
+                preserve_keys = [
                     "http_request_ingress_id",
                     "http_request_started_at",
                     "http_response_finished_at",
@@ -929,7 +952,21 @@ class RunRepositoryMixin:
                     "v3_recovery_payload",
                     "v3_response_snapshot",
                     "performance",
-                ):
+                ]
+                if str(existing["generation_status"] or "") in {
+                    GENERATION_STATUS_RECOVERED,
+                    GENERATION_STATUS_MANUAL_REVIEW,
+                }:
+                    preserve_keys.extend(
+                        (
+                            "runtime_status",
+                            "runtime_phase",
+                            "runtime_updated_at",
+                            "v3_recovery_delivery",
+                            "recovery_reply_messages",
+                        )
+                    )
+                for key in preserve_keys:
                     if key in existing_output and key not in output_snapshot:
                         output_snapshot[key] = existing_output[key]
                 existing_performance = (
@@ -980,37 +1017,46 @@ class RunRepositoryMixin:
                     existing_output.get("interface_version") or interface_version
                 ),
             }
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO runs
-                    (request_id, conversation_id, customer_id, generation_key, response_id,
-                     generation_status, recovery_kind, recovery_attempts, recovery_next_at,
-                     recovery_dispatch_id, recovery_error, input_snapshot, output_snapshot, intents, tags,
-                     duration_ms, token_usage, error, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    request_id,
-                    conversation_id,
-                    str(final_state.get("customer_id") or ""),
-                    (existing["generation_key"] if existing else None),
-                    (existing["response_id"] if existing else None),
-                    str(existing["generation_status"] or "") if existing else "",
-                    str(existing["recovery_kind"] or "") if existing else "",
-                    int(existing["recovery_attempts"] or 0) if existing else 0,
-                    str(existing["recovery_next_at"] or "") if existing else "",
-                    str(existing["recovery_dispatch_id"] or "") if existing else "",
-                    str(existing["recovery_error"] or "") if existing else "",
-                    dumps(compact(input_snapshot)),
-                    dumps(_compact_run_output(output_snapshot)),
-                    dumps(planner_task_views(final_state)),
-                    dumps(tags_from_state(final_state)),
-                    duration_ms,
-                    dumps(token_usage),
-                    error,
-                    started_at or finished_at,
-                ),
+            common_values = (
+                conversation_id,
+                str(final_state.get("customer_id") or ""),
+                dumps(compact(input_snapshot)),
+                dumps(_compact_run_output(output_snapshot)),
+                dumps(planner_task_views(final_state)),
+                dumps(tags_from_state(final_state)),
+                duration_ms,
+                dumps(token_usage),
+                error,
             )
+            if existing:
+                # Recovery owns its state columns and terminal delivery snapshot.
+                # A graph finalizer must not replace the whole row with stale
+                # recovery values captured before a delivery callback.
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET conversation_id=?, customer_id=?, input_snapshot=?, output_snapshot=?,
+                        intents=?, tags=?, duration_ms=?, token_usage=?, error=?
+                    WHERE request_id=?
+                    """,
+                    (*common_values, request_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO runs
+                        (request_id, conversation_id, customer_id, generation_key, response_id,
+                         generation_status, recovery_kind, recovery_attempts, recovery_next_at,
+                         recovery_dispatch_id, recovery_error, input_snapshot, output_snapshot,
+                         intents, tags, duration_ms, token_usage, error, created_at)
+                    VALUES (?, ?, ?, NULL, NULL, '', '', 0, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        request_id,
+                        *common_values,
+                        started_at or finished_at,
+                    ),
+                )
             trace_rows = [
                 (
                     f"{request_id}_{index}",
@@ -1399,6 +1445,8 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
         "v3_recovery_payload",
         "v3_response_snapshot",
         "v3_recovery_response_snapshot",
+        "v3_recovery_delivery",
+        "recovery_reply_messages",
         "performance",
     ):
         if key in output_snapshot:

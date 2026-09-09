@@ -7,11 +7,15 @@ from types import SimpleNamespace
 import sys
 from typing import Any
 
+import httpx
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 
+from app.config import Settings  # noqa: E402
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage  # noqa: E402
+from app.services.outreach_send_client import OutreachSendClient  # noqa: E402
 from app.services.v3_reply_recovery_worker import V3ReplyRecoveryWorker  # noqa: E402
 
 
@@ -55,9 +59,12 @@ class _Repository:
         self.newer_results: list[dict[str, Any]] = []
         self.stop_contact = False
         self.completed: list[dict[str, Any]] = []
+        self.staged: list[dict[str, Any]] = []
+        self.finalized: list[dict[str, Any]] = []
         self.cancelled: list[dict[str, Any]] = []
         self.retried: list[dict[str, Any]] = []
         self.manual: list[dict[str, Any]] = []
+        self.dispatches: dict[str, dict[str, Any]] = {}
         self.claim_calls = 0
 
     def claim_v3_fallback_recoveries(self, **_: Any) -> list[dict[str, Any]]:
@@ -73,9 +80,18 @@ class _Repository:
     def has_stop_contact(self, _: str) -> bool:
         return self.stop_contact
 
+    def stage_v3_fallback_recovery_delivery(self, **kwargs: Any) -> dict[str, Any]:
+        self.staged.append(kwargs)
+        return {"updated": 1, "status": "delivery_pending"}
+
     def complete_v3_fallback_recovery(self, **kwargs: Any) -> dict[str, Any]:
         self.completed.append(kwargs)
-        return {"updated": 1, "status": "recovered"}
+        return self.stage_v3_fallback_recovery_delivery(**kwargs)
+
+    def finalize_v3_recovery_delivery(self, **kwargs: Any) -> dict[str, Any]:
+        self.finalized.append(kwargs)
+        status = "recovered" if kwargs.get("delivery_status") == "send_succeeded" else "manual_review"
+        return {"found": True, "updated": 1, "status": status}
 
     def cancel_v3_fallback_recovery(self, **kwargs: Any) -> dict[str, Any]:
         self.cancelled.append(kwargs)
@@ -97,6 +113,9 @@ class _Repository:
 
     def get_v3_generation_result(self, **_: Any) -> dict[str, Any]:
         return dict(self.current_claim)
+
+    def get_message_dispatch(self, dispatch_id: str) -> dict[str, Any]:
+        return dict(self.dispatches.get(dispatch_id) or {})
 
     @property
     def current_claim(self) -> dict[str, Any]:
@@ -134,7 +153,7 @@ class _SystemClient:
 
 class _SendClient:
     def __init__(self) -> None:
-        self._delivery_service = SimpleNamespace(enabled=True)
+        self._delivery_service = SimpleNamespace(enabled=True, callback_required=True)
         self.messages = [
             {
                 "direction": "customer",
@@ -193,7 +212,15 @@ class _Generator:
             request_id=request_id,
             response_id="response-1",
             reply_messages=[ReplyMessage(type="text", order=1, content="这次活动是268元哦～")],
-            meta={"reply_source": "v3_reply_recovery"},
+            meta={
+                "reply_source": "v3_reply_recovery",
+                "reply_sales_judgment": {
+                    "next_sales_action": {
+                        "type": "explain_activity",
+                        "target_stage": "activity_offer",
+                    }
+                },
+            },
         )
 
 
@@ -204,6 +231,7 @@ def _worker(
     send: _SendClient | None = None,
     context: _CustomerContext | None = None,
     generator: _Generator | None = None,
+    delivery_finalizer: Any | None = None,
 ) -> tuple[V3ReplyRecoveryWorker, _Repository, _SystemClient, _SendClient, _CustomerContext, _Generator]:
     repository = repository or _Repository()
     system = system or _SystemClient()
@@ -216,6 +244,7 @@ def _worker(
         system_client=system,
         send_client=send,
         customer_context_service=context,
+        delivery_finalizer=delivery_finalizer,
         settings=SimpleNamespace(
             v3_reply_recovery_enabled=True,
             v3_reply_recovery_poll_seconds=0.01,
@@ -226,14 +255,14 @@ def _worker(
     return worker, repository, system, send, context, generator
 
 
-def test_success_rechecks_every_gate_and_sends_with_stable_idempotency() -> None:
+def test_platform_acceptance_rechecks_every_gate_and_waits_for_delivery_callback() -> None:
     worker, repository, system, send, context, generator = _worker()
     claim = _claim()
     repository.current_claim = claim
 
     result = asyncio.run(worker.process_claim(claim))
 
-    assert result["status"] == "recovered"
+    assert result["status"] == "delivery_pending"
     assert system.status_calls == 2
     assert send.fetch_calls == 2
     assert context.calls == 2
@@ -243,7 +272,51 @@ def test_success_rechecks_every_gate_and_sends_with_stable_idempotency() -> None
     assert outbound["delivery_idempotency_key"] == "v3-recovery:request-1"
     assert outbound["source_kind"] == "v3_reply_recovery"
     assert outbound["reply_messages"][0]["client_message_id"]
-    assert repository.completed[0]["dispatch_id"] == "dispatch-1"
+    assert outbound["source_context"]["sales_stage_record"] == {
+        "stage": "activity_offer",
+        "action_type": "explain_activity",
+    }
+    assert repository.staged[0]["dispatch_id"] == "dispatch-1"
+    assert repository.finalized == []
+
+
+def test_confirmed_delivery_uses_recovery_finalizer_boundary() -> None:
+    class _Finalizer:
+        def __init__(self) -> None:
+            self.dispatches: list[dict[str, Any]] = []
+
+        def finalize(self, dispatch: dict[str, Any]) -> dict[str, Any]:
+            self.dispatches.append(dispatch)
+            return {"found": True, "updated": 1, "status": "recovered"}
+
+    repository = _Repository()
+    repository.dispatches["dispatch-1"] = {
+        "id": "dispatch-1",
+        "source_kind": "v3_reply_recovery",
+        "source_request_id": "request-1",
+        "status": "send_succeeded",
+        "source_context": {"sales_stage_record": {"stage": "activity_offer"}},
+    }
+    send = _SendClient()
+    send.send_result = {
+        "status": "sent",
+        "delivery_status": "send_succeeded",
+        "dispatch_id": "dispatch-1",
+    }
+    finalizer = _Finalizer()
+    worker, repository, _, _, _, _ = _worker(
+        repository,
+        send=send,
+        delivery_finalizer=finalizer,
+    )
+    claim = _claim()
+    repository.current_claim = claim
+
+    result = asyncio.run(worker.process_claim(claim))
+
+    assert result["status"] == "recovered"
+    assert len(finalizer.dispatches) == 1
+    assert finalizer.dispatches[0]["status"] == "send_succeeded"
 
 
 def test_new_local_customer_message_cancels_before_model_or_send() -> None:
@@ -365,6 +438,16 @@ def test_omitted_image_or_disabled_delivery_goes_directly_to_manual_review() -> 
     assert omitted["status"] == "manual_review"
     assert omitted["reason"] == "recovery_image_payload_omitted"
     assert generator.calls == 0
+
+    send = _SendClient()
+    send._delivery_service.callback_required = False
+    worker, repository, _, _, _, generator = _worker(send=send)
+    claim = _claim()
+    repository.current_claim = claim
+    no_callback = asyncio.run(worker.process_claim(claim))
+    assert no_callback["status"] == "manual_review"
+    assert no_callback["reason"] == "recovery_delivery_tracking_unavailable"
+    assert generator.calls == 0
     assert send.send_calls == []
 
     send = _SendClient()
@@ -400,7 +483,7 @@ def test_transient_failure_retries_after_about_thirty_seconds_then_exhausts() ->
     assert repository.retried[-1]["max_attempts"] == 2
 
 
-def test_existing_accepted_dispatch_is_reconciled_without_model_or_resend() -> None:
+def test_existing_accepted_dispatch_waits_without_model_or_resend() -> None:
     system = _SystemClient()
     system.dispatch = {
         "id": "dispatch-existing",
@@ -413,9 +496,10 @@ def test_existing_accepted_dispatch_is_reconciled_without_model_or_resend() -> N
 
     result = asyncio.run(worker.process_claim(claim))
 
-    assert result["status"] == "recovered"
+    assert result["status"] == "delivery_pending"
     assert result["duplicate_dispatch"] is True
-    assert repository.completed[0]["dispatch_id"] == "dispatch-existing"
+    assert repository.staged[0]["dispatch_id"] == "dispatch-existing"
+    assert repository.finalized == []
     assert generator.calls == 0
     assert send.send_calls == []
 
@@ -429,5 +513,170 @@ def test_run_once_claims_configured_batch() -> None:
     results = asyncio.run(worker.run_once())
 
     assert repository.claim_calls == 1
-    assert [item["status"] for item in results] == ["recovered"]
+    assert [item["status"] for item in results] == ["delivery_pending"]
     assert worker.status()["counters"]["claimed"] == 1
+
+
+def test_confirmed_dispatch_is_the_only_path_to_recovered() -> None:
+    system = _SystemClient()
+    system.dispatch = {
+        "id": "dispatch-confirmed",
+        "status": "send_succeeded",
+        "reply_messages": [{"type": "text", "order": 1, "content": "confirmed"}],
+    }
+    worker, repository, _, send, _, generator = _worker(system=system)
+    claim = _claim()
+    repository.current_claim = claim
+
+    result = asyncio.run(worker.process_claim(claim))
+
+    assert result["status"] == "recovered"
+    assert repository.finalized == [
+        {
+            "request_id": "request-1",
+            "dispatch_id": "dispatch-confirmed",
+            "delivery_status": "send_succeeded",
+            "error": "",
+        }
+    ]
+    assert generator.calls == 0
+    assert send.send_calls == []
+
+
+def test_repository_cas_conflict_is_not_reported_as_recovered() -> None:
+    system = _SystemClient()
+    system.dispatch = {
+        "id": "dispatch-confirmed",
+        "status": "send_succeeded",
+        "reply_messages": [{"type": "text", "order": 1, "content": "confirmed"}],
+    }
+    worker, repository, _, _, _, _ = _worker(system=system)
+    repository.current_claim = _claim()
+
+    def conflict(**_: Any) -> dict[str, Any]:
+        return {"found": True, "updated": 0, "status": "state_conflict", "reason": "changed"}
+
+    repository.finalize_v3_recovery_delivery = conflict  # type: ignore[method-assign]
+    result = asyncio.run(worker.process_claim(repository.current_claim))
+
+    assert result["status"] == "state_conflict"
+    assert result["reason"] == "changed"
+
+
+class _DeliveryTracking:
+    enabled = True
+    callback_required = True
+
+    def __init__(self, *, guard_error: str = "") -> None:
+        self.guard_error = guard_error
+        self.guard_calls = 0
+        self.submissions: list[str] = []
+
+    def assert_proactive_send_allowed(self, _: dict[str, Any]) -> None:
+        self.guard_calls += 1
+        if self.guard_error:
+            raise RuntimeError(self.guard_error)
+
+    def prepare_dispatch(self, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "dispatch": {"id": "dispatch-real", "status": "created", "created": True},
+            "dispatch_id": "dispatch-real",
+            "reply_messages": kwargs["reply_messages"],
+            "callback_url": "https://callback.test/message-delivery",
+            "callback_required": True,
+        }
+
+    def record_submission(self, _: str, *, status: str, **__: Any) -> dict[str, Any]:
+        self.submissions.append(status)
+        return {"status": status}
+
+    def mark_finalized(self, _: str) -> dict[str, Any]:
+        raise AssertionError("callback-confirmed recovery must not finalize on HTTP acceptance")
+
+
+def _real_send_client(delivery: _DeliveryTracking) -> OutreachSendClient:
+    settings = Settings().model_copy(
+        update={
+            "outreach_send_base_url": "https://send.test",
+            "outreach_send_agent_token": "token",
+        }
+    )
+    return OutreachSendClient(settings, delivery_service=delivery)  # type: ignore[arg-type]
+
+
+def _real_send_kwargs() -> dict[str, Any]:
+    return {
+        "request_id": "request-1",
+        "request_context": {
+            "corp_id": "corp-1",
+            "customer_id": "customer-1",
+            "external_userid": "external-1",
+            "user_id": "88",
+            "wechat": "SL8003",
+        },
+        "fallback_customer_id": "customer-1",
+        "fallback_corp_id": "corp-1",
+        "fallback_user_id": "88",
+        "fallback_wechat": "SL8003",
+        "fallback_external_userid": "external-1",
+        "reply_messages": [{"type": "text", "order": 1, "content": "reply"}],
+        "source_kind": "v3_reply_recovery",
+        "delivery_idempotency_key": "v3-recovery:request-1",
+    }
+
+
+def test_real_send_persists_submitting_before_non_idempotent_http() -> None:
+    delivery = _DeliveryTracking()
+    client = _real_send_client(delivery)
+    observed: list[list[str]] = []
+
+    async def request(*_: Any, **__: Any) -> httpx.Response:
+        observed.append(list(delivery.submissions))
+        return httpx.Response(200, json={"data": {"request_id": "platform-1"}})
+
+    client._request_with_retry = request  # type: ignore[method-assign]
+    result = asyncio.run(client.send_reply_messages(**_real_send_kwargs()))
+
+    assert observed == [["submitting"]]
+    assert delivery.submissions == ["submitting", "platform_accepted"]
+    assert result["status"] == "accepted"
+    assert result["delivery_status"] == "platform_accepted"
+
+
+def test_real_send_guard_blocks_immediately_before_dispatch() -> None:
+    delivery = _DeliveryTracking(guard_error="explicit_stop_contact")
+    client = _real_send_client(delivery)
+    called = 0
+
+    async def request(*_: Any, **__: Any) -> httpx.Response:
+        nonlocal called
+        called += 1
+        return httpx.Response(200)
+
+    client._request_with_retry = request  # type: ignore[method-assign]
+    result = asyncio.run(client.send_reply_messages(**_real_send_kwargs()))
+
+    assert result == {"status": "skipped", "reason": "explicit_stop_contact"}
+    assert delivery.guard_calls == 1
+    assert delivery.submissions == []
+    assert called == 0
+
+
+def test_non_idempotent_transport_error_is_not_retried_and_stays_unknown() -> None:
+    delivery = _DeliveryTracking()
+    client = _real_send_client(delivery)
+    calls = 0
+
+    class Transport:
+        async def request(self, *_: Any, **__: Any) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            raise httpx.RemoteProtocolError("connection closed after submit")
+
+    client._http_client = lambda: Transport()  # type: ignore[method-assign]
+    result = asyncio.run(client.send_reply_messages(**_real_send_kwargs()))
+
+    assert calls == 1
+    assert delivery.submissions == ["submitting", "submission_unknown"]
+    assert result["status"] == "accepted"
+    assert result["delivery_status"] == "submission_unknown"

@@ -24,6 +24,7 @@ def sent_message_summary_for_model(
         now=now,
     )
     case_image_delivery = _case_image_delivery(state.get("history_events"))
+    sales_stage_delivery = _sales_stage_delivery(state.get("history_events"))
     store_address_delivery = _store_address_delivery(state.get("history_events"))
     store_recommendation = _store_recommendation_delivery(state.get("history_events"))
     store_anchor_fact = _store_anchor_fact(store_address_delivery)
@@ -59,9 +60,11 @@ def sent_message_summary_for_model(
         "payment_collection_sent": total_count > 0,
         "payment_collection_count": total_count,
         "payment_collection": payment_frequency,
-        "case_image_sent": bool(case_image_delivery),
+        "case_image_sent": bool(case_image_delivery.get("effect_evidence_sent")),
         "case_image_delivery": case_image_delivery,
         "activity_intro_image_sent": activity_intro_image_sent,
+        "activity_offer_sent": "activity_offer" in sales_stage_delivery.get("stages", []),
+        "sales_stage_delivery": sales_stage_delivery,
         "store_address_sent_by_store_id": list(dict.fromkeys(store_ids)),
         "store_address_delivery": store_address_delivery,
         "latest_store_recommendation": store_recommendation,
@@ -307,6 +310,17 @@ def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
         )
     )
     timestamped_count = sum(1 for _, _, event_at in events if event_at is not None)
+    delivered_roles: list[str] = []
+    for _, event, _ in events:
+        event_facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        raw_roles = event_facts.get("asset_roles")
+        # Historical case_image_sent events predate role metadata and were
+        # created only for case facts, so preserve their effect-stage meaning.
+        roles = raw_roles if isinstance(raw_roles, list) else ["effect_evidence"]
+        for role in roles:
+            clean_role = str(role or "").strip()
+            if clean_role and clean_role not in delivered_roles:
+                delivered_roles.append(clean_role)
     return {
         "total_events": len(events),
         "last_sent_at": latest_at.isoformat() if latest_at is not None else "",
@@ -314,9 +328,52 @@ def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
         "last_image_count": len(image_urls),
         "sent_image_urls": all_image_urls,
         "recent_document_ids": recent_document_ids[:12],
+        "asset_roles": delivered_roles,
+        "effect_evidence_sent": "effect_evidence" in delivered_roles,
         "time_confidence": "high" if timestamped_count == len(events) else "partial",
         "source": "history_events",
         "decision_policy": "evidence_only_model_decides_case_image_send",
+    }
+
+
+def _sales_stage_delivery(raw_events: Any) -> dict[str, Any]:
+    deliveries: list[tuple[int, dict[str, Any], datetime | None]] = []
+    for index, event in enumerate(raw_events if isinstance(raw_events, list) else []):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("event_type") or "").strip() not in {
+            "v3_sales_stage_delivered",
+        }:
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        if str(facts.get("stage") or "").strip() not in {"activity_offer"}:
+            continue
+        deliveries.append((index, event, _event_datetime(event)))
+    if not deliveries:
+        return {}
+    latest = max(
+        deliveries,
+        key=lambda item: (
+            item[2].timestamp() if item[2] is not None else float("-inf"),
+            item[0],
+        ),
+    )
+    stages = list(
+        dict.fromkeys(
+            str((event.get("facts") or {}).get("stage") or "").strip()
+            for _, event, _ in deliveries
+            if isinstance(event.get("facts"), dict)
+            and str((event.get("facts") or {}).get("stage") or "").strip()
+        )
+    )
+    latest_facts = latest[1].get("facts") if isinstance(latest[1].get("facts"), dict) else {}
+    return {
+        "stages": stages,
+        "latest_stage": str(latest_facts.get("stage") or "").strip(),
+        "latest_action_type": str(latest_facts.get("action_type") or "").strip(),
+        "last_delivered_at": latest[2].isoformat() if latest[2] is not None else "",
+        "request_id": str(latest_facts.get("request_id") or "").strip(),
+        "source": "reply_delivery_event",
     }
 
 
