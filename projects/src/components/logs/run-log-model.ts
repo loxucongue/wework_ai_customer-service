@@ -14,7 +14,27 @@ export type BusinessSummary = {
   delivery_status?: string;
   usage_event_recorded?: boolean;
   response_kind?: string;
+  response_id?: string;
+  replayed?: boolean;
+  generation_status?: string;
+  recovery_kind?: string;
+  recovery_attempts?: number;
+  recovery_next_at?: string;
+  recovery_dispatch_id?: string;
+  recovery_error?: string;
   post_reply_finalization?: Record<string, JsonValue>;
+};
+
+export type GenerationRecoverySummary = {
+  available: boolean;
+  response_id: string;
+  replayed?: boolean;
+  generation_status: string;
+  recovery_kind: string;
+  recovery_attempts?: number;
+  recovery_next_at: string;
+  recovery_dispatch_id: string;
+  recovery_error: string;
 };
 
 export type CustomerIdentity = {
@@ -47,6 +67,14 @@ export type RunItem = {
   finished_at?: string;
   runtime_status?: string;
   runtime_phase?: string;
+  response_id?: string;
+  replayed?: boolean;
+  generation_status?: string;
+  recovery_kind?: string;
+  recovery_attempts?: number;
+  recovery_next_at?: string;
+  recovery_dispatch_id?: string;
+  recovery_error?: string;
 };
 
 export type ImportantField = { key: string; label: string; value: JsonValue };
@@ -294,6 +322,7 @@ export type ObservabilityView = {
     dispatches: DeliveryDispatch[];
   };
   customer_identity?: CustomerIdentity;
+  generation_recovery?: Partial<GenerationRecoverySummary>;
   decision_summary?: DecisionSummary;
   checkpoint_summary?: CheckpointSummary;
   knowledge_match?: KnowledgeMatch;
@@ -383,6 +412,12 @@ export const STATUS_META: Record<string, { label: string; className: string }> =
   send_succeeded: { label: "发送成功", className: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
   success: { label: "处理成功", className: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
   completed: { label: "已完成", className: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
+  generating: { label: "正在生成", className: "bg-blue-50 text-blue-700 ring-blue-200" },
+  fallback_pending: { label: "等待自动补答", className: "bg-amber-50 text-amber-800 ring-amber-200" },
+  recovery_claimed: { label: "自动补答处理中", className: "bg-blue-50 text-blue-700 ring-blue-200" },
+  recovered: { label: "自动补答成功", className: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
+  recovery_failed: { label: "自动补答已取消", className: "bg-zinc-100 text-zinc-600 ring-zinc-200" },
+  manual_review: { label: "等待人工复核", className: "bg-red-50 text-red-700 ring-red-200" },
   warning: { label: "有警告", className: "bg-amber-50 text-amber-800 ring-amber-200" },
   degraded: { label: "已降级", className: "bg-amber-50 text-amber-800 ring-amber-200" },
   fallback: { label: "异常兜底", className: "bg-amber-50 text-amber-800 ring-amber-200" },
@@ -472,4 +507,114 @@ export function isRunning(run: RunItem) {
 
 export function runtimePhaseLabel(phase?: string) {
   return ({ request_received: "请求已接收", full: "主链处理中", commit: "提交中", completed: "已完成" } as Record<string, string>)[phase || ""] || phase || "处理中";
+}
+
+export function generationRecoveryFromRun(
+  run: RunItem,
+  view?: ObservabilityView,
+): GenerationRecoverySummary {
+  const output = isRecord(run.output_snapshot) ? run.output_snapshot : {};
+  const meta = isRecord(output.meta)
+    ? output.meta
+    : isRecord(output.http_response_body) && isRecord(output.http_response_body.meta)
+      ? output.http_response_body.meta
+      : {};
+  const business = run.business_summary || {};
+  const observed = view?.generation_recovery || {};
+  const responseId = firstText(
+    observed.response_id,
+    run.response_id,
+    business.response_id,
+    output.response_id,
+    meta.response_id,
+  );
+  const generationStatus = firstText(
+    observed.generation_status,
+    run.generation_status,
+    business.generation_status,
+    output.generation_status,
+  );
+  const recoveryKind = firstText(
+    observed.recovery_kind,
+    run.recovery_kind,
+    business.recovery_kind,
+    output.recovery_kind,
+  );
+  const recoveryNextAt = firstText(
+    observed.recovery_next_at,
+    run.recovery_next_at,
+    business.recovery_next_at,
+    output.recovery_next_at,
+  );
+  const recoveryDispatchId = firstText(
+    observed.recovery_dispatch_id,
+    run.recovery_dispatch_id,
+    business.recovery_dispatch_id,
+    output.recovery_dispatch_id,
+  );
+  const recoveryError = firstText(
+    observed.recovery_error,
+    run.recovery_error,
+    business.recovery_error,
+    output.recovery_error,
+  );
+  const attempts = firstNumber(
+    observed.recovery_attempts,
+    run.recovery_attempts,
+    business.recovery_attempts,
+    output.recovery_attempts,
+  );
+  const replayed = firstBoolean(
+    observed.replayed,
+    run.replayed,
+    business.replayed,
+    output.replayed,
+    meta.replayed,
+  );
+  return {
+    available: Boolean(
+      responseId
+      || generationStatus
+      || recoveryKind
+      || recoveryNextAt
+      || recoveryDispatchId
+      || recoveryError
+      || attempts !== undefined
+      || replayed !== undefined
+    ),
+    response_id: responseId,
+    replayed,
+    generation_status: generationStatus,
+    recovery_kind: recoveryKind,
+    recovery_attempts: attempts,
+    recovery_next_at: recoveryNextAt,
+    recovery_dispatch_id: recoveryDispatchId,
+    recovery_error: recoveryError,
+  };
+}
+
+function firstText(...values: JsonValue[]) {
+  for (const value of values) {
+    const text = stringField(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function firstNumber(...values: JsonValue[]): number | undefined {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return undefined;
+}
+
+function firstBoolean(...values: JsonValue[]): boolean | undefined {
+  for (const value of values) {
+    if (typeof value === "boolean") return value;
+    if (value === 1 || value === "1" || value === "true") return true;
+    if (value === 0 || value === "0" || value === "false") return false;
+  }
+  return undefined;
 }

@@ -41,6 +41,7 @@ import {
   contentString,
   formatDuration,
   formatTime,
+  generationRecoveryFromRun,
   isRecord,
   isRunning,
   replyMessages,
@@ -283,6 +284,7 @@ function RunListItem({ run, selected, onSelect }: { run: RunItem; selected: bool
   const summary = run.business_summary || {};
   const status = runStatus(run);
   const reply = runReply(run);
+  const generation = generationRecoveryFromRun(run);
   return (
     <button type="button" onClick={() => onSelect(run.request_id)} className={`w-full border-b border-zinc-100 px-4 py-3 text-left transition-colors ${selected ? "bg-blue-50/80 shadow-[inset_3px_0_0_#2563eb]" : "bg-white hover:bg-zinc-50"}`}>
       <div className="flex items-start justify-between gap-3">
@@ -301,6 +303,8 @@ function RunListItem({ run, selected, onSelect }: { run: RunItem; selected: bool
         {summary.checkpoint_code ? <SmallTag tone="amber">卡点 {summary.checkpoint_name || summary.checkpoint_code}</SmallTag> : null}
         {summary.sequence_adopted ? <SmallTag tone="green">已采用序列</SmallTag> : null}
         {summary.script_adopted ? <SmallTag tone="green">已采用话术</SmallTag> : null}
+        {generation.generation_status ? <StatusPill status={generation.generation_status} /> : null}
+        {generation.replayed ? <SmallTag tone="blue">复用原结果</SmallTag> : null}
       </div>
       <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-zinc-400">
         <span className="truncate font-mono">{run.request_id}</span>
@@ -326,6 +330,7 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
   const finalReply = finalMessages.map((item) => contentString(isRecord(item) ? item.content : item)).filter(Boolean);
   const alerts = collectAlerts(run, view);
   const identity = view?.customer_identity || identityFromRun(run);
+  const generation = generationRecoveryFromRun(run, view);
 
   return (
     <div className="mx-auto max-w-[1440px] space-y-5 p-4 sm:p-6">
@@ -357,6 +362,7 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
       ) : null}
       {alerts.map((alert, index) => <Notice key={index} tone={alert.tone} title={alert.title} text={alert.text} />)}
 
+      <GenerationRecoverySection generation={generation} />
       <IdentitySection identity={identity} />
 
       <section className="grid gap-4 lg:grid-cols-2">
@@ -377,6 +383,85 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
       <DeliverySection view={view} />
     </div>
   );
+}
+
+function GenerationRecoverySection({ generation }: {
+  generation: ReturnType<typeof generationRecoveryFromRun>;
+}) {
+  if (!generation.available) {
+    return (
+      <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+        <SectionHeader title="生成与自动补答" subtitle="同一平台消息只生成一次；技术失败时可后台补答" />
+        <div className="border-t border-zinc-100 p-4 sm:p-5">
+          <Notice tone="gray" title="历史字段未记录" text="该日志生成时尚未保存幂等与自动补答字段，不能据此判断是否发生过结果复用或补答。" />
+        </div>
+      </section>
+    );
+  }
+  const attempts = generation.recovery_attempts;
+  return (
+    <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <SectionHeader title="生成与自动补答" subtitle="生成、结果复用和后台补答分开记录" />
+      <div className="border-t border-zinc-100 p-4 sm:p-5">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <RecoveryField label="当前生成状态">
+            {generation.generation_status
+              ? <StatusPill status={generation.generation_status} />
+              : <span className="text-zinc-400">未记录</span>}
+          </RecoveryField>
+          <RecoveryField label="本次是否复用原结果">
+            <span className="font-medium text-zinc-800">
+              {generation.replayed === true ? "是，同一消息未重复调用模型" : generation.replayed === false ? "否，首次生成" : "未记录"}
+            </span>
+          </RecoveryField>
+          <RecoveryField label="自动补答次数">
+            <span className="font-medium text-zinc-800">{attempts === undefined ? "未记录" : `${attempts} 次`}</span>
+          </RecoveryField>
+          <RecoveryField label="下次补答时间">
+            <span className="font-medium text-zinc-800">{generation.recovery_next_at ? formatTime(generation.recovery_next_at) : "无待执行补答"}</span>
+          </RecoveryField>
+        </div>
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <RecoveryField label="稳定响应 ID" mono value={generation.response_id} />
+          <RecoveryField label="补答发送记录 ID" mono value={generation.recovery_dispatch_id} />
+          <RecoveryField label="补答类型" value={recoveryKindLabel(generation.recovery_kind)} />
+          <RecoveryField label="最近一次问题" value={generation.recovery_error || "无"} tone={generation.recovery_error ? "error" : "normal"} />
+        </div>
+        {generation.replayed ? (
+          <p className="mt-3 text-xs leading-relaxed text-blue-700">该请求直接复用了首次生成的回复，响应 ID 和每条消息 ID 保持不变；这不代表客户侧一定只发送一次，仍需结合聚合平台发送记录判断。</p>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function RecoveryField({ label, value, children, mono = false, tone = "normal" }: {
+  label: string;
+  value?: string;
+  children?: React.ReactNode;
+  mono?: boolean;
+  tone?: "normal" | "error";
+}) {
+  const display = value || "未记录";
+  return (
+    <div className="min-w-0 rounded-lg border border-zinc-200 bg-zinc-50/70 px-3 py-2.5">
+      <div className="text-[11px] font-medium text-zinc-500">{label}</div>
+      <div className={`mt-1 break-words text-xs leading-relaxed ${mono ? "font-mono" : ""} ${tone === "error" ? "text-red-700" : "text-zinc-700"}`} title={value || undefined}>
+        {children || display}
+      </div>
+    </div>
+  );
+}
+
+function recoveryKindLabel(value?: string) {
+  const labels: Record<string, string> = {
+    primary: "首次正常生成",
+    runtime_fallback: "主链失败后自动补答",
+    stale_generation: "生成中断后的恢复",
+    recovery: "后台自动补答",
+    manual_review: "自动补答耗尽，转人工复核",
+  };
+  return value ? labels[value] || value : "未触发补答";
 }
 
 function SalesProgressSection({ progress }: { progress?: ObservabilityView["sales_progress"] }) {
