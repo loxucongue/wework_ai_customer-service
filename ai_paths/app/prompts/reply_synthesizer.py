@@ -262,8 +262,13 @@ def _render_mainline_execution_contract(value: Any) -> str:
             "本轮禁止邀请预约、询问工作日/周末或到店时间，也禁止把这些文字伪标成 ask_missing_fact/deliver_value。"
         )
     stage_requirements = {
-        "effect_evidence": "答完当前问题后，应交付真实效果说明或本轮可用效果素材。",
-        "activity_offer": "答完当前问题后，应说明权威活动价格或包含价值。",
+        "effect_evidence": (
+            "答完当前问题后，应交付真实效果说明或本轮可用效果素材；"
+            "‘到店看效果/方案、先留名额、要不要看案例’都不是效果交付，有可用案例时直接发送。"
+        ),
+        "activity_offer": (
+            "答完当前问题后，应说明权威活动价格或包含价值；本轮不得改问到店时间。"
+        ),
         "store": "答完当前问题后，应询问缺失地区或交付本轮允许的真实门店信息。",
         "appointment": "项目、活动和门店均已交付，可自然说明预约目的并询问一个日期或时段。",
         "appointment_deposit": "仅在真实行动信号和付款结构均满足时解释或交付预约金入口。",

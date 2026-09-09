@@ -2407,7 +2407,10 @@ def _parallel_generic_reply_repair_messages(
         "next_sales_action_exceeds_delivered_mainline" in item for item in violations
     )
     stage_delivery_requirements = {
-        "effect_evidence": "回答当前消息后，交付真实效果说明或本轮允许的真实效果素材；不能邀约到店或询问时间",
+        "effect_evidence": (
+            "回答当前消息后，交付真实效果说明或本轮允许的真实效果素材；不能邀约到店、询问时间、"
+            "让客户到店看效果或再次询问要不要看案例"
+        ),
         "activity_offer": "回答当前消息后，说明本轮权威活动价格或包含价值；不能邀约到店或询问时间",
         "store": "回答当前消息后，询问缺失城市/地区或交付本轮允许的真实门店卡",
         "appointment": "项目、活动和门店已经交付，可自然说明预约目的并询问一个日期或时段",

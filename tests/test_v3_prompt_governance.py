@@ -133,6 +133,16 @@ def test_dynamic_mainline_contract_blocks_customer_visible_booking_shortcut() ->
     assert "询问工作日/周末或到店时间" in rendered
     assert "最早缺失主线=activity_offer" in rendered
     assert "权威活动价格或包含价值" in rendered
+    assert "本轮不得改问到店时间" in rendered
+
+    effect = _render_mainline_execution_contract(
+        {
+            "next_missing_stage": "effect_evidence",
+            "allowed_next_sales_action_types": ["deliver_value", "send_effect_material"],
+        }
+    )
+    assert "到店看效果/方案、先留名额、要不要看案例" in effect
+    assert "有可用案例时直接发送" in effect
 
 
 def test_router_treats_explicit_location_delivery_as_store_detail_not_booking() -> None:
