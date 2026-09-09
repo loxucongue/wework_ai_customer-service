@@ -2402,6 +2402,18 @@ def _parallel_generic_reply_repair_messages(
     allowed_next_action_types = list(
         mainline_delivery_state.get("allowed_next_sales_action_types") or ["keep_open"]
     )
+    next_missing_stage = str(mainline_delivery_state.get("next_missing_stage") or "").strip()
+    mainline_violation = any(
+        "next_sales_action_exceeds_delivered_mainline" in item for item in violations
+    )
+    stage_delivery_requirements = {
+        "effect_evidence": "回答当前消息后，交付真实效果说明或本轮允许的真实效果素材；不能邀约到店或询问时间",
+        "activity_offer": "回答当前消息后，说明本轮权威活动价格或包含价值；不能邀约到店或询问时间",
+        "store": "回答当前消息后，询问缺失城市/地区或交付本轮允许的真实门店卡",
+        "appointment": "项目、活动和门店已经交付，可自然说明预约目的并询问一个日期或时段",
+        "appointment_deposit": "仅在付款结构与行动信号合同同时满足时解释或交付预约金入口",
+        "complete": "按权威交易状态提供相邻服务，不重复营销",
+    }
     required_output_contract: dict[str, Any] = {
         "reply_messages": [
             {
@@ -2415,6 +2427,7 @@ def _parallel_generic_reply_repair_messages(
             "posture": "answer|advance|switch|pause|close",
             "next_sales_action": {
                 "type": "单个字符串；逐字从本次 allowed_next_sales_action_types 选择一个值",
+                "target_stage": "单个字符串；本次主线修复时必须等于 mandatory_mainline_correction.next_missing_stage",
                 "reason": "客户可见回复必须真实落实该动作",
             },
         },
@@ -2455,6 +2468,18 @@ def _parallel_generic_reply_repair_messages(
         ),
         "targeted_repair_instructions": targeted_repair_instructions,
         "allowed_next_sales_action_types": allowed_next_action_types,
+        "mandatory_mainline_correction": (
+            {
+                "next_missing_stage": next_missing_stage,
+                "customer_visible_requirement": stage_delivery_requirements.get(
+                    next_missing_stage,
+                    "回答当前消息后只落实允许动作，不恢复被拦截的预约或付款推进",
+                ),
+                "forbidden_shortcut": "不能只改动作标签；reply_messages、目标、姿态和理由必须同步改成该阶段",
+            }
+            if mainline_violation
+            else {}
+        ),
         "required_output_contract": required_output_contract,
         "payment_repair_instruction": payment_repair_instruction,
         "rules": [
@@ -2525,7 +2550,7 @@ def _parallel_generic_reply_repair_messages(
         if "reply_messages" in repair_previous_payload:
             repair_previous_payload.pop("reply_messages", None)
             removed_invalid_fields.append("reply_messages")
-        if any("next_sales_action_exceeds_delivered_mainline" in item for item in violations):
+        if mainline_violation:
             if "sales_judgment" in repair_previous_payload:
                 repair_previous_payload.pop("sales_judgment", None)
                 removed_invalid_fields.append("sales_judgment")

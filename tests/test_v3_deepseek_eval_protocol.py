@@ -343,6 +343,8 @@ def test_judge_uses_current_store_resolution_over_historical_order_store() -> No
     )
 
     assert "历史订单里出现的门店只说明旧订单关联" in messages[0]["content"]
+    assert "明确要求发或重发地址、位置、导航" in messages[0]["content"]
+    assert "不得因重复卡片判失败" in messages[0]["content"]
 
 
 def _prior_store_delivery(store_id: str = "160") -> list[dict[str, object]]:

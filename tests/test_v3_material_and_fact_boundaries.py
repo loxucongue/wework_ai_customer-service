@@ -306,6 +306,8 @@ def test_mainline_repair_drops_invalid_visible_draft_and_requires_scalar_action(
     assert "sales_judgment" not in assistant_payload
     assert "单个字符串" in repair_contract
     assert '"allowed_next_sales_action_types":["deliver_value","send_effect_material"]' in repair_contract
+    assert '"next_missing_stage":"effect_evidence"' in repair_contract
+    assert "不能只改动作标签" in repair_contract
     assert "工作日/周末" in repair_contract
 
 
