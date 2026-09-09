@@ -6,6 +6,7 @@ import base64
 import pytest
 
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
+from app.graph.nodes.reply_generation import _salvage_repair_payload
 from app.graph.nodes.reply_nodes import (
     _parallel_generic_reply_repair_messages,
     _repair_policy_skeleton,
@@ -373,6 +374,99 @@ def test_generic_repair_forbids_permission_seeking_instead_of_media_delivery() -
     repair_prompt = str(messages[-1].get("content") or "")
     assert "没有可用素材时删除发送承诺" in repair_prompt
     assert "您看可以吗" in repair_prompt
+    assert '"media_delivery_contract":{"available":false' in repair_prompt
+    assert "本轮没有可交付的真实效果素材" in repair_prompt
+
+
+def test_failed_repair_salvage_only_removes_unsupported_media_promise() -> None:
+    payload = {
+        "reply_messages": [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "斑点改善这块可以先给您讲清楚。我可以发效果图给您，您看可以吗？",
+            }
+        ],
+        "sales_judgment": {"next_sales_action": {"type": "deliver_value"}},
+    }
+
+    salvaged, codes = _salvage_repair_payload(
+        payload,
+        ValueError(
+            "reply_admission_violations::"
+            "case_image_structure_required_when_reply_promises_delivery"
+        ),
+    )
+
+    assert codes == ["case_image_structure_required_when_reply_promises_delivery"]
+    assert salvaged is not None
+    assert salvaged["reply_messages"] == [
+        {"type": "text", "order": 1, "content": "斑点改善这块可以先给您讲清楚。"}
+    ]
+    assert salvaged["sales_judgment"] == payload["sales_judgment"]
+
+
+def test_failed_repair_salvage_removes_distance_restatement_but_keeps_value() -> None:
+    payload = {
+        "reply_messages": [
+            {
+                "type": "text",
+                "content": "理解您觉得过来太远了。很多客户会专程过来，主要还是看中技术和效果。",
+            },
+            {"type": "image", "content": "https://example.com/effect.png"},
+        ]
+    }
+
+    salvaged, _codes = _salvage_repair_payload(
+        payload,
+        ValueError(
+            "reply_admission_violations::"
+            "terminal_store_distance_objection_restates_negative"
+        ),
+    )
+
+    assert salvaged is not None
+    assert salvaged["reply_messages"] == [
+        {
+            "type": "text",
+            "content": "很多客户会专程过来，主要还是看中技术和效果。",
+            "order": 1,
+        },
+        {"type": "image", "content": "https://example.com/effect.png", "order": 2},
+    ]
+
+
+def test_failed_repair_salvage_fails_closed_for_unsafe_or_empty_rewrite() -> None:
+    price_payload = {
+        "reply_messages": [{"type": "text", "content": "脸和手总共268元。"}]
+    }
+    empty_payload = {
+        "reply_messages": [{"type": "text", "content": "我是真人客服。"}]
+    }
+    media_action_payload = {
+        "reply_messages": [
+            {"type": "text", "content": "效果反馈不错。我可以发案例给您参考。"}
+        ],
+        "sales_judgment": {
+            "next_sales_action": {"type": "send_effect_material"}
+        },
+    }
+
+    assert _salvage_repair_payload(
+        price_payload,
+        ValueError("reply_admission_violations::offer_face_hand_total_268_conflict"),
+    )[0] is None
+    assert _salvage_repair_payload(
+        empty_payload,
+        ValueError("reply_admission_violations::customer_visible_false_human_identity_claim"),
+    )[0] is None
+    assert _salvage_repair_payload(
+        media_action_payload,
+        ValueError(
+            "reply_admission_violations::"
+            "case_image_structure_required_when_reply_promises_delivery"
+        ),
+    )[0] is None
 
 
 def test_paused_turn_repair_drops_invalid_sales_action_and_visible_draft() -> None:

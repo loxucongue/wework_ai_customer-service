@@ -828,13 +828,15 @@ async def _run_model_led_reply_pipeline(
             )
             model_call["raw_json_output"] = copy.deepcopy(payload)
             model_call["usage"] = model_usage_snapshot(model_client)
+            primary_warnings: list[dict[str, Any]] = []
             messages = _validated_parallel_reply_payload(
                 state=state,
                 payload=payload,
                 validated_model_messages=validated_model_messages,
-                warnings=warnings,
+                warnings=primary_warnings,
                 presentation_limits=presentation_limits,
             )
+            warnings.extend(primary_warnings)
             model_call["validated_json_output"] = payload
             model_call["draft_messages"] = debug_message_contents(messages)
             model_call["output"] = {"messages": len(messages)}
@@ -913,16 +915,65 @@ async def _run_model_led_reply_pipeline(
             "raw_json_output": copy.deepcopy(repair_payload),
             "usage": model_usage_snapshot(model_client),
         }
+        repair_warnings: list[dict[str, Any]] = []
         messages = _validated_parallel_reply_payload(
             state=state,
             payload=repair_payload,
             validated_model_messages=validated_model_messages,
-            warnings=warnings,
+            warnings=repair_warnings,
             safety_floor=safety_floor,
             presentation_limits=presentation_limits,
         )
+        warnings.extend(repair_warnings)
         model_call["validated_json_output"] = repair_payload
     except Exception as repair_error:
+        salvaged_payload, salvage_codes = _salvage_repair_payload(
+            repair_payload,
+            repair_error,
+        )
+        if retry_mode == "targeted_repair" and salvaged_payload is not None:
+            try:
+                salvage_warnings: list[dict[str, Any]] = []
+                messages = _validated_parallel_reply_payload(
+                    state=state,
+                    payload=salvaged_payload,
+                    validated_model_messages=validated_model_messages,
+                    warnings=salvage_warnings,
+                    safety_floor=safety_floor,
+                    presentation_limits=presentation_limits,
+                )
+            except Exception as salvage_error:
+                model_call["retry"] = {
+                    **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
+                    "salvage": {
+                        "status": "rejected",
+                        "codes": salvage_codes,
+                        "error": f"{type(salvage_error).__name__}: {salvage_error}",
+                    },
+                }
+            else:
+                repair_payload = salvaged_payload
+                model_call["retry"] = {
+                    **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
+                    "initial_validation_error": f"{type(repair_error).__name__}: {repair_error}",
+                    "salvage": {
+                        "status": "accepted",
+                        "codes": salvage_codes,
+                    },
+                }
+                model_call["validated_json_output"] = repair_payload
+                model_call["draft_messages"] = debug_message_contents(messages)
+                model_call["output"] = {"messages": len(messages)}
+                model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+                warnings.extend(salvage_warnings)
+                warnings.append(
+                    {
+                        "node": "synthesize_reply",
+                        "message": "targeted_repair_invalid_sentences_removed",
+                        "codes": salvage_codes,
+                    }
+                )
+                return messages, model_call, "single_targeted_repair_model"
         model_call["retry"] = {
             **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
             "mode": retry_mode,
@@ -986,3 +1037,148 @@ def _validated_parallel_reply_payload(
     messages = _prepare_structural_messages(messages, validation_state, warnings)
     validate_model_led_reply_admission(messages, validation_state)
     return messages
+
+
+_REPAIR_SENTENCE_SALVAGE_CODES = {
+    "case_image_structure_required_when_reply_promises_delivery",
+    "customer_visible_false_human_identity_claim",
+    "terminal_store_distance_objection_restates_negative",
+}
+
+
+def _salvage_repair_payload(
+    payload: dict[str, Any] | None,
+    error: Exception,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Remove only invalid customer-visible sentences from a failed repair.
+
+    The model has already had its single allowed repair attempt.  These narrow
+    contracts describe claims that can be removed without inventing wording,
+    selecting an asset, changing a sales action, or creating a business fact.
+    The complete payload is validated again afterwards; any remaining mismatch
+    still fails closed.
+    """
+
+    if not isinstance(payload, dict):
+        return None, []
+    codes = _reply_admission_violation_codes(error)
+    if not codes or any(code not in _REPAIR_SENTENCE_SALVAGE_CODES for code in codes):
+        return None, codes
+    messages = payload.get("reply_messages")
+    if not isinstance(messages, list):
+        return None, codes
+    sales = payload.get("sales_judgment") if isinstance(payload.get("sales_judgment"), dict) else {}
+    next_action = sales.get("next_sales_action") if isinstance(sales.get("next_sales_action"), dict) else {}
+    if (
+        "case_image_structure_required_when_reply_promises_delivery" in codes
+        and str(next_action.get("type") or "").strip() == "send_effect_material"
+    ):
+        return None, codes
+
+    changed = False
+    cleaned_messages: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict) or str(item.get("type") or "").strip() != "text":
+            if isinstance(item, dict):
+                cleaned_messages.append(copy.deepcopy(item))
+            continue
+        original = str(item.get("content") or "")
+        cleaned = _remove_repair_violation_sentences(original, set(codes))
+        if cleaned != original.strip():
+            changed = True
+        if cleaned:
+            cleaned_messages.append({**copy.deepcopy(item), "content": cleaned})
+
+    if not changed or not any(
+        str(item.get("type") or "") == "text" and str(item.get("content") or "").strip()
+        for item in cleaned_messages
+    ):
+        return None, codes
+    for index, item in enumerate(cleaned_messages, start=1):
+        item["order"] = index
+    salvaged = copy.deepcopy(payload)
+    salvaged["reply_messages"] = cleaned_messages
+    return salvaged, codes
+
+
+def _reply_admission_violation_codes(error: Exception) -> list[str]:
+    raw = str(error)
+    marker = "reply_admission_violations::"
+    if marker not in raw:
+        return []
+    body = raw.split(marker, 1)[1]
+    return [item.strip() for item in body.split(";;") if item.strip()]
+
+
+def _remove_repair_violation_sentences(text: str, codes: set[str]) -> str:
+    pieces = re.findall(r"[^。！？!?\n]+[。！？!?\n]?", str(text or ""))
+    kept: list[str] = []
+    for piece in pieces:
+        compact = re.sub(r"\s+", "", piece)
+        if not compact:
+            continue
+        if (
+            "customer_visible_false_human_identity_claim" in codes
+            and any(
+                marker in compact.lower()
+                for marker in (
+                    "我不是机器人",
+                    "不是机器人",
+                    "我不是ai",
+                    "不是ai",
+                    "我是真人",
+                    "真人客服",
+                    "我是人工",
+                    "人工客服",
+                )
+            )
+        ):
+            continue
+        if (
+            "terminal_store_distance_objection_restates_negative" in codes
+            and any(marker in compact for marker in ("距离", "太远", "有点远", "确实远", "折腾", "麻烦"))
+        ):
+            continue
+        if (
+            "case_image_structure_required_when_reply_promises_delivery" in codes
+            and _sentence_promises_case_media(compact)
+        ):
+            continue
+        kept.append(piece.strip())
+    return "".join(kept).strip()
+
+
+def _sentence_promises_case_media(text: str) -> bool:
+    delivery_terms = (
+        "给您发",
+        "给你发",
+        "发您",
+        "发你",
+        "继续给您看",
+        "继续给你看",
+        "再给您接一组",
+        "再给你接一组",
+        "找一张",
+        "找一组",
+        "挑一张",
+        "挑一组",
+        "选一张",
+        "选一组",
+        "可以先发",
+        "可以发",
+        "先发一些",
+        "先发一张",
+        "先发一组",
+        "这就发",
+        "马上发",
+    )
+    media_terms = (
+        "效果图",
+        "案例",
+        "改善参考",
+        "实际参考图",
+        "参考图",
+        "同类淡斑",
+        "同类改善参考",
+    )
+    return any(term in text for term in delivery_terms) and any(term in text for term in media_terms)

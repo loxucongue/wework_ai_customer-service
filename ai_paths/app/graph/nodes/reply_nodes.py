@@ -2439,6 +2439,22 @@ def _parallel_generic_reply_repair_messages(
         if isinstance(validation_context.get("structured_delivery_options"), dict)
         else {}
     )
+    allowed_content_ids = {
+        str(item or "").strip()
+        for item in validation_context.get("allowed_selected_content_ids") or []
+        if str(item or "").strip()
+    }
+    media_delivery_requirements = [
+        item
+        for item in validation_context.get("content_candidate_delivery_requirements") or []
+        if isinstance(item, dict)
+        and str(item.get("content_id") or "").strip() in allowed_content_ids
+        and any(
+            isinstance(message, dict)
+            and str(message.get("type") or "").strip() in {"image", "video"}
+            for message in item.get("messages") or []
+        )
+    ]
     mainline_delivery_state = (
         validation_context.get("mainline_delivery_state")
         if isinstance(validation_context.get("mainline_delivery_state"), dict)
@@ -2552,6 +2568,16 @@ def _parallel_generic_reply_repair_messages(
         ),
         "required_output_contract": required_output_contract,
         "payment_repair_instruction": payment_repair_instruction,
+        "media_delivery_contract": {
+            "available": bool(media_delivery_requirements),
+            "exact_options": media_delivery_requirements,
+            "instruction": (
+                "只有选择 exact_options 中的真实 content_id 才能在客户文字里说本轮发送效果图或案例；"
+                "选择后保留 selected_content_ids，结构媒体会按真实候选补齐。"
+                if media_delivery_requirements
+                else "本轮没有可交付的真实效果素材；禁止承诺、预告或询问是否发送效果图/案例，直接用文字完成答复。"
+            ),
+        },
         "rules": [
             "targeted_repair_instructions 是本次最高优先级；previous_reply 中被移除的无效字段不得照抄或重建。",
             "不得重新判断客户心理、成交阶段或销售节奏，不得按错误码生成新销售话术。",
@@ -2670,6 +2696,7 @@ def _parallel_generic_reply_repair_messages(
                 "只处理 schema、结构素材、引用或确定性事实冲突。"
                 "保留所有未冲突内容；targeted_repair_instructions 是本轮最高优先级。"
                 "previous_reply 中被删除的字段已被证明无效，必须根据允许动作和真实证据重新生成，不能照抄。"
+                "media_delivery_contract.available=false 时，客户文字不得出现任何发送效果图或案例的承诺。"
                 "输出时必须先写非空 reply_messages，再写其他字段。"
                 "只输出完整严格 json。"
             ),

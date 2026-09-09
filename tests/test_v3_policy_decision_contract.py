@@ -12,6 +12,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 
+from app.graph.nodes import reply_generation as reply_generation_module  # noqa: E402
 from app.graph.nodes.reply_nodes import (  # noqa: E402
     _normalized_policy_decision,
     _policy_safety_floor,
@@ -57,6 +58,90 @@ def _state() -> dict[str, Any]:
             ]
         },
     }
+
+
+def test_targeted_repair_salvage_does_not_add_a_third_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = {
+        "reply_messages": [
+            {"type": "text", "content": "您告诉我在哪个位置，我再看看。"}
+        ]
+    }
+    repair = {
+        "reply_messages": [
+            {
+                "type": "text",
+                "content": "理解您觉得太远了。很多客户会专程过来，主要还是看中技术和效果。",
+            }
+        ]
+    }
+
+    class Model:
+        settings = None
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            self.calls += 1
+            value = primary if self.calls == 1 else repair
+            return json.loads(json.dumps(value, ensure_ascii=False))
+
+    def validate_payload(**kwargs: Any) -> list[dict[str, Any]]:
+        payload = kwargs["payload"]
+        text = "".join(
+            str(item.get("content") or "")
+            for item in payload.get("reply_messages") or []
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+        if "哪个位置" in text:
+            raise ValueError(
+                "reply_admission_violations::"
+                "terminal_store_distance_objection_same_city_requery"
+            )
+        if "太远" in text:
+            raise ValueError(
+                "reply_admission_violations::"
+                "terminal_store_distance_objection_restates_negative"
+            )
+        return payload["reply_messages"]
+
+    monkeypatch.setattr(
+        reply_generation_module,
+        "_validated_parallel_reply_payload",
+        validate_payload,
+    )
+    model = Model()
+    warnings: list[dict[str, Any]] = []
+    messages, model_call, source = asyncio.run(
+        _run_reply_model_pipeline(
+            state={"evidence_join": {"content_candidates": []}},
+            model_client=model,  # type: ignore[arg-type]
+            model_messages=[{"role": "user", "content": "还是太远了"}],
+            validated_model_messages=lambda payload, _state: payload["reply_messages"],
+            debug_message_contents=lambda values: [str(item.get("content")) for item in values],
+            warnings=warnings,
+        )
+    )
+
+    assert model.calls == 2
+    assert source == "single_targeted_repair_model"
+    assert messages == [
+        {
+            "type": "text",
+            "content": "很多客户会专程过来，主要还是看中技术和效果。",
+            "order": 1,
+        }
+    ]
+    assert model_call["retry"]["salvage"]["status"] == "accepted"
+    assert model_call["retry"]["salvage"]["codes"] == [
+        "terminal_store_distance_objection_restates_negative"
+    ]
+    assert any(
+        item.get("message") == "targeted_repair_invalid_sentences_removed"
+        for item in warnings
+    )
 
 
 def _external_closing_state(*, with_friction: bool = False) -> dict[str, Any]:
