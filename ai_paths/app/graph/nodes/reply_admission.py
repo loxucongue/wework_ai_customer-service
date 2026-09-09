@@ -63,6 +63,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         lambda: _validate_mainline_sales_action(state),
         lambda: _validate_customer_visible_mainline_boundary(messages, state),
         lambda: _validate_unrelated_historical_store_claim(messages, state),
+        lambda: _validate_completed_store_scope_requery(messages, state),
         lambda: _validate_terminal_store_distance_objection(messages, state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
@@ -200,6 +201,7 @@ def _validate_terminal_store_distance_objection(
             "麻烦",
             "不方便",
             "不太方便",
+            "路程",
         )
     ):
         raise ValueError("terminal_store_distance_objection_restates_negative")
@@ -239,6 +241,42 @@ def _validate_unrelated_historical_store_claim(
         raise ValueError("stale_historical_store_topic_leak")
     if any(name in text for name in _inactive_order_store_names(state)):
         raise ValueError("stale_historical_store_topic_leak")
+
+
+def _validate_completed_store_scope_requery(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Do not ask for finer detail after a complete empty scope lookup.
+
+    The store workflow already determined whether another district or landmark
+    can change the result.  This check validates that authoritative terminal
+    fact only; it does not classify the customer's objection or choose whether
+    Reply should offer another city, an effect example, or another sales step.
+    """
+
+    store_fact = parallel_reply_payload(state).get("store_fact_status")
+    if not isinstance(store_fact, dict):
+        return
+    if str(store_fact.get("status") or "").strip() != "no_valid_candidate":
+        return
+    if store_fact.get("candidate_search_complete") is not True:
+        return
+    text = re.sub(
+        r"\s+",
+        "",
+        "\n".join(
+            message_content_text(item.get("content"))
+            for item in messages
+            if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+        ),
+    )
+    if re.search(
+        r"(?:哪个|哪一个|具体|什么)[^。！？!?]{0,8}"
+        r"(?:区域|区县|商圈|地铁站|路口|楼栋|位置)",
+        text,
+    ):
+        raise ValueError("store_scope_confirmed_same_region_requery")
 
 
 def _claims_historical_store_topic(text: str) -> bool:

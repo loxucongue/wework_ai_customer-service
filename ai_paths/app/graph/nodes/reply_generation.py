@@ -9,6 +9,7 @@ from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, 
 from app.graph.nodes.material_selection import parallel_reply_payload
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
 from app.graph.nodes.reply_quality import collect_reply_observation_metrics
+from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
 from app.graph.state import AgentState
 from app.prompts.reply_synthesizer import alias_reply_reference_fields, restore_reply_output_references
 from app.services.model_client import ModelClient
@@ -927,11 +928,24 @@ async def _run_model_led_reply_pipeline(
         warnings.extend(repair_warnings)
         model_call["validated_json_output"] = repair_payload
     except Exception as repair_error:
-        salvaged_payload, salvage_codes = _salvage_repair_payload(
-            repair_payload,
-            repair_error,
-        )
-        if retry_mode == "targeted_repair" and salvaged_payload is not None:
+        salvage_attempts: list[tuple[str, dict[str, Any] | None, Exception]] = [
+            ("repair", repair_payload, repair_error),
+        ]
+        if retry_mode == "targeted_repair" and previous_payload is not None:
+            # A repair can collapse several valid customer sentences into one
+            # still-invalid sentence. The original draft may be recoverable by
+            # deleting only its rejected claims. Every candidate is validated
+            # again against the complete current state, so this neither adds a
+            # model call nor bypasses a fact/action boundary.
+            salvage_attempts.append(("primary", previous_payload, primary_error))
+        salvage_failures: list[dict[str, Any]] = []
+        for salvage_source, salvage_input, salvage_input_error in salvage_attempts:
+            salvaged_payload, salvage_codes = _salvage_repair_payload(
+                salvage_input,
+                salvage_input_error,
+            )
+            if retry_mode != "targeted_repair" or salvaged_payload is None:
+                continue
             try:
                 salvage_warnings: list[dict[str, Any]] = []
                 messages = _validated_parallel_reply_payload(
@@ -943,14 +957,13 @@ async def _run_model_led_reply_pipeline(
                     presentation_limits=presentation_limits,
                 )
             except Exception as salvage_error:
-                model_call["retry"] = {
-                    **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
-                    "salvage": {
-                        "status": "rejected",
+                salvage_failures.append(
+                    {
+                        "source": salvage_source,
                         "codes": salvage_codes,
                         "error": f"{type(salvage_error).__name__}: {salvage_error}",
-                    },
-                }
+                    }
+                )
             else:
                 repair_payload = salvaged_payload
                 model_call["retry"] = {
@@ -958,6 +971,7 @@ async def _run_model_led_reply_pipeline(
                     "initial_validation_error": f"{type(repair_error).__name__}: {repair_error}",
                     "salvage": {
                         "status": "accepted",
+                        "source": salvage_source,
                         "codes": salvage_codes,
                     },
                 }
@@ -974,6 +988,14 @@ async def _run_model_led_reply_pipeline(
                     }
                 )
                 return messages, model_call, "single_targeted_repair_model"
+        if salvage_failures:
+            model_call["retry"] = {
+                **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
+                "salvage": {
+                    "status": "rejected",
+                    "attempts": salvage_failures,
+                },
+            }
         model_call["retry"] = {
             **(model_call.get("retry") if isinstance(model_call.get("retry"), dict) else {}),
             "mode": retry_mode,
@@ -1042,7 +1064,14 @@ def _validated_parallel_reply_payload(
 _REPAIR_SENTENCE_SALVAGE_CODES = {
     "case_image_structure_required_when_reply_promises_delivery",
     "customer_visible_false_human_identity_claim",
+    "offer_268_full_face_claim_conflict",
+    "offer_bilateral_cheek_split_price_conflict",
+    "offer_face_hand_price_scope_ambiguous",
+    "offer_face_hand_total_268_conflict",
+    "offer_repeat_visit_268_unverified",
     "stale_historical_store_topic_leak",
+    "store_address_text_without_card",
+    "store_scope_confirmed_same_region_requery",
     "terminal_store_distance_objection_restates_negative",
 }
 
@@ -1148,8 +1177,32 @@ def _remove_repair_violation_sentences(text: str, codes: set[str]) -> str:
                     "麻烦",
                     "不方便",
                     "不太方便",
+                    "路程",
                 )
             )
+        ):
+            continue
+        if (
+            codes.intersection(
+                {
+                    "offer_268_full_face_claim_conflict",
+                    "offer_bilateral_cheek_split_price_conflict",
+                    "offer_face_hand_price_scope_ambiguous",
+                    "offer_face_hand_total_268_conflict",
+                    "offer_repeat_visit_268_unverified",
+                }
+            )
+            and _sentence_has_selected_price_conflict(compact, codes)
+        ):
+            continue
+        if (
+            "store_address_text_without_card" in codes
+            and _sentence_promises_store_card(compact)
+        ):
+            continue
+        if (
+            "store_scope_confirmed_same_region_requery" in codes
+            and _sentence_requeries_same_store_scope(compact)
         ):
             continue
         if (
@@ -1164,6 +1217,60 @@ def _remove_repair_violation_sentences(text: str, codes: set[str]) -> str:
             continue
         kept.append(piece.strip())
     return "".join(kept).strip()
+
+
+def _sentence_has_selected_price_conflict(text: str, codes: set[str]) -> bool:
+    try:
+        validate_sales_price_fact_boundaries([{"type": "text", "content": text}])
+    except ValueError as exc:
+        return str(exc).strip() in codes
+    return False
+
+
+def _sentence_promises_store_card(text: str) -> bool:
+    if any(
+        marker in text
+        for marker in (
+            "不能发地址",
+            "无法发地址",
+            "不能发位置",
+            "无法发位置",
+            "没有可发送的门店",
+        )
+    ):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "地址我发",
+            "地址我再发",
+            "地址发您",
+            "地址发你",
+            "地址再发您",
+            "地址再发你",
+            "位置我发",
+            "位置我再发",
+            "位置发您",
+            "位置发你",
+            "位置再发您",
+            "位置再发你",
+            "点开导航",
+            "直接导航过去",
+            "门店卡片",
+            "位置卡",
+            "定位卡",
+        )
+    )
+
+
+def _sentence_requeries_same_store_scope(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:哪个|哪一个|具体|什么)[^。！？!?]{0,8}"
+            r"(?:区域|区县|商圈|地铁站|路口|楼栋|位置)",
+            text,
+        )
+    )
 
 
 def _sentence_promises_case_media(text: str) -> bool:

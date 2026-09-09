@@ -144,6 +144,74 @@ def test_targeted_repair_salvage_does_not_add_a_third_model_call(
     )
 
 
+def test_targeted_repair_can_salvage_safe_primary_sentences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = {
+        "reply_messages": [
+            {"type": "text", "content": "咱们聊的就是斑点改善，不是抗衰。"},
+            {"type": "text", "content": "268元包含脸部和手部的斑点改善。"},
+        ]
+    }
+    repair = {
+        "reply_messages": [
+            {"type": "text", "content": "脸部和手部都包含在268元活动里。"}
+        ]
+    }
+
+    class Model:
+        settings = None
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            self.calls += 1
+            value = primary if self.calls == 1 else repair
+            return json.loads(json.dumps(value, ensure_ascii=False))
+
+    def validate_payload(**kwargs: Any) -> list[dict[str, Any]]:
+        payload = kwargs["payload"]
+        text = "".join(
+            str(item.get("content") or "")
+            for item in payload.get("reply_messages") or []
+            if isinstance(item, dict) and item.get("type") == "text"
+        )
+        if "脸部和手部" in text:
+            raise ValueError(
+                "reply_admission_violations::offer_face_hand_price_scope_ambiguous"
+            )
+        return payload["reply_messages"]
+
+    monkeypatch.setattr(
+        reply_generation_module,
+        "_validated_parallel_reply_payload",
+        validate_payload,
+    )
+    model = Model()
+    messages, model_call, source = asyncio.run(
+        _run_reply_model_pipeline(
+            state={"evidence_join": {"content_candidates": []}},
+            model_client=model,  # type: ignore[arg-type]
+            model_messages=[{"role": "user", "content": "我要了解的是斑点，不是抗衰"}],
+            validated_model_messages=lambda payload, _state: payload["reply_messages"],
+            debug_message_contents=lambda values: [str(item.get("content")) for item in values],
+            warnings=[],
+        )
+    )
+
+    assert model.calls == 2
+    assert source == "single_targeted_repair_model"
+    assert messages == [
+        {"type": "text", "content": "咱们聊的就是斑点改善，不是抗衰。", "order": 1}
+    ]
+    assert model_call["retry"]["salvage"] == {
+        "status": "accepted",
+        "source": "primary",
+        "codes": ["offer_face_hand_price_scope_ambiguous"],
+    }
+
+
 def _external_closing_state(*, with_friction: bool = False) -> dict[str, Any]:
     state = _state()
     state["closing_catalog_evidence"] = {

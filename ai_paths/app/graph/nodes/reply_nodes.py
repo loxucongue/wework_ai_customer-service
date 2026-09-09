@@ -2478,6 +2478,7 @@ def _parallel_generic_reply_repair_messages(
         "paused_turn_cannot_advance_transaction",
         "invalid_parallel_reply_message_content:",
         "store_address_text_without_card",
+        "store_scope_confirmed_same_region_requery",
         "stale_historical_store_topic_leak",
         "terminal_store_distance_objection_restates_negative",
         "terminal_store_distance_objection_same_city_requery",
@@ -3624,6 +3625,12 @@ def _reply_repair_hint(error: str) -> str:
             "‘马上发地址/位置’等承诺，并按当前工具事实回答或追问一个真正缺失的信息。"
             "工具结果为 search_incomplete 时，不得从旧门店卡、历史订单或 Router 摘要恢复门店事实。"
         )
+    if "store_scope_confirmed_same_region_requery" in error:
+        return (
+            "当前城市或地区已经完成全范围查询且没有可发送门店。删除继续追问该范围内区域、区县、"
+            "商圈、地铁站、路口、楼栋或更细位置的内容；可以如实说明当前覆盖结果。若要继续门店方向，"
+            "只允许询问客户是否有其他方便前往的城市；也可以采用本轮已有的效果或活动价值承接。"
+        )
     if "stale_historical_store_topic_leak" in error:
         return (
             "当前消息和本轮工具没有要求处理门店。删除所有从历史订单、旧门店卡或旧城市带回的门店名、"
@@ -3633,7 +3640,7 @@ def _reply_repair_hint(error: str) -> str:
     if "terminal_store_distance_objection_restates_negative" in error:
         return (
             "当前城市门店推荐已经完成。第一句只用‘那没关系呀/没事的’轻承接，"
-            "不得再次出现‘距离、远、折腾、麻烦、不方便’等加重顾虑的说法；"
+            "不得再次出现‘距离、远、路程、折腾、麻烦、不方便’等加重顾虑的说法；"
             "立即用本轮已召回且安全的话术把注意力转到技术、效果、案例和是否值得。"
         )
     if "terminal_store_distance_objection_same_city_requery" in error:

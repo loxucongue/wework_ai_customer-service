@@ -406,6 +406,47 @@ def test_failed_repair_salvage_only_removes_unsupported_media_promise() -> None:
     assert salvaged["sales_judgment"] == payload["sales_judgment"]
 
 
+def test_failed_repair_salvage_removes_price_scope_claim_but_keeps_answer() -> None:
+    payload = {
+        "reply_messages": [
+            {"type": "text", "content": "咱们聊的就是斑点改善，不是抗衰。"},
+            {"type": "text", "content": "268元包含脸部和手部的斑点改善。"},
+        ],
+        "sales_judgment": {"next_sales_action": {"type": "explain_activity"}},
+    }
+
+    salvaged, codes = _salvage_repair_payload(
+        payload,
+        ValueError("reply_admission_violations::offer_face_hand_price_scope_ambiguous"),
+    )
+
+    assert codes == ["offer_face_hand_price_scope_ambiguous"]
+    assert salvaged is not None
+    assert salvaged["reply_messages"] == [
+        {"type": "text", "content": "咱们聊的就是斑点改善，不是抗衰。", "order": 1}
+    ]
+
+
+def test_failed_repair_salvage_removes_unbacked_store_card_promise() -> None:
+    payload = {
+        "reply_messages": [
+            {"type": "text", "content": "济南目前没有可发送的门店。"},
+            {"type": "text", "content": "之前的地址我再发您。"},
+        ]
+    }
+
+    salvaged, codes = _salvage_repair_payload(
+        payload,
+        ValueError("reply_admission_violations::store_address_text_without_card"),
+    )
+
+    assert codes == ["store_address_text_without_card"]
+    assert salvaged is not None
+    assert salvaged["reply_messages"] == [
+        {"type": "text", "content": "济南目前没有可发送的门店。", "order": 1}
+    ]
+
+
 def test_failed_repair_salvage_removes_distance_restatement_but_keeps_value() -> None:
     payload = {
         "reply_messages": [
@@ -527,6 +568,40 @@ def test_failed_repair_salvage_removes_stale_store_sentence_only() -> None:
     assert salvaged["reply_messages"] == [
         {"type": "text", "content": "周年庆淡斑活动价是268元。", "order": 1}
     ]
+
+
+def test_complete_empty_store_scope_rejects_only_same_region_requery() -> None:
+    state = {
+        "evidence_join": {
+            "schema_version": "v3_evidence_join_v1",
+            "semantic_route": {},
+            "shared_context": {},
+            "normalized_tool_facts": {
+                "structured_facts": {
+                    "store_resolution_fact": {
+                        "status": "no_valid_candidate",
+                        "candidate_search_complete": True,
+                        "resolved_admin_level": "city",
+                        "location_evidence": {"city": "济南市"},
+                    }
+                }
+            },
+        },
+        "reply_sales_judgment": {
+            "next_sales_action": {"type": "ask_missing_fact", "target_stage": "store"}
+        },
+    }
+
+    with pytest.raises(ValueError, match="store_scope_confirmed_same_region_requery"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "您平时主要在济南哪个区域活动？"}],
+            state,
+        )
+
+    validate_model_led_reply_admission(
+        [{"type": "text", "content": "济南目前没有可发送门店，您还有其他方便前往的城市吗？"}],
+        state,
+    )
 
 
 def test_failed_repair_salvage_fails_closed_for_unsafe_or_empty_rewrite() -> None:
