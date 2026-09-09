@@ -331,6 +331,31 @@ def test_store_fact_followup_never_fabricates_missing_hours() -> None:
     }
 
 
+def test_paid_customer_needs_private_facts_before_arrival_guidance_is_available() -> None:
+    output = build_store_fact_followup(
+        store_resolution_fact={"status": "send_single", "delivery_store_ids": ["101"]},
+        store_facts=[
+            {
+                "store_id": "101",
+                "store_name": "厦门店",
+                "address": "厦门市思明区示例路1号",
+                "business_hours": "09:00-20:00",
+            }
+        ],
+        requested_detail_kind="arrival_guidance",
+        authoritative_paid=True,
+    )
+
+    assert output["requested_detail"]["status"] == "missing"
+    assert output["post_payment_arrival_guidance"] == {
+        "status": "unavailable",
+        "store_id": "",
+        "facts": {},
+        "reason": "private_arrival_guidance_facts_required",
+    }
+    assert output["internal_followup"]["status"] == "pending"
+
+
 def test_offer_model_facts_include_all_price_boundaries() -> None:
     offer = parallel_reply_business_rules_for_model()["AUTHORITATIVE FACTS"]["offer"]
 

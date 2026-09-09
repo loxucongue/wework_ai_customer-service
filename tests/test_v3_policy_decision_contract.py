@@ -696,7 +696,14 @@ def test_confirmed_store_does_not_advance_transaction_terminal() -> None:
     payload = {
         "reply_messages": [{"type": "text", "order": 1, "content": "好的，欢迎按已确认安排到店。"}],
         "action": "none",
-        "sales_judgment": {"posture": "close"},
+                "sales_judgment": {
+                    "posture": "close",
+                    "next_sales_action": {
+                        "type": "stop",
+                        "target_stage": "current_problem",
+                        "reason": "客户明确要求停止联系",
+                    },
+                },
         "commit_actions": [],
         "policy_decision": decision,
     }

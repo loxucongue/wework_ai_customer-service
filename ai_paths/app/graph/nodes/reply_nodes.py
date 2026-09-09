@@ -23,6 +23,7 @@ from app.graph.nodes.reply_validation import (
     _paid_deposit_context,
     _parallel_paid_deposit_context,
     _parallel_shared_context,
+    _validate_paid_only_store_guidance,
     extract_image_url_from_text,
     message_content_text,
     completed_parallel_selected_content_ids,
@@ -444,6 +445,33 @@ def _prepare_structural_messages(
     state: AgentState,
     warnings: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    if _policy_blocks_sales_delivery(state):
+        blocked_types = {
+            str(item.get("type") or "").strip()
+            for item in messages
+            if isinstance(item, dict)
+        } & {"image", "video", "payment_collection", "store_address"}
+        selected_ids = [
+            str(item or "").strip()
+            for item in state.get("reply_selected_content_ids") or []
+            if str(item or "").strip()
+        ]
+        if blocked_types or selected_ids:
+            reasons = sorted(blocked_types)
+            if selected_ids:
+                reasons.append("selected_content")
+            raise ValueError(
+                "hard_stop_structured_delivery_forbidden:" + ",".join(reasons)
+            )
+        prepared = compact_reply_message_format(messages)
+        presentation_violations = reply_presentation_violations(
+            prepared,
+            sensitive_turn=True,
+        )
+        if presentation_violations:
+            raise ValueError(";;".join(presentation_violations))
+        _validate_paid_only_store_guidance(prepared, state)
+        return _renumber(prepared)
     if state.get("evidence_join"):
         # Reply owns content selection, wording, and sales judgement. Once it
         # explicitly adopts and cites a current Gate asset, its configured
@@ -480,6 +508,7 @@ def _prepare_structural_messages(
         presentation_violations = reply_presentation_violations(prepared)
         if presentation_violations:
             raise ValueError(";;".join(presentation_violations))
+        _validate_paid_only_store_guidance(prepared, state)
         return _renumber(prepared)
     prepared = _filter_unsupported_media(messages, state, warnings)
     prepared = append_activity_intro_image(prepared, state, warnings)
@@ -498,7 +527,37 @@ def _prepare_structural_messages(
     presentation_violations = reply_presentation_violations(prepared)
     if presentation_violations:
         raise ValueError(";;".join(presentation_violations))
+    _validate_paid_only_store_guidance(prepared, state)
     return prepared
+
+
+def _policy_blocks_sales_delivery(state: AgentState) -> bool:
+    """Return whether this turn may only emit a safe text/handoff response.
+
+    Store and content tools can finish before Reply notices an explicit exit,
+    medical risk, complaint escalation, or human handoff. Their successful
+    result is not permission to append a sales structure after that decision.
+    """
+
+    decision = (
+        state.get("reply_policy_decision")
+        if isinstance(state.get("reply_policy_decision"), dict)
+        else {}
+    )
+    primary = decision.get("primary_task") if isinstance(decision.get("primary_task"), dict) else {}
+    intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
+    closing = decision.get("closing_decision") if isinstance(decision.get("closing_decision"), dict) else {}
+    safety = (
+        state.get("reply_safety_assessment")
+        if isinstance(state.get("reply_safety_assessment"), dict)
+        else {}
+    )
+    return (
+        str(intent.get("type") or "") == "explicit_exit"
+        or str(primary.get("type") or "") in {"hard_stop", "human_takeover", "risk"}
+        or str(closing.get("customer_state") or "") == "hard_stop_marketing"
+        or str(safety.get("status") or "") in {"health_risk", "complaint_refund"}
+    )
 
 def _materialize_selected_content_media(
     messages: list[dict[str, Any]],
@@ -755,6 +814,18 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
     ]
     validation_state["reply_content_decisions"] = _normalized_content_decisions(
         payload.get("content_decisions")
+    )
+    normalized_policy = _normalized_policy_decision(
+        payload.get("policy_decision"),
+        state=state,
+    )
+    normalized_decision = normalized_policy.get("policy_decision")
+    validation_state["reply_policy_decision"] = (
+        normalized_decision
+        if isinstance(normalized_decision, dict) and normalized_decision
+        else dict(payload.get("policy_decision") or {})
+        if isinstance(payload.get("policy_decision"), dict)
+        else {}
     )
     reply_payload = parallel_reply_payload(state)
     validation_state["reply_payment_channel_availability"] = (
@@ -1074,7 +1145,6 @@ _LEGACY_CUSTOMER_STATE_MAP = {
     "not_buying_now": "pause_current_turn",
     "new_blocker": "pause_current_turn",
     "hard_stop": "hard_stop_marketing",
-    "transaction_terminal_or_handoff": "post_payment_service",
 }
 
 
@@ -1093,6 +1163,16 @@ def _normalized_customer_state(
     raw = str(value or "").strip()
     if not raw:
         return "continue_sales", "missing_closing_customer_state"
+    if raw == "transaction_terminal_or_handoff":
+        # The retired value conflated two terminal states. A platform-paid
+        # fact can safely recover the service branch; otherwise the only safe
+        # rolling-deploy interpretation is a human/terminal stop, never a
+        # temporary pause that resumes selling.
+        return (
+            ("post_payment_service", "")
+            if authoritative_paid
+            else ("hard_stop_marketing", "")
+        )
     normalized = _LEGACY_CUSTOMER_STATE_MAP.get(raw, raw)
     if normalized not in _CUSTOMER_STATE_V4:
         return "continue_sales", "invalid_closing_customer_state"

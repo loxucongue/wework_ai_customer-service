@@ -5,6 +5,7 @@ from app.services.storage.customer_record_admin_repository import CustomerRecord
 from app.services.storage.customer_identity_repository import CustomerIdentityRepositoryMixin
 from app.services.storage.memory_repository import MemoryRepositoryMixin
 from app.services.storage.message_delivery_repository import MessageDeliveryRepositoryMixin
+from app.services.storage.internal_work_item_repository import InternalWorkItemRepositoryMixin
 from app.services.storage.outreach_dashboard_repository import OutreachDashboardRepositoryMixin
 from app.services.storage.outreach_repository import OutreachRepositoryMixin
 from app.services.storage.operations_dashboard_repository import OperationsDashboardRepositoryMixin
@@ -22,6 +23,7 @@ class AppRepository(
     CustomerRecordAdminRepositoryMixin,
     MemoryRepositoryMixin,
     MessageDeliveryRepositoryMixin,
+    InternalWorkItemRepositoryMixin,
     OutreachDashboardRepositoryMixin,
     OutreachRepositoryMixin,
     OperationsDashboardRepositoryMixin,

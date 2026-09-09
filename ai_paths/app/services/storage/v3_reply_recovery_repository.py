@@ -6,7 +6,6 @@ from typing import Any
 from app.services.storage.serialization import dumps, loads_dict, utc_now_iso
 from app.services.v3_reply_recovery import (
     GENERATION_STATUS_FALLBACK_PENDING,
-    GENERATION_STATUS_GENERATING,
     GENERATION_STATUS_MANUAL_REVIEW,
     GENERATION_STATUS_RECOVERED,
     GENERATION_STATUS_RECOVERY_CLAIMED,
@@ -77,48 +76,6 @@ class V3ReplyRecoveryRepositoryMixin:
             ).fetchone()
         latest_at = str(row["latest_at"] or "") if row is not None else ""
         return {"has_newer": bool(latest_at), "latest_at": latest_at, "reason": ""}
-
-    def recover_stale_v3_generation(
-        self,
-        *,
-        generation_key: str,
-        stale_before: str,
-        next_retry_at: str,
-        recovery_kind: str = "stale_generation",
-    ) -> dict[str, Any]:
-        """Atomically turn only an abandoned generation reservation into recovery work."""
-
-        clean_key = str(generation_key or "").strip()
-        if not clean_key or not str(stale_before or "").strip() or not str(next_retry_at or "").strip():
-            raise ValueError("generation_key, stale_before and next_retry_at are required")
-        with self.store.connect() as conn:
-            updated = conn.execute(
-                """
-                UPDATE runs
-                SET generation_status=?, recovery_kind=?, recovery_next_at=?,
-                    recovery_error='stale_generation_reservation'
-                WHERE generation_key=? AND generation_status=? AND created_at<=?
-                """,
-                (
-                    GENERATION_STATUS_FALLBACK_PENDING,
-                    str(recovery_kind or "stale_generation")[:64],
-                    str(next_retry_at),
-                    clean_key,
-                    GENERATION_STATUS_GENERATING,
-                    str(stale_before),
-                ),
-            )
-            row = conn.execute(
-                "SELECT * FROM runs WHERE generation_key=? LIMIT 1",
-                (clean_key,),
-            ).fetchone()
-        result = _generation_result(dict(row)) if row is not None else {
-            "found": False,
-            "ready": False,
-            "replayed": False,
-        }
-        result["recovered_stale"] = bool(updated.rowcount)
-        return result
 
     def get_v3_generation_result(
         self,
@@ -200,7 +157,11 @@ class V3ReplyRecoveryRepositoryMixin:
                     GENERATION_STATUS_RECOVERY_FAILED,
                 ),
             )
-        return {"scheduled": bool(updated.rowcount), "request_id": clean_request_id}
+        return {
+            "scheduled": bool(updated.rowcount),
+            "request_id": clean_request_id,
+            "status": GENERATION_STATUS_FALLBACK_PENDING if int(updated.rowcount or 0) else "",
+        }
 
     def claim_v3_fallback_recoveries(
         self,
@@ -313,7 +274,7 @@ class V3ReplyRecoveryRepositoryMixin:
         with self.store.connect() as conn:
             row = conn.execute(
                 """
-                SELECT response_id, recovery_kind, output_snapshot
+                SELECT response_id, recovery_kind, recovery_dispatch_id, output_snapshot
                 FROM runs WHERE request_id=? AND generation_status IN (?, ?)
                 LIMIT 1
                 """,
@@ -325,6 +286,10 @@ class V3ReplyRecoveryRepositoryMixin:
             ).fetchone()
             if row is None:
                 return {"updated": 0, "status": "not_recoverable"}
+            current_dispatch_id = str(row["recovery_dispatch_id"] or "").strip()
+            clean_dispatch_id = str(dispatch_id or "").strip()
+            if current_dispatch_id and current_dispatch_id != clean_dispatch_id:
+                return {"updated": 0, "status": "dispatch_mismatch"}
             recovery_kind = str(row["recovery_kind"] or "recovery")
             stable_messages = stable_v3_reply_messages(
                 reply_messages,
@@ -346,24 +311,190 @@ class V3ReplyRecoveryRepositoryMixin:
                 # key. Keep the original HTTP snapshot immutable so a later
                 # retry of the platform msgid cannot send the recovery twice.
                 output["v3_recovery_response_snapshot"] = encode_v3_recovery_payload(snapshot)
-            conn.execute(
+            updated = conn.execute(
                 """
                 UPDATE runs
                 SET generation_status=?, recovery_next_at='', recovery_dispatch_id=?,
                     recovery_error='', output_snapshot=?
-                WHERE request_id=?
+                WHERE request_id=? AND generation_status IN (?, ?)
+                  AND (recovery_dispatch_id='' OR recovery_dispatch_id=?)
                 """,
                 (
                     GENERATION_STATUS_RECOVERED,
-                    str(dispatch_id or ""),
+                    clean_dispatch_id,
                     dumps(output),
                     clean_request_id,
+                    GENERATION_STATUS_RECOVERY_CLAIMED,
+                    GENERATION_STATUS_FALLBACK_PENDING,
+                    clean_dispatch_id,
                 ),
             )
+            if not int(updated.rowcount or 0):
+                return {"updated": 0, "status": "not_recoverable"}
         return {
-            "updated": 1,
+            "updated": int(updated.rowcount or 0),
             "status": GENERATION_STATUS_RECOVERED,
             "reply_messages": stable_messages,
+        }
+
+    def finalize_v3_recovery_delivery(
+        self,
+        *,
+        request_id: str,
+        dispatch_id: str,
+        delivery_status: str,
+        error: str = "",
+    ) -> dict[str, Any]:
+        """CAS the terminal receipt onto the recovery run that created it.
+
+        A callback can race the worker between platform acceptance and
+        ``complete_v3_fallback_recovery``.  An empty recovery_dispatch_id is
+        therefore linkable only while the run is still actively recoverable;
+        a different non-empty dispatch ID is always a conflict.
+        """
+
+        clean_request_id = str(request_id or "").strip()
+        clean_dispatch_id = str(dispatch_id or "").strip()
+        clean_status = str(delivery_status or "").strip().lower()
+        if not clean_request_id or not clean_dispatch_id:
+            raise ValueError("request_id and dispatch_id are required")
+        if clean_status not in {"send_succeeded", "send_failed", "partial_failed"}:
+            raise ValueError(f"unsupported recovery delivery status: {clean_status or '<empty>'}")
+
+        active_states = {
+            GENERATION_STATUS_FALLBACK_PENDING,
+            GENERATION_STATUS_RECOVERY_CLAIMED,
+            GENERATION_STATUS_RECOVERED,
+        }
+        allowed_states = active_states | {GENERATION_STATUS_MANUAL_REVIEW}
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT generation_status, recovery_dispatch_id, recovery_error, output_snapshot
+                FROM runs WHERE request_id=? LIMIT 1
+                """,
+                (clean_request_id,),
+            ).fetchone()
+            if row is None:
+                return {"found": False, "updated": 0, "status": "not_found"}
+
+            current_status = str(row["generation_status"] or "")
+            current_dispatch_id = str(row["recovery_dispatch_id"] or "").strip()
+            if current_dispatch_id and current_dispatch_id != clean_dispatch_id:
+                return {
+                    "found": True,
+                    "updated": 0,
+                    "status": "dispatch_mismatch",
+                    "reason": "recovery dispatch does not match the run",
+                }
+            if current_status not in allowed_states:
+                return {
+                    "found": True,
+                    "updated": 0,
+                    "status": "state_conflict",
+                    "reason": f"recovery run is not finalizable from {current_status or '<empty>'}",
+                }
+
+            output = loads_dict(row["output_snapshot"])
+            output["v3_recovery_delivery"] = {
+                "dispatch_id": clean_dispatch_id,
+                "status": clean_status,
+                "error": str(error or "")[:2000],
+                "finalized_at": now,
+            }
+            if clean_status == "send_succeeded":
+                updated = conn.execute(
+                    """
+                    UPDATE runs
+                    SET recovery_dispatch_id=COALESCE(NULLIF(recovery_dispatch_id, ''), ?),
+                        output_snapshot=?
+                    WHERE request_id=? AND generation_status=?
+                      AND (recovery_dispatch_id='' OR recovery_dispatch_id=?)
+                    """,
+                    (
+                        clean_dispatch_id,
+                        dumps(output),
+                        clean_request_id,
+                        current_status,
+                        clean_dispatch_id,
+                    ),
+                )
+                status = current_status
+            elif current_status in active_states:
+                output.pop("v3_recovery_payload", None)
+                reason = f"recovery_dispatch_{clean_status}"
+                if str(error or "").strip():
+                    reason += ":" + str(error).strip()
+                updated = conn.execute(
+                    """
+                    UPDATE runs
+                    SET generation_status=?, recovery_kind='manual_review',
+                        recovery_next_at='', recovery_dispatch_id=?, recovery_error=?,
+                        output_snapshot=?
+                    WHERE request_id=? AND generation_status=?
+                      AND (recovery_dispatch_id='' OR recovery_dispatch_id=?)
+                    """,
+                    (
+                        GENERATION_STATUS_MANUAL_REVIEW,
+                        clean_dispatch_id,
+                        reason[:4000],
+                        dumps(output),
+                        clean_request_id,
+                        current_status,
+                        clean_dispatch_id,
+                    ),
+                )
+                status = GENERATION_STATUS_MANUAL_REVIEW
+            else:
+                # A repeated terminal-failure callback for an already escalated
+                # run is a successful idempotent reconciliation.
+                updated = conn.execute(
+                    """
+                    UPDATE runs
+                    SET recovery_dispatch_id=COALESCE(NULLIF(recovery_dispatch_id, ''), ?),
+                        output_snapshot=?
+                    WHERE request_id=? AND generation_status=?
+                      AND (recovery_dispatch_id='' OR recovery_dispatch_id=?)
+                    """,
+                    (
+                        clean_dispatch_id,
+                        dumps(output),
+                        clean_request_id,
+                        GENERATION_STATUS_MANUAL_REVIEW,
+                        clean_dispatch_id,
+                    ),
+                )
+                status = GENERATION_STATUS_MANUAL_REVIEW
+
+            if not int(updated.rowcount or 0):
+                latest = conn.execute(
+                    """
+                    SELECT generation_status, recovery_dispatch_id
+                    FROM runs WHERE request_id=? LIMIT 1
+                    """,
+                    (clean_request_id,),
+                ).fetchone()
+                latest_status = str(latest["generation_status"] or "") if latest else ""
+                latest_dispatch_id = str(latest["recovery_dispatch_id"] or "") if latest else ""
+                if latest_status == status and latest_dispatch_id == clean_dispatch_id:
+                    return {
+                        "found": True,
+                        "updated": 0,
+                        "status": status,
+                        "duplicate": True,
+                    }
+                return {
+                    "found": True,
+                    "updated": 0,
+                    "status": "state_conflict",
+                    "reason": "recovery run changed during delivery finalization",
+                }
+        return {
+            "found": True,
+            "updated": int(updated.rowcount or 0),
+            "status": status,
+            "duplicate": False,
         }
 
     def cancel_v3_fallback_recovery(self, *, request_id: str, reason: str) -> dict[str, Any]:

@@ -548,3 +548,35 @@ CREATE TABLE IF NOT EXISTS v3_strategy_outcome_events (
 
 CREATE INDEX IF NOT EXISTS idx_v3_strategy_outcome_updated
 ON v3_strategy_outcome_events(updated_at);
+
+CREATE TABLE IF NOT EXISTS internal_work_items (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    work_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    store_id TEXT NOT NULL DEFAULT '',
+    detail_kind TEXT NOT NULL DEFAULT '',
+    missing_fact_keys_json TEXT NOT NULL DEFAULT '[]',
+    source_request_id TEXT NOT NULL DEFAULT '',
+    conversation_id TEXT NOT NULL DEFAULT '',
+    corp_id TEXT NOT NULL DEFAULT '',
+    wechat TEXT NOT NULL DEFAULT '',
+    external_userid TEXT NOT NULL DEFAULT '',
+    customer_id TEXT NOT NULL DEFAULT '',
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    resolved_at TEXT NOT NULL DEFAULT '',
+    resolved_by TEXT NOT NULL DEFAULT '',
+    resolution_note TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_internal_work_items_queue
+ON internal_work_items(work_type, status, last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_internal_work_items_store_detail
+ON internal_work_items(store_id, detail_kind, status);
+CREATE INDEX IF NOT EXISTS idx_internal_work_items_contact
+ON internal_work_items(corp_id, wechat, external_userid, customer_id, last_seen_at);

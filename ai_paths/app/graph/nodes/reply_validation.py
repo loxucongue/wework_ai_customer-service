@@ -1780,7 +1780,10 @@ def _validate_fact_boundaries(messages: list[dict[str, Any]], state: dict[str, A
     has_distance = _has_distance_ranking_fact(structured)
     if _asserts_parking(text) and not has_parking:
         raise ValueError("parking_fact_required")
-    if _asserts_business_hours(text) and not has_hours:
+    if _asserts_business_hours(
+        text,
+        replying_to_hours_question=_current_customer_asks_business_hours(state),
+    ) and not has_hours:
         raise ValueError("business_hours_fact_required")
     if _asserts_address(text) and not has_store_detail:
         raise ValueError("store_address_fact_required")
@@ -1803,7 +1806,10 @@ def _validate_parallel_business_hours_facts(
     """
 
     text = _combined_text(messages)
-    if not text or not _asserts_business_hours(text):
+    if not text or not _asserts_business_hours(
+        text,
+        replying_to_hours_question=_current_customer_asks_business_hours(state),
+    ):
         return
     structured = _structured_facts(state)
     store_facts = [
@@ -1821,6 +1827,83 @@ def _validate_parallel_business_hours_facts(
     ):
         return
     raise ValueError("business_hours_fact_required")
+
+
+def _validate_paid_only_store_guidance(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Keep private arrival instructions behind authoritative payment.
+
+    Public store names, addresses, maps, parking and published opening hours
+    remain usable before payment.  Floor, room and reception instructions are
+    operational handoff facts and must not leak merely because the store tool
+    returned them in the same record.
+    """
+
+    paid = (
+        _parallel_paid_deposit_context(state)
+        if state.get("evidence_join")
+        else _paid_deposit_context(state)
+    )
+    if paid:
+        return
+    text = _combined_text(messages)
+    if not text:
+        return
+    compact = re.sub(r"\s+", "", text)
+
+    for store in _known_store_records_for_validation(state):
+        floor = str(store.get("floor") or "").strip()
+        room = str(store.get("room") or "").strip()
+        arrival = str(store.get("arrival_guidance") or "").strip()
+        reception = str(store.get("reception") or "").strip()
+        if floor:
+            floor_pattern = re.escape(floor)
+            if re.fullmatch(r"[B负]?\d+", floor, flags=re.IGNORECASE):
+                floor_pattern = rf"{floor_pattern}(?:楼|层)"
+            if re.search(floor_pattern, compact, flags=re.IGNORECASE):
+                raise ValueError("paid_store_arrival_guidance_required")
+        if room:
+            room_pattern = re.escape(room)
+            if room.isdigit():
+                room_pattern = rf"(?:房间)?{room_pattern}(?:室|房|号房)"
+            if re.search(room_pattern, compact, flags=re.IGNORECASE):
+                raise ValueError("paid_store_arrival_guidance_required")
+        if arrival and len(arrival) >= 2 and re.sub(r"\s+", "", arrival) in compact:
+            raise ValueError("paid_store_arrival_guidance_required")
+        if reception and len(reception) >= 2 and re.sub(r"\s+", "", reception) in compact:
+            raise ValueError("paid_store_arrival_guidance_required")
+
+    clauses = [
+        clause
+        for clause in re.split(r"[，。！？；,.!?;]+", compact)
+        if clause
+    ]
+    floor_or_room = re.compile(
+        r"(?:[B负]?\d+|[一二三四五六七八九十百]+)(?:楼|层)"
+        r"(?:\d{2,4}(?:室|房|号房)?)?",
+        flags=re.IGNORECASE,
+    )
+    store_subjects = ("门店", "店里", "店在", "地址", "位置", "到店", "到了", "电梯", "楼梯")
+    if any(floor_or_room.search(clause) and any(term in clause for term in store_subjects) for clause in clauses):
+        raise ValueError("paid_store_arrival_guidance_required")
+    if re.search(r"(?:房间|房号|房间号)?\d{2,4}(?:室|号房)", compact):
+        raise ValueError("paid_store_arrival_guidance_required")
+    if any(
+        term in compact
+        for term in (
+            "电梯出来",
+            "出电梯",
+            "上楼后",
+            "到店后联系",
+            "到了联系",
+            "前台会带",
+            "老师会接待",
+            "接待老师",
+        )
+    ):
+        raise ValueError("paid_store_arrival_guidance_required")
 
 
 def _validate_unconfirmed_store_availability_claim(
@@ -2264,16 +2347,50 @@ def _asserts_parking(text: str) -> bool:
     return any(term in text for term in ("有停车", "可以停车", "能停车", "楼下可停", "停车场"))
 
 
-def _asserts_business_hours(text: str) -> bool:
+def _asserts_business_hours(
+    text: str,
+    *,
+    replying_to_hours_question: bool = False,
+) -> bool:
     if any(term in text for term in ("营业时间是", "营业时间为", "营业到")):
         return True
-    if re.search(r"\d{1,2}[:：]\d{2}\s*[-~到至]\s*\d{1,2}[:：]\d{2}", text):
+    if replying_to_hours_question and re.search(
+        r"\d{1,2}[:：]\d{2}\s*[-~到至]\s*\d{1,2}[:：]\d{2}",
+        text,
+    ):
         return True
     compact = re.sub(r"\s+", "", str(text or ""))
     time_token = r"(?:早上|上午|下午|晚上)?\d{1,2}(?:点(?:半)?|[:：]\d{2})"
     return bool(
-        re.search(rf"{time_token}.{{0,14}}(?:开门|营业)", compact)
-        or re.search(rf"(?:开门|营业).{{0,14}}{time_token}", compact)
+        re.search(rf"{time_token}.{{0,14}}(?:开门|营业|关门|闭店|打烊)", compact)
+        or re.search(rf"(?:开门|营业|关门|闭店|打烊).{{0,14}}{time_token}", compact)
+    )
+
+
+def _current_customer_asks_business_hours(state: dict[str, Any]) -> bool:
+    shared = _parallel_shared_context(state)
+    current = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
+    text = str(
+        current.get("content")
+        or current.get("raw_content")
+        or state.get("normalized_content")
+        or state.get("content")
+        or ""
+    )
+    compact = re.sub(r"\s+", "", text)
+    return any(
+        term in compact
+        for term in (
+            "营业时间",
+            "几点开门",
+            "几点关门",
+            "几点营业",
+            "开到几点",
+            "营业到几点",
+            "什么时候开门",
+            "什么时候营业",
+            "什么时候关门",
+        )
     )
 
 

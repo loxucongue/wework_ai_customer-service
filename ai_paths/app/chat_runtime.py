@@ -850,27 +850,13 @@ class ChatRuntime:
                 break
             await asyncio.sleep(0.15)
 
-        # A process may have died after reserving the unique generation. Only
-        # an old reservation is converted to recovery; an active peer keeps it.
-        recover_stale = getattr(self._repository, "recover_stale_v3_generation", None)
-        if callable(recover_stale):
-            now = datetime.now(timezone.utc)
-            strong_seconds = max(
-                35.0,
-                float(
-                    getattr(self._settings, "v3_reply_strong_round_timeout_seconds", 35.0)
-                    or 35.0
-                ),
-            )
-            stale_result = await asyncio.to_thread(
-                recover_stale,
-                generation_key=generation_key,
-                stale_before=(now - timedelta(seconds=strong_seconds + 15.0)).isoformat(),
-                next_retry_at=(now + timedelta(seconds=15)).isoformat(),
-            )
-            if bool(stale_result.get("ready")):
-                return _chat_response_from_generation(stale_result)
-            latest = stale_result or latest
+        # Do not turn a slow in-flight generation into customer-visible
+        # recovery work.  Without an owner lease or heartbeat there is no safe
+        # way to distinguish a dead process from a legitimate long request;
+        # promoting it here can send a recovery reply while the original call
+        # is still completing.  Only an explicit, durably persisted
+        # ``fallback_pending`` terminal result is eligible for the recovery
+        # worker.
         return _generation_wait_fallback(
             str(latest.get("request_id") or fallback_request_id),
             str(latest.get("response_id") or fallback_response_id),
@@ -2053,19 +2039,34 @@ def _record_sent_case_images(
 
 def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, Any]]) -> dict[str, Any]:
     case_by_url = _case_documents_by_image_url(state)
-    effect_asset_urls = _selected_effect_asset_image_urls(state)
+    selected_asset_urls = _selected_content_asset_image_urls(state)
     image_urls = [_message_image_url(message) for message in reply_messages if isinstance(message, dict)]
     image_urls = [url for url in image_urls if url]
     matched_ids: list[str] = []
     matched_urls: list[str] = []
     unmatched_urls: list[str] = []
+    matched_content_ids: list[str] = []
+    matched_script_ids: list[str] = []
+    matched_script_codes: list[str] = []
     for image_url in image_urls:
-        doc_id = case_by_url.get(_normalize_url(image_url), "")
+        normalized_url = _normalize_url(image_url)
+        doc_id = case_by_url.get(normalized_url, "")
+        selected_asset = selected_asset_urls.get(normalized_url) or {}
         if doc_id:
             if doc_id not in matched_ids:
                 matched_ids.append(doc_id)
-            matched_urls.append(image_url)
-        elif _normalize_url(image_url) in effect_asset_urls:
+        for record_id in selected_asset.get("record_ids") or []:
+            if record_id not in matched_ids:
+                matched_ids.append(record_id)
+        for target, key in (
+            (matched_content_ids, "content_ids"),
+            (matched_script_ids, "script_ids"),
+            (matched_script_codes, "script_codes"),
+        ):
+            for value in selected_asset.get(key) or []:
+                if value not in target:
+                    target.append(value)
+        if doc_id or selected_asset:
             matched_urls.append(image_url)
         else:
             unmatched_urls.append(image_url)
@@ -2075,34 +2076,59 @@ def _case_image_send_record(state: AgentState, reply_messages: list[dict[str, An
         "image_urls": matched_urls,
         "unmatched_image_urls": unmatched_urls,
         "candidate_document_ids": sorted(set(case_by_url.values())),
+        "matched_content_ids": matched_content_ids,
+        "matched_script_ids": matched_script_ids,
+        "matched_script_codes": matched_script_codes,
         "selected_effect_asset_ids": sorted(
             {
-                asset_id
-                for asset_id in effect_asset_urls.values()
-                if str(asset_id or "").strip()
+                content_id
+                for asset in selected_asset_urls.values()
+                if "effect_evidence" in (asset.get("asset_roles") or [])
+                for content_id in asset.get("content_ids") or []
+            }
+        ),
+        "selected_sales_reference_ids": sorted(
+            {
+                content_id
+                for asset in selected_asset_urls.values()
+                if "sales_reference" in (asset.get("asset_roles") or [])
+                for content_id in asset.get("content_ids") or []
             }
         ),
     }
 
 
-def _selected_effect_asset_image_urls(state: AgentState) -> dict[str, str]:
-    selected_ids = {
-        str(item).strip()
-        for item in state.get("selected_content_ids") or state.get("reply_selected_content_ids") or []
-        if str(item or "").strip()
-    }
+def _selected_content_asset_image_urls(state: AgentState) -> dict[str, dict[str, list[str]]]:
+    """Index selected image candidates that may be durably recorded after delivery.
+
+    Follow-script media uses ``asset_role=sales_reference`` rather than
+    ``effect_evidence``.  Both roles are explicit, already-approved content
+    candidates; intersecting them with the final reply images prevents an
+    unadopted candidate from being recorded as delivered.
+    """
+
+    raw_selected_ids = state.get("selected_content_ids")
+    if not isinstance(raw_selected_ids, list):
+        raw_selected_ids = (
+            state.get("reply_selected_content_ids") if isinstance(state.get("reply_selected_content_ids"), list) else []
+        )
+    selected_ids = {str(item).strip() for item in raw_selected_ids if str(item or "").strip()}
     if not selected_ids:
         return {}
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
-    output: dict[str, str] = {}
+    output: dict[str, dict[str, list[str]]] = {}
     for candidate in joined.get("content_candidates") or []:
         if not isinstance(candidate, dict):
             continue
         content_id = str(candidate.get("content_id") or candidate.get("id") or "").strip()
         if content_id not in selected_ids:
             continue
-        if str(candidate.get("asset_role") or "").strip() != "effect_evidence":
+        asset_role = str(candidate.get("asset_role") or "").strip()
+        if asset_role not in {"effect_evidence", "sales_reference"}:
             continue
+        script_id = str(candidate.get("source_script_id") or "").strip()
+        script_code = str(candidate.get("source_script_code") or "").strip()
+        record_ids = list(dict.fromkeys(value for value in (content_id, script_id, script_code) if value))
         messages = candidate.get("messages")
         if not isinstance(messages, list):
             messages = candidate.get("reply_messages") if isinstance(candidate.get("reply_messages"), list) else []
@@ -2111,8 +2137,37 @@ def _selected_effect_asset_image_urls(state: AgentState) -> dict[str, str]:
                 continue
             image_url = _message_image_url(message)
             if image_url:
-                output[_normalize_url(image_url)] = content_id
+                entry = output.setdefault(
+                    _normalize_url(image_url),
+                    {
+                        "content_ids": [],
+                        "script_ids": [],
+                        "script_codes": [],
+                        "asset_roles": [],
+                        "record_ids": [],
+                    },
+                )
+                for target_key, values in (
+                    ("content_ids", [content_id]),
+                    ("script_ids", [script_id]),
+                    ("script_codes", [script_code]),
+                    ("asset_roles", [asset_role]),
+                    ("record_ids", record_ids),
+                ):
+                    for value in values:
+                        if value and value not in entry[target_key]:
+                            entry[target_key].append(value)
     return output
+
+
+def _selected_effect_asset_image_urls(state: AgentState) -> dict[str, str]:
+    """Backward-compatible view retained for callers/tests of the old helper."""
+
+    return {
+        image_url: str((asset.get("content_ids") or [""])[0])
+        for image_url, asset in _selected_content_asset_image_urls(state).items()
+        if "effect_evidence" in (asset.get("asset_roles") or [])
+    }
 
 
 def _case_documents_by_image_url(state: AgentState) -> dict[str, str]:

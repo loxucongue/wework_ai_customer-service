@@ -41,6 +41,7 @@ from app.services.trace_logger import TraceLogger
 from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.v3_strategy_outcome_service import PlatformOrderOutcomeProvider
 from app.services.v3_reply_finalization_service import V3ReplyFinalizationService
+from app.services.v3_reply_recovery_delivery import V3ReplyRecoveryDeliveryFinalizer
 from app.services.v3_reply_recovery_worker import V3ReplyRecoveryWorker
 from app.services.v3_sop_execution_service import SopExecutionService as V3SopExecutionService
 from app.services.voice_transcription import DoubaoAsrClient
@@ -70,6 +71,7 @@ class ControlServices:
     storage_store: Any
     repository: AppRepository
     async_reply_delivery_finalizer: AsyncReplyDeliveryFinalizer
+    v3_reply_recovery_delivery_finalizer: V3ReplyRecoveryDeliveryFinalizer
     message_delivery_service: MessageDeliveryService
     outreach_service: OutreachService
     sop_delivery_compatibility_service: SopDeliveryCompatibilityService
@@ -234,6 +236,7 @@ def build_control_services(settings: Settings) -> ControlServices:
     message_delivery_service = MessageDeliveryService(settings, repository)
     memory_store = CustomerMemoryStore(settings, repository)
     async_reply_delivery_finalizer = AsyncReplyDeliveryFinalizer(repository, memory_store)
+    v3_reply_recovery_delivery_finalizer = V3ReplyRecoveryDeliveryFinalizer(repository)
     model_client = ModelClient(settings)
     outreach_model_client = _build_outreach_model_client(settings)
     coze_client = CozeClient(settings)
@@ -278,6 +281,7 @@ def build_control_services(settings: Settings) -> ControlServices:
         storage_store=storage_store,
         repository=repository,
         async_reply_delivery_finalizer=async_reply_delivery_finalizer,
+        v3_reply_recovery_delivery_finalizer=v3_reply_recovery_delivery_finalizer,
         message_delivery_service=message_delivery_service,
         outreach_service=outreach_service,
         sop_delivery_compatibility_service=SopDeliveryCompatibilityService(

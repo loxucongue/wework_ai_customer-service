@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.graph.nodes.material_selection import parallel_reply_payload
 from app.graph.nodes.reply_validation import (
     _validate_no_placeholder_facts,
     _validate_parallel_claimed_deposit_evidence,
@@ -47,6 +48,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         lambda: _validate_parallel_appointment_confirmation_facts(messages, state),
         lambda: _validate_parallel_business_hours_facts(messages, state),
         lambda: validate_sales_price_fact_boundaries(messages),
+        lambda: _validate_mainline_sales_action(state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
     for check in checks:
@@ -58,6 +60,73 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
                 violations.append(detail)
     if violations:
         raise ValueError("reply_admission_violations::" + ";;".join(violations))
+
+
+def _validate_mainline_sales_action(state: dict[str, Any]) -> None:
+    """Keep the model's declared next action inside delivered-stage bounds.
+
+    This validates an explicit enum against deterministic delivery facts.  It
+    does not infer sales intent from customer words or inspect visible reply
+    copy.  The one permitted repair remains responsible for making the model's
+    wording match a valid action.
+    """
+
+    if not isinstance(state.get("evidence_join"), dict):
+        return
+    mainline = (
+        state.get("mainline_delivery_state")
+        if isinstance(state.get("mainline_delivery_state"), dict)
+        else parallel_reply_payload(state).get("mainline_delivery_state", {})
+    )
+    allowed = {
+        str(item or "").strip()
+        for item in mainline.get("allowed_next_sales_action_types") or []
+        if str(item or "").strip()
+    }
+    if not allowed:
+        return
+    sales = (
+        state.get("reply_sales_judgment")
+        if isinstance(state.get("reply_sales_judgment"), dict)
+        else {}
+    )
+    next_action = (
+        sales.get("next_sales_action")
+        if isinstance(sales.get("next_sales_action"), dict)
+        else {}
+    )
+    action_type = str(next_action.get("type") or "").strip()
+    policy = (
+        state.get("reply_policy_decision")
+        if isinstance(state.get("reply_policy_decision"), dict)
+        else {}
+    )
+    closing = (
+        policy.get("closing_decision")
+        if isinstance(policy.get("closing_decision"), dict)
+        else {}
+    )
+    customer_state = str(closing.get("customer_state") or "").strip()
+    if customer_state in {"continue_sales", "pause_current_turn"} and not action_type:
+        raise ValueError("next_sales_action_required")
+    if customer_state == "pause_current_turn" and action_type in {
+        "invite_booking",
+        "send_payment",
+    }:
+        raise ValueError("paused_turn_cannot_advance_transaction")
+    if customer_state == "hard_stop_marketing" and action_type and action_type != "stop":
+        raise ValueError("hard_stop_requires_stop_action")
+    if customer_state == "post_payment_service" and action_type not in {
+        "post_payment_service",
+        "keep_open",
+        "ask_missing_fact",
+    }:
+        raise ValueError("post_payment_requires_service_action")
+    if customer_state in {"continue_sales", "pause_current_turn"} and action_type not in allowed:
+        raise ValueError(
+            "next_sales_action_exceeds_delivered_mainline:"
+            f"{action_type}:{mainline.get('next_missing_stage') or ''}"
+        )
 
 
 def _validate_structured_delivery_conversation_shape(

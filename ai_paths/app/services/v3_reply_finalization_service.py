@@ -96,6 +96,25 @@ class V3ReplyFinalizationService:
                     state["closing_sequence_shadow"] = (
                         self.outreach_service.record_closing_sequence_shadow(state)
                     )
+                state["internal_work_item"] = (
+                    self.repository.upsert_store_fact_followup_work_item(
+                        followup=(
+                            state.get("store_fact_followup")
+                            if isinstance(state.get("store_fact_followup"), dict)
+                            else None
+                        ),
+                        request_id=request_id,
+                        conversation_id=str(job.get("conversation_id") or ""),
+                        corp_id=str(state.get("corp_id") or ""),
+                        wechat=str(state.get("wechat") or ""),
+                        external_userid=str(state.get("external_userid") or ""),
+                        customer_id=str(
+                            state.get("platform_customer_id")
+                            or state.get("customer_id")
+                            or ""
+                        ),
+                    )
+                )
                 log_path = self.trace_logger.write_run(state)
                 state["trace_url"] = str(log_path)
                 self.repository.save_run(

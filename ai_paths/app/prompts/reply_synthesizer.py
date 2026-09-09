@@ -199,6 +199,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
                 evidence,
                 json_dumps=json_dumps,
                 reference_aliases=reference_aliases,
+                authoritative_paid=bool(registration_status.get("authoritative_paid")),
             ),
         ),
         _section("必须遵守", _render_must_follow(rules)),
@@ -1233,6 +1234,7 @@ def _render_tool_facts(
     *,
     json_dumps,
     reference_aliases: dict[str, str] | None = None,
+    authoritative_paid: bool = False,
 ) -> str:
     normalized = evidence.get("normalized_tool_facts") if isinstance(evidence.get("normalized_tool_facts"), dict) else {}
     structured = normalized.get("structured_facts") if isinstance(normalized.get("structured_facts"), dict) else {}
@@ -1342,8 +1344,7 @@ def _render_tool_facts(
         }
         stores = [store_by_id[store_id] for store_id in final_store_ids if store_id in store_by_id]
     for store in stores:
-        compact_store = _pick(
-            store,
+        public_store_keys = (
             "store_id",
             "store_name",
             "province",
@@ -1354,13 +1355,19 @@ def _render_tool_facts(
             "parking_name",
             "parking_address",
             "map_url",
+            "distance_km",
+            "duration_seconds",
+            "scope_authorized",
+        )
+        paid_arrival_keys = (
             "floor",
             "room",
             "arrival_guidance",
             "reception",
-            "distance_km",
-            "duration_seconds",
-            "scope_authorized",
+        )
+        compact_store = _pick(
+            store,
+            *(public_store_keys + paid_arrival_keys if authoritative_paid else public_store_keys),
         )
         lines.append("门店：" + "；".join(_flatten_pairs(compact_store)))
     for label, key in (

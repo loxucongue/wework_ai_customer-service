@@ -23,6 +23,8 @@ def create_callbacks_router(settings: Settings, services: ControlServices) -> AP
         source_kind = str(dispatch.get("source_kind") or "").strip()
         if source_kind == "ai_async_reply":
             services.async_reply_delivery_finalizer.finalize(dispatch)
+        elif source_kind == "v3_reply_recovery":
+            services.v3_reply_recovery_delivery_finalizer.finalize(dispatch)
         elif source_kind == "sop_event":
             services.sop_delivery_compatibility_service.finalize_message_delivery(dispatch)
         elif source_kind == "outreach_task":

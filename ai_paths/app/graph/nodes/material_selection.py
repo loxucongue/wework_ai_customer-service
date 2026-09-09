@@ -274,6 +274,7 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         structured_delivered_assets=structured_delivered_assets,
         registration_fact_status=registration_fact_status,
         payment_channel_availability=payment_channel_availability,
+        semantic_route=semantic_route,
     )
     reply_evidence = copy.deepcopy(joined)
     reply_shared = (
@@ -368,6 +369,7 @@ def _mainline_delivery_state(
     structured_delivered_assets: list[dict[str, Any]],
     registration_fact_status: dict[str, Any],
     payment_channel_availability: dict[str, Any],
+    semantic_route: dict[str, Any],
 ) -> dict[str, Any]:
     """Expose delivered-stage evidence without choosing the next sales action."""
 
@@ -398,6 +400,48 @@ def _mainline_delivery_state(
         next_missing_stage = "appointment_deposit"
     else:
         next_missing_stage = "complete"
+    current_intent = (
+        semantic_route.get("current_intent")
+        if isinstance(semantic_route.get("current_intent"), dict)
+        else {}
+    )
+    continuation_signals = [
+        str(item or "").strip()
+        for item in current_intent.get("continuation_signals") or []
+        if str(item or "").strip()
+    ]
+    current_friction = (
+        semantic_route.get("current_friction")
+        if isinstance(semantic_route.get("current_friction"), dict)
+        else {}
+    )
+    friction_active = str(current_friction.get("status") or "none") in {
+        "explicit",
+        "inferred",
+    }
+    allowed_actions = {
+        "keep_open",
+        "ask_missing_fact",
+        "deliver_value",
+        "send_effect_material",
+        "send_store",
+        "explain_activity",
+    }
+    if not friction_active and next_missing_stage in {
+        "appointment",
+        "appointment_deposit",
+        "complete",
+    }:
+        allowed_actions.add("invite_booking")
+    if (
+        not friction_active
+        and next_missing_stage in {"appointment", "appointment_deposit", "complete"}
+        and bool(payment_card.get("available"))
+        and "explicit_booking_request" in continuation_signals
+    ):
+        allowed_actions.add("send_payment")
+    if authoritative_paid:
+        allowed_actions.add("post_payment_service")
     return {
         "effect_evidence_delivered": effect_delivered,
         "activity_offer_delivered": activity_delivered,
@@ -406,6 +450,10 @@ def _mainline_delivery_state(
         "authoritative_paid": authoritative_paid,
         "payment_card_available": bool(payment_card.get("available")),
         "next_missing_stage": next_missing_stage,
+        "continuation_signals": continuation_signals,
+        "explicit_booking_request": "explicit_booking_request" in continuation_signals,
+        "friction_active": friction_active,
+        "allowed_next_sales_action_types": sorted(allowed_actions),
         "source": "delivered_assets_and_authoritative_transaction_facts",
         "meaning": "事实阶段摘要，不是强制销售动作；先答当前问题，安全边界与当前卡点仍优先",
     }

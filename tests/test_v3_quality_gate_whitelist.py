@@ -195,7 +195,6 @@ def test_appointment_completion_gate_rejects_only_without_authoritative_fact(rep
 @pytest.mark.parametrize(
     "reply",
     [
-        "我们早上9点开门。",
         "明天下午有档期。",
         "已经帮您登记好了。",
         "今天直接过去就行。",
@@ -207,3 +206,11 @@ def test_removed_fact_and_sales_rules_do_not_reject_reply(reply: str) -> None:
         [{"type": "text", "content": reply}],
         _payment_state(),
     )
+
+
+def test_missing_business_hours_are_a_current_authoritative_fact_boundary() -> None:
+    with pytest.raises(ValueError, match="business_hours_fact_required"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "我们早上9点开门。"}],
+            _payment_state(),
+        )

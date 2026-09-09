@@ -50,6 +50,47 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @router.get("/admin/internal-work-items", dependencies=[Depends(require_api_key)])
+    def internal_work_items(
+        work_type: str = "",
+        status: str = "",
+        store_id: str = "",
+        detail_kind: str = "",
+        started_from: str = "",
+        started_to: str = "",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        try:
+            return repository.list_internal_work_items(
+                work_type=work_type,
+                status=status,
+                store_id=store_id,
+                detail_kind=detail_kind,
+                started_from=started_from,
+                started_to=started_to,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.patch("/admin/internal-work-items/{item_id}", dependencies=[Depends(require_api_key)])
+    def update_internal_work_item(
+        item_id: str,
+        payload: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        try:
+            result = repository.update_internal_work_item(
+                item_id=item_id,
+                status=str(payload.get("status") or ""),
+                resolved_by=str(payload.get("resolved_by") or ""),
+                resolution_note=str(payload.get("resolution_note") or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if result.get("status") == "not_found":
+            raise HTTPException(status_code=404, detail="Internal work item not found")
+        return result
+
     @router.get("/admin/ai-sales-policy", dependencies=[Depends(require_api_key)])
     async def ai_sales_policy() -> dict[str, Any]:
         try:

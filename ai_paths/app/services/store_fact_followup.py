@@ -12,6 +12,9 @@ DETAIL_FACT_KEYS: dict[str, tuple[str, ...]] = {
     "arrival_guidance": ("floor", "room", "arrival_guidance", "reception"),
 }
 
+PAID_ONLY_DETAIL_KEYS = {"floor", "room", "arrival_guidance", "reception"}
+PRIVATE_ARRIVAL_FACT_KEYS = ("floor", "room", "arrival_guidance", "reception")
+
 ARRIVAL_FACT_KEYS = (
     "store_id",
     "store_name",
@@ -68,11 +71,25 @@ def build_store_fact_followup(
         or resolution.get("requested_detail_kind")
         or ((resolution.get("destination_resolution") or {}).get("detail_kind") if isinstance(resolution.get("destination_resolution"), dict) else "")
     ).strip()
-    detail_keys = DETAIL_FACT_KEYS.get(detail_kind, ())
-    detail_facts = _selected_facts(unique_store, detail_keys)
+    configured_detail_keys = DETAIL_FACT_KEYS.get(detail_kind, ())
+    paid_only_request = bool(
+        detail_kind == "arrival_guidance" and not authoritative_paid
+    )
+    detail_keys = (
+        configured_detail_keys
+        if authoritative_paid
+        else tuple(key for key in configured_detail_keys if key not in PAID_ONLY_DETAIL_KEYS)
+    )
+    detail_facts = (
+        {}
+        if paid_only_request
+        else _selected_facts(unique_store, detail_keys)
+    )
     detail_status = (
         "not_requested"
         if not detail_kind
+        else "payment_required"
+        if paid_only_request
         else "available"
         if detail_facts
         else "missing"
@@ -81,6 +98,10 @@ def build_store_fact_followup(
         _selected_facts(unique_store, ARRIVAL_FACT_KEYS)
         if authoritative_paid and unique_store_id and unique_store
         else {}
+    )
+    private_arrival_facts = _selected_facts(unique_store, PRIVATE_ARRIVAL_FACT_KEYS)
+    arrival_guidance_available = bool(
+        authoritative_paid and unique_store_id and private_arrival_facts
     )
     missing_detail_task = (
         {
@@ -91,7 +112,7 @@ def build_store_fact_followup(
             "missing_fact_keys": list(detail_keys),
             "customer_send_authorized": False,
         }
-        if unique_store_id and detail_kind and not detail_facts
+        if unique_store_id and detail_kind and detail_status == "missing"
         else {}
     )
     return {
@@ -112,18 +133,18 @@ def build_store_fact_followup(
             "kind": detail_kind,
             "status": detail_status,
             "facts": detail_facts,
-            "missing_fact_keys": list(detail_keys) if detail_kind and not detail_facts else [],
+            "missing_fact_keys": list(detail_keys) if detail_status == "missing" else [],
         },
         "post_payment_arrival_guidance": {
-            "status": "available" if arrival_facts else "unavailable",
-            "store_id": unique_store_id if arrival_facts else "",
-            "facts": arrival_facts,
+            "status": "available" if arrival_guidance_available else "unavailable",
+            "store_id": unique_store_id if arrival_guidance_available else "",
+            "facts": arrival_facts if arrival_guidance_available else {},
             "reason": (
                 "paid_and_unique_store_facts_available"
-                if arrival_facts
+                if arrival_guidance_available
                 else "authoritative_payment_required"
                 if not authoritative_paid
-                else "unique_store_facts_required"
+                else "private_arrival_guidance_facts_required"
             ),
         },
         "internal_followup": missing_detail_task,

@@ -28,6 +28,7 @@ MAX_SCRIPT_GROUPS_PER_ACTION_OR_TAG = 3
 CURRENT_INTENT_CONTINUATION_SIGNALS = {
     "information_submission",
     "transaction_progress",
+    "explicit_booking_request",
 }
 
 

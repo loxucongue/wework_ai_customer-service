@@ -102,6 +102,33 @@ def test_generation_reservation_is_stable_and_does_not_duplicate_customer_messag
         assert conn.execute("SELECT COUNT(*) AS total FROM messages WHERE role='user'").fetchone()["total"] == 1
 
 
+def test_inflight_generation_is_never_promoted_to_recovery_without_an_owner_lease(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    request = _request("slow-but-live-message")
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-slow-but-live",
+        started_at="2026-09-09T00:00:00+00:00",
+    )
+
+    # A duplicate caller may observe the reservation, but age alone is not
+    # proof that its owner died.  Only the owner may persist fallback_pending.
+    observed = repository.get_v3_generation_result(
+        generation_key=str(reserved["generation_key"])
+    )
+
+    assert observed["ready"] is False
+    assert observed["generation_status"] == "generating"
+    assert not hasattr(repository, "recover_stale_v3_generation")
+    assert repository.claim_v3_fallback_recoveries(
+        now="2026-09-09T00:10:00+00:00",
+        max_attempts=2,
+    ) == []
+
+
 def test_completed_generation_replays_exact_http_result_with_stable_message_ids(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     request = _request()
@@ -164,7 +191,7 @@ def test_completed_generation_replays_exact_http_result_with_stable_message_ids(
     assert "v3_recovery_payload" not in run["output_snapshot"]
 
 
-def test_stale_generation_and_fallback_recovery_are_claimed_and_completed(tmp_path: Path) -> None:
+def test_explicit_fallback_recovery_is_claimed_and_completed(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     request = _request("stale-message")
     reserved = _reserve(
@@ -175,13 +202,14 @@ def test_stale_generation_and_fallback_recovery_are_claimed_and_completed(tmp_pa
     )
     generation_key = str(reserved["generation_key"])
 
-    stale = repository.recover_stale_v3_generation(
-        generation_key=generation_key,
-        stale_before="2026-09-09T00:00:10+00:00",
+    scheduled = repository.schedule_v3_fallback_recovery(
+        request_id="request-stale",
+        recovery_kind="reply_timeout",
         next_retry_at="2026-09-09T00:00:15+00:00",
+        error="reply_timeout",
     )
-    assert stale["recovered_stale"] is True
-    assert stale["generation_status"] == GENERATION_STATUS_FALLBACK_PENDING
+    assert scheduled["scheduled"] is True
+    assert scheduled["status"] == GENERATION_STATUS_FALLBACK_PENDING
 
     claimed = repository.claim_v3_fallback_recoveries(
         now="2026-09-09T00:00:20+00:00",
