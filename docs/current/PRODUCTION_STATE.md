@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-09T09:27:00+08:00`
+- verified_at: `2026-09-09T11:54:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260909-v3-terminal-78622cf4`
-- git commit: `78622cf42fdf632e47d8f7e4d9e379a7bc3c6b9c`
+- release: `ai-paths-unified-20260909-sop-deterministic-af3c515d`
+- git commit: `af3c515dc2491347cf170d9abdcba9c875882288`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -40,7 +40,7 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行；现场 `queue_depth=0`、最近轮询错误为空。任务按“未开口、未删除、AI 托管”三个确定性门槛执行，只有三项均满足才读取第一组未消费内容并原样发送。仅客户已开口、客户关系已删除和人工接管消费任务 `70` 且不消费 `msgId`；参数、资格数据、内容、接口或发送失败保持未消费并恢复、预警。
-- 旧执行模式恢复任务进入本地 `platform_legacy_quarantined`，不调用主动发送或第三方消费接口；发布后首批 10 条隔离完成时 worker 的 `send=0`、`consume=0`。钉钉告警重试已与 SOP 恢复解耦，不再阻塞任务恢复。
+- 正常拉取与恢复任务共用客户锁和 `customer_batch_sequence` 确定性状态机；恢复入口不再进入旧单任务模型路径。第三方 `/pending` 未返回任务时只做空轮询，不生成任务、不消费、不告警；平台已返回任务但 `/sop-messages` 缺内容仍按第三方内容故障处理。
 - V3 回复异步收尾任务 `v3_reply_finalization` 已启动且无启动错误；截至本次核验，发布后 2 条固定协议消息均为 1ms、零模型、零客户回复，首条普通自然 V3 请求已生成客户回复且可靠收尾完成、无运行错误。该普通请求总耗时 34.02s，其中 AI/人工状态 804ms、入口事务 2.21s、上一轮状态 1.19s、模型图 29.71s、核心持久化 479ms；本次数据库收敛已生效，但单样本因完整 Reply 重试产生的模型长尾不属于本次审计优化范围，仍不能据此声明生产 P95。
 - Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=58`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
@@ -48,13 +48,14 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-sop-alert-8c31b2b2`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-v3-terminal-78622cf4`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-152743-9e0f24c2`。
 - 数据库已迁移到 `20260908_01`，本次只为 `aics_runs.created_at` 增加查询索引。发布前全部 `aics_*` 表的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-v3-proactive-20260908-204425/aics-before-20260908_01.sql.gz`，文件大小 `398145414` 字节，`SHA256SUMS` 与 `gzip -t` 均通过。旧代码可保留该索引，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-09 11:54 发布并核验第三方 SOP 恢复路径确定性修复：control/reply/worker 统一运行 clean `main@af3c515dc2491347cf170d9abdcba9c875882288`，release 为 `ai-paths-unified-20260909-sop-deterministic-af3c515d`，三个 unit 均 active/running 且 `NRestarts=0`。恢复任务与正常任务复用同一客户锁和确定性状态机，不再调用旧模型入口；发布后多个自然轮询/恢复周期中 worker `model.count=0`、`last_poll_error` 为空。管理日志对客户 15215324 的历史任务 82716/82717/82718 均按明确发送证据展示 `completed`，旧模型错误只留在原始审计。空 `/pending` 已定义为无操作，不生成、不消费、不告警；本次无历史补发、无第三方任务生成、无数据库 schema 或前端变更。V3 无鉴权 401、V2 404、管理接口无鉴权 401、Nginx 配置检查通过；统一回滚点为 `ai-paths-unified-20260909-v3-terminal-78622cf4`。
 - 2026-09-09 09:31 补充首条普通自然请求：客户回复成功、无运行错误，可靠收尾已完成；入口事务 2.21s、核心持久化 479ms且记录的数据库连接数为 1，证明本次审计/数据库收敛已进入生产路径。该请求完整耗时 34.02s，其中模型图 29.71s并发生一次完整 Reply 重试，因此这条剩余长尾来自模型恢复链而不是回复后的审计写入；当前样本量不足，人工接管和普通请求 P50/P95继续观察。
 - 2026-09-09 09:27 发布并核验 V3 终态持久化与审计关键路径优化：control/reply/worker 统一运行 clean `main@78622cf42fdf632e47d8f7e4d9e379a7bc3c6b9c`，release 为 `ai-paths-unified-20260909-v3-terminal-78622cf4`，三个角色 `/health` 的 release、完整 SHA、`dirty=false` 一致且 `NRestarts=0`；V3 无鉴权为 401、V2 为 404，发布后错误级日志为空。人工接管、平台挤占/过滤和状态失败等终态路径现在以一次连接和一次事务保存客户消息、run、主动唤醒取消、最小 BI 及可靠收尾任务；普通入口也把客户消息与唤醒取消合并到同一事务，身份观察、SOP 回传、完整轨迹和 BI 补充由持久化 Worker 幂等批量收尾。全仓 626 条测试通过，100ms 连接延迟注入证明人工接管模型调用为 0、数据库连接为 1；一条生产同配置 DeepSeek 只读运行有效回复、图后 82ms、生产写入/发送为 0。发布窗口只有 1 条自然协议消息（1ms），尚无人工接管自然样本，不能宣称生产 P95 已达标。现场同时确认应用服务器使用私网地址，但 MySQL 主机名解析到公网地址；简单 SQL 约 211ms、独立连接约 937ms、冷连接约 3.5s，该网络切换作为独立运维发布处理，本次未混合修改。无数据库迁移、无前端发布、无测试客户发送；回滚点为 `ai-paths-unified-20260909-sop-alert-8c31b2b2`。
 - 2026-09-08 23:35 发布并核验 V3 回复关键路径性能优化：control/reply/worker 统一运行 clean `main@7b1c01f7877321b3eb729cefbed91f0cc09ba6c8`，release 为 `ai-paths-unified-20260908-v3-latency-7b1c01f7`。入口客户消息与 run 创建合并为单事务；客户身份观察和唤醒取消在客户消息可靠保存后并行；上一轮策略与 SOP 读取移出事件循环；Follow Knowledge 增加 8 秒启动预热、300 秒租户知识缓存和同键 single-flight；Reply 输入去除重复的知识、策略与上一轮状态副本；响应快照和完整耗时在响应后合并写入。V3 独立预算为 AI/人工状态 12 秒、普通/强工具图 35/45 秒、收尾预留 12 秒，未改变 DeepSeek 模型和销售语义。全仓 616 条测试通过；120 条有质量评审的 DeepSeek 隔离样本初评通过率 95.0%、真人表达 96.2%、策略覆盖 98.8%，安全/无依据事实/生产写入均为 0，完整 L3 P50/P95 为 8.49/12.43 秒；最终 12 秒状态预算的 120 条运行验证中状态与模型超时均为 0、策略覆盖 100%、P50/P95 为 9.42/13.96 秒，仍有 1 条既有门店事实兜底。发布后三个服务 active、`NRestarts=0`、V3 无鉴权 401、V2 404，且未发现启动错误；核验窗口内尚无自然 V3 请求，因此不能把隔离 L3 耗时声明为生产公网 HTTP 指标。无数据库迁移、无前端发布、无测试客户发送；统一回滚点为 `ai-paths-unified-20260908-outreach-cb33fc65`。
