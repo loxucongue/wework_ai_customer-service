@@ -241,7 +241,7 @@ def test_model_led_admission_allows_sales_slot_hold_language() -> None:
 
 
 def test_distance_prompt_reframes_without_repeating_negative_objection() -> None:
-    assert "客户可见文字不得再用“距离、远、折腾、麻烦”复述顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "客户可见文字不得再用“距离、远、折腾、麻烦、不方便”复述顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "即使候选原文有也不得照搬" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "马上把注意力转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "正向社会证明可以说“专程过来/花一两个小时过来”" in PARALLEL_REPLY_SYSTEM_PROMPT
@@ -298,6 +298,12 @@ def test_terminal_distance_objection_rejects_negative_restatement_and_same_city_
             state,
         )
 
+    with pytest.raises(ValueError, match="terminal_store_distance_objection_restates_negative"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "理解您觉得过来一趟不太方便。"}],
+            state,
+        )
+
     with pytest.raises(ValueError, match="terminal_store_distance_objection_same_city_requery"):
         validate_model_led_reply_admission(
             [{"type": "text", "content": "那没关系呀，您告诉我大概在哪个位置，我再看看。"}],
@@ -321,7 +327,7 @@ def test_distance_repair_hints_remove_same_city_loop_and_negative_restatement() 
     restatement = _reply_repair_hint("terminal_store_distance_objection_restates_negative")
     requery = _reply_repair_hint("terminal_store_distance_objection_same_city_requery")
 
-    assert "不得再次出现‘距离、远、折腾、麻烦’" in restatement
+    assert "不得再次出现‘距离、远、折腾、麻烦、不方便’" in restatement
     assert "删除询问地铁站、路口、楼栋、具体位置" in requery
 
 

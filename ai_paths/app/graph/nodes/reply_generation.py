@@ -1042,6 +1042,7 @@ def _validated_parallel_reply_payload(
 _REPAIR_SENTENCE_SALVAGE_CODES = {
     "case_image_structure_required_when_reply_promises_delivery",
     "customer_visible_false_human_identity_claim",
+    "stale_historical_store_topic_leak",
     "terminal_store_distance_objection_restates_negative",
 }
 
@@ -1136,12 +1137,29 @@ def _remove_repair_violation_sentences(text: str, codes: set[str]) -> str:
             continue
         if (
             "terminal_store_distance_objection_restates_negative" in codes
-            and any(marker in compact for marker in ("距离", "太远", "有点远", "确实远", "折腾", "麻烦"))
+            and any(
+                marker in compact
+                for marker in (
+                    "距离",
+                    "太远",
+                    "有点远",
+                    "确实远",
+                    "折腾",
+                    "麻烦",
+                    "不方便",
+                    "不太方便",
+                )
+            )
         ):
             continue
         if (
             "case_image_structure_required_when_reply_promises_delivery" in codes
             and _sentence_promises_case_media(compact)
+        ):
+            continue
+        if (
+            "stale_historical_store_topic_leak" in codes
+            and _sentence_revives_historical_store_topic(compact)
         ):
             continue
         kept.append(piece.strip())
@@ -1182,3 +1200,13 @@ def _sentence_promises_case_media(text: str) -> bool:
         "同类改善参考",
     )
     return any(term in text for term in delivery_terms) and any(term in text for term in media_terms)
+
+
+def _sentence_revives_historical_store_topic(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in ("之前", "前面", "刚才", "刚刚", "已经", "已发", "发过")
+    ) and any(
+        marker in text
+        for marker in ("门店", "店址", "地址", "位置", "定位", "导航", "门店卡")
+    )

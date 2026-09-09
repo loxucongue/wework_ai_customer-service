@@ -24,6 +24,7 @@ from app.graph.nodes.sales_fact_validation import (
     validate_customer_visible_identity_boundaries,
     validate_sales_price_fact_boundaries,
 )
+from app.services.customer_payment_state import is_completed_order, is_inactive_order
 
 
 def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -61,6 +62,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         lambda: validate_sales_price_fact_boundaries(messages),
         lambda: _validate_mainline_sales_action(state),
         lambda: _validate_customer_visible_mainline_boundary(messages, state),
+        lambda: _validate_unrelated_historical_store_claim(messages, state),
         lambda: _validate_terminal_store_distance_objection(messages, state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
@@ -187,13 +189,103 @@ def _validate_terminal_store_distance_objection(
     )
     if not text:
         return
-    if any(marker in text for marker in ("距离", "太远", "有点远", "确实远", "折腾", "麻烦")):
+    if any(
+        marker in text
+        for marker in (
+            "距离",
+            "太远",
+            "有点远",
+            "确实远",
+            "折腾",
+            "麻烦",
+            "不方便",
+            "不太方便",
+        )
+    ):
         raise ValueError("terminal_store_distance_objection_restates_negative")
     if re.search(
         r"(?:告诉|说|发|回复)(?:我|这边)?[^。！？!?]{0,10}(?:哪个位置|在哪里|在哪儿|哪边|地铁站|路口|楼栋|几号)",
         text,
     ):
         raise ValueError("terminal_store_distance_objection_same_city_requery")
+
+
+def _validate_unrelated_historical_store_claim(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Do not turn unrelated historical store provenance into a new claim.
+
+    The prompt builder explicitly records whether this turn needs historical
+    store evidence.  When it does not, a completed-delivery statement or the
+    name of a store that appears only on an inactive order is a provenance
+    mismatch, not a sales-language judgement.
+    """
+
+    if state.get("_historical_store_context_allowed") is not False:
+        return
+    text = re.sub(
+        r"\s+",
+        "",
+        "\n".join(
+            message_content_text(item.get("content"))
+            for item in messages
+            if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+        ),
+    )
+    if not text:
+        return
+    if _claims_historical_store_topic(text):
+        raise ValueError("stale_historical_store_topic_leak")
+    if any(name in text for name in _inactive_order_store_names(state)):
+        raise ValueError("stale_historical_store_topic_leak")
+
+
+def _claims_historical_store_topic(text: str) -> bool:
+    for clause in re.split(r"[，。！？；,.!?;]+", str(text or "")):
+        if not clause:
+            continue
+        if not any(
+            marker in clause
+            for marker in ("之前", "前面", "刚才", "刚刚", "已经", "已发", "发过")
+        ):
+            continue
+        if any(
+            marker in clause
+            for marker in ("门店", "店址", "地址", "位置", "定位", "导航", "门店卡")
+        ):
+            return True
+    return False
+
+
+def _inactive_order_store_names(state: dict[str, Any]) -> set[str]:
+    joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
+    shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
+    facts = (
+        shared.get("authoritative_facts")
+        if isinstance(shared.get("authoritative_facts"), dict)
+        else {}
+    )
+    order_payment = (
+        facts.get("orders_and_payment")
+        if isinstance(facts.get("orders_and_payment"), dict)
+        else {}
+    )
+    names: set[str] = set()
+    for order in order_payment.get("orders") or []:
+        if not isinstance(order, dict):
+            continue
+        expired = str(order.get("paid_protection_status") or "").strip() in {
+            "expired",
+            "inactive_order_expired",
+            "completed_order_expired",
+        }
+        if not (expired or is_inactive_order(order) or is_completed_order(order)):
+            continue
+        name = str(order.get("store_name") or "").strip()
+        if name:
+            names.add(name)
+    return names
 
 
 def _route_has_distance_objection(route: dict[str, Any], joined: dict[str, Any]) -> bool:

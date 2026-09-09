@@ -5,6 +5,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.prompts.reply_sales_prompt_v4 import PARALLEL_REPLY_SYSTEM_PROMPT
+from app.services.customer_payment_state import is_completed_order, is_inactive_order
 from app.services.store_fact_followup import unique_delivery_store_id
 
 
@@ -122,6 +123,11 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         if item
     )
     reference_aliases = build_reply_reference_aliases(payload)
+    include_store_context = _reply_requires_historical_store_context(
+        payload,
+        semantic_route=semantic_route,
+        relevant_fact_topic_ids=relevant_fact_topic_ids,
+    )
     sections = [
         _section("当前时间", time_text or "未提供"),
         _section(
@@ -135,7 +141,12 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         _section("完整聊天", _render_conversation(shared, reference_aliases=reference_aliases)),
         _section(
             "当前结构事实与不能越过的边界",
-            _render_compact_status(_compact_reply_status(facts)),
+            _render_compact_status(
+                _compact_reply_status(
+                    facts,
+                    include_store_context=include_store_context,
+                )
+            ),
         ),
         _section("本轮真实执行能力", _render_execution_capabilities()),
     ]
@@ -242,6 +253,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
                 payload,
                 json_dumps=json_dumps,
                 reference_aliases=reference_aliases,
+                include_store_context=include_store_context,
             ),
         ),
         "请只返回符合系统输出合同的严格 json。",
@@ -349,11 +361,71 @@ def _compact_previous_policy_state(value: Any) -> dict[str, Any]:
     }
 
 
-def _compact_reply_status(facts: dict[str, Any]) -> dict[str, Any]:
+def _reply_requires_historical_store_context(
+    payload: dict[str, Any],
+    *,
+    semantic_route: dict[str, Any],
+    relevant_fact_topic_ids: list[str],
+) -> bool:
+    """Show old store evidence only when this turn structurally needs it.
+
+    Historical order stores and delivered cards remain available to runtime
+    validators.  They are withheld from the customer-facing model on unrelated
+    turns so the model cannot combine two unrelated provenance records into a
+    new store claim.
+    """
+
+    if "historical_store_context_allowed" in payload:
+        return payload.get("historical_store_context_allowed") is True
+    store_query = (
+        semantic_route.get("store_query")
+        if isinstance(semantic_route.get("store_query"), dict)
+        else {}
+    )
+    if store_query.get("required") is True:
+        return True
+    if str(store_query.get("purpose") or "").strip() not in {"", "none"}:
+        return True
+    if isinstance(semantic_route.get("store_result_interpretation"), dict):
+        return True
+    relevant_topics = {
+        str(item or "").strip()
+        for item in relevant_fact_topic_ids
+        if str(item or "").strip()
+    }
+    if relevant_topics.intersection(
+        {"store_policy", "store_arrival_detail", "store_trust", "transport_policy"}
+    ):
+        return True
+    store_status = (
+        payload.get("store_fact_status")
+        if isinstance(payload.get("store_fact_status"), dict)
+        else {}
+    )
+    if str(store_status.get("status") or "").strip():
+        return True
+    structured = (
+        payload.get("structured_delivery_options")
+        if isinstance(payload.get("structured_delivery_options"), dict)
+        else {}
+    )
+    return bool(structured.get("store_address"))
+
+
+def _compact_reply_status(
+    facts: dict[str, Any],
+    *,
+    include_store_context: bool = True,
+) -> dict[str, Any]:
     order_payment = facts.get("orders_and_payment") if isinstance(facts.get("orders_and_payment"), dict) else {}
     resolved = order_payment.get("resolved_payment") if isinstance(order_payment.get("resolved_payment"), dict) else {}
     orders = [item for item in order_payment.get("orders") or [] if isinstance(item, dict)]
-    latest_order = orders[0] if orders else {}
+    active_orders = [
+        item
+        for item in orders
+        if not is_inactive_order(item) and not is_completed_order(item)
+    ]
+    latest_order = active_orders[0] if active_orders else {}
     appointment = order_payment.get("appointment") if isinstance(order_payment.get("appointment"), dict) else {}
     request_store = facts.get("request_store_facts") if isinstance(facts.get("request_store_facts"), dict) else {}
     confirmed_store = _pick(request_store, "confirmed_store_id", "confirmed_store_name")
@@ -376,25 +448,31 @@ def _compact_reply_status(facts: dict[str, Any]) -> dict[str, Any]:
         for item in store_delivery.get("latest_batch_store_ids") or []
         if str(item or "").strip()
     ]
-    if confirmed_store:
+    if include_store_context and confirmed_store:
         current_store_status: Any = confirmed_store
-    elif recent_store_ids:
+    elif include_store_context and recent_store_ids:
         current_store_status = {
             "状态": "最近已交付候选门店，尚未确认成交门店",
             "候选数量": len(recent_store_ids),
             "候选门店ID": recent_store_ids,
         }
-    else:
+    elif include_store_context:
         current_store_status = "没有已确认成交门店"
+    else:
+        current_store_status = None
     factual_boundaries: list[str] = []
-    if not confirmed_store:
+    if include_store_context and not confirmed_store:
         if recent_store_ids:
             factual_boundaries.append(
                 "最近已交付候选门店不等于客户已选定成交门店；不能把候选发送说成已预约、已登记或已安排到店"
             )
         else:
             factual_boundaries.append("没有已确认成交门店；不能声称已预约、已登记或已安排到店")
-    recommendation_final = _historical_recommendation_final(recommendation_evidence)
+    recommendation_final = (
+        _historical_recommendation_final(recommendation_evidence)
+        if include_store_context
+        else False
+    )
     if recommendation_final:
         current_store_status = {
             **(current_store_status if isinstance(current_store_status, dict) else {"状态": current_store_status}),
@@ -435,13 +513,11 @@ def _compact_reply_status(facts: dict[str, Any]) -> dict[str, Any]:
                 "amount",
                 "source",
                 "paid_protection_status",
-                "store_id",
-                "store_name",
             ),
             "订单": _drop_empty(
                 {
-                    "count": len(orders),
-                    "latest": _pick(
+                    "active_count": len(active_orders),
+                    "current": _pick(
                         latest_order,
                         "id",
                         "order_id",
@@ -465,16 +541,30 @@ def _compact_reply_status(facts: dict[str, Any]) -> dict[str, Any]:
                     "预约金卡次数": sent.get("payment_collection_count"),
                     "活动图已发": sent.get("activity_intro_image_sent"),
                     "案例图": _pick(case_delivery, "total_events", "last_sent_at"),
-                    "最近门店卡": _pick(
-                        store_delivery,
-                        "latest_batch_store_ids",
-                        "latest_batch_count",
-                        "last_sent_at",
-                        "request_id",
+                    "最近门店卡": (
+                        _pick(
+                            store_delivery,
+                            "latest_batch_store_ids",
+                            "latest_batch_count",
+                            "last_sent_at",
+                            "request_id",
+                        )
+                        if include_store_context
+                        else {}
                     ),
                 }
             ),
-            "定位卡": _pick(facts.get("location_card") or {}, "title", "address", "coordinates", "location"),
+            "定位卡": (
+                _pick(
+                    facts.get("location_card") or {},
+                    "title",
+                    "address",
+                    "coordinates",
+                    "location",
+                )
+                if include_store_context
+                else {}
+            ),
         }
     )
 
@@ -1658,6 +1748,7 @@ def _render_reference_contract(
     *,
     json_dumps,
     reference_aliases: dict[str, str] | None = None,
+    include_store_context: bool = True,
 ) -> str:
     valid_message_refs = {
         str(item).strip()
@@ -1669,6 +1760,7 @@ def _render_reference_contract(
         for item in payload.get("valid_deposit_evidence_refs") or []
         if str(item).strip()
         and str(item).strip() not in valid_message_refs
+        and (include_store_context or not str(item).strip().startswith("store_delivery:"))
     ]
     lines = [
         (

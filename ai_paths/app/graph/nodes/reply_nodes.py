@@ -872,6 +872,9 @@ def _reply_validation_state(state: AgentState, payload: dict[str, Any]) -> Agent
         else {}
     )
     reply_payload = parallel_reply_payload(state)
+    validation_state["_historical_store_context_allowed"] = (
+        reply_payload.get("historical_store_context_allowed") is True
+    )
     validation_state["reply_payment_channel_availability"] = (
         reply_payload.get("payment_channel_availability")
         if isinstance(reply_payload.get("payment_channel_availability"), dict)
@@ -2475,6 +2478,7 @@ def _parallel_generic_reply_repair_messages(
         "paused_turn_cannot_advance_transaction",
         "invalid_parallel_reply_message_content:",
         "store_address_text_without_card",
+        "stale_historical_store_topic_leak",
         "terminal_store_distance_objection_restates_negative",
         "terminal_store_distance_objection_same_city_requery",
         "offer_face_hand_price_scope_ambiguous",
@@ -2581,6 +2585,8 @@ def _parallel_generic_reply_repair_messages(
         "rules": [
             "targeted_repair_instructions 是本次最高优先级；previous_reply 中被移除的无效字段不得照抄或重建。",
             "不得重新判断客户心理、成交阶段或销售节奏，不得按错误码生成新销售话术。",
+            "任何修复都不得回答或声称自己是真人、人工、机器人或 AI；客户出现身份质疑时，只处理紧邻的真实业务请求。",
+            "不得从历史订单、旧门店卡或旧城市引入当前消息没有请求的门店名称、城市、地址、路线或‘之前已发地址’话题；只有本轮真实门店工具/结构合同允许时才可写门店。",
             "policy_decision 不是本次错误来源时必须原样保留；不得因删除事实冲突话术而删掉意图、情绪、卡点和逼单暂停判断。",
             "事实不足时删除完成态、可用性或已安排断言，改成真实的条件表达、追问或说明待核对；不得换一种措辞重复同一断言。",
             "所有 ID、URL、金额、结构消息和 evidence_refs 只能取自 valid_reference_contract。",
@@ -3618,10 +3624,16 @@ def _reply_repair_hint(error: str) -> str:
             "‘马上发地址/位置’等承诺，并按当前工具事实回答或追问一个真正缺失的信息。"
             "工具结果为 search_incomplete 时，不得从旧门店卡、历史订单或 Router 摘要恢复门店事实。"
         )
+    if "stale_historical_store_topic_leak" in error:
+        return (
+            "当前消息和本轮工具没有要求处理门店。删除所有从历史订单、旧门店卡或旧城市带回的门店名、"
+            "城市、地址、路线和‘之前已经发过地址’断言；保留并直接完成客户当前问题以及本轮允许的"
+            "最早缺失主线。不得用另一个历史地点替换。"
+        )
     if "terminal_store_distance_objection_restates_negative" in error:
         return (
             "当前城市门店推荐已经完成。第一句只用‘那没关系呀/没事的’轻承接，"
-            "不得再次出现‘距离、远、折腾、麻烦’等加重顾虑的说法；"
+            "不得再次出现‘距离、远、折腾、麻烦、不方便’等加重顾虑的说法；"
             "立即用本轮已召回且安全的话术把注意力转到技术、效果、案例和是否值得。"
         )
     if "terminal_store_distance_objection_same_city_requery" in error:

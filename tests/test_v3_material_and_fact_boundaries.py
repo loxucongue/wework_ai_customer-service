@@ -436,6 +436,99 @@ def test_failed_repair_salvage_removes_distance_restatement_but_keeps_value() ->
     ]
 
 
+def test_failed_repair_salvage_removes_inconvenience_restatement() -> None:
+    payload = {
+        "reply_messages": [
+            {
+                "type": "text",
+                "content": "理解您觉得过来一趟不太方便。很多客户会专程过来，主要还是看中技术和效果。",
+            }
+        ]
+    }
+
+    salvaged, _codes = _salvage_repair_payload(
+        payload,
+        ValueError(
+            "reply_admission_violations::"
+            "terminal_store_distance_objection_restates_negative"
+        ),
+    )
+
+    assert salvaged is not None
+    assert salvaged["reply_messages"] == [
+        {
+            "type": "text",
+            "content": "很多客户会专程过来，主要还是看中技术和效果。",
+            "order": 1,
+        }
+    ]
+
+
+def test_unrelated_turn_rejects_historical_store_provenance_leak() -> None:
+    state = {
+        "_historical_store_context_allowed": False,
+        "evidence_join": {
+            "schema_version": "v3_evidence_join_v1",
+            "shared_context": {
+                "authoritative_facts": {
+                    "orders_and_payment": {
+                        "orders": [
+                            {
+                                "status": "lost_refunded",
+                                "paid_protection_status": "inactive_order_expired",
+                                "store_id": "126",
+                                "store_name": "厦门二店",
+                            }
+                        ]
+                    }
+                }
+            },
+        },
+    }
+
+    with pytest.raises(ValueError, match="stale_historical_store_topic_leak"):
+        validate_model_led_reply_admission(
+            [
+                {"type": "text", "content": "活动价是268元。"},
+                {"type": "text", "content": "您之前问的济南门店地址已经发您了。"},
+            ],
+            state,
+        )
+
+    with pytest.raises(ValueError, match="stale_historical_store_topic_leak"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "活动价是268元，您可以去厦门二店看看。"}],
+            state,
+        )
+
+    validate_model_led_reply_admission(
+        [{"type": "text", "content": "周年庆淡斑活动价是268元，包含皮肤检测和基础护理。"}],
+        state,
+    )
+
+
+def test_failed_repair_salvage_removes_stale_store_sentence_only() -> None:
+    payload = {
+        "reply_messages": [
+            {
+                "type": "text",
+                "content": "周年庆淡斑活动价是268元。您之前问的济南门店地址已经发您了。",
+            }
+        ]
+    }
+
+    salvaged, codes = _salvage_repair_payload(
+        payload,
+        ValueError("reply_admission_violations::stale_historical_store_topic_leak"),
+    )
+
+    assert codes == ["stale_historical_store_topic_leak"]
+    assert salvaged is not None
+    assert salvaged["reply_messages"] == [
+        {"type": "text", "content": "周年庆淡斑活动价是268元。", "order": 1}
+    ]
+
+
 def test_failed_repair_salvage_fails_closed_for_unsafe_or_empty_rewrite() -> None:
     price_payload = {
         "reply_messages": [{"type": "text", "content": "脸和手总共268元。"}]
@@ -512,9 +605,12 @@ def test_every_visible_rewrite_rebuilds_sales_judgment_with_visible_text() -> No
     )
 
     assistant_payload = repaired_messages[-2]["content"]
+    repair_contract = repaired_messages[-1]["content"]
     assert "reply_messages" not in assistant_payload
     assert "sales_judgment" not in assistant_payload
     assert "policy_decision" in assistant_payload
+    assert "不得回答或声称自己是真人、人工、机器人或 AI" in repair_contract
+    assert "不得从历史订单、旧门店卡或旧城市引入" in repair_contract
 
 
 def test_visible_identity_repair_removes_stale_policy_prose_and_lists_hard_exclusions() -> None:

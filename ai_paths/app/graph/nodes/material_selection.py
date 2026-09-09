@@ -265,6 +265,11 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
     registration_fact_status = _registration_fact_status(state, shared)
     store_fact_status = _store_fact_status(joined)
     structured_delivery_options = _structured_delivery_options(joined, state=state)
+    historical_store_context_allowed = _historical_store_context_allowed(
+        semantic_route=semantic_route,
+        store_fact_status=store_fact_status,
+        structured_delivery_options=structured_delivery_options,
+    )
     current_message = shared.get("current_message") if isinstance(shared.get("current_message"), dict) else {}
     protocol_events = (
         current_message.get("protocol_events") if isinstance(current_message.get("protocol_events"), list) else []
@@ -313,6 +318,7 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
         "registration_fact_status": registration_fact_status,
         "mainline_delivery_state": mainline_delivery_state,
         "store_fact_status": store_fact_status,
+        "historical_store_context_allowed": historical_store_context_allowed,
         "current_turn_structural_constraints": _current_turn_structural_constraints(
             store_fact_status=store_fact_status,
             structured_delivery_options=structured_delivery_options,
@@ -370,6 +376,43 @@ def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _historical_store_context_allowed(
+    *,
+    semantic_route: dict[str, Any],
+    store_fact_status: dict[str, Any],
+    structured_delivery_options: dict[str, Any],
+) -> bool:
+    """Whether old store delivery evidence belongs in the Reply prompt.
+
+    This is input minimisation driven only by Router/tool structures.  It does
+    not infer customer intent from prose or choose a sales action.
+    """
+
+    store_query = (
+        semantic_route.get("store_query")
+        if isinstance(semantic_route.get("store_query"), dict)
+        else {}
+    )
+    if store_query.get("required") is True:
+        return True
+    if str(store_query.get("purpose") or "").strip() not in {"", "none"}:
+        return True
+    if isinstance(semantic_route.get("store_result_interpretation"), dict):
+        return True
+    relevant_topics = {
+        str(item or "").strip()
+        for item in semantic_route.get("relevant_fact_topic_ids") or []
+        if str(item or "").strip()
+    }
+    if relevant_topics.intersection(
+        {"store_policy", "store_arrival_detail", "store_trust", "transport_policy"}
+    ):
+        return True
+    if str(store_fact_status.get("status") or "").strip():
+        return True
+    return bool(structured_delivery_options.get("store_address"))
 
 
 def _mainline_delivery_state(

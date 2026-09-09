@@ -198,6 +198,66 @@ def test_primary_prompt_receives_runtime_presentation_limits() -> None:
     assert "max_text_chars：500" in messages[1]["content"]
 
 
+def test_unrelated_price_turn_hides_expired_order_and_store_delivery_provenance() -> None:
+    messages = build_parallel_reply_messages(
+        {
+            "historical_store_context_allowed": False,
+            "mainline_delivery_state": {
+                "next_missing_stage": "effect_evidence",
+                "allowed_next_sales_action_types": ["deliver_value"],
+            },
+            "valid_message_refs": ["current_message"],
+            "valid_deposit_evidence_refs": ["store_delivery:old-card", "current_message"],
+            "evidence": {
+                "semantic_route": {
+                    "relevant_fact_topic_ids": ["activity_offer"],
+                    "store_query": {"required": False, "purpose": "none"},
+                },
+                "shared_context": {
+                    "current_message": {"content": "多少钱？", "message_ref": "current_message"},
+                    "conversation": [
+                        {"role": "customer", "message_ref": "current_message", "content": "多少钱？"}
+                    ],
+                    "authoritative_facts": {
+                        "orders_and_payment": {
+                            "orders": [
+                                {
+                                    "status": "lost_refunded",
+                                    "deposit_state": "historical_paid_inactive",
+                                    "paid_protection_status": "inactive_order_expired",
+                                    "store_id": "126",
+                                    "store_name": "厦门二店",
+                                }
+                            ],
+                            "resolved_payment": {
+                                "deposit_state": "historical_paid_inactive",
+                                "store_id": "126",
+                                "store_name": "厦门二店",
+                            },
+                        },
+                        "sent_messages": {
+                            "store_address_delivery": {
+                                "request_id": "old-card",
+                                "latest_batch_store_ids": ["227"],
+                                "latest_batch_count": 1,
+                                "batch_confidence": "high",
+                            }
+                        },
+                    },
+                    "rules": {},
+                },
+            },
+        },
+        json_dumps=lambda value: json.dumps(value, ensure_ascii=False),
+    )
+
+    prompt = messages[1]["content"]
+    assert "厦门二店" not in prompt
+    assert "store_delivery:old-card" not in prompt
+    assert "latest_batch_store_ids：227" not in prompt
+    assert "多少钱？" in prompt
+
+
 def test_four_customer_states_and_legacy_aliases_normalize_compatibly() -> None:
     expected = {
         "continue_sales": "continue_sales",
