@@ -2,16 +2,16 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-09T14:56:00+08:00`
+- verified_at: `2026-09-09T18:36:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260909-sop-alert-attribution-182c9866`
-- git commit: `182c986644a4d6d0db054a4e66d9e0d90e833a19`
+- release: `ai-paths-unified-20260909-v3-supervisor-3192f19a`
+- git commit: `3192f19ae31900015b48ccb94516aaee03517d12`
 - branch contract: `main`
 - dirty: `false`
-- config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
+- config revision: `642e600e85f9ecb0ac931706ffbe83ec338c899c5cd9b0d6fc4453e5a5ed8f6d`
 - database backend: MySQL
 
 | 角色 | Unit | 现场状态 | 现场健康信息 |
@@ -19,9 +19,9 @@
 | control | `ai-paths.service` | active/running | `/health` 返回 `service_role=control`，后台 worker 关闭 |
 | reply | `ai-paths-v3.service` | active/running | `/health` 返回 `service_role=reply`，与当前 release/commit 一致 |
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
-| 管理前端 | `ai-paths-frontend.service` | active/running | 本次无前端变更；`/logs` 经 Nginx 鉴权边界返回 401 |
+| 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260909-v3-supervisor-3192f19a`；内部日志页 200，Nginx 未鉴权为 401 |
 
-三个后端角色均由同一 clean main SHA 构建；管理前端沿用上一已验证版本。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空；沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
+三个后端角色与管理前端均来自同一 clean `main@3192f19a`。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空、`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`、`V3_REPLY_TEMPERATURE=0.15`；客户可见自动补答明确保持 `V3_REPLY_RECOVERY_ENABLED=false`。沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
 ## 已核验开关
 
@@ -34,6 +34,7 @@
 - 企微 allowlist 为空，表示全部企微号进入候选。
 - 启用水位：`2026-09-05T09:41:20+00:00`；水位前历史沉默不补发。
 - 当前代码仍要求沉默计划前和每次发送前由平台明确确认 AI 模式；人工、未知或状态查询失败均阻断。
+- V3 同一平台消息使用持久 `generation_key/response_id/client_message_id` 幂等；显式过期且没有结果或 dispatch 的同步生成租约可由相同消息重试原子接管。该同步接管不会创建主动发送，也不代表自动补答已开启。
 - 沉默唤醒不再设置每位客户每日计划数和任务数上限；有卡点时按真实发送进度续接，单次最多 3 个不同解卡动作和 1 个成交承接动作；无卡点时先排除近 30 天已真实交付的主线，再由 DeepSeek 选择必要来源；主线完成后只生成 1 个与门店、到店或预约金事实匹配的成交互动任务。
 - 安静时段为 `22:00–08:00`，常规计划顺延到 `08:30`；客户夜间仍活跃时，完整计划压缩到最后一条客户消息后的 40 分钟内，但每个节点发送前仍重新执行 AI/人工、客户回复、退订、订单终态等校验。
 
@@ -48,13 +49,14 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-sop-alert-attribution-32f386f0`。
-- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-152743-9e0f24c2`。
-- 数据库已迁移到 `20260908_01`，本次只为 `aics_runs.created_at` 增加查询索引。发布前全部 `aics_*` 表的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-v3-proactive-20260908-204425/aics-before-20260908_01.sql.gz`，文件大小 `398145414` 字节，`SHA256SUMS` 与 `gzip -t` 均通过。旧代码可保留该索引，回滚 release 不要求破坏性降级。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-sop-alert-attribution-182c9866`。
+- 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-v3-proactive-05723ce3`。
+- 数据库已迁移到 `20260909_02`，新增 V3 生成幂等/恢复兼容字段、索引和内部事实待办表。迁移前 21 张 `aics_*` InnoDB 表的一致性压缩备份为 `/opt/ai-paths/backups/pre-v3-supervisor-20260909-180132/aics-before-20260909_02.sql.gz`，文件大小 `315519267` 字节，SHA-256 为 `c2e117e7bbe87dd7aec0215c00a81a3995ddd6fc578460be687c5aef450a4794`，`gzip -t` 通过。旧代码兼容新增结构，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-09 18:36 发布后复核销售主管反馈闭环版本：control/reply/worker 和管理前端统一来自 clean `main@3192f19ae31900015b48ccb94516aaee03517d12`；后端 release 为 `ai-paths-unified-20260909-v3-supervisor-3192f19a`，前端 release 为 `frontend-20260909-v3-supervisor-3192f19a`。数据库由 `20260908_01` 升至唯一 head `20260909_02` 并通过运行时 schema 指纹检查；四个 unit 均 active、`NRestarts=0`，三角色 `/health` 的 SHA、角色和 `dirty=false` 一致，V3 直连接口未鉴权返回 401、退役 V2 公网返回 410、管理接口未鉴权返回 401、Nginx 配置通过。版本增加跨进程持久生成幂等、过期同步租约接管、稳定消息 ID、多条真人短消息、软拒绝继续给价值、最早缺失主线恢复、素材/话术去重、效果素材与唯一门店卡强交付，以及价格/门店/付款后指引事实校验；自动补答保持关闭，数据库中 `fallback_pending/recovery_claimed` 和 `v3_reply_recovery` dispatch 均为 0。全仓 846 条后端测试、扩大回归 160 条、前端测试/类型/Lint/37 路由生产构建通过；80+120 条广覆盖 DeepSeek 结果属于前序候选 AI 初评，当前代码另以真实素材快照定点重放通过，不作为业务金标。发布后尚无自然 V3 新 run，不能宣称生产回复质量或 P95 已达标；本次未发送测试客户消息。18:36 只读现场另见第三方 SOP `pending_total=28`、`in_flight=1`，策略 outbox `dead=16/pending=58` 且 delivery 关闭，均无本轮询错误，属于既有独立积压而非本发布新增故障。
 - 2026-09-09 14:56 发布并核验第三方 SOP 聚合平台发送失败归责：control/reply/worker 统一运行 clean `main@182c986644a4d6d0db054a4e66d9e0d90e833a19`，release 为 `ai-paths-unified-20260909-sop-alert-attribution-182c9866`，三个 unit 均 active/running 且 `NRestarts=0`。聚合平台明确返回 `send_allowed=false` 或 HTTP/业务拒绝时，告警失败类型改为“消息发送未成功”、责任方向改为“企微聚合平台消息发送”，并保留安全错误码；`account_unassigned` 显示为“企微账号未绑定客服用户或超级客服 AI 映射”。接待企微兼容第三方任务的 `user_wechat_id/user_wechat/wecom_account`。生产任务 83044 的自然恢复周期已记录 `wecom_aggregate_send_failed:account_unassigned`，未消费任务或 `msgId`，后续任务继续按顺序阻断；已有任务 83049 的旧告警因单任务去重不会重发或改写。连接超时和本地执行异常仍归我方链路，不误归第三方。全仓 632 条测试、Ruff、compileall 和 diff check 通过；本次无客户测试发送、无历史补发、无数据库 schema 或前端变更。统一回滚点为 `ai-paths-unified-20260909-sop-alert-attribution-32f386f0`。
 - 2026-09-09 11:54 发布并核验第三方 SOP 恢复路径确定性修复：control/reply/worker 统一运行 clean `main@af3c515dc2491347cf170d9abdcba9c875882288`，release 为 `ai-paths-unified-20260909-sop-deterministic-af3c515d`，三个 unit 均 active/running 且 `NRestarts=0`。恢复任务与正常任务复用同一客户锁和确定性状态机，不再调用旧模型入口；发布后多个自然轮询/恢复周期中 worker `model.count=0`、`last_poll_error` 为空。管理日志对客户 15215324 的历史任务 82716/82717/82718 均按明确发送证据展示 `completed`，旧模型错误只留在原始审计。空 `/pending` 已定义为无操作，不生成、不消费、不告警；本次无历史补发、无第三方任务生成、无数据库 schema 或前端变更。V3 无鉴权 401、V2 404、管理接口无鉴权 401、Nginx 配置检查通过；统一回滚点为 `ai-paths-unified-20260909-v3-terminal-78622cf4`。
 - 2026-09-09 09:31 补充首条普通自然请求：客户回复成功、无运行错误，可靠收尾已完成；入口事务 2.21s、核心持久化 479ms且记录的数据库连接数为 1，证明本次审计/数据库收敛已进入生产路径。该请求完整耗时 34.02s，其中模型图 29.71s并发生一次完整 Reply 重试，因此这条剩余长尾来自模型恢复链而不是回复后的审计写入；当前样本量不足，人工接管和普通请求 P50/P95继续观察。

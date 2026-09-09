@@ -2,8 +2,8 @@
 
 - status: current
 - owner: backend/platform
-- last_verified: 2026-09-09 Asia/Shanghai against code candidate `codex/v3-supervisor-feedback-closure@a85ad72a`
-- source_of_truth: 当前 FastAPI route 表与版本化 Nginx 配置；生产 systemd 仍需发布前现场核验
+- last_verified: 2026-09-09 Asia/Shanghai against production clean `main@3192f19a`
+- source_of_truth: 当前 FastAPI route 表、版本化 Nginx 配置与 2026-09-09 生产 systemd 现场核验
 
 ## 产品接口
 

@@ -2,7 +2,7 @@
 
 - status: current-code
 - owner: project
-- last_verified: 2026-09-09 Asia/Shanghai against code candidate `codex/v3-supervisor-feedback-closure@a85ad72a`
+- last_verified: 2026-09-09 Asia/Shanghai against production clean `main@3192f19a`
 - source_of_truth: 当前 `main` 代码树；精确版本以 `git rev-parse HEAD` 为准
 
 ## 代码结构
@@ -84,7 +84,7 @@ Follow Knowledge 是单业务知识租户的共享只读目录。Reply 进程启
 
 托管平台 `msgid` 在进入销售图前按 `corp_id + wechat + external_userid` 生成持久 `generation_key`，并派生稳定 `response_id/client_message_id`。并发请求共享同一进程任务，重启后的重复请求从 `runs` 恢复相同结果；只有取得生成所有权的请求允许进入 Router/Reply。该机制消除 AI 内部重复生成，但不替代聚合平台对稳定消息 ID 的发送去重。
 
-代码已经具备技术兜底恢复能力，但本次发布明确保持 `V3_REPLY_RECOVERY_ENABLED=false`，不产生客户可见自动补答。后续只有在生成所有权、恢复后素材/门店记忆收尾和送达 finalizer 异常三项风险独立验收后才允许启用。启用时，正常链最终只能返回“您稍等一下”的 run 才转为 `fallback_pending`；Worker 最多执行两次隔离的 DeepSeek 恢复生成，发送前重新读取客户最新消息、平台 AI/人工状态、退订与关系删除、权威交易终态和既有送达，并以 `v3-recovery:<original_request_id>` 幂等发送。恢复图不提交交易、BI、Shadow 或策略回写。
+代码已经具备技术兜底恢复能力，但本次发布明确保持 `V3_REPLY_RECOVERY_ENABLED=false`，不产生客户可见自动补答。普通同步生成所有权、稳定消息 ID 与过期租约接管已经上线；后续只有在恢复后素材/门店记忆收尾、送达 finalizer 异常和真实回调三项发送安全风险独立验收后才允许启用自动补答。启用时，正常链最终只能返回“您稍等一下”的 run 才转为 `fallback_pending`；Worker 最多执行两次隔离的 DeepSeek 恢复生成，发送前重新读取客户最新消息、平台 AI/人工状态、退订与关系删除、权威交易终态和既有送达，并以 `v3-recovery:<original_request_id>` 幂等发送。恢复图不提交交易、BI、Shadow 或策略回写。
 
 文本链当前固定由 `deepseek-v4-flash` 承担 Semantic Router、`deepseek-chat` 承担最终 Reply 及其唯一一次结构修复/完整重试；Reply tier 不继承全局 GPT 应急候选。连续客户消息按原始顺序作为本轮正文输入，内部合并说明只留审计；最终 Reply 只读取最近 12 条真实客户可见消息，排除未交付草稿、覆盖请求和内部 trace。
 
