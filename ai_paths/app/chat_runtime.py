@@ -81,7 +81,6 @@ class ChatRuntime:
         self._platform_request_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
         self._platform_request_results: dict[str, tuple[float, ChatResponse]] = {}
         self._platform_request_tasks_lock = asyncio.Lock()
-        self._ingress_side_effect_tasks: set[asyncio.Task[dict[str, Any]]] = set()
 
     @staticmethod
     def is_platform_protocol_message(request: ChatRequest) -> bool:
@@ -150,19 +149,6 @@ class ChatRuntime:
         request_id = str(uuid4())
         request_context["test_isolated"] = False
         request_context["memory_persist_allowed"] = True
-        ingress_result = await asyncio.to_thread(
-            self._prepare_and_start_request,
-            request=request,
-            request_id=request_id,
-            request_context=request_context,
-        )
-        conversation_id = str(ingress_result.get("conversation_id") or "")
-        await asyncio.to_thread(
-            self._complete_request_ingress_side_effects,
-            request=request,
-            request_id=request_id,
-            request_context=request_context,
-        )
         state = self._initial_state(request, request_id, request_context)
         state["reply_messages"] = []
         state["reply_source"] = "human_takeover_guard"
@@ -173,26 +159,20 @@ class ChatRuntime:
                 "decision": "no_reply",
                 "reason": "platform_human_takeover_active",
                 "takeover": dict(request_context["takeover_guard"]),
+                "duration_ms": int(
+                    ((request_context.get("v3_phase_timings") or {}).get("takeover_guard") or {}).get(
+                        "duration_ms"
+                    )
+                    or 0
+                ),
             }
         )
         _set_sync_return(state, "empty", [])
-        if self._service_rule_data_service:
-            try:
-                state["strategy_data_callback"] = self._service_rule_data_service.enqueue_customer_open(
-                    state,
-                    allow_empty_reply=True,
-                )
-            except Exception as exc:
-                state["strategy_data_callback"] = {
-                    "status": "error",
-                    "reason": f"{type(exc).__name__}: {exc}"[:500],
-                }
-        return self._persist_and_build_response(
+        return await asyncio.to_thread(
+            self._persist_terminal_response,
             request=request,
             request_id=request_id,
-            conversation_id=conversation_id,
             final_state=state,
-            allow_empty_reply=True,
         )
 
     def _build_takeover_block_response(
@@ -215,17 +195,6 @@ class ChatRuntime:
         request_id = str(uuid4())
         request_context["test_isolated"] = False
         request_context["memory_persist_allowed"] = True
-        ingress_result = self._prepare_and_start_request(
-            request=request,
-            request_id=request_id,
-            request_context=request_context,
-        )
-        conversation_id = str(ingress_result.get("conversation_id") or "")
-        self._complete_request_ingress_side_effects(
-            request=request,
-            request_id=request_id,
-            request_context=request_context,
-        )
         state = self._initial_state(request, request_id, request_context)
         state["reply_messages"] = _deterministic_final_fallback_messages(state)
         state["reply_source"] = "takeover_status_unavailable_fallback"
@@ -239,12 +208,10 @@ class ChatRuntime:
             }
         )
         _set_sync_return(state, "final_reply", state["reply_messages"])
-        return self._persist_and_build_response(
+        return self._persist_terminal_response(
             request=request,
             request_id=request_id,
-            conversation_id=conversation_id,
             final_state=state,
-            allow_empty_reply=False,
         )
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
@@ -373,34 +340,6 @@ class ChatRuntime:
         request_id = str(uuid4())
         request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
         request_context["memory_persist_allowed"] = not request_context["test_isolated"]
-        ingress_started = time.perf_counter()
-        ingress_result = await asyncio.to_thread(
-            self._prepare_and_start_request,
-            request=request,
-            request_id=request_id,
-            request_context=request_context,
-        )
-        conversation_id = str(ingress_result.get("conversation_id") or "")
-        _record_v3_phase(
-            request_context,
-            "request_ingress_persistence",
-            ingress_started,
-            metadata={
-                "repository_ms": int(ingress_result.get("duration_ms") or 0),
-                "connection_count": int(ingress_result.get("connection_count") or 0),
-            },
-        )
-        ingress_side_effect_task = asyncio.create_task(
-            asyncio.to_thread(
-                self._complete_request_ingress_side_effects,
-                request=request,
-                request_id=request_id,
-                request_context=request_context,
-                record_identity=False,
-            )
-        )
-        self._ingress_side_effect_tasks.add(ingress_side_effect_task)
-        ingress_side_effect_task.add_done_callback(self._ingress_side_effect_tasks.discard)
         decision = (
             await self._platform_reply_coordinator.begin(request, request_id=request_id, request_context=request_context)
             if self._platform_reply_coordinator
@@ -417,13 +356,31 @@ class ChatRuntime:
             state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
             _set_sync_return(state, "empty", [])
             return await asyncio.to_thread(
-                self._persist_and_build_response,
+                self._persist_terminal_response,
                 request=request,
                 request_id=request_id,
-                conversation_id=conversation_id,
                 final_state=state,
-                allow_empty_reply=True,
             )
+
+        ingress_started = time.perf_counter()
+        ingress_result = await asyncio.to_thread(
+            self._prepare_and_start_request,
+            request=request,
+            request_id=request_id,
+            request_context=request_context,
+        )
+        conversation_id = str(ingress_result.get("conversation_id") or "")
+        _record_v3_phase(
+            request_context,
+            "request_ingress_persistence",
+            ingress_started,
+            metadata={
+                "repository_ms": int(ingress_result.get("duration_ms") or 0),
+                "connection_count": int(ingress_result.get("connection_count") or 0),
+                "statement_count": int(ingress_result.get("statement_count") or 0),
+                "outreach_cancel": ingress_result.get("outreach_cancel", {}),
+            },
+        )
 
         effective_request = request
         effective_context = request_context
@@ -531,11 +488,11 @@ class ChatRuntime:
         _record_v3_phase(effective_context, "commit_graph", commit_started)
         final_state["v3_phase_timings"] = dict(effective_context.get("v3_phase_timings") or {})
 
-        if ingress_side_effect_task.done():
-            with suppress(Exception):
-                final_state["ingress_side_effects"] = ingress_side_effect_task.result()
-        else:
-            final_state["ingress_side_effects"] = {"status": "running_concurrently"}
+        final_state["ingress_side_effects"] = {
+            "status": "completed",
+            "identity": {"status": "deferred_to_finalization_worker"},
+            "outreach_cancel": ingress_result.get("outreach_cancel", {}),
+        }
 
         final_state["sync_reply_messages"] = list(final_state.get("reply_messages") or [])
         final_state.setdefault("async_final_reply", {"scheduled": False, "status": "not_required"})
@@ -767,6 +724,8 @@ class ChatRuntime:
                 interface_version=str(request_context.get("interface_version") or "v3"),
                 started_at=str(request_context.get("http_request_started_at") or ""),
                 http_request_ingress_id=str(request_context.get("http_request_ingress_id") or ""),
+                cancel_outreach=bool(request_context.get("memory_persist_allowed"))
+                and not bool(request_context.get("test_isolated")),
             )
         conversation_id = self._prepare_conversation(request, request_id, request_context)
         self._start_run_tracking(
@@ -776,51 +735,6 @@ class ChatRuntime:
             request_context=request_context,
         )
         return {"conversation_id": conversation_id, "duration_ms": 0, "connection_count": 0}
-
-    def _complete_request_ingress_side_effects(
-        self,
-        *,
-        request: ChatRequest,
-        request_id: str,
-        request_context: dict[str, Any],
-        record_identity: bool = True,
-    ) -> dict[str, Any]:
-        started = time.perf_counter()
-        observe_identity = getattr(self._repository, "observe_customer_identity", None)
-        identity_status: dict[str, Any] = {"status": "skipped"}
-        if callable(observe_identity) and record_identity:
-            identity_status = safe_repository_call(
-                observe_identity,
-                corp_id=str(request.corp_id or ""),
-                wechat=str(request.wechat or ""),
-                external_userid=str(request.external_userid or ""),
-                customer_id=str(request.platform_customer_id or request.customer_id or ""),
-                user_id=str(request.user_id or ""),
-                customer_add_wechat_id=str(request.customer_add_wechat_id or ""),
-                source="v3_request",
-            ) or {"status": "unknown"}
-        cancel_status: dict[str, Any] = {"status": "skipped"}
-        cancel_outreach = getattr(self._repository, "cancel_outreach_for_customer_reply", None)
-        if (
-            callable(cancel_outreach)
-            and bool(request_context.get("memory_persist_allowed"))
-            and not bool(request_context.get("test_isolated"))
-            and str(request.wechat or "").strip()
-        ):
-            cancel_status = safe_repository_call(
-                cancel_outreach,
-                customer_id=str(request.customer_id or ""),
-                corp_id=str(request.corp_id or ""),
-                wechat=str(request.wechat or ""),
-                external_userid=str(request.external_userid or ""),
-                request_id=request_id,
-            ) or {"status": "unknown"}
-        return {
-            "status": "completed",
-            "duration_ms": max(0, int((time.perf_counter() - started) * 1000)),
-            "identity": identity_status,
-            "outreach_cancel": cancel_status,
-        }
 
     def _load_previous_policy_state(self, state: AgentState, request_id: str) -> dict[str, Any]:
         scope = customer_scope_from_state(state)
@@ -853,11 +767,6 @@ class ChatRuntime:
         *,
         phase: str,
     ) -> AgentState:
-        await asyncio.to_thread(
-            self._update_run_progress,
-            str(state.get("request_id") or ""),
-            phase,
-        )
         deadline = graph_deadline_monotonic(
             state,
             phase=phase,
@@ -895,13 +804,6 @@ class ChatRuntime:
             http_request_ingress_id=str(request_context.get("http_request_ingress_id") or ""),
         )
 
-    def _update_run_progress(self, request_id: str, phase: str) -> None:
-        if not request_id:
-            return
-        update_run_progress = getattr(self._repository, "update_run_progress", None)
-        if callable(update_run_progress):
-            safe_repository_call(update_run_progress, request_id=request_id, phase=phase)
-
     def _initial_state(self, request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> AgentState:
         test_isolated = bool(request_context.get("test_isolated"))
         state: AgentState = {
@@ -924,6 +826,7 @@ class ChatRuntime:
             "appointment_id": request.appointment_id,
             "appointment_time": request.appointment_time,
             "request_context": request_context,
+            "v3_phase_timings": dict(request_context.get("v3_phase_timings") or {}),
             "test_isolated": test_isolated,
             "memory_persist_allowed": bool(request_context.get("memory_persist_allowed")),
             "runtime_budget": build_runtime_budget(self._settings),
@@ -935,6 +838,10 @@ class ChatRuntime:
         state["global_customer_key"] = scope.global_customer_key
         state["customer_scope"] = scope.as_dict()
         state["previous_policy_state"] = {}
+        state["deferred_identity_observation"] = bool(
+            request_context.get("memory_persist_allowed")
+            and not request_context.get("test_isolated")
+        )
         if self._ai_sales_policy_service is not None:
             try:
                 state["ai_sales_policy"] = self._ai_sales_policy_service.runtime_snapshot()
@@ -957,6 +864,71 @@ class ChatRuntime:
         failed_state["reply_source"] = "deterministic_runtime_exception_fallback"
         return failed_state
 
+    def _persist_terminal_response(
+        self,
+        *,
+        request: ChatRequest,
+        request_id: str,
+        final_state: AgentState,
+    ) -> ChatResponse:
+        """Persist a no-graph terminal result with one database checkout."""
+
+        raw_reply_messages = [
+            item for item in final_state.get("reply_messages") or [] if isinstance(item, dict)
+        ]
+        final_state["decision_status"] = str(final_state.get("decision_status") or "system_guard")
+        final_state["deferred_identity_observation"] = True
+        final_state["service_rule_data_allow_empty_reply"] = not bool(raw_reply_messages)
+        persist = getattr(self._repository, "save_v3_terminal_no_reply", None)
+        if not callable(persist):
+            raise RuntimeError("repository does not support atomic V3 terminal persistence")
+        persistence_started = time.perf_counter()
+        result = persist(
+            default_conversation_id=conversation_id_from_request(request, final_state.get("request_context") or {}),
+            resolve_existing=not bool(
+                (final_state.get("request_context") or {}).get("conversation_id")
+                or (final_state.get("request_context") or {}).get("session_id")
+            ),
+            request=request,
+            request_id=request_id,
+            title=conversation_title(request.content),
+            input_snapshot=_run_tracking_input_snapshot(
+                request,
+                final_state.get("request_context") or {},
+            ),
+            request_context=final_state.get("request_context") or {},
+            final_state=final_state,
+            reply_messages=raw_reply_messages,
+            token_usage=collect_model_usage(final_state.get("trace", []))["summary"],
+            deferred_payload=_deferred_state_payload(final_state),
+        )
+        _record_v3_phase(
+            final_state,
+            "terminal_persistence",
+            persistence_started,
+            metadata={
+                "repository_ms": int(result.get("duration_ms") or 0),
+                "connection_count": int(result.get("connection_count") or 0),
+                "statement_count": int(result.get("statement_count") or 0),
+            },
+        )
+        final_state["persistence_metrics"] = {
+            "terminal": {
+                "duration_ms": int(result.get("duration_ms") or 0),
+                "connection_count": int(result.get("connection_count") or 0),
+                "statement_count": int(result.get("statement_count") or 0),
+            }
+        }
+        final_state["post_reply_finalization"] = {"status": "pending", "mode": "durable_worker"}
+        return self._persist_and_build_response(
+            request=request,
+            request_id=request_id,
+            conversation_id=str(result.get("conversation_id") or ""),
+            final_state=final_state,
+            allow_empty_reply=not bool(raw_reply_messages),
+            persistence_completed=True,
+        )
+
     def _persist_and_build_response(
         self,
         *,
@@ -965,6 +937,7 @@ class ChatRuntime:
         conversation_id: str,
         final_state: AgentState,
         allow_empty_reply: bool,
+        persistence_completed: bool = False,
     ) -> ChatResponse:
         route_result = planner_public_route(final_state)
         model_usage = collect_model_usage(final_state.get("trace", []))
@@ -994,7 +967,7 @@ class ChatRuntime:
             final_state.pop("follow_knowledge_callback", None)
         reply_messages = [ReplyMessage(**message) for message in raw_reply_messages]
         reply_message_dicts = [message.model_dump() for message in reply_messages]
-        if (
+        if not persistence_completed and (
             not bool(final_state.get("test_isolated"))
             and _memory_persistence_allowed(final_state)
         ):
@@ -1005,11 +978,11 @@ class ChatRuntime:
             )
         deferred_finalization = False
         log_path: Any = ""
-        if reply_messages and not bool(final_state.get("test_isolated")):
+        if not persistence_completed and not bool(final_state.get("test_isolated")):
             save_reply_core = getattr(self._repository, "save_v3_reply_core", None)
             if callable(save_reply_core):
                 try:
-                    save_reply_core(
+                    core_result = save_reply_core(
                         conversation_id=conversation_id,
                         final_state=final_state,
                         reply_messages=reply_message_dicts,
@@ -1021,6 +994,7 @@ class ChatRuntime:
                         "status": "pending",
                         "mode": "durable_worker",
                     }
+                    final_state["persistence_metrics"] = {"reply_core": core_result or {}}
                 except Exception as exc:
                     final_state.setdefault("warnings", []).append(
                         {
@@ -1029,7 +1003,7 @@ class ChatRuntime:
                             "detail": f"{type(exc).__name__}: {exc}",
                         }
                     )
-            if not deferred_finalization:
+            if not deferred_finalization and reply_messages:
                 if _memory_persistence_allowed(final_state):
                     self._record_reply_memory(
                         final_state=final_state,
@@ -1058,7 +1032,7 @@ class ChatRuntime:
                                 "detail": f"{type(exc).__name__}: {exc}",
                             }
                         )
-        elif reply_messages:
+        elif not persistence_completed and reply_messages:
             final_state["case_image_send_record"] = {
                 "status": "skipped",
                 "reason": "test_isolated",
@@ -1066,7 +1040,7 @@ class ChatRuntime:
                     [message for message in reply_messages if message.type == "image"]
                 ),
             }
-        if not deferred_finalization and self._outreach_service is not None:
+        if not persistence_completed and not deferred_finalization and self._outreach_service is not None:
             try:
                 final_state["closing_sequence_shadow"] = self._outreach_service.record_closing_sequence_shadow(
                     final_state
@@ -1083,7 +1057,7 @@ class ChatRuntime:
                         "warning": "Closing sequence shadow audit failed; no delayed customer message was sent.",
                     }
                 )
-        if not deferred_finalization:
+        if not persistence_completed and not deferred_finalization:
             log_path = self._trace_logger.write_run(final_state)
             safe_repository_call(
                 self._repository.save_run,
@@ -1158,6 +1132,7 @@ class ChatRuntime:
                 "strategy_data_callback": final_state.get("strategy_data_callback", {}),
                 "follow_knowledge_callback": final_state.get("follow_knowledge_callback", {}),
                 "post_reply_finalization": final_state.get("post_reply_finalization", {}),
+                "persistence_metrics": final_state.get("persistence_metrics", {}),
                 "conversation_id": conversation_id,
             },
         )
