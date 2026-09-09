@@ -338,6 +338,7 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
         lambda: _validate_parallel_payment_boundaries(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_parallel_selected_content_delivery(messages, state),
+        lambda: _validate_structured_delivery_promises(messages, state),
         lambda: _validate_store_resolution_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),

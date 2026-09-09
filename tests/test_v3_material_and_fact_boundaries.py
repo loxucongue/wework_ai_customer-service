@@ -190,6 +190,11 @@ def test_parallel_validation_runs_hours_and_price_boundaries() -> None:
             [{"type": "text", "content": "我们公司在XX市XX区XX路XX号。"}],
             state,
         )
+    with pytest.raises(ValueError, match="case_image_structure_required"):
+        _validate_parallel_reply_consistency(
+            [{"type": "text", "content": "手部效果图我这边有，我发您参考下。"}],
+            state,
+        )
 
 
 def test_missing_store_location_skips_parser_and_requests_region() -> None:
