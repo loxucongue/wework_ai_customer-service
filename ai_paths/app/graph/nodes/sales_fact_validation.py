@@ -57,7 +57,15 @@ def _claims_face_and_hand_total_268(text: str) -> bool:
         return False
     total_claim = bool(
         re.search(r"(?:总共|一共|合计|一起做(?:只要|就是|是)?)[^。！？]{0,10}268", text)
-        or re.search(r"268(?:元)?[^。！？]{0,10}(?:脸(?:部)?和手(?:部)?都做|脸手一起做)", text)
+        or re.search(
+            r"268(?:元)?[^。！？]{0,18}(?:"
+            r"脸(?:部)?和手(?:部)?(?:都)?(?:一起)?做|"
+            r"脸手一起做|"
+            r"覆盖脸(?:部)?和手(?:部)?|"
+            r"脸(?:部)?、?手(?:部)?都包含"
+            r")",
+            text,
+        )
     )
     if not total_claim:
         return False

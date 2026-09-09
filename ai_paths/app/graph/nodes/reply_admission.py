@@ -3,16 +3,20 @@ from __future__ import annotations
 from typing import Any
 
 from app.graph.nodes.reply_validation import (
+    _validate_no_placeholder_facts,
     _validate_parallel_claimed_deposit_evidence,
     _validate_parallel_appointment_confirmation_facts,
+    _validate_parallel_business_hours_facts,
     _validate_parallel_media_facts,
     _validate_parallel_payment_boundaries,
     _validate_parallel_selected_content_delivery,
+    _validate_structured_delivery_promises,
     _validate_unconfirmed_store_availability_claim,
     _validate_store_address_message_facts,
     _validate_store_resolution_delivery_mode,
     _validate_store_resolution_contract,
 )
+from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
 
 
 def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -26,11 +30,13 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
     violations: list[str] = []
     checks = (
         lambda: _validate_structured_delivery_conversation_shape(messages),
+        lambda: _validate_no_placeholder_facts(messages),
         lambda: _validate_selected_content_provenance(state),
         lambda: _validate_parallel_claimed_deposit_evidence(messages, state),
         lambda: _validate_parallel_payment_boundaries(messages, state),
         lambda: _validate_parallel_media_facts(messages, state),
         lambda: _validate_parallel_selected_content_delivery(messages, state),
+        lambda: _validate_structured_delivery_promises(messages, state),
         lambda: _validate_store_resolution_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(
@@ -39,6 +45,8 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
             check_visible_text=False,
         ),
         lambda: _validate_parallel_appointment_confirmation_facts(messages, state),
+        lambda: _validate_parallel_business_hours_facts(messages, state),
+        lambda: validate_sales_price_fact_boundaries(messages),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
     for check in checks:

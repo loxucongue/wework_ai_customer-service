@@ -5,6 +5,7 @@ import base64
 
 import pytest
 
+from app.graph.nodes.reply_admission import validate_model_led_reply_admission
 from app.graph.nodes.reply_validation import _validate_parallel_reply_consistency
 from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
 from app.policies.business_rules import parallel_reply_business_rules_for_model
@@ -195,6 +196,63 @@ def test_parallel_validation_runs_hours_and_price_boundaries() -> None:
             [{"type": "text", "content": "手部效果图我这边有，我发您参考下。"}],
             state,
         )
+
+
+@pytest.mark.parametrize(
+    ("reply", "violation"),
+    [
+        ("我们公司在XX市，您告诉我城市我再查。", "customer_visible_placeholder_fact"),
+        ("手部效果图我这边有，我发您参考下。", "case_image_structure_required"),
+        ("268元脸部和手部都一起做。", "offer_face_hand_total_268_conflict"),
+        ("门店营业时间是9:00-20:00。", "business_hours_fact_required"),
+    ],
+)
+def test_model_led_admission_enforces_customer_visible_fact_boundaries(
+    reply: str,
+    violation: str,
+) -> None:
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "evidence_join": {
+            "schema_version": "v3_evidence_join_v1",
+            "structured_facts": {},
+            "normalized_tool_facts": {"structured_facts": {}},
+            "content_candidates": [],
+        },
+        "reply_selected_content_ids": [],
+    }
+
+    with pytest.raises(ValueError, match=violation):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": reply}],
+            state,
+        )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "效果这块我跟您讲清楚，我这边先给您发活动价。",
+        "我这边先给您发门店地址，效果您前面已经了解了。",
+        "这个位置不能直接导航过去，需要先确认。",
+    ],
+)
+def test_delivery_promise_checks_do_not_block_unrelated_or_negated_text(reply: str) -> None:
+    state = {
+        "request_context": {"interface_version": "v3"},
+        "evidence_join": {
+            "schema_version": "v3_evidence_join_v1",
+            "structured_facts": {},
+            "normalized_tool_facts": {"structured_facts": {}},
+            "content_candidates": [],
+        },
+        "reply_selected_content_ids": [],
+    }
+
+    validate_model_led_reply_admission(
+        [{"type": "text", "content": reply}],
+        state,
+    )
 
 
 def test_missing_store_location_skips_parser_and_requests_region() -> None:

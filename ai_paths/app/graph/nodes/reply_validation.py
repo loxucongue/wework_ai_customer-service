@@ -745,8 +745,6 @@ def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state
             "给你发同类",
             "发您同类",
             "发你同类",
-            "我这边先给您发",
-            "我这边先给你发",
         )
     ) and any(term in text for term in ("效果", "案例", "改善参考", "同类淡斑"))
     if not promises_case_image:
@@ -2391,6 +2389,19 @@ def _is_store_distance_context(text: str, state: dict[str, Any]) -> bool:
 
 def _promises_store_address_card(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
+    if any(
+        term in compact
+        for term in (
+            "不能直接导航",
+            "无法直接导航",
+            "暂时不能直接导航",
+            "不能发地址",
+            "无法发地址",
+            "不能发位置",
+            "无法发位置",
+        )
+    ):
+        return False
     return any(
         term in compact
         for term in (
