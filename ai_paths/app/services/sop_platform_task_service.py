@@ -6002,6 +6002,9 @@ def _terminal_delivery_failure_outcome(
     message = str(exc or "").lower()
     if "manual handoff" in message or "ai_mode_manual" in message or "40907" in message:
         return "human_takeover"
+    audit_reason_code = _aggregate_send_audit_reason_code(audit)
+    if audit_reason_code:
+        return f"wecom_aggregate_send_failed:{audit_reason_code}"
     aggregate_response = message.startswith(("outreach_system_http_", "outreach_system_error:"))
     aggregate_response = aggregate_response or any(
         marker in message
@@ -6038,6 +6041,16 @@ def _aggregate_send_failure_reason_code(
     match = re.search(r"['\"]reason_code['\"]\s*:\s*['\"]([a-z0-9_.-]+)['\"]", normalized)
     if match:
         return match.group(1)[:120]
+    audit_code = _aggregate_send_audit_reason_code(audit)
+    if audit_code:
+        return audit_code
+    http_match = re.search(r"outreach_system_http_(\d{3})", normalized)
+    if http_match:
+        return f"http_{http_match.group(1)}"
+    return ""
+
+
+def _aggregate_send_audit_reason_code(audit: dict[str, Any] | None) -> str:
     context = audit.get("context") if isinstance(audit, dict) and isinstance(audit.get("context"), dict) else {}
     management = (
         context.get("management_status") if isinstance(context.get("management_status"), dict) else {}
@@ -6045,9 +6058,6 @@ def _aggregate_send_failure_reason_code(
     audit_code = str(management.get("send_reason_code") or management.get("reason_code") or "").strip().lower()
     if management.get("send_allowed") is False and re.fullmatch(r"[a-z0-9_.-]{1,120}", audit_code):
         return audit_code
-    http_match = re.search(r"outreach_system_http_(\d{3})", normalized)
-    if http_match:
-        return f"http_{http_match.group(1)}"
     return ""
 
 
