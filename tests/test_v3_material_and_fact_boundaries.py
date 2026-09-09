@@ -150,6 +150,7 @@ def test_recent_script_and_high_similarity_are_penalized_not_deleted() -> None:
         ("左脸268元，右脸也是268元。", "offer_bilateral_cheek_split_price_conflict"),
         ("脸和手一起做只要268元。", "offer_face_hand_total_268_conflict"),
         ("脸部和手部都是268元。", "offer_face_hand_price_scope_ambiguous"),
+        ("周年庆活动是268元，针对脸部和手部的斑点都适用。", "offer_face_hand_price_scope_ambiguous"),
         ("第二次再做也是268元。", "offer_repeat_visit_268_unverified"),
     ],
 )
@@ -165,6 +166,7 @@ def test_invalid_268_claims_are_rejected(reply: str, reason: str) -> None:
         "脸颊两侧不会按左脸、右脸拆开收费，脸部一个部位是268元。",
         "脸和手不是总共268元，两个部位需要分别计算。",
         "脸部和手部单独做都是268元，一个268只对应一个部位。",
+        "脸部活动价268元，手部需要单独计算。",
         "第二次价格不能承诺还是268元，要以届时活动和门店确认为准。",
     ],
 )

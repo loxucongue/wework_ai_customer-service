@@ -25,6 +25,7 @@ def test_prompts_preserve_outstanding_fulfillment_across_merged_messages() -> No
     assert "地址则 store_query=store_detail 并沿用已确认门店" in V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
     assert "后句催促或问机器人不撤销前句未完成的发图、发地址或答题请求" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "明确再次索要地址允许重发" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不得谎称“我不是机器人/我是真人客服”" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> None:

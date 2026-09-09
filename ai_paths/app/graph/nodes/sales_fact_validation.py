@@ -25,6 +25,8 @@ def validate_sales_price_fact_boundaries(messages: list[dict[str, Any]]) -> None
             raise ValueError("offer_bilateral_cheek_split_price_conflict")
         if _claims_face_and_hand_total_268(compact):
             raise ValueError("offer_face_hand_total_268_conflict")
+        if _claims_face_and_hand_shared_offer_scope(compact):
+            raise ValueError("offer_face_hand_price_scope_ambiguous")
         if _claims_ambiguous_face_and_hand_268(compact):
             raise ValueError("offer_face_hand_price_scope_ambiguous")
         if _claims_repeat_visit_268(compact):
@@ -100,6 +102,40 @@ def _claims_ambiguous_face_and_hand_268(text: str) -> bool:
     return not bool(
         re.search(r"(?:单独|分别|各自|每个部位|一个部位)[^。！？]{0,12}(?:都|均|268)", text)
         or re.search(r"(?:都|均)(?:是|为)?268[^。！？]{0,12}(?:单独|分别|各自|每个部位)", text)
+    )
+
+
+def _claims_face_and_hand_shared_offer_scope(text: str) -> bool:
+    """Reject wording that makes one 268 offer sound applicable to two areas.
+
+    The unsafe wording does not always say "total" or "both are 268".  Phrases
+    such as "the 268 activity applies to face and hands" carry the same price
+    implication, so keep this deterministic boundary narrow around an explicit
+    268 offer, both body areas and an applicability verb.
+    """
+
+    has_face_and_hand = bool(
+        re.search(r"(?:脸部?|面部)[^。！？]{0,20}手部?|手部?[^。！？]{0,20}(?:脸部?|面部)", text)
+    )
+    if not has_face_and_hand:
+        return False
+    shared_scope = bool(
+        re.search(
+            r"(?:268(?:元)?[^。！？]{0,36}(?:针对|适用|用于|覆盖|包含)[^。！？]{0,20}"
+            r"(?:(?:脸部?|面部)[^。！？]{0,20}手部?|手部?[^。！？]{0,20}(?:脸部?|面部))|"
+            r"(?:(?:脸部?|面部)[^。！？]{0,20}手部?|手部?[^。！？]{0,20}(?:脸部?|面部))"
+            r"[^。！？]{0,36}(?:针对|适用|用于|覆盖|包含)[^。！？]{0,20}268(?:元)?)",
+            text,
+        )
+    )
+    if not shared_scope:
+        return False
+    return not bool(
+        re.search(
+            r"(?:单独|分别|各自|每个部位|一个部位|另算|分开计算|分别计算)[^。！？]{0,24}(?:268|脸|面部|手)|"
+            r"(?:268|脸|面部|手)[^。！？]{0,24}(?:单独|分别|各自|每个部位|一个部位|另算|分开计算|分别计算)",
+            text,
+        )
     )
 
 
