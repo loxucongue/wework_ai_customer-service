@@ -330,6 +330,7 @@ class SopPlatformTaskService:
         "platform_complete_pending",
         "platform_batch_send_retry",
         "platform_sequence_blocked",
+        "platform_sequence_waiting",
         "platform_failure_rule_data_pending",
         "platform_batch_consume_pending",
     ]

@@ -35,6 +35,7 @@ def test_terminal_platform_states_are_reconciled_without_retry() -> None:
 
 def test_platform_queued_tasks_are_recovered_after_restart() -> None:
     assert "platform_queued" in SopPlatformTaskService.RECOVERY_STATUSES
+    assert "platform_sequence_waiting" in SopPlatformTaskService.RECOVERY_STATUSES
 
 
 def test_outreach_client_identity_excludes_canonical_audit_fields() -> None:
