@@ -31,6 +31,8 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
 
     assert "V3 唯一的最终销售大脑" in prompt
     assert "明确“别联系、别发了、不要打扰”" in prompt
+    assert "医疗高风险、具体严重客诉或退款纠纷" in prompt
+    assert "只有明确停止联系才持久记录退订" in prompt
     assert "有活动卡点时" in prompt
     assert "cardpoint 为 active/repeated 时 closing 必须 pause" in prompt
     assert "门店查询只证明位置需求和本轮返回的公开门店事实" in prompt
