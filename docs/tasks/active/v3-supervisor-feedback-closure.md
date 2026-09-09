@@ -5,7 +5,7 @@
 - branch: `codex/v3-supervisor-feedback-closure`
 - base_branch: `main`
 - base_sha: `eae652145a1891e1626b8a1c1395d6b76b47219b`
-- candidate_code_sha: `a85ad72a`（当前代码与评测锚点；文档提交后 SHA 会前移）
+- candidate_code_sha: `e58dc7c1`（当前代码、日志 UI 与评测锚点；文档提交后 SHA 会前移）
 - production_verified_at: `2026-09-09 Asia/Shanghai`
 - production_release_before_deploy: `/opt/ai-paths/releases/ai-paths-unified-20260909-sop-alert-attribution-182c9866`
 - production_commit_before_deploy: `182c986644a4d6d0db054a4e66d9e0d90e833a19`
@@ -55,6 +55,7 @@
 
 - 以 `sha256(corp_id|wechat|external_userid|msgid)` 形成持久 `generation_key`；相同消息的并发、顺序重试和进程重启后重试只允许一次 Router/Reply。
 - 为结果提供稳定 `response_id`，为每条文本或结构消息提供稳定 `client_message_id`；数据库恢复结果标记 `replayed=true`。
+- 同步生成进程异常留下的显式过期租约可由下一次相同平台消息请求原子接管并同步重算；复用原 `request_id/response_id`，不创建第二条 run、dispatch 或客户可见自动补答。该能力不依赖、也不等于启用 `V3_REPLY_RECOVERY_ENABLED`。
 - 新增迁移 `20260909_01_add_v3_reply_generation.py`，在 `runs` 增加生成与恢复字段、唯一索引和到期扫描索引。
 
 ### 可靠失败补答（代码完成、生产保持关闭）
@@ -87,7 +88,7 @@
 
 ## 测试结果
 
-- 全仓后端确定性测试：`845 passed, 0 failed`；仅有既有 Authlib/SQLAlchemy 弃用警告，不阻断发布。
+- 全仓后端确定性测试：`846 passed, 0 failed`；另有生成租约、人工接管、迁移、素材、门店、价格与安全边界扩大回归 `160 passed`。仅有既有 Authlib/SQLAlchemy 弃用警告，不阻断发布。
 - 数据库迁移：单一 Alembic head `20260909_02`，链路为 `20260908_01 → 20260909_01 → 20260909_02`；SQLite/MySQL 兼容测试通过。迁移为兼容字段/新表保留型，不支持破坏性 downgrade。
 - 前端：TypeScript、ESLint、Next 生产构建和 tsup 构建通过；共 37 条路由完成构建。
 - DeepSeek 广覆盖前序候选 `df79dd5a`：80 条专项中 46 条进入模型、34 条人工接管，46/46 AI 初评通过；120 条生命周期中 42 条可评、78 条人工接管，39/42 AI 初评通过，2 条技术兜底，3 条需复核。两批 P95 为 17.01/16.77 秒，GPT、生产发送和生产写入均为 0。
