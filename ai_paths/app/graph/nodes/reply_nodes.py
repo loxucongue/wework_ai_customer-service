@@ -2559,6 +2559,7 @@ def _parallel_generic_reply_repair_messages(
             "事实不足时删除完成态、可用性或已安排断言，改成真实的条件表达、追问或说明待核对；不得换一种措辞重复同一断言。",
             "所有 ID、URL、金额、结构消息和 evidence_refs 只能取自 valid_reference_contract。",
             "采用内容资产就完整交付其必需结构；无法完整交付就删除该资产 ID 和对应引用。",
+            "客户可见文字只要提到可以、将要、马上或稍后发送效果图/案例，本轮就必须交付 allowed_selected_content_ids 中对应的真实 image；没有可用素材时删除发送承诺，也不能改成‘要不要发、我可以发、您看可以吗’。",
             "只输出完整严格 json，不解释错误，不输出 markdown 或内部分析。",
         ],
         "previous_reply_claims": {

@@ -276,6 +276,8 @@ def test_parallel_validation_runs_hours_and_price_boundaries() -> None:
         ("我们公司在XX市，您告诉我城市我再查。", "customer_visible_placeholder_fact"),
         ("手部效果图我这边有，我发您参考下。", "case_image_structure_required"),
         ("有的，我找一张手部斑点改善的效果图给您参考。", "case_image_structure_required"),
+        ("我可以先发一些真实改善案例给您参考，您看可以吗？", "case_image_structure_required"),
+        ("济南暂时没有可发送的门店地址，但我可以先发案例给您参考。", "case_image_structure_required"),
         ("268元脸部和手部都一起做。", "offer_face_hand_total_268_conflict"),
         ("门店营业时间是9:00-20:00。", "business_hours_fact_required"),
         ("我不是机器人哦，是真人客服。", "customer_visible_false_human_identity_claim"),
@@ -352,6 +354,25 @@ def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> No
     assert "删除这类身份断言" in identity
     assert "不能邀约、催时间或推进付款" in paused
     assert "不得从历史订单、旧门店卡或旧城市恢复门店话题" in invalid_store
+
+
+def test_generic_repair_forbids_permission_seeking_instead_of_media_delivery() -> None:
+    messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "当前消息"}],
+        ValueError("reply_admission_violations::offer_face_hand_price_scope_ambiguous"),
+        previous_payload={
+            "reply_messages": [{"type": "text", "content": "原回复"}],
+            "sales_judgment": {},
+        },
+        validation_context={
+            "allowed_selected_content_ids": [],
+            "mainline_delivery_state": {"allowed_next_sales_action_types": ["explain_activity"]},
+        },
+    )
+
+    repair_prompt = str(messages[-1].get("content") or "")
+    assert "没有可用素材时删除发送承诺" in repair_prompt
+    assert "您看可以吗" in repair_prompt
 
 
 def test_paused_turn_repair_drops_invalid_sales_action_and_visible_draft() -> None:

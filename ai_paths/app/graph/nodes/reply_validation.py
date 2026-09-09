@@ -764,6 +764,13 @@ def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state
             "\u6311\u4e00\u7ec4",
             "\u9009\u4e00\u5f20",
             "\u9009\u4e00\u7ec4",
+            "可以先发",
+            "可以发",
+            "先发一些",
+            "先发一张",
+            "先发一组",
+            "这就发",
+            "马上发",
         )
         media_terms = (
             "\u6548\u679c\u56fe",
@@ -774,8 +781,9 @@ def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state
             "\u540c\u7c7b\u6de1\u6591",
             "\u540c\u7c7b\u6539\u5584\u53c2\u8003",
         )
-        promises_case_image = any(term in text for term in delivery_terms) and any(
-            term in text for term in media_terms
+        promises_case_image = (
+            any(term in text for term in delivery_terms)
+            and any(term in text for term in media_terms)
         )
     if not promises_case_image:
         return
