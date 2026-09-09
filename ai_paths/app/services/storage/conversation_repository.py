@@ -9,8 +9,9 @@ from app.services.trace_logger import compact
 
 
 class ConversationRepositoryMixin:
-    def prepare_v3_request(
+    def _prepare_v3_request_in_connection(
         self,
+        conn: Any,
         *,
         default_conversation_id: str,
         resolve_existing: bool,
@@ -21,17 +22,9 @@ class ConversationRepositoryMixin:
         interface_version: str,
         started_at: str,
         http_request_ingress_id: str,
-    ) -> dict[str, Any]:
-        """Persist the V3 ingress facts in one database transaction.
+    ) -> str:
+        """Write V3 ingress facts using a caller-owned transaction."""
 
-        Historically the reply path checked the conversation, upserted it,
-        inserted the customer message and created the run through four
-        independent connections.  Remote MySQL latency made those round trips
-        visible to the customer.  This method keeps the exact same durable
-        facts while sharing one checkout and one commit.
-        """
-
-        operation_started = time.perf_counter()
         now = str(started_at or utc_now_iso())
         version = str(interface_version or "v3").strip().lower()
         if version not in {"v1", "v2", "v3"}:
@@ -45,89 +38,150 @@ class ConversationRepositoryMixin:
             or ""
         )
         conversation_id = str(default_conversation_id or "")
-        with self.store.connect() as conn:
-            if resolve_existing and corp_id and wechat and (external_userid or customer_id):
-                identity_clause = "external_userid=?" if external_userid else "customer_id=?"
-                identity_value = external_userid or customer_id
-                row = conn.execute(
-                    f"""
-                    SELECT id FROM conversations
-                    WHERE corp_id=? AND LOWER(wechat)=LOWER(?) AND {identity_clause}
-                    ORDER BY updated_at DESC LIMIT 1
-                    """,
-                    (corp_id, wechat, identity_value),
-                ).fetchone()
-                if row and str(row["id"] or ""):
-                    conversation_id = str(row["id"])
+        if resolve_existing and corp_id and wechat and (external_userid or customer_id):
+            identity_clause = "external_userid=?" if external_userid else "customer_id=?"
+            identity_value = external_userid or customer_id
+            row = conn.execute(
+                f"""
+                SELECT id FROM conversations
+                WHERE corp_id=? AND LOWER(wechat)=LOWER(?) AND {identity_clause}
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (corp_id, wechat, identity_value),
+            ).fetchone()
+            if row and str(row["id"] or ""):
+                conversation_id = str(row["id"])
 
-            conn.execute(
-                """
-                INSERT INTO conversations (id, customer_id, external_userid, corp_id, user_id, wechat, title, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    customer_id=excluded.customer_id,
-                    external_userid=excluded.external_userid,
-                    corp_id=excluded.corp_id,
-                    user_id=excluded.user_id,
-                    wechat=excluded.wechat,
-                    title=CASE WHEN conversations.title='' THEN excluded.title ELSE conversations.title END,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    conversation_id,
-                    str(getattr(request, "customer_id", "") or ""),
-                    external_userid,
-                    corp_id,
-                    str(getattr(request, "user_id", "") or ""),
-                    wechat,
-                    title,
-                    now,
-                    now,
-                ),
+        conn.execute(
+            """
+            INSERT INTO conversations (id, customer_id, external_userid, corp_id, user_id, wechat, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                customer_id=excluded.customer_id,
+                external_userid=excluded.external_userid,
+                corp_id=excluded.corp_id,
+                user_id=excluded.user_id,
+                wechat=excluded.wechat,
+                title=CASE WHEN conversations.title='' THEN excluded.title ELSE conversations.title END,
+                updated_at=excluded.updated_at
+            """,
+            (
+                conversation_id,
+                str(getattr(request, "customer_id", "") or ""),
+                external_userid,
+                corp_id,
+                str(getattr(request, "user_id", "") or ""),
+                wechat,
+                title,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (id, conversation_id, request_id, role, content, file_image, reply_messages, created_at)
+            VALUES (?, ?, ?, 'user', ?, ?, '[]', ?)
+            """,
+            (
+                str(uuid4()),
+                conversation_id,
+                request_id,
+                str(getattr(request, "content", "") or ""),
+                str(getattr(request, "file_image", "") or ""),
+                now,
+            ),
+        )
+        output_snapshot = {
+            "runtime_status": "running",
+            "runtime_phase": "request_received",
+            "runtime_started_at": now,
+            "runtime_updated_at": now,
+            "interface_version": version,
+            "http_request_ingress_id": str(http_request_ingress_id or ""),
+            "http_request_started_at": now,
+        }
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO runs
+                (request_id, conversation_id, customer_id, input_snapshot, output_snapshot, intents, tags,
+                 duration_ms, token_usage, error, created_at)
+            VALUES (?, ?, ?, ?, ?, '[]', '[]', 0, '{}', '', ?)
+            """,
+            (
+                request_id,
+                conversation_id,
+                str(getattr(request, "customer_id", "") or ""),
+                dumps(compact(input_snapshot)),
+                dumps(output_snapshot),
+                now,
+            ),
+        )
+        return conversation_id
+
+    def prepare_v3_request(
+        self,
+        *,
+        default_conversation_id: str,
+        resolve_existing: bool,
+        request: Any,
+        request_id: str,
+        title: str,
+        input_snapshot: dict[str, Any],
+        interface_version: str,
+        started_at: str,
+        http_request_ingress_id: str,
+        cancel_outreach: bool = False,
+    ) -> dict[str, Any]:
+        """Persist the V3 ingress facts in one database transaction.
+
+        Historically the reply path checked the conversation, upserted it,
+        inserted the customer message and created the run through four
+        independent connections.  Remote MySQL latency made those round trips
+        visible to the customer.  This method keeps the exact same durable
+        facts while sharing one checkout and one commit.
+        """
+
+        operation_started = time.perf_counter()
+        statement_count = 0
+        with self.store.connect() as raw_conn:
+            class _CountedConnection:
+                def execute(self, *args: Any, **kwargs: Any) -> Any:
+                    nonlocal statement_count
+                    statement_count += 1
+                    return raw_conn.execute(*args, **kwargs)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(raw_conn, name)
+
+            conn = _CountedConnection()
+            conversation_id = self._prepare_v3_request_in_connection(
+                conn,
+                default_conversation_id=default_conversation_id,
+                resolve_existing=resolve_existing,
+                request=request,
+                request_id=request_id,
+                title=title,
+                input_snapshot=input_snapshot,
+                interface_version=interface_version,
+                started_at=started_at,
+                http_request_ingress_id=http_request_ingress_id,
             )
-            conn.execute(
-                """
-                INSERT INTO messages (id, conversation_id, request_id, role, content, file_image, reply_messages, created_at)
-                VALUES (?, ?, ?, 'user', ?, ?, '[]', ?)
-                """,
-                (
-                    str(uuid4()),
-                    conversation_id,
-                    request_id,
-                    str(getattr(request, "content", "") or ""),
-                    str(getattr(request, "file_image", "") or ""),
-                    now,
-                ),
-            )
-            output_snapshot = {
-                "runtime_status": "running",
-                "runtime_phase": "request_received",
-                "runtime_started_at": now,
-                "runtime_updated_at": now,
-                "interface_version": version,
-                "http_request_ingress_id": str(http_request_ingress_id or ""),
-                "http_request_started_at": now,
-            }
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO runs
-                    (request_id, conversation_id, customer_id, input_snapshot, output_snapshot, intents, tags,
-                     duration_ms, token_usage, error, created_at)
-                VALUES (?, ?, ?, ?, ?, '[]', '[]', 0, '{}', '', ?)
-                """,
-                (
-                    request_id,
-                    conversation_id,
-                    str(getattr(request, "customer_id", "") or ""),
-                    dumps(compact(input_snapshot)),
-                    dumps(output_snapshot),
-                    now,
-                ),
-            )
+            cancellation = {"cancelled_plans": 0, "skipped_tasks": 0}
+            if cancel_outreach and str(getattr(request, "wechat", "") or "").strip():
+                cancellation = self._cancel_outreach_for_customer_reply_in_connection(
+                    conn,
+                    customer_id=str(getattr(request, "customer_id", "") or ""),
+                    corp_id=str(getattr(request, "corp_id", "") or ""),
+                    wechat=str(getattr(request, "wechat", "") or ""),
+                    external_userid=str(getattr(request, "external_userid", "") or ""),
+                    request_id=request_id,
+                )
         return {
             "conversation_id": conversation_id,
             "duration_ms": max(0, int((time.perf_counter() - operation_started) * 1000)),
             "connection_count": 1,
+            "statement_count": statement_count,
+            "outreach_cancel": cancellation,
         }
 
     def find_conversation_id_for_identity(
