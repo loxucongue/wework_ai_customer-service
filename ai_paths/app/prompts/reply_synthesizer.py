@@ -123,14 +123,14 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
     reference_aliases = build_reply_reference_aliases(payload)
     sections = [
         _section("当前时间", time_text or "未提供"),
+        _section(
+            "本轮销售动作硬合同（客户可见文字也必须遵守）",
+            _render_mainline_execution_contract(payload.get("mainline_delivery_state") or {}),
+        ),
         _section("完整聊天", _render_conversation(shared, reference_aliases=reference_aliases)),
         _section(
             "当前结构事实与不能越过的边界",
             _render_compact_status(_compact_reply_status(facts)),
-        ),
-        _section(
-            "销售主线已真实交付到哪里（只按已送达/权威事实，不按模型猜测）",
-            _render_compact_status(payload.get("mainline_delivery_state") or {}),
         ),
         _section("本轮真实执行能力", _render_execution_capabilities()),
     ]
@@ -243,6 +243,35 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         ]
     )
     return "\n\n".join(item for item in sections if item)
+
+
+def _render_mainline_execution_contract(value: Any) -> str:
+    state = value if isinstance(value, dict) else {}
+    allowed = {
+        str(item or "").strip()
+        for item in state.get("allowed_next_sales_action_types") or []
+        if str(item or "").strip()
+    }
+    next_stage = str(state.get("next_missing_stage") or "").strip()
+    lines = [
+        _render_compact_status(state),
+        "next_sales_action.type 只能逐字选择 allowed_next_sales_action_types 中的一个值，客户可见文字必须实际落实同一个动作。",
+    ]
+    if "invite_booking" not in allowed:
+        lines.append(
+            "本轮禁止邀请预约、询问工作日/周末或到店时间，也禁止把这些文字伪标成 ask_missing_fact/deliver_value。"
+        )
+    stage_requirements = {
+        "effect_evidence": "答完当前问题后，应交付真实效果说明或本轮可用效果素材。",
+        "activity_offer": "答完当前问题后，应说明权威活动价格或包含价值。",
+        "store": "答完当前问题后，应询问缺失地区或交付本轮允许的真实门店信息。",
+        "appointment": "项目、活动和门店均已交付，可自然说明预约目的并询问一个日期或时段。",
+        "appointment_deposit": "仅在真实行动信号和付款结构均满足时解释或交付预约金入口。",
+        "complete": "按权威交易状态提供相邻服务，不重复营销。",
+    }
+    if next_stage in stage_requirements:
+        lines.append("最早缺失主线=" + next_stage + "；" + stage_requirements[next_stage])
+    return "\n".join(line for line in lines if line)
 
 
 def _render_missing_authority_guard(

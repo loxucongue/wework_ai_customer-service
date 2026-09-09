@@ -5,6 +5,7 @@ from ai_paths.app.prompts.reply_synthesizer import (
     _render_authoritative_facts,
     _render_delivery_assets,
     _render_knowledge_evidence,
+    _render_mainline_execution_contract,
     _render_reference_contract,
 )
 from ai_paths.app.prompts.v3_semantic_router import V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
@@ -118,6 +119,20 @@ def test_reply_connects_store_detail_to_the_true_mainline_stage() -> None:
     assert "不得说可直接到店" in prompt
     assert "明确再次索要地址/位置/导航时必须重发" in prompt
     assert "不能把预约问句伪标成 ask_missing_fact/deliver_value" in prompt
+
+
+def test_dynamic_mainline_contract_blocks_customer_visible_booking_shortcut() -> None:
+    rendered = _render_mainline_execution_contract(
+        {
+            "next_missing_stage": "activity_offer",
+            "allowed_next_sales_action_types": ["send_store", "explain_activity"],
+        }
+    )
+
+    assert "本轮禁止邀请预约" in rendered
+    assert "询问工作日/周末或到店时间" in rendered
+    assert "最早缺失主线=activity_offer" in rendered
+    assert "权威活动价格或包含价值" in rendered
 
 
 def test_router_treats_explicit_location_delivery_as_store_detail_not_booking() -> None:

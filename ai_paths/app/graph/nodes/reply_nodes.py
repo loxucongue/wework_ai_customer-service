@@ -2540,6 +2540,7 @@ def _parallel_generic_reply_repair_messages(
         "customer_visible_placeholder_fact",
         "case_image_structure_required_when_reply_promises_delivery",
         "next_sales_action_exceeds_delivered_mainline",
+        "offer_face_hand_price_scope_ambiguous",
     )
     removed_invalid_fields: list[str] = []
     if isinstance(repair_previous_payload, dict) and any(
@@ -3436,6 +3437,12 @@ def _reply_repair_hint(error: str) -> str:
             "上一版承诺找、挑、选或发送效果图，却没有交付真实 image。"
             "若 allowed_selected_content_ids 中有当前相关素材，选择其真实 content_id 并按交付要求输出 image；"
             "若没有可用素材，删除发送承诺，如实用文字回答，不能继续说稍后找图或发图。"
+        )
+    if "offer_face_hand_price_scope_ambiguous" in error:
+        return (
+            "脸部和手部价格范围表达含糊。客户只问手部时直接说‘手部单独做是268元活动价’，不要主动带出脸部；"
+            "客户明确同时问两个部位时，必须说‘两个部位单独做均为268元，一个268元只对应一个部位’，"
+            "不能只说‘脸部和手部都是268元’。"
         )
     if "invalid_parallel_reply_action" in error:
         return (

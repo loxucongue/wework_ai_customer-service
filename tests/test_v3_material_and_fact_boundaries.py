@@ -270,11 +270,13 @@ def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> No
     media = _reply_repair_hint(
         "case_image_structure_required_when_reply_promises_delivery"
     )
+    body_area_price = _reply_repair_hint("offer_face_hand_price_scope_ambiguous")
 
     assert "XX市" in placeholder and "所在城市" in placeholder
     assert "allowed_next_sales_action_types" in mainline
     assert "删除预约时间" in mainline
     assert "allowed_selected_content_ids" in media
+    assert "手部单独做是268元活动价" in body_area_price
 
 
 def test_mainline_repair_drops_invalid_visible_draft_and_requires_scalar_action() -> None:
