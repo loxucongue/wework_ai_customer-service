@@ -185,6 +185,11 @@ def test_parallel_validation_runs_hours_and_price_boundaries() -> None:
             [{"type": "text", "content": "268元就是做全脸。"}],
             state,
         )
+    with pytest.raises(ValueError, match="customer_visible_placeholder_fact"):
+        _validate_parallel_reply_consistency(
+            [{"type": "text", "content": "我们公司在XX市XX区XX路XX号。"}],
+            state,
+        )
 
 
 def test_missing_store_location_skips_parser_and_requests_region() -> None:

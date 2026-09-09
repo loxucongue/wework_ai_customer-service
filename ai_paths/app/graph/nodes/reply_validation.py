@@ -331,6 +331,7 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
     """
 
     checks = (
+        lambda: _validate_no_placeholder_facts(messages),
         lambda: _validate_handoff_notice_text(messages),
         lambda: _validate_single_payment_collection(messages),
         lambda: _validate_parallel_claimed_deposit_evidence(messages, state),
@@ -355,6 +356,27 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
                 violations.append(detail)
     if violations:
         raise ValueError("parallel_reply_hard_violations::" + ";;".join(violations))
+
+
+def _validate_no_placeholder_facts(messages: list[dict[str, Any]]) -> None:
+    """Reject template placeholders that would be visible to a customer.
+
+    This is a presentation/fact-integrity check, not a sales-intent rule.  A
+    missing authoritative value must remain missing instead of being rendered
+    as an example address, phone number, amount, or store name.
+    """
+
+    text = _combined_text(messages)
+    if not text:
+        return
+    compact = re.sub(r"\s+", "", text)
+    placeholder_patterns = (
+        r"(?:X|x|Ｘ){2,}(?:市|区|县|路|街|号|店)",
+        r"(?:某|示例)(?:市|区|县|路|街|门店)",
+        r"(?:待补充|待填写|PLACEHOLDER|TBD)",
+    )
+    if any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in placeholder_patterns):
+        raise ValueError("customer_visible_placeholder_fact")
 
 
 def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
