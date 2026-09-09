@@ -579,7 +579,7 @@ export function generationRecoveryFromRun(
       || recoveryNextAt
       || recoveryDispatchId
       || recoveryError
-      || attempts !== undefined
+      || (attempts !== undefined && attempts > 0)
       || replayed !== undefined
     ),
     response_id: responseId,

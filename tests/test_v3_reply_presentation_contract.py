@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -173,3 +174,35 @@ def test_sales_reply_uses_small_variation_but_structural_repair_is_deterministic
     )
 
     assert model.temperatures == [0.15, 0.0]
+
+
+def test_sales_reply_temperature_uses_runtime_setting() -> None:
+    class Model:
+        settings = SimpleNamespace(v3_reply_temperature=0.22)
+
+        def __init__(self) -> None:
+            self.temperatures: list[float] = []
+
+        async def chat_json(self, _messages: Any, **kwargs: Any) -> dict[str, Any]:
+            self.temperatures.append(float(kwargs["temperature"]))
+            return {"reply_messages": [{"type": "text", "content": "在的呀"}]}
+
+    model = Model()
+    asyncio.run(
+        _chat_json_with_deadline(
+            model,  # type: ignore[arg-type]
+            [{"role": "system", "content": "你是 V3 唯一的最终销售大脑"}],
+            tier="reply",
+            deadline_monotonic=999999999.0,
+        )
+    )
+    asyncio.run(
+        _chat_json_with_deadline(
+            model,  # type: ignore[arg-type]
+            [{"role": "system", "content": "你是 JSON 结构修复器"}],
+            tier="reply",
+            deadline_monotonic=999999999.0,
+        )
+    )
+
+    assert model.temperatures == [0.22, 0.0]

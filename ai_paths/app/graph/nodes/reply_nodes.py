@@ -2116,7 +2116,13 @@ async def _chat_json_with_deadline(
     # The sales Reply gets a small amount of lexical variation so consecutive
     # customers do not receive the same rigid template. Exact JSON/fact repair
     # stays deterministic. This changes expression only, never Router or facts.
-    temperature = 0.0 if "修复器" in system_text else 0.15
+    settings = getattr(model_client, "settings", None)
+    configured_temperature = getattr(settings, "v3_reply_temperature", 0.15)
+    try:
+        sales_temperature = min(0.5, max(0.0, float(configured_temperature)))
+    except (TypeError, ValueError):
+        sales_temperature = 0.15
+    temperature = 0.0 if "修复器" in system_text else sales_temperature
     try:
         return await model_client.chat_json(
             messages,
