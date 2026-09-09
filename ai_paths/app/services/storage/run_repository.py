@@ -1398,12 +1398,19 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
         "post_reply_payload",
         "v3_recovery_payload",
         "v3_response_snapshot",
+        "v3_recovery_response_snapshot",
         "performance",
     ):
         if key in output_snapshot:
             stored[key] = (
                 output_snapshot[key]
-                if key in {"post_reply_payload", "v3_recovery_payload", "v3_response_snapshot"}
+                if key
+                in {
+                    "post_reply_payload",
+                    "v3_recovery_payload",
+                    "v3_response_snapshot",
+                    "v3_recovery_response_snapshot",
+                }
                 else compact(output_snapshot[key])
             )
     observability = output_snapshot.get("observability_v3")

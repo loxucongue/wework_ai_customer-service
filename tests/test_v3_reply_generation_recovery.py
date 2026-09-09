@@ -205,12 +205,62 @@ def test_stale_generation_and_fallback_recovery_are_claimed_and_completed(tmp_pa
     replay = repository.get_v3_generation_result(generation_key=generation_key)
     assert replay["generation_status"] == GENERATION_STATUS_RECOVERED
     assert replay["recovery_dispatch_id"] == "dispatch-1"
-    assert replay["response"]["reply_messages"][0]["content"] == "补答成功"
+    assert replay["response"]["reply_messages"] == []
+    assert replay["recovery_reply_messages"][0]["content"] == "补答成功"
     with repository.store.connect() as conn:
         raw = conn.execute(
             "SELECT output_snapshot FROM runs WHERE request_id='request-stale'"
         ).fetchone()["output_snapshot"]
     assert "v3_recovery_payload" not in raw
+
+
+def test_recovery_delivery_does_not_replace_primary_platform_response(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    request = _request("primary-fallback-stays-primary")
+    reserved = _reserve(repository, request, request_id="request-primary-fallback")
+    generation_key = str(reserved["generation_key"])
+    primary_messages = [{"type": "text", "order": 1, "content": "您稍等一下"}]
+
+    repository.save_v3_reply_core(
+        conversation_id=str(reserved["conversation_id"]),
+        final_state={
+            "request_id": "request-primary-fallback",
+            "generation_status": GENERATION_STATUS_FALLBACK_PENDING,
+            "recovery_kind": "reply_timeout",
+            "recovery_next_at": "2026-09-09T00:00:15+00:00",
+            "reply_source": "deterministic_runtime_exception_fallback",
+            "request_context": {"interface_version": "v3"},
+        },
+        reply_messages=primary_messages,
+        token_usage={},
+        deferred_payload={},
+    )
+    repository.claim_v3_fallback_recoveries(
+        now="2026-09-09T00:00:20+00:00",
+        max_attempts=2,
+    )
+    repository.complete_v3_fallback_recovery(
+        request_id="request-primary-fallback",
+        reply_messages=[{"type": "text", "order": 1, "content": "这是恢复后的正式答复"}],
+        dispatch_id="dispatch-recovery",
+        response_snapshot={
+            "request_id": "request-primary-fallback",
+            "meta": {"reply_source": "recovery"},
+        },
+    )
+
+    replay = repository.get_v3_generation_result(generation_key=generation_key)
+    assert replay["generation_status"] == GENERATION_STATUS_RECOVERED
+    assert replay["response"]["reply_messages"][0]["content"] == "您稍等一下"
+    assert replay["recovery_reply_messages"][0]["content"] == "这是恢复后的正式答复"
+    assert (
+        replay["response"]["reply_messages"][0]["client_message_id"]
+        == primary_messages[0]["client_message_id"]
+    )
+    assert (
+        replay["response"]["reply_messages"][0]["client_message_id"]
+        != replay["recovery_reply_messages"][0]["client_message_id"]
+    )
 
 
 def test_same_reserved_request_can_finish_terminal_fallback_without_duplicate_ingress(tmp_path: Path) -> None:

@@ -332,7 +332,6 @@ class V3ReplyRecoveryRepositoryMixin:
                 recovery_kind=recovery_kind,
             )
             output = loads_dict(row["output_snapshot"])
-            output["reply_messages"] = stable_messages
             output["recovery_reply_messages"] = stable_messages
             output["runtime_status"] = "completed"
             output["runtime_phase"] = "recovery_completed"
@@ -343,7 +342,10 @@ class V3ReplyRecoveryRepositoryMixin:
                 snapshot["reply_messages"] = stable_messages
                 snapshot["response_id"] = str(row["response_id"] or "")
                 snapshot["replayed"] = False
-                output["v3_response_snapshot"] = encode_v3_recovery_payload(snapshot)
+                # Recovery is an out-of-band delivery with its own idempotency
+                # key. Keep the original HTTP snapshot immutable so a later
+                # retry of the platform msgid cannot send the recovery twice.
+                output["v3_recovery_response_snapshot"] = encode_v3_recovery_payload(snapshot)
             conn.execute(
                 """
                 UPDATE runs
@@ -429,11 +431,12 @@ def _generation_result(
     )
     response_id = str(row.get("response_id") or "")
     status = str(row.get("generation_status") or "")
+    # The primary HTTP result and the later recovery dispatch are separate
+    # channels. Never replay recovery_reply_messages for the original msgid:
+    # the worker has already sent them through message_dispatches.
     messages = (
         response_snapshot.get("reply_messages")
         if isinstance(response_snapshot.get("reply_messages"), list)
-        else output.get("recovery_reply_messages")
-        if isinstance(output.get("recovery_reply_messages"), list)
         else output.get("reply_messages")
         if isinstance(output.get("reply_messages"), list)
         else []
@@ -442,11 +445,7 @@ def _generation_result(
         messages = stable_v3_reply_messages(
             messages,
             response_id=response_id,
-            recovery_kind=(
-                str(row.get("recovery_kind") or "recovery")
-                if status == GENERATION_STATUS_RECOVERED
-                else "primary"
-            ),
+            recovery_kind="primary",
         )
     if not response_snapshot:
         response_snapshot = {
@@ -490,6 +489,11 @@ def _generation_result(
         "recovery_error": str(row.get("recovery_error") or ""),
         "response": response_snapshot,
         "http_response": http_response,
+        "recovery_reply_messages": (
+            list(output.get("recovery_reply_messages") or [])
+            if isinstance(output.get("recovery_reply_messages"), list)
+            else []
+        ),
         "request": {},
     }
     if include_recovery_payload:
