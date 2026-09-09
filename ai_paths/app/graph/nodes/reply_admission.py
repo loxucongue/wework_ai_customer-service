@@ -160,7 +160,21 @@ def _validate_customer_visible_mainline_boundary(
         for item in mainline.get("allowed_next_sales_action_types") or []
         if str(item or "").strip()
     }
-    if "invite_booking" in allowed:
+    policy = (
+        state.get("reply_policy_decision")
+        if isinstance(state.get("reply_policy_decision"), dict)
+        else {}
+    )
+    closing = (
+        policy.get("closing_decision")
+        if isinstance(policy.get("closing_decision"), dict)
+        else {}
+    )
+    customer_state = str(closing.get("customer_state") or "").strip()
+    if "invite_booking" in allowed and customer_state not in {
+        "pause_current_turn",
+        "hard_stop_marketing",
+    }:
         return
     text = "\n".join(
         message_content_text(item.get("content"))

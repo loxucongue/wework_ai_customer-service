@@ -122,6 +122,20 @@ def test_visible_mainline_guard_allows_negated_or_reached_booking_language() -> 
     )
 
 
+@pytest.mark.parametrize("customer_state", ["pause_current_turn", "hard_stop_marketing"])
+def test_visible_booking_is_blocked_when_customer_state_forbids_current_sales_advance(
+    customer_state: str,
+) -> None:
+    ready = _mainline(roles=("effect_evidence", "activity_offer", "address_evidence"))
+    state = _state(ready, action="deliver_value", customer_state=customer_state)
+
+    with pytest.raises(ValueError, match="next_sales_action_exceeds_delivered_mainline"):
+        _validate_customer_visible_mainline_boundary(
+            [{"type": "text", "content": "您先忙，周末方便过来吗？"}],
+            state,
+        )
+
+
 def test_active_friction_and_paused_turn_cannot_advance_booking() -> None:
     mainline = _mainline(
         roles=("effect_evidence", "activity_offer", "address_evidence"),
