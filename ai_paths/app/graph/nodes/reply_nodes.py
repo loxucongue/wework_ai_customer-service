@@ -2394,6 +2394,14 @@ def _parallel_generic_reply_repair_messages(
         if isinstance(validation_context.get("structured_delivery_options"), dict)
         else {}
     )
+    mainline_delivery_state = (
+        validation_context.get("mainline_delivery_state")
+        if isinstance(validation_context.get("mainline_delivery_state"), dict)
+        else {}
+    )
+    allowed_next_action_types = list(
+        mainline_delivery_state.get("allowed_next_sales_action_types") or ["keep_open"]
+    )
     required_output_contract: dict[str, Any] = {
         "reply_messages": [
             {
@@ -2406,14 +2414,7 @@ def _parallel_generic_reply_repair_messages(
             "primary_objective": "本轮唯一目标",
             "posture": "answer|advance|switch|pause|close",
             "next_sales_action": {
-                "type": (
-                    (
-                        validation_context.get("mainline_delivery_state")
-                        if isinstance(validation_context.get("mainline_delivery_state"), dict)
-                        else {}
-                    ).get("allowed_next_sales_action_types")
-                    or ["keep_open"]
-                ),
+                "type": "单个字符串；逐字从本次 allowed_next_sales_action_types 选择一个值",
                 "reason": "客户可见回复必须真实落实该动作",
             },
         },
@@ -2453,9 +2454,11 @@ def _parallel_generic_reply_repair_messages(
             "保留未冲突的事实解释、客户可见内容和销售判断。"
         ),
         "targeted_repair_instructions": targeted_repair_instructions,
+        "allowed_next_sales_action_types": allowed_next_action_types,
         "required_output_contract": required_output_contract,
         "payment_repair_instruction": payment_repair_instruction,
         "rules": [
+            "targeted_repair_instructions 是本次最高优先级；previous_reply 中被移除的无效字段不得照抄或重建。",
             "不得重新判断客户心理、成交阶段或销售节奏，不得按错误码生成新销售话术。",
             "policy_decision 不是本次错误来源时必须原样保留；不得因删除事实冲突话术而删掉意图、情绪、卡点和逼单暂停判断。",
             "事实不足时删除完成态、可用性或已安排断言，改成真实的条件表达、追问或说明待核对；不得换一种措辞重复同一断言。",
@@ -2507,9 +2510,34 @@ def _parallel_generic_reply_repair_messages(
         for item in messages
         if isinstance(item, dict) and str(item.get("role") or "") == "user"
     ]
+    repair_previous_payload = copy.deepcopy(previous_payload) if isinstance(previous_payload, dict) else None
+    visible_rewrite_markers = (
+        "customer_visible_placeholder_fact",
+        "case_image_structure_required_when_reply_promises_delivery",
+        "next_sales_action_exceeds_delivered_mainline",
+    )
+    removed_invalid_fields: list[str] = []
+    if isinstance(repair_previous_payload, dict) and any(
+        marker in violation
+        for violation in violations
+        for marker in visible_rewrite_markers
+    ):
+        if "reply_messages" in repair_previous_payload:
+            repair_previous_payload.pop("reply_messages", None)
+            removed_invalid_fields.append("reply_messages")
+        if any("next_sales_action_exceeds_delivered_mainline" in item for item in violations):
+            if "sales_judgment" in repair_previous_payload:
+                repair_previous_payload.pop("sales_judgment", None)
+                removed_invalid_fields.append("sales_judgment")
+    repair_contract["previous_invalid_fields_removed"] = removed_invalid_fields
     previous_output = (
-        [{"role": "assistant", "content": json.dumps(previous_payload, ensure_ascii=False, separators=(",", ":"))}]
-        if isinstance(previous_payload, dict)
+        [
+            {
+                "role": "assistant",
+                "content": json.dumps(repair_previous_payload, ensure_ascii=False, separators=(",", ":")),
+            }
+        ]
+        if isinstance(repair_previous_payload, dict)
         else []
     )
     return [
@@ -2518,7 +2546,9 @@ def _parallel_generic_reply_repair_messages(
             "content": (
                 "你是最终 Reply 的通用校验修复器，不是第二个销售大脑。"
                 "只处理 schema、结构素材、引用或确定性事实冲突。"
-                "保留所有未冲突内容；输出时必须先写非空 reply_messages，再写其他字段。"
+                "保留所有未冲突内容；targeted_repair_instructions 是本轮最高优先级。"
+                "previous_reply 中被删除的字段已被证明无效，必须根据允许动作和真实证据重新生成，不能照抄。"
+                "输出时必须先写非空 reply_messages，再写其他字段。"
                 "只输出完整严格 json。"
             ),
         },
@@ -3370,9 +3400,11 @@ def _reply_repair_hint(error: str) -> str:
         return (
             "上一版跨过了尚未交付的销售主线。必须从 "
             "valid_reference_contract.mainline_delivery_state.allowed_next_sales_action_types "
-            "中逐字选择 next_sales_action.type，并让客户可见文字只落实这个动作。"
+            "中逐字选择一个字符串作为 next_sales_action.type，并让客户可见文字只落实这个动作。"
             "如果 invite_booking 或 send_payment 不在允许列表，必须删除预约时间、到店时间、保留名额和付款推进，"
+            "完整重写 reply_messages、primary_objective、posture、next_sales_action.reason，"
             "改为交付 next_missing_stage 所需的效果、活动、门店价值，或自然保持沟通。"
+            "不得再出现工作日/周末、什么时候到店、预约登记、保留档期或付款等被禁止的推进。"
         )
     if "case_image_structure_required_when_reply_promises_delivery" in error:
         return (

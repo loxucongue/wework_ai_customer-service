@@ -25,6 +25,8 @@ def validate_sales_price_fact_boundaries(messages: list[dict[str, Any]]) -> None
             raise ValueError("offer_bilateral_cheek_split_price_conflict")
         if _claims_face_and_hand_total_268(compact):
             raise ValueError("offer_face_hand_total_268_conflict")
+        if _claims_ambiguous_face_and_hand_268(compact):
+            raise ValueError("offer_face_hand_price_scope_ambiguous")
         if _claims_repeat_visit_268(compact):
             raise ValueError("offer_repeat_visit_268_unverified")
 
@@ -86,6 +88,18 @@ def _claims_repeat_visit_268(text: str) -> bool:
             text,
         )
         or re.search(r"(?:第二次|下次|复访|复做|后续再做|以后再做|再次做)[^。！？]{0,8}(?:不是|并非)268", text)
+    )
+
+
+def _claims_ambiguous_face_and_hand_268(text: str) -> bool:
+    if not re.search(
+        r"(?:(?:脸部?|面部)[^。！？]{0,12}手部?|手部?[^。！？]{0,12}(?:脸部?|面部))[^。！？]{0,10}(?:都|均)(?:是|为)?268",
+        text,
+    ):
+        return False
+    return not bool(
+        re.search(r"(?:单独|分别|各自|每个部位|一个部位)[^。！？]{0,12}(?:都|均|268)", text)
+        or re.search(r"(?:都|均)(?:是|为)?268[^。！？]{0,12}(?:单独|分别|各自|每个部位)", text)
     )
 
 

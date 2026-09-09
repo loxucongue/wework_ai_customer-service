@@ -116,6 +116,8 @@ def test_reply_connects_store_detail_to_the_true_mainline_stage() -> None:
     assert "发位置/地址”本身不等于要预约" in prompt
     assert "到店不用等、优先接待" in prompt
     assert "不得说可直接到店" in prompt
+    assert "明确再次索要地址/位置/导航时必须重发" in prompt
+    assert "不能把预约问句伪标成 ask_missing_fact/deliver_value" in prompt
 
 
 def test_router_treats_explicit_location_delivery_as_store_detail_not_booking() -> None:
@@ -125,6 +127,15 @@ def test_router_treats_explicit_location_delivery_as_store_detail_not_booking() 
     assert "store_query.required=true" in prompt
     assert "purpose=store_detail" in prompt
     assert "不把“可以”升级成预约意愿" in prompt
+    assert "不能输出 already_completed 或 none" in prompt
+
+
+def test_reply_does_not_promise_unavailable_body_part_material() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "本轮没有该部位真实素材时" in prompt
+    assert "不得承诺去找、稍后发" in prompt
+    assert "不得声称到店一定能看对应案例" in prompt
 
 
 def test_reply_keeps_pure_life_sharing_natural() -> None:

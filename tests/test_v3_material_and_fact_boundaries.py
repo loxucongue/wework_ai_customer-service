@@ -6,7 +6,10 @@ import base64
 import pytest
 
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
-from app.graph.nodes.reply_nodes import _reply_repair_hint
+from app.graph.nodes.reply_nodes import (
+    _parallel_generic_reply_repair_messages,
+    _reply_repair_hint,
+)
 from app.graph.nodes.reply_validation import _validate_parallel_reply_consistency
 from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
 from app.policies.business_rules import parallel_reply_business_rules_for_model
@@ -146,6 +149,7 @@ def test_recent_script_and_high_similarity_are_penalized_not_deleted() -> None:
         ("这次活动268元就是操作全脸。", "offer_268_full_face_claim_conflict"),
         ("左脸268元，右脸也是268元。", "offer_bilateral_cheek_split_price_conflict"),
         ("脸和手一起做只要268元。", "offer_face_hand_total_268_conflict"),
+        ("脸部和手部都是268元。", "offer_face_hand_price_scope_ambiguous"),
         ("第二次再做也是268元。", "offer_repeat_visit_268_unverified"),
     ],
 )
@@ -160,6 +164,7 @@ def test_invalid_268_claims_are_rejected(reply: str, reason: str) -> None:
         "268元不是无差别操作全脸，是按脸部这个部位的实际斑点做针对性改善。",
         "脸颊两侧不会按左脸、右脸拆开收费，脸部一个部位是268元。",
         "脸和手不是总共268元，两个部位需要分别计算。",
+        "脸部和手部单独做都是268元，一个268只对应一个部位。",
         "第二次价格不能承诺还是268元，要以届时活动和门店确认为准。",
     ],
 )
@@ -270,6 +275,38 @@ def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> No
     assert "allowed_next_sales_action_types" in mainline
     assert "删除预约时间" in mainline
     assert "allowed_selected_content_ids" in media
+
+
+def test_mainline_repair_drops_invalid_visible_draft_and_requires_scalar_action() -> None:
+    invalid_text = "您大概工作日还是周末到店？我帮您预约登记。"
+    repaired_messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "当前客户消息：有时间"}],
+        ValueError(
+            "reply_admission_violations::"
+            "next_sales_action_exceeds_delivered_mainline:invite_booking:effect_evidence"
+        ),
+        previous_payload={
+            "reply_messages": [{"type": "text", "content": invalid_text}],
+            "sales_judgment": {
+                "next_sales_action": {"type": "invite_booking"},
+            },
+            "policy_decision": {"realtime_intent": {"type": "transaction_progress"}},
+        },
+        validation_context={
+            "mainline_delivery_state": {
+                "next_missing_stage": "effect_evidence",
+                "allowed_next_sales_action_types": ["deliver_value", "send_effect_material"],
+            }
+        },
+    )
+
+    assistant_payload = repaired_messages[-2]["content"]
+    repair_contract = repaired_messages[-1]["content"]
+    assert invalid_text not in assistant_payload
+    assert "sales_judgment" not in assistant_payload
+    assert "单个字符串" in repair_contract
+    assert '"allowed_next_sales_action_types":["deliver_value","send_effect_material"]' in repair_contract
+    assert "工作日/周末" in repair_contract
 
 
 def test_missing_store_location_skips_parser_and_requests_region() -> None:
