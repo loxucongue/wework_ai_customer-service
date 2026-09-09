@@ -41,6 +41,7 @@ from app.services.trace_logger import TraceLogger
 from app.services.v3_semantic_router_service import V3SemanticRouterService
 from app.services.v3_strategy_outcome_service import PlatformOrderOutcomeProvider
 from app.services.v3_reply_finalization_service import V3ReplyFinalizationService
+from app.services.v3_reply_recovery_worker import V3ReplyRecoveryWorker
 from app.services.v3_sop_execution_service import SopExecutionService as V3SopExecutionService
 from app.services.voice_transcription import DoubaoAsrClient
 
@@ -99,6 +100,7 @@ class WorkerServices:
     store_snapshot_service: StoreSnapshotService
     strategy_outcome_provider: PlatformOrderOutcomeProvider
     v3_reply_finalization_service: V3ReplyFinalizationService
+    v3_reply_recovery_worker: V3ReplyRecoveryWorker
     _closers: tuple[Any, ...]
     _platform_agent_client: PlatformAgentClient
 
@@ -319,6 +321,7 @@ def build_worker_services(settings: Settings) -> WorkerServices:
     coze_client = CozeClient(settings)
     platform_agent_client = PlatformAgentClient(settings)
     outreach_system_client = OutreachSystemClient(settings, delivery_service=message_delivery_service)
+    outreach_send_client = OutreachSendClient(settings, delivery_service=message_delivery_service)
     sales_strategy_service = SalesStrategyService(settings)
     follow_knowledge_client = FollowKnowledgeClient(settings)
     customer_context_service = CustomerContextService(platform_agent_client, repository)
@@ -353,12 +356,89 @@ def build_worker_services(settings: Settings) -> WorkerServices:
         outreach_service=outreach_service,
         memory_store=memory_store,
     )
+    recovery_customer_context_service = CustomerContextService(platform_agent_client, None)
+    recovery_model_client = _build_v3_recovery_model_client(settings)
+    recovery_semantic_fallback_client = ModelClient(
+        settings.model_copy(
+            update={
+                "model_fast": "deepseek-chat",
+                "model_fast_fallbacks": "",
+                "model_emergency_fallbacks": "",
+                "model_hedge_max_parallel": 1,
+            }
+        )
+    )
+    recovery_semantic_client = DeepSeekSemanticClient(
+        settings,
+        recovery_semantic_fallback_client,
+    )
+    recovery_semantic_router_service = V3SemanticRouterService(
+        semantic_client=recovery_semantic_client,
+        knowledge_client=follow_knowledge_client,
+        script_threshold=settings.deepseek_semantic_script_threshold,
+        max_scripts=settings.deepseek_semantic_max_scripts,
+    )
+    recovery_store_knowledge_service = CustomerStoreKnowledgeService(
+        platform_agent_client,
+        store_snapshot_service,
+    )
+    recovery_sop_execution_service = V3SopExecutionService(
+        repository=repository,
+        sop_reply_pack_service=sop_reply_pack_service,
+        model_client=recovery_model_client,
+        memory_store=memory_store,
+        customer_context_service=recovery_customer_context_service,
+        chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
+        model_led_objection_playbook_service=ModelLedObjectionPlaybookService(
+            settings.model_led_objection_playbook_path
+        ),
+    )
+    recovery_graphs = build_reply_graphs(
+        coze_client,
+        trace_logger,
+        recovery_model_client,
+        memory_store,
+        recovery_customer_context_service,
+        recovery_store_knowledge_service,
+        StoreService(platform_agent_client),
+        outreach_send_client,
+        platform_agent_client,
+        recovery_sop_execution_service,
+        recovery_semantic_router_service,
+        sales_strategy_service,
+    )
+    recovery_runtime = ChatRuntime(
+        full_graph=recovery_graphs.full_graph,
+        commit_graph=None,
+        trace_logger=trace_logger,
+        repository=repository,
+        ai_sales_policy_service=AiSalesPolicyService(settings),
+        settings=settings,
+    )
+    if settings.v3_reply_recovery_enabled:
+        if not message_delivery_service.enabled:
+            raise RuntimeError(
+                "V3_REPLY_RECOVERY_ENABLED=true requires message delivery tracking"
+            )
+        if not outreach_send_client.available or not outreach_system_client.available:
+            raise RuntimeError(
+                "V3_REPLY_RECOVERY_ENABLED=true requires outreach send and status clients"
+            )
+    v3_reply_recovery_worker = V3ReplyRecoveryWorker(
+        repository=repository,
+        generator=recovery_runtime.run_v3_recovery_graph,
+        system_client=outreach_system_client,
+        send_client=outreach_send_client,
+        customer_context_service=recovery_customer_context_service,
+        settings=settings,
+    )
     return WorkerServices(
         storage_store=storage_store,
         repository=repository,
         outreach_service=outreach_service,
         service_rule_data_service=service_rule_data_service,
         v3_reply_finalization_service=v3_reply_finalization_service,
+        v3_reply_recovery_worker=v3_reply_recovery_worker,
         sop_platform_task_service=SopPlatformTaskService(
             settings=settings,
             repository=repository,
@@ -386,6 +466,10 @@ def build_worker_services(settings: Settings) -> WorkerServices:
             sop_failure_alert_client,
             service_rule_data_service.client,
             follow_knowledge_client,
+            outreach_send_client,
+            recovery_model_client,
+            recovery_semantic_fallback_client,
+            recovery_semantic_client,
         ),
         _platform_agent_client=platform_agent_client,
     )
@@ -414,6 +498,29 @@ def _build_outreach_model_client(settings: Settings) -> ModelClient:
                 "model_balanced_fallbacks": fallbacks,
                 "model_strong_fallbacks": fallbacks,
                 "model_reply_fallbacks": fallbacks,
+                "model_emergency_fallbacks": "",
+                "model_hedge_max_parallel": 1,
+            }
+        )
+    )
+
+
+def _build_v3_recovery_model_client(settings: Settings) -> ModelClient:
+    """Keep every recovery decision on DeepSeek with no GPT takeover."""
+
+    return ModelClient(
+        settings.model_copy(
+            update={
+                "model_fast": "deepseek-chat",
+                "model_planner": "deepseek-chat",
+                "model_balanced": "deepseek-chat",
+                "model_strong": "deepseek-chat",
+                "model_reply": "deepseek-chat",
+                "model_fast_fallbacks": "",
+                "model_planner_fallbacks": "",
+                "model_balanced_fallbacks": "",
+                "model_strong_fallbacks": "",
+                "model_reply_fallbacks": "",
                 "model_emergency_fallbacks": "",
                 "model_hedge_max_parallel": 1,
             }

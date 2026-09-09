@@ -38,6 +38,9 @@ class WorkerSupervisor:
             "v3_reply_finalization",
             self.services.v3_reply_finalization_service.run(),
         )
+        recovery_worker = getattr(self.services, "v3_reply_recovery_worker", None)
+        if bool(getattr(self.settings, "v3_reply_recovery_enabled", False)) and recovery_worker:
+            await recovery_worker.start()
         if self.settings.sop_platform_pull_enabled:
             self._start("sop_platform_pull", self.services.sop_platform_task_service.run())
         self._start("storage_retention", self._run_storage_retention())
@@ -47,6 +50,9 @@ class WorkerSupervisor:
         await self.sync_outreach_workers()
 
     async def stop(self) -> None:
+        recovery_worker = getattr(self.services, "v3_reply_recovery_worker", None)
+        if recovery_worker:
+            await recovery_worker.stop()
         if "strategy_data_callback" in self._tasks:
             self.services.service_rule_data_service.stop()
         tasks = list(self._tasks.values())
@@ -84,6 +90,11 @@ class WorkerSupervisor:
                 "cancelled": task.cancelled(),
                 "error": error,
             }
+        recovery_worker = getattr(self.services, "v3_reply_recovery_worker", None)
+        recovery_status = recovery_worker.status() if recovery_worker else {
+            "enabled": False,
+            "running": False,
+        }
         return {
             "enabled": self.settings.outreach_first_day_silence_enabled,
             "threshold_minutes": self.settings.outreach_first_day_silence_minutes,
@@ -110,6 +121,17 @@ class WorkerSupervisor:
                 ),
             },
             "tasks": tasks,
+            "v3_reply_recovery": {
+                **recovery_status,
+                "poll_seconds": float(
+                    getattr(self.settings, "v3_reply_recovery_poll_seconds", 5.0)
+                ),
+                "batch_size": int(getattr(self.settings, "v3_reply_recovery_batch_size", 5)),
+                "max_attempts": int(
+                    getattr(self.settings, "v3_reply_recovery_max_attempts", 2)
+                ),
+                "schedule_seconds": [15, 45],
+            },
             "monitor": {
                 **self.services.outreach_service.monitor_status(),
                 **self._outreach_monitor_runtime,
