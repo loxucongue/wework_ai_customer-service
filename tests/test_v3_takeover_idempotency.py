@@ -36,7 +36,12 @@ class _StatusClient:
         return self.result
 
 
-def _runtime(tmp_path: Path, status_client: _StatusClient) -> tuple[ChatRuntime, SQLiteStore]:
+def _runtime(
+    tmp_path: Path,
+    status_client: _StatusClient,
+    *,
+    recovery_enabled: bool = False,
+) -> tuple[ChatRuntime, SQLiteStore]:
     settings = Settings().model_copy(
         update={
             "service_role": "reply",
@@ -45,6 +50,7 @@ def _runtime(tmp_path: Path, status_client: _StatusClient) -> tuple[ChatRuntime,
             "memory_dir": tmp_path / "memory",
             "trace_log_dir": tmp_path / "trace",
             "background_workers_enabled": False,
+            "v3_reply_recovery_enabled": recovery_enabled,
         }
     )
     store = SQLiteStore(settings)
@@ -137,3 +143,27 @@ def test_process_restart_replays_durable_result_before_remote_status_lookup(tmp_
     assert replay.response_id == first.response_id
     assert replay.replayed is True
     assert replay.reply_messages == []
+
+
+def test_runtime_failure_persists_fallback_pending_for_worker_recovery(tmp_path: Path) -> None:
+    client = _StatusClient(
+        result={"data": {"takeover": {"mode": "ai", "is_human": False}}}
+    )
+    runtime, store = _runtime(tmp_path, client, recovery_enabled=True)
+
+    response = asyncio.run(runtime.run_platform_reply(_request("recover-after-failure")))
+
+    assert [item.content for item in response.reply_messages] == ["您稍等一下"]
+    assert response.response_id
+    assert all(item.client_message_id for item in response.reply_messages)
+    assert response.meta["generation_status"] == "fallback_pending"
+    with store.connect() as conn:
+        run = conn.execute(
+            "SELECT generation_status, recovery_kind, recovery_next_at, output_snapshot "
+            "FROM runs WHERE request_id=?",
+            (response.request_id,),
+        ).fetchone()
+    assert run["generation_status"] == "fallback_pending"
+    assert run["recovery_kind"] == "runtime_exception"
+    assert run["recovery_next_at"]
+    assert "v3_recovery_payload" in run["output_snapshot"]

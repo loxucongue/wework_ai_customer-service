@@ -1068,6 +1068,8 @@ class ChatRuntime:
             return
         if bool(state.get("test_isolated")):
             return
+        if str(state.get("generation_status") or "") == GENERATION_STATUS_FALLBACK_PENDING:
+            return
         next_at = datetime.now(timezone.utc) + timedelta(seconds=15)
         state["generation_status"] = GENERATION_STATUS_FALLBACK_PENDING
         state["recovery_kind"] = str(recovery_kind or "runtime_fallback")[:64]
