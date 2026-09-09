@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 
 import json
+import re
 
 
 from typing import Any, Callable
@@ -1912,7 +1913,11 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
     _validate_closing_script_selection(payload, state, decision)
     intent = decision.get("realtime_intent") if isinstance(decision.get("realtime_intent"), dict) else {}
     explicit_exit = str(intent.get("type") or "") == "explicit_exit"
-    if not explicit_exit:
+    hard_stop = (
+        explicit_exit
+        or str(primary_task.get("type") or "") == "hard_stop"
+    )
+    if not hard_stop:
         return
 
     reply_action = _reply_action_from_payload(payload)
@@ -1934,10 +1939,89 @@ def _validate_policy_reply_consistency(payload: dict[str, Any], state: AgentStat
         conflicts.append("structured_sales_message")
     if commit_actions:
         conflicts.append("commit_actions")
+    text_conflict = _hard_stop_text_conflict_reason(
+        messages,
+        require_stop_ack=explicit_exit,
+    )
+    if text_conflict:
+        conflicts.append(text_conflict)
     if conflicts:
-        raise ValueError(
-            "policy_decision_explicit_exit_conflict:" + ",".join(conflicts)
+        error_code = (
+            "policy_decision_explicit_exit_conflict"
+            if explicit_exit
+            else "policy_decision_hard_stop_conflict"
         )
+        raise ValueError(error_code + ":" + ",".join(conflicts))
+
+
+def _hard_stop_text_conflict_reason(
+    messages: list[Any],
+    *,
+    require_stop_ack: bool,
+) -> str:
+    """Reject customer-visible selling after Reply has chosen a hard stop.
+
+    This deliberately does not infer whether an ordinary customer message is
+    an opt-out.  It only validates a decision that is already structurally a
+    hard stop. Explicit exits must acknowledge the stop and cannot ask another
+    question; medical or complaint hard stops retain their normal explanation
+    while an obvious sales-continuation CTA is still rejected.
+    """
+
+    text = "".join(
+        message_content_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return ""
+    stop_acknowledgements = (
+        "不再联系",
+        "不会再联系",
+        "不联系了",
+        "不再打扰",
+        "不会再打扰",
+        "不打扰了",
+        "不再给您发",
+        "不再给你发",
+        "不会再给您发",
+        "不会再给你发",
+        "停止联系",
+        "停止发送",
+        "已停止",
+        "已经停止",
+    )
+    acknowledgements = [
+        marker for marker in stop_acknowledgements if marker in compact
+    ]
+    if require_stop_ack and ("?" in compact or "？" in compact):
+        return "text_followup_question"
+    sales_text = compact
+    for acknowledgement in acknowledgements:
+        sales_text = sales_text.replace(acknowledgement, "")
+    has_sales_continuation = bool(
+        re.search(
+            r"(?:继续|再|先|可以|要不|不妨).{0,8}"
+            r"(?:了解|看看|考虑|介绍|发(?:送)?|预约|报名|到店|付款|支付)",
+            sales_text,
+        )
+        or re.search(
+            r"(?:活动|优惠|价格|效果|案例|门店|预约|名额|预约金).{0,8}"
+            r"(?:还在|不错|很好|合适|可以|了解|看看|考虑|保留)",
+            sales_text,
+        )
+        or re.search(
+            r"(?:我|这边).{0,4}(?:给您|给你|帮您|帮你).{0,4}"
+            r"(?:发(?:效果图|案例|地址|收款)|介绍|留名额|安排预约|预约|报名)",
+            sales_text,
+        )
+    )
+    if has_sales_continuation:
+        return "text_sales_continuation"
+    if require_stop_ack and not acknowledgements:
+        return "text_missing_stop_ack"
+    return ""
 
 
 def _validate_closing_script_selection(

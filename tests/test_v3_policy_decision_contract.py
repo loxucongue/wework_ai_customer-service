@@ -552,6 +552,120 @@ def test_explicit_exit_rejects_same_turn_sales_structures() -> None:
         _validate_policy_reply_consistency(payload, _state())
 
 
+def test_explicit_exit_rejects_pure_text_sales_continuation() -> None:
+    payload = {
+        "reply_messages": [
+            {"type": "text", "order": 1, "content": "活动还在，您可以再考虑一下。"},
+        ],
+        "sales_judgment": {"posture": "hold"},
+        "commit_actions": [],
+        "policy_decision": {
+            **_valid_decision(),
+            "primary_task": {"type": "hard_stop", "goal": "停止自动营销"},
+            "realtime_intent": {
+                "type": "explicit_exit",
+                "secondary_types": [],
+                "confidence": "high",
+                "evidence_refs": ["current_message"],
+                "basis": ["客户明确要求停止联系"],
+            },
+            "closing_decision": {
+                "action": "complete",
+                "customer_state": "hard_stop_marketing",
+                "pressure": "none",
+                "evidence_refs": ["current_message"],
+            },
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="policy_decision_explicit_exit_conflict:text_sales_continuation",
+    ):
+        _validate_policy_reply_consistency(payload, _state())
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "好的，收到，不再打扰您。",
+        "好的，不会再给您发活动消息了。",
+    ],
+)
+def test_explicit_exit_accepts_plain_stop_acknowledgement(message: str) -> None:
+    payload = {
+        "reply_messages": [
+            {"type": "text", "order": 1, "content": message},
+        ],
+        "sales_judgment": {"posture": "hold"},
+        "commit_actions": [],
+        "policy_decision": {
+            **_valid_decision(),
+            "primary_task": {"type": "hard_stop", "goal": "停止自动营销"},
+            "realtime_intent": {
+                "type": "explicit_exit",
+                "secondary_types": [],
+                "confidence": "high",
+                "evidence_refs": ["current_message"],
+                "basis": ["客户明确要求停止联系"],
+            },
+            "closing_decision": {
+                "action": "complete",
+                "customer_state": "hard_stop_marketing",
+                "pressure": "none",
+                "evidence_refs": ["current_message"],
+            },
+        },
+    }
+
+    _validate_policy_reply_consistency(payload, _state())
+
+
+def test_non_exit_hard_stop_rejects_sales_but_allows_risk_handling() -> None:
+    decision = _valid_decision()
+    decision["primary_task"] = {"type": "hard_stop", "goal": "停止销售并处理风险"}
+    decision["closing_decision"].update(
+        {
+            "action": "complete",
+            "customer_state": "hard_stop_marketing",
+            "pressure": "none",
+        }
+    )
+    base = {
+        "sales_judgment": {"posture": "hold"},
+        "commit_actions": [],
+        "policy_decision": decision,
+        "safety_assessment": {
+            "status": "complaint_refund",
+            "evidence_refs": ["current_message"],
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="policy_decision_hard_stop_conflict:text_sales_continuation",
+    ):
+        _validate_policy_reply_consistency(
+            {
+                **base,
+                "reply_messages": [
+                    {"type": "text", "content": "活动还在，您可以再考虑一下。"},
+                ],
+            },
+            _state(),
+        )
+
+    _validate_policy_reply_consistency(
+        {
+            **base,
+            "reply_messages": [
+                {"type": "text", "content": "退款问题我帮您核实，请稍等。"},
+            ],
+        },
+        _state(),
+    )
+
+
 def test_explicit_exit_conflict_takes_priority_over_generic_ask_shape() -> None:
     decision = _valid_decision()
     decision["realtime_intent"] = {

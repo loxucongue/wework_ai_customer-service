@@ -1896,14 +1896,10 @@ def _validate_paid_only_store_guidance(
         arrival = re.sub(r"\s+", "", str(authorized_store.get("arrival_guidance") or ""))
         reception = re.sub(r"\s+", "", str(authorized_store.get("reception") or ""))
         if floor:
-            floor_pattern = re.escape(floor)
-            if re.fullmatch(r"[B负]?\d+", floor, flags=re.IGNORECASE):
-                floor_pattern = rf"{floor_pattern}(?:楼|层)"
+            floor_pattern = _exact_store_floor_pattern(floor)
             residual = re.sub(floor_pattern, "", residual, flags=re.IGNORECASE)
         if room:
-            room_pattern = re.escape(room)
-            if room.isdigit():
-                room_pattern = rf"(?:房间|房号|房间号)?{room_pattern}(?:室|房|号房)"
+            room_pattern = _exact_store_room_pattern(room)
             residual = re.sub(room_pattern, "", residual, flags=re.IGNORECASE)
         for value in (arrival, reception):
             if len(value) >= 2:
@@ -1929,15 +1925,11 @@ def _validate_paid_only_store_guidance(
         arrival = str(store.get("arrival_guidance") or "").strip()
         reception = str(store.get("reception") or "").strip()
         if floor:
-            floor_pattern = re.escape(floor)
-            if re.fullmatch(r"[B负]?\d+", floor, flags=re.IGNORECASE):
-                floor_pattern = rf"{floor_pattern}(?:楼|层)"
+            floor_pattern = _exact_store_floor_pattern(floor)
             if re.search(floor_pattern, private_compact, flags=re.IGNORECASE):
                 raise ValueError("paid_store_arrival_guidance_required")
         if room:
-            room_pattern = re.escape(room)
-            if room.isdigit():
-                room_pattern = rf"(?:房间)?{room_pattern}(?:室|房|号房)"
+            room_pattern = _exact_store_room_pattern(room)
             if re.search(room_pattern, private_compact, flags=re.IGNORECASE):
                 raise ValueError("paid_store_arrival_guidance_required")
         if arrival and len(arrival) >= 2 and re.sub(r"\s+", "", arrival) in private_compact:
@@ -1963,6 +1955,12 @@ def _contains_private_arrival_guidance_shape(compact: str) -> bool:
     store_subjects = ("门店", "店里", "店在", "地址", "位置", "到店", "到了", "电梯", "楼梯")
     if any(floor_or_room.search(clause) and any(term in clause for term in store_subjects) for clause in clauses):
         return True
+    location_prefix = r"(?:是在|就在|位于|请到|到|去|在|上到|上至|前往)(?:第)?"
+    if re.search(rf"{location_prefix}{floor_or_room.pattern}", compact, flags=re.IGNORECASE):
+        return True
+    bare = compact.strip("，。！？；,.!?;")
+    if re.fullmatch(rf"(?:第)?{floor_or_room.pattern}", bare, flags=re.IGNORECASE):
+        return True
     if re.search(r"(?:房间|房号|房间号)?\d{2,4}(?:室|号房)", compact):
         return True
     if any(
@@ -1980,6 +1978,41 @@ def _contains_private_arrival_guidance_shape(compact: str) -> bool:
     ):
         return True
     return False
+
+
+def _exact_store_floor_pattern(value: str) -> str:
+    """Match an authoritative floor as a complete numeric/text token."""
+
+    compact = re.sub(r"\s+", "", str(value or ""))
+    matched = re.fullmatch(
+        r"([B负]?\d+|[一二三四五六七八九十百]+)(?:楼|层)?",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return re.escape(compact)
+    token = matched.group(1)
+    if re.fullmatch(r"[B负]?\d+", token, flags=re.IGNORECASE):
+        return rf"(?<![A-Za-z0-9]){re.escape(token)}(?!\d)(?:楼|层)"
+    chinese_digits = "一二三四五六七八九十百"
+    return (
+        rf"(?<![{chinese_digits}]){re.escape(token)}"
+        rf"(?![{chinese_digits}])(?:楼|层)"
+    )
+
+
+def _exact_store_room_pattern(value: str) -> str:
+    """Match an authoritative room without accepting 301 inside 1301."""
+
+    compact = re.sub(r"\s+", "", str(value or ""))
+    matched = re.fullmatch(
+        r"(?:房间|房号|房间号)?(\d{2,4})(?:室|房|号房)?",
+        compact,
+    )
+    if not matched:
+        return re.escape(compact)
+    room = re.escape(matched.group(1))
+    return rf"(?<!\d)(?:房间|房号|房间号)?{room}(?!\d)(?:室|房|号房)"
 
 
 def _validate_unconfirmed_store_availability_claim(

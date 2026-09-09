@@ -181,6 +181,11 @@ def test_unpaid_store_guidance_is_hidden_from_prompt_and_rejected_in_reply() -> 
             [{"type": "text", "content": "门店在3楼301室，出电梯左转。"}],
             state,
         )
+    with pytest.raises(ValueError, match="paid_store_arrival_guidance_required"):
+        _validate_paid_only_store_guidance(
+            [{"type": "text", "content": "在8楼。"}],
+            state,
+        )
 
 
 def test_authoritative_parking_floor_remains_public_before_payment() -> None:
@@ -221,6 +226,25 @@ def test_paid_store_guidance_remains_available() -> None:
         [{"type": "text", "content": "门店在3楼301室，出电梯左转。"}],
         state,
     )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "门店在13楼1301室。",
+        "在13楼1301室。",
+        "门店在13楼301室。",
+        "门店在3楼1301室。",
+    ],
+)
+def test_paid_store_guidance_rejects_numeric_substring_variants(content: str) -> None:
+    state = _store_evidence(paid=True)
+
+    with pytest.raises(ValueError, match="paid_store_arrival_guidance_required"):
+        _validate_paid_only_store_guidance(
+            [{"type": "text", "content": content}],
+            state,
+        )
 
 
 def test_paid_reused_confirmed_store_guidance_remains_available() -> None:
