@@ -3114,7 +3114,10 @@ class PlanGenerator:
             str(policy.get("runtime_mode") or "off") != "off"
             and str(closing.get("silent_tasks_mode") or "off") == "shadow"
             and decision.get("action") in {"enter", "advance", "fallback"}
-            and decision.get("customer_state") not in {"hard_stop", "new_blocker"}
+            and (
+                decision.get("legacy_customer_state") or decision.get("customer_state")
+            )
+            not in {"hard_stop", "new_blocker", "transaction_terminal_or_handoff"}
         )
         if not schedulable:
             cancelled = self.repository.cancel_open_closing_sequence_plans(

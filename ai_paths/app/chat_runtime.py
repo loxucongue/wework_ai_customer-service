@@ -7,6 +7,7 @@ import json
 import time
 import zlib
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -25,7 +26,7 @@ from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
 from app.services.customer_payment_state import payment_fact_from_image
-from app.services.customer_scope import customer_scope_from_state
+from app.services.customer_scope import build_customer_scope, customer_scope_from_state
 from app.services.follow_knowledge_metadata import adopted_follow_knowledge_metadata
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
@@ -40,6 +41,13 @@ from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.storage import AppRepository
 from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
+from app.services.v3_reply_recovery import (
+    GENERATION_STATUS_FALLBACK_PENDING,
+    GENERATION_STATUS_GENERATING,
+    stable_v3_reply_messages,
+    v3_generation_key,
+    v3_response_id,
+)
 
 
 RUNTIME_SAFE_FALLBACK_TEXT = "您稍等一下"
@@ -86,7 +94,12 @@ class ChatRuntime:
     def is_platform_protocol_message(request: ChatRequest) -> bool:
         return _platform_protocol_event(request.content) is not None
 
-    async def run_v3_takeover_guard(self, request: ChatRequest) -> ChatResponse | None:
+    async def run_v3_takeover_guard(
+        self,
+        request: ChatRequest,
+        *,
+        request_id: str = "",
+    ) -> ChatResponse | None:
         """Stop V3 before model/tool work when the platform is in human mode."""
 
         request_context = build_request_context(request)
@@ -99,6 +112,7 @@ class ChatRuntime:
                 request,
                 request_context,
                 reason="outreach_system_not_configured",
+                request_id=request_id,
             )
 
         guard_started = time.perf_counter()
@@ -128,6 +142,7 @@ class ChatRuntime:
                 request_context,
                 reason="status_query_failed",
                 error=f"{type(exc).__name__}: {exc}"[:500],
+                request_id=request_id,
             )
         _record_v3_phase(request_context, "takeover_guard", guard_started)
 
@@ -146,10 +161,11 @@ class ChatRuntime:
         if not human_mode:
             return None
 
-        request_id = str(uuid4())
+        request_id = str(request_id or uuid4())
         request_context["test_isolated"] = False
         request_context["memory_persist_allowed"] = True
         state = self._initial_state(request, request_id, request_context)
+        _copy_generation_context_to_state(state, request_context)
         state["reply_messages"] = []
         state["reply_source"] = "human_takeover_guard"
         state["takeover_guard"] = dict(request_context["takeover_guard"])
@@ -182,6 +198,7 @@ class ChatRuntime:
         *,
         reason: str,
         error: str = "",
+        request_id: str = "",
     ) -> ChatResponse:
         guard = {
             "checked": False,
@@ -192,12 +209,18 @@ class ChatRuntime:
             guard["error"] = error
         request_context["takeover_guard"] = guard
         request.request_context = request_context
-        request_id = str(uuid4())
+        request_id = str(request_id or uuid4())
         request_context["test_isolated"] = False
         request_context["memory_persist_allowed"] = True
         state = self._initial_state(request, request_id, request_context)
+        _copy_generation_context_to_state(state, request_context)
         state["reply_messages"] = _deterministic_final_fallback_messages(state)
         state["reply_source"] = "takeover_status_unavailable_fallback"
+        self._mark_v3_recovery_pending(
+            state,
+            recovery_kind="takeover_status_unavailable",
+            error=error or reason,
+        )
         state["takeover_guard"] = dict(guard)
         state.setdefault("trace", []).append(
             {
@@ -268,8 +291,9 @@ class ChatRuntime:
             }
             cached = self._platform_request_results.get(request_identity)
             if cached:
-                return cached[1]
+                return _replayed_chat_response(cached[1])
             task = self._platform_request_tasks.get(request_identity)
+            joined_existing = task is not None
             if task is None:
                 task = asyncio.create_task(self._run_platform_reply_once(request, background_tasks))
                 self._platform_request_tasks[request_identity] = task
@@ -277,7 +301,7 @@ class ChatRuntime:
             response = await asyncio.shield(task)
             async with self._platform_request_tasks_lock:
                 self._platform_request_results[request_identity] = (time.monotonic(), response)
-            return response
+            return _replayed_chat_response(response) if joined_existing else response
         finally:
             if task.done():
                 async with self._platform_request_tasks_lock:
@@ -327,26 +351,86 @@ class ChatRuntime:
                 protocol_event=protocol_event,
             )
 
-        # The takeover lookup belongs inside the per-msgid task created by
-        # run_platform_reply. Platform retries must share one status result
-        # instead of creating duplicate runs before idempotency takes effect.
-        takeover_response = await self.run_v3_takeover_guard(request)
-        if takeover_response is not None:
-            return takeover_response
-        # The guard attaches its authoritative status and timing to the
-        # request. Rebuild the local view before persisting the run.
-        request_context = build_request_context(request)
-
         request_id = str(uuid4())
         request_context["test_isolated"] = is_isolated_v2_test_request(request, request_context)
         request_context["memory_persist_allowed"] = not request_context["test_isolated"]
+        generation_key = ""
+        response_id = ""
+        if not request_context["test_isolated"]:
+            generation_key = v3_generation_key(
+                corp_id=str(request.corp_id or ""),
+                wechat=str(request.wechat or ""),
+                external_userid=str(request.external_userid or ""),
+                msgid=str(request_context.get("msgid") or ""),
+            )
+            response_id = v3_response_id(generation_key)
+        if generation_key:
+            request_context.update(
+                {
+                    "generation_key": generation_key,
+                    "response_id": response_id,
+                    "generation_status": GENERATION_STATUS_GENERATING,
+                }
+            )
+            request.request_context = request_context
+
+        scope = build_customer_scope(
+            corp_id=request.corp_id,
+            wechat=request.wechat,
+            external_userid=request.external_userid,
+            customer_id=request.platform_customer_id or request.customer_id,
+            customer_add_wechat_id=request.customer_add_wechat_id,
+            user_id=request.user_id,
+        )
+
+        ingress_started = time.perf_counter()
+        ingress_result = await asyncio.to_thread(
+            self._prepare_and_start_request,
+            request=request,
+            request_id=request_id,
+            request_context=request_context,
+            generation_key=generation_key,
+            response_id=response_id,
+            sales_contact_key=scope.sales_contact_key,
+        )
+        if bool(ingress_result.get("replayed")):
+            return await self._await_persisted_generation(
+                generation_key=str(ingress_result.get("generation_key") or generation_key),
+                fallback_request_id=str(ingress_result.get("request_id") or request_id),
+                fallback_response_id=str(ingress_result.get("response_id") or response_id),
+            )
+        conversation_id = str(ingress_result.get("conversation_id") or "")
+        _record_v3_phase(
+            request_context,
+            "request_ingress_persistence",
+            ingress_started,
+            metadata={
+                "repository_ms": int(ingress_result.get("duration_ms") or 0),
+                "connection_count": int(ingress_result.get("connection_count") or 0),
+                "statement_count": int(ingress_result.get("statement_count") or 0),
+                "outreach_cancel": ingress_result.get("outreach_cancel", {}),
+            },
+        )
+
+        # Reserve the durable generation before any remote status/model work.
+        # Platform retries and another Reply process now converge on this run.
+        takeover_response = await self.run_v3_takeover_guard(request, request_id=request_id)
+        if takeover_response is not None:
+            return takeover_response
+        request_context = build_request_context(request)
+
         decision = (
-            await self._platform_reply_coordinator.begin(request, request_id=request_id, request_context=request_context)
+            await self._platform_reply_coordinator.begin(
+                request,
+                request_id=request_id,
+                request_context=request_context,
+            )
             if self._platform_reply_coordinator
             else None
         )
         if decision and not decision.should_run_graph:
             state = self._initial_state(request, request_id, request_context)
+            _copy_generation_context_to_state(state, request_context)
             state["reply_messages"] = []
             state["reply_source"] = (
                 "platform_superseded"
@@ -362,32 +446,15 @@ class ChatRuntime:
                 final_state=state,
             )
 
-        ingress_started = time.perf_counter()
-        ingress_result = await asyncio.to_thread(
-            self._prepare_and_start_request,
-            request=request,
-            request_id=request_id,
-            request_context=request_context,
-        )
-        conversation_id = str(ingress_result.get("conversation_id") or "")
-        _record_v3_phase(
-            request_context,
-            "request_ingress_persistence",
-            ingress_started,
-            metadata={
-                "repository_ms": int(ingress_result.get("duration_ms") or 0),
-                "connection_count": int(ingress_result.get("connection_count") or 0),
-                "statement_count": int(ingress_result.get("statement_count") or 0),
-                "outreach_cancel": ingress_result.get("outreach_cancel", {}),
-            },
-        )
-
         effective_request = request
         effective_context = request_context
         control_record: PlatformReplyRecord | None = None
         if decision:
             control_record = decision.record
-            effective_context = decision.effective_request_context
+            effective_context = {
+                **request_context,
+                **decision.effective_request_context,
+            }
             effective_request = request.model_copy(
                 update={
                     "content": decision.effective_content,
@@ -395,6 +462,7 @@ class ChatRuntime:
                 }
             )
         initial_state = self._initial_state(effective_request, request_id, effective_context)
+        _copy_generation_context_to_state(initial_state, effective_context)
         if decision and self._platform_reply_coordinator:
             initial_state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
 
@@ -447,13 +515,23 @@ class ChatRuntime:
                 allow_empty_reply=True,
             )
 
-        previous_state_started = time.perf_counter()
-        initial_state["previous_policy_state"] = await asyncio.to_thread(
-            self._load_previous_policy_state,
-            initial_state,
-            request_id,
-        )
-        _record_v3_phase(effective_context, "previous_policy_state", previous_state_started)
+        previous_state = ingress_result.get("previous_strategy_state")
+        if isinstance(previous_state, dict):
+            initial_state["previous_policy_state"] = previous_state
+            _record_v3_phase(
+                effective_context,
+                "previous_policy_state",
+                time.perf_counter(),
+                metadata={"source": "request_ingress_transaction"},
+            )
+        else:
+            previous_state_started = time.perf_counter()
+            initial_state["previous_policy_state"] = await asyncio.to_thread(
+                self._load_previous_policy_state,
+                initial_state,
+                request_id,
+            )
+            _record_v3_phase(effective_context, "previous_policy_state", previous_state_started)
 
         graph_started = time.perf_counter()
         try:
@@ -708,6 +786,9 @@ class ChatRuntime:
         request: ChatRequest,
         request_id: str,
         request_context: dict[str, Any],
+        generation_key: str = "",
+        response_id: str = "",
+        sales_contact_key: str = "",
     ) -> dict[str, Any]:
         conversation_id = conversation_id_from_request(request, request_context)
         prepare = getattr(self._repository, "prepare_v3_request", None)
@@ -726,6 +807,10 @@ class ChatRuntime:
                 http_request_ingress_id=str(request_context.get("http_request_ingress_id") or ""),
                 cancel_outreach=bool(request_context.get("memory_persist_allowed"))
                 and not bool(request_context.get("test_isolated")),
+                generation_key=generation_key,
+                response_id=response_id,
+                include_previous_strategy_state=bool(sales_contact_key),
+                sales_contact_key=sales_contact_key,
             )
         conversation_id = self._prepare_conversation(request, request_id, request_context)
         self._start_run_tracking(
@@ -735,6 +820,103 @@ class ChatRuntime:
             request_context=request_context,
         )
         return {"conversation_id": conversation_id, "duration_ms": 0, "connection_count": 0}
+
+    async def _await_persisted_generation(
+        self,
+        *,
+        generation_key: str,
+        fallback_request_id: str,
+        fallback_response_id: str,
+    ) -> ChatResponse:
+        """Wait briefly for another process and replay its exact durable result."""
+
+        get_result = getattr(self._repository, "get_v3_generation_result", None)
+        if not generation_key or not callable(get_result):
+            return _generation_wait_fallback(fallback_request_id, fallback_response_id)
+        wait_seconds = min(
+            12.0,
+            max(
+                2.0,
+                float(getattr(self._settings, "v3_reply_reserve_seconds", 10.0) or 10.0),
+            ),
+        )
+        deadline = time.monotonic() + wait_seconds
+        latest: dict[str, Any] = {}
+        while True:
+            latest = await asyncio.to_thread(get_result, generation_key=generation_key)
+            if bool(latest.get("ready")):
+                return _chat_response_from_generation(latest)
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.15)
+
+        # A process may have died after reserving the unique generation. Only
+        # an old reservation is converted to recovery; an active peer keeps it.
+        recover_stale = getattr(self._repository, "recover_stale_v3_generation", None)
+        if callable(recover_stale):
+            now = datetime.now(timezone.utc)
+            strong_seconds = max(
+                35.0,
+                float(
+                    getattr(self._settings, "v3_reply_strong_round_timeout_seconds", 35.0)
+                    or 35.0
+                ),
+            )
+            stale_result = await asyncio.to_thread(
+                recover_stale,
+                generation_key=generation_key,
+                stale_before=(now - timedelta(seconds=strong_seconds + 15.0)).isoformat(),
+                next_retry_at=(now + timedelta(seconds=15)).isoformat(),
+            )
+            if bool(stale_result.get("ready")):
+                return _chat_response_from_generation(stale_result)
+            latest = stale_result or latest
+        return _generation_wait_fallback(
+            str(latest.get("request_id") or fallback_request_id),
+            str(latest.get("response_id") or fallback_response_id),
+        )
+
+    async def run_v3_recovery_graph(self, request: ChatRequest, *, request_id: str) -> ChatResponse:
+        """Regenerate one failed turn without ingress, commit, memory, BI or customer send."""
+
+        request_context = build_request_context(request)
+        request_context.update(
+            {
+                "interface_version": "v3",
+                "test_isolated": False,
+                "memory_persist_allowed": False,
+                "v3_recovery_execution": True,
+            }
+        )
+        recovery_request = request.model_copy(update={"request_context": request_context})
+        state = self._initial_state(recovery_request, request_id, request_context)
+        state["deferred_identity_observation"] = False
+        state["runtime_budget"] = build_runtime_budget(self._settings)
+        try:
+            final_state = await self._invoke_graph_with_budget(self._full_graph, state, phase="full")
+        except Exception as exc:
+            final_state = failed_state_from_exception(state, exc)
+            final_state["reply_messages"] = []
+            final_state["reply_source"] = "v3_recovery_generation_failed"
+        raw_messages = [
+            item for item in final_state.get("reply_messages") or [] if isinstance(item, dict)
+        ]
+        if not raw_messages or _only_runtime_fallback_text(raw_messages):
+            raw_messages = []
+        route_result = planner_public_route(final_state)
+        return ChatResponse(
+            request_id=request_id,
+            reply_messages=[ReplyMessage(**item) for item in raw_messages],
+            scene=str(route_result.get("scene") or ""),
+            intent=str(route_result.get("intent") or ""),
+            subflow=str(route_result.get("subflow") or ""),
+            trace_url="",
+            meta={
+                "reply_source": str(final_state.get("reply_source") or ""),
+                "decision_status": str(final_state.get("decision_status") or ""),
+                "v3_recovery_execution": True,
+            },
+        )
 
     def _load_previous_policy_state(self, state: AgentState, request_id: str) -> dict[str, Any]:
         scope = customer_scope_from_state(state)
@@ -836,6 +1018,7 @@ class ChatRuntime:
             "trace": [],
             "errors": [],
         }
+        _copy_generation_context_to_state(state, request_context)
         scope = customer_scope_from_state(state)
         state["sales_contact_key"] = scope.sales_contact_key
         state["global_customer_key"] = scope.global_customer_key
@@ -865,7 +1048,41 @@ class ChatRuntime:
         failed_state = failed_state_from_exception(initial_state, exc)
         failed_state["reply_messages"] = _deterministic_final_fallback_messages(failed_state)
         failed_state["reply_source"] = "deterministic_runtime_exception_fallback"
+        self._mark_v3_recovery_pending(
+            failed_state,
+            recovery_kind="runtime_exception",
+            error=f"{type(exc).__name__}: {exc}",
+        )
         return failed_state
+
+    def _mark_v3_recovery_pending(
+        self,
+        state: AgentState,
+        *,
+        recovery_kind: str,
+        error: str = "",
+    ) -> None:
+        if not bool(getattr(self._settings, "v3_reply_recovery_enabled", False)):
+            return
+        if not str(state.get("generation_key") or "").strip():
+            return
+        if bool(state.get("test_isolated")):
+            return
+        next_at = datetime.now(timezone.utc) + timedelta(seconds=15)
+        state["generation_status"] = GENERATION_STATUS_FALLBACK_PENDING
+        state["recovery_kind"] = str(recovery_kind or "runtime_fallback")[:64]
+        state["recovery_next_at"] = next_at.isoformat()
+        if error:
+            state["recovery_error"] = str(error)[:4000]
+        context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+        context.update(
+            {
+                "generation_status": GENERATION_STATUS_FALLBACK_PENDING,
+                "recovery_kind": state["recovery_kind"],
+                "recovery_next_at": state["recovery_next_at"],
+            }
+        )
+        state["request_context"] = context
 
     def _persist_terminal_response(
         self,
@@ -962,7 +1179,38 @@ class ChatRuntime:
             raw_reply_messages = _deterministic_final_fallback_messages(final_state)
             final_state["reply_messages"] = raw_reply_messages
             final_state["reply_source"] = "deterministic_empty_reply_fallback"
+            self._mark_v3_recovery_pending(
+                final_state,
+                recovery_kind="empty_reply",
+                error="final reply was empty",
+            )
             _set_sync_return(final_state, "final_reply", raw_reply_messages)
+        elif (
+            not allow_empty_reply
+            and _only_runtime_fallback_text(
+                [item for item in raw_reply_messages if isinstance(item, dict)]
+            )
+        ):
+            self._mark_v3_recovery_pending(
+                final_state,
+                recovery_kind="reply_pipeline_failure",
+                error=str(final_state.get("recovery_reason") or "reply pipeline fallback"),
+            )
+        response_id = str(
+            final_state.get("response_id")
+            or (
+                (final_state.get("request_context") or {}).get("response_id")
+                if isinstance(final_state.get("request_context"), dict)
+                else ""
+            )
+            or ""
+        )
+        if response_id:
+            raw_reply_messages = stable_v3_reply_messages(
+                [item for item in raw_reply_messages if isinstance(item, dict)],
+                response_id=response_id,
+            )
+            final_state["reply_messages"] = raw_reply_messages
         follow_knowledge_callback = adopted_follow_knowledge_metadata(final_state)
         if follow_knowledge_callback:
             final_state["follow_knowledge_callback"] = follow_knowledge_callback
@@ -1084,6 +1332,8 @@ class ChatRuntime:
 
         return ChatResponse(
             request_id=request_id,
+            response_id=response_id,
+            replayed=False,
             reply_messages=reply_messages,
             scene=str(route_result.get("scene", "")),
             intent=str(route_result.get("intent", "")),
@@ -1137,6 +1387,11 @@ class ChatRuntime:
                 "post_reply_finalization": final_state.get("post_reply_finalization", {}),
                 "persistence_metrics": final_state.get("persistence_metrics", {}),
                 "conversation_id": conversation_id,
+                "response_id": response_id,
+                "replayed": False,
+                "generation_status": str(final_state.get("generation_status") or ""),
+                "recovery_kind": str(final_state.get("recovery_kind") or ""),
+                "recovery_next_at": str(final_state.get("recovery_next_at") or ""),
             },
         )
 
@@ -1256,6 +1511,81 @@ def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, 
     state["fallback_violation"] = str(state.get("recovery_reason") or "")[:500]
     state["fallback_remaining_budget"] = runtime_budget_snapshot(state, tier="reply")
     return [{"type": "text", "order": 1, "content": RUNTIME_SAFE_FALLBACK_TEXT}]
+
+
+def _copy_generation_context_to_state(
+    state: AgentState,
+    request_context: dict[str, Any],
+) -> None:
+    for key in (
+        "generation_key",
+        "response_id",
+        "generation_status",
+        "recovery_kind",
+        "recovery_next_at",
+    ):
+        value = request_context.get(key)
+        if value not in (None, ""):
+            state[key] = value
+
+
+def _replayed_chat_response(response: ChatResponse) -> ChatResponse:
+    meta = dict(response.meta or {})
+    meta["replayed"] = True
+    return response.model_copy(update={"replayed": True, "meta": meta}, deep=True)
+
+
+def _chat_response_from_generation(result: dict[str, Any]) -> ChatResponse:
+    snapshot = result.get("response") if isinstance(result.get("response"), dict) else {}
+    messages = snapshot.get("reply_messages") if isinstance(snapshot.get("reply_messages"), list) else []
+    meta = snapshot.get("meta") if isinstance(snapshot.get("meta"), dict) else {}
+    meta = {
+        **meta,
+        "replayed": True,
+        "generation_status": str(result.get("generation_status") or ""),
+        "recovery_kind": str(result.get("recovery_kind") or ""),
+        "recovery_attempts": int(result.get("recovery_attempts") or 0),
+        "recovery_next_at": str(result.get("recovery_next_at") or ""),
+        "recovery_dispatch_id": str(result.get("recovery_dispatch_id") or ""),
+    }
+    return ChatResponse(
+        request_id=str(snapshot.get("request_id") or result.get("request_id") or ""),
+        response_id=str(snapshot.get("response_id") or result.get("response_id") or ""),
+        replayed=True,
+        reply_messages=[ReplyMessage(**item) for item in messages if isinstance(item, dict)],
+        scene=str(snapshot.get("scene") or ""),
+        intent=str(snapshot.get("intent") or ""),
+        subflow=str(snapshot.get("subflow") or ""),
+        trace_url=snapshot.get("trace_url") or None,
+        meta=meta,
+    )
+
+
+def _generation_wait_fallback(request_id: str, response_id: str) -> ChatResponse:
+    messages = stable_v3_reply_messages(
+        [{"type": "text", "order": 1, "content": RUNTIME_SAFE_FALLBACK_TEXT}],
+        response_id=response_id,
+    )
+    return ChatResponse(
+        request_id=request_id,
+        response_id=response_id,
+        replayed=True,
+        reply_messages=[ReplyMessage(**item) for item in messages],
+        trace_url="",
+        meta={
+            "reply_source": "generation_in_progress",
+            "replayed": True,
+            "generation_status": GENERATION_STATUS_GENERATING,
+        },
+    )
+
+
+def _only_runtime_fallback_text(messages: list[dict[str, Any]]) -> bool:
+    visible = [item for item in messages if isinstance(item, dict)]
+    return bool(visible) and all(
+        _message_type(item) == "text" and _message_text(item) == RUNTIME_SAFE_FALLBACK_TEXT
+        for item in visible
+    )
 
 
 def _deferred_state_payload(state: AgentState) -> dict[str, Any]:

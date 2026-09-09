@@ -67,7 +67,7 @@ def _request(*, msgid: str = "terminal-1", wechat: str = "SL8003") -> ChatReques
     )
 
 
-def test_human_takeover_uses_one_delayed_database_checkout(tmp_path: Path) -> None:
+def test_human_takeover_uses_one_reservation_and_one_terminal_checkout(tmp_path: Path) -> None:
     runtime, _repository, store = _runtime(tmp_path)
     original_connect = store.connect
     checkouts = 0
@@ -87,8 +87,10 @@ def test_human_takeover_uses_one_delayed_database_checkout(tmp_path: Path) -> No
 
     assert response.reply_messages == []
     assert response.meta["reply_source"] == "human_takeover_guard"
-    assert checkouts == 1
-    assert elapsed < 0.35
+    # The first transaction durably reserves generation before the remote
+    # takeover check; the second atomically completes the terminal run.
+    assert checkouts == 2
+    assert elapsed < 0.45
     assert response.meta["persistence_metrics"]["terminal"]["connection_count"] == 1
 
 

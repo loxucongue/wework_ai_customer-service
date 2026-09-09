@@ -102,3 +102,38 @@ def test_confirmed_human_takeover_still_returns_empty(tmp_path: Path) -> None:
     assert client.calls == 1
     assert response.reply_messages == []
     assert response.meta["reply_source"] == "human_takeover_guard"
+
+
+def test_process_restart_replays_durable_result_before_remote_status_lookup(tmp_path: Path) -> None:
+    first_client = _StatusClient(
+        result={"data": {"takeover": {"mode": "human", "is_human": True}}}
+    )
+    first_runtime, store = _runtime(tmp_path, first_client)
+    first = asyncio.run(first_runtime.run_platform_reply(_request("restart-replay")))
+
+    second_client = _StatusClient(error=AssertionError("durable replay must skip status lookup"))
+    settings = Settings().model_copy(
+        update={
+            "service_role": "reply",
+            "aics_storage_backend": "sqlite",
+            "db_path": tmp_path / "state.db",
+            "memory_dir": tmp_path / "memory-2",
+            "trace_log_dir": tmp_path / "trace-2",
+            "background_workers_enabled": False,
+        }
+    )
+    restarted = ChatRuntime(
+        full_graph=_FailGraph(),
+        trace_logger=TraceLogger(settings),
+        repository=AppRepository(store),
+        outreach_system_client=second_client,  # type: ignore[arg-type]
+        settings=settings,
+    )
+
+    replay = asyncio.run(restarted.run_platform_reply(_request("restart-replay")))
+
+    assert second_client.calls == 0
+    assert replay.request_id == first.request_id
+    assert replay.response_id == first.response_id
+    assert replay.replayed is True
+    assert replay.reply_messages == []
