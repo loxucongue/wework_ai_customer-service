@@ -2,7 +2,7 @@
 
 - status: current
 - owner: backend/platform
-- last_verified: 2026-09-06 Asia/Shanghai at `main@007bf2c8`
+- last_verified: 2026-09-09 Asia/Shanghai against code candidate `codex/v3-supervisor-feedback-closure@a85ad72a`
 - source_of_truth: 当前 FastAPI route 表与版本化 Nginx 配置；生产 systemd 仍需发布前现场核验
 
 ## 产品接口
@@ -38,7 +38,19 @@
 实时人工接管查询、第三方 SOP 的 `humantakeover` 策略回传、消息送达回调和
 `/admin/sop-events` 历史只读日志不受影响。
 
-V3 普通客户消息按接待边界和平台 `msgid` 先进入单次幂等任务，再查询实时人工接管状态：平台明确为人工时返回空且不进入模型；状态接口异常或状态未知时只返回中性“您稍等一下”，不得以 HTTP 200 空回复伪装成功。同一 `msgid` 的平台重试共享同一状态查询和同一运行结果。
+V3 普通客户消息按接待边界和平台 `msgid` 先进入单次幂等任务，再查询实时人工接管状态：平台明确为人工时返回空且不进入模型；状态接口异常或状态未知时只返回中性“您稍等一下”，不得以 HTTP 200 空回复伪装成功。同一 `msgid` 的并发、顺序重试和进程重启后重试都必须共享同一运行结果。
+
+## V3 生成幂等与失败恢复
+
+持久生成幂等属于本次运行合同；客户可见失败补答不是。本次发布必须在共享环境和 Reply 覆盖环境中同时保持 `V3_REPLY_RECOVERY_ENABLED=false`。只有完成独立发送安全验收后，以下恢复合同才允许启用。
+
+- 托管平台消息使用 `generation_key=sha256(corp_id|wechat|external_userid|msgid)` 作为持久生成键；它只用于服务端幂等，不向客户展示。相同键只允许创建一个 run、执行一次 Router/Reply 并保存一份最终结果。
+- 每次生成同时产生稳定 `response_id`，批次内每条客户可见消息产生稳定 `client_message_id`。数据库已有完整结果时直接重放并标记 `replayed=true`，不得重新调用模型或产生第二组消息 ID。
+- `response_id/client_message_id/replayed` 是 AI 服务提供给聚合平台的去重证据。AI 内部重复生成必须为零，但如果聚合平台忽略稳定消息 ID 并重复消费同一响应，客户侧重复不能由 AI 服务单方面宣称已闭环，必须结合聚合平台发送日志核验。
+- 只有正常销售链因技术异常最终返回唯一中性文本“您稍等一下”时，才进入 `fallback_pending`。Worker 在约 15 秒、45 秒两个窗口内最多尝试两次重新生成；业务事实缺失不是技术失败，不进入该恢复链。
+- 自动补答发送前必须重新确认：没有更新的客户消息、平台仍为 AI 接待、没有明确退订/人工接管/关系删除、没有权威已付或已预约终态，并且相同恢复消息尚未成功送达。任一条件不满足即取消，不以旧快照覆盖客户的新状态。
+- 恢复消息通过现有 `message_dispatches` 发送，幂等键固定为 `v3-recovery:<original_request_id>`。两次失败后转内部人工复核状态，不继续无限重试；关闭 `V3_REPLY_RECOVERY_ENABLED` 必须立即停用自动补答而不影响正常 V3 回复。
+- 恢复生成仍使用 `deepseek-v4-flash` Router 与 `deepseek-chat` Reply/修复，不继承 GPT 应急候选；恢复图不执行交易写入、策略回写、BI 或主动触达计划，只生成经过发送前门禁的客户可见候选。
 
 状态门禁和销售模型分别使用独立预算。优化耗时不得把“未知”改成“AI”，也不得用过短门禁或模型超时批量制造兜底；预算调整必须以真实身份隔离评测中的兜底率和完整生命周期 P95 共同验收。
 

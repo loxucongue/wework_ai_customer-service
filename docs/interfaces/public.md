@@ -19,6 +19,37 @@
   - 真实发送客户消息必须受发送链路和回调合同约束。
   - 接口端到端耗时从请求接收计算到 HTTP 响应完成，包含模型图之后的 run、历史、BI、outbox 和响应组装；不能用模型图耗时代替。
 
+### V3 响应幂等字段
+
+V3 成功响应新增以下向后兼容可选字段；旧调用方可以忽略，但聚合平台应原样保存并用于去重：
+
+- 顶层及 `data.response_id`：本次平台消息生成结果的稳定 ID；同一 `corp_id + wechat + external_userid + msgid` 重试返回相同值。
+- 顶层及 `data.replayed`：`true` 表示服务从已有持久结果重放，未再次执行 Router/Reply。
+- `data.reply_messages[].client_message_id`：批次内每条客户可见消息的稳定 ID，文本、图片、视频、门店卡和收款卡都适用；同一结果重放时顺序和值不变。
+
+```json
+{
+  "code": 0,
+  "execute_id": "request-id",
+  "response_id": "stable-response-id",
+  "replayed": false,
+  "data": {
+    "response_id": "stable-response-id",
+    "replayed": false,
+    "reply_messages": [
+      {
+        "type": "text",
+        "order": 1,
+        "client_message_id": "stable-client-message-uuid",
+        "content": {"text": "客户可见内容"}
+      }
+    ]
+  }
+}
+```
+
+稳定 ID 只能证明 AI 服务没有重复生成；聚合平台仍需使用 `client_message_id` 防止同一响应被重复发送，并在送达回调中原样返回该 ID。技术失败的即时响应仍只包含“您稍等一下”；启用恢复开关后，后续补答经独立发送链和送达合同处理，不会作为第二个 HTTP 响应返回。
+
 ## 消息送达回调
 
 - 接口：`POST /api/ai/callbacks/v1/message-delivery`
@@ -66,6 +97,7 @@
 - 旧调用不传 `include_debug` 时继续返回原有完整详情；管理页面默认使用轻量模式。
 - `GET /admin/runs/{request_id}/nodes/{node_id}` 仅在用户点击节点时读取该节点现有留存的输入、输出、模型和工具记录，并递归隐藏 token、Authorization、密钥和密码。节点必须同时属于指定请求，禁止跨请求读取。
 - 原始节点轨迹沿用现有 14 天保留期，运行和业务摘要沿用现有 90 天保留期。历史字段缺失、轨迹过期和真实零候选必须分别展示；禁止用当前知识目录回填历史正文。
+- 新产生的运行详情可以返回 `generation_key` 的存在状态、`response_id`、`generation_status`、`replayed`、`recovery_kind`、`recovery_attempts`、`recovery_next_at`、`recovery_dispatch_id` 和脱敏后的 `recovery_error`。页面不得显示原始生成键，也不得把旧记录缺少这些字段解释为恢复次数为零。
 
 ### V3 跟进策略 BI
 
@@ -92,6 +124,17 @@
 - 归因口径：时间窗口统计，不声明强因果。客户开口只来自已标记为真实客户轮次的后续 V3 消息；平台自动消息、撤回、去重/覆盖和隔离评测消息不计入。启用平台订单归因后，支付、排客、到店和完成优先使用平台只读订单状态。送达未知不计算开口/订单窗口；订单接口成功但基线不足与查询失败分别统计，均不能写成未成交。
 - `transitions` 只返回已有下一次真实 V3 客户回复的变化，不把“尚未回复”伪装成空意图/空情绪迁移。
 - `failures` 不把所有 `adopted=false` 当失败；明确退订、系统拦截、无卡点和无需匹配不会淹没真实 selector、策略结构或送达失败。
+
+### 内部门店事实待办
+
+- `GET /admin/internal-work-items`
+- `PATCH /admin/internal-work-items/{item_id}`
+- 鉴权：现有管理员 Bearer 鉴权。
+- GET 可按 `work_type`、`status=pending|resolved|dismissed`、`store_id`、`detail_kind`、`started_from`、`started_to` 和 `limit` 筛选；时间范围作用于 `last_seen_at`，`limit` 为 1～500。当前接口不分页，`total` 是本次返回条数，不表示全库总数。
+- 返回完整销售接触身份边界、门店、缺失事实类型、首次/最近出现时间、出现次数和处理状态；内部来源请求 ID 历史不对外返回。
+- PATCH 只接受 `status=resolved|dismissed`，可附 `resolved_by` 和 `resolution_note`；结果为 `updated` 或 `unchanged`。非法状态或跨终态修改返回 400，不存在返回 404。
+- 已解决待办再次遇到同类事实缺失时可重新打开；已忽略待办不会自动重开。`resolved_by` 当前为调用方填写文本，且没有独立的变更历史，不能把它表述成完整操作审计。
+- 此接口只处理 AI 服务内部待办：不会补写第三方门店资料、不会自动派单或承诺 SLA，也不会触发客户消息。
 
 ### 策略、门店和 playbook
 

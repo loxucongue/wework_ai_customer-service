@@ -2,7 +2,7 @@
 
 - status: current-code
 - owner: project
-- last_verified: 2026-09-08 Asia/Shanghai at `main@7b1c01f7`
+- last_verified: 2026-09-09 Asia/Shanghai against code candidate `codex/v3-supervisor-feedback-closure@a85ad72a`
 - source_of_truth: 当前 `main` 代码树；精确版本以 `git rev-parse HEAD` 为准
 
 ## 代码结构
@@ -58,6 +58,7 @@ docs/                             当前架构、合同、运行手册和现场�
 ```text
 公网请求 / 连续消息挤占
   → 平台协议事件快速过滤（固定开场/撤回只记审计）
+  → 持久 generation 幂等（已有结果直接重放）
   → 真实客户可见历史 + 已送达结构消息 + 稳定客户状态
   → authoritative context
   → Semantic Router（一次：卡点、工具需求、检索条件）
@@ -69,6 +70,7 @@ docs/                             当前架构、合同、运行手册和现场�
   → 同步保存客户可见回复与 run 核心终态
   → Worker 幂等补齐 memory / trace / BI / Shadow / outbox 审计
   → HTTP 返回
+  → （仅显式启用时）技术兜底进入有界恢复队列（15 秒/45 秒，发送前重新门禁）
   → 送达回执与后续客户/订单窗口归因
 ```
 
@@ -80,7 +82,15 @@ V3 普通请求入口将会话解析、会话更新、客户消息、运行记�
 
 Follow Knowledge 是单业务知识租户的共享只读目录。Reply 进程启动时只做有界预热；运行中按查询键使用短期 last-known-good 缓存和 single-flight，同一冷查询只有一个上游请求。缓存仅包含序列、卡点话术和 B 单目录，不包含客户身份、聊天、订单或跨企微状态；目录不可用时不得伪造候选。
 
+托管平台 `msgid` 在进入销售图前按 `corp_id + wechat + external_userid` 生成持久 `generation_key`，并派生稳定 `response_id/client_message_id`。并发请求共享同一进程任务，重启后的重复请求从 `runs` 恢复相同结果；只有取得生成所有权的请求允许进入 Router/Reply。该机制消除 AI 内部重复生成，但不替代聚合平台对稳定消息 ID 的发送去重。
+
+代码已经具备技术兜底恢复能力，但本次发布明确保持 `V3_REPLY_RECOVERY_ENABLED=false`，不产生客户可见自动补答。后续只有在生成所有权、恢复后素材/门店记忆收尾和送达 finalizer 异常三项风险独立验收后才允许启用。启用时，正常链最终只能返回“您稍等一下”的 run 才转为 `fallback_pending`；Worker 最多执行两次隔离的 DeepSeek 恢复生成，发送前重新读取客户最新消息、平台 AI/人工状态、退订与关系删除、权威交易终态和既有送达，并以 `v3-recovery:<original_request_id>` 幂等发送。恢复图不提交交易、BI、Shadow 或策略回写。
+
 文本链当前固定由 `deepseek-v4-flash` 承担 Semantic Router、`deepseek-chat` 承担最终 Reply 及其唯一一次结构修复/完整重试；Reply tier 不继承全局 GPT 应急候选。连续客户消息按原始顺序作为本轮正文输入，内部合并说明只留审计；最终 Reply 只读取最近 12 条真实客户可见消息，排除未交付草稿、覆盖请求和内部 trace。
+
+客户可见消息不再默认限制为一条或两条。Reply 可以把回答、证明和推进拆成多条 20～60 字的独立短消息；发送端只以最多 8 条、文字合计 300 字作为异常保护。正常轮必须落实一个 `next_sales_action`，软拒绝只降压不永久停销；硬停止和权威已付服务阶段仍由代码校验。
+
+素材选择同时使用稳定 ID/URL、文件 SHA-256 与感知指纹，识别同图换 URL 并结合近期使用和表达多样性排序。268 价格范围、门店卡、营业时间和付款后到店指引由窄范围事实校验保护；缺失门店营业时间时只形成结构化 `store_fact_followup` 事实，不得编造具体时段，也不得把该记录冒充外部工单已创建。
 
 生产质量不能只看模型图。门店卡、付款卡和素材等结构化消息也属于客户已看到的历史，必须和文本一起参与去重与本轮判断；图执行后的历史事件、BI、outbox、响应组装也属于接口端到端耗时。内存历史保存使用批量幂等写入降低数据库往返，但仍须从请求接收到 HTTP 返回持续观察尾部耗时。
 
