@@ -70,6 +70,7 @@ class AgentState(TypedDict, total=False):
     sop_delivery_decision: dict[str, Any]
     authorized_sop_delivery_manifest: dict[str, Any]
     sop_progress_evidence: dict[str, Any]
+    preloaded_sop_progress: dict[str, Any]
     conversation_state: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]

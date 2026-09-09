@@ -25,6 +25,7 @@ from app.graph.nodes.authoritative_context import (
     create_shared_context_node,
 )
 from app.graph.nodes.reply_input import should_use_model_reply
+from app.graph.nodes.reply_contract import _request_from_state
 from app.graph.nodes.reply_generation import (
     create_synthesize_reply_node,
 )
@@ -154,6 +155,14 @@ def _build_nodes(
         ),
         closing_catalog_fetcher=(
             semantic_router_service.load_closing_catalog if semantic_router_service is not None else None
+        ),
+        sop_progress_loader=(
+            lambda state: sop_execution_service.reply_chain_sop_progress(
+                _request_from_state(state),
+                request_context=dict(state.get("request_context") or {}),
+            )
+            if sop_execution_service is not None
+            else None
         ),
     )
     shared_context = create_shared_context_node(

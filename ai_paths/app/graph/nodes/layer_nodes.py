@@ -274,6 +274,7 @@ def create_background_context_layer(
     follow_sequence_fetcher: Callable[[], Any] | None = None,
     follow_taxonomy_fetcher: Callable[[], Any] | None = None,
     closing_catalog_fetcher: Callable[[], Any] | None = None,
+    sop_progress_loader: Callable[[AgentState], Any] | None = None,
 ) -> Callable[[AgentState], Any]:
     async def background_context_layer(state: AgentState) -> dict[str, Any]:
         request_context = request_context_from_state(state)
@@ -333,7 +334,15 @@ def create_background_context_layer(
                     request_context,
                 )
             )
-            memory_result, identity_result = await asyncio.gather(
+            sop_progress_task = asyncio.create_task(
+                asyncio.to_thread(
+                    _timed_call,
+                    "sop_progress",
+                    sop_progress_loader or _disabled_sop_progress,
+                    state,
+                )
+            )
+            memory_result, identity_result, sop_progress_result = await asyncio.gather(
                 _await_timed_background_task(
                     memory_task,
                     name="memory_load",
@@ -358,10 +367,29 @@ def create_background_context_layer(
                         "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
                     },
                 ),
+                _await_timed_background_task(
+                    sop_progress_task,
+                    name="sop_progress",
+                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                    timeout_result={
+                        "status": "error",
+                        "source": "scoped_sop_send_records",
+                        "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                        "completed_pack_ids": [],
+                        "completed_categories": [],
+                        "unfinished_sops": [],
+                    },
+                ),
             )
             memory = memory_result["result"]
             identity = identity_result["result"]
-            substeps.extend([_without_result(memory_result), _without_result(identity_result)])
+            substeps.extend(
+                [
+                    _without_result(memory_result),
+                    _without_result(identity_result),
+                    _without_result(sop_progress_result),
+                ]
+            )
 
             identity_context = identity.get("request_context") if isinstance(identity, dict) else {}
             scoped_request_context = {**request_context, **identity_context} if isinstance(identity_context, dict) else request_context
@@ -499,6 +527,7 @@ def create_background_context_layer(
                 "follow_sequence_index": sequence_result_timed.get("result") or {},
                 "follow_checkpoint_taxonomy": taxonomy_result_timed.get("result") or {},
                 "closing_catalog": closing_catalog_result_timed.get("result") or {},
+                "preloaded_sop_progress": sop_progress_result.get("result") or {},
                 "background_substeps": substeps,
                 "store_context_status": store_context_status,
                 "store_context_elapsed_ms": store_context_elapsed_ms,
@@ -515,6 +544,16 @@ def create_background_context_layer(
             return output
 
     return background_context_layer
+
+
+def _disabled_sop_progress(_state: AgentState) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "source": "sop_execution_service_unavailable",
+        "completed_pack_ids": [],
+        "completed_categories": [],
+        "unfinished_sops": [],
+    }
 
 
 def _background_fact_views(

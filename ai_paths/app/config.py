@@ -88,16 +88,32 @@ class Settings(BaseSettings):
     model_strong_round_timeout_seconds: float = 120.0
     model_reply_reserve_seconds: float = 30.0
     model_min_retry_remaining_seconds: float = 8.0
-    v3_reply_round_timeout_seconds: float = Field(default=35.0, alias="V3_REPLY_ROUND_TIMEOUT_SECONDS")
+    v3_reply_round_timeout_seconds: float = Field(default=25.0, alias="V3_REPLY_ROUND_TIMEOUT_SECONDS")
     v3_reply_strong_round_timeout_seconds: float = Field(
-        default=45.0,
+        default=35.0,
         alias="V3_REPLY_STRONG_ROUND_TIMEOUT_SECONDS",
     )
-    v3_reply_reserve_seconds: float = Field(default=12.0, alias="V3_REPLY_RESERVE_SECONDS")
+    v3_reply_reserve_seconds: float = Field(default=10.0, alias="V3_REPLY_RESERVE_SECONDS")
     v3_reply_min_retry_remaining_seconds: float = Field(
         default=4.0,
         alias="V3_REPLY_MIN_RETRY_REMAINING_SECONDS",
     )
+    v3_reply_recovery_enabled: bool = Field(default=False, alias="V3_REPLY_RECOVERY_ENABLED")
+    v3_reply_recovery_poll_seconds: float = Field(
+        default=5.0,
+        alias="V3_REPLY_RECOVERY_POLL_SECONDS",
+    )
+    v3_reply_recovery_batch_size: int = Field(
+        default=5,
+        alias="V3_REPLY_RECOVERY_BATCH_SIZE",
+    )
+    v3_reply_recovery_max_attempts: int = Field(
+        default=2,
+        alias="V3_REPLY_RECOVERY_MAX_ATTEMPTS",
+    )
+    v3_reply_max_messages: int = Field(default=8, alias="V3_REPLY_MAX_MESSAGES")
+    v3_reply_max_text_chars: int = Field(default=300, alias="V3_REPLY_MAX_TEXT_CHARS")
+    v3_reply_temperature: float = Field(default=0.15, alias="V3_REPLY_TEMPERATURE")
     model_vision_total_timeout_seconds: float = 15.0
     model_store_destination_total_timeout_seconds: float = 25.0
     model_store_destination_hedge_delay_seconds: float = 3.0
@@ -431,6 +447,14 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_runtime_contract(self) -> "Settings":
         role = self.runtime_role
+        if not 1 <= int(self.v3_reply_max_messages) <= 20:
+            raise ValueError("V3_REPLY_MAX_MESSAGES must be between 1 and 20")
+        if not 50 <= int(self.v3_reply_max_text_chars) <= 2000:
+            raise ValueError("V3_REPLY_MAX_TEXT_CHARS must be between 50 and 2000")
+        if not 0.0 <= float(self.v3_reply_temperature) <= 0.5:
+            raise ValueError("V3_REPLY_TEMPERATURE must be between 0 and 0.5")
+        if not 1 <= int(self.v3_reply_recovery_max_attempts) <= 5:
+            raise ValueError("V3_REPLY_RECOVERY_MAX_ATTEMPTS must be between 1 and 5")
         if role is RuntimeRole.REPLY and self.background_workers_enabled:
             raise ValueError("reply role requires AI_PATHS_BACKGROUND_WORKERS_ENABLED=false")
         if role is RuntimeRole.CONTROL and self.background_workers_enabled:

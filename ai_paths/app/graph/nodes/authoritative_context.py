@@ -40,21 +40,25 @@ def create_shared_context_node(
                     "unfinished_sops": [],
                 }
             else:
-                try:
-                    sop_progress = await asyncio.to_thread(
-                        sop_execution_service.reply_chain_sop_progress,
-                        _request_from_state(state),
-                        request_context=dict(state.get("request_context") or {}),
-                    )
-                except Exception as exc:
-                    sop_progress = {
-                        "status": "error",
-                        "source": "scoped_sop_send_records",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "completed_pack_ids": [],
-                        "completed_categories": [],
-                        "unfinished_sops": [],
-                    }
+                preloaded = state.get("preloaded_sop_progress")
+                if isinstance(preloaded, dict) and preloaded:
+                    sop_progress = copy.deepcopy(preloaded)
+                else:
+                    try:
+                        sop_progress = await asyncio.to_thread(
+                            sop_execution_service.reply_chain_sop_progress,
+                            _request_from_state(state),
+                            request_context=dict(state.get("request_context") or {}),
+                        )
+                    except Exception as exc:
+                        sop_progress = {
+                            "status": "error",
+                            "source": "scoped_sop_send_records",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "completed_pack_ids": [],
+                            "completed_categories": [],
+                            "unfinished_sops": [],
+                        }
             shared = _shared_context(
                 state,
                 content_catalog=content_catalog,
