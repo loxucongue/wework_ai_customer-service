@@ -368,6 +368,10 @@ class V3ReplyRecoveryWorker:
         eligibility = personalized_order_eligibility(customer_context)
         if not bool(eligibility.get("available")):
             return _gate("retry", str(eligibility.get("reason") or "platform_order_context_unavailable"))
+        if bool(eligibility.get("prepay_paid")) or str(
+            eligibility.get("deposit_state") or ""
+        ).strip().lower() in {"paid", "paid_by_order"}:
+            return _gate("cancel", "order_state_changed")
         if not bool(eligibility.get("eligible")):
             return _gate("cancel", str(eligibility.get("reason") or "order_state_changed"))
         if _authoritative_appointment_exists(customer_context):
@@ -733,10 +737,22 @@ def _authoritative_appointment_exists(customer_context: Any) -> bool:
     status = str(appointment.get("status") or "").strip().lower()
     if status in {"cancelled", "canceled", "expired", "invalid"}:
         return False
+    if status in {"scheduled", "visited", "finished"}:
+        return True
+    if any(
+        _meaningful_identifier(appointment.get(key))
+        for key in ("id", "appointment_id", "appointmentId")
+    ):
+        return True
     return any(
-        appointment.get(key) not in (None, "", False)
-        for key in ("id", "appointment_id", "appointmentId", "time", "appointment_time", "scheduled_at", "status")
+        _parse_datetime(appointment.get(key)) is not None
+        for key in ("time", "appointment_time", "scheduled_at")
     )
+
+
+def _meaningful_identifier(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text not in {"", "0", "none", "null", "unknown", "pending", "waiting_schedule"}
 
 
 def _platform_has_newer_customer_message(

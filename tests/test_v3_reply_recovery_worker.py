@@ -377,6 +377,50 @@ def test_human_mode_and_deleted_relation_are_business_cancellations() -> None:
     assert generator.calls == 0
 
 
+def test_pending_unpaid_customer_is_still_eligible_for_recovery() -> None:
+    context = _CustomerContext()
+    context.context = {
+        "source": "platform_agent",
+        "orders": [
+            {
+                "id": "order-1",
+                "status": "pending",
+                "prepay_required": 10,
+                "prepay_paid": False,
+                "deposit_state": "required_unpaid",
+            }
+        ],
+        "appointment": {"status": "pending", "order_id": "order-1"},
+    }
+    worker, repository, _, send, _, generator = _worker(context=context)
+    claim = _claim()
+    repository.current_claim = claim
+
+    result = asyncio.run(worker.process_claim(claim))
+
+    assert result["status"] == "delivery_pending"
+    assert generator.calls == 1
+    assert len(send.send_calls) == 1
+
+
+def test_waiting_schedule_label_alone_is_not_an_authoritative_appointment() -> None:
+    context = _CustomerContext()
+    context.context = {
+        "source": "platform_agent",
+        "orders": [],
+        "appointment": {"status": "waiting_schedule", "order_id": "order-1"},
+    }
+    worker, repository, _, send, _, generator = _worker(context=context)
+    claim = _claim()
+    repository.current_claim = claim
+
+    result = asyncio.run(worker.process_claim(claim))
+
+    assert result["status"] == "delivery_pending"
+    assert generator.calls == 1
+    assert len(send.send_calls) == 1
+
+
 def test_paid_or_booked_customer_cancels_recovery() -> None:
     context = _CustomerContext()
     context.context = {
@@ -396,6 +440,28 @@ def test_paid_or_booked_customer_cancels_recovery() -> None:
     assert send.send_calls == []
 
     context = _CustomerContext()
+    context.context = {
+        "source": "platform_agent",
+        "orders": [
+            {
+                "id": "order-1",
+                "status": "pending",
+                "prepay_required": 10,
+                "prepay_paid": True,
+                "deposit_state": "paid_by_order",
+            }
+        ],
+        "appointment": {"status": "pending", "order_id": "order-1"},
+    }
+    worker, repository, _, send, _, generator = _worker(context=context)
+    repository.current_claim = claim
+    paid_pending_result = asyncio.run(worker.process_claim(claim))
+    assert paid_pending_result["status"] == "cancelled"
+    assert paid_pending_result["reason"] == "order_state_changed"
+    assert generator.calls == 0
+    assert send.send_calls == []
+
+    context = _CustomerContext()
     context.context["appointment"] = {"id": "appointment-1", "status": "scheduled"}
     worker, repository, _, _, _, generator = _worker(context=context)
     repository.current_claim = claim
@@ -403,6 +469,34 @@ def test_paid_or_booked_customer_cancels_recovery() -> None:
     assert booked_result["status"] == "cancelled"
     assert booked_result["reason"] == "appointment_state_changed"
     assert generator.calls == 0
+
+
+def test_real_appointment_id_or_valid_time_cancels_recovery() -> None:
+    claim = _claim()
+    for appointment in (
+        {"status": "pending", "appointment_id": "appointment-1"},
+        {"status": "pending", "appointment_time": "2026-09-10 10:00:00"},
+        {"status": "visited"},
+        {"status": "finished"},
+    ):
+        context = _CustomerContext()
+        context.context["appointment"] = appointment
+        worker, repository, _, send, _, generator = _worker(context=context)
+        repository.current_claim = claim
+
+        result = asyncio.run(worker.process_claim(claim))
+
+        assert result["status"] == "cancelled"
+        assert result["reason"] == "appointment_state_changed"
+        assert generator.calls == 0
+        assert send.send_calls == []
+
+
+def test_deployment_example_keeps_recovery_disabled_by_default() -> None:
+    example = (PROJECT_ROOT / "deploy" / "v3.env.example").read_text(encoding="utf-8")
+
+    assert "V3_REPLY_RECOVERY_ENABLED=false" in example
+    assert "V3_REPLY_RECOVERY_ENABLED=true" not in example
 
 
 def test_platform_new_customer_message_cancels_recovery() -> None:
