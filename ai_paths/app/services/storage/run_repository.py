@@ -27,6 +27,7 @@ from app.services.storage.v3_strategy_analytics_repository import _usage_event_f
 from app.services.v3_reply_recovery import (
     GENERATION_STATUS_COMPLETED,
     GENERATION_STATUS_FALLBACK_PENDING,
+    GENERATION_STATUS_GENERATING,
     GENERATION_STATUS_MANUAL_REVIEW,
     GENERATION_STATUS_RECOVERED,
     decode_v3_recovery_payload,
@@ -96,6 +97,11 @@ class RunRepositoryMixin:
                 if requested_generation_status == GENERATION_STATUS_FALLBACK_PENDING
                 else GENERATION_STATUS_COMPLETED
             )
+            saved_recovery_kind = (
+                str(final_state.get("recovery_kind") or "")
+                if generation_status == GENERATION_STATUS_FALLBACK_PENDING
+                else ""
+            )
             prepared = self._prepare_v3_request_in_connection(
                 conn,
                 default_conversation_id=default_conversation_id,
@@ -122,6 +128,36 @@ class RunRepositoryMixin:
                     "outreach_cancel": {"cancelled_plans": 0, "skipped_tasks": 0},
                     "usage_event": {"status": "skipped", "reason": "generation_replayed"},
                 }
+            owner_status = ""
+            owner_kind = ""
+            if generation_key:
+                lock_suffix = " FOR UPDATE" if getattr(self.store, "dialect", "") == "mysql" else ""
+                owner_row = conn.execute(
+                    """
+                    SELECT generation_status, recovery_kind, recovery_dispatch_id
+                    FROM runs WHERE request_id=?
+                    """ + lock_suffix,
+                    (request_id,),
+                ).fetchone()
+                owner_status = str(owner_row["generation_status"] or "") if owner_row else ""
+                owner_kind = str(owner_row["recovery_kind"] or "") if owner_row else ""
+                owner_loss = _generation_owner_loss(owner_row, request_context)
+                if owner_loss:
+                    return {
+                        **prepared,
+                        "duration_ms": max(
+                            0, int((time.perf_counter() - operation_started) * 1000)
+                        ),
+                        "connection_count": 1,
+                        "statement_count": statement_count,
+                        "generation_owner_lost": True,
+                        "generation_status": owner_loss,
+                        "outreach_cancel": {"cancelled_plans": 0, "skipped_tasks": 0},
+                        "usage_event": {
+                            "status": "skipped",
+                            "reason": "generation_owner_lost",
+                        },
+                    }
             conversation_id = str(prepared.get("conversation_id") or "")
             response_id = str(prepared.get("response_id") or response_id)
             if response_id:
@@ -206,27 +242,58 @@ class RunRepositoryMixin:
                     if existing_output.get("v3_recovery_payload"):
                         output_snapshot["v3_recovery_payload"] = existing_output["v3_recovery_payload"]
             duration_ms = _elapsed_ms(started_at, now)
-            conn.execute(
+            terminal_update = conn.execute(
                 """
                 UPDATE runs
                 SET conversation_id=?, response_id=COALESCE(response_id, ?),
                     generation_status=?, recovery_kind=?, recovery_next_at=?,
                     output_snapshot=?, duration_ms=?, token_usage=?, error=?
                 WHERE request_id=?
+                  AND (?='' OR (
+                    generation_status=? AND COALESCE(recovery_kind, '')=?
+                    AND COALESCE(recovery_dispatch_id, '')=''
+                  ))
                 """,
                 (
                     conversation_id,
                     response_id or None,
                     generation_status if generation_key else "",
-                    str(final_state.get("recovery_kind") or ""),
+                    saved_recovery_kind,
                     str(final_state.get("recovery_next_at") or ""),
                     dumps(output_snapshot),
                     duration_ms,
                     dumps(token_usage),
                     dumps(final_state.get("errors") or []) if final_state.get("errors") else "",
                     request_id,
+                    generation_key,
+                    owner_status,
+                    owner_kind,
                 ),
             )
+            if generation_key and not int(terminal_update.rowcount or 0):
+                current = conn.execute(
+                    "SELECT generation_status FROM runs WHERE request_id=?",
+                    (request_id,),
+                ).fetchone()
+                return {
+                    **prepared,
+                    "duration_ms": max(
+                        0, int((time.perf_counter() - operation_started) * 1000)
+                    ),
+                    "connection_count": 1,
+                    "statement_count": statement_count,
+                    "generation_owner_lost": True,
+                    "generation_status": (
+                        str(current["generation_status"] or "")
+                        if current
+                        else GENERATION_STATUS_GENERATING
+                    ),
+                    "outreach_cancel": cancellation,
+                    "usage_event": {
+                        "status": "skipped",
+                        "reason": "generation_owner_lost",
+                    },
+                }
             if reply_messages:
                 content = "\n".join(
                     str(item.get("content") or "")
@@ -296,12 +363,13 @@ class RunRepositoryMixin:
                 statement_count += 1
                 return conn.execute(*args, **kwargs)
 
+            lock_suffix = " FOR UPDATE" if getattr(self.store, "dialect", "") == "mysql" else ""
             existing = execute(
                 """
                 SELECT output_snapshot, created_at, generation_key, response_id,
-                       generation_status, recovery_kind
+                       generation_status, recovery_kind, recovery_dispatch_id
                 FROM runs WHERE request_id=?
-                """,
+                """ + lock_suffix,
                 (request_id,),
             ).fetchone()
             output_snapshot = loads_dict(existing["output_snapshot"]) if existing else {}
@@ -332,6 +400,24 @@ class RunRepositoryMixin:
                 if requested_generation_status == GENERATION_STATUS_FALLBACK_PENDING
                 else GENERATION_STATUS_COMPLETED
             )
+            saved_recovery_kind = (
+                str(final_state.get("recovery_kind") or "")
+                if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
+                else ""
+            )
+            owner_loss = _generation_owner_loss(existing, request_context)
+            if generation_key and owner_loss:
+                return {
+                    "duration_ms": max(
+                        0, int((time.perf_counter() - operation_started) * 1000)
+                    ),
+                    "connection_count": 1,
+                    "statement_count": statement_count,
+                    "generation_key": generation_key,
+                    "response_id": response_id,
+                    "generation_owner_lost": True,
+                    "generation_status": owner_loss,
+                }
             if response_id:
                 reply_messages[:] = stable_v3_reply_messages(
                     reply_messages,
@@ -397,18 +483,22 @@ class RunRepositoryMixin:
                 )
             duration_ms = _elapsed_ms(started_at, now)
             if existing:
-                execute(
+                core_update = execute(
                     """
                     UPDATE runs
                     SET response_id=COALESCE(response_id, ?), generation_status=?,
                         recovery_kind=?, recovery_next_at=?, recovery_error=?, output_snapshot=?,
                         duration_ms=?, token_usage=?, error=?
                     WHERE request_id=?
+                      AND (?='' OR (
+                        generation_status=? AND COALESCE(recovery_kind, '')=?
+                        AND COALESCE(recovery_dispatch_id, '')=''
+                      ))
                     """,
                     (
                         response_id or None,
                         saved_generation_status if generation_key else "",
-                        str(final_state.get("recovery_kind") or ""),
+                        saved_recovery_kind,
                         (
                             str(final_state.get("recovery_next_at") or "")
                             if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
@@ -424,8 +514,31 @@ class RunRepositoryMixin:
                         dumps(token_usage),
                         dumps(final_state.get("errors") or []) if final_state.get("errors") else "",
                         request_id,
+                        generation_key,
+                        str(existing["generation_status"] or ""),
+                        str(existing["recovery_kind"] or ""),
                     ),
                 )
+                if generation_key and not int(core_update.rowcount or 0):
+                    current = execute(
+                        "SELECT generation_status FROM runs WHERE request_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    return {
+                        "duration_ms": max(
+                            0, int((time.perf_counter() - operation_started) * 1000)
+                        ),
+                        "connection_count": 1,
+                        "statement_count": statement_count,
+                        "generation_key": generation_key,
+                        "response_id": response_id,
+                        "generation_owner_lost": True,
+                        "generation_status": (
+                            str(current["generation_status"] or "")
+                            if current
+                            else GENERATION_STATUS_GENERATING
+                        ),
+                    }
             else:
                 execute(
                     """
@@ -443,7 +556,7 @@ class RunRepositoryMixin:
                         generation_key or None,
                         response_id or None,
                         saved_generation_status if generation_key else "",
-                        str(final_state.get("recovery_kind") or ""),
+                        saved_recovery_kind,
                         (
                             str(final_state.get("recovery_next_at") or "")
                             if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
@@ -1655,6 +1768,28 @@ def _reply_messages_from_http_response(response_body: dict[str, Any]) -> list[An
         return messages
     messages = response_body.get("reply_messages") if isinstance(response_body.get("reply_messages"), list) else []
     return messages
+
+
+def _generation_owner_loss(row: Any, request_context: dict[str, Any]) -> str:
+    """Return the durable status when this synchronous owner lost its lease."""
+
+    if row is None:
+        return ""
+    stored = dict(row)
+    status = str(stored.get("generation_status") or "").strip()
+    if not status:
+        return ""
+    dispatch_id = str(stored.get("recovery_dispatch_id") or "").strip()
+    if status != GENERATION_STATUS_GENERATING or dispatch_id:
+        return status
+    current_token = str(stored.get("recovery_kind") or "").strip()
+    if not current_token.startswith("generation_lease:"):
+        # Compatibility for reservations created before generation leases were
+        # introduced.  The stale reaper changes their status before takeover,
+        # so a still-generating legacy row remains owned by its original call.
+        return ""
+    expected_token = str(request_context.get("generation_lease_token") or "").strip()
+    return "" if expected_token and expected_token == current_token else status
 
 
 def _elapsed_ms(started_at: str, finished_at: str) -> int:

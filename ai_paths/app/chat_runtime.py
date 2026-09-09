@@ -45,6 +45,7 @@ from app.services.v3_reply_recovery import (
     GENERATION_STATUS_FALLBACK_PENDING,
     GENERATION_STATUS_GENERATING,
     stable_v3_reply_messages,
+    v3_generation_lease_seconds,
     v3_generation_key,
     v3_response_id,
 )
@@ -365,11 +366,19 @@ class ChatRuntime:
             )
             response_id = v3_response_id(generation_key)
         if generation_key:
+            generation_lease_token = f"generation_lease:{request_id}"
+            generation_lease_until = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=v3_generation_lease_seconds(self._settings))
+            ).isoformat()
             request_context.update(
                 {
                     "generation_key": generation_key,
                     "response_id": response_id,
                     "generation_status": GENERATION_STATUS_GENERATING,
+                    "generation_lease_token": generation_lease_token,
+                    "recovery_kind": generation_lease_token,
+                    "recovery_next_at": generation_lease_until,
                 }
             )
             request.request_context = request_context
@@ -809,6 +818,11 @@ class ChatRuntime:
                 and not bool(request_context.get("test_isolated")),
                 generation_key=generation_key,
                 response_id=response_id,
+                generation_status=str(
+                    request_context.get("generation_status") or GENERATION_STATUS_GENERATING
+                ),
+                recovery_kind=str(request_context.get("recovery_kind") or ""),
+                recovery_next_at=str(request_context.get("recovery_next_at") or ""),
                 include_previous_strategy_state=bool(sales_contact_key),
                 sales_contact_key=sales_contact_key,
             )
@@ -846,20 +860,41 @@ class ChatRuntime:
             latest = await asyncio.to_thread(get_result, generation_key=generation_key)
             if bool(latest.get("ready")):
                 return _chat_response_from_generation(latest)
+            if str(latest.get("generation_status") or "") not in {
+                "",
+                GENERATION_STATUS_GENERATING,
+            }:
+                break
             if time.monotonic() >= deadline:
                 break
             await asyncio.sleep(0.15)
 
-        # Do not turn a slow in-flight generation into customer-visible
-        # recovery work.  Without an owner lease or heartbeat there is no safe
-        # way to distinguish a dead process from a legitimate long request;
-        # promoting it here can send a recovery reply while the original call
-        # is still completing.  Only an explicit, durably persisted
-        # ``fallback_pending`` terminal result is eligible for the recovery
-        # worker.
+        # A duplicate request may reclaim only an explicitly expired durable
+        # owner lease.  Active leases remain untouched.  The repository also
+        # refuses recovery when a primary result or dispatch is already
+        # present, preventing the retry from becoming a second customer send.
+        reclaim = getattr(self._repository, "recover_stale_v3_generations", None)
+        if bool(getattr(self._settings, "v3_reply_recovery_enabled", False)) and callable(reclaim):
+            reclaimed = await asyncio.to_thread(
+                reclaim,
+                generation_key=generation_key,
+                limit=1,
+                lease_seconds=v3_generation_lease_seconds(self._settings),
+            )
+            latest = await asyncio.to_thread(get_result, generation_key=generation_key)
+            if bool(latest.get("ready")):
+                return _chat_response_from_generation(latest)
+            if int((reclaimed or {}).get("fallback_pending") or 0):
+                return _generation_wait_fallback(
+                    str(latest.get("request_id") or fallback_request_id),
+                    str(latest.get("response_id") or fallback_response_id),
+                    generation_status=GENERATION_STATUS_FALLBACK_PENDING,
+                )
+
         return _generation_wait_fallback(
             str(latest.get("request_id") or fallback_request_id),
             str(latest.get("response_id") or fallback_response_id),
+            generation_status=str(latest.get("generation_status") or GENERATION_STATUS_GENERATING),
         )
 
     async def run_v3_recovery_graph(self, request: ChatRequest, *, request_id: str) -> ChatResponse:
@@ -1115,6 +1150,13 @@ class ChatRuntime:
             token_usage=collect_model_usage(final_state.get("trace", []))["summary"],
             deferred_payload=_deferred_state_payload(final_state),
         )
+        if bool(result.get("generation_owner_lost")):
+            return self._response_after_generation_owner_loss(
+                request_id=request_id,
+                response_id=str(final_state.get("response_id") or ""),
+                generation_key=str(final_state.get("generation_key") or ""),
+                generation_status=str(result.get("generation_status") or ""),
+            )
         _record_v3_phase(
             final_state,
             "terminal_persistence",
@@ -1263,6 +1305,15 @@ class ChatRuntime:
                         "mode": "durable_worker",
                     }
                     final_state["persistence_metrics"] = {"reply_core": core_result or {}}
+                    if bool((core_result or {}).get("generation_owner_lost")):
+                        return self._response_after_generation_owner_loss(
+                            request_id=request_id,
+                            response_id=response_id,
+                            generation_key=str(final_state.get("generation_key") or ""),
+                            generation_status=str(
+                                (core_result or {}).get("generation_status") or ""
+                            ),
+                        )
                 except Exception as exc:
                     final_state.setdefault("warnings", []).append(
                         {
@@ -1271,6 +1322,17 @@ class ChatRuntime:
                             "detail": f"{type(exc).__name__}: {exc}",
                         }
                     )
+                    # A generation-key response must never escape without its
+                    # durable idempotent result.  Otherwise a platform retry
+                    # can run the same message again while this untracked reply
+                    # has already reached the customer.
+                    if str(final_state.get("generation_key") or "").strip():
+                        return self._response_after_generation_owner_loss(
+                            request_id=request_id,
+                            response_id=response_id,
+                            generation_key=str(final_state.get("generation_key") or ""),
+                            generation_status=GENERATION_STATUS_GENERATING,
+                        )
             if not deferred_finalization and reply_messages:
                 if _memory_persistence_allowed(final_state):
                     self._record_reply_memory(
@@ -1364,6 +1426,30 @@ class ChatRuntime:
             subflow=str(route_result.get("subflow", "")),
             trace_url=str(log_path),
             meta=response_meta,
+        )
+
+    def _response_after_generation_owner_loss(
+        self,
+        *,
+        request_id: str,
+        response_id: str,
+        generation_key: str,
+        generation_status: str,
+    ) -> ChatResponse:
+        """Suppress a late owner's payload after its durable lease was reclaimed."""
+
+        get_result = getattr(self._repository, "get_v3_generation_result", None)
+        if callable(get_result) and generation_key:
+            try:
+                latest = get_result(generation_key=generation_key)
+                if bool(latest.get("ready")):
+                    return _chat_response_from_generation(latest)
+            except Exception:
+                pass
+        return _generation_wait_fallback(
+            request_id,
+            response_id,
+            generation_status=generation_status or GENERATION_STATUS_FALLBACK_PENDING,
         )
 
     def _record_reply_memory(
@@ -1494,16 +1580,19 @@ def _copy_generation_context_to_state(
     state: AgentState,
     request_context: dict[str, Any],
 ) -> None:
-    for key in (
-        "generation_key",
-        "response_id",
-        "generation_status",
-        "recovery_kind",
-        "recovery_next_at",
-    ):
+    for key in ("generation_key", "response_id", "generation_status"):
         value = request_context.get(key)
         if value not in (None, ""):
             state[key] = value
+    # ``recovery_kind`` and ``recovery_next_at`` carry the active owner lease
+    # while generation is running.  They are storage coordination details, not
+    # a customer-visible recovery decision.  A real fallback copies them when
+    # ``_mark_v3_recovery_pending`` changes the status.
+    if str(request_context.get("generation_status") or "") != GENERATION_STATUS_GENERATING:
+        for key in ("recovery_kind", "recovery_next_at"):
+            value = request_context.get(key)
+            if value not in (None, ""):
+                state[key] = value
 
 
 def _chat_response_meta(
@@ -1611,7 +1700,12 @@ def _chat_response_from_generation(result: dict[str, Any]) -> ChatResponse:
     )
 
 
-def _generation_wait_fallback(request_id: str, response_id: str) -> ChatResponse:
+def _generation_wait_fallback(
+    request_id: str,
+    response_id: str,
+    *,
+    generation_status: str = GENERATION_STATUS_GENERATING,
+) -> ChatResponse:
     # Another process still owns this generation.  Returning a customer-visible
     # fallback here would create a second message while the owner may shortly
     # return the real reply.  The workflow-compatible response deliberately has
@@ -1626,7 +1720,7 @@ def _generation_wait_fallback(request_id: str, response_id: str) -> ChatResponse
             "reply_source": "generation_in_progress",
             "response_kind": "generation_in_progress",
             "replayed": True,
-            "generation_status": GENERATION_STATUS_GENERATING,
+            "generation_status": generation_status or GENERATION_STATUS_GENERATING,
         },
     )
 

@@ -12,7 +12,7 @@ from app.services.customer_relation import customer_relation_is_deleted, normali
 from app.services.customer_scope import build_customer_scope
 from app.services.outreach.first_day import _ai_mode_gate
 from app.services.sop_platform_task_policy import personalized_order_eligibility
-from app.services.v3_reply_recovery import stable_v3_reply_messages
+from app.services.v3_reply_recovery import stable_v3_reply_messages, v3_generation_lease_seconds
 
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,15 @@ class V3ReplyRecoveryWorker:
         self._last_iteration_at = _utc_now().isoformat()
         max_attempts = max(1, int(getattr(self.settings, "v3_reply_recovery_max_attempts", 2) or 2))
         batch_size = max(1, min(int(getattr(self.settings, "v3_reply_recovery_batch_size", 5) or 5), 50))
+        recover_stale = getattr(self.repository, "recover_stale_v3_generations", None)
+        if callable(recover_stale):
+            stale = await _thread_call(
+                recover_stale,
+                limit=max(batch_size, 10),
+                lease_seconds=v3_generation_lease_seconds(self.settings),
+            )
+            for key in ("completed", "fallback_pending", "manual_review"):
+                self._counters[f"stale_{key}"] += int((stale or {}).get(key) or 0)
         claims = await _thread_call(
             self.repository.claim_v3_fallback_recoveries,
             limit=batch_size,

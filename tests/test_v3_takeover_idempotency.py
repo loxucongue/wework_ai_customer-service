@@ -101,13 +101,21 @@ def test_confirmed_human_takeover_still_returns_empty(tmp_path: Path) -> None:
     client = _StatusClient(
         result={"data": {"takeover": {"mode": "human", "is_human": True}}}
     )
-    runtime, _store = _runtime(tmp_path, client)
+    runtime, store = _runtime(tmp_path, client)
 
     response = asyncio.run(runtime.run_platform_reply(_request("human-message")))
 
     assert client.calls == 1
     assert response.reply_messages == []
     assert response.meta["reply_source"] == "human_takeover_guard"
+    with store.connect() as conn:
+        run = conn.execute(
+            "SELECT generation_status, recovery_kind, recovery_next_at FROM runs WHERE request_id=?",
+            (response.request_id,),
+        ).fetchone()
+    assert run["generation_status"] == "completed"
+    assert run["recovery_kind"] == ""
+    assert run["recovery_next_at"] == ""
 
 
 def test_process_restart_replays_durable_result_before_remote_status_lookup(tmp_path: Path) -> None:

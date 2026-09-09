@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from hashlib import sha256
 import json
+import math
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 import zlib
@@ -17,6 +18,31 @@ GENERATION_STATUS_RECOVERY_CLAIMED = "recovery_claimed"
 GENERATION_STATUS_RECOVERED = "recovered"
 GENERATION_STATUS_RECOVERY_FAILED = "recovery_failed"
 GENERATION_STATUS_MANUAL_REVIEW = "manual_review"
+
+
+def v3_generation_lease_seconds(settings: Any | None) -> int:
+    """Return a conservative ownership lease for one synchronous generation.
+
+    ``runs.recovery_next_at`` doubles as the lease deadline while a row is in
+    ``generating``.  The floor deliberately exceeds the complete live-request
+    budget (takeover, strong graph, persistence and network tail), so an active
+    request is not reclaimed merely because a platform retry arrived.
+    """
+
+    def positive(name: str, default: float) -> float:
+        try:
+            value = float(getattr(settings, name, default) or default)
+        except (TypeError, ValueError):
+            value = default
+        return value if value > 0 else default
+
+    takeover = positive("v3_takeover_timeout_seconds", 12.0)
+    strong_graph = positive("v3_reply_strong_round_timeout_seconds", 35.0)
+    reserve = positive("v3_reply_reserve_seconds", 10.0)
+    # Two complete budgets plus one minute for remote DB/network tail.  The
+    # three-minute floor is intentional: recovery safety is more important
+    # than aggressively reclaiming a slow but still live request.
+    return max(180, int(math.ceil((takeover + strong_graph + reserve) * 2 + 60)))
 
 
 def v3_generation_key(

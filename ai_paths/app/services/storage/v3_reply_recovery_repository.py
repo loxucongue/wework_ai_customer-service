@@ -6,7 +6,9 @@ from uuid import NAMESPACE_URL, uuid5
 
 from app.services.storage.serialization import dumps, loads_dict, loads_list, utc_now_iso
 from app.services.v3_reply_recovery import (
+    GENERATION_STATUS_COMPLETED,
     GENERATION_STATUS_FALLBACK_PENDING,
+    GENERATION_STATUS_GENERATING,
     GENERATION_STATUS_MANUAL_REVIEW,
     GENERATION_STATUS_RECOVERED,
     GENERATION_STATUS_RECOVERY_CLAIMED,
@@ -163,6 +165,122 @@ class V3ReplyRecoveryRepositoryMixin:
             "request_id": clean_request_id,
             "status": GENERATION_STATUS_FALLBACK_PENDING if int(updated.rowcount or 0) else "",
         }
+
+    def recover_stale_v3_generations(
+        self,
+        *,
+        generation_key: str = "",
+        limit: int = 50,
+        lease_seconds: int = 180,
+        now: str = "",
+    ) -> dict[str, Any]:
+        """Reconcile expired synchronous generation leases without duplicating sends.
+
+        A completed primary snapshot is made replayable.  A row with any
+        dispatch is escalated for reconciliation.  Only an expired row with no
+        primary result and no dispatch becomes ``fallback_pending``.
+        """
+
+        now_value = str(now or utc_now_iso())
+        parsed_now = _parse_datetime(now_value) or datetime.now(timezone.utc)
+        safe_lease_seconds = max(60, int(lease_seconds or 180))
+        legacy_cutoff = (parsed_now - timedelta(seconds=safe_lease_seconds)).isoformat()
+        clean_generation_key = str(generation_key or "").strip()
+        stats = {
+            "examined": 0,
+            "active": 0,
+            "completed": 0,
+            "fallback_pending": 0,
+            "manual_review": 0,
+        }
+        with self.store.connect() as conn:
+            params: list[Any] = [GENERATION_STATUS_GENERATING]
+            where = "generation_status=?"
+            if clean_generation_key:
+                where += " AND generation_key=?"
+                params.append(clean_generation_key)
+            else:
+                where += (
+                    " AND ((recovery_next_at<>'' AND recovery_next_at<=?)"
+                    " OR (recovery_next_at='' AND created_at<=?))"
+                )
+                params.extend((now_value, legacy_cutoff))
+            lock_suffix = " FOR UPDATE" if getattr(self.store, "dialect", "") == "mysql" else ""
+            rows = conn.execute(
+                f"""
+                SELECT * FROM runs
+                WHERE {where}
+                ORDER BY created_at ASC
+                LIMIT ?{lock_suffix}
+                """,
+                (*params, max(1, min(int(limit or 50), 500))),
+            ).fetchall()
+            for raw in rows:
+                row = dict(raw)
+                stats["examined"] += 1
+                if not _generation_lease_expired(
+                    row,
+                    now=parsed_now,
+                    legacy_lease_seconds=safe_lease_seconds,
+                ):
+                    stats["active"] += 1
+                    continue
+                request_id = str(row.get("request_id") or "")
+                if not request_id:
+                    continue
+                if _has_replayable_primary_response(row):
+                    updated = conn.execute(
+                        """
+                        UPDATE runs
+                        SET generation_status=?, recovery_kind='', recovery_next_at='',
+                            recovery_error=''
+                        WHERE request_id=? AND generation_status=?
+                        """,
+                        (
+                            GENERATION_STATUS_COMPLETED,
+                            request_id,
+                            GENERATION_STATUS_GENERATING,
+                        ),
+                    )
+                    stats["completed"] += int(updated.rowcount or 0)
+                    continue
+                dispatch_id = str(row.get("recovery_dispatch_id") or "").strip()
+                if dispatch_id:
+                    updated = conn.execute(
+                        """
+                        UPDATE runs
+                        SET generation_status=?, recovery_kind='manual_review',
+                            recovery_next_at='', recovery_error=?
+                        WHERE request_id=? AND generation_status=?
+                        """,
+                        (
+                            GENERATION_STATUS_MANUAL_REVIEW,
+                            "stale_generation_has_dispatch",
+                            request_id,
+                            GENERATION_STATUS_GENERATING,
+                        ),
+                    )
+                    stats["manual_review"] += int(updated.rowcount or 0)
+                    continue
+                updated = conn.execute(
+                    """
+                    UPDATE runs
+                    SET generation_status=?, recovery_kind=?, recovery_next_at=?,
+                        recovery_error=?
+                    WHERE request_id=? AND generation_status=?
+                      AND recovery_dispatch_id=''
+                    """,
+                    (
+                        GENERATION_STATUS_FALLBACK_PENDING,
+                        "stale_generation_lease_expired",
+                        now_value,
+                        "generation_owner_lease_expired",
+                        request_id,
+                        GENERATION_STATUS_GENERATING,
+                    ),
+                )
+                stats["fallback_pending"] += int(updated.rowcount or 0)
+        return stats
 
     def claim_v3_fallback_recoveries(
         self,
@@ -829,3 +947,52 @@ def _parse_datetime(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _generation_lease_expired(
+    row: dict[str, Any],
+    *,
+    now: datetime,
+    legacy_lease_seconds: int,
+) -> bool:
+    lease_until = _parse_datetime(str(row.get("recovery_next_at") or ""))
+    if lease_until is not None:
+        return lease_until <= now
+    created_at = _parse_datetime(str(row.get("created_at") or ""))
+    if created_at is None:
+        return False
+    return created_at + timedelta(seconds=max(60, int(legacy_lease_seconds))) <= now
+
+
+def _has_replayable_primary_response(row: dict[str, Any]) -> bool:
+    output = loads_dict(row.get("output_snapshot"))
+    stored = decode_v3_recovery_payload(output.get("v3_response_snapshot"))
+    response = (
+        stored.get("chat_response")
+        if isinstance(stored.get("chat_response"), dict)
+        else stored
+    )
+    messages = (
+        response.get("reply_messages")
+        if isinstance(response, dict) and isinstance(response.get("reply_messages"), list)
+        else output.get("reply_messages")
+        if isinstance(output.get("reply_messages"), list)
+        else []
+    )
+    visible_fields = (
+        "content",
+        "url",
+        "image_url",
+        "store_id",
+        "appointment_id",
+        "payment_id",
+    )
+    if any(
+        isinstance(item, dict)
+        and any(str(item.get(field) or "").strip() for field in visible_fields)
+        for item in messages
+    ):
+        return True
+    meta = response.get("meta") if isinstance(response, dict) and isinstance(response.get("meta"), dict) else {}
+    reply_source = str(output.get("reply_source") or meta.get("reply_source") or "")
+    return reply_source in _EMPTY_REPLY_SOURCES

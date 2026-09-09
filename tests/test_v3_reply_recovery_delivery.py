@@ -239,6 +239,51 @@ def test_success_callback_records_declared_activity_stage_once(tmp_path: Path) -
     assert stage_events[0]["facts"]["stage"] == "activity_offer"
 
 
+def test_worker_direct_success_uses_same_finalizer_and_records_stage_once(tmp_path: Path) -> None:
+    settings, repository, delivery = _stack(tmp_path)
+    request_id = "request-stage-direct-success"
+    sales_contact_key = "sales-contact-stage-direct-success"
+    _seed_run(repository, request_id=request_id, generation_status="recovery_claimed")
+    dispatch = _prepare_dispatch(
+        delivery,
+        request_id=request_id,
+        source_context={
+            "original_request_id": request_id,
+            "memory_persist_allowed": True,
+            "sales_contact_key": sales_contact_key,
+            # This is the exact projection produced from ChatResponse.meta by
+            # V3ReplyRecoveryWorker before it calls the send adapter.
+            "sales_stage_record": {
+                "stage": "activity_offer",
+                "action_type": "explain_activity",
+            },
+        },
+    )
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE runs SET recovery_dispatch_id=? WHERE request_id=?",
+            (dispatch["id"], request_id),
+        )
+    finalizer = V3ReplyRecoveryDeliveryFinalizer(
+        repository,
+        CustomerMemoryStore(settings, repository),
+    )
+
+    result = finalizer.finalize({**dispatch, "status": "send_succeeded"})
+    duplicate = finalizer.finalize({**dispatch, "status": "send_succeeded"})
+
+    assert result["status"] == "recovered"
+    assert duplicate["status"] == "recovered"
+    memory = CustomerMemoryStore(settings, repository).load(sales_contact_key)
+    stage_events = [
+        item
+        for item in memory.get("history_events") or []
+        if item.get("event_type") == "v3_sales_stage_delivered"
+    ]
+    assert len(stage_events) == 1
+    assert stage_events[0]["facts"]["request_id"] == request_id
+
+
 def test_failed_callback_never_records_sales_stage(tmp_path: Path) -> None:
     settings, repository, delivery = _stack(tmp_path)
     request_id = "request-stage-failed"

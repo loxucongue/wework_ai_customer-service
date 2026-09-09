@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -19,10 +21,13 @@ from app.services.storage.mysql_schema import (  # noqa: E402
     EXPECTED_INDEXES,
     EXPECTED_UNIQUE_INDEXES,
 )
+from app.services.storage.serialization import dumps, loads_dict  # noqa: E402
 from app.services.v3_reply_recovery import (  # noqa: E402
     GENERATION_STATUS_FALLBACK_PENDING,
     GENERATION_STATUS_MANUAL_REVIEW,
     GENERATION_STATUS_RECOVERED,
+    encode_v3_recovery_payload,
+    v3_generation_lease_seconds,
     v3_generation_key,
     v3_response_id,
 )
@@ -110,6 +115,8 @@ def _reserve(
     *,
     request_id: str,
     started_at: str = "2026-09-09T00:00:00+00:00",
+    recovery_kind: str = "",
+    recovery_next_at: str = "",
 ) -> dict[str, object]:
     generation_key = v3_generation_key(
         corp_id=request.corp_id,
@@ -129,6 +136,8 @@ def _reserve(
         http_request_ingress_id=f"ingress-{request_id}",
         generation_key=generation_key,
         response_id=v3_response_id(generation_key),
+        recovery_kind=recovery_kind,
+        recovery_next_at=recovery_next_at,
     )
 
 
@@ -152,7 +161,7 @@ def test_generation_reservation_is_stable_and_does_not_duplicate_customer_messag
         assert conn.execute("SELECT COUNT(*) AS total FROM messages WHERE role='user'").fetchone()["total"] == 1
 
 
-def test_inflight_generation_is_never_promoted_to_recovery_without_an_owner_lease(
+def test_active_generation_lease_is_not_promoted_to_recovery(
     tmp_path: Path,
 ) -> None:
     repository = _repository(tmp_path)
@@ -162,21 +171,204 @@ def test_inflight_generation_is_never_promoted_to_recovery_without_an_owner_leas
         request,
         request_id="request-slow-but-live",
         started_at="2026-09-09T00:00:00+00:00",
+        recovery_kind="generation_lease:request-slow-but-live",
+        recovery_next_at="2026-09-09T00:05:00+00:00",
     )
 
-    # A duplicate caller may observe the reservation, but age alone is not
-    # proof that its owner died.  Only the owner may persist fallback_pending.
-    observed = repository.get_v3_generation_result(
-        generation_key=str(reserved["generation_key"])
+    reclaimed = repository.recover_stale_v3_generations(
+        generation_key=str(reserved["generation_key"]),
+        now="2026-09-09T00:04:59+00:00",
+        lease_seconds=180,
     )
+    observed = repository.get_v3_generation_result(generation_key=str(reserved["generation_key"]))
 
+    assert reclaimed["active"] == 1
+    assert reclaimed["fallback_pending"] == 0
     assert observed["ready"] is False
     assert observed["generation_status"] == "generating"
-    assert not hasattr(repository, "recover_stale_v3_generation")
-    assert repository.claim_v3_fallback_recoveries(
-        now="2026-09-09T00:10:00+00:00",
+
+
+def test_expired_generation_lease_without_result_becomes_recoverable(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    request = _request("owner-process-died")
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-owner-died",
+        started_at="2026-09-09T00:00:00+00:00",
+        recovery_kind="generation_lease:request-owner-died",
+        recovery_next_at="2026-09-09T00:03:00+00:00",
+    )
+
+    reclaimed = repository.recover_stale_v3_generations(
+        generation_key=str(reserved["generation_key"]),
+        now="2026-09-09T00:03:01+00:00",
+        lease_seconds=180,
+    )
+
+    assert reclaimed["fallback_pending"] == 1
+    pending = repository.get_v3_generation_result(generation_key=str(reserved["generation_key"]))
+    assert pending["generation_status"] == GENERATION_STATUS_FALLBACK_PENDING
+    assert pending["recovery_kind"] == "stale_generation_lease_expired"
+    assert pending["recovery_error"] == "generation_owner_lease_expired"
+    claims = repository.claim_v3_fallback_recoveries(
+        now="2026-09-09T00:03:02+00:00",
         max_attempts=2,
-    ) == []
+    )
+    assert [item["request_id"] for item in claims] == ["request-owner-died"]
+
+
+def test_legacy_generating_row_without_lease_is_recovered_by_created_at(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    request = _request("legacy-owner-process-died")
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-legacy-owner-died",
+        started_at="2026-09-09T00:00:00+00:00",
+    )
+
+    reclaimed = repository.recover_stale_v3_generations(
+        generation_key=str(reserved["generation_key"]),
+        now="2026-09-09T00:03:01+00:00",
+        lease_seconds=180,
+    )
+
+    assert reclaimed["fallback_pending"] == 1
+    pending = repository.get_v3_generation_result(request_id="request-legacy-owner-died")
+    assert pending["generation_status"] == GENERATION_STATUS_FALLBACK_PENDING
+
+
+def test_expired_generating_row_with_dispatch_requires_manual_reconciliation(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    request = _request("stale-owner-with-dispatch")
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-stale-with-dispatch",
+        recovery_kind="generation_lease:request-stale-with-dispatch",
+        recovery_next_at="2026-09-09T00:03:00+00:00",
+    )
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE runs SET recovery_dispatch_id=? WHERE request_id=?",
+            ("dispatch-ambiguous", "request-stale-with-dispatch"),
+        )
+
+    reclaimed = repository.recover_stale_v3_generations(
+        generation_key=str(reserved["generation_key"]),
+        now="2026-09-09T00:03:01+00:00",
+    )
+
+    assert reclaimed["manual_review"] == 1
+    run = repository.get_v3_generation_result(request_id="request-stale-with-dispatch")
+    assert run["generation_status"] == GENERATION_STATUS_MANUAL_REVIEW
+    assert run["recovery_error"] == "stale_generation_has_dispatch"
+    assert repository.claim_v3_fallback_recoveries(now="2026-09-09T00:03:02+00:00") == []
+
+
+def test_expired_generation_with_durable_primary_result_is_replayed_not_recovered(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    request = _request("primary-snapshot-before-status")
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-primary-snapshot",
+        recovery_kind="generation_lease:request-primary-snapshot",
+        recovery_next_at="2026-09-09T00:03:00+00:00",
+    )
+    with repository.store.connect() as conn:
+        row = conn.execute(
+            "SELECT output_snapshot FROM runs WHERE request_id=?",
+            ("request-primary-snapshot",),
+        ).fetchone()
+        output = loads_dict(row["output_snapshot"])
+        output["v3_response_snapshot"] = encode_v3_recovery_payload(
+            {
+                "request_id": "request-primary-snapshot",
+                "response_id": str(reserved["response_id"]),
+                "reply_messages": [{"type": "text", "order": 1, "content": "已生成"}],
+                "meta": {"reply_source": "v3_reply"},
+            }
+        )
+        conn.execute(
+            "UPDATE runs SET output_snapshot=? WHERE request_id=?",
+            (dumps(output), "request-primary-snapshot"),
+        )
+
+    reconciled = repository.recover_stale_v3_generations(
+        generation_key=str(reserved["generation_key"]),
+        now="2026-09-09T00:03:01+00:00",
+    )
+
+    assert reconciled["completed"] == 1
+    replay = repository.get_v3_generation_result(generation_key=str(reserved["generation_key"]))
+    assert replay["generation_status"] == "completed"
+    assert replay["ready"] is True
+    assert replay["response"]["reply_messages"][0]["content"] == "已生成"
+    assert repository.claim_v3_fallback_recoveries(now="2026-09-09T00:03:02+00:00") == []
+
+
+def test_late_generation_owner_cannot_overwrite_reclaimed_run(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    request = _request("late-owner")
+    lease_token = "generation_lease:request-late-owner"
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-late-owner",
+        recovery_kind=lease_token,
+        recovery_next_at="2026-09-09T00:03:00+00:00",
+    )
+    repository.recover_stale_v3_generations(
+        generation_key=str(reserved["generation_key"]),
+        now="2026-09-09T00:03:01+00:00",
+    )
+
+    result = repository.save_v3_reply_core(
+        conversation_id=str(reserved["conversation_id"]),
+        final_state={
+            "request_id": "request-late-owner",
+            "customer_id": "customer-1",
+            "generation_key": str(reserved["generation_key"]),
+            "response_id": str(reserved["response_id"]),
+            "request_context": {
+                "interface_version": "v3",
+                "generation_lease_token": lease_token,
+            },
+            "reply_source": "v3_reply",
+        },
+        reply_messages=[{"type": "text", "order": 1, "content": "迟到的主回复"}],
+        token_usage={},
+        deferred_payload={},
+    )
+
+    assert result["generation_owner_lost"] is True
+    assert result["generation_status"] == GENERATION_STATUS_FALLBACK_PENDING
+    pending = repository.get_v3_generation_result(request_id="request-late-owner")
+    assert pending["generation_status"] == GENERATION_STATUS_FALLBACK_PENDING
+    assert pending["response"]["reply_messages"] == []
+    with repository.store.connect() as conn:
+        assistant_count = conn.execute(
+            "SELECT COUNT(*) AS total FROM messages WHERE role='assistant'"
+        ).fetchone()["total"]
+    assert assistant_count == 0
+
+
+def test_generation_lease_budget_is_conservative() -> None:
+    settings = Settings().model_copy(
+        update={
+            "v3_takeover_timeout_seconds": 12.0,
+            "v3_reply_strong_round_timeout_seconds": 35.0,
+            "v3_reply_reserve_seconds": 10.0,
+        }
+    )
+
+    assert v3_generation_lease_seconds(settings) >= 180
 
 
 def test_inflight_cross_process_retry_never_emits_a_second_customer_message() -> None:
@@ -187,6 +379,126 @@ def test_inflight_cross_process_retry_never_emits_a_second_customer_message() ->
     public = workflow_response_from_chat(response)
     assert public["data"]["reply_messages"] == []
     assert public["data"]["replayed"] is True
+
+
+def test_duplicate_wait_does_not_reclaim_when_recovery_is_disabled() -> None:
+    class _Repository:
+        recover_calls = 0
+
+        @staticmethod
+        def get_v3_generation_result(**_: object) -> dict[str, object]:
+            return {
+                "found": True,
+                "ready": False,
+                "request_id": "request-active",
+                "response_id": "response-active",
+                "generation_status": "generating",
+                "recovery_next_at": "2020-01-01T00:00:00+00:00",
+            }
+
+        def recover_stale_v3_generations(self, **_: object) -> dict[str, int]:
+            self.recover_calls += 1
+            return {"fallback_pending": 1}
+
+    repository = _Repository()
+    runtime = ChatRuntime(
+        full_graph=object(),
+        trace_logger=object(),
+        repository=repository,
+        settings=Settings().model_copy(
+            update={"v3_reply_recovery_enabled": False, "v3_reply_reserve_seconds": 0.01}
+        ),
+    )
+
+    response = asyncio.run(
+        runtime._await_persisted_generation(
+            generation_key="generation-key",
+            fallback_request_id="request-active",
+            fallback_response_id="response-active",
+        )
+    )
+
+    assert repository.recover_calls == 0
+    assert response.reply_messages == []
+    assert response.meta["generation_status"] == "generating"
+
+
+def test_sqlite_interleaving_reaper_wins_atomic_owner_update(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    request = _request("sqlite-owner-race")
+    lease_token = "generation_lease:request-sqlite-owner-race"
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-sqlite-owner-race",
+        recovery_kind=lease_token,
+        recovery_next_at="2026-09-09T00:03:00+00:00",
+    )
+    original_connect = repository.store.connect
+    injected = {"done": False}
+
+    class _InterleavingConnection:
+        def __init__(self, raw: sqlite3.Connection) -> None:
+            self.raw = raw
+
+        def execute(self, sql: str, params: object = ()) -> object:
+            if (
+                not injected["done"]
+                and "UPDATE runs" in sql
+                and "COALESCE(recovery_kind" in sql
+            ):
+                injected["done"] = True
+                with sqlite3.connect(str(repository.store.db_path)) as contender:
+                    contender.execute(
+                        """
+                        UPDATE runs SET generation_status='fallback_pending',
+                            recovery_kind='stale_generation_lease_expired',
+                            recovery_next_at='2026-09-09T00:03:01+00:00'
+                        WHERE request_id='request-sqlite-owner-race'
+                        """
+                    )
+            return self.raw.execute(sql, params)  # type: ignore[arg-type]
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.raw, name)
+
+    @contextmanager
+    def interleaving_connect():
+        with original_connect() as raw:
+            yield _InterleavingConnection(raw)
+
+    repository.store.connect = interleaving_connect  # type: ignore[method-assign]
+    result = repository.save_v3_reply_core(
+        conversation_id=str(reserved["conversation_id"]),
+        final_state={
+            "request_id": "request-sqlite-owner-race",
+            "customer_id": "customer-1",
+            "generation_key": str(reserved["generation_key"]),
+            "response_id": str(reserved["response_id"]),
+            "request_context": {
+                "interface_version": "v3",
+                "generation_lease_token": lease_token,
+            },
+            "reply_source": "v3_reply",
+        },
+        reply_messages=[{"type": "text", "order": 1, "content": "不得写入的迟到回复"}],
+        token_usage={},
+        deferred_payload={},
+    )
+
+    assert injected["done"] is True
+    assert result["generation_owner_lost"] is True
+    assert result["generation_status"] == GENERATION_STATUS_FALLBACK_PENDING
+    repository.store.connect = original_connect  # type: ignore[method-assign]
+    with repository.store.connect() as conn:
+        run = conn.execute(
+            "SELECT generation_status FROM runs WHERE request_id='request-sqlite-owner-race'"
+        ).fetchone()
+        assistants = conn.execute(
+            "SELECT COUNT(*) AS total FROM messages WHERE role='assistant'"
+        ).fetchone()["total"]
+    assert run["generation_status"] == GENERATION_STATUS_FALLBACK_PENDING
+    assert assistants == 0
 
 
 def test_completed_generation_replays_exact_http_result_with_stable_message_ids(tmp_path: Path) -> None:

@@ -66,6 +66,11 @@ class _Repository:
         self.manual: list[dict[str, Any]] = []
         self.dispatches: dict[str, dict[str, Any]] = {}
         self.claim_calls = 0
+        self.stale_recovery_calls = 0
+
+    def recover_stale_v3_generations(self, **_: Any) -> dict[str, int]:
+        self.stale_recovery_calls += 1
+        return {"completed": 1, "fallback_pending": 2, "manual_review": 0}
 
     def claim_v3_fallback_recoveries(self, **_: Any) -> list[dict[str, Any]]:
         self.claim_calls += 1
@@ -609,6 +614,9 @@ def test_run_once_claims_configured_batch() -> None:
     assert repository.claim_calls == 1
     assert [item["status"] for item in results] == ["delivery_pending"]
     assert worker.status()["counters"]["claimed"] == 1
+    assert repository.stale_recovery_calls == 1
+    assert worker.status()["counters"]["stale_completed"] == 1
+    assert worker.status()["counters"]["stale_fallback_pending"] == 2
 
 
 def test_confirmed_dispatch_is_the_only_path_to_recovered() -> None:
