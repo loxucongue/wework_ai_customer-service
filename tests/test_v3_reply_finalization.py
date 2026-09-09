@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from app.config import Settings  # noqa: E402
 from app.schemas import ChatRequest  # noqa: E402
 from app.services.memory_store import CustomerMemoryStore  # noqa: E402
 from app.services.storage import AppRepository, SQLiteStore  # noqa: E402
+from app.services.storage.mysql_store import MySQLStore  # noqa: E402
 from app.chat_runtime import _deferred_state_payload  # noqa: E402
 
 
@@ -26,42 +28,61 @@ def _repository(tmp_path: Path) -> AppRepository:
     return AppRepository(store)
 
 
-def _enqueue(repository: AppRepository) -> None:
+def _enqueue(
+    repository: AppRepository,
+    *,
+    request_id: str = "request-1",
+    conversation_id: str = "conversation-1",
+    customer_id: str = "customer-1",
+    external_userid: str = "external-1",
+) -> None:
     request = ChatRequest(
         content="敏感肌可以做吗",
-        customer_id="customer-1",
+        customer_id=customer_id,
         corp_id="corp-1",
         wechat="sl8003",
-        external_userid="external-1",
+        external_userid=external_userid,
     )
     repository.upsert_conversation(
-        conversation_id="conversation-1",
+        conversation_id=conversation_id,
         request=request,
         title="测试",
     )
     repository.start_run(
-        request_id="request-1",
-        conversation_id="conversation-1",
-        customer_id="customer-1",
+        request_id=request_id,
+        conversation_id=conversation_id,
+        customer_id=customer_id,
         input_snapshot={"content": request.content},
         interface_version="v3",
         http_request_ingress_id="ingress-1",
     )
     state = {
-        "request_id": "request-1",
-        "customer_id": "customer-1",
+        "request_id": request_id,
+        "customer_id": customer_id,
         "request_context": {"interface_version": "v3"},
         "reply_messages": [{"type": "text", "order": 1, "content": "可以先了解一下。"}],
         "reply_source": "main_model",
         "trace": [],
     }
     repository.save_v3_reply_core(
-        conversation_id="conversation-1",
+        conversation_id=conversation_id,
         final_state=state,
         reply_messages=state["reply_messages"],
         token_usage={},
         deferred_payload=state,
     )
+
+
+def test_finalization_status_json_path_is_supported_by_both_databases(tmp_path: Path) -> None:
+    sqlite_store = _repository(tmp_path).store
+    mysql_store = object.__new__(MySQLStore)
+
+    assert sqlite_store.json_text(
+        "output_snapshot", "$.post_reply_finalization.status"
+    ) == "json_extract(output_snapshot, '$.post_reply_finalization.status')"
+    assert mysql_store.json_text(
+        "output_snapshot", "$.post_reply_finalization.status"
+    ) == "JSON_UNQUOTE(JSON_EXTRACT(output_snapshot, '$.post_reply_finalization.status'))"
 
 
 def test_durable_finalization_is_claimed_once_and_removed_after_completion(tmp_path: Path) -> None:
@@ -80,6 +101,35 @@ def test_durable_finalization_is_claimed_once_and_removed_after_completion(tmp_p
     assert run["output_snapshot"]["post_reply_finalization"]["duration_ms"] >= 0
     assert "post_reply_payload" not in run["output_snapshot"]
     assert repository.claim_v3_reply_finalizations(limit=5) == []
+
+
+def test_completed_finalization_with_other_pending_state_does_not_starve_pending_job(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    _enqueue(repository)
+    assert repository.claim_v3_reply_finalizations(limit=1)[0]["request_id"] == "request-1"
+    repository.finish_v3_reply_finalization(request_id="request-1")
+
+    completed = repository.get_run("request-1")["run"]["output_snapshot"]
+    completed["order_attribution"] = {"status": "pending"}
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE runs SET output_snapshot=? WHERE request_id=?",
+            (json.dumps(completed, ensure_ascii=False), "request-1"),
+        )
+
+    _enqueue(
+        repository,
+        request_id="request-2",
+        conversation_id="conversation-2",
+        customer_id="customer-2",
+        external_userid="external-2",
+    )
+
+    claimed = repository.claim_v3_reply_finalizations(limit=1)
+
+    assert [item["request_id"] for item in claimed] == ["request-2"]
 
 
 def test_deferred_payload_is_compressed_and_decoded_when_claimed(tmp_path: Path) -> None:

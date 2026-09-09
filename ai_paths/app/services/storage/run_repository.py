@@ -497,22 +497,18 @@ class RunRepositoryMixin:
         now = datetime.now(timezone.utc)
         stale_before = (now - timedelta(minutes=5)).isoformat()
         recent_cutoff = (now - timedelta(days=7)).isoformat()
+        finalization_status = self.store.json_text(
+            "output_snapshot",
+            "$.post_reply_finalization.status",
+        )
         claimed: list[dict[str, Any]] = []
         with self.store.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT request_id, conversation_id, output_snapshot, token_usage
                 FROM runs
                 WHERE created_at >= ?
-                  AND output_snapshot LIKE '%"post_reply_finalization"%'
-                  AND (
-                       output_snapshot LIKE '%"status": "pending"%'
-                    OR output_snapshot LIKE '%"status":"pending"%'
-                    OR output_snapshot LIKE '%"status": "error"%'
-                    OR output_snapshot LIKE '%"status":"error"%'
-                    OR output_snapshot LIKE '%"status": "processing"%'
-                    OR output_snapshot LIKE '%"status":"processing"%'
-                  )
+                  AND {finalization_status} IN ('pending', 'error', 'processing')
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
