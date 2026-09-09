@@ -15,6 +15,8 @@ class _Repository:
         self.updated: list[tuple[str, str, str]] = []
         self.retry_events: list[dict[str, Any]] = []
         self.alerts_by_task: dict[str, dict[str, Any]] = {}
+        self.claimed_events: set[str] = set()
+        self.local_task: dict[str, Any] = {}
 
     def create_sop_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         alert = payload.get("alert") if isinstance(payload.get("alert"), dict) else {}
@@ -30,8 +32,16 @@ class _Repository:
     def update_sop_event_status(self, event_id: str, *, status: str, error: str = "") -> None:
         self.updated.append((event_id, status, error))
 
+    def claim_sop_failure_alert_delivery(self, event_id: str, *, stale_before: str) -> bool:
+        del stale_before
+        if event_id in self.claimed_events:
+            return False
+        self.claimed_events.add(event_id)
+        self.updated.append((event_id, "alert_sending", ""))
+        return True
+
     def get_sop_send_task_by_idempotency_key(self, _key: str) -> dict[str, Any]:
-        return {}
+        return dict(self.local_task)
 
     def find_sop_failure_alert_by_task_id(self, task_id: str) -> dict[str, Any]:
         return dict(self.alerts_by_task.get(task_id) or {})
@@ -196,6 +206,56 @@ def test_same_task_is_alerted_only_once_across_reason_and_phase_changes() -> Non
     assert second == 0
     assert len(repository.created) == 1
     assert len(client.sent) == 1
+
+
+def test_concurrent_immediate_and_retry_delivery_send_one_alert() -> None:
+    service, repository, client = _service()
+    event = {
+        "event_id": "sop_failure_alert:one",
+        "status": "accepted",
+        "raw_payload": {
+            "alert": {
+                "task_id": "task-1",
+                "status": "send_failed",
+                "reason": "send_failed",
+            }
+        },
+    }
+
+    async def deliver_concurrently() -> list[bool]:
+        return list(await asyncio.gather(service._deliver_event(event), service._deliver_event(event)))
+
+    results = asyncio.run(deliver_concurrently())
+
+    assert sorted(results) == [False, True]
+    assert len(client.sent) == 1
+
+
+def test_overwritten_failure_status_is_suppressed_when_send_response_has_message_ids() -> None:
+    service, repository, client = _service()
+    repository.local_task = {
+        "status": "processing_retry",
+        "sent_at": "2026-09-09T01:00:14+00:00",
+        "send_response": {
+            "data": {
+                "delivery_status": "platform_accepted",
+                "system_msgids": ["msg-1", "msg-2"],
+            }
+        },
+    }
+
+    delivered = asyncio.run(
+        service.notify_task_failure(
+            task_id="task-1",
+            status="send_failed",
+            reason="TimeoutError",
+            phase="recovery_exception",
+        )
+    )
+
+    assert delivered == 0
+    assert repository.created == []
+    assert client.sent == []
 
 
 def test_retry_worker_suppresses_preexisting_excluded_alert() -> None:

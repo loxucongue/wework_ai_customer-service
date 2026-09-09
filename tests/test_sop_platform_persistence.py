@@ -211,6 +211,78 @@ def test_successful_send_cannot_be_downgraded_to_no_send(tmp_path) -> None:
     assert downgraded["send_response"] == sent_response
 
 
+def test_successful_send_cannot_be_downgraded_by_recovery_failure(tmp_path) -> None:
+    settings = Settings(AI_PATHS_DB_PATH=tmp_path / "sop.db", AICS_STORAGE_BACKEND="sqlite")
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    event_id = "platform_sop_task:recovery-race"
+    repository.create_sop_event(
+        {"event_id": event_id, "event_type": "platform_sop_task", "source": "test"}
+    )
+    task = repository.create_sop_send_task(
+        event_id=event_id,
+        idempotency_key="platform-sop:recovery-race",
+        customer_id="customer",
+        external_userid="external",
+        corp_id="corp",
+        user_id="user",
+        wechat="wechat",
+        sop_pack_id="pack",
+        sop_pack_name="pack",
+        reply_messages=[],
+    )
+    sent_response = {
+        "data": {
+            "delivery_status": "platform_accepted",
+            "system_msgids": ["msg-1", "msg-2"],
+        }
+    }
+    repository.update_sop_send_task(
+        task["id"],
+        status="sent",
+        send_payload={"processing_mode": "deterministic_customer_gate"},
+        send_response=sent_response,
+        sent_at="2026-09-09T01:00:14+00:00",
+    )
+
+    downgraded = repository.update_sop_send_task(
+        task["id"],
+        status="processing_retry",
+        send_payload={"platform_task_id": "recovery-race"},
+        error="TimeoutError: total timeout 20.0s",
+    )
+
+    assert downgraded["status"] == "sent"
+    assert downgraded["send_payload"] == {"processing_mode": "deterministic_customer_gate"}
+    assert downgraded["send_response"] == sent_response
+    assert downgraded["error"] == ""
+
+
+def test_alert_delivery_claim_allows_one_sender_and_reclaims_only_stale_lease(tmp_path) -> None:
+    settings = Settings(AI_PATHS_DB_PATH=tmp_path / "sop.db", AICS_STORAGE_BACKEND="sqlite")
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    event_id = "sop_failure_alert:claim"
+    repository.create_sop_event(
+        {"event_id": event_id, "event_type": "sop_failure_alert", "source": "test"}
+    )
+
+    assert repository.claim_sop_failure_alert_delivery(
+        event_id,
+        stale_before=(datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+    ) is True
+    assert repository.claim_sop_failure_alert_delivery(
+        event_id,
+        stale_before=(datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
+    ) is False
+    assert repository.claim_sop_failure_alert_delivery(
+        event_id,
+        stale_before=(datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+    ) is True
+
+
 def test_atomic_no_send_completion_preserves_existing_send_success(tmp_path) -> None:
     settings = Settings(AI_PATHS_DB_PATH=tmp_path / "sop.db", AICS_STORAGE_BACKEND="sqlite")
     store = SQLiteStore(settings)

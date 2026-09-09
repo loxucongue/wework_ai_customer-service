@@ -446,7 +446,11 @@ def test_legacy_queued_recovery_is_quarantined(monkeypatch: pytest.MonkeyPatch) 
     ]
 
 
-def test_deterministic_queued_recovery_reenters_batch_path(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("recovery_status", ["platform_queued", "platform_processing"])
+def test_deterministic_queued_recovery_reenters_batch_path(
+    monkeypatch: pytest.MonkeyPatch,
+    recovery_status: str,
+) -> None:
     task = _task()
 
     class _Repository:
@@ -454,7 +458,7 @@ def test_deterministic_queued_recovery_reenters_batch_path(monkeypatch: pytest.M
             return [
                 {
                     "event_id": "platform_sop_task:task-1",
-                    "status": "platform_queued",
+                    "status": recovery_status,
                     "raw_payload": {"platform_task": task},
                     "retry_count": 0,
                 }
@@ -479,6 +483,7 @@ def test_deterministic_queued_recovery_reenters_batch_path(monkeypatch: pytest.M
         nonlocal batch_called
         batch_called = True
         assert batch["tasks"] == [task]
+        assert batch["recovery_status"] == recovery_status
         return {"processed": True, "status": "sent", "task_id": "task-1"}
 
     async def alert(*_args: object, **_kwargs: object) -> None:

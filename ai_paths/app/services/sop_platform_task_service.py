@@ -773,6 +773,11 @@ class SopPlatformTaskService:
                 )
                 return 0
             task_id = _task_id(task)
+            queued_ids = getattr(self, "_queued_ids", set())
+            in_flight_ids = getattr(self, "_in_flight_ids", set())
+            if task_id in queued_ids or task_id in in_flight_ids:
+                self._counters["recovery_skipped_active_task"] += 1
+                return 0
             local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
             local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             processing_mode = str(local_audit.get("processing_mode") or "")
@@ -796,6 +801,7 @@ class SopPlatformTaskService:
                 try:
                     if recovery_status in {
                         "platform_queued",
+                        "platform_processing",
                         "platform_sequence_blocked",
                         "platform_processing_retry",
                     }:
@@ -806,6 +812,7 @@ class SopPlatformTaskService:
                                 "biz_type": str(task.get("_aics_biz_type") or "online_service"),
                                 "tasks": [task],
                                 "compat_trigger_tasks": _batch_compat_trigger_tasks({"tasks": [task]}),
+                                "recovery_status": recovery_status,
                             }
                         )
                     else:
@@ -1030,6 +1037,7 @@ class SopPlatformTaskService:
                 trigger_tasks=trigger_tasks,
                 batch_key=batch_key,
                 biz_type=str(batch.get("biz_type") or tasks[0].get("_aics_biz_type") or "online_service"),
+                recovery_status=str(batch.get("recovery_status") or ""),
             )
 
     async def _process_customer_batch_locked(
@@ -1039,6 +1047,7 @@ class SopPlatformTaskService:
         trigger_tasks: list[dict[str, Any]],
         batch_key: str,
         biz_type: str,
+        recovery_status: str = "",
     ) -> dict[str, Any]:
         # Each pending task is an execution trigger. Only the earliest trigger is
         # handled in this pass; later triggers remain upstream until the next poll.
@@ -1066,8 +1075,45 @@ class SopPlatformTaskService:
                 batch_run_id=batch_run_id,
             )
         phase_started = time.perf_counter()
-        _event, local_task = await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
+        event, local_task = await asyncio.to_thread(self._ensure_local_task, task, status="platform_queued")
         local_task_id = str(local_task.get("id") or "")
+        current_event_status = str(event.get("status") or "")
+        current_task_status = str(local_task.get("status") or "")
+        if current_event_status == "platform_completed" and current_task_status in {
+            "sent",
+            "sent_recovered",
+            "completed_without_send",
+        }:
+            self._remember_terminal(batch_task_ids[0])
+            return {
+                "processed": True,
+                "status": "sent" if current_task_status in {"sent", "sent_recovered"} else "completed_without_send",
+                "task_id": batch_task_ids[0],
+                "terminal_task_ids": [batch_task_ids[0]],
+                "reason": "already_terminal_after_concurrent_processing",
+            }
+        if recovery_status and current_task_status == "sending":
+            return await self._recover_interrupted_batch_send(task, local_task=local_task)
+        if recovery_status and _local_task_has_successful_send_evidence(local_task):
+            audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            if isinstance(audit.get("final_messages"), list) and audit.get("final_messages"):
+                return await self._complete_recovered_batch_send(
+                    selected_id=batch_task_ids[0],
+                    local_task_id=local_task_id,
+                    audit=audit,
+                    recovery={
+                        "status": "confirmed_from_local_send_evidence",
+                        "checked_at": utc_now_iso(),
+                    },
+                )
+            self._remember_terminal(batch_task_ids[0])
+            return {
+                "processed": True,
+                "status": "sent",
+                "task_id": batch_task_ids[0],
+                "terminal_task_ids": [batch_task_ids[0]],
+                "reason": "successful_send_evidence_without_replayable_audit",
+            }
         repository = getattr(self, "repository", None)
         update_local_task = getattr(repository, "update_sop_send_task", None)
         if local_task_id and callable(update_local_task):
@@ -5737,6 +5783,28 @@ def _admin_has_successful_send_evidence(*, task_status: str, sent_at: str, send_
             ).strip()
         )
     return task_status == "sent_recovered" and bool(sent_at.strip())
+
+
+def _local_task_has_successful_send_evidence(local_task: dict[str, Any]) -> bool:
+    status = str(local_task.get("status") or "").strip()
+    sent_at = str(local_task.get("sent_at") or "").strip()
+    send_response = local_task.get("send_response") if isinstance(local_task.get("send_response"), dict) else {}
+    data = send_response.get("data") if isinstance(send_response.get("data"), dict) else {}
+    delivery_status = str(data.get("delivery_status") or "").strip()
+    if delivery_status in {"send_succeeded", "delivered"}:
+        return True
+    if delivery_status == "platform_accepted":
+        single_id = str(
+            data.get("system_msgid")
+            or data.get("systemMsgId")
+            or data.get("msgid")
+            or data.get("msgId")
+            or ""
+        ).strip()
+        multiple_ids = data.get("system_msgids") if isinstance(data.get("system_msgids"), list) else []
+        if single_id or any(str(value or "").strip() for value in multiple_ids):
+            return True
+    return status in {"sent", "sent_recovered"} and bool(sent_at)
 
 
 def _collect_identifier_items(

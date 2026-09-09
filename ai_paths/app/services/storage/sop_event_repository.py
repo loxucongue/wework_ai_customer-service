@@ -186,6 +186,30 @@ class SopEventRepositoryMixin:
             ).fetchone()
         return self._decode_sop_event(dict(row)) if row else {}
 
+    def claim_sop_failure_alert_delivery(self, event_id: str, *, stale_before: str) -> bool:
+        """Atomically lease one alert delivery attempt.
+
+        Fresh ``alert_sending`` rows belong to another sender.  A stale row may
+        be reclaimed after a worker crash without allowing the immediate sender
+        and retry loop to deliver the same alert concurrently.
+        """
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE sop_events
+                SET status='alert_sending', error='', next_retry_at='', updated_at=?
+                WHERE event_id=?
+                  AND event_type='sop_failure_alert'
+                  AND (
+                    status IN ('accepted', 'alert_retry')
+                    OR (status='alert_sending' AND updated_at<=?)
+                  )
+                """,
+                (now, str(event_id or "").strip(), str(stale_before or "").strip()),
+            )
+        return int(result.rowcount or 0) == 1
+
     def list_platform_sop_task_records(
         self,
         *,
@@ -443,14 +467,17 @@ class SopEventRepositoryMixin:
             ).fetchone()
             existing_payload = loads_dict(current["send_payload_json"]) if current else {}
             existing_response = loads_dict(current["send_response_json"]) if current else {}
-            if status == "completed_without_send" and _has_successful_send_evidence(
+            already_sent = _has_successful_send_evidence(
                 status=str(current["status"] or "") if current else "",
                 sent_at=str(current["sent_at"] or "") if current else "",
                 send_response=existing_response,
-            ):
-                status = "sent"
+            )
+            if already_sent and status not in {"sent", "sent_recovered"}:
+                current_status = str(current["status"] or "") if current else ""
+                status = current_status if current_status in {"sent", "sent_recovered"} else "sent"
                 send_payload = existing_payload
                 send_response = existing_response
+                error = ""
             conn.execute(
                 """
                 UPDATE sop_send_tasks
@@ -1074,16 +1101,17 @@ def _has_successful_send_evidence(*, status: str, sent_at: str, send_response: d
     if delivery_status in {"send_succeeded", "delivered"}:
         return True
     if delivery_status == "platform_accepted":
-        return bool(
-            str(
-                data.get("system_msgid")
-                or data.get("systemMsgId")
-                or data.get("msgid")
-                or data.get("msgId")
-                or ""
-            ).strip()
-        )
-    return status == "sent_recovered" and bool(sent_at.strip())
+        single_id = str(
+            data.get("system_msgid")
+            or data.get("systemMsgId")
+            or data.get("msgid")
+            or data.get("msgId")
+            or ""
+        ).strip()
+        multiple_ids = data.get("system_msgids") if isinstance(data.get("system_msgids"), list) else []
+        if single_id or any(str(value or "").strip() for value in multiple_ids):
+            return True
+    return status in {"sent", "sent_recovered"} and bool(sent_at.strip())
 
 
 def _identity_row(row: dict[str, Any]) -> dict[str, str]:

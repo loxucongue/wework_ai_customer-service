@@ -75,7 +75,7 @@ class SopFailureAlertService:
         sent = 0
         for task_id in task_ids:
             task = task_map.get(task_id, {})
-            if task_id != "unknown" and await asyncio.to_thread(self._local_task_has_send_evidence, task_id):
+            if task_id != "unknown" and await asyncio.to_thread(self._local_task_suppresses_alert, task_id):
                 continue
             sent += await self.notify_task_failure(
                 task=task,
@@ -106,7 +106,7 @@ class SopFailureAlertService:
         if (
             clean_task_id != "unknown"
             and not clean_task_id.startswith("system-")
-            and await asyncio.to_thread(self._local_task_has_send_evidence, clean_task_id)
+            and await asyncio.to_thread(self._local_task_suppresses_alert, clean_task_id)
         ):
             return 0
         clean_phase = _clean_value(phase, fallback="unknown")
@@ -207,12 +207,14 @@ class SopFailureAlertService:
                     error="invalid_alert_payload",
                 )
             return False
-        await asyncio.to_thread(
-            self.repository.update_sop_event_status,
+        stale_before = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        claimed = await asyncio.to_thread(
+            self.repository.claim_sop_failure_alert_delivery,
             event_id,
-            status="alert_sending",
-            error="",
+            stale_before=stale_before,
         )
+        if not claimed:
+            return False
         try:
             await self.client.send_markdown(
                 title="第三方 SOP 发送失败预警",
@@ -258,12 +260,42 @@ class SopFailureAlertService:
             reason=str(alert.get("reason") or ""),
         )
 
-    def _local_task_has_send_evidence(self, task_id: str) -> bool:
+    def _local_task_suppresses_alert(self, task_id: str) -> bool:
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
         if not isinstance(local_task, dict):
             return False
         status = str(local_task.get("status") or "").strip()
-        return bool(status == "sent" and str(local_task.get("sent_at") or "").strip())
+        sent_at = str(local_task.get("sent_at") or "").strip()
+        send_response = local_task.get("send_response") if isinstance(local_task.get("send_response"), dict) else {}
+        data = send_response.get("data") if isinstance(send_response.get("data"), dict) else {}
+        delivery_status = str(data.get("delivery_status") or "").strip()
+        single_id = str(
+            data.get("system_msgid")
+            or data.get("systemMsgId")
+            or data.get("msgid")
+            or data.get("msgId")
+            or ""
+        ).strip()
+        multiple_ids = data.get("system_msgids") if isinstance(data.get("system_msgids"), list) else []
+        if delivery_status in {"send_succeeded", "delivered"}:
+            return True
+        if delivery_status == "platform_accepted" and (
+            single_id or any(str(value or "").strip() for value in multiple_ids)
+        ):
+            return True
+        if status in self.SEND_CONFIRMED_STATUSES.union({"sent_recovered"}) and sent_at:
+            return True
+        audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        decision = audit.get("decision") if isinstance(audit.get("decision"), dict) else {}
+        local_reason = " ".join(
+            str(value or "")
+            for value in (
+                local_task.get("error"),
+                audit.get("reason"),
+                decision.get("reason"),
+            )
+        )
+        return self._is_non_alert_outcome(status=status, reason=local_reason)
 
 
 def _result_task_ids(result: dict[str, Any]) -> list[str]:

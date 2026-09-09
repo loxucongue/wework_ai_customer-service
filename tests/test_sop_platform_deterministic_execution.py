@@ -324,6 +324,42 @@ def test_consume_retry_reuses_exact_msg_id_without_resending_customer_message() 
     ]
 
 
+def test_concurrent_recovery_observes_completed_send_without_replaying_task() -> None:
+    service, repository, platform, system, events = _service()
+    repository.local.update(
+        {
+            "status": "sent",
+            "sent_at": "2026-09-09T01:00:14+00:00",
+            "send_response": {
+                "data": {
+                    "delivery_status": "platform_accepted",
+                    "system_msgids": ["msg-1"],
+                }
+            },
+        }
+    )
+    service._ensure_local_task = lambda _task, **_kwargs: (
+        {"status": "platform_completed"},
+        dict(repository.local),
+    )
+
+    result = asyncio.run(
+        service._process_customer_batch_locked(
+            [_task()],
+            trigger_tasks=[],
+            batch_key="online_service|corp|staff|external",
+            biz_type="online_service",
+            recovery_status="platform_processing",
+        )
+    )
+
+    assert result["status"] == "sent"
+    assert result["reason"] == "already_terminal_after_concurrent_processing"
+    assert events == []
+    assert system.send_calls == []
+    assert platform.consume_calls == []
+
+
 def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_quarantined() -> None:
     service, _repository, platform, system, _events = _service()
 
