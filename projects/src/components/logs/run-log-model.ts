@@ -427,6 +427,11 @@ export const STATUS_META: Record<string, { label: string; className: string }> =
   delivery_failed: { label: "发送失败", className: "bg-red-50 text-red-700 ring-red-200" },
   send_failed: { label: "发送失败", className: "bg-red-50 text-red-700 ring-red-200" },
   failed: { label: "失败", className: "bg-red-50 text-red-700 ring-red-200" },
+  interrupted: { label: "执行中断", className: "bg-red-50 text-red-700 ring-red-200" },
+  failure_fallback: { label: "失败兜底", className: "bg-amber-50 text-amber-800 ring-amber-200" },
+  human_takeover: { label: "人工接管，不回复", className: "bg-zinc-100 text-zinc-700 ring-zinc-200" },
+  protocol_filtered: { label: "协议消息已忽略", className: "bg-zinc-100 text-zinc-600 ring-zinc-200" },
+  superseded: { label: "已被新消息取代", className: "bg-zinc-100 text-zinc-600 ring-zinc-200" },
   skipped: { label: "无需执行", className: "bg-zinc-100 text-zinc-600 ring-zinc-200" },
   not_reached: { label: "未到达", className: "bg-red-50 text-red-700 ring-red-200" },
   expired: { label: "轨迹已过期", className: "bg-zinc-100 text-zinc-500 ring-zinc-200" },
@@ -474,6 +479,7 @@ export function replyMessages(record?: Record<string, JsonValue>) {
     ["reply_control", "async_final", "reply_messages"],
     ["async_final_reply", "reply_messages"],
     ["http_response_reply_messages"],
+    ["http_response_body", "data", "reply_messages"],
     ["http_response_body", "reply_messages"],
     ["reply_messages"],
   ]) {
@@ -503,6 +509,46 @@ export function runReply(run: RunItem) {
 
 export function isRunning(run: RunItem) {
   return run.runtime_status === "running";
+}
+
+export function responseKindFromRun(run: RunItem) {
+  const recorded = stringField(run.business_summary?.response_kind);
+  if (recorded && recorded !== "business_reply") return recorded;
+  const output = isRecord(run.output_snapshot) ? run.output_snapshot : {};
+  const replySource = stringField(output.reply_source);
+  if (replySource === "platform_superseded") return "superseded";
+  if (
+    replySource === "ignored_platform_auto_message"
+    || replySource === "platform_recalled_message"
+    || replySource === "platform_filtered"
+    || replySource.startsWith("platform_protocol")
+  ) return "protocol_filtered";
+  if (replySource === "human_takeover_guard") return "human_takeover";
+  if (replySource.includes("fallback") || output.fallback_source) return "failure_fallback";
+  return recorded || "business_reply";
+}
+
+export function runDisplayStatus(run: RunItem, view?: ObservabilityView) {
+  if (isRunning(run)) return "running";
+  if (run.runtime_status === "interrupted") return "interrupted";
+  if (run.error) return "failed";
+  const delivery = view?.delivery?.status || run.business_summary?.delivery_status || "";
+  if (["send_failed", "delivery_failed", "partial_failed"].includes(delivery)) return "delivery_failed";
+  const responseKind = responseKindFromRun(run);
+  if (["human_takeover", "protocol_filtered", "superseded", "failure_fallback"].includes(responseKind)) {
+    return responseKind;
+  }
+  if (view?.summary?.fallback_detected || run.business_summary?.fallback_used) return "fallback";
+  if (view?.decision_summary?.decision_status === "degraded" || run.business_summary?.decision_status === "degraded") return "degraded";
+  return "success";
+}
+
+export function workflowNodesForDisplay(view?: ObservabilityView) {
+  const stages = view?.workflow_nodes || [];
+  if (view?.delivery?.status) return stages;
+  return stages.map((stage) => stage.key === "delivery"
+    ? { ...stage, status: "not_recorded", summary: stage.summary || "未记录异步发送回执" }
+    : stage);
 }
 
 export function runtimePhaseLabel(phase?: string) {

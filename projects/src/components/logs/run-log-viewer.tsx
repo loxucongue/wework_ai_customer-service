@@ -45,10 +45,12 @@ import {
   isRecord,
   isRunning,
   replyMessages,
+  runDisplayStatus,
   runContent,
   runReply,
   runtimePhaseLabel,
   stringField,
+  workflowNodesForDisplay,
 } from "./run-log-model";
 import { RunNodeDetailSheet } from "./run-node-detail-sheet";
 
@@ -282,7 +284,7 @@ function YesNoSelect({ value, onChange }: { value: string; onChange: (value: str
 
 function RunListItem({ run, selected, onSelect }: { run: RunItem; selected: boolean; onSelect: (id: string) => void }) {
   const summary = run.business_summary || {};
-  const status = runStatus(run);
+  const status = runDisplayStatus(run);
   const reply = runReply(run);
   const generation = generationRecoveryFromRun(run);
   return (
@@ -338,7 +340,7 @@ function RunDetailPanel({ run, detail, loading, onOpenNode }: {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-lg font-semibold">本轮回复判断</h2>
-            <StatusPill status={runStatus(run, view)} />
+            <StatusPill status={runDisplayStatus(run, view)} />
             {decision?.decision_status === "degraded" ? <StatusPill status="degraded" /> : null}
           </div>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
@@ -457,6 +459,11 @@ function recoveryKindLabel(value?: string) {
   const labels: Record<string, string> = {
     primary: "首次正常生成",
     runtime_fallback: "主链失败后自动补答",
+    empty_reply: "主链未生成有效回复",
+    reply_pipeline_failure: "回复链异常后的自动补答",
+    runtime_exception: "运行异常后的自动补答",
+    reply_timeout: "回复超时后的自动补答",
+    model_timeout: "模型超时后的自动补答",
     stale_generation: "生成中断后的恢复",
     recovery: "后台自动补答",
     manual_review: "自动补答耗尽，转人工复核",
@@ -625,7 +632,7 @@ function StrategySection({ knowledge, checkpoint, deliveryStatus }: {
 }
 
 function WorkflowSection({ view, onOpenNode }: { view?: ObservabilityView; onOpenNode: (node: ObservableNode) => void }) {
-  const stages = view?.workflow_nodes || [];
+  const stages = workflowNodesForDisplay(view);
   const nodes = view?.nodes || [];
   return (
     <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
@@ -771,16 +778,6 @@ function collectAlerts(run: RunItem, view?: ObservabilityView) {
   const delivery = view?.delivery?.status || "";
   if (["send_failed", "delivery_failed", "partial_failed"].includes(delivery)) alerts.push({ tone: "red", title: "发送或送达异常", text: `平台状态：${delivery}` });
   return alerts;
-}
-
-function runStatus(run: RunItem, view?: ObservabilityView) {
-  if (isRunning(run)) return "running";
-  if (run.error) return "failed";
-  const delivery = view?.delivery?.status || run.business_summary?.delivery_status || "";
-  if (["send_failed", "delivery_failed", "partial_failed"].includes(delivery)) return "delivery_failed";
-  if (view?.summary?.fallback_detected || run.business_summary?.fallback_used) return "fallback";
-  if (view?.decision_summary?.decision_status === "degraded" || run.business_summary?.decision_status === "degraded") return "degraded";
-  return "success";
 }
 
 function runDurationLabel(run: RunItem) {
