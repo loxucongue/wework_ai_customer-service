@@ -172,8 +172,8 @@ def test_send_path_requires_selected_sop_message_id(monkeypatch: pytest.MonkeyPa
 
     async def block(tasks: list[dict[str, object]], **kwargs: object) -> dict[str, object]:
         return {
-            "processed": False,
-            "status": "send_failed",
+            "processed": True,
+            "status": "failed_consumed",
             "task_id": tasks[0]["taskId"],
             "reason": kwargs["reason"],
         }
@@ -183,7 +183,7 @@ def test_send_path_requires_selected_sop_message_id(monkeypatch: pytest.MonkeyPa
         send_called = True
         return {}
 
-    service._defer_batch_failure = block
+    service._consume_batch_without_send = block
     service.system_client = SimpleNamespace(send=send)
     monkeypatch.setattr(sop_module, "_in_configured_quiet_hours", lambda **_kwargs: False)
     monkeypatch.setattr(sop_module, "_quiet_hours_base_summary", lambda *_args, **_kwargs: {})
@@ -211,6 +211,7 @@ def test_send_path_requires_selected_sop_message_id(monkeypatch: pytest.MonkeyPa
     )
 
     assert result["reason"] == "missing_sop_message_id"
+    assert result["status"] == "failed_consumed"
     assert send_called is False
 
 

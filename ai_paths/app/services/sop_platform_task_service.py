@@ -32,6 +32,21 @@ SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
         "发送失败｜企微聚合平台",
         "企微聚合平台发送失败，任务已消费且未发送",
     ),
+    "sop_messages_empty": (
+        "sop_send_failed",
+        "SOP发送失败",
+        "第三方SOP平台未返回可消费内容，任务已消费且未发送",
+    ),
+    "invalid_sop_message_group": (
+        "sop_send_failed",
+        "SOP发送失败",
+        "第三方SOP平台返回的内容组无效，任务已消费且未发送",
+    ),
+    "missing_sop_message_id": (
+        "sop_send_failed",
+        "SOP发送失败",
+        "第三方SOP平台未返回消息ID，任务已消费且未发送",
+    ),
     "human_takeover": ("humantakeover", "人工接管", "当前会话由人工接待"),
     "customer_relation_deleted": ("customer_deleted", "客户删除", "客户关系已删除"),
     "customer_already_opened": ("sop_no_send_all_filtered", "客户已开口", "客户已经回复，不发送固定SOP"),
@@ -53,12 +68,24 @@ SOP_TERMINAL_SCENES: dict[str, tuple[str, str, str]] = {
 
 
 # These are business outcomes that AICS can fully handle without sending. They
-# are the only deterministic paths allowed to close an upstream task as 70.
+# close an upstream task as the protocol's status 70 without raising an alert.
 SOP_HANDLED_NO_SEND_REASONS = {
     "customer_already_opened",
     "customer_relation_deleted",
     "human_takeover",
 }
+
+
+# The upstream task API has no writable task-level failure status. These
+# failures therefore close the task as 70 while retaining an explicit failure
+# outcome in local audit, rule-data callback, and alerting. No msgId is consumed.
+SOP_CONSUMED_FAILURE_REASON_PREFIXES = (
+    "sop_messages_empty",
+    "invalid_sop_message_group",
+    "missing_sop_message_id",
+    "wecom_aggregate_send_failed",
+    "wecom_send_rejected",
+)
 
 
 SOP_PLATFORM_TASK_SYSTEM_PROMPT = (
@@ -934,6 +961,7 @@ class SopPlatformTaskService:
             "platform_batch_consume_pending",
             "platform_sequence_blocked",
             "platform_sequence_waiting",
+            "platform_failure_rule_data_pending",
             "platform_failed",
             "platform_legacy_quarantined",
         }
@@ -1079,16 +1107,43 @@ class SopPlatformTaskService:
             "sent",
             "sent_recovered",
             "completed_without_send",
+            "failed_consumed",
         }:
             self._remember_terminal(batch_task_ids[0])
             return {
                 "processed": True,
-                "status": "sent" if current_task_status in {"sent", "sent_recovered"} else "completed_without_send",
+                "status": (
+                    "sent"
+                    if current_task_status in {"sent", "sent_recovered"}
+                    else "failed_consumed"
+                    if current_task_status == "failed_consumed"
+                    else "completed_without_send"
+                ),
                 "task_id": batch_task_ids[0],
                 "terminal_task_ids": [batch_task_ids[0]],
                 "reason": "already_terminal_after_concurrent_processing",
             }
-        if recovery_status and current_task_status == "sending":
+        current_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        if (
+            recovery_status in {"platform_complete_pending", "platform_failure_rule_data_pending"}
+            and int(current_audit.get("terminal_task_status") or 0) == 70
+        ):
+            return await self._consume_batch_without_send(
+                [task],
+                reason=str(current_audit.get("reason") or "send_failed"),
+                batch_key=str(current_audit.get("batch_key") or batch_key),
+                biz_type=str(current_audit.get("biz_type") or biz_type),
+                batch_run_id=str(current_audit.get("batch_run_id") or batch_run_id),
+                decision=current_audit.get("decision") if isinstance(current_audit.get("decision"), dict) else None,
+                audit_context=(
+                    current_audit.get("context") if isinstance(current_audit.get("context"), dict) else None
+                ),
+                terminal_failure=isinstance(current_audit.get("terminal_failure"), dict),
+            )
+        # A durable invocation is terminal under the deterministic SOP policy.
+        # The same item may return through the ordinary pending poll after a
+        # restart, so recovery must not depend on a recovery-only event status.
+        if current_task_status == "sending" and str(current_audit.get("send_invoked_at") or "").strip():
             return await self._recover_interrupted_batch_send(task, local_task=local_task)
         if recovery_status and _local_task_has_successful_send_evidence(local_task):
             audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
@@ -1637,7 +1692,8 @@ class SopPlatformTaskService:
         decision: dict[str, Any] | None = None,
         audit_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if reason in SOP_HANDLED_NO_SEND_REASONS:
+        terminal_failure = _is_consumed_terminal_failure(reason)
+        if reason in SOP_HANDLED_NO_SEND_REASONS or terminal_failure:
             return await self._consume_batch_without_send(
                 tasks,
                 reason=reason,
@@ -1646,6 +1702,7 @@ class SopPlatformTaskService:
                 batch_run_id=batch_run_id,
                 decision=decision,
                 audit_context=audit_context,
+                terminal_failure=terminal_failure,
             )
         return await self._defer_batch_failure(
             tasks,
@@ -1745,6 +1802,7 @@ class SopPlatformTaskService:
         batch_run_id: str,
         decision: dict[str, Any] | None = None,
         audit_context: dict[str, Any] | None = None,
+        terminal_failure: bool = False,
     ) -> dict[str, Any]:
         terminal_ids: list[str] = []
         unique_tasks = _dedupe_tasks([*tasks, *(trigger_tasks or [])])
@@ -1757,9 +1815,29 @@ class SopPlatformTaskService:
                 "selected_task_id": "",
                 "failure_reason": reason,
             }
+            _event, local_task = await asyncio.to_thread(
+                self._ensure_local_task,
+                task,
+                status="platform_complete_pending",
+            )
+            local_task_id = str(local_task.get("id") or "")
+            existing = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            previous_message_results = (
+                existing.get("content_message_results")
+                if isinstance(existing.get("content_message_results"), list)
+                else []
+            )
+            unconsumed_message_ids = [
+                str(item.get("msgId") or "").strip()
+                for item in previous_message_results
+                if isinstance(item, dict) and str(item.get("msgId") or "").strip()
+            ]
             audit = {
+                **existing,
                 "audit_schema_version": 4,
-                "processing_mode": "deterministic_task_no_send",
+                "processing_mode": (
+                    "deterministic_task_failure" if terminal_failure else "deterministic_task_no_send"
+                ),
                 "batch_run_id": batch_run_id,
                 "batch_key": batch_key,
                 "biz_type": biz_type,
@@ -1775,21 +1853,26 @@ class SopPlatformTaskService:
                 "decision": terminal_decision,
                 "reason": reason,
                 "context": _context_audit(audit_context or {}),
-                "consume_results": [],
+                "consume_results": (
+                    existing.get("consume_results") if isinstance(existing.get("consume_results"), list) else []
+                ),
             }
-            _event, local_task = await asyncio.to_thread(
-                self._ensure_local_task,
-                task,
-                status="platform_complete_pending",
-            )
-            local_task_id = str(local_task.get("id") or "")
+            if terminal_failure:
+                audit["terminal_failure"] = {
+                    "outcome": reason,
+                    "failed_at": utc_now_iso(),
+                    "task_consumed": False,
+                    "task_status": 70,
+                    "message_ids_consumed": [],
+                    "unconsumed_message_ids": unconsumed_message_ids,
+                }
             if local_task_id:
                 await asyncio.to_thread(
                     self.repository.update_sop_send_task,
                     local_task_id,
-                    status="completed_without_send",
+                    status="failure_consume_pending" if terminal_failure else "completed_without_send",
                     send_payload=audit,
-                    error="",
+                    error=reason if terminal_failure else "",
                 )
             await asyncio.to_thread(
                 self.repository.update_sop_event_status,
@@ -1805,6 +1888,11 @@ class SopPlatformTaskService:
                 remark=reason,
             )
             _require_platform_status(response, 70)
+            if terminal_failure:
+                terminal_failure_audit = audit.get("terminal_failure")
+                if isinstance(terminal_failure_audit, dict):
+                    terminal_failure_audit["task_consumed"] = True
+                    terminal_failure_audit["consumed_at"] = utc_now_iso()
             rule_data = await self._report_terminal_rule_data(
                 task,
                 outcome=reason,
@@ -1816,9 +1904,9 @@ class SopPlatformTaskService:
                 await asyncio.to_thread(
                     self.repository.update_sop_send_task,
                     local_task_id,
-                    status="completed_without_send",
+                    status="failed_consumed" if terminal_failure else "completed_without_send",
                     send_payload=audit,
-                    error="",
+                    error=reason if terminal_failure else "",
                 )
             rule_response = rule_data.get("rule_data_response") if isinstance(rule_data, dict) else {}
             if isinstance(rule_response, dict) and rule_response.get("error"):
@@ -1839,14 +1927,14 @@ class SopPlatformTaskService:
                 self.repository.update_sop_event_status,
                 f"platform_sop_task:{task_id}",
                 status="platform_completed",
-                error="",
+                error=reason if terminal_failure else "",
             )
             self._remember_terminal(task_id)
             self._release_sequence_reservations(selected_id=task_id, audit=audit)
             terminal_ids.append(task_id)
         return {
             "processed": True,
-            "status": "completed_without_send",
+            "status": "failed_consumed" if terminal_failure else "completed_without_send",
             "task_id": terminal_ids[0] if terminal_ids else "",
             "task_ids": terminal_ids,
             "terminal_task_ids": terminal_ids,
@@ -2128,43 +2216,54 @@ class SopPlatformTaskService:
         audit: dict[str, Any],
         error: Exception,
     ) -> dict[str, Any]:
-        if _send_failure_result_is_uncertain(error):
-            failure_error = f"{type(error).__name__}: {error}"
-            uncertain_audit = {
-                **audit,
-                "delivery_uncertain": True,
-                "send_failure": failure_error,
-                "send_failure_at": utc_now_iso(),
-                "terminal_task_status": None,
-            }
-            self.repository.update_sop_send_task(
-                local_task_id,
-                status="sending",
-                send_payload=uncertain_audit,
-                error=failure_error,
+        terminal_outcome = _terminal_delivery_failure_outcome(error, audit=audit)
+        if terminal_outcome:
+            return await self._complete_batch_send_failure(
+                platform_task=platform_task,
+                selected_task_id=selected_task_id,
+                local_task_id=local_task_id,
+                audit=audit,
+                error=error,
+                outcome=terminal_outcome,
             )
-            self._reserved_prefix_ids.add(selected_task_id)
-            self._schedule_recovery_backoff(
-                f"platform_sop_task:{selected_task_id}",
-                status="platform_send_uncertain",
-                error=failure_error,
-            )
-            self._counters["send_interface_timeout"] += 1
-            return {
-                "processed": False,
-                "status": "send_failed",
-                "task_id": selected_task_id,
-                "terminal_task_ids": [],
-                "reason": f"send_interface_timeout:{type(error).__name__}",
-                "retry_scheduled": True,
-            }
-        return await self._complete_batch_send_failure(
-            platform_task=platform_task,
-            selected_task_id=selected_task_id,
+        # Once the managed-send call has been entered, an exception without an
+        # explicit downstream rejection is an unknown result, not permission to
+        # retry.  Close exactly this task/msgId as successful by business policy
+        # and retain the uncertainty in audit instead of risking a duplicate.
+        failure_error = f"{type(error).__name__}: {error}"
+        uncertain_audit = {
+            **audit,
+            "send_result_unconfirmed": {
+                "exception": failure_error,
+                "recorded_at": utc_now_iso(),
+                "completion_policy": "send_api_invocation_is_terminal",
+            },
+            "send_failure": failure_error,
+            "send_failure_at": utc_now_iso(),
+            "terminal_task_status": 30,
+        }
+        self.repository.update_sop_send_task(
+            local_task_id,
+            status="sending",
+            send_payload=uncertain_audit,
+            error=failure_error,
+        )
+        self.repository.update_sop_event_status(
+            f"platform_sop_task:{selected_task_id}",
+            status="platform_complete_pending",
+            error=failure_error,
+        )
+        counter = "send_interface_timeout" if _send_failure_result_is_uncertain(error) else "send_result_unconfirmed"
+        self._counters[counter] += 1
+        return await self._complete_recovered_batch_send(
+            selected_id=selected_task_id,
             local_task_id=local_task_id,
-            audit=audit,
-            error=error,
-            outcome=_terminal_delivery_failure_outcome(error, audit=audit) or "send_failed",
+            audit=uncertain_audit,
+            recovery={
+                "status": "send_invoked_result_unconfirmed",
+                "checked_at": utc_now_iso(),
+                "exception_type": type(error).__name__,
+            },
         )
 
     async def _complete_batch_send_failure(
@@ -2178,17 +2277,37 @@ class SopPlatformTaskService:
         outcome: str,
     ) -> dict[str, Any]:
         failure_error = f"{type(error).__name__}: {error}"
-        result = await self._defer_batch_failure(
-            [platform_task],
-            reason=outcome,
-            batch_key=str(audit.get("batch_key") or _customer_batch_key(platform_task)),
-            biz_type=str(audit.get("biz_type") or platform_task.get("_aics_biz_type") or "online_service"),
-            batch_run_id=str(audit.get("batch_run_id") or f"failure:{selected_task_id}"),
-            decision=audit.get("decision") if isinstance(audit.get("decision"), dict) else None,
-            audit_context={**audit, "send_failure": failure_error, "local_task_id": local_task_id},
-        )
+        terminal_failure = _is_consumed_terminal_failure(outcome)
+        if terminal_failure or outcome in SOP_HANDLED_NO_SEND_REASONS:
+            result = await self._consume_batch_without_send(
+                [platform_task],
+                reason=outcome,
+                batch_key=str(audit.get("batch_key") or _customer_batch_key(platform_task)),
+                biz_type=str(audit.get("biz_type") or platform_task.get("_aics_biz_type") or "online_service"),
+                batch_run_id=str(audit.get("batch_run_id") or f"failure:{selected_task_id}"),
+                decision=audit.get("decision") if isinstance(audit.get("decision"), dict) else None,
+                audit_context=audit.get("context") if isinstance(audit.get("context"), dict) else None,
+                terminal_failure=terminal_failure,
+            )
+        else:
+            result = await self._defer_batch_failure(
+                [platform_task],
+                reason=outcome,
+                batch_key=str(audit.get("batch_key") or _customer_batch_key(platform_task)),
+                biz_type=str(audit.get("biz_type") or platform_task.get("_aics_biz_type") or "online_service"),
+                batch_run_id=str(audit.get("batch_run_id") or f"failure:{selected_task_id}"),
+                decision=audit.get("decision") if isinstance(audit.get("decision"), dict) else None,
+                audit_context={**audit, "send_failure": failure_error, "local_task_id": local_task_id},
+            )
         result["error"] = failure_error
-        self._counters["send_failure_deferred"] += 1
+        counter = (
+            "send_failure_consumed"
+            if terminal_failure
+            else "handled_no_send"
+            if outcome in SOP_HANDLED_NO_SEND_REASONS
+            else "send_failure_deferred"
+        )
+        self._counters[counter] += 1
         return result
 
     async def _retry_batch_send(
@@ -2376,14 +2495,18 @@ class SopPlatformTaskService:
         if (
             str(audit.get("processing_mode") or "") == "deterministic_customer_gate"
             and str(audit.get("send_invoked_at") or "").strip()
-            and not bool(audit.get("delivery_uncertain"))
         ):
+            result_unconfirmed = bool(audit.get("delivery_uncertain")) or isinstance(
+                audit.get("send_result_unconfirmed"), dict
+            )
             return await self._complete_recovered_batch_send(
                 selected_id=selected_id,
                 local_task_id=local_task_id,
                 audit=audit,
                 recovery={
-                    "status": "send_api_invocation_recorded",
+                    "status": (
+                        "send_invoked_result_unconfirmed" if result_unconfirmed else "send_api_invocation_recorded"
+                    ),
                     "checked_at": utc_now_iso(),
                 },
             )
@@ -2530,12 +2653,18 @@ class SopPlatformTaskService:
                 "reason": "third_party_task_already_terminal_no_send",
                 "delivery_recovery": recovery,
             }
+        recovery_status = str(recovery.get("status") or "confirmed_delivery")
+        result_unconfirmed = recovery_status == "send_invoked_result_unconfirmed"
         recovered_response = {
             "code": 0,
-            "msg": "delivery_confirmed_after_interrupted_send",
+            "msg": (
+                "send_invocation_completed_by_business_policy"
+                if result_unconfirmed
+                else "delivery_confirmed_after_interrupted_send"
+            ),
             "data": {
-                "send_status": str(recovery.get("status") or "confirmed_delivery"),
-                "delivery_status": "delivered",
+                "send_status": recovery_status,
+                "delivery_status": "submission_unconfirmed" if result_unconfirmed else "delivered",
                 "callback_required": False,
                 "delivery_recovery": recovery,
             },
@@ -2568,8 +2697,10 @@ class SopPlatformTaskService:
             "platform_processing",
             "platform_batch_send_retry",
             "platform_delivery_pending",
+            "platform_complete_pending",
             "platform_batch_consume_pending",
             "platform_sequence_blocked",
+            "platform_failure_rule_data_pending",
             "platform_failed",
             "platform_legacy_quarantined",
         }
@@ -2937,6 +3068,7 @@ class SopPlatformTaskService:
                 "judged_no_send": summary["judged_no_send"],
                 "sending": summary["sending"],
                 "sent": summary["sent"],
+                "failed": summary["failed"],
                 "recovery": summary["recovery"],
             },
             "platform": {
@@ -3244,12 +3376,21 @@ class SopPlatformTaskService:
         )
         for task_id in terminal_task_ids:
             self._remember_terminal(task_id)
-        if status in {"sent", "completed_without_send", "platform_completed", "shadow_send", "shadow_no_send"}:
+        if status in {
+            "sent",
+            "completed_without_send",
+            "failed_consumed",
+            "platform_completed",
+            "shadow_send",
+            "shadow_no_send",
+        }:
             self._remember_terminal(str(result.get("task_id") or ""))
         if status == "sent":
             self._counters["sent"] += 1
         elif status in {"completed_without_send", "shadow_no_send"}:
             self._counters["no_send"] += 1
+        elif status == "failed_consumed":
+            self._counters["failed_consumed"] += 1
         elif status == "shadow_send":
             self._counters["shadow_send"] += 1
         elif status == "platform_send_uncertain":
@@ -3483,6 +3624,7 @@ class SopPlatformTaskService:
         if recovery_status == "platform_failure_rule_data_pending":
             audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             terminal_failure = audit.get("terminal_failure") if isinstance(audit.get("terminal_failure"), dict) else {}
+            failure_consumed = bool(terminal_failure) and int(audit.get("terminal_task_status") or 0) == 70
             recovery_sent = int(audit.get("terminal_task_status") or 0) == 30 or local_status in {
                 "sent",
                 "sent_recovered",
@@ -3501,18 +3643,22 @@ class SopPlatformTaskService:
             await asyncio.to_thread(
                 self.repository.update_sop_send_task,
                 str(local_task.get("id") or ""),
-                status="sent" if recovery_sent else "completed_without_send",
+                status="sent" if recovery_sent else "failed_consumed" if failure_consumed else "completed_without_send",
                 send_payload=audit,
-                error="",
+                error=outcome if failure_consumed else "",
             )
             rule_response = rule_data.get("rule_data_response") if isinstance(rule_data, dict) else {}
             if isinstance(rule_response, dict) and rule_response.get("error"):
                 return {"processed": False, "status": "rule_data_pending", "task_id": task_id}
-            self.repository.update_sop_event_status(event_id, status="platform_completed", error="")
+            self.repository.update_sop_event_status(
+                event_id,
+                status="platform_completed",
+                error=outcome if failure_consumed else "",
+            )
             self._release_sequence_reservations(selected_id=task_id, audit=audit)
             return {
                 "processed": True,
-                "status": "sent" if recovery_sent else "completed_without_send",
+                "status": "sent" if recovery_sent else "failed_consumed" if failure_consumed else "completed_without_send",
                 "task_id": task_id,
                 "terminal_task_ids": [task_id],
             }
@@ -4125,6 +4271,8 @@ class SopPlatformTaskService:
     ) -> dict[str, Any]:
         """Report one immutable strategy label after a terminal consume."""
         normalized = str(outcome or "").strip()
+        if normalized.startswith("wecom_aggregate_send_failed"):
+            normalized = "wecom_aggregate_send_failed"
         if normalized not in SOP_TERMINAL_SCENES:
             if "duplicate" in normalized:
                 normalized = "duplicate"
@@ -5462,6 +5610,8 @@ def _platform_run_task_item(
 def _platform_run_status(*, version: str, representative: dict[str, Any], tasks: list[dict[str, Any]]) -> str:
     event_statuses = {str(task.get("event_status") or "") for task in tasks}
     task_statuses = {str(task.get("task_status") or "") for task in tasks}
+    if "failed_consumed" in task_statuses:
+        return "exception"
     if "platform_delivery_pending" in event_statuses or "sending" in task_statuses:
         return "delivery_pending"
     if event_statuses.intersection({"platform_batch_consume_pending", "platform_complete_pending"}):
@@ -5904,6 +6054,8 @@ def _platform_task_bucket(*, event_status: str, task_status: str, has_local: boo
         return "recovery"
     if task_status == "sent":
         return "sent"
+    if task_status == "failed_consumed":
+        return "failed"
     if task_status == "sending":
         return "sending"
     if task_status in {"shadow_no_send", "completed_without_send"}:
@@ -5923,6 +6075,7 @@ _PLATFORM_TASK_BUCKET_LABELS = {
     "judged_no_send": "已判断不发",
     "sending": "发送中",
     "sent": "已发送",
+    "failed": "失败已消费",
     "recovery": "恢复中",
 }
 
@@ -5978,6 +6131,11 @@ def _send_failure_result_is_uncertain(exc: Exception) -> bool:
     name = type(exc).__name__.lower()
     message = str(exc or "").lower()
     return "timeout" in name or "timeout" in message or "timed out" in message
+
+
+def _is_consumed_terminal_failure(reason: str) -> bool:
+    normalized = str(reason or "").strip()
+    return normalized.startswith(SOP_CONSUMED_FAILURE_REASON_PREFIXES)
 
 
 def _send_result_requires_confirmation(send_result: dict[str, Any]) -> bool:

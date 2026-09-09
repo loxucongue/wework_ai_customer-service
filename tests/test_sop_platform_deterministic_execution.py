@@ -235,27 +235,34 @@ def test_any_failed_customer_gate_consumes_task_70_without_loading_or_consuming_
     assert len(platform.rule_calls) == 1
 
 
-def test_content_and_send_failures_remain_unconsumed_and_recoverable() -> None:
-    empty_service, _repository, empty_platform, empty_system, _events = _service(empty_content=True)
+def test_content_failure_consumes_task_70_without_consuming_msg_id() -> None:
+    empty_service, repository, empty_platform, empty_system, _events = _service(empty_content=True)
     empty_result = _run(empty_service)
 
     assert empty_result["reason"] == "sop_messages_empty"
-    assert empty_result["status"] == "send_failed"
+    assert empty_result["status"] == "failed_consumed"
     assert empty_system.send_calls == []
-    assert empty_platform.consume_calls == []
-    assert empty_platform.rule_calls == []
+    assert [(call["status"], call.get("messages")) for call in empty_platform.consume_calls] == [(70, None)]
+    assert len(empty_platform.rule_calls) == 1
+    assert repository.local["status"] == "failed_consumed"
+    assert repository.local["send_payload"]["terminal_failure"]["task_consumed"] is True
+    assert repository.local["send_payload"]["terminal_failure"]["message_ids_consumed"] == []
 
+
+def test_send_call_exception_is_terminal_and_consumes_exact_msg_id_once() -> None:
     failed_service, failed_repository, failed_platform, failed_system, _events = _service(
-        send_error=RuntimeError("send rejected")
+        send_error=RuntimeError("send result unavailable")
     )
     failed_result = _run(failed_service)
 
-    assert failed_result["status"] == "send_failed"
+    assert failed_result["status"] == "sent"
     assert len(failed_system.send_calls) == 1
-    assert failed_platform.consume_calls == []
-    assert failed_platform.rule_calls == []
-    assert failed_repository.local["status"] == "processing_retry"
-    assert failed_repository.event_updates[-1]["status"] == "platform_processing_retry"
+    assert failed_platform.consume_calls[0]["status"] == 30
+    assert failed_platform.consume_calls[0]["messages"] == [{"msgId": "701", "status": 30, "remark": ""}]
+    assert len(failed_platform.rule_calls) == 1
+    assert failed_repository.local["status"] == "sent_recovered"
+    assert failed_repository.local["send_response"]["data"]["delivery_status"] == "submission_unconfirmed"
+    assert failed_repository.event_updates[-1]["status"] == "platform_completed"
 
 
 def test_polling_does_not_load_sop_messages_before_customer_gates() -> None:
@@ -358,6 +365,36 @@ def test_concurrent_recovery_observes_completed_send_without_replaying_task() ->
     assert events == []
     assert system.send_calls == []
     assert platform.consume_calls == []
+
+
+def test_ordinary_pending_poll_closes_recorded_send_invocation_without_replaying() -> None:
+    service, repository, platform, system, events = _service()
+    repository.local.update(
+        {
+            "status": "sending",
+            "send_payload": {
+                "processing_mode": "deterministic_customer_gate",
+                "send_invoked_at": "2026-09-09T01:00:14+00:00",
+                "delivery_uncertain": True,
+                "final_messages": [{"type": "text", "content": {"text": "第一组文本"}}],
+                "content_message_results": [{"msgId": "701", "status": 30, "remark": ""}],
+                "consume_results": [],
+            },
+        }
+    )
+    service._ensure_local_task = lambda _task, **_kwargs: (
+        {"status": "platform_sequence_waiting"},
+        dict(repository.local),
+    )
+
+    result = _run(service)
+
+    assert result["status"] == "sent"
+    assert system.send_calls == []
+    assert "send" not in events
+    assert platform.consume_calls[0]["status"] == 30
+    assert platform.consume_calls[0]["messages"] == [{"msgId": "701", "status": 30, "remark": ""}]
+    assert repository.local["send_response"]["data"]["delivery_status"] == "submission_unconfirmed"
 
 
 def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_quarantined() -> None:

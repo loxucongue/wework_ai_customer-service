@@ -439,7 +439,7 @@ def _render_markdown(alert: dict[str, Any]) -> str:
             f"- 发生时间：{_clean_value(alert.get('occurred_at'), fallback='unknown')}",
             f"- 发布版本：{_clean_value(alert.get('release_id'), fallback='unknown')}",
             f"- 告警 ID：{_clean_value(alert.get('alert_id'), fallback='unknown')}",
-            "- 处理原则：业务已承接状态不告警；本告警任务保持未消费并继续恢复，后续任务不得越过。",
+            "- 处理原则：业务已承接状态不告警；明确失败按终态消费并留痕；主动发送接口已调用则不重发。",
         ]
     )
 
