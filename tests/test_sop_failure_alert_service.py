@@ -143,13 +143,19 @@ def test_actionable_send_failure_still_creates_and_delivers_alert() -> None:
     assert len(repository.created) == 1
     assert len(client.sent) == 1
     assert repository.updated[-1][1] == "alert_sent"
-    assert "责任方向：我方主动发送链路" in client.sent[0][1]
+    assert "责任方向：企微聚合平台消息发送" in client.sent[0][1]
 
 
 @pytest.mark.parametrize(
     ("reason", "phase", "failure_type", "responsibility"),
     [
         ("send_interface_timeout:TimeoutError", "queue_process", "接口超时", "我方主动发送链路"),
+        (
+            "wecom_aggregate_send_failed:account_unassigned",
+            "queue_process",
+            "消息发送未成功",
+            "企微聚合平台消息发送",
+        ),
         ("missing_identity:corp_id", "queue_process", "任务缺少必填参数", "第三方 SOP 平台"),
         ("sop_messages_empty", "queue_process", "第三方任务内容不完整", "第三方 SOP 平台"),
         (
@@ -180,6 +186,31 @@ def test_alert_classifies_failure_type_and_responsibility(
     assert delivered == 1
     assert f"失败类型：{failure_type}" in client.sent[0][1]
     assert f"责任方向：{responsibility}" in client.sent[0][1]
+
+
+def test_aggregate_account_mapping_failure_has_actionable_reason_and_wechat() -> None:
+    service, repository, client = _service()
+
+    delivered = asyncio.run(
+        service.notify_result(
+            {
+                "task_id": "83049",
+                "status": "send_failed",
+                "reason": "wecom_aggregate_send_failed:account_unassigned",
+            },
+            tasks=[{"taskId": "83049", "user_wechat_id": "SL0069"}],
+            phase="queue_process",
+        )
+    )
+
+    assert delivered == 1
+    markdown = client.sent[0][1]
+    assert "责任方向：企微聚合平台消息发送" in markdown
+    assert "失败原因：消息发送未成功，原因：企微账号未绑定客服用户或超级客服 AI 映射（account_unassigned）" in markdown
+    assert "接待企微：SL0069" in markdown
+    alert = repository.created[0]["alert"]
+    assert alert["reason"] == "wecom_aggregate_send_failed:account_unassigned"
+    assert alert["wechat"] == "SL0069"
 
 
 def test_same_task_is_alerted_only_once_across_reason_and_phase_changes() -> None:

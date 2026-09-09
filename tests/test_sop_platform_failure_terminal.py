@@ -171,10 +171,38 @@ def test_downstream_409_remains_unconsumed_and_recoverable() -> None:
     )
 
     assert result["status"] == "send_failed"
+    assert result["reason"] == "wecom_aggregate_send_failed:ai_automation_disabled"
     assert platform.consume_calls == []
     assert platform.rule_calls == []
     assert repository.task_updates[-1]["status"] == "processing_retry"
     assert repository.event_updates[-1]["status"] == "platform_processing_retry"
+
+
+def test_downstream_account_unassigned_preserves_safe_reason_code() -> None:
+    service, repository, platform = _service()
+    result = asyncio.run(
+        service._handle_batch_send_failure(
+            platform_task=_task(),
+            selected_task_id="101",
+            local_task_id="local-101",
+            audit={
+                "context": {
+                    "management_status": {
+                        "send_allowed": False,
+                        "reason_code": "unrelated_takeover_reason",
+                        "send_reason_code": "account_unassigned",
+                    }
+                }
+            },
+            error=RuntimeError("aggregate send rejected without a detailed response body"),
+        )
+    )
+
+    assert result["status"] == "send_failed"
+    assert result["reason"] == "wecom_aggregate_send_failed:account_unassigned"
+    assert platform.consume_calls == []
+    assert platform.rule_calls == []
+    assert repository.task_updates[-1]["status"] == "processing_retry"
 
 
 def test_expired_delivery_retry_remains_unconsumed_and_recoverable() -> None:

@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-09T11:54:00+08:00`
+- verified_at: `2026-09-09T14:56:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260909-sop-deterministic-af3c515d`
-- git commit: `af3c515dc2491347cf170d9abdcba9c875882288`
+- release: `ai-paths-unified-20260909-sop-alert-attribution-182c9866`
+- git commit: `182c986644a4d6d0db054a4e66d9e0d90e833a19`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -48,13 +48,14 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-v3-terminal-78622cf4`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-sop-alert-attribution-32f386f0`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-152743-9e0f24c2`。
 - 数据库已迁移到 `20260908_01`，本次只为 `aics_runs.created_at` 增加查询索引。发布前全部 `aics_*` 表的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-v3-proactive-20260908-204425/aics-before-20260908_01.sql.gz`，文件大小 `398145414` 字节，`SHA256SUMS` 与 `gzip -t` 均通过。旧代码可保留该索引，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-09 14:56 发布并核验第三方 SOP 聚合平台发送失败归责：control/reply/worker 统一运行 clean `main@182c986644a4d6d0db054a4e66d9e0d90e833a19`，release 为 `ai-paths-unified-20260909-sop-alert-attribution-182c9866`，三个 unit 均 active/running 且 `NRestarts=0`。聚合平台明确返回 `send_allowed=false` 或 HTTP/业务拒绝时，告警失败类型改为“消息发送未成功”、责任方向改为“企微聚合平台消息发送”，并保留安全错误码；`account_unassigned` 显示为“企微账号未绑定客服用户或超级客服 AI 映射”。接待企微兼容第三方任务的 `user_wechat_id/user_wechat/wecom_account`。生产任务 83044 的自然恢复周期已记录 `wecom_aggregate_send_failed:account_unassigned`，未消费任务或 `msgId`，后续任务继续按顺序阻断；已有任务 83049 的旧告警因单任务去重不会重发或改写。连接超时和本地执行异常仍归我方链路，不误归第三方。全仓 632 条测试、Ruff、compileall 和 diff check 通过；本次无客户测试发送、无历史补发、无数据库 schema 或前端变更。统一回滚点为 `ai-paths-unified-20260909-sop-alert-attribution-32f386f0`。
 - 2026-09-09 11:54 发布并核验第三方 SOP 恢复路径确定性修复：control/reply/worker 统一运行 clean `main@af3c515dc2491347cf170d9abdcba9c875882288`，release 为 `ai-paths-unified-20260909-sop-deterministic-af3c515d`，三个 unit 均 active/running 且 `NRestarts=0`。恢复任务与正常任务复用同一客户锁和确定性状态机，不再调用旧模型入口；发布后多个自然轮询/恢复周期中 worker `model.count=0`、`last_poll_error` 为空。管理日志对客户 15215324 的历史任务 82716/82717/82718 均按明确发送证据展示 `completed`，旧模型错误只留在原始审计。空 `/pending` 已定义为无操作，不生成、不消费、不告警；本次无历史补发、无第三方任务生成、无数据库 schema 或前端变更。V3 无鉴权 401、V2 404、管理接口无鉴权 401、Nginx 配置检查通过；统一回滚点为 `ai-paths-unified-20260909-v3-terminal-78622cf4`。
 - 2026-09-09 09:31 补充首条普通自然请求：客户回复成功、无运行错误，可靠收尾已完成；入口事务 2.21s、核心持久化 479ms且记录的数据库连接数为 1，证明本次审计/数据库收敛已进入生产路径。该请求完整耗时 34.02s，其中模型图 29.71s并发生一次完整 Reply 重试，因此这条剩余长尾来自模型恢复链而不是回复后的审计写入；当前样本量不足，人工接管和普通请求 P50/P95继续观察。
 - 2026-09-09 09:27 发布并核验 V3 终态持久化与审计关键路径优化：control/reply/worker 统一运行 clean `main@78622cf42fdf632e47d8f7e4d9e379a7bc3c6b9c`，release 为 `ai-paths-unified-20260909-v3-terminal-78622cf4`，三个角色 `/health` 的 release、完整 SHA、`dirty=false` 一致且 `NRestarts=0`；V3 无鉴权为 401、V2 为 404，发布后错误级日志为空。人工接管、平台挤占/过滤和状态失败等终态路径现在以一次连接和一次事务保存客户消息、run、主动唤醒取消、最小 BI 及可靠收尾任务；普通入口也把客户消息与唤醒取消合并到同一事务，身份观察、SOP 回传、完整轨迹和 BI 补充由持久化 Worker 幂等批量收尾。全仓 626 条测试通过，100ms 连接延迟注入证明人工接管模型调用为 0、数据库连接为 1；一条生产同配置 DeepSeek 只读运行有效回复、图后 82ms、生产写入/发送为 0。发布窗口只有 1 条自然协议消息（1ms），尚无人工接管自然样本，不能宣称生产 P95 已达标。现场同时确认应用服务器使用私网地址，但 MySQL 主机名解析到公网地址；简单 SQL 约 211ms、独立连接约 937ms、冷连接约 3.5s，该网络切换作为独立运维发布处理，本次未混合修改。无数据库迁移、无前端发布、无测试客户发送；回滚点为 `ai-paths-unified-20260909-sop-alert-8c31b2b2`。
