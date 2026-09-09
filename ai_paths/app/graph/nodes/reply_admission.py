@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.graph.nodes.material_selection import parallel_reply_payload
@@ -16,6 +17,7 @@ from app.graph.nodes.reply_validation import (
     _validate_store_address_message_facts,
     _validate_store_resolution_delivery_mode,
     _validate_store_resolution_contract,
+    message_content_text,
 )
 from app.graph.nodes.sales_fact_validation import (
     validate_customer_visible_identity_boundaries,
@@ -53,6 +55,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         lambda: validate_customer_visible_identity_boundaries(messages),
         lambda: validate_sales_price_fact_boundaries(messages),
         lambda: _validate_mainline_sales_action(state),
+        lambda: _validate_customer_visible_mainline_boundary(messages, state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )
     for check in checks:
@@ -131,6 +134,73 @@ def _validate_mainline_sales_action(state: dict[str, Any]) -> None:
             "next_sales_action_exceeds_delivered_mainline:"
             f"{action_type}:{mainline.get('next_missing_stage') or ''}"
         )
+
+
+def _validate_customer_visible_mainline_boundary(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Reject an explicit booking invitation before that stage is available.
+
+    The model still owns sales wording and progression.  This narrow check only
+    prevents customer-visible transaction advancement from contradicting the
+    deterministic delivered-mainline contract, even when the model labels its
+    structured action as a harmless value-delivery action.
+    """
+
+    if not isinstance(state.get("evidence_join"), dict):
+        return
+    mainline = (
+        state.get("mainline_delivery_state")
+        if isinstance(state.get("mainline_delivery_state"), dict)
+        else parallel_reply_payload(state).get("mainline_delivery_state", {})
+    )
+    allowed = {
+        str(item or "").strip()
+        for item in mainline.get("allowed_next_sales_action_types") or []
+        if str(item or "").strip()
+    }
+    if "invite_booking" in allowed:
+        return
+    text = "\n".join(
+        message_content_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    if not text.strip():
+        return
+    patterns = (
+        r"(?:我|这边)?(?:可以|先|现在|马上|直接)?(?:帮|给)您"
+        r"(?:做|办|提交)?(?:个|一下)?(?:预约登记|预约)(?:一下|上)?"
+        r"(?:吧|哈|哦|呢|呀|[，。！？!?]|$)",
+        r"(?:您|你)?(?:可以直接|就可以|直接|先)预约到店(?:就行|即可|可以)?"
+        r"(?:吧|呢|呀|[，。！？!?]|$)",
+        r"(?:您|你)?(?:大概|准备|打算|想)?"
+        r"(?:工作日还是周末|周末还是工作日)(?:方便|过来|到店|来店)?"
+        r"(?:呢|吗|呀|吧|[?？])",
+        r"(?:您|你)?(?:大概|准备|打算|想)?(?:周末|工作日)"
+        r"(?:方便)?(?:过来|到店|来店|来)(?:呢|吗|呀|吧|[?？])",
+        r"(?:您|你)?(?:大概|准备|打算|想)?"
+        r"(?:哪天|什么时候|几点|几号|什么时间|哪个时间)(?:方便)?"
+        r"(?:过来|到店|来店|来)(?:呢|吗|呀|吧|[?？])",
+        r"(?:您|你)?(?:大概|准备|打算|想)?(?:过来|到店|来店|来)(?:的)?"
+        r"(?:哪天|什么时候|几点|几号|什么时间|哪个时间)(?:方便)?"
+        r"(?:呢|吗|呀|吧|[?？])",
+    )
+    immediate_negation = re.compile(
+        r"(?:不用|不需要|无需|不必|不能|不会|无法|暂时不|暂不|先不|"
+        r"不建议|不要|不是让您|并非让您|不由)(?:现在|马上|立刻|直接)?$"
+    )
+    compact = re.sub(r"\s+", "", text)
+    for pattern in patterns:
+        for match in re.finditer(pattern, compact):
+            prefix = compact[max(0, match.start() - 14) : match.start()]
+            if immediate_negation.search(prefix):
+                continue
+            raise ValueError(
+                "next_sales_action_exceeds_delivered_mainline:visible_invite_booking:"
+                f"{mainline.get('next_missing_stage') or ''}"
+            )
 
 
 def _validate_structured_delivery_conversation_shape(

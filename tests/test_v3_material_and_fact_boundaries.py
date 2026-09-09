@@ -183,6 +183,10 @@ def test_valid_268_boundaries_are_allowed(reply: str) -> None:
         "我不是机器人哦，是真人客服。",
         "我这边不是AI，您放心。",
         "我是真人销售，刚才在忙。",
+        "我是人工顾问，刚才在忙。",
+        "我是真人在回复。",
+        "我不是ai，您放心。",
+        "这边不是机器人，是人工客服。",
     ],
 )
 def test_false_human_identity_claims_are_rejected(reply: str) -> None:
@@ -196,6 +200,9 @@ def test_natural_acknowledgement_does_not_require_an_identity_claim() -> None:
     )
     validate_customer_visible_identity_boundaries(
         [{"type": "text", "content": "我是小贝，这边负责线上智能接待。"}]
+    )
+    validate_customer_visible_identity_boundaries(
+        [{"type": "text", "content": "到店后这边是真人老师给您操作。"}]
     )
 
 

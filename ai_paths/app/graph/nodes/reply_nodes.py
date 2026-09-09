@@ -2496,7 +2496,7 @@ def _parallel_generic_reply_repair_messages(
                 ),
                 "forbidden_shortcut": "不能只改动作标签；reply_messages、目标、姿态和理由必须同步改成该阶段",
             }
-            if mainline_violation or visible_rewrite_required
+            if mainline_violation
             else {}
         ),
         "required_output_contract": required_output_contract,

@@ -39,9 +39,24 @@ def validate_customer_visible_identity_boundaries(messages: list[dict[str, Any]]
     text = re.sub(r"\s+", "", _combined_text(messages))
     if not text:
         return
-    if re.search(r"我(?:这边)?不是(?:机器人|AI|人工智能)", text) or re.search(
-        r"(?:我|我这边|这边)(?:是|就是)(?:真人(?:客服|顾问|销售|接待)?|人工客服)",
+    explicit_human_role = re.search(
+        r"(?:我|我这边|这边)(?:是|就是)(?:"
+        r"真人(?:客服|顾问|销售|接待|在线|在回复)|"
+        r"人工(?:客服|顾问|销售|接待|在线))",
         text,
+    )
+    first_person_bare_human = re.search(
+        r"(?:我|我这边)(?:是|就是)真人(?=$|[，。！？!~～])",
+        text,
+    )
+    if (
+        re.search(
+            r"(?:我|我这边|这边)不是(?:机器人|ai|人工智能)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        or explicit_human_role
+        or first_person_bare_human
     ):
         raise ValueError("customer_visible_false_human_identity_claim")
 

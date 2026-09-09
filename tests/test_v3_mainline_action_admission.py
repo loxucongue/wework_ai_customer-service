@@ -10,7 +10,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 
 from app.graph.nodes.material_selection import _mainline_delivery_state  # noqa: E402
-from app.graph.nodes.reply_admission import _validate_mainline_sales_action  # noqa: E402
+from app.graph.nodes.reply_admission import (  # noqa: E402
+    _validate_customer_visible_mainline_boundary,
+    _validate_mainline_sales_action,
+)
 from app.services.v3_semantic_router_service import (  # noqa: E402
     CURRENT_INTENT_CONTINUATION_SIGNALS,
 )
@@ -70,6 +73,53 @@ def test_booking_only_opens_after_effect_activity_and_store_are_delivered() -> N
     assert mainline["next_missing_stage"] == "appointment"
     assert "invite_booking" in mainline["allowed_next_sales_action_types"]
     _validate_mainline_sales_action(_state(mainline, action="invite_booking"))
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "我先发一个真实效果案例给您。您大概工作日还是周末过来呢？",
+        "我帮您预约一下，您哪天方便？",
+        "效果图发您参考，什么时候方便到店？",
+        "您直接预约到店就行。",
+        "我帮您做个预约登记吧。",
+        "不着急，您周末方便过来吗？",
+    ],
+)
+def test_visible_booking_invitation_cannot_hide_behind_a_value_delivery_action(reply: str) -> None:
+    mainline = _mainline()
+    state = _state(mainline, action="deliver_value")
+
+    with pytest.raises(ValueError, match="next_sales_action_exceeds_delivered_mainline"):
+        _validate_customer_visible_mainline_boundary(
+            [{"type": "text", "content": reply}],
+            state,
+        )
+
+
+def test_visible_mainline_guard_allows_negated_or_reached_booking_language() -> None:
+    early_state = _state(_mainline(), action="deliver_value")
+    allowed_explanations = (
+        "不用现在定哪天，我先把效果图发您看看。",
+        "周末营业时间我还需要以门店确认为准。",
+        "预约到店后会先了解清楚您的情况。",
+        "您问的是周末营业时间，到店接待需要门店确认。",
+        "您问什么时候可以到店，这个时间目前还没同步。",
+        "您不用现在直接预约到店，先看效果。",
+        "不是让您现在直接预约到店，我先发案例。",
+        "不建议您直接预约到店，先了解清楚。",
+    )
+    for reply in allowed_explanations:
+        _validate_customer_visible_mainline_boundary(
+            [{"type": "text", "content": reply}],
+            early_state,
+        )
+
+    ready = _mainline(roles=("effect_evidence", "activity_offer", "address_evidence"))
+    _validate_customer_visible_mainline_boundary(
+        [{"type": "text", "content": "您大概工作日还是周末过来呢？我帮您预约。"}],
+        _state(ready, action="invite_booking"),
+    )
 
 
 def test_active_friction_and_paused_turn_cannot_advance_booking() -> None:
