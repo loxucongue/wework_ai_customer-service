@@ -2164,7 +2164,7 @@ class SopPlatformTaskService:
             local_task_id=local_task_id,
             audit=audit,
             error=error,
-            outcome=_terminal_delivery_failure_outcome(error) or "send_failed",
+            outcome=_terminal_delivery_failure_outcome(error, audit=audit) or "send_failed",
         )
 
     async def _complete_batch_send_failure(
@@ -5994,16 +5994,60 @@ def _send_result_requires_confirmation(send_result: dict[str, Any]) -> bool:
     return True
 
 
-def _terminal_delivery_failure_outcome(exc: Exception) -> str:
+def _terminal_delivery_failure_outcome(
+    exc: Exception,
+    *,
+    audit: dict[str, Any] | None = None,
+) -> str:
     message = str(exc or "").lower()
     if "manual handoff" in message or "ai_mode_manual" in message or "40907" in message:
         return "human_takeover"
-    if (
-        "outreach_system_http_409" in message
-        or "managed send requires a verified customer remark" in message
-        or "missing_platform_customer_id" in message
-    ):
-        return "wecom_aggregate_send_failed"
+    aggregate_response = message.startswith(("outreach_system_http_", "outreach_system_error:"))
+    aggregate_response = aggregate_response or any(
+        marker in message
+        for marker in (
+            "managed send requires a verified customer remark",
+            "missing_platform_customer_id",
+        )
+    )
+    if aggregate_response:
+        reason_code = _aggregate_send_failure_reason_code(message, audit=audit)
+        return f"wecom_aggregate_send_failed:{reason_code}" if reason_code else "wecom_aggregate_send_failed"
+    return ""
+
+
+def _aggregate_send_failure_reason_code(
+    message: str,
+    *,
+    audit: dict[str, Any] | None = None,
+) -> str:
+    normalized = str(message or "").strip().lower()
+    known_codes = (
+        "account_unassigned",
+        "missing_platform_customer_id",
+        "customer_remark_unverified",
+        "ai_automation_disabled",
+    )
+    for code in known_codes:
+        if code in normalized:
+            return code
+    if "managed send requires a verified customer remark" in normalized:
+        return "customer_remark_unverified"
+    if "ai automation master switch is disabled" in normalized:
+        return "ai_automation_disabled"
+    match = re.search(r"['\"]reason_code['\"]\s*:\s*['\"]([a-z0-9_.-]+)['\"]", normalized)
+    if match:
+        return match.group(1)[:120]
+    context = audit.get("context") if isinstance(audit, dict) and isinstance(audit.get("context"), dict) else {}
+    management = (
+        context.get("management_status") if isinstance(context.get("management_status"), dict) else {}
+    )
+    audit_code = str(management.get("send_reason_code") or management.get("reason_code") or "").strip().lower()
+    if management.get("send_allowed") is False and re.fullmatch(r"[a-z0-9_.-]{1,120}", audit_code):
+        return audit_code
+    http_match = re.search(r"outreach_system_http_(\d{3})", normalized)
+    if http_match:
+        return f"http_{http_match.group(1)}"
     return ""
 
 
@@ -6307,6 +6351,7 @@ def _compact_management_status(data: dict[str, Any]) -> dict[str, Any]:
         "mode": str(takeover.get("mode") or ""),
         "handoff_status": str(takeover.get("handoff_status") or ""),
         "reason_code": str(takeover.get("reason_code") or outreach.get("reason_code") or ""),
+        "send_reason_code": str(outreach.get("reason_code") or ""),
         "send_allowed": outreach.get("send_allowed") if isinstance(outreach.get("send_allowed"), bool) else None,
     }
 
@@ -6691,10 +6736,24 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
     timeline_structure = (
         context.get("timeline_structure") if isinstance(context.get("timeline_structure"), dict) else {}
     )
+    management_status = (
+        context.get("management_status") if isinstance(context.get("management_status"), dict) else {}
+    )
     return {
         "source": str(context.get("source") or ""),
         "management_mode": str(context.get("management_mode") or ""),
         "management_source": str(context.get("management_source") or ""),
+        "management_status": {
+            "mode": str(management_status.get("mode") or ""),
+            "handoff_status": str(management_status.get("handoff_status") or ""),
+            "reason_code": str(management_status.get("reason_code") or "")[:120],
+            "send_reason_code": str(management_status.get("send_reason_code") or "")[:120],
+            "send_allowed": (
+                management_status.get("send_allowed")
+                if isinstance(management_status.get("send_allowed"), bool)
+                else None
+            ),
+        },
         "customer_opened": context.get("customer_opened") if isinstance(context.get("customer_opened"), bool) else None,
         "same_day_unopened": (
             context.get("same_day_unopened") if isinstance(context.get("same_day_unopened"), bool) else None
