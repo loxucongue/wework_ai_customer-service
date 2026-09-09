@@ -111,7 +111,10 @@ def test_reply_connects_store_detail_to_the_true_mainline_stage() -> None:
     assert "最后一句必须是" in prompt
     assert "您大概工作日还是周末方便？我帮您做预约登记" in prompt
     assert "否则补最缺的效果或活动" in prompt
-    assert "行动意愿优先于 next_missing_stage" in prompt
+    assert "行动意愿才可优先于 next_missing_stage" in prompt
+    assert "单独“发位置、可以、有时间”" in prompt
+    assert "发位置/地址”本身不等于要预约" in prompt
+    assert "到店不用等、优先接待" in prompt
     assert "不得说可直接到店" in prompt
 
 
