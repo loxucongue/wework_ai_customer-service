@@ -308,6 +308,8 @@ def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> No
     body_area_price = _reply_repair_hint("offer_face_hand_price_scope_ambiguous")
     combined_price = _reply_repair_hint("offer_face_hand_total_268_conflict")
     identity = _reply_repair_hint("customer_visible_false_human_identity_claim")
+    paused = _reply_repair_hint("paused_turn_cannot_advance_transaction")
+    invalid_store = _reply_repair_hint("invalid_parallel_reply_message_content:2:store_address")
 
     assert "XX市" in placeholder and "所在城市" in placeholder
     assert "allowed_next_sales_action_types" in mainline
@@ -316,6 +318,61 @@ def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> No
     assert "手部单独做是268元活动价" in body_area_price
     assert "一个268元只对应一个部位" in combined_price
     assert "删除这类身份断言" in identity
+    assert "不能邀约、催时间或推进付款" in paused
+    assert "不得从历史订单、旧门店卡或旧城市恢复门店话题" in invalid_store
+
+
+def test_paused_turn_repair_drops_invalid_sales_action_and_visible_draft() -> None:
+    invalid_text = "您周末过来吧，我先帮您预约，预约金10元。"
+    repaired_messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "当前客户消息：还是太远了"}],
+        ValueError("reply_admission_violations::paused_turn_cannot_advance_transaction"),
+        previous_payload={
+            "reply_messages": [{"type": "text", "content": invalid_text}],
+            "sales_judgment": {"next_sales_action": {"type": "invite_booking"}},
+            "policy_decision": {"closing_decision": {"customer_state": "pause_current_turn"}},
+        },
+        validation_context={
+            "mainline_delivery_state": {
+                "next_missing_stage": "appointment",
+                "allowed_next_sales_action_types": ["deliver_value", "keep_open", "invite_booking"],
+            }
+        },
+    )
+
+    assistant_payload = repaired_messages[-2]["content"]
+    repair_contract = repaired_messages[-1]["content"]
+    assert invalid_text not in assistant_payload
+    assert "sales_judgment" not in assistant_payload
+    assert "不能邀约、催时间或推进付款" in repair_contract
+
+
+def test_invalid_store_structure_repair_drops_stale_visible_draft_without_current_contract() -> None:
+    invalid_text = "您之前问的济南门店是厦门二店，地址我发给您。"
+    repaired_messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "当前客户消息：多少钱？"}],
+        ValueError("invalid_parallel_reply_message_content:2:store_address"),
+        previous_payload={
+            "reply_messages": [
+                {"type": "text", "content": invalid_text},
+                {"type": "store_address", "content": "厦门二店"},
+            ],
+            "sales_judgment": {"next_sales_action": {"type": "deliver_value"}},
+        },
+        validation_context={
+            "structured_delivery_options": {"store_address": {}},
+            "mainline_delivery_state": {
+                "next_missing_stage": "effect_evidence",
+                "allowed_next_sales_action_types": ["deliver_value", "send_effect_material"],
+            },
+        },
+    )
+
+    assistant_payload = repaired_messages[-2]["content"]
+    repair_contract = repaired_messages[-1]["content"]
+    assert invalid_text not in assistant_payload
+    assert "reply_messages" not in assistant_payload
+    assert "不得从历史订单、旧门店卡或旧城市恢复门店话题" in repair_contract
 
 
 def test_identity_repair_drops_invalid_visible_draft_and_restores_mainline_contract() -> None:

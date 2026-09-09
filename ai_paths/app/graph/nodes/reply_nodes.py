@@ -2456,6 +2456,8 @@ def _parallel_generic_reply_repair_messages(
         "customer_visible_false_human_identity_claim",
         "case_image_structure_required_when_reply_promises_delivery",
         "next_sales_action_exceeds_delivered_mainline",
+        "paused_turn_cannot_advance_transaction",
+        "invalid_parallel_reply_message_content:",
         "offer_face_hand_price_scope_ambiguous",
         "offer_face_hand_total_268_conflict",
         "offer_268_full_face_claim_conflict",
@@ -2606,7 +2608,9 @@ def _parallel_generic_reply_repair_messages(
         if "reply_messages" in repair_previous_payload:
             repair_previous_payload.pop("reply_messages", None)
             removed_invalid_fields.append("reply_messages")
-        if mainline_violation:
+        if mainline_violation or any(
+            "paused_turn_cannot_advance_transaction" in item for item in violations
+        ):
             if "sales_judgment" in repair_previous_payload:
                 repair_previous_payload.pop("sales_judgment", None)
                 removed_invalid_fields.append("sales_judgment")
@@ -3488,6 +3492,19 @@ def _reply_repair_hint(error: str) -> str:
             "改为交付 next_missing_stage 所需的效果、活动、门店价值，或自然保持沟通。"
             "不得再出现工作日/周末、什么时候到店、预约登记、保留档期或付款等被禁止的推进。"
         )
+    if "paused_turn_cannot_advance_transaction" in error:
+        return (
+            "客户本轮仍有卡点或只允许低压承接，不能邀约、催时间或推进付款。"
+            "删除预约、保留名额、预约金和付款内容；从 allowed_next_sales_action_types 中选择一个"
+            "非 invite_booking、非 send_payment 的动作，用当前相关话术或真实素材解决卡点、提供价值或自然保持沟通。"
+            "reply_messages、primary_objective、posture 和 next_sales_action 必须同步重写，不能只改动作标签。"
+        )
+    if "invalid_parallel_reply_message_content" in error and "store_address" in error:
+        return (
+            "上一版 store_address 结构非法。只有 exact_store_delivery_contract 明确给出本轮真实门店 ID 时，"
+            "才按该 ID 重建门店卡；否则删除 store_address，以及文字中的门店名称、地址、城市续接和‘地址发您’承诺。"
+            "不得从历史订单、旧门店卡或旧城市恢复门店话题；改为只回答当前消息并落实允许的下一主线动作。"
+        )
     if "case_image_structure_required_when_reply_promises_delivery" in error:
         return (
             "上一版承诺找、挑、选或发送效果图，却没有交付真实 image。"
@@ -3496,7 +3513,8 @@ def _reply_repair_hint(error: str) -> str:
         )
     if "offer_face_hand_price_scope_ambiguous" in error:
         return (
-            "脸部和手部价格范围表达含糊。客户只问手部时直接说‘手部单独做是268元活动价’，不要主动带出脸部；"
+            "脸部和手部价格范围表达含糊。当前客户没有明确询问脸部与手部价格时，完整删除这段多部位价格扩写；"
+            "客户只问手部时直接说‘手部单独做是268元活动价’，不要主动带出脸部；"
             "客户明确同时问两个部位时，必须说‘两个部位单独做均为268元，一个268元只对应一个部位’，"
             "不能只说‘脸部和手部都是268元’。"
         )
@@ -3519,8 +3537,8 @@ def _reply_repair_hint(error: str) -> str:
         )
     if "customer_visible_false_human_identity_claim" in error:
         return (
-            "上一版对客户谎称自己不是机器人或是真人客服。删除这类身份断言；"
-            "用一句自然短话承接客户催促，然后完成紧邻尚未交付的请求。"
+            "上一版对客户谎称自己不是机器人或是真人客服。删除这类身份断言，包括所有‘真人、人工、不是机器人、不是AI’表达，"
+            "也不要换一种方式解释身份。客户催促时可直接说‘我在的，这就发您看’，然后完成紧邻尚未交付的请求。"
             "不得借机恢复无关门店、价格或预约话题；对象确实无法确定时只追问一个必要信息。"
         )
     if "invalid_parallel_reply_action" in error:

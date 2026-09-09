@@ -169,4 +169,3 @@ def test_migration_types_keep_mysql_variants_and_compile_for_sqlite() -> None:
     assert generation_types["recovery_error"].compile(dialect=sqlite.dialect()) == "TEXT"
     assert work_items._varchar(191).compile(dialect=mysql.dialect()) == "VARCHAR(191)"
     assert work_items._longtext().compile(dialect=mysql.dialect()) == "LONGTEXT"
-
