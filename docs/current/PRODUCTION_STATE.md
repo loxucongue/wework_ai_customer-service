@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-08T23:35:37+08:00`
+- verified_at: `2026-09-09T09:27:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260908-v3-latency-7b1c01f7`
-- git commit: `7b1c01f7877321b3eb729cefbed91f0cc09ba6c8`
+- release: `ai-paths-unified-20260909-v3-terminal-78622cf4`
+- git commit: `78622cf42fdf632e47d8f7e4d9e379a7bc3c6b9c`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `9e2a9dc4f2559bd0a78d38226717365dd5e548988c7a4595972ecaa37321137f`
@@ -41,20 +41,21 @@
 
 - 第三方 SOP worker 正常运行；现场 `queue_depth=0`、最近轮询错误为空。任务按“未开口、未删除、AI 托管”三个确定性门槛执行，只有三项均满足才读取第一组未消费内容并原样发送。仅客户已开口、客户关系已删除和人工接管消费任务 `70` 且不消费 `msgId`；参数、资格数据、内容、接口或发送失败保持未消费并恢复、预警。
 - 旧执行模式恢复任务进入本地 `platform_legacy_quarantined`，不调用主动发送或第三方消费接口；发布后首批 10 条隔离完成时 worker 的 `send=0`、`consume=0`。钉钉告警重试已与 SOP 恢复解耦，不再阻塞任务恢复。
-- V3 回复异步收尾任务 `v3_reply_finalization` 已启动且无启动错误；截至本次核验，发布后尚无自然 V3 请求可用于抽查收尾完成态，因此只记录运行路径已就绪，不把未发生的样本写成已验收。
-- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=57`、`dead=16`。
+- V3 回复异步收尾任务 `v3_reply_finalization` 已启动且无启动错误；截至本次核验，发布后只有 1 条固定协议消息（1ms、零模型、零客户回复），没有人工接管或普通 V3 自然请求可用于统计收尾完成率与生产 P95，因此只记录运行路径已就绪，不把未发生的样本写成已验收。
+- Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=58`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
 - 平台订单异步归因开关未在本次安全配置核验中发现显式启用值；在下一次归因或发布任务中重新确认，不把未知写成已启用。
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260908-outreach-cb33fc65`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-sop-alert-8c31b2b2`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-152743-9e0f24c2`。
 - 数据库已迁移到 `20260908_01`，本次只为 `aics_runs.created_at` 增加查询索引。发布前全部 `aics_*` 表的一致性压缩备份保存在 `/opt/ai-paths/backups/pre-v3-proactive-20260908-204425/aics-before-20260908_01.sql.gz`，文件大小 `398145414` 字节，`SHA256SUMS` 与 `gzip -t` 均通过。旧代码可保留该索引，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
 
+- 2026-09-09 09:27 发布并核验 V3 终态持久化与审计关键路径优化：control/reply/worker 统一运行 clean `main@78622cf42fdf632e47d8f7e4d9e379a7bc3c6b9c`，release 为 `ai-paths-unified-20260909-v3-terminal-78622cf4`，三个角色 `/health` 的 release、完整 SHA、`dirty=false` 一致且 `NRestarts=0`；V3 无鉴权为 401、V2 为 404，发布后错误级日志为空。人工接管、平台挤占/过滤和状态失败等终态路径现在以一次连接和一次事务保存客户消息、run、主动唤醒取消、最小 BI 及可靠收尾任务；普通入口也把客户消息与唤醒取消合并到同一事务，身份观察、SOP 回传、完整轨迹和 BI 补充由持久化 Worker 幂等批量收尾。全仓 626 条测试通过，100ms 连接延迟注入证明人工接管模型调用为 0、数据库连接为 1；一条生产同配置 DeepSeek 只读运行有效回复、图后 82ms、生产写入/发送为 0。发布窗口只有 1 条自然协议消息（1ms），尚无人工接管自然样本，不能宣称生产 P95 已达标。现场同时确认应用服务器使用私网地址，但 MySQL 主机名解析到公网地址；简单 SQL 约 211ms、独立连接约 937ms、冷连接约 3.5s，该网络切换作为独立运维发布处理，本次未混合修改。无数据库迁移、无前端发布、无测试客户发送；回滚点为 `ai-paths-unified-20260909-sop-alert-8c31b2b2`。
 - 2026-09-08 23:35 发布并核验 V3 回复关键路径性能优化：control/reply/worker 统一运行 clean `main@7b1c01f7877321b3eb729cefbed91f0cc09ba6c8`，release 为 `ai-paths-unified-20260908-v3-latency-7b1c01f7`。入口客户消息与 run 创建合并为单事务；客户身份观察和唤醒取消在客户消息可靠保存后并行；上一轮策略与 SOP 读取移出事件循环；Follow Knowledge 增加 8 秒启动预热、300 秒租户知识缓存和同键 single-flight；Reply 输入去除重复的知识、策略与上一轮状态副本；响应快照和完整耗时在响应后合并写入。V3 独立预算为 AI/人工状态 12 秒、普通/强工具图 35/45 秒、收尾预留 12 秒，未改变 DeepSeek 模型和销售语义。全仓 616 条测试通过；120 条有质量评审的 DeepSeek 隔离样本初评通过率 95.0%、真人表达 96.2%、策略覆盖 98.8%，安全/无依据事实/生产写入均为 0，完整 L3 P50/P95 为 8.49/12.43 秒；最终 12 秒状态预算的 120 条运行验证中状态与模型超时均为 0、策略覆盖 100%、P50/P95 为 9.42/13.96 秒，仍有 1 条既有门店事实兜底。发布后三个服务 active、`NRestarts=0`、V3 无鉴权 401、V2 404，且未发现启动错误；核验窗口内尚无自然 V3 请求，因此不能把隔离 L3 耗时声明为生产公网 HTTP 指标。无数据库迁移、无前端发布、无测试客户发送；统一回滚点为 `ai-paths-unified-20260908-outreach-cb33fc65`。
 - 2026-09-08 22:25 发布并核验沉默唤醒去重与成交承接：control/reply/worker 统一运行 clean `main@cb33fc65fe18af4204cb55a442be31a7a42367ff`，release 为 `ai-paths-unified-20260908-outreach-cb33fc65`。同一销售接触边界内只以近 30 天 `status=sent + system_msgid` 的真实发送作为跨计划进度；重复节点、已用话术、已交付价值维度和高相似文本均受约束；有卡点的单次计划最多 3 个不同解卡动作和 1 个成交承接，无卡点回到未完成主线，主线完成后只推进门店、到店时间或有完整活动/预约金事实依据的锁额意向，不发送付款卡。上线前精确取消 2 个旧逻辑计划的 9 个未发送任务，取消前确认任务和 `message_dispatches` 均无消息 ID/发送调度；原 5 个已发送任务及平台消息 ID 保持不变，并新增 9 条审计事件。发布后首个自然计划正确续接旧计划已发送的节点 101/102，从 103 开始生成 3 个任务，最后一步为 `return_mainline`；未重新从头发送。相关 39 条、全仓 613 条测试、Ruff、后端编译和 3 条生产同配置 DeepSeek 无写入测试通过；三个服务 active、`NRestarts=0`，V3 无鉴权 401、V2 404、Nginx 正常。本次无数据库迁移、无测试客户发送、无前端变更；统一回滚点为 `ai-paths-unified-20260908-v3-proactive-05723ce3`，已取消的 9 个旧任务不随代码回滚恢复。
 - 2026-09-08 21:09 发布并核验 V3 回复可靠性、性能与主动销售修复：control/reply/worker 统一运行 clean `main@05723ce3ab88a629f659e6f0caf51bfac8c7f6eb`，前端使用对应构建产物；后端 release 为 `ai-paths-unified-20260908-v3-proactive-05723ce3`，前端 release 为 `frontend-20260908-v3-proactive-05723ce3`。四个 unit 均 active/running 且 `NRestarts=0`，三个后端 `/health` 的 release、完整 SHA、`dirty=false` 一致，发布后 error 级日志为空，V2 路由为 404。版本消除正常业务空回复和错误停推，软拒绝改为继续交付低压力价值，效果素材和唯一门店卡在真实候选/ID存在时同轮交付，并按真实已交付主线阶段推进；非关键节点轨迹、BI、记忆和 Shadow 改由可恢复 worker 异步收尾。全仓 599 条测试、Ruff、前端 TypeScript/ESLint/37 路由生产构建通过；120 条真实身份 DeepSeek 隔离评测中 35 条 AI 请求全部通过、85 条人工接管正确跳过，策略核心覆盖率 100%，有话术候选样本采用率 89.5%，P50/P95 为 10.66/14.62 秒，图后同步尾部 P95 为 0.162 秒，生产发送及写入均为 0。评测报告位于 ignored 目录 `/opt/ai-paths/evaluations/v3-proactive-120-4e96a354/`。异步收尾 worker 已运行，但核验窗口内尚无自然 V3 新请求，不宣称完成生产样本验收。统一回滚点为后端 `ai-paths-unified-20260908-201613-3b717cd5`、前端 `frontend-20260908-152743-9e0f24c2`；新增索引可保留。
