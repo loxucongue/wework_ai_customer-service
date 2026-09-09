@@ -2458,6 +2458,7 @@ def _parallel_generic_reply_repair_messages(
         "next_sales_action_exceeds_delivered_mainline",
         "paused_turn_cannot_advance_transaction",
         "invalid_parallel_reply_message_content:",
+        "store_address_text_without_card",
         "offer_face_hand_price_scope_ambiguous",
         "offer_face_hand_total_268_conflict",
         "offer_268_full_face_claim_conflict",
@@ -2608,9 +2609,11 @@ def _parallel_generic_reply_repair_messages(
         if "reply_messages" in repair_previous_payload:
             repair_previous_payload.pop("reply_messages", None)
             removed_invalid_fields.append("reply_messages")
-        if mainline_violation or any(
-            "paused_turn_cannot_advance_transaction" in item for item in violations
-        ):
+        # A visible rewrite can change what was actually delivered.  Keeping the
+        # old sales judgment anchors the repair model to the rejected action and
+        # makes the regenerated text disagree with its own next_sales_action.
+        # Rebuild the two together while preserving the already-valid policy.
+        if visible_rewrite_required:
             if "sales_judgment" in repair_previous_payload:
                 repair_previous_payload.pop("sales_judgment", None)
                 removed_invalid_fields.append("sales_judgment")
@@ -3504,6 +3507,13 @@ def _reply_repair_hint(error: str) -> str:
             "上一版 store_address 结构非法。只有 exact_store_delivery_contract 明确给出本轮真实门店 ID 时，"
             "才按该 ID 重建门店卡；否则删除 store_address，以及文字中的门店名称、地址、城市续接和‘地址发您’承诺。"
             "不得从历史订单、旧门店卡或旧城市恢复门店话题；改为只回答当前消息并落实允许的下一主线动作。"
+        )
+    if "store_address_text_without_card" in error:
+        return (
+            "上一版文字承诺本轮发送门店地址或位置，但本轮没有可交付的真实 store_address。"
+            "只有 exact_store_delivery_contract 给出真实 store_id 时才原样输出对应门店卡；否则必须删除门店名称、城市、地址和"
+            "‘马上发地址/位置’等承诺，并按当前工具事实回答或追问一个真正缺失的信息。"
+            "工具结果为 search_incomplete 时，不得从旧门店卡、历史订单或 Router 摘要恢复门店事实。"
         )
     if "case_image_structure_required_when_reply_promises_delivery" in error:
         return (

@@ -15,6 +15,7 @@ from app.graph.nodes.reply_validation import (
     _validate_structured_delivery_promises,
     _validate_unconfirmed_store_availability_claim,
     _validate_store_address_message_facts,
+    _validate_store_delivery_text_matches_cards,
     _validate_store_resolution_delivery_mode,
     _validate_store_resolution_contract,
     message_content_text,
@@ -50,6 +51,10 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
             state,
             check_visible_text=False,
         ),
+        # This is a structure-delivery check, not a sales-intent keyword route:
+        # once Reply itself promises to send an address/location card, the same
+        # payload must contain an authorized store_address structure.
+        lambda: _validate_store_delivery_text_matches_cards(messages, state),
         lambda: _validate_parallel_appointment_confirmation_facts(messages, state),
         lambda: _validate_parallel_business_hours_facts(messages, state),
         lambda: validate_customer_visible_identity_boundaries(messages),

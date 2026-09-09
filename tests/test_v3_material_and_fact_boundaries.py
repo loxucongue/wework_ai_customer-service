@@ -347,6 +347,55 @@ def test_paused_turn_repair_drops_invalid_sales_action_and_visible_draft() -> No
     assert "不能邀约、催时间或推进付款" in repair_contract
 
 
+def test_every_visible_rewrite_rebuilds_sales_judgment_with_visible_text() -> None:
+    repaired_messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "当前客户消息：我要了解的是斑点，不是抗衰"}],
+        ValueError("reply_admission_violations::offer_face_hand_price_scope_ambiguous"),
+        previous_payload={
+            "reply_messages": [{"type": "text", "content": "脸部和手部都按268元。"}],
+            "sales_judgment": {"next_sales_action": {"type": "explain_activity"}},
+            "policy_decision": {"realtime_intent": {"type": "fact_inquiry"}},
+        },
+        validation_context={
+            "mainline_delivery_state": {
+                "next_missing_stage": "activity_offer",
+                "allowed_next_sales_action_types": ["explain_activity", "keep_open"],
+            }
+        },
+    )
+
+    assistant_payload = repaired_messages[-2]["content"]
+    assert "reply_messages" not in assistant_payload
+    assert "sales_judgment" not in assistant_payload
+    assert "policy_decision" in assistant_payload
+
+
+def test_store_address_promise_without_card_is_an_admission_violation() -> None:
+    from app.graph.nodes.reply_admission import validate_model_led_reply_admission
+
+    state = {
+        "evidence_join": {"schema_version": "v3_evidence_join_v1"},
+        "fact_envelope": {
+            "structured_facts": {
+                "store_resolution_fact": {
+                    "status": "search_incomplete",
+                    "delivery_mode": "none",
+                    "delivery_store_ids": [],
+                }
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="store_address_text_without_card"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "您稍等，我马上把济南门店地址发您。"}],
+            state,
+        )
+
+    hint = _reply_repair_hint("store_address_text_without_card")
+    assert "search_incomplete" in hint
+    assert "旧门店卡" in hint
+
+
 def test_invalid_store_structure_repair_drops_stale_visible_draft_without_current_contract() -> None:
     invalid_text = "您之前问的济南门店是厦门二店，地址我发给您。"
     repaired_messages = _parallel_generic_reply_repair_messages(
