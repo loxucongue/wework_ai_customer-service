@@ -8,6 +8,7 @@ from typing import Any, Callable
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.material_selection import parallel_reply_payload
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
+from app.graph.nodes.reply_validation import _parallel_paid_deposit_context
 from app.graph.nodes.reply_quality import collect_reply_observation_metrics
 from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
 from app.graph.state import AgentState
@@ -1028,6 +1029,13 @@ def _validated_parallel_reply_payload(
     presentation_limits: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     restore_reply_output_references(payload, parallel_reply_payload(state))
+    if _normalize_post_payment_service_action(payload, state):
+        warnings.append(
+            {
+                "node": "synthesize_reply",
+                "message": "post_payment_service_action_normalized",
+            }
+        )
     linked_content_id = _link_adopted_script_media(payload, state)
     if linked_content_id:
         warnings.append(
@@ -1061,6 +1069,46 @@ def _validated_parallel_reply_payload(
     return messages
 
 
+def _normalize_post_payment_service_action(
+    payload: dict[str, Any],
+    state: dict[str, Any],
+) -> bool:
+    """Keep an already-paid customer inside the post-payment service lane.
+
+    The visible answer remains model-owned.  This only repairs the model's
+    administrative action enum when its own policy decision already says the
+    customer is in an authoritative post-payment state.  A price or fact
+    question can therefore still be answered without failing the entire turn
+    because the observation field accidentally says ``explain_activity``.
+    """
+
+    policy = payload.get("policy_decision") if isinstance(payload.get("policy_decision"), dict) else {}
+    closing = policy.get("closing_decision") if isinstance(policy.get("closing_decision"), dict) else {}
+    if (
+        str(closing.get("customer_state") or "").strip() != "post_payment_service"
+        or not _parallel_paid_deposit_context(state)
+    ):
+        return False
+    sales = payload.get("sales_judgment") if isinstance(payload.get("sales_judgment"), dict) else {}
+    next_action = sales.get("next_sales_action") if isinstance(sales.get("next_sales_action"), dict) else {}
+    if str(next_action.get("type") or "").strip() in {
+        "post_payment_service",
+        "keep_open",
+        "ask_missing_fact",
+    }:
+        return False
+    payload["sales_judgment"] = {
+        **sales,
+        "next_sales_action": {
+            **next_action,
+            "type": "post_payment_service",
+            "target_stage": "post_payment_service",
+            "reason": str(next_action.get("reason") or "authoritative_paid_service_boundary"),
+        },
+    }
+    return True
+
+
 _REPAIR_SENTENCE_SALVAGE_CODES = {
     "case_image_structure_required_when_reply_promises_delivery",
     "customer_visible_false_human_identity_claim",
@@ -1071,6 +1119,7 @@ _REPAIR_SENTENCE_SALVAGE_CODES = {
     "offer_repeat_visit_268_unverified",
     "stale_historical_store_topic_leak",
     "store_address_text_without_card",
+    "store_availability_fact_required",
     "store_scope_confirmed_same_region_requery",
     "terminal_store_distance_objection_restates_negative",
 }
@@ -1144,6 +1193,8 @@ def _remove_repair_violation_sentences(text: str, codes: set[str]) -> str:
     pieces = re.findall(r"[^。！？!?\n]+[。！？!?\n]?", str(text or ""))
     kept: list[str] = []
     for piece in pieces:
+        if "store_availability_fact_required" in codes:
+            piece = _strip_unconfirmed_store_availability_prefix(piece)
         compact = re.sub(r"\s+", "", piece)
         if not compact:
             continue
@@ -1219,6 +1270,26 @@ def _remove_repair_violation_sentences(text: str, codes: set[str]) -> str:
     return "".join(kept).strip()
 
 
+def _strip_unconfirmed_store_availability_prefix(text: str) -> str:
+    """Remove only a leading unsupported store-exists assertion.
+
+    The remainder must already have been written by Reply (normally a city or
+    district clarification).  The helper never invents a location question or
+    a store fact.
+    """
+
+    value = str(text or "").strip()
+    patterns = (
+        r"^(?:有的|有哦|有呢|有啊|有哈|有呀|有)(?:[，,。！!～~：:]|\s)*",
+        r"^(?:(?:这边|附近)(?:是)?有(?:店|门店)?(?:的|哦|呢|啊|哈|呀)?)(?:[，,。！!～~：:]|\s)*",
+    )
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", value, count=1)
+        if cleaned != value:
+            return cleaned.strip()
+    return value
+
+
 def _sentence_has_selected_price_conflict(text: str, codes: set[str]) -> bool:
     try:
         validate_sales_price_fact_boundaries([{"type": "text", "content": text}])
@@ -1291,6 +1362,8 @@ def _sentence_promises_case_media(text: str) -> bool:
         "选一组",
         "可以先发",
         "可以发",
+        "可以提供",
+        "能提供",
         "先发一些",
         "先发一张",
         "先发一组",

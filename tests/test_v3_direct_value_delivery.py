@@ -246,7 +246,7 @@ def test_distance_script_hold_language_keeps_direct_effect_media_delivery() -> N
             {
                 "type": "text",
                 "order": 1,
-                "content": "那没关系呀，我们不少客户专程过来，主要还是看重技术和效果。我先帮您把活动名额留着。",
+                "content": "那没关系呀，我们不少客户专程过来，主要还是看重技术和效果。先给您看一组真实改善参考。",
             }
         ],
         state,

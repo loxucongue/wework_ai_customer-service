@@ -225,27 +225,12 @@ def test_explicit_new_destination_is_not_suppressed() -> None:
     assert tool_plan["tool_calls"][0]["arguments"]["destination_hint"] == "武汉市"
 
 
-def test_model_led_admission_allows_sales_slot_hold_language() -> None:
-    state = {
-        "evidence_join": {
-            "schema_version": "v3_evidence_join_v1",
-            "normalized_tool_facts": {"structured_facts": {}},
-            "content_candidates": [],
-        }
-    }
-
-    validate_model_led_reply_admission(
-        [{"type": "text", "content": "那没关系呀，我先帮您把活动名额留着。"}],
-        state,
-    )
-
-
 def test_distance_prompt_reframes_without_repeating_negative_objection() -> None:
     assert "回复不得再用“距离、远、路程、折腾、麻烦、不方便”复述顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "即使候选原文有也不得照搬" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "马上把注意力转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "正向社会证明可以说“专程过来/花一两个小时过来”" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "我先帮您留着/保留活动名额" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "轻承接后马上转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "正向社会证明可说“专程过来/花一两个小时过来”" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "无真实登记、订单或付款事实，不得说“我已留名额”" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_terminal_distance_objection_rejects_negative_restatement_and_same_city_requery() -> None:

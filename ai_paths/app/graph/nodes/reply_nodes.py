@@ -3964,8 +3964,8 @@ def _reply_repair_hint(error: str) -> str:
     if "registration_confirmation_fact_required" in error:
         return (
             "本轮没有权威登记完成事实，不能说系统已经登记完成或报名完成。"
-            "销售表达‘我先帮您留着/保留活动名额’不属于系统完成态，不要删除，也不要升级成已经预约成功或排客完成。"
-            "只把真正的系统完成态改成尚待登记或预约的真实表述，并保持其他销售判断、素材和合法结构不变。"
+            "‘我先帮您留着/保留活动名额’同样属于已执行承诺，没有真实登记、订单或付款事实时必须删除。"
+            "可以条件式说明付款或登记后才能保留，或询问客户是否需要登记；保持其他销售判断、素材和合法结构不变。"
         )
     if "payment_collection_required" in error:
         return "如果 payment_action=send_now、文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"

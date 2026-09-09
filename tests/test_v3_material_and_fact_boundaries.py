@@ -6,7 +6,10 @@ import base64
 import pytest
 
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
-from app.graph.nodes.reply_generation import _salvage_repair_payload
+from app.graph.nodes.reply_generation import (
+    _normalize_post_payment_service_action,
+    _salvage_repair_payload,
+)
 from app.graph.nodes.reply_nodes import (
     _parallel_generic_reply_repair_messages,
     _repair_policy_skeleton,
@@ -51,6 +54,66 @@ def _image_candidate(content_id: str, url: str, *, relevance: str = "available")
         "messages": [message],
         "media": [message],
     }
+
+
+def test_post_payment_action_normalization_keeps_customer_answer_and_repairs_enum_only() -> None:
+    payload = {
+        "reply_messages": [{"type": "text", "content": "现在活动价是268元。"}],
+        "sales_judgment": {
+            "primary_objective": "回答价格",
+            "next_sales_action": {
+                "type": "explain_activity",
+                "target_stage": "activity",
+                "reason": "回答客户当前问题",
+            },
+        },
+        "policy_decision": {
+            "closing_decision": {"customer_state": "post_payment_service"}
+        },
+    }
+
+    state = {
+        "evidence_join": {
+            "shared_context": {
+                "authoritative_facts": {
+                    "orders_and_payment": {
+                        "resolved_payment": {"deposit_state": "paid_by_order"}
+                    }
+                }
+            }
+        }
+    }
+
+    assert _normalize_post_payment_service_action(payload, state) is True
+    assert payload["reply_messages"] == [
+        {"type": "text", "content": "现在活动价是268元。"}
+    ]
+    assert payload["sales_judgment"]["next_sales_action"]["type"] == "post_payment_service"
+    assert payload["sales_judgment"]["next_sales_action"]["target_stage"] == "post_payment_service"
+
+
+def test_valid_post_payment_action_is_not_rewritten() -> None:
+    payload = {
+        "sales_judgment": {"next_sales_action": {"type": "keep_open"}},
+        "policy_decision": {
+            "closing_decision": {"customer_state": "post_payment_service"}
+        },
+    }
+
+    assert _normalize_post_payment_service_action(payload, {}) is False
+    assert payload["sales_judgment"]["next_sales_action"]["type"] == "keep_open"
+
+
+def test_unsupported_post_payment_label_does_not_create_paid_service_state() -> None:
+    payload = {
+        "sales_judgment": {"next_sales_action": {"type": "explain_activity"}},
+        "policy_decision": {
+            "closing_decision": {"customer_state": "post_payment_service"}
+        },
+    }
+
+    assert _normalize_post_payment_service_action(payload, {}) is False
+    assert payload["sales_judgment"]["next_sales_action"]["type"] == "explain_activity"
 
 
 def test_media_fingerprint_has_sha_and_visual_fallback() -> None:
@@ -445,6 +508,42 @@ def test_failed_repair_salvage_removes_unbacked_store_card_promise() -> None:
     assert salvaged["reply_messages"] == [
         {"type": "text", "content": "济南目前没有可发送的门店。", "order": 1}
     ]
+
+
+def test_failed_repair_salvage_removes_false_store_prefix_but_keeps_city_question() -> None:
+    payload = {
+        "reply_messages": [
+            {"type": "text", "content": "有的，您现在在哪个城市呀？"}
+        ],
+        "sales_judgment": {"next_sales_action": {"type": "ask_missing_fact"}},
+    }
+
+    salvaged, codes = _salvage_repair_payload(
+        payload,
+        ValueError("reply_admission_violations::store_availability_fact_required"),
+    )
+
+    assert codes == ["store_availability_fact_required"]
+    assert salvaged is not None
+    assert salvaged["reply_messages"] == [
+        {"type": "text", "content": "您现在在哪个城市呀？", "order": 1}
+    ]
+
+
+def test_case_availability_promise_requires_same_turn_media_structure() -> None:
+    with pytest.raises(
+        ValueError,
+        match="case_image_structure_required_when_reply_promises_delivery",
+    ):
+        _validate_parallel_reply_consistency(
+            [{"type": "text", "content": "这种情况的案例我们可以提供给您看。"}],
+            {
+                "evidence_join": {
+                    "schema_version": "reply_chain_evidence_join_v1",
+                    "structured_facts": {},
+                }
+            },
+        )
 
 
 def test_failed_repair_salvage_removes_distance_restatement_but_keeps_value() -> None:

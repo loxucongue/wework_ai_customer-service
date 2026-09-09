@@ -764,9 +764,11 @@ def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state
             "\u6311\u4e00\u7ec4",
             "\u9009\u4e00\u5f20",
             "\u9009\u4e00\u7ec4",
-            "可以先发",
-            "可以发",
-            "先发一些",
+        "可以先发",
+        "可以发",
+        "可以提供",
+        "能提供",
+        "先发一些",
             "先发一张",
             "先发一组",
             "这就发",
@@ -2841,11 +2843,14 @@ def _asserts_registration_confirmed(text: str) -> bool:
     )
     if any(marker in compact for marker in conditional_markers):
         return False
-    # A salesperson saying “我先帮您留着活动名额” is a customer-facing sales
-    # commitment, not proof that the appointment/registration system has
-    # completed a write.  Do not reject that wording here.  This guard remains
-    # deliberately limited to unmistakable completed registration claims;
-    # appointment completion and payment stay under their independent checks.
+    if compact.startswith(("需要我先", "要不要我先", "是否需要我先", "我可以帮您")) and compact.endswith(
+        ("吗", "吗？", "么", "么？")
+    ):
+        return False
+    # A promise that the salesperson has already held a slot is still an
+    # externally visible completed-state claim.  It needs the same order or
+    # registration evidence as an explicit “登记好了”; otherwise the system
+    # would manufacture scarcity/fulfilment without a real platform record.
     return any(
         term in compact
         for term in (
@@ -2864,6 +2869,16 @@ def _asserts_registration_confirmed(text: str) -> bool:
             "名额已经留好",
             "名额给您留好了",
             "名额帮您留好了",
+            "我先帮您留着",
+            "我先给您留着",
+            "先帮您把活动名额留着",
+            "先给您把活动名额留着",
+            "先帮您保留活动名额",
+            "先给您保留活动名额",
+            "我给您保留活动名额",
+            "我帮您保留活动名额",
+            "我先帮您留一个名额",
+            "我先给您留一个名额",
         )
     )
 

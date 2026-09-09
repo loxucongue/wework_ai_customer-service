@@ -267,13 +267,28 @@ def test_non_completion_appointment_language_is_not_a_quality_gate(reply: str) -
     )
 
 
-@pytest.mark.parametrize("reply", ["已登记。", "已经帮您登记好了。", "登记完成。"])
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "已登记。",
+        "已经帮您登记好了。",
+        "登记完成。",
+        "我先帮您把活动名额留着。",
+    ],
+)
 def test_registration_completion_claim_still_requires_authoritative_fact(reply: str) -> None:
     with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
         _validate_parallel_registration_confirmation_facts(
             [{"type": "text", "content": reply}],
             {"evidence_join": {"structured_facts": {}}},
         )
+
+
+def test_slot_hold_question_is_not_a_completed_registration_claim() -> None:
+    _validate_parallel_registration_confirmation_facts(
+        [{"type": "text", "content": "需要我先帮您留一个活动名额吗？"}],
+        {"evidence_join": {"structured_facts": {}}},
+    )
 
 
 @pytest.mark.parametrize(
