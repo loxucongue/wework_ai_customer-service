@@ -381,26 +381,18 @@ def test_inflight_cross_process_retry_never_emits_a_second_customer_message() ->
     assert public["data"]["replayed"] is True
 
 
-def test_duplicate_wait_does_not_reclaim_when_recovery_is_disabled() -> None:
-    class _Repository:
-        recover_calls = 0
-
-        @staticmethod
-        def get_v3_generation_result(**_: object) -> dict[str, object]:
-            return {
-                "found": True,
-                "ready": False,
-                "request_id": "request-active",
-                "response_id": "response-active",
-                "generation_status": "generating",
-                "recovery_next_at": "2020-01-01T00:00:00+00:00",
-            }
-
-        def recover_stale_v3_generations(self, **_: object) -> dict[str, int]:
-            self.recover_calls += 1
-            return {"fallback_pending": 1}
-
-    repository = _Repository()
+def test_duplicate_wait_reclaims_expired_generation_when_recovery_is_disabled(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    request = _request("recovery-disabled-http-reclaim")
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-dead-owner",
+        recovery_kind="generation_lease:request-dead-owner",
+        recovery_next_at="2020-01-01T00:00:00+00:00",
+    )
     runtime = ChatRuntime(
         full_graph=object(),
         trace_logger=object(),
@@ -410,17 +402,88 @@ def test_duplicate_wait_does_not_reclaim_when_recovery_is_disabled() -> None:
         ),
     )
 
-    response = asyncio.run(
+    response, reclaimed = asyncio.run(
         runtime._await_persisted_generation(
-            generation_key="generation-key",
-            fallback_request_id="request-active",
-            fallback_response_id="response-active",
+            generation_key=str(reserved["generation_key"]),
+            fallback_request_id="request-dead-owner",
+            fallback_response_id=str(reserved["response_id"]),
+            claimant_request_id="request-http-retry",
         )
     )
 
-    assert repository.recover_calls == 0
-    assert response.reply_messages == []
-    assert response.meta["generation_status"] == "generating"
+    assert response is None
+    assert reclaimed["claimed"] is True
+    assert reclaimed["request_id"] == "request-dead-owner"
+    assert reclaimed["generation_lease_token"] == "generation_lease:request-http-retry"
+    assert reclaimed["recovery_dispatch_id"] == ""
+    persisted = repository.get_v3_generation_result(
+        generation_key=str(reserved["generation_key"])
+    )
+    assert persisted["generation_status"] == "generating"
+    assert persisted["recovery_kind"] == "generation_lease:request-http-retry"
+    assert persisted["recovery_dispatch_id"] == ""
+
+
+def test_expired_generation_http_reclaim_finishes_synchronously_without_recovery_worker(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    request = _request("sync-http-reclaim")
+    reserved = _reserve(
+        repository,
+        request,
+        request_id="request-original-owner",
+        recovery_kind="generation_lease:request-original-owner",
+        recovery_next_at="2020-01-01T00:00:00+00:00",
+    )
+
+    class _Graph:
+        async def ainvoke(self, state: dict[str, object]) -> dict[str, object]:
+            return {
+                **state,
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": "活动价是268元哦。"}
+                ],
+                "reply_source": "v3_reply",
+                "decision_status": "valid",
+            }
+
+    class _AiStatus:
+        available = True
+
+        @staticmethod
+        async def conversation_status(**_: object) -> dict[str, object]:
+            return {"data": {"takeover": {"is_human": False, "mode": "ai"}}}
+
+    runtime = ChatRuntime(
+        full_graph=_Graph(),
+        trace_logger=object(),
+        repository=repository,
+        outreach_system_client=_AiStatus(),
+        settings=Settings().model_copy(
+            update={"v3_reply_recovery_enabled": False, "v3_reply_reserve_seconds": 0.01}
+        ),
+    )
+
+    response = asyncio.run(runtime.run_platform_reply(request))
+
+    assert response.request_id == "request-original-owner"
+    assert response.replayed is False
+    assert [message.content for message in response.reply_messages] == ["活动价是268元哦。"]
+    result = repository.get_v3_generation_result(
+        generation_key=str(reserved["generation_key"])
+    )
+    assert result["ready"] is True
+    assert result["generation_status"] == "completed"
+    assert result["recovery_dispatch_id"] == ""
+    with repository.store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS total FROM runs").fetchone()["total"] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) AS total FROM messages WHERE role='user'"
+        ).fetchone()["total"] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) AS total FROM messages WHERE role='assistant'"
+        ).fetchone()["total"] == 1
 
 
 def test_sqlite_interleaving_reaper_wins_atomic_owner_update(tmp_path: Path) -> None:

@@ -403,11 +403,48 @@ class ChatRuntime:
             sales_contact_key=scope.sales_contact_key,
         )
         if bool(ingress_result.get("replayed")):
-            return await self._await_persisted_generation(
+            replay_response, reclaimed_generation = await self._await_persisted_generation(
                 generation_key=str(ingress_result.get("generation_key") or generation_key),
                 fallback_request_id=str(ingress_result.get("request_id") or request_id),
                 fallback_response_id=str(ingress_result.get("response_id") or response_id),
+                claimant_request_id=request_id,
             )
+            if replay_response is not None:
+                return replay_response
+
+            # The original process died after reserving this platform message
+            # but before making a durable response available.  The expired
+            # lease was atomically transferred to this HTTP request, so resume
+            # the ordinary synchronous path against the original run.  This is
+            # generation liveness, not the optional out-of-band reply recovery
+            # feature; no proactive dispatch is created here.
+            request_id = str(reclaimed_generation.get("request_id") or request_id)
+            generation_key = str(reclaimed_generation.get("generation_key") or generation_key)
+            response_id = str(reclaimed_generation.get("response_id") or response_id)
+            generation_lease_token = str(
+                reclaimed_generation.get("generation_lease_token") or ""
+            )
+            request_context.update(
+                {
+                    "generation_key": generation_key,
+                    "response_id": response_id,
+                    "generation_status": GENERATION_STATUS_GENERATING,
+                    "generation_lease_token": generation_lease_token,
+                    "recovery_kind": generation_lease_token,
+                    "recovery_next_at": str(
+                        reclaimed_generation.get("recovery_next_at") or ""
+                    ),
+                    "generation_http_reclaimed": True,
+                }
+            )
+            request.request_context = request_context
+            ingress_result = {
+                **ingress_result,
+                **reclaimed_generation,
+                "replayed": False,
+                "continue_existing": True,
+                "generation_http_reclaimed": True,
+            }
         conversation_id = str(ingress_result.get("conversation_id") or "")
         _record_v3_phase(
             request_context,
@@ -841,12 +878,19 @@ class ChatRuntime:
         generation_key: str,
         fallback_request_id: str,
         fallback_response_id: str,
-    ) -> ChatResponse:
-        """Wait briefly for another process and replay its exact durable result."""
+        claimant_request_id: str = "",
+    ) -> tuple[ChatResponse | None, dict[str, Any]]:
+        """Replay an existing result or safely reclaim an expired HTTP lease.
+
+        Reclaiming a dead synchronous owner is deliberately independent from
+        ``V3_REPLY_RECOVERY_ENABLED``.  That flag controls later out-of-band
+        generation and sending; it must not turn a crashed primary request into
+        a permanent empty replay for the same platform message.
+        """
 
         get_result = getattr(self._repository, "get_v3_generation_result", None)
         if not generation_key or not callable(get_result):
-            return _generation_wait_fallback(fallback_request_id, fallback_response_id)
+            return _generation_wait_fallback(fallback_request_id, fallback_response_id), {}
         wait_seconds = min(
             12.0,
             max(
@@ -859,43 +903,136 @@ class ChatRuntime:
         while True:
             latest = await asyncio.to_thread(get_result, generation_key=generation_key)
             if bool(latest.get("ready")):
-                return _chat_response_from_generation(latest)
+                return _chat_response_from_generation(latest), {}
             if str(latest.get("generation_status") or "") not in {
                 "",
                 GENERATION_STATUS_GENERATING,
             }:
                 break
+            if _explicit_generation_lease_expired(latest):
+                break
             if time.monotonic() >= deadline:
                 break
             await asyncio.sleep(0.15)
 
-        # A duplicate request may reclaim only an explicitly expired durable
-        # owner lease.  Active leases remain untouched.  The repository also
-        # refuses recovery when a primary result or dispatch is already
-        # present, preventing the retry from becoming a second customer send.
-        reclaim = getattr(self._repository, "recover_stale_v3_generations", None)
-        if bool(getattr(self._settings, "v3_reply_recovery_enabled", False)) and callable(reclaim):
-            reclaimed = await asyncio.to_thread(
-                reclaim,
-                generation_key=generation_key,
-                limit=1,
-                lease_seconds=v3_generation_lease_seconds(self._settings),
-            )
+        # Only an explicit expired primary lease can be transferred.  The CAS
+        # also requires the row to remain generating and dispatch-free.  If the
+        # original owner finished or a recovery worker won the race, this HTTP
+        # request falls back to replay/wait and never creates a second result.
+        if (
+            claimant_request_id
+            and str(latest.get("generation_status") or "") == GENERATION_STATUS_GENERATING
+            and _explicit_generation_lease_expired(latest)
+        ):
+            try:
+                reclaimed = await asyncio.to_thread(
+                    self._claim_expired_generation_for_http_retry,
+                    generation_key=generation_key,
+                    claimant_request_id=claimant_request_id,
+                    latest=latest,
+                )
+            except Exception:
+                reclaimed = {}
+            if bool(reclaimed.get("claimed")):
+                return None, reclaimed
             latest = await asyncio.to_thread(get_result, generation_key=generation_key)
             if bool(latest.get("ready")):
-                return _chat_response_from_generation(latest)
-            if int((reclaimed or {}).get("fallback_pending") or 0):
-                return _generation_wait_fallback(
-                    str(latest.get("request_id") or fallback_request_id),
-                    str(latest.get("response_id") or fallback_response_id),
-                    generation_status=GENERATION_STATUS_FALLBACK_PENDING,
-                )
+                return _chat_response_from_generation(latest), {}
 
-        return _generation_wait_fallback(
-            str(latest.get("request_id") or fallback_request_id),
-            str(latest.get("response_id") or fallback_response_id),
-            generation_status=str(latest.get("generation_status") or GENERATION_STATUS_GENERATING),
+        return (
+            _generation_wait_fallback(
+                str(latest.get("request_id") or fallback_request_id),
+                str(latest.get("response_id") or fallback_response_id),
+                generation_status=str(
+                    latest.get("generation_status") or GENERATION_STATUS_GENERATING
+                ),
+            ),
+            {},
         )
+
+    def _claim_expired_generation_for_http_retry(
+        self,
+        *,
+        generation_key: str,
+        claimant_request_id: str,
+        latest: dict[str, Any],
+    ) -> dict[str, Any]:
+        """CAS one dead primary lease to the current HTTP request.
+
+        This intentionally performs no recovery scheduling and no customer
+        send.  The caller continues through the same Router/Reply/persistence
+        path as the original request and stores the result under the original
+        durable run and response IDs.
+        """
+
+        current_token = str(latest.get("recovery_kind") or "").strip()
+        current_lease_until = str(latest.get("recovery_next_at") or "").strip()
+        if (
+            not generation_key
+            or not claimant_request_id
+            or not current_token.startswith("generation_lease:")
+            or not current_lease_until
+            or not _explicit_generation_lease_expired(latest)
+            or str(latest.get("recovery_dispatch_id") or "").strip()
+        ):
+            return {"claimed": False, "reason": "generation_not_safely_reclaimable"}
+
+        store = getattr(self._repository, "store", None)
+        connect = getattr(store, "connect", None)
+        if not callable(connect):
+            return {"claimed": False, "reason": "repository_store_unavailable"}
+
+        lease_token = f"generation_lease:{claimant_request_id}"[:64]
+        lease_until = (
+            datetime.now(timezone.utc)
+            + timedelta(seconds=v3_generation_lease_seconds(self._settings))
+        ).isoformat()
+        with connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE runs
+                SET recovery_kind=?, recovery_next_at=?, recovery_error=''
+                WHERE generation_key=? AND generation_status=?
+                  AND COALESCE(recovery_dispatch_id, '')=''
+                  AND COALESCE(recovery_kind, '')=?
+                  AND COALESCE(recovery_next_at, '')=?
+                """,
+                (
+                    lease_token,
+                    lease_until,
+                    generation_key,
+                    GENERATION_STATUS_GENERATING,
+                    current_token,
+                    current_lease_until,
+                ),
+            )
+            if not int(updated.rowcount or 0):
+                return {"claimed": False, "reason": "generation_claim_race_lost"}
+            row = conn.execute(
+                """
+                SELECT request_id, conversation_id, generation_key, response_id,
+                       generation_status, recovery_dispatch_id
+                FROM runs WHERE generation_key=? LIMIT 1
+                """,
+                (generation_key,),
+            ).fetchone()
+        if row is None:
+            return {"claimed": False, "reason": "generation_missing_after_claim"}
+        stored = dict(row)
+        return {
+            "claimed": True,
+            "request_id": str(stored.get("request_id") or ""),
+            "conversation_id": str(stored.get("conversation_id") or ""),
+            "generation_key": str(stored.get("generation_key") or generation_key),
+            "response_id": str(
+                stored.get("response_id") or latest.get("response_id") or ""
+            ),
+            "generation_status": GENERATION_STATUS_GENERATING,
+            "generation_lease_token": lease_token,
+            "recovery_kind": lease_token,
+            "recovery_next_at": lease_until,
+            "recovery_dispatch_id": "",
+        }
 
     async def run_v3_recovery_graph(self, request: ChatRequest, *, request_id: str) -> ChatResponse:
         """Regenerate one failed turn without ingress, commit, memory, BI or customer send."""
@@ -1723,6 +1860,29 @@ def _generation_wait_fallback(
             "generation_status": generation_status or GENERATION_STATUS_GENERATING,
         },
     )
+
+
+def _explicit_generation_lease_expired(
+    generation: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return true only for a parseable, explicitly expired primary lease."""
+
+    raw = str(generation.get("recovery_next_at") or "").strip()
+    token = str(generation.get("recovery_kind") or "").strip()
+    if not raw or not token.startswith("generation_lease:"):
+        return False
+    try:
+        lease_until = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if lease_until.tzinfo is None:
+        lease_until = lease_until.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return lease_until.astimezone(timezone.utc) <= current.astimezone(timezone.utc)
 
 
 def _only_runtime_fallback_text(messages: list[dict[str, Any]]) -> bool:
