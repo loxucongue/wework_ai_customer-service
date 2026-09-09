@@ -37,6 +37,13 @@ export type GenerationRecoverySummary = {
   recovery_error: string;
 };
 
+export const GENERATION_RECOVERY_SECTION_COPY = {
+  title: "生成幂等与补答记录",
+  subtitle: "只展示本轮已有记录；自动补答是否启用以运行配置为准",
+  unavailable:
+    "该日志生成时尚未保存幂等与补答字段；不能据此判断是否启用补答，也不能判断是否发生过结果复用或补答。",
+} as const;
+
 export type CustomerIdentity = {
   request_id?: string;
   conversation_id?: string;

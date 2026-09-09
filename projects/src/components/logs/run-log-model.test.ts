@@ -2,12 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  GENERATION_RECOVERY_SECTION_COPY,
   replyMessages,
   runDisplayStatus,
   workflowNodesForDisplay,
   type ObservabilityView,
   type RunItem,
 } from "./run-log-model";
+
+
+test("generation recovery copy does not imply that automatic recovery is enabled", () => {
+  assert.match(GENERATION_RECOVERY_SECTION_COPY.subtitle, /是否启用以运行配置为准/);
+  assert.doesNotMatch(GENERATION_RECOVERY_SECTION_COPY.subtitle, /技术失败时可后台补答/);
+  assert.match(GENERATION_RECOVERY_SECTION_COPY.unavailable, /不能据此判断是否启用补答/);
+});
 
 
 function run(overrides: Partial<RunItem> = {}): RunItem {

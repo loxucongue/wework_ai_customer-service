@@ -41,6 +41,7 @@ import {
   contentString,
   formatDuration,
   formatTime,
+  GENERATION_RECOVERY_SECTION_COPY,
   generationRecoveryFromRun,
   isRecord,
   isRunning,
@@ -393,9 +394,16 @@ function GenerationRecoverySection({ generation }: {
   if (!generation.available) {
     return (
       <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
-        <SectionHeader title="生成与自动补答" subtitle="同一平台消息只生成一次；技术失败时可后台补答" />
+        <SectionHeader
+          title={GENERATION_RECOVERY_SECTION_COPY.title}
+          subtitle={GENERATION_RECOVERY_SECTION_COPY.subtitle}
+        />
         <div className="border-t border-zinc-100 p-4 sm:p-5">
-          <Notice tone="gray" title="历史字段未记录" text="该日志生成时尚未保存幂等与自动补答字段，不能据此判断是否发生过结果复用或补答。" />
+          <Notice
+            tone="gray"
+            title="历史字段未记录"
+            text={GENERATION_RECOVERY_SECTION_COPY.unavailable}
+          />
         </div>
       </section>
     );
@@ -403,7 +411,10 @@ function GenerationRecoverySection({ generation }: {
   const attempts = generation.recovery_attempts;
   return (
     <section className="rounded-xl border border-zinc-200 bg-white shadow-sm">
-      <SectionHeader title="生成与自动补答" subtitle="生成、结果复用和后台补答分开记录" />
+      <SectionHeader
+        title={GENERATION_RECOVERY_SECTION_COPY.title}
+        subtitle={GENERATION_RECOVERY_SECTION_COPY.subtitle}
+      />
       <div className="border-t border-zinc-100 p-4 sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <RecoveryField label="当前生成状态">
