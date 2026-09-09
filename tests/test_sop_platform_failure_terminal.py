@@ -194,7 +194,7 @@ def test_downstream_account_unassigned_preserves_safe_reason_code() -> None:
                     }
                 }
             },
-            error=RuntimeError('outreach_system_http_409: {"code":409,"message":"send rejected"}'),
+            error=RuntimeError("aggregate send rejected without a detailed response body"),
         )
     )
 
