@@ -397,6 +397,71 @@ def test_ordinary_pending_poll_closes_recorded_send_invocation_without_replaying
     assert repository.local["send_response"]["data"]["delivery_status"] == "submission_unconfirmed"
 
 
+def test_terminal_send_rejection_recovery_consumes_without_resending() -> None:
+    service, repository, platform, system, events = _service()
+    repository.local.update(
+        {
+            "status": "processing_retry",
+            "error": "wecom_aggregate_send_failed:account_unassigned",
+            "send_payload": {
+                "processing_mode": "deterministic_customer_gate",
+                "reason": "wecom_aggregate_send_failed:account_unassigned",
+                "send_invoked_at": "2026-09-09T01:00:14+00:00",
+                "content_message_results": [{"msgId": "701", "status": 30, "remark": ""}],
+                "consume_results": [],
+            },
+        }
+    )
+    service._ensure_local_task = lambda _task, **_kwargs: (
+        {"status": "platform_sequence_waiting"},
+        dict(repository.local),
+    )
+
+    result = asyncio.run(
+        service._process_customer_batch_locked(
+            [_task()],
+            trigger_tasks=[],
+            batch_key="online_service|corp|staff|external",
+            biz_type="online_service",
+            recovery_status="platform_sequence_waiting",
+        )
+    )
+
+    assert result["status"] == "failed_consumed"
+    assert result["reason"] == "wecom_aggregate_send_failed:account_unassigned"
+    assert system.send_calls == []
+    assert "send" not in events
+    assert "sop_messages" not in events
+    assert platform.consume_calls[0]["status"] == 70
+    assert platform.consume_calls[0]["messages"] is None
+    assert repository.local["send_payload"]["terminal_failure"]["message_ids_consumed"] == []
+
+
+def test_msg_id_binding_conflict_closes_task_without_consuming_another_message() -> None:
+    service, repository, platform, system, _events = _service(send_error=TimeoutError("connect timeout"))
+
+    async def consume_with_binding_conflict(**values: Any) -> dict[str, Any]:
+        platform.consume_calls.append(values)
+        if values["status"] == 30:
+            raise RuntimeError("sop_platform_error: 队列消息已绑定其它任务")
+        return {"code": 200, "data": {"status": values["status"]}}
+
+    platform.consume = consume_with_binding_conflict  # type: ignore[method-assign]
+
+    result = _run(service)
+
+    assert result["status"] == "failed_consumed"
+    assert result["reason"] == "sop_message_binding_conflict"
+    assert len(system.send_calls) == 1
+    assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [
+        (30, [{"msgId": "701", "status": 30, "remark": ""}]),
+        (70, None),
+    ]
+    assert repository.local["status"] == "failed_consumed"
+    assert repository.local["send_payload"]["terminal_failure"]["message_ids_consumed"] == []
+    assert repository.local["send_payload"]["terminal_failure"]["unconsumed_message_ids"] == ["701"]
+
+
 def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_quarantined() -> None:
     service, _repository, platform, system, _events = _service()
 

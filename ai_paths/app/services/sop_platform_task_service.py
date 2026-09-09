@@ -83,6 +83,7 @@ SOP_CONSUMED_FAILURE_REASON_PREFIXES = (
     "sop_messages_empty",
     "invalid_sop_message_group",
     "missing_sop_message_id",
+    "sop_message_binding_conflict",
     "wecom_aggregate_send_failed",
     "wecom_send_rejected",
 )
@@ -1125,6 +1126,23 @@ class SopPlatformTaskService:
                 "reason": "already_terminal_after_concurrent_processing",
             }
         current_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        persisted_failure_reason = str(current_audit.get("reason") or local_task.get("error") or "").strip()
+        if current_task_status in {"processing_retry", "failure_consume_pending"} and _is_consumed_terminal_failure(
+            persisted_failure_reason
+        ):
+            # An explicit platform rejection is already a terminal observation.
+            # Recovery may finish the task/rule-data transaction, but it must
+            # never submit the customer message a second time.
+            return await self._consume_batch_without_send(
+                [task],
+                reason=persisted_failure_reason,
+                batch_key=str(current_audit.get("batch_key") or batch_key),
+                biz_type=str(current_audit.get("biz_type") or biz_type),
+                batch_run_id=str(current_audit.get("batch_run_id") or batch_run_id),
+                decision=current_audit.get("decision") if isinstance(current_audit.get("decision"), dict) else None,
+                audit_context=current_audit.get("context") if isinstance(current_audit.get("context"), dict) else None,
+                terminal_failure=True,
+            )
         if (
             recovery_status in {"platform_complete_pending", "platform_failure_rule_data_pending"}
             and int(current_audit.get("terminal_task_status") or 0) == 70
@@ -1150,6 +1168,7 @@ class SopPlatformTaskService:
             audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             if isinstance(audit.get("final_messages"), list) and audit.get("final_messages"):
                 return await self._complete_recovered_batch_send(
+                    platform_task=task,
                     selected_id=batch_task_ids[0],
                     local_task_id=local_task_id,
                     audit=audit,
@@ -2257,6 +2276,7 @@ class SopPlatformTaskService:
         counter = "send_interface_timeout" if _send_failure_result_is_uncertain(error) else "send_result_unconfirmed"
         self._counters[counter] += 1
         return await self._complete_recovered_batch_send(
+            platform_task=platform_task,
             selected_id=selected_task_id,
             local_task_id=local_task_id,
             audit=uncertain_audit,
@@ -2501,6 +2521,7 @@ class SopPlatformTaskService:
                 audit.get("send_result_unconfirmed"), dict
             )
             return await self._complete_recovered_batch_send(
+                platform_task=platform_task,
                 selected_id=selected_id,
                 local_task_id=local_task_id,
                 audit=audit,
@@ -2530,6 +2551,7 @@ class SopPlatformTaskService:
         )
         if dispatch_confirmed:
             return await self._complete_recovered_batch_send(
+                platform_task=platform_task,
                 selected_id=selected_id,
                 local_task_id=local_task_id,
                 audit=audit,
@@ -2580,6 +2602,7 @@ class SopPlatformTaskService:
             **existing_delivery,
         }
         return await self._complete_recovered_batch_send(
+            platform_task=platform_task,
             selected_id=selected_id,
             local_task_id=local_task_id,
             audit=audit,
@@ -2589,6 +2612,7 @@ class SopPlatformTaskService:
     async def _complete_recovered_batch_send(
         self,
         *,
+        platform_task: dict[str, Any],
         selected_id: str,
         local_task_id: str,
         audit: dict[str, Any],
@@ -2613,6 +2637,32 @@ class SopPlatformTaskService:
                 audit=recovered_audit,
             )
         except RuntimeError as exc:
+            if _platform_message_binding_conflict(exc):
+                # The platform refused the exact msgId. Omitting `messages`
+                # would auto-bind another group, so close only the task as 70
+                # and leave every msgId untouched.
+                return await self._consume_batch_without_send(
+                    [platform_task],
+                    reason="sop_message_binding_conflict",
+                    batch_key=str(recovered_audit.get("batch_key") or _customer_batch_key(platform_task)),
+                    biz_type=str(
+                        recovered_audit.get("biz_type")
+                        or platform_task.get("_aics_biz_type")
+                        or "online_service"
+                    ),
+                    batch_run_id=str(recovered_audit.get("batch_run_id") or f"recovery:{selected_id}"),
+                    decision=(
+                        recovered_audit.get("decision")
+                        if isinstance(recovered_audit.get("decision"), dict)
+                        else None
+                    ),
+                    audit_context=(
+                        recovered_audit.get("context")
+                        if isinstance(recovered_audit.get("context"), dict)
+                        else None
+                    ),
+                    terminal_failure=True,
+                )
             if not _platform_task_is_already_no_send(exc):
                 raise
             recovered_audit.setdefault("consume_results", []).append(
@@ -6137,6 +6187,19 @@ def _send_failure_result_is_uncertain(exc: Exception) -> bool:
 def _is_consumed_terminal_failure(reason: str) -> bool:
     normalized = str(reason or "").strip()
     return normalized.startswith(SOP_CONSUMED_FAILURE_REASON_PREFIXES)
+
+
+def _platform_message_binding_conflict(error: Exception) -> bool:
+    normalized = str(error or "").strip().lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "队列消息已绑定其它任务",
+            "队列消息已绑定其他任务",
+            "message already bound to another task",
+            "message is bound to another task",
+        )
+    )
 
 
 def _send_result_requires_confirmation(send_result: dict[str, Any]) -> bool:

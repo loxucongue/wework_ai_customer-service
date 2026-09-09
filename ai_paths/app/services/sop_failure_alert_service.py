@@ -363,7 +363,9 @@ def _failure_type(reason: str) -> tuple[str, str]:
         )
     ):
         return "qualification_data_incomplete", "发送资格数据不足"
-    if normalized.startswith(("sop_messages_empty", "invalid_sop_message_group", "missing_sop_message_id")):
+    if normalized.startswith(
+        ("sop_messages_empty", "invalid_sop_message_group", "missing_sop_message_id", "sop_message_binding_conflict")
+    ):
         return "invalid_task_content", "第三方任务内容不完整"
     if "failed" in normalized or "error" in normalized or "rejected" in normalized:
         return "interface_or_execution_failure", "接口或执行失败"
@@ -381,6 +383,7 @@ def _failure_responsibility(*, task_id: str, reason: str, phase: str) -> tuple[s
             "sop_messages_",
             "invalid_sop_message_group",
             "missing_sop_message_id",
+            "sop_message_binding_conflict",
             "invalid_message_content",
         )
     ) or normalized_phase in {"poll_pending_and_content", "platform_consume", "platform_rule_data"}:
