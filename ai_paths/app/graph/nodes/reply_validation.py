@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.graph.nodes.common import renumber_messages
+from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
 from app.graph.nodes.store_scope_summary import (
     build_store_scope_summary,
     region_mentioned_in_text,
@@ -339,6 +340,8 @@ def _validate_parallel_reply_consistency(messages: list[dict[str, Any]], state: 
         lambda: _validate_store_resolution_contract(messages, state),
         lambda: _validate_store_resolution_delivery_mode(messages, state),
         lambda: _validate_store_address_message_facts(messages, state, check_visible_text=False),
+        lambda: _validate_parallel_business_hours_facts(messages, state),
+        lambda: validate_sales_price_fact_boundaries(messages),
         lambda: _validate_parallel_appointment_confirmation_facts(messages, state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),
     )

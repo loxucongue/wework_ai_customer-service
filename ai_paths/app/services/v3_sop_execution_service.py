@@ -1366,13 +1366,14 @@ def _parallel_sop_asset_summary(
         "name": _string(pack.get("name")),
         "purpose": _string(pack.get("purpose")),
         "asset_role": _string(pack.get("asset_role")) or "supporting_content",
+        "category": _pack_category(pack),
+        "material_group": _string(pack.get("material_group")) or _pack_category(pack) or _string(pack.get("id")),
         "selection_constraints": deepcopy(pack.get("selection_constraints") or {}),
         "requires_prior_asset_roles": [
             _string(item)
             for item in pack.get("requires_prior_asset_roles") or []
             if _string(item)
         ],
-        "category": _pack_category(pack),
         "delivery_status": (
             "completed"
             if _string(pack.get("id")) in (completed_pack_ids or set())
@@ -2193,6 +2194,8 @@ def _parallel_content_candidate(
         "name": _string(pack.get("name")),
         "purpose": _string(pack.get("purpose")),
         "asset_role": _string(pack.get("asset_role")) or "supporting_content",
+        "category": _pack_category(pack),
+        "material_group": _string(pack.get("material_group")) or _pack_category(pack) or _string(pack.get("id")),
         "selection_constraints": deepcopy(pack.get("selection_constraints") or {}),
         "evidence_purpose": _string(annotation.get("evidence_purpose") or pack.get("purpose")),
         "relevance": _string(annotation.get("relevance")) or "supporting",

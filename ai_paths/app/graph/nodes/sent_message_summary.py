@@ -287,6 +287,25 @@ def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
             if str(url).strip()
         )
     )
+    recent_events = sorted(
+        events,
+        key=lambda item: (
+            item[2].timestamp() if item[2] is not None else float("-inf"),
+            item[0],
+        ),
+        reverse=True,
+    )[:12]
+    recent_document_ids = list(
+        dict.fromkeys(
+            str(document_id).strip()
+            for _, event, _ in recent_events
+            for document_id in (
+                (event.get("facts") if isinstance(event.get("facts"), dict) else {}).get("document_ids")
+                or []
+            )
+            if str(document_id).strip()
+        )
+    )
     timestamped_count = sum(1 for _, _, event_at in events if event_at is not None)
     return {
         "total_events": len(events),
@@ -294,6 +313,7 @@ def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
         "last_document_count": len(document_ids),
         "last_image_count": len(image_urls),
         "sent_image_urls": all_image_urls,
+        "recent_document_ids": recent_document_ids[:12],
         "time_confidence": "high" if timestamped_count == len(events) else "partial",
         "source": "history_events",
         "decision_policy": "evidence_only_model_decides_case_image_send",

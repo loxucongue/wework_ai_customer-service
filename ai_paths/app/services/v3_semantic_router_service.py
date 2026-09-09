@@ -4,6 +4,7 @@ import asyncio
 import copy
 import re
 import time
+from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import urlparse
 
@@ -139,6 +140,10 @@ class V3SemanticRouterService:
             )
         else:
             semantic_route = _apply_terminal_store_recommendation_guard(
+                semantic_route,
+                shared_context=shared_context,
+            )
+            semantic_route = _apply_missing_store_location_shortcut(
                 semantic_route,
                 shared_context=shared_context,
             )
@@ -443,10 +448,13 @@ class V3SemanticRouterService:
         )
         script_candidates = [item for item in script_result.get("items") or [] if isinstance(item, dict)]
         raw_paragraph_group_count = _paragraph_group_count(script_candidates)
+        recent_script_ids, recent_assistant_texts = _recent_script_context(shared_context)
         script_candidates = _rank_script_groups(
             script_candidates,
             query_text=_semantic_retrieval_text(shared_context, semantic_route),
             max_groups=MAX_PARAGRAPH_GROUPS,
+            recent_script_ids=recent_script_ids,
+            recent_assistant_texts=recent_assistant_texts,
         )
         retrieval_mode = _retrieval_mode_for_candidates(script_candidates)
         adaptive_pool_used = any(
@@ -2290,10 +2298,14 @@ def _rank_script_groups(
     *,
     query_text: str,
     max_groups: int,
+    recent_script_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+    recent_assistant_texts: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Return a relevant and diverse subset from the same-checkpoint script pool."""
 
     query_terms = _retrieval_terms(query_text)
+    recent_ids = {str(item).strip() for item in recent_script_ids or [] if str(item).strip()}
+    recent_texts = [str(item).strip() for item in recent_assistant_texts or [] if str(item).strip()]
     ranked: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
     for raw in candidates:
@@ -2325,16 +2337,24 @@ def _rank_script_groups(
             "checkpoint_type_semantic": 0,
         }.get(scope, 0)
         weight_bonus = min(10, max(0, int(raw.get("weight") or 0)))
+        script_recent_penalty = 4 if (
+            script_id in recent_ids or str(raw.get("id") or "").strip() in recent_ids
+        ) else 0
         action_code = str(raw.get("action_code") or "").strip().lower()
         tag_id = int(checkpoint_tag.get("id") or 0)
         paragraphs = [item for item in raw.get("paragraphs") or [] if isinstance(item, dict)]
         if not paragraphs:
             searchable = base + " " + str(raw.get("body_text") or "")
+            repetition_penalty = round(
+                4 * max((_retrieval_text_similarity(searchable, value) for value in recent_texts), default=0.0)
+            )
             ranked.append(
                 {
                     "score": 10 * _retrieval_overlap(query_terms, searchable)
                     + scope_bonus
-                    + weight_bonus,
+                    + weight_bonus
+                    - script_recent_penalty
+                    - repetition_penalty,
                     "script_id": script_id,
                     "paragraph_no": 0,
                     "has_group": False,
@@ -2352,11 +2372,16 @@ def _rank_script_groups(
                 for message in paragraph.get("messages") or []
                 if isinstance(message, dict)
             )
+            repetition_penalty = round(
+                4 * max((_retrieval_text_similarity(body, value) for value in recent_texts), default=0.0)
+            )
             ranked.append(
                 {
                     "score": 10 * _retrieval_overlap(query_terms, base + " " + body)
                     + scope_bonus
-                    + weight_bonus,
+                    + weight_bonus
+                    - script_recent_penalty
+                    - repetition_penalty,
                     "script_id": script_id,
                     "paragraph_no": paragraph_no,
                     "has_group": True,
@@ -2438,6 +2463,48 @@ def _rank_script_groups(
         selected_script_ids=selected_scripts,
         max_groups=max_groups,
     )
+
+
+def _recent_script_context(shared_context: dict[str, Any]) -> tuple[list[str], list[str]]:
+    observations = (
+        shared_context.get("derived_observations")
+        if isinstance(shared_context.get("derived_observations"), dict)
+        else {}
+    )
+    latest = (
+        observations.get("latest_follow_knowledge_usage")
+        if isinstance(observations.get("latest_follow_knowledge_usage"), dict)
+        else {}
+    )
+    script_ids = [
+        str(item).strip()
+        for item in latest.get("selected_script_ids") or []
+        if str(item).strip()
+    ]
+    assistant_texts = [
+        str(item.get("content") or "").strip()
+        for item in observations.get("recent_assistant_messages") or []
+        if isinstance(item, dict) and str(item.get("content") or "").strip()
+    ]
+    return script_ids[:8], assistant_texts[:4]
+
+
+def _retrieval_text_similarity(left: str, right: str) -> float:
+    left_value = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(left or "").lower())
+    right_value = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(right or "").lower())
+    if not left_value or not right_value:
+        return 0.0
+    sequence = SequenceMatcher(None, left_value, right_value).ratio()
+    left_grams = {
+        left_value[index : index + 3]
+        for index in range(max(1, len(left_value) - 2))
+    }
+    right_grams = {
+        right_value[index : index + 3]
+        for index in range(max(1, len(right_value) - 2))
+    }
+    overlap = len(left_grams & right_grams) / max(1, len(left_grams | right_grams))
+    return max(sequence, overlap)
 
 
 def _retrieval_mode_for_candidates(candidates: list[dict[str, Any]]) -> str:
@@ -2961,6 +3028,16 @@ def script_content_candidates(
 def _store_tool_plan(route: dict[str, Any]) -> dict[str, Any]:
     store = route.get("store_query") if isinstance(route.get("store_query"), dict) else {}
     if not store.get("required"):
+        if store.get("skip_store_parser") is True:
+            return {
+                "schema_version": "v3_store_tool_plan_v1",
+                "status": "completed",
+                "decision": "need_customer_input",
+                "tool_calls": [],
+                "missing_facts": ["customer_city_or_district"],
+                "evidence_refs": list(store.get("location_evidence_refs") or []),
+                "reason": "structured_store_location_insufficient",
+            }
         return {
             "schema_version": "v3_store_tool_plan_v1",
             "status": "completed",
@@ -2996,6 +3073,58 @@ def _store_tool_plan(route: dict[str, Any]) -> dict[str, Any]:
         "evidence_refs": list(store.get("location_evidence_refs") or []),
         "reason": "semantic_router_requires_store_lookup",
     }
+
+
+def _apply_missing_store_location_shortcut(
+    route: dict[str, Any],
+    *,
+    shared_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Skip the location parser when Router supplied no location evidence.
+
+    This consumes Router structure only; it never scans customer wording for a
+    city or infers sales intent.  Known-store detail requests keep using the
+    normal resolver so their authoritative facts can be hydrated.
+    """
+
+    store = route.get("store_query") if isinstance(route.get("store_query"), dict) else {}
+    if not store.get("required"):
+        return route
+    if str(store.get("destination_hint") or "").strip():
+        return route
+    if any(str(item or "").strip() for item in store.get("location_evidence_refs") or []):
+        return route
+    purpose = str(store.get("purpose") or "store_resolution").strip().lower()
+    if purpose in {
+        "store_detail",
+        "reuse_store",
+        "address",
+        "navigation",
+        "parking",
+        "hours",
+        "arrival_guidance",
+    }:
+        return route
+    facts = (
+        shared_context.get("authoritative_facts")
+        if isinstance(shared_context.get("authoritative_facts"), dict)
+        else {}
+    )
+    sent = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    anchor = sent.get("store_anchor_fact") if isinstance(sent.get("store_anchor_fact"), dict) else {}
+    if str(anchor.get("status") or "").strip() == "eligible" and str(anchor.get("store_id") or "").strip():
+        return route
+    output = copy.deepcopy(route)
+    output["store_query"] = {
+        **store,
+        "required": False,
+        "purpose": "clarify_store_region",
+        "resolution_status": "need_location",
+        "next_action": "ask_city_or_district",
+        "skip_store_parser": True,
+        "suppressed_reason": "router_has_no_location_evidence",
+    }
+    return output
 
 
 def _apply_terminal_store_recommendation_guard(

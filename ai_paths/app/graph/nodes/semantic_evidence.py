@@ -7,6 +7,7 @@ from typing import Any, Callable
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
+from app.services.material_fingerprint import diversify_material_candidates
 from app.services.sales_strategy_service import SalesStrategyService
 from app.services.trace_logger import TraceLogger
 from app.services.v3_semantic_router_service import V3SemanticRouterService, script_content_candidates
@@ -34,6 +35,68 @@ def _sent_case_image_urls(state: AgentState) -> list[str]:
             if str(item or "").strip()
         )
     )
+
+
+def _recent_material_context(state: AgentState) -> tuple[list[str], list[str]]:
+    shared = state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+    observations = (
+        shared.get("derived_observations")
+        if isinstance(shared.get("derived_observations"), dict)
+        else {}
+    )
+    material_ids: list[str] = []
+    for delivery in observations.get("recent_asset_deliveries") or []:
+        if not isinstance(delivery, dict):
+            continue
+        facts = (
+            delivery.get("last_delivery_facts")
+            if isinstance(delivery.get("last_delivery_facts"), dict)
+            else {}
+        )
+        for value in (
+            delivery.get("asset_identity"),
+            facts.get("sop_pack_id"),
+            facts.get("document_id"),
+        ):
+            normalized = str(value or "").strip()
+            if normalized and normalized not in material_ids:
+                material_ids.append(normalized)
+    latest_usage = (
+        observations.get("latest_follow_knowledge_usage")
+        if isinstance(observations.get("latest_follow_knowledge_usage"), dict)
+        else {}
+    )
+    for script_id in latest_usage.get("selected_script_ids") or []:
+        normalized = str(script_id or "").strip()
+        if normalized and normalized not in material_ids:
+            material_ids.append(normalized)
+    facts = shared.get("authoritative_facts") if isinstance(shared.get("authoritative_facts"), dict) else {}
+    sent = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
+    case_delivery = sent.get("case_image_delivery") if isinstance(sent.get("case_image_delivery"), dict) else {}
+    for document_id in case_delivery.get("recent_document_ids") or []:
+        normalized = str(document_id or "").strip()
+        if normalized and normalized not in material_ids:
+            material_ids.append(normalized)
+    recent_texts = [
+        str(item.get("content") or "").strip()
+        for item in observations.get("recent_assistant_messages") or []
+        if isinstance(item, dict) and str(item.get("content") or "").strip()
+    ]
+    return material_ids[:12], recent_texts[:4]
+
+
+async def _diverse_content_candidates(
+    state: AgentState,
+    candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    recent_material_ids, recent_texts = _recent_material_context(state)
+    result = await diversify_material_candidates(
+        _dedupe_content_candidates(candidates),
+        sent_image_urls=_sent_case_image_urls(state),
+        recent_material_ids=recent_material_ids,
+        recent_assistant_texts=recent_texts,
+    )
+    return _dict_list(result.get("candidates")), copy.deepcopy(result.get("audit") or {})
 
 
 def create_post_fact_semantic_evidence_node(
@@ -114,7 +177,8 @@ def create_post_fact_semantic_evidence_node(
                 sales_recall,
                 sent_image_urls=_sent_case_image_urls(state),
             )
-            content_candidates = _dedupe_content_candidates(
+            content_candidates, material_audit = await _diverse_content_candidates(
+                state,
                 [
                     *existing_candidates,
                     *recalled_candidates,
@@ -137,6 +201,7 @@ def create_post_fact_semantic_evidence_node(
                     "pre_reply_evidence_elapsed_ms": int(metrics.get("pre_reply_evidence_elapsed_ms") or 0)
                     + post_duration_ms,
                     "semantic_route_summary": _semantic_route_observability(semantic_route),
+                    "material_selection": material_audit,
                 }
             )
             span["entry"]["tool_calls"] = [
@@ -150,6 +215,7 @@ def create_post_fact_semantic_evidence_node(
                 "sales_recall_candidates": sales_recall.get("candidate_count"),
                 "selected_content_ids": gate_result.get("content_candidate_ids") or [],
                 "metrics": metrics,
+                "material_selection": material_audit,
             }
             return {
                 "content_gate_result": gate_result,
@@ -243,7 +309,8 @@ def create_semantic_evidence_node(
                 sales_recall,
                 sent_image_urls=_sent_case_image_urls(state),
             )
-            content_candidates = _dedupe_content_candidates(
+            content_candidates, material_audit = await _diverse_content_candidates(
+                state,
                 [
                     *assets,
                     *recalled_candidates,
@@ -263,6 +330,7 @@ def create_semantic_evidence_node(
                 "sales_recall_duration_ms": int(sales_recall.get("duration_ms") or 0),
                 "pre_reply_evidence_elapsed_ms": elapsed_ms,
                 "semantic_route_summary": _semantic_route_observability(semantic_route),
+                "material_selection": material_audit,
             }
             output = {
                 "content_gate_result": gate_result,
@@ -317,6 +385,7 @@ def create_semantic_evidence_node(
                 ),
                 "missing_fact_count": len(tool_plan.get("missing_facts") or []),
                 "metrics": metrics,
+                "material_selection": material_audit,
             }
             return output
 
