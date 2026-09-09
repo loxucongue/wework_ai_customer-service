@@ -763,6 +763,7 @@ def _render_authoritative_facts(
         _append_fact(lines, "活动包含", includes)
         _append_fact(lines, "活动名额", offer.get("quota"))
         _append_fact(lines, "原价口径", offer.get("original_price_visibility"))
+        lines.append("询价表达：普通询价不主动补‘单部位体验’；客户明确问单/多部位范围时再按事实解释。")
     if "body_area" in selected:
         _append_fact(lines, "项目范围", offer.get("scope_answer_policy"))
         _append_fact(lines, "部位价格", offer.get("body_area_price_rule"))

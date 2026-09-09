@@ -1266,7 +1266,7 @@ def _sentence_promises_store_card(text: str) -> bool:
 def _sentence_requeries_same_store_scope(text: str) -> bool:
     return bool(
         re.search(
-            r"(?:哪个|哪一个|具体|什么)[^。！？!?]{0,8}"
+            r"(?:哪个|哪一个|具体|什么|其他|常去|方便)[^。！？!?]{0,12}"
             r"(?:区域|区县|商圈|地铁站|路口|楼栋|位置)",
             text,
         )

@@ -260,6 +260,16 @@ def test_reply_always_receives_online_project_scope_boundary() -> None:
     assert "不得确认‘那个案例是真的’" in rendered
 
 
+def test_generic_price_context_does_not_volunteer_single_area_wording() -> None:
+    rendered = _render_authoritative_facts(
+        {"AUTHORITATIVE FACTS": {"offer": {"new_customer_price": 268}}},
+        topic_ids=["activity_offer"],
+    )
+
+    assert "普通询价不主动补‘单部位体验’" in rendered
+    assert "客户明确问单/多部位范围时再按事实解释" in rendered
+
+
 def test_reply_prompt_handles_generic_store_distrust_before_store_lookup() -> None:
     assert "客户只泛称某些店“骗子/不靠谱”" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不把普通信任质疑升级为投诉或停止营销" in PARALLEL_REPLY_SYSTEM_PROMPT

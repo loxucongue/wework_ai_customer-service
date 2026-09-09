@@ -598,6 +598,12 @@ def test_complete_empty_store_scope_rejects_only_same_region_requery() -> None:
             state,
         )
 
+    with pytest.raises(ValueError, match="store_scope_confirmed_same_region_requery"):
+        validate_model_led_reply_admission(
+            [{"type": "text", "content": "您还有其他常去的城市或区域吗？"}],
+            state,
+        )
+
     validate_model_led_reply_admission(
         [{"type": "text", "content": "济南目前没有可发送门店，您还有其他方便前往的城市吗？"}],
         state,
