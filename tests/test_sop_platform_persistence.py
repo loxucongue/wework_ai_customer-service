@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from app.config import Settings
 from app.services.storage.repositories import AppRepository
 from app.services.storage.sqlite_store import SQLiteStore
-from app.services.sop_platform_task_service import _platform_task_log_item
+from app.services.sop_platform_task_service import _platform_run_status, _platform_task_log_item
 
 
 def _platform_sent_task(
@@ -346,6 +346,40 @@ def test_admin_log_prefers_send_evidence_over_stale_no_send_status() -> None:
     assert item["decision"] == "send"
     assert item["bucket"] == "sent"
     assert item["decision_reason"] == "successful_send_evidence"
+
+
+def test_admin_log_treats_post_send_legacy_error_as_completed_audit_history() -> None:
+    item = _platform_task_log_item(
+        platform_task={"taskId": "82716", "customerId": "15215324"},
+        local_record={
+            "event_status": "platform_legacy_quarantined",
+            "event_error": "legacy_execution_disabled",
+            "task_status": "processing_retry",
+            "task_error": "RuntimeError: model HTTP 503",
+            "sent_at": "2026-09-08T18:10:56+00:00",
+            "send_payload": {"platform_task_id": "82716"},
+            "send_response": {
+                "data": {
+                    "delivery_status": "platform_accepted",
+                    "system_msgid": "msg-82716",
+                }
+            },
+        },
+        platform_visible=False,
+    )
+
+    task = {
+        "task_id": item["task_id"],
+        "task_status": item["task_status"],
+        "event_status": item["event_status"],
+        "consume_status": None,
+        "error": item["error"],
+    }
+
+    assert item["task_status"] == "sent"
+    assert item["error"] == ""
+    assert item["raw"]["local_event"]["task_error"] == "RuntimeError: model HTTP 503"
+    assert _platform_run_status(version="legacy_single", representative=item, tasks=[task]) == "completed"
 
 
 def test_recovery_query_skips_deferred_events_unless_explicitly_requested(tmp_path) -> None:

@@ -971,18 +971,7 @@ class SopPlatformTaskService:
         task_id = _task_id(platform_task)
         if not task_id:
             raise ValueError("platform task_id is required")
-        if not recovery_status:
-            return await self.process_customer_batch(
-                {
-                    "_aics_customer_batch": True,
-                    "batch_key": _customer_batch_key(platform_task),
-                    "biz_type": str(platform_task.get("_aics_biz_type") or "online_service"),
-                    "tasks": [platform_task],
-                    "compat_trigger_tasks": [],
-                }
-            )
-        lock = self._locks.setdefault(task_id, asyncio.Lock())
-        async with lock:
+        if recovery_status:
             local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
             local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             processing_mode = str(local_audit.get("processing_mode") or "")
@@ -998,12 +987,19 @@ class SopPlatformTaskService:
                     "task_id": task_id,
                     "reason": "legacy_execution_disabled",
                 }
-            duplicate_key = _platform_duplicate_send_once_key(platform_task)
-            if duplicate_key:
-                content_lock = self._locks.setdefault(f"platform-content:{duplicate_key}", asyncio.Lock())
-                async with content_lock:
-                    return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
-            return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
+        # Normal queue work and recovery must enter the same deterministic
+        # customer lock and state machine. The legacy single-task path includes
+        # model decisions and must never be reachable from the V3 worker.
+        return await self.process_customer_batch(
+            {
+                "_aics_customer_batch": True,
+                "batch_key": _customer_batch_key(platform_task),
+                "biz_type": str(platform_task.get("_aics_biz_type") or "online_service"),
+                "tasks": [platform_task],
+                "compat_trigger_tasks": [],
+                "recovery_status": recovery_status,
+            }
+        )
 
     def _quarantine_legacy_recovery(self, *, task_id: str, event_id: str) -> None:
         reserved_ids = getattr(self, "_reserved_prefix_ids", None)
@@ -5466,10 +5462,6 @@ def _platform_run_task_item(
 def _platform_run_status(*, version: str, representative: dict[str, Any], tasks: list[dict[str, Any]]) -> str:
     event_statuses = {str(task.get("event_status") or "") for task in tasks}
     task_statuses = {str(task.get("task_status") or "") for task in tasks}
-    if any(task.get("error") for task in tasks) or event_statuses.intersection(
-        {"platform_batch_send_retry", "platform_processing_retry", "platform_send_uncertain", "platform_failed"}
-    ):
-        return "exception"
     if "platform_delivery_pending" in event_statuses or "sending" in task_statuses:
         return "delivery_pending"
     if event_statuses.intersection({"platform_batch_consume_pending", "platform_complete_pending"}):
@@ -5490,6 +5482,19 @@ def _platform_run_status(*, version: str, representative: dict[str, Any], tasks:
             "shadow_no_send",
         }:
             return "no_send"
+    elif tasks and all(
+        task.get("consume_status") == 30
+        or task.get("task_status") in {"sent", "sent_recovered", "shadow_send"}
+        for task in tasks
+    ):
+        # Explicit send evidence outranks a stale post-send exception written by
+        # the retired legacy recovery path.
+        return "completed"
+    if any(task.get("error") for task in tasks) or event_statuses.intersection(
+        {"platform_batch_send_retry", "platform_processing_retry", "platform_send_uncertain", "platform_failed"}
+    ):
+        return "exception"
+    if selected_task_id:
         return "processing"
     if str(representative.get("decision") or "") == "send":
         return (
@@ -5691,6 +5696,7 @@ def _platform_task_log_item(
             ),
         ]
     )
+    recorded_error = str(local_record.get("task_error") or local_record.get("event_error") or "")
     return {
         "task_id": task_id,
         "bucket": bucket,
@@ -5703,7 +5709,9 @@ def _platform_task_log_item(
         "decision_reason": (
             "successful_send_evidence" if has_successful_send_evidence else str(decision_payload.get("reason") or "")
         ),
-        "error": str(local_record.get("task_error") or local_record.get("event_error") or ""),
+        # Keep the original value in raw.local_event for audit, but do not
+        # present a retired post-send recovery error as the current task result.
+        "error": "" if has_successful_send_evidence else recorded_error,
         "customer_id": identity["customer_id"],
         "external_userid": identity["external_userid"],
         "corp_id": identity["corp_id"],
