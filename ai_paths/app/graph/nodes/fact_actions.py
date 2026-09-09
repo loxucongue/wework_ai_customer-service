@@ -9,6 +9,7 @@ from app.services.model_client import ModelClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
+from app.services.runtime_budget import promote_runtime_budget_for_tools
 
 
 def create_readonly_fact_actions_node(
@@ -20,7 +21,7 @@ def create_readonly_fact_actions_node(
     platform_agent_client: PlatformAgentClient | None = None,
     model_client: ModelClient | None = None,
 ) -> Callable[[AgentState], Any]:
-    return _create_action_executor(
+    executor = _create_action_executor(
         coze_client=coze_client,
         trace_logger=trace_logger,
         store_service=store_service,
@@ -29,3 +30,11 @@ def create_readonly_fact_actions_node(
         model_client=model_client,
         execution_mode="readonly",
     )
+
+    async def execute_with_tool_budget(state: AgentState) -> dict[str, Any]:
+        planned = state.get("planner_tool_calls")
+        if isinstance(planned, list) and any(isinstance(item, dict) for item in planned):
+            promote_runtime_budget_for_tools(state)
+        return await executor(state)
+
+    return execute_with_tool_budget

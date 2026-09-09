@@ -770,7 +770,10 @@ class ChatRuntime:
         deadline = graph_deadline_monotonic(
             state,
             phase=phase,
-            strong_reply=_has_structured_professional_assist(state),
+            # The graph wrapper must leave room for a Router-selected fact
+            # tool. Ordinary turns still keep their shorter internal deadline;
+            # fact_actions promotes it only after a structured tool plan exists.
+            strong_reply=(phase == "full") or _has_structured_professional_assist(state),
         )
         if deadline is None:
             return await graph.ainvoke(state)

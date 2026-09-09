@@ -132,6 +132,24 @@ def runtime_budget_snapshot(
     }
 
 
+def promote_runtime_budget_for_tools(state: dict[str, Any]) -> None:
+    """Give a fact-tool turn the configured strong round deadline.
+
+    The outer graph always has room for the strong deadline, while ordinary
+    turns keep the shorter deadline.  Promotion is mechanical and depends on
+    the Router's structured tool plan, never on customer-message keywords.
+    """
+
+    budget = _runtime_budget(state)
+    if not budget or not bool(budget.get("enforced")):
+        return
+    strong = float(budget.get("strong_deadline_monotonic") or 0.0)
+    ordinary = float(budget.get("ordinary_deadline_monotonic") or 0.0)
+    if strong > ordinary:
+        budget["ordinary_deadline_monotonic"] = strong
+        budget["tool_budget_promoted"] = True
+
+
 def _runtime_budget(state: dict[str, Any]) -> dict[str, Any]:
     value = state.get("runtime_budget") if isinstance(state, dict) else None
     return value if isinstance(value, dict) else {}

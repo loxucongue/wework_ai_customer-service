@@ -15,6 +15,10 @@ from app.config import Settings  # noqa: E402
 from app.graph.nodes.material_selection import parallel_reply_payload  # noqa: E402
 from app.schemas import ChatRequest  # noqa: E402
 from app.services.follow_knowledge_client import FollowKnowledgeClient  # noqa: E402
+from app.services.runtime_budget import (  # noqa: E402
+    build_runtime_budget,
+    promote_runtime_budget_for_tools,
+)
 from app.services.storage import AppRepository, SQLiteStore  # noqa: E402
 
 
@@ -128,3 +132,23 @@ def test_reply_payload_does_not_duplicate_large_policy_and_knowledge_objects() -
     assert "ai_sales_policy" not in evidence["shared_context"]
     assert "previous_policy_state" not in evidence["shared_context"]
     assert payload["ai_sales_policy"]["large"].startswith("x")
+
+
+def test_runtime_budget_promotes_only_after_structured_tool_plan() -> None:
+    settings = Settings().model_copy(
+        update={
+            "model_round_budget_enforced": True,
+            "v3_reply_round_timeout_seconds": 25.0,
+            "v3_reply_strong_round_timeout_seconds": 35.0,
+            "v3_reply_reserve_seconds": 10.0,
+        }
+    )
+    state = {"runtime_budget": build_runtime_budget(settings, started_monotonic=100.0)}
+
+    assert state["runtime_budget"]["ordinary_deadline_monotonic"] == 125.0
+    assert state["runtime_budget"]["strong_deadline_monotonic"] == 135.0
+
+    promote_runtime_budget_for_tools(state)
+
+    assert state["runtime_budget"]["ordinary_deadline_monotonic"] == 135.0
+    assert state["runtime_budget"]["tool_budget_promoted"] is True
