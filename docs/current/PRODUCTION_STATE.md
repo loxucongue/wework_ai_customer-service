@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-09T18:36:00+08:00`
+- verified_at: `2026-09-10T00:19:00+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260909-v3-supervisor-3192f19a`
-- git commit: `3192f19ae31900015b48ccb94516aaee03517d12`
+- release: `ai-paths-unified-20260910-sop-terminal-9ae26dcd`
+- git commit: `9ae26dcd830c8a8ba6ca9f79d90b257451115e7b`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `642e600e85f9ecb0ac931706ffbe83ec338c899c5cd9b0d6fc4453e5a5ed8f6d`
@@ -30,7 +30,7 @@
 - `AI_CLOSING_CATALOG_SOURCE=external_then_local`
 - `OUTREACH_FIRST_DAY_SILENCE_ENABLED=true`
 - `OUTREACH_FIRST_DAY_SILENCE_MINUTES=1`
-- 第三方 SOP 首次发送不再设置任务年龄窗口；计划时间仅用于排序和审计，延迟任务仍执行实时三项门禁。发送结果未知的恢复等待仍为 `1800` 秒，避免首次调用结果不明时重复发送。
+- 第三方 SOP 首次发送不再设置任务年龄窗口；计划时间仅用于排序和审计，延迟任务仍执行实时三项门禁。主动发送接口一旦调用，超时或结果未知即按业务幂等约定联合消费任务 `30 + 当前 msgId=30`，保留 `submission_unconfirmed` 审计且禁止重发；若第三方明确返回当前 `msgId` 已绑定其他任务，则任务 `70`、所有 `msgId` 不消费，避免自动错绑下一组。
 - 企微 allowlist 为空，表示全部企微号进入候选。
 - 启用水位：`2026-09-05T09:41:20+00:00`；水位前历史沉默不补发。
 - 当前代码仍要求沉默计划前和每次发送前由平台明确确认 AI 模式；人工、未知或状态查询失败均阻断。
@@ -40,7 +40,7 @@
 
 ## Worker 与 outbox
 
-- 第三方 SOP worker 正常运行；现场 `queue_depth=0`、最近轮询错误为空。任务按“未开口、未删除、AI 托管”三个确定性门槛执行，只有三项均满足才读取第一组未消费内容并原样发送。仅客户已开口、客户关系已删除和人工接管消费任务 `70` 且不消费 `msgId`；参数、资格数据、内容、接口或发送失败保持未消费并恢复、预警。
+- 第三方 SOP worker 正常运行；现场 `pending_total=0`、`queue_depth=0`、`in_flight_count=0`、最近轮询错误为空。任务按“未开口、未删除、AI 托管”三个确定性门槛执行，只有三项均满足才读取第一组未消费内容并原样发送。客户已开口、客户关系已删除和人工接管消费任务 `70` 且不消费 `msgId`、不预警；内容缺失、聚合平台明确拒绝、消息绑定冲突及仍在第三方 pending 的旧执行链任务均以失败口径消费任务 `70`、不消费任何 `msgId`并预警。已记录明确拒绝或发送调用的恢复任务禁止再次调用主动发送。
 - 正常拉取与恢复任务共用客户锁和 `customer_batch_sequence` 确定性状态机；恢复入口不再进入旧单任务模型路径。第三方 `/pending` 未返回任务时只做空轮询，不生成任务、不消费、不告警；平台已返回任务但 `/sop-messages` 缺内容仍按第三方内容故障处理。
 - V3 回复异步收尾任务 `v3_reply_finalization` 已启动且无启动错误；截至本次核验，发布后 2 条固定协议消息均为 1ms、零模型、零客户回复，首条普通自然 V3 请求已生成客户回复且可靠收尾完成、无运行错误。该普通请求总耗时 34.02s，其中 AI/人工状态 804ms、入口事务 2.21s、上一轮状态 1.19s、模型图 29.71s、核心持久化 479ms；本次数据库收敛已生效，但单样本因完整 Reply 重试产生的模型长尾不属于本次审计优化范围，仍不能据此声明生产 P95。
 - Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=58`、`dead=16`。
@@ -49,12 +49,14 @@
 
 ## 回滚状态
 
-- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-sop-alert-attribution-182c9866`。
+- 后端 `/opt/ai-paths/previous` 与 Reply `/opt/ai-paths-v3/previous` 均指向 clean release `ai-paths-unified-20260909-sop-no-replay-66595533`。
 - 前端 `/opt/ai-paths-frontend/previous` 指向 `frontend-20260908-v3-proactive-05723ce3`。
 - 数据库已迁移到 `20260909_02`，新增 V3 生成幂等/恢复兼容字段、索引和内部事实待办表。迁移前 21 张 `aics_*` InnoDB 表的一致性压缩备份为 `/opt/ai-paths/backups/pre-v3-supervisor-20260909-180132/aics-before-20260909_02.sql.gz`，文件大小 `315519267` 字节，SHA-256 为 `c2e117e7bbe87dd7aec0215c00a81a3995ddd6fc578460be687c5aef450a4794`，`gzip -t` 通过。旧代码兼容新增结构，回滚 release 不要求破坏性降级。
 - 回滚仍应同时恢复三个后端角色、前端和 release 环境标识，并重新核验健康。
 
 ## 本次发布观察
+
+- 2026-09-10 00:19 发布并核验第三方 SOP 终态消费与防重收口：control/reply/worker 统一运行 clean `main@9ae26dcd830c8a8ba6ca9f79d90b257451115e7b`，release 为 `ai-paths-unified-20260910-sop-terminal-9ae26dcd`，三个 unit active/running、`NRestarts=0`，V3 未鉴权 401、Nginx 检查通过。修复 `platform_sequence_waiting` 未进入恢复器、历史聚合平台明确拒绝被再次发送、超时任务精确 `msgId` 已绑定其他任务后持续重试，以及当前 pending 中旧执行链任务长期隔离四个问题。自然恢复将待处理从 30 降至 0；任务 83045 因第三方返回“队列消息已绑定其它任务”最终任务 70、`msgId=38789` 保持未消费；账号未绑定/AI 映射任务与 6 条旧隔离 pending 均任务 70、未消费任何 `msgId`。最终版本启动后 `send.count=0`，证明收口过程未再次主动发送。全仓 851 条测试、变更范围 Ruff 与 diff check 通过；统一回滚点为 `ai-paths-unified-20260909-sop-no-replay-66595533`。
 
 - 2026-09-09 18:36 发布后复核销售主管反馈闭环版本：control/reply/worker 和管理前端统一来自 clean `main@3192f19ae31900015b48ccb94516aaee03517d12`；后端 release 为 `ai-paths-unified-20260909-v3-supervisor-3192f19a`，前端 release 为 `frontend-20260909-v3-supervisor-3192f19a`。数据库由 `20260908_01` 升至唯一 head `20260909_02` 并通过运行时 schema 指纹检查；四个 unit 均 active、`NRestarts=0`，三角色 `/health` 的 SHA、角色和 `dirty=false` 一致，V3 直连接口未鉴权返回 401、退役 V2 公网返回 410、管理接口未鉴权返回 401、Nginx 配置通过。版本增加跨进程持久生成幂等、过期同步租约接管、稳定消息 ID、多条真人短消息、软拒绝继续给价值、最早缺失主线恢复、素材/话术去重、效果素材与唯一门店卡强交付，以及价格/门店/付款后指引事实校验；自动补答保持关闭，数据库中 `fallback_pending/recovery_claimed` 和 `v3_reply_recovery` dispatch 均为 0。全仓 846 条后端测试、扩大回归 160 条、前端测试/类型/Lint/37 路由生产构建通过；80+120 条广覆盖 DeepSeek 结果属于前序候选 AI 初评，当前代码另以真实素材快照定点重放通过，不作为业务金标。发布后尚无自然 V3 新 run，不能宣称生产回复质量或 P95 已达标；本次未发送测试客户消息。18:36 只读现场另见第三方 SOP `pending_total=28`、`in_flight=1`，策略 outbox `dead=16/pending=58` 且 delivery 关闭，均无本轮询错误，属于既有独立积压而非本发布新增故障。
 - 2026-09-09 14:56 发布并核验第三方 SOP 聚合平台发送失败归责：control/reply/worker 统一运行 clean `main@182c986644a4d6d0db054a4e66d9e0d90e833a19`，release 为 `ai-paths-unified-20260909-sop-alert-attribution-182c9866`，三个 unit 均 active/running 且 `NRestarts=0`。聚合平台明确返回 `send_allowed=false` 或 HTTP/业务拒绝时，告警失败类型改为“消息发送未成功”、责任方向改为“企微聚合平台消息发送”，并保留安全错误码；`account_unassigned` 显示为“企微账号未绑定客服用户或超级客服 AI 映射”。接待企微兼容第三方任务的 `user_wechat_id/user_wechat/wecom_account`。生产任务 83044 的自然恢复周期已记录 `wecom_aggregate_send_failed:account_unassigned`，未消费任务或 `msgId`，后续任务继续按顺序阻断；已有任务 83049 的旧告警因单任务去重不会重发或改写。连接超时和本地执行异常仍归我方链路，不误归第三方。全仓 632 条测试、Ruff、compileall 和 diff check 通过；本次无客户测试发送、无历史补发、无数据库 schema 或前端变更。统一回滚点为 `ai-paths-unified-20260909-sop-alert-attribution-32f386f0`。
