@@ -253,6 +253,14 @@ def test_store_fact_followup_never_fabricates_missing_hours() -> None:
     }
     assert "business_hours" not in output["post_payment_arrival_guidance"]["facts"]
     assert output["post_payment_arrival_guidance"]["facts"]["floor"] == "3楼"
+    assert output["internal_followup"] == {
+        "task_type": "store_fact_followup",
+        "status": "pending",
+        "store_id": "101",
+        "detail_kind": "hours",
+        "missing_fact_keys": ["business_hours"],
+        "customer_send_authorized": False,
+    }
 
 
 def test_offer_model_facts_include_all_price_boundaries() -> None:

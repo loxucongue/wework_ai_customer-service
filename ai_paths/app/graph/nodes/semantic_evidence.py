@@ -9,6 +9,7 @@ from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
 from app.services.material_fingerprint import diversify_material_candidates
 from app.services.sales_strategy_service import SalesStrategyService
+from app.services.store_fact_followup import build_store_fact_followup
 from app.services.trace_logger import TraceLogger
 from app.services.v3_semantic_router_service import V3SemanticRouterService, script_content_candidates
 from app.services.v3_sop_execution_service import SopExecutionService
@@ -19,6 +20,7 @@ from app.graph.nodes.reply_contract import (
     _merge_tool_calls,
     _protocol_required_read_only_tools,
     _semantic_route_observability,
+    _parallel_payment_is_paid,
     _store_resolution_fact_for_post_route,
 )
 
@@ -112,6 +114,20 @@ def create_post_fact_semantic_evidence_node(
 
         started = time.perf_counter()
         store_fact = _store_resolution_fact_for_post_route(state)
+        fact_envelope = copy.deepcopy(state.get("fact_envelope") or {})
+        structured_facts = (
+            fact_envelope.get("structured_facts")
+            if isinstance(fact_envelope.get("structured_facts"), dict)
+            else {}
+        )
+        store_fact_followup = build_store_fact_followup(
+            store_resolution_fact=store_fact,
+            store_facts=structured_facts.get("store_facts"),
+            requested_detail_kind=str(store_fact.get("requested_detail_kind") or ""),
+            authoritative_paid=_parallel_payment_is_paid(state),
+        )
+        structured_facts["store_fact_followup"] = store_fact_followup
+        fact_envelope["structured_facts"] = structured_facts
         with trace_logger.node(
             state,
             "v3_post_store_retrieval_after_facts",
@@ -218,6 +234,8 @@ def create_post_fact_semantic_evidence_node(
                 "material_selection": material_audit,
             }
             return {
+                "fact_envelope": fact_envelope,
+                "store_fact_followup": store_fact_followup,
                 "content_gate_result": gate_result,
                 "sales_recall": sales_recall,
                 "cardpoint_candidates": [],

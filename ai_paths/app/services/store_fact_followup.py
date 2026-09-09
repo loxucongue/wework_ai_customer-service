@@ -82,6 +82,18 @@ def build_store_fact_followup(
         if authoritative_paid and unique_store_id and unique_store
         else {}
     )
+    missing_detail_task = (
+        {
+            "task_type": "store_fact_followup",
+            "status": "pending",
+            "store_id": unique_store_id,
+            "detail_kind": detail_kind,
+            "missing_fact_keys": list(detail_keys),
+            "customer_send_authorized": False,
+        }
+        if unique_store_id and detail_kind and not detail_facts
+        else {}
+    )
     return {
         "schema_version": "store_fact_followup_v1",
         "source": "authoritative_store_resolution_and_facts",
@@ -114,6 +126,7 @@ def build_store_fact_followup(
                 else "unique_store_facts_required"
             ),
         },
+        "internal_followup": missing_detail_task,
         "constraints": {
             "customer_copy_generated": False,
             "unknown_values_omitted": True,

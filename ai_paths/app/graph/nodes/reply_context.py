@@ -226,6 +226,7 @@ def _tool_facts_for_reply(fact_envelope: dict[str, Any]) -> dict[str, Any]:
         "recommended_store",
         "store_lookup_status",
         "store_resolution_fact",
+        "store_fact_followup",
         "distance_facts",
         "appointment_facts",
         "case_facts",
