@@ -2409,7 +2409,7 @@ def _parallel_generic_reply_repair_messages(
     stage_delivery_requirements = {
         "effect_evidence": (
             "回答当前消息后，交付真实效果说明或本轮允许的真实效果素材；不能邀约到店、询问时间、"
-            "让客户到店看效果或再次询问要不要看案例"
+            "让客户到店看效果、再次询问要不要看案例或只预告稍后再发效果说明"
         ),
         "activity_offer": "回答当前消息后，说明本轮权威活动价格或包含价值；不能邀约到店或询问时间",
         "store": "回答当前消息后，询问缺失城市/地区或交付本轮允许的真实门店卡",
@@ -2544,6 +2544,10 @@ def _parallel_generic_reply_repair_messages(
         "case_image_structure_required_when_reply_promises_delivery",
         "next_sales_action_exceeds_delivered_mainline",
         "offer_face_hand_price_scope_ambiguous",
+        "offer_face_hand_total_268_conflict",
+        "offer_268_full_face_claim_conflict",
+        "offer_bilateral_cheek_split_price_conflict",
+        "offer_repeat_visit_268_unverified",
     )
     removed_invalid_fields: list[str] = []
     if isinstance(repair_previous_payload, dict) and any(
@@ -3446,6 +3450,23 @@ def _reply_repair_hint(error: str) -> str:
             "脸部和手部价格范围表达含糊。客户只问手部时直接说‘手部单独做是268元活动价’，不要主动带出脸部；"
             "客户明确同时问两个部位时，必须说‘两个部位单独做均为268元，一个268元只对应一个部位’，"
             "不能只说‘脸部和手部都是268元’。"
+        )
+    if "offer_face_hand_total_268_conflict" in error:
+        return (
+            "上一版把脸部和手部写成共用一个268元。若客户没有问多部位价格，删除这段无关扩写；"
+            "若当前必须解释，改成‘脸部和手部是两个部位，单独做均为268元，一个268元只对应一个部位’。"
+        )
+    if "offer_268_full_face_claim_conflict" in error:
+        return (
+            "268元对应脸部斑点改善这个部位，不是无差别操作全脸；只按实际斑点位置做针对性改善。"
+        )
+    if "offer_bilateral_cheek_split_price_conflict" in error:
+        return (
+            "双侧脸颊同属脸部一个部位，不按左右拆成两个价格；删除拆分收费表达。"
+        )
+    if "offer_repeat_visit_268_unverified" in error:
+        return (
+            "二次或后续价格不能沿用268元；改为以届时有效活动和门店确认结果为准。"
         )
     if "invalid_parallel_reply_action" in error:
         return (

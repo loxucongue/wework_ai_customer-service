@@ -141,8 +141,9 @@ def test_dynamic_mainline_contract_blocks_customer_visible_booking_shortcut() ->
             "allowed_next_sales_action_types": ["deliver_value", "send_effect_material"],
         }
     )
-    assert "到店看效果/方案、先留名额、要不要看案例" in effect
+    assert "到店看效果/方案、先留名额、要不要看案例、我先把效果说明发您" in effect
     assert "有可用案例时直接发送" in effect
+    assert "不能只预告以后再讲" in effect
 
 
 def test_router_treats_explicit_location_delivery_as_store_detail_not_booking() -> None:

@@ -271,12 +271,14 @@ def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> No
         "case_image_structure_required_when_reply_promises_delivery"
     )
     body_area_price = _reply_repair_hint("offer_face_hand_price_scope_ambiguous")
+    combined_price = _reply_repair_hint("offer_face_hand_total_268_conflict")
 
     assert "XX市" in placeholder and "所在城市" in placeholder
     assert "allowed_next_sales_action_types" in mainline
     assert "删除预约时间" in mainline
     assert "allowed_selected_content_ids" in media
     assert "手部单独做是268元活动价" in body_area_price
+    assert "一个268元只对应一个部位" in combined_price
 
 
 def test_mainline_repair_drops_invalid_visible_draft_and_requires_scalar_action() -> None:
