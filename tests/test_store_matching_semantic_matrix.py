@@ -82,9 +82,9 @@ def test_store_selection_continuation_is_visible_to_reply() -> None:
     assert "information_submission" in rendered
     assert "transaction_progress" in rendered
     assert "仅作证据，不授权动作" in rendered
-    assert "门店已确定但效果/项目或活动价值尚未可靠交付时" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不得直接跳问到店日期" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "closing_decision.action=none" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "先答其问题，再补最缺价值" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "三项均有可靠交付后才邀请预约" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "正常轮（continue_sales/pause_current_turn）必须输出非空 `next_sales_action`" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_confirmed_named_store_defers_arrival_question_until_mainline_ready() -> None:
