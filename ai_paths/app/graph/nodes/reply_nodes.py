@@ -2405,6 +2405,17 @@ def _parallel_generic_reply_repair_messages(
             "customer_friction_observation": "字符串；无当前未解顾虑时为空",
             "primary_objective": "本轮唯一目标",
             "posture": "answer|advance|switch|pause|close",
+            "next_sales_action": {
+                "type": (
+                    (
+                        validation_context.get("mainline_delivery_state")
+                        if isinstance(validation_context.get("mainline_delivery_state"), dict)
+                        else {}
+                    ).get("allowed_next_sales_action_types")
+                    or ["keep_open"]
+                ),
+                "reason": "客户可见回复必须真实落实该动作",
+            },
         },
     }
     if bool(validation_context.get("policy_required")):
@@ -2484,6 +2495,11 @@ def _parallel_generic_reply_repair_messages(
             "structured_prior_activity_refs": validation_context.get("structured_prior_activity_refs") or [],
             "structured_prior_supporting_refs": validation_context.get("structured_prior_supporting_refs") or [],
             "authoritative_paid": bool(validation_context.get("authoritative_paid")),
+            "mainline_delivery_state": (
+                validation_context.get("mainline_delivery_state")
+                if isinstance(validation_context.get("mainline_delivery_state"), dict)
+                else {}
+            ),
         },
     }
     evidence_messages = [
@@ -3080,6 +3096,7 @@ def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
         "closing_catalog_evidence": payload.get("closing_catalog_evidence") or {},
         "content_candidate_delivery_requirements": candidate_requirements,
         "authoritative_paid": bool(_parallel_paid_deposit_context(state)),
+        "mainline_delivery_state": payload.get("mainline_delivery_state") or {},
     }
 
 def _reply_model_tier(state: AgentState) -> str:
@@ -3343,6 +3360,25 @@ def _reply_repair_hint(error: str) -> str:
         return (
             "reply_messages 不能缺失或为空。即使 Gate 没有候选、工具没有结果或你决定暂停推进，也必须根据当前消息、"
             "完整聊天和权威事实生成至少一条客户可见 text；不采用候选时 selected_content_ids 留空即可。"
+        )
+    if "customer_visible_placeholder_fact" in error:
+        return (
+            "客户可见文字含 XX市、XX区、某市、示例地址等模板占位符。必须完整删除占位事实；"
+            "如果本轮没有真实城市或门店，就直接请客户告诉所在城市或方便前往的地区，不能换一种占位写法。"
+        )
+    if "next_sales_action_exceeds_delivered_mainline" in error:
+        return (
+            "上一版跨过了尚未交付的销售主线。必须从 "
+            "valid_reference_contract.mainline_delivery_state.allowed_next_sales_action_types "
+            "中逐字选择 next_sales_action.type，并让客户可见文字只落实这个动作。"
+            "如果 invite_booking 或 send_payment 不在允许列表，必须删除预约时间、到店时间、保留名额和付款推进，"
+            "改为交付 next_missing_stage 所需的效果、活动、门店价值，或自然保持沟通。"
+        )
+    if "case_image_structure_required_when_reply_promises_delivery" in error:
+        return (
+            "上一版承诺找、挑、选或发送效果图，却没有交付真实 image。"
+            "若 allowed_selected_content_ids 中有当前相关素材，选择其真实 content_id 并按交付要求输出 image；"
+            "若没有可用素材，删除发送承诺，如实用文字回答，不能继续说稍后找图或发图。"
         )
     if "invalid_parallel_reply_action" in error:
         return (

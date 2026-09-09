@@ -118,6 +118,15 @@ def test_reply_connects_store_detail_to_the_true_mainline_stage() -> None:
     assert "不得说可直接到店" in prompt
 
 
+def test_router_treats_explicit_location_delivery_as_store_detail_not_booking() -> None:
+    prompt = V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT
+
+    assert "发位置/发地址/发导航" in prompt
+    assert "store_query.required=true" in prompt
+    assert "purpose=store_detail" in prompt
+    assert "不把“可以”升级成预约意愿" in prompt
+
+
 def test_reply_keeps_pure_life_sharing_natural() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 

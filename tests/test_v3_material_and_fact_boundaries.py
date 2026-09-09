@@ -6,6 +6,7 @@ import base64
 import pytest
 
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
+from app.graph.nodes.reply_nodes import _reply_repair_hint
 from app.graph.nodes.reply_validation import _validate_parallel_reply_consistency
 from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
 from app.policies.business_rules import parallel_reply_business_rules_for_model
@@ -203,6 +204,7 @@ def test_parallel_validation_runs_hours_and_price_boundaries() -> None:
     [
         ("我们公司在XX市，您告诉我城市我再查。", "customer_visible_placeholder_fact"),
         ("手部效果图我这边有，我发您参考下。", "case_image_structure_required"),
+        ("有的，我找一张手部斑点改善的效果图给您参考。", "case_image_structure_required"),
         ("268元脸部和手部都一起做。", "offer_face_hand_total_268_conflict"),
         ("门店营业时间是9:00-20:00。", "business_hours_fact_required"),
     ],
@@ -253,6 +255,21 @@ def test_delivery_promise_checks_do_not_block_unrelated_or_negated_text(reply: s
         [{"type": "text", "content": reply}],
         state,
     )
+
+
+def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> None:
+    placeholder = _reply_repair_hint("customer_visible_placeholder_fact")
+    mainline = _reply_repair_hint(
+        "next_sales_action_exceeds_delivered_mainline:invite_booking:effect_evidence"
+    )
+    media = _reply_repair_hint(
+        "case_image_structure_required_when_reply_promises_delivery"
+    )
+
+    assert "XX市" in placeholder and "所在城市" in placeholder
+    assert "allowed_next_sales_action_types" in mainline
+    assert "删除预约时间" in mainline
+    assert "allowed_selected_content_ids" in media
 
 
 def test_missing_store_location_skips_parser_and_requests_region() -> None:

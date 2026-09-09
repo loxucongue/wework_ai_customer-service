@@ -757,6 +757,12 @@ def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state
             "\u7ee7\u7eed\u7ed9\u4f60\u770b",
             "\u518d\u7ed9\u60a8\u63a5\u4e00\u7ec4",
             "\u518d\u7ed9\u4f60\u63a5\u4e00\u7ec4",
+            "\u627e\u4e00\u5f20",
+            "\u627e\u4e00\u7ec4",
+            "\u6311\u4e00\u5f20",
+            "\u6311\u4e00\u7ec4",
+            "\u9009\u4e00\u5f20",
+            "\u9009\u4e00\u7ec4",
         )
         media_terms = (
             "\u6548\u679c\u56fe",
