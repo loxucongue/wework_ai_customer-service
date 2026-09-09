@@ -22,8 +22,10 @@ class SQLiteStore:
         with self.connect() as conn:
             # Existing SQLite tables must gain indexed columns before schema.sql
             # attempts to create the new indexes. New databases have no tables yet.
+            self._ensure_runs_generation_columns(conn)
             self._ensure_v3_strategy_analytics_columns(conn)
             conn.executescript(schema)
+            self._ensure_runs_generation_columns(conn)
             self._ensure_customer_memory_columns(conn)
             self._ensure_outreach_plan_columns(conn)
             self._ensure_first_day_outreach_run_columns(conn)
@@ -49,6 +51,50 @@ class SQLiteStore:
     @staticmethod
     def close() -> None:
         return None
+
+    @staticmethod
+    def _ensure_runs_generation_columns(conn: sqlite3.Connection) -> None:
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'"
+        ).fetchone() is None:
+            return
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        columns = {
+            "generation_key": "TEXT DEFAULT NULL",
+            "response_id": "TEXT DEFAULT NULL",
+            "generation_status": "TEXT NOT NULL DEFAULT ''",
+            "recovery_kind": "TEXT NOT NULL DEFAULT ''",
+            "recovery_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "recovery_next_at": "TEXT NOT NULL DEFAULT ''",
+            "recovery_dispatch_id": "TEXT NOT NULL DEFAULT ''",
+            "recovery_error": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_generation_key
+            ON runs(generation_key)
+            WHERE generation_key IS NOT NULL AND generation_key<>''
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_response_id
+            ON runs(response_id)
+            WHERE response_id IS NOT NULL AND response_id<>''
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_runs_generation_recovery
+            ON runs(generation_status, recovery_next_at, created_at)
+            """
+        )
 
     @staticmethod
     def _ensure_customer_memory_columns(conn: sqlite3.Connection) -> None:

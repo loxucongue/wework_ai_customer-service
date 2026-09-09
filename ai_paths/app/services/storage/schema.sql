@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS runs (
     request_id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL,
     customer_id TEXT NOT NULL,
+    generation_key TEXT DEFAULT NULL,
+    response_id TEXT DEFAULT NULL,
+    generation_status TEXT NOT NULL DEFAULT '',
+    recovery_kind TEXT NOT NULL DEFAULT '',
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    recovery_next_at TEXT NOT NULL DEFAULT '',
+    recovery_dispatch_id TEXT NOT NULL DEFAULT '',
+    recovery_error TEXT NOT NULL DEFAULT '',
     input_snapshot TEXT NOT NULL DEFAULT '{}',
     output_snapshot TEXT NOT NULL DEFAULT '{}',
     intents TEXT NOT NULL DEFAULT '[]',
@@ -70,6 +78,12 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE INDEX IF NOT EXISTS idx_runs_conversation_id ON runs(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_customer_id ON runs(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_generation_key
+ON runs(generation_key) WHERE generation_key IS NOT NULL AND generation_key<>'';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_response_id
+ON runs(response_id) WHERE response_id IS NOT NULL AND response_id<>'';
+CREATE INDEX IF NOT EXISTS idx_runs_generation_recovery
+ON runs(generation_status, recovery_next_at, created_at);
 
 CREATE TABLE IF NOT EXISTS node_traces (
     id TEXT PRIMARY KEY,

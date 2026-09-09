@@ -24,6 +24,14 @@ from app.services.run_observability import (
     enrich_v3_run_observability,
 )
 from app.services.storage.v3_strategy_analytics_repository import _usage_event_from_state
+from app.services.v3_reply_recovery import (
+    GENERATION_STATUS_COMPLETED,
+    GENERATION_STATUS_FALLBACK_PENDING,
+    decode_v3_recovery_payload,
+    encode_v3_recovery_payload,
+    stable_v3_reply_messages,
+    v3_response_id,
+)
 
 
 class RunRepositoryMixin:
@@ -41,6 +49,7 @@ class RunRepositoryMixin:
         reply_messages: list[dict[str, Any]],
         token_usage: dict[str, Any],
         deferred_payload: dict[str, Any],
+        response_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Atomically persist terminal V3 paths and enqueue durable audit work.
 
@@ -71,7 +80,21 @@ class RunRepositoryMixin:
 
         with self.store.connect() as raw_conn:
             conn = _CountedConnection(raw_conn)
-            conversation_id = self._prepare_v3_request_in_connection(
+            generation_key = str(
+                final_state.get("generation_key") or request_context.get("generation_key") or ""
+            ).strip()
+            response_id = str(
+                final_state.get("response_id") or request_context.get("response_id") or ""
+            ).strip()
+            requested_generation_status = str(
+                final_state.get("generation_status") or request_context.get("generation_status") or ""
+            ).strip()
+            generation_status = (
+                requested_generation_status
+                if requested_generation_status == GENERATION_STATUS_FALLBACK_PENDING
+                else GENERATION_STATUS_COMPLETED
+            )
+            prepared = self._prepare_v3_request_in_connection(
                 conn,
                 default_conversation_id=default_conversation_id,
                 resolve_existing=resolve_existing,
@@ -82,7 +105,29 @@ class RunRepositoryMixin:
                 interface_version=str(request_context.get("interface_version") or "v3"),
                 started_at=started_at,
                 http_request_ingress_id=str(request_context.get("http_request_ingress_id") or ""),
+                generation_key=generation_key,
+                response_id=response_id,
+                generation_status=generation_status,
+                recovery_kind=str(final_state.get("recovery_kind") or ""),
+                recovery_next_at=str(final_state.get("recovery_next_at") or ""),
             )
+            if bool(prepared.get("replayed")):
+                return {
+                    **prepared,
+                    "duration_ms": max(0, int((time.perf_counter() - operation_started) * 1000)),
+                    "connection_count": 1,
+                    "statement_count": statement_count,
+                    "outreach_cancel": {"cancelled_plans": 0, "skipped_tasks": 0},
+                    "usage_event": {"status": "skipped", "reason": "generation_replayed"},
+                }
+            conversation_id = str(prepared.get("conversation_id") or "")
+            response_id = str(prepared.get("response_id") or response_id)
+            if response_id:
+                reply_messages[:] = stable_v3_reply_messages(
+                    reply_messages,
+                    response_id=response_id,
+                )
+                final_state["reply_messages"] = reply_messages
             cancellation = {"cancelled_plans": 0, "skipped_tasks": 0}
             if (
                 bool(request_context.get("memory_persist_allowed"))
@@ -140,15 +185,39 @@ class RunRepositoryMixin:
                 },
                 "post_reply_payload": deferred_payload,
             }
+            if generation_key:
+                output_snapshot["v3_response_snapshot"] = encode_v3_recovery_payload(
+                    _response_snapshot_from_state(
+                        request_id=request_id,
+                        response_id=response_id,
+                        reply_messages=reply_messages,
+                        final_state=final_state,
+                        response_snapshot=response_snapshot,
+                    )
+                )
+                if generation_status == GENERATION_STATUS_FALLBACK_PENDING:
+                    existing_run = conn.execute(
+                        "SELECT output_snapshot FROM runs WHERE request_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    existing_output = loads_dict(existing_run["output_snapshot"]) if existing_run else {}
+                    if existing_output.get("v3_recovery_payload"):
+                        output_snapshot["v3_recovery_payload"] = existing_output["v3_recovery_payload"]
             duration_ms = _elapsed_ms(started_at, now)
             conn.execute(
                 """
                 UPDATE runs
-                SET conversation_id=?, output_snapshot=?, duration_ms=?, token_usage=?, error=?
+                SET conversation_id=?, response_id=COALESCE(response_id, ?),
+                    generation_status=?, recovery_kind=?, recovery_next_at=?,
+                    output_snapshot=?, duration_ms=?, token_usage=?, error=?
                 WHERE request_id=?
                 """,
                 (
                     conversation_id,
+                    response_id or None,
+                    generation_status if generation_key else "",
+                    str(final_state.get("recovery_kind") or ""),
+                    str(final_state.get("recovery_next_at") or ""),
                     dumps(output_snapshot),
                     duration_ms,
                     dumps(token_usage),
@@ -185,12 +254,14 @@ class RunRepositoryMixin:
             usage_result = self._record_v3_strategy_usage_in_connection(conn, event=event)
 
         return {
+            **prepared,
             "conversation_id": conversation_id,
             "duration_ms": max(0, int((time.perf_counter() - operation_started) * 1000)),
             "connection_count": 1,
             "statement_count": statement_count,
             "outreach_cancel": cancellation,
             "usage_event": usage_result,
+            "generation_status": generation_status if generation_key else "",
         }
 
     def save_v3_reply_core(
@@ -201,7 +272,8 @@ class RunRepositoryMixin:
         reply_messages: list[dict[str, Any]],
         token_usage: dict[str, Any],
         deferred_payload: dict[str, Any],
-    ) -> dict[str, int]:
+        response_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Persist the customer-visible reply and a durable finalization job.
 
         This is the only persistence required before returning the V3 response.
@@ -223,10 +295,47 @@ class RunRepositoryMixin:
                 return conn.execute(*args, **kwargs)
 
             existing = execute(
-                "SELECT output_snapshot, created_at FROM runs WHERE request_id=?",
+                """
+                SELECT output_snapshot, created_at, generation_key, response_id,
+                       generation_status, recovery_kind
+                FROM runs WHERE request_id=?
+                """,
                 (request_id,),
             ).fetchone()
             output_snapshot = loads_dict(existing["output_snapshot"]) if existing else {}
+            request_context = (
+                final_state.get("request_context")
+                if isinstance(final_state.get("request_context"), dict)
+                else {}
+            )
+            generation_key = str(
+                (existing["generation_key"] if existing else "")
+                or final_state.get("generation_key")
+                or request_context.get("generation_key")
+                or ""
+            ).strip()
+            response_id = str(
+                (existing["response_id"] if existing else "")
+                or final_state.get("response_id")
+                or request_context.get("response_id")
+                or ""
+            ).strip() or v3_response_id(generation_key)
+            requested_generation_status = str(
+                final_state.get("generation_status")
+                or request_context.get("generation_status")
+                or ""
+            ).strip()
+            saved_generation_status = (
+                GENERATION_STATUS_FALLBACK_PENDING
+                if requested_generation_status == GENERATION_STATUS_FALLBACK_PENDING
+                else GENERATION_STATUS_COMPLETED
+            )
+            if response_id:
+                reply_messages[:] = stable_v3_reply_messages(
+                    reply_messages,
+                    response_id=response_id,
+                )
+                final_state["reply_messages"] = reply_messages
             started_at = str(
                 output_snapshot.get("runtime_started_at")
                 or (existing["created_at"] if existing else "")
@@ -272,15 +381,37 @@ class RunRepositoryMixin:
                     },
                 }
             )
+            if generation_key:
+                if saved_generation_status != GENERATION_STATUS_FALLBACK_PENDING:
+                    output_snapshot.pop("v3_recovery_payload", None)
+                output_snapshot["v3_response_snapshot"] = encode_v3_recovery_payload(
+                    _response_snapshot_from_state(
+                        request_id=request_id,
+                        response_id=response_id,
+                        reply_messages=reply_messages,
+                        final_state=final_state,
+                        response_snapshot=response_snapshot,
+                    )
+                )
             duration_ms = _elapsed_ms(started_at, now)
             if existing:
                 execute(
                     """
                     UPDATE runs
-                    SET output_snapshot=?, duration_ms=?, token_usage=?, error=?
+                    SET response_id=COALESCE(response_id, ?), generation_status=?,
+                        recovery_kind=?, recovery_next_at=?, recovery_error='', output_snapshot=?,
+                        duration_ms=?, token_usage=?, error=?
                     WHERE request_id=?
                     """,
                     (
+                        response_id or None,
+                        saved_generation_status if generation_key else "",
+                        str(final_state.get("recovery_kind") or ""),
+                        (
+                            str(final_state.get("recovery_next_at") or "")
+                            if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
+                            else ""
+                        ),
                         dumps(output_snapshot),
                         duration_ms,
                         dumps(token_usage),
@@ -292,14 +423,25 @@ class RunRepositoryMixin:
                 execute(
                     """
                     INSERT INTO runs
-                        (request_id, conversation_id, customer_id, input_snapshot, output_snapshot,
-                         intents, tags, duration_ms, token_usage, error, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (request_id, conversation_id, customer_id, generation_key, response_id,
+                         generation_status, recovery_kind, recovery_next_at,
+                         input_snapshot, output_snapshot, intents, tags,
+                         duration_ms, token_usage, error, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         request_id,
                         conversation_id,
                         str(final_state.get("customer_id") or ""),
+                        generation_key or None,
+                        response_id or None,
+                        saved_generation_status if generation_key else "",
+                        str(final_state.get("recovery_kind") or ""),
+                        (
+                            str(final_state.get("recovery_next_at") or "")
+                            if saved_generation_status == GENERATION_STATUS_FALLBACK_PENDING
+                            else ""
+                        ),
                         dumps({}),
                         dumps(output_snapshot),
                         dumps([]),
@@ -335,6 +477,9 @@ class RunRepositoryMixin:
             "duration_ms": max(0, int((time.perf_counter() - operation_started) * 1000)),
             "connection_count": 1,
             "statement_count": statement_count,
+            "generation_key": generation_key,
+            "response_id": response_id,
+            "generation_status": saved_generation_status if generation_key else "",
         }
     def claim_v3_reply_finalizations(self, *, limit: int = 10) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc)
@@ -755,7 +900,12 @@ class RunRepositoryMixin:
         }
         with self.store.connect() as conn:
             existing = conn.execute(
-                "SELECT output_snapshot, created_at FROM runs WHERE request_id=?",
+                """
+                SELECT output_snapshot, created_at, generation_key, response_id,
+                       generation_status, recovery_kind, recovery_attempts,
+                       recovery_next_at, recovery_dispatch_id, recovery_error
+                FROM runs WHERE request_id=?
+                """,
                 (request_id,),
             ).fetchone()
             existing_output: dict[str, Any] = {}
@@ -776,6 +926,8 @@ class RunRepositoryMixin:
                     "runtime_processing_finished_at",
                     "post_reply_finalization",
                     "post_reply_payload",
+                    "v3_recovery_payload",
+                    "v3_response_snapshot",
                     "performance",
                 ):
                     if key in existing_output and key not in output_snapshot:
@@ -831,14 +983,24 @@ class RunRepositoryMixin:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO runs
-                    (request_id, conversation_id, customer_id, input_snapshot, output_snapshot, intents, tags,
+                    (request_id, conversation_id, customer_id, generation_key, response_id,
+                     generation_status, recovery_kind, recovery_attempts, recovery_next_at,
+                     recovery_dispatch_id, recovery_error, input_snapshot, output_snapshot, intents, tags,
                      duration_ms, token_usage, error, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request_id,
                     conversation_id,
                     str(final_state.get("customer_id") or ""),
+                    (existing["generation_key"] if existing else None),
+                    (existing["response_id"] if existing else None),
+                    str(existing["generation_status"] or "") if existing else "",
+                    str(existing["recovery_kind"] or "") if existing else "",
+                    int(existing["recovery_attempts"] or 0) if existing else 0,
+                    str(existing["recovery_next_at"] or "") if existing else "",
+                    str(existing["recovery_dispatch_id"] or "") if existing else "",
+                    str(existing["recovery_error"] or "") if existing else "",
                     dumps(compact(input_snapshot)),
                     dumps(_compact_run_output(output_snapshot)),
                     dumps(planner_task_views(final_state)),
@@ -876,12 +1038,21 @@ class RunRepositoryMixin:
 
     def update_run_http_response(self, *, request_id: str, response_body: dict[str, Any]) -> None:
         with self.store.connect() as conn:
-            row = conn.execute("SELECT output_snapshot FROM runs WHERE request_id=?", (request_id,)).fetchone()
+            row = conn.execute(
+                "SELECT output_snapshot, generation_key FROM runs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
             if not row:
                 return
             output_snapshot = loads_dict(row["output_snapshot"])
             output_snapshot["http_response_body"] = response_body
             output_snapshot["http_response_reply_messages"] = _reply_messages_from_http_response(response_body)
+            if str(row["generation_key"] or ""):
+                stored_response = decode_v3_recovery_payload(output_snapshot.get("v3_response_snapshot"))
+                if "chat_response" not in stored_response and "http_response" not in stored_response:
+                    stored_response = {"chat_response": stored_response}
+                stored_response["http_response"] = response_body
+                output_snapshot["v3_response_snapshot"] = encode_v3_recovery_payload(stored_response)
             conn.execute(
                 "UPDATE runs SET output_snapshot=? WHERE request_id=?",
                 (dumps(_compact_run_output(output_snapshot)), request_id),
@@ -906,7 +1077,7 @@ class RunRepositoryMixin:
 
         with self.store.connect() as conn:
             row = conn.execute(
-                "SELECT output_snapshot, duration_ms FROM runs WHERE request_id=?",
+                "SELECT output_snapshot, duration_ms, generation_key FROM runs WHERE request_id=?",
                 (request_id,),
             ).fetchone()
             if not row:
@@ -935,6 +1106,16 @@ class RunRepositoryMixin:
             if isinstance(response_body, dict):
                 output_snapshot["http_response_body"] = response_body
                 output_snapshot["http_response_reply_messages"] = _reply_messages_from_http_response(response_body)
+                if str(row["generation_key"] or ""):
+                    stored_response = decode_v3_recovery_payload(
+                        output_snapshot.get("v3_response_snapshot")
+                    )
+                    if "chat_response" not in stored_response and "http_response" not in stored_response:
+                        stored_response = {"chat_response": stored_response}
+                    stored_response["http_response"] = response_body
+                    output_snapshot["v3_response_snapshot"] = encode_v3_recovery_payload(
+                        stored_response
+                    )
             conn.execute(
                 "UPDATE runs SET output_snapshot=?, duration_ms=? WHERE request_id=?",
                 (dumps(_compact_run_output(output_snapshot)), effective_duration_ms, request_id),
@@ -1028,7 +1209,11 @@ class RunRepositoryMixin:
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT r.request_id, r.conversation_id, r.customer_id, r.input_snapshot, r.output_snapshot,
+                SELECT r.request_id, r.conversation_id, r.customer_id,
+                       r.generation_key, r.response_id, r.generation_status,
+                       r.recovery_kind, r.recovery_attempts, r.recovery_next_at,
+                       r.recovery_dispatch_id, r.recovery_error,
+                       r.input_snapshot, r.output_snapshot,
                        r.intents, r.tags, r.duration_ms, r.token_usage, r.error, r.created_at,
                        COALESCE(c.wechat, '') AS contact_wechat,
                        u.intent_code AS usage_intent_code,
@@ -1080,6 +1265,7 @@ class RunRepositoryMixin:
                 else {}
             )
             output_snapshot.pop("post_reply_payload", None)
+            output_snapshot.pop("v3_recovery_payload", None)
             callback = (
                 output_snapshot.get("strategy_data_callback")
                 if isinstance(output_snapshot.get("strategy_data_callback"), dict)
@@ -1210,12 +1396,14 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
         "runtime_processing_finished_at",
         "post_reply_finalization",
         "post_reply_payload",
+        "v3_recovery_payload",
+        "v3_response_snapshot",
         "performance",
     ):
         if key in output_snapshot:
             stored[key] = (
                 output_snapshot[key]
-                if key == "post_reply_payload"
+                if key in {"post_reply_payload", "v3_recovery_payload", "v3_response_snapshot"}
                 else compact(output_snapshot[key])
             )
     observability = output_snapshot.get("observability_v3")
@@ -1225,6 +1413,41 @@ def _compact_run_output(output_snapshot: dict[str, Any]) -> dict[str, Any]:
         # entries and would hide the complete visible conversation.
         stored["observability_v3"] = observability
     return stored
+
+
+def _response_snapshot_from_state(
+    *,
+    request_id: str,
+    response_id: str,
+    reply_messages: list[dict[str, Any]],
+    final_state: dict[str, Any],
+    response_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(response_snapshot, dict) and response_snapshot:
+        snapshot = dict(response_snapshot)
+    else:
+        route = planner_public_route(final_state)
+        response_meta = (
+            final_state.get("response_meta")
+            if isinstance(final_state.get("response_meta"), dict)
+            else {}
+        )
+        snapshot = {
+            "request_id": request_id,
+            "response_id": response_id,
+            "replayed": False,
+            "reply_messages": reply_messages,
+            "scene": str(route.get("scene") or ""),
+            "intent": str(route.get("intent") or ""),
+            "subflow": str(route.get("subflow") or ""),
+            "trace_url": final_state.get("trace_url") or None,
+            "meta": response_meta,
+        }
+    snapshot["request_id"] = request_id
+    snapshot["response_id"] = response_id
+    snapshot["replayed"] = False
+    snapshot["reply_messages"] = reply_messages
+    return snapshot
 
 
 def _decode_post_reply_payload(value: Any) -> dict[str, Any]:
@@ -1294,6 +1517,7 @@ def _run_list_view(run: dict[str, Any]) -> dict[str, Any]:
         output = dict(output)
         output.pop("observability_v3", None)
         output.pop("post_reply_payload", None)
+        output.pop("v3_recovery_payload", None)
         run["output_snapshot"] = output
     for key in list(run):
         if key.startswith("usage_") or key == "contact_wechat":

@@ -121,6 +121,14 @@ runs = Table(
     _id("request_id", primary_key=True),
     _id("conversation_id"),
     _id("customer_id"),
+    Column("generation_key", VARCHAR(64), nullable=True),
+    Column("response_id", VARCHAR(64), nullable=True),
+    _short("generation_status", length=32),
+    _short("recovery_kind", length=64),
+    Column("recovery_attempts", Integer, nullable=False, server_default="0"),
+    _time("recovery_next_at", ""),
+    _id("recovery_dispatch_id"),
+    _long("recovery_error"),
     _json("input_snapshot", "{}"),
     _json("output_snapshot", "{}"),
     _json("intents", "[]"),
@@ -132,6 +140,14 @@ runs = Table(
     Index("idx_aics_runs_conversation_id", "conversation_id", "created_at"),
     Index("idx_aics_runs_customer_id", "customer_id", "created_at"),
     Index("idx_aics_runs_created_at", "created_at"),
+    UniqueConstraint("generation_key", name="uq_aics_runs_generation_key"),
+    UniqueConstraint("response_id", name="uq_aics_runs_response_id"),
+    Index(
+        "idx_aics_runs_generation_recovery",
+        "generation_status",
+        "recovery_next_at",
+        "created_at",
+    ),
 )
 
 node_traces = Table(

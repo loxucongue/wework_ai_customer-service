@@ -88,6 +88,8 @@ def workflow_response_from_chat(response: ChatResponse) -> dict[str, Any]:
         "versions": "1",
         "reply_messages": [_workflow_reply_message(message.model_dump()) for message in response.reply_messages],
         "trace_id": response.request_id,
+        "response_id": response.response_id,
+        "replayed": response.replayed,
         "step": response.subflow or response.intent or response.scene,
         "has_knowledge": "true" if _has_knowledge(response.meta) else "",
         "error": "",
@@ -102,6 +104,8 @@ def workflow_response_from_chat(response: ChatResponse) -> dict[str, Any]:
         "code": 0,
         "msg": "success",
         "execute_id": response.request_id,
+        "response_id": response.response_id,
+        "replayed": response.replayed,
         "data": data,
         "detail": {"logid": response.request_id},
     }
@@ -184,23 +188,28 @@ def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
     raw_content = message.get("content")
     order = int(message.get("order") or 1)
     if message_type in {"human_handoff", "human_handoff_notice"}:
-        return {
+        output = {
             "type": "human_handoff_notice",
             "order": order,
             "content": {"handoff_reason": _message_content_value(raw_content, "handoff_reason")},
         }
-    if message_type == "image":
+    elif message_type == "image":
         content = _message_content_value(raw_content, "url")
-        return {"type": "image", "order": order, "content": {"url": content}}
-    if message_type == "video":
+        output = {"type": "image", "order": order, "content": {"url": content}}
+    elif message_type == "video":
         content = _message_content_value(raw_content, "url")
-        return {"type": "video", "order": order, "content": {"url": content}}
-    if message_type == "payment_collection":
-        return {"type": "payment_collection", "order": order, "content": _payment_collection_content(raw_content)}
-    if message_type == "store_address":
-        return {"type": "store_address", "order": order, "content": _store_address_content(raw_content)}
-    content = _message_content_value(raw_content, "text")
-    return {"type": "text", "order": order, "content": {"text": content}}
+        output = {"type": "video", "order": order, "content": {"url": content}}
+    elif message_type == "payment_collection":
+        output = {"type": "payment_collection", "order": order, "content": _payment_collection_content(raw_content)}
+    elif message_type == "store_address":
+        output = {"type": "store_address", "order": order, "content": _store_address_content(raw_content)}
+    else:
+        content = _message_content_value(raw_content, "text")
+        output = {"type": "text", "order": order, "content": {"text": content}}
+    client_message_id = _string(message.get("client_message_id"))
+    if client_message_id:
+        output["client_message_id"] = client_message_id
+    return output
 
 
 def _has_knowledge(meta: dict[str, Any]) -> bool:

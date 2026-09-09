@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -124,6 +125,7 @@ class V3StrategyAnalyticsRepositoryMixin:
         wechat: str = "",
         external_userid: str = "",
         customer_id: str = "",
+        _connection: Any | None = None,
     ) -> dict[str, Any]:
         boundary = _validated_contact_boundary(
             corp_id=corp_id,
@@ -150,7 +152,8 @@ class V3StrategyAnalyticsRepositoryMixin:
         if _text(exclude_request_id):
             clauses.append("u.request_id<>?")
             params.append(_text(exclude_request_id))
-        with self.store.connect() as conn:
+        connection_scope = nullcontext(_connection) if _connection is not None else self.store.connect()
+        with connection_scope as conn:
             row = conn.execute(
                 f"""
                 SELECT u.request_id, u.occurred_at, u.intent_code, u.emotion_before,
@@ -236,6 +239,27 @@ class V3StrategyAnalyticsRepositoryMixin:
             "last_closing_action_at": last_closing_action_at,
             "minutes_since_last_closing_action": minutes_since_last_closing_action,
         }
+
+    def _latest_v3_strategy_state_in_connection(
+        self,
+        conn: Any,
+        *,
+        sales_contact_key: str,
+        exclude_request_id: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        external_userid: str = "",
+        customer_id: str = "",
+    ) -> dict[str, Any]:
+        return self.latest_v3_strategy_state(
+            sales_contact_key,
+            exclude_request_id=exclude_request_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+            _connection=conn,
+        )
 
     def link_v3_strategy_usage_dispatch(self, *, request_id: str, dispatch_id: str) -> dict[str, Any]:
         clean_request_id = _text(request_id)

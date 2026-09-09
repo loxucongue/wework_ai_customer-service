@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from app.services.storage.serialization import dumps, loads_dict, loads_list, utc_now_iso
 from app.services.trace_logger import compact
+from app.services.v3_reply_recovery import chat_request_recovery_payload, v3_response_id
 
 
 class ConversationRepositoryMixin:
@@ -22,7 +23,13 @@ class ConversationRepositoryMixin:
         interface_version: str,
         started_at: str,
         http_request_ingress_id: str,
-    ) -> str:
+        generation_key: str = "",
+        response_id: str = "",
+        generation_status: str = "generating",
+        recovery_kind: str = "",
+        recovery_next_at: str = "",
+        recovery_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Write V3 ingress facts using a caller-owned transaction."""
 
         now = str(started_at or utc_now_iso())
@@ -37,6 +44,29 @@ class ConversationRepositoryMixin:
             or getattr(request, "customer_id", "")
             or ""
         )
+        clean_generation_key = str(generation_key or "").strip() or None
+        clean_response_id = str(response_id or "").strip() or (
+            v3_response_id(clean_generation_key) if clean_generation_key else None
+        )
+        if clean_generation_key:
+            existing_generation = conn.execute(
+                """
+                SELECT request_id, conversation_id, response_id, generation_status
+                FROM runs WHERE generation_key=? LIMIT 1
+                """,
+                (clean_generation_key,),
+            ).fetchone()
+            if existing_generation is not None:
+                same_request = str(existing_generation["request_id"] or "") == str(request_id or "")
+                return {
+                    "conversation_id": str(existing_generation["conversation_id"] or ""),
+                    "request_id": str(existing_generation["request_id"] or ""),
+                    "generation_key": clean_generation_key,
+                    "response_id": str(existing_generation["response_id"] or ""),
+                    "generation_status": str(existing_generation["generation_status"] or ""),
+                    "replayed": not same_request,
+                    "continue_existing": same_request,
+                }
         conversation_id = str(default_conversation_id or "")
         if resolve_existing and corp_id and wechat and (external_userid or customer_id):
             identity_clause = "external_userid=?" if external_userid else "customer_id=?"
@@ -77,9 +107,69 @@ class ConversationRepositoryMixin:
                 now,
             ),
         )
+        output_snapshot = {
+            "runtime_status": "running",
+            "runtime_phase": "request_received",
+            "runtime_started_at": now,
+            "runtime_updated_at": now,
+            "interface_version": version,
+            "http_request_ingress_id": str(http_request_ingress_id or ""),
+            "http_request_started_at": now,
+        }
+        durable_recovery_payload = (
+            recovery_payload
+            if isinstance(recovery_payload, dict) and recovery_payload
+            else (chat_request_recovery_payload(request) if clean_generation_key else {})
+        )
+        if durable_recovery_payload:
+            output_snapshot["v3_recovery_payload"] = durable_recovery_payload
+        insert_run = conn.execute(
+            """
+            INSERT OR IGNORE INTO runs
+                (request_id, conversation_id, customer_id, generation_key, response_id,
+                 generation_status, recovery_kind, recovery_attempts, recovery_next_at,
+                 recovery_dispatch_id, recovery_error, input_snapshot, output_snapshot, intents, tags,
+                 duration_ms, token_usage, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '', '', ?, ?, '[]', '[]', 0, '{}', '', ?)
+            """,
+            (
+                request_id,
+                conversation_id,
+                str(getattr(request, "customer_id", "") or ""),
+                clean_generation_key,
+                clean_response_id,
+                str(generation_status or "generating") if clean_generation_key else "",
+                str(recovery_kind or ""),
+                str(recovery_next_at or ""),
+                dumps(compact(input_snapshot)),
+                dumps(output_snapshot),
+                now,
+            ),
+        )
+        if clean_generation_key and int(insert_run.rowcount or 0) == 0:
+            suffix = " FOR UPDATE" if getattr(self.store, "dialect", "") == "mysql" else ""
+            existing_generation = conn.execute(
+                """
+                SELECT request_id, conversation_id, response_id, generation_status
+                FROM runs WHERE generation_key=? LIMIT 1
+                """ + suffix,
+                (clean_generation_key,),
+            ).fetchone()
+            if existing_generation is None:
+                raise RuntimeError("V3 generation reservation conflicted but could not be reloaded")
+            same_request = str(existing_generation["request_id"] or "") == str(request_id or "")
+            return {
+                "conversation_id": str(existing_generation["conversation_id"] or ""),
+                "request_id": str(existing_generation["request_id"] or ""),
+                "generation_key": clean_generation_key,
+                "response_id": str(existing_generation["response_id"] or ""),
+                "generation_status": str(existing_generation["generation_status"] or ""),
+                "replayed": not same_request,
+                "continue_existing": same_request,
+            }
         conn.execute(
             """
-            INSERT INTO messages (id, conversation_id, request_id, role, content, file_image, reply_messages, created_at)
+            INSERT OR IGNORE INTO messages (id, conversation_id, request_id, role, content, file_image, reply_messages, created_at)
             VALUES (?, ?, ?, 'user', ?, ?, '[]', ?)
             """,
             (
@@ -91,32 +181,15 @@ class ConversationRepositoryMixin:
                 now,
             ),
         )
-        output_snapshot = {
-            "runtime_status": "running",
-            "runtime_phase": "request_received",
-            "runtime_started_at": now,
-            "runtime_updated_at": now,
-            "interface_version": version,
-            "http_request_ingress_id": str(http_request_ingress_id or ""),
-            "http_request_started_at": now,
+        return {
+            "conversation_id": conversation_id,
+            "request_id": request_id,
+            "generation_key": clean_generation_key or "",
+            "response_id": clean_response_id or "",
+            "generation_status": str(generation_status or "generating") if clean_generation_key else "",
+            "replayed": False,
+            "continue_existing": False,
         }
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO runs
-                (request_id, conversation_id, customer_id, input_snapshot, output_snapshot, intents, tags,
-                 duration_ms, token_usage, error, created_at)
-            VALUES (?, ?, ?, ?, ?, '[]', '[]', 0, '{}', '', ?)
-            """,
-            (
-                request_id,
-                conversation_id,
-                str(getattr(request, "customer_id", "") or ""),
-                dumps(compact(input_snapshot)),
-                dumps(output_snapshot),
-                now,
-            ),
-        )
-        return conversation_id
 
     def prepare_v3_request(
         self,
@@ -131,6 +204,14 @@ class ConversationRepositoryMixin:
         started_at: str,
         http_request_ingress_id: str,
         cancel_outreach: bool = False,
+        generation_key: str = "",
+        response_id: str = "",
+        generation_status: str = "generating",
+        recovery_kind: str = "",
+        recovery_next_at: str = "",
+        recovery_payload: dict[str, Any] | None = None,
+        include_previous_strategy_state: bool = False,
+        sales_contact_key: str = "",
     ) -> dict[str, Any]:
         """Persist the V3 ingress facts in one database transaction.
 
@@ -154,7 +235,7 @@ class ConversationRepositoryMixin:
                     return getattr(raw_conn, name)
 
             conn = _CountedConnection()
-            conversation_id = self._prepare_v3_request_in_connection(
+            prepared = self._prepare_v3_request_in_connection(
                 conn,
                 default_conversation_id=default_conversation_id,
                 resolve_existing=resolve_existing,
@@ -165,9 +246,20 @@ class ConversationRepositoryMixin:
                 interface_version=interface_version,
                 started_at=started_at,
                 http_request_ingress_id=http_request_ingress_id,
+                generation_key=generation_key,
+                response_id=response_id,
+                generation_status=generation_status,
+                recovery_kind=recovery_kind,
+                recovery_next_at=recovery_next_at,
+                recovery_payload=recovery_payload,
             )
             cancellation = {"cancelled_plans": 0, "skipped_tasks": 0}
-            if cancel_outreach and str(getattr(request, "wechat", "") or "").strip():
+            if (
+                not bool(prepared.get("replayed"))
+                and not bool(prepared.get("continue_existing"))
+                and cancel_outreach
+                and str(getattr(request, "wechat", "") or "").strip()
+            ):
                 cancellation = self._cancel_outreach_for_customer_reply_in_connection(
                     conn,
                     customer_id=str(getattr(request, "customer_id", "") or ""),
@@ -176,12 +268,30 @@ class ConversationRepositoryMixin:
                     external_userid=str(getattr(request, "external_userid", "") or ""),
                     request_id=request_id,
                 )
+            previous_strategy_state: dict[str, Any] = {}
+            load_previous = getattr(self, "_latest_v3_strategy_state_in_connection", None)
+            if (
+                include_previous_strategy_state
+                and not bool(prepared.get("replayed"))
+                and not bool(prepared.get("continue_existing"))
+                and callable(load_previous)
+            ):
+                previous_strategy_state = load_previous(
+                    conn,
+                    sales_contact_key=sales_contact_key,
+                    exclude_request_id=request_id,
+                    corp_id=str(getattr(request, "corp_id", "") or ""),
+                    wechat=str(getattr(request, "wechat", "") or ""),
+                    external_userid=str(getattr(request, "external_userid", "") or ""),
+                    customer_id=str(getattr(request, "customer_id", "") or ""),
+                )
         return {
-            "conversation_id": conversation_id,
+            **prepared,
             "duration_ms": max(0, int((time.perf_counter() - operation_started) * 1000)),
             "connection_count": 1,
             "statement_count": statement_count,
             "outreach_cancel": cancellation,
+            "previous_strategy_state": previous_strategy_state,
         }
 
     def find_conversation_id_for_identity(
