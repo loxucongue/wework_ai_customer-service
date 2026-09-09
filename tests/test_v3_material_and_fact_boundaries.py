@@ -11,7 +11,10 @@ from app.graph.nodes.reply_nodes import (
     _reply_repair_hint,
 )
 from app.graph.nodes.reply_validation import _validate_parallel_reply_consistency
-from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
+from app.graph.nodes.sales_fact_validation import (
+    validate_customer_visible_identity_boundaries,
+    validate_sales_price_fact_boundaries,
+)
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 from app.services.material_fingerprint import (
     diversify_material_candidates,
@@ -174,6 +177,28 @@ def test_valid_268_boundaries_are_allowed(reply: str) -> None:
     validate_sales_price_fact_boundaries([{"type": "text", "content": reply}])
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "我不是机器人哦，是真人客服。",
+        "我这边不是AI，您放心。",
+        "我是真人销售，刚才在忙。",
+    ],
+)
+def test_false_human_identity_claims_are_rejected(reply: str) -> None:
+    with pytest.raises(ValueError, match="customer_visible_false_human_identity_claim"):
+        validate_customer_visible_identity_boundaries([{"type": "text", "content": reply}])
+
+
+def test_natural_acknowledgement_does_not_require_an_identity_claim() -> None:
+    validate_customer_visible_identity_boundaries(
+        [{"type": "text", "content": "在的，刚才消息连着过来，我现在接着给您说明。"}]
+    )
+    validate_customer_visible_identity_boundaries(
+        [{"type": "text", "content": "我是小贝，这边负责线上智能接待。"}]
+    )
+
+
 def test_parallel_validation_runs_hours_and_price_boundaries() -> None:
     state = {
         "request_context": {"interface_version": "v3"},
@@ -214,6 +239,7 @@ def test_parallel_validation_runs_hours_and_price_boundaries() -> None:
         ("有的，我找一张手部斑点改善的效果图给您参考。", "case_image_structure_required"),
         ("268元脸部和手部都一起做。", "offer_face_hand_total_268_conflict"),
         ("门店营业时间是9:00-20:00。", "business_hours_fact_required"),
+        ("我不是机器人哦，是真人客服。", "customer_visible_false_human_identity_claim"),
     ],
 )
 def test_model_led_admission_enforces_customer_visible_fact_boundaries(
@@ -274,6 +300,7 @@ def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> No
     )
     body_area_price = _reply_repair_hint("offer_face_hand_price_scope_ambiguous")
     combined_price = _reply_repair_hint("offer_face_hand_total_268_conflict")
+    identity = _reply_repair_hint("customer_visible_false_human_identity_claim")
 
     assert "XX市" in placeholder and "所在城市" in placeholder
     assert "allowed_next_sales_action_types" in mainline
@@ -281,6 +308,35 @@ def test_repair_hints_make_placeholder_and_mainline_corrections_explicit() -> No
     assert "allowed_selected_content_ids" in media
     assert "手部单独做是268元活动价" in body_area_price
     assert "一个268元只对应一个部位" in combined_price
+    assert "删除这类身份断言" in identity
+
+
+def test_identity_repair_drops_invalid_visible_draft_and_restores_mainline_contract() -> None:
+    invalid_text = "我不是机器人，是真人客服。您周末过来吗？"
+    repaired_messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "当前客户消息：你是机器人吗"}],
+        ValueError(
+            "reply_admission_violations::customer_visible_false_human_identity_claim;;"
+            "next_sales_action_exceeds_delivered_mainline:invite_booking:effect_evidence"
+        ),
+        previous_payload={
+            "reply_messages": [{"type": "text", "content": invalid_text}],
+            "sales_judgment": {"next_sales_action": {"type": "invite_booking"}},
+        },
+        validation_context={
+            "mainline_delivery_state": {
+                "next_missing_stage": "effect_evidence",
+                "allowed_next_sales_action_types": ["deliver_value", "send_effect_material"],
+            }
+        },
+    )
+
+    assistant_payload = repaired_messages[-2]["content"]
+    repair_contract = repaired_messages[-1]["content"]
+    assert invalid_text not in assistant_payload
+    assert "sales_judgment" not in assistant_payload
+    assert '"next_missing_stage":"effect_evidence"' in repair_contract
+    assert '"allowed_next_sales_action_types":["deliver_value","send_effect_material"]' in repair_contract
 
 
 def test_mainline_repair_drops_invalid_visible_draft_and_requires_scalar_action() -> None:

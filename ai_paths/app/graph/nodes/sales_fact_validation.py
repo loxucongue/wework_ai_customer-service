@@ -33,6 +33,19 @@ def validate_sales_price_fact_boundaries(messages: list[dict[str, Any]]) -> None
             raise ValueError("offer_repeat_visit_268_unverified")
 
 
+def validate_customer_visible_identity_boundaries(messages: list[dict[str, Any]]) -> None:
+    """Reject a false human identity claim from the AI-only V3 endpoint."""
+
+    text = re.sub(r"\s+", "", _combined_text(messages))
+    if not text:
+        return
+    if re.search(r"我(?:这边)?不是(?:机器人|AI|人工智能)", text) or re.search(
+        r"(?:我|我这边|这边)(?:是|就是)(?:真人(?:客服|顾问|销售|接待)?|人工客服)",
+        text,
+    ):
+        raise ValueError("customer_visible_false_human_identity_claim")
+
+
 def _claims_full_face_268(text: str) -> bool:
     if not re.search(r"(?:268(?:元)?[^。！？]{0,12}(?:全脸|整脸)|(?:全脸|整脸)[^。！？]{0,12}268)", text):
         return False

@@ -17,7 +17,10 @@ from app.graph.nodes.reply_validation import (
     _validate_store_resolution_delivery_mode,
     _validate_store_resolution_contract,
 )
-from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
+from app.graph.nodes.sales_fact_validation import (
+    validate_customer_visible_identity_boundaries,
+    validate_sales_price_fact_boundaries,
+)
 
 
 def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -47,6 +50,7 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         ),
         lambda: _validate_parallel_appointment_confirmation_facts(messages, state),
         lambda: _validate_parallel_business_hours_facts(messages, state),
+        lambda: validate_customer_visible_identity_boundaries(messages),
         lambda: validate_sales_price_fact_boundaries(messages),
         lambda: _validate_mainline_sales_action(state),
         lambda: _validate_unconfirmed_store_availability_claim(messages, state),

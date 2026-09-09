@@ -558,6 +558,29 @@ def test_explicit_address_rerequest_survives_later_incomplete_distance_result() 
     assert reused["delivery_store_ids"] == ["160"]
 
 
+def test_degraded_store_detail_without_a_concrete_field_does_not_reuse_stale_anchor() -> None:
+    resolution = {
+        "status": "search_incomplete",
+        "outcome": "search_incomplete",
+        "delivery_store_ids": [],
+        "destination_resolution": {
+            "request_kind": "store_detail",
+            "detail_kind": "none",
+            "resolver_status": "invalid_model_output",
+        },
+    }
+
+    unchanged = _reuse_already_delivered_store_delivery(
+        {
+            "request_context": {"interface_version": "v3"},
+            "history_events": _history_events(),
+        },
+        resolution,
+    )
+
+    assert unchanged == resolution
+
+
 def test_store_detail_survives_incomplete_lookup_without_repeating_card() -> None:
     resolution = {
         "status": "search_incomplete",

@@ -293,6 +293,13 @@ def _reuse_already_delivered_store_delivery(
             "search_incomplete",
         }
     if incomplete_detail_status and request_kind == "store_detail":
+        # A degraded destination resolver may preserve the router's broad
+        # ``store_detail`` purpose while failing to identify which detail the
+        # customer requested.  Do not turn that semantic failure into a
+        # resolved binding to an older card; the card remains visible history,
+        # but it cannot authorize store facts or a new sales step.
+        if detail_kind in {"", "none"}:
+            return resolution
         anchor = (
             sent_summary.get("store_anchor_fact")
             if isinstance(sent_summary.get("store_anchor_fact"), dict)

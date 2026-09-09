@@ -400,6 +400,24 @@ def _recent_assistant_store_reference(payload: dict[str, Any]) -> dict[str, str]
         if structured:
             return {"query": structured, "message_ref": str(item.get("message_ref") or "")}
         compact = re.sub(r"\s+", "", content).lower()
+        # Generic assistant questions such as “您在哪个城市，我帮您查门店”
+        # describe a missing destination rather than a store location.  Feeding
+        # them back as a destination makes degraded parsing geocode the prompt
+        # itself and can incorrectly bind an unrelated historical store.
+        if any(
+            marker in compact
+            for marker in (
+                "哪个城市",
+                "在哪个城市",
+                "哪个区",
+                "在哪个区",
+                "说下城市",
+                "说一下城市",
+                "告诉我城市",
+                "告诉我哪个城市",
+            )
+        ):
+            continue
         if "店" not in compact:
             continue
         if not any(marker in compact for marker in ("门店", "位置", "地址", "导航", "发")):

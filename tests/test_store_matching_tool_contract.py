@@ -14,6 +14,7 @@ from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.services.driving_route_service import parse_driving_route_workflow_result, rerank_stores_by_driving_route
 from app.services.store_destination_resolver import (
     _is_generic_store_detail_hint,
+    _recent_assistant_store_reference,
     _structured_current_location_query,
     resolve_active_store_destination,
 )
@@ -875,6 +876,23 @@ def test_assistant_store_location_history_strips_speaker_prefix() -> None:
     query = _structured_current_location_query("小贝: 门店位置：深圳龙华店 深圳市龙华区民治街道星河WORLD")
 
     assert query == "深圳龙华店 深圳市龙华区民治街道星河WORLD"
+
+
+def test_generic_assistant_location_question_is_not_reused_as_a_store_reference() -> None:
+    reference = _recent_assistant_store_reference(
+        {
+            "current_message": {"content": "你发我看看"},
+            "conversation": [
+                {
+                    "message_ref": "conv_001",
+                    "role": "assistant",
+                    "content": "我们全国有门店，您方便说下在哪个城市吗？我帮您查。",
+                }
+            ],
+        }
+    )
+
+    assert reference == {}
 
 
 def test_combined_store_detail_request_requires_model_to_ground_historical_store_location() -> None:

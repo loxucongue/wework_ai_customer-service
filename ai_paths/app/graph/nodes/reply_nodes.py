@@ -2406,6 +2406,22 @@ def _parallel_generic_reply_repair_messages(
     mainline_violation = any(
         "next_sales_action_exceeds_delivered_mainline" in item for item in violations
     )
+    visible_rewrite_markers = (
+        "customer_visible_placeholder_fact",
+        "customer_visible_false_human_identity_claim",
+        "case_image_structure_required_when_reply_promises_delivery",
+        "next_sales_action_exceeds_delivered_mainline",
+        "offer_face_hand_price_scope_ambiguous",
+        "offer_face_hand_total_268_conflict",
+        "offer_268_full_face_claim_conflict",
+        "offer_bilateral_cheek_split_price_conflict",
+        "offer_repeat_visit_268_unverified",
+    )
+    visible_rewrite_required = any(
+        marker in violation
+        for violation in violations
+        for marker in visible_rewrite_markers
+    )
     stage_delivery_requirements = {
         "effect_evidence": (
             "回答当前消息后，交付真实效果说明或本轮允许的真实效果素材；不能邀约到店、询问时间、"
@@ -2480,7 +2496,7 @@ def _parallel_generic_reply_repair_messages(
                 ),
                 "forbidden_shortcut": "不能只改动作标签；reply_messages、目标、姿态和理由必须同步改成该阶段",
             }
-            if mainline_violation
+            if mainline_violation or visible_rewrite_required
             else {}
         ),
         "required_output_contract": required_output_contract,
@@ -2539,22 +2555,8 @@ def _parallel_generic_reply_repair_messages(
         if isinstance(item, dict) and str(item.get("role") or "") == "user"
     ]
     repair_previous_payload = copy.deepcopy(previous_payload) if isinstance(previous_payload, dict) else None
-    visible_rewrite_markers = (
-        "customer_visible_placeholder_fact",
-        "case_image_structure_required_when_reply_promises_delivery",
-        "next_sales_action_exceeds_delivered_mainline",
-        "offer_face_hand_price_scope_ambiguous",
-        "offer_face_hand_total_268_conflict",
-        "offer_268_full_face_claim_conflict",
-        "offer_bilateral_cheek_split_price_conflict",
-        "offer_repeat_visit_268_unverified",
-    )
     removed_invalid_fields: list[str] = []
-    if isinstance(repair_previous_payload, dict) and any(
-        marker in violation
-        for violation in violations
-        for marker in visible_rewrite_markers
-    ):
+    if isinstance(repair_previous_payload, dict) and visible_rewrite_required:
         if "reply_messages" in repair_previous_payload:
             repair_previous_payload.pop("reply_messages", None)
             removed_invalid_fields.append("reply_messages")
@@ -3467,6 +3469,12 @@ def _reply_repair_hint(error: str) -> str:
     if "offer_repeat_visit_268_unverified" in error:
         return (
             "二次或后续价格不能沿用268元；改为以届时有效活动和门店确认结果为准。"
+        )
+    if "customer_visible_false_human_identity_claim" in error:
+        return (
+            "上一版对客户谎称自己不是机器人或是真人客服。删除这类身份断言；"
+            "用一句自然短话承接客户催促，然后完成紧邻尚未交付的请求。"
+            "不得借机恢复无关门店、价格或预约话题；对象确实无法确定时只追问一个必要信息。"
         )
     if "invalid_parallel_reply_action" in error:
         return (
