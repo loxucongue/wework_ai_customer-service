@@ -502,7 +502,6 @@ def create_background_context_layer(
                     _without_result(closing_catalog_result_timed),
                 ]
             )
-            customer_context = customer_result.get("customer_context", {})
             store_context_skipped_steps = ["store_index:deferred_until_semantic_router"]
             store_context_status = "deferred"
             store_context_elapsed_ms = 0

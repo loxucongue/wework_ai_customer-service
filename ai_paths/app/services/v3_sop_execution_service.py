@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -20,16 +19,13 @@ from app.policies.sales_flow import (
     sales_mainline_for_model,
 )
 from app.prompts.v3_sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
-from app.chat_request_context import is_isolated_v2_test_request
 from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
-from app.services.customer_scope import customer_scope_from_identity
 from app.services.model_client import ModelClient
 from app.services.sop.execution_core import SopExecutionCore
 from app.services.model_led_objection_playbook_service import ModelLedObjectionPlaybookService
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
-from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
 
 
