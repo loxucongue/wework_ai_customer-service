@@ -723,14 +723,21 @@ EXPECTED_COLUMNS = {
     for table in metadata.tables.values()
 }
 EXPECTED_INDEXES: dict[str, dict[str, tuple[str, ...]]] = {}
+EXPECTED_UNIQUE_INDEXES: dict[str, set[str]] = {}
 for _table in metadata.tables.values():
     _indexes: dict[str, tuple[str, ...]] = {}
+    _unique_indexes: set[str] = set()
     _primary = tuple(column.name for column in _table.primary_key.columns)
     if _primary:
         _indexes["PRIMARY"] = _primary
+        _unique_indexes.add("PRIMARY")
     for _constraint in _table.constraints:
         if isinstance(_constraint, UniqueConstraint) and _constraint.name:
             _indexes[_constraint.name] = tuple(column.name for column in _constraint.columns)
+            _unique_indexes.add(_constraint.name)
     for _index in _table.indexes:
         _indexes[_index.name] = tuple(column.name for column in _index.columns)
+        if _index.unique:
+            _unique_indexes.add(_index.name)
     EXPECTED_INDEXES[_table.name] = _indexes
+    EXPECTED_UNIQUE_INDEXES[_table.name] = _unique_indexes

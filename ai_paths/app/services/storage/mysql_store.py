@@ -11,7 +11,12 @@ from sqlalchemy.engine import Engine
 import pymysql
 
 from app.config import Settings
-from app.services.storage.mysql_schema import EXPECTED_ALL_TABLES, EXPECTED_COLUMNS, EXPECTED_INDEXES
+from app.services.storage.mysql_schema import (
+    EXPECTED_ALL_TABLES,
+    EXPECTED_COLUMNS,
+    EXPECTED_INDEXES,
+    EXPECTED_UNIQUE_INDEXES,
+)
 from app.services.storage.store_base import map_logical_tables
 
 
@@ -288,7 +293,8 @@ class MySQLStore:
             index_rows = conn.execute(
                 """
                 SELECT TABLE_NAME AS table_name, INDEX_NAME AS index_name,
-                       COLUMN_NAME AS column_name, SEQ_IN_INDEX AS seq_in_index
+                       COLUMN_NAME AS column_name, SEQ_IN_INDEX AS seq_in_index,
+                       NON_UNIQUE AS non_unique
                 FROM information_schema.STATISTICS
                 WHERE TABLE_SCHEMA=? AND TABLE_NAME LIKE ?
                 ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX
@@ -308,16 +314,26 @@ class MySQLStore:
         if mismatches:
             raise RuntimeError(f"AICS MySQL schema fingerprint mismatch: {', '.join(mismatches)}")
         actual_indexes: dict[str, dict[str, list[str]]] = {}
+        actual_unique_indexes: dict[str, set[str]] = {}
         for row in index_rows:
-            actual_indexes.setdefault(str(row["table_name"]), {}).setdefault(
-                str(row["index_name"]),
+            table_name = str(row["table_name"])
+            index_name = str(row["index_name"])
+            actual_indexes.setdefault(table_name, {}).setdefault(
+                index_name,
                 [],
             ).append(str(row["column_name"]))
+            if int(row.get("non_unique", 1) or 0) == 0:
+                actual_unique_indexes.setdefault(table_name, set()).add(index_name)
         missing_indexes = []
         for table, indexes in EXPECTED_INDEXES.items():
             for name, columns in indexes.items():
                 if tuple(actual_indexes.get(table, {}).get(name, ())) != columns:
                     missing_indexes.append(f"{table}.{name}")
+                    continue
+                expected_unique = name in EXPECTED_UNIQUE_INDEXES.get(table, set())
+                actual_unique = name in actual_unique_indexes.get(table, set())
+                if expected_unique != actual_unique:
+                    missing_indexes.append(f"{table}.{name}:uniqueness")
         if missing_indexes:
             raise RuntimeError(
                 f"AICS MySQL index fingerprint mismatch: {', '.join(missing_indexes)}"

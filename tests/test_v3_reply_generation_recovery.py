@@ -10,7 +10,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "ai_paths"))
 from app.config import Settings  # noqa: E402
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage  # noqa: E402
 from app.services.storage import AppRepository, SQLiteStore  # noqa: E402
-from app.services.storage.mysql_schema import EXPECTED_COLUMNS, EXPECTED_INDEXES  # noqa: E402
+from app.services.storage.mysql_schema import (  # noqa: E402
+    EXPECTED_COLUMNS,
+    EXPECTED_INDEXES,
+    EXPECTED_UNIQUE_INDEXES,
+)
 from app.services.v3_reply_recovery import (  # noqa: E402
     GENERATION_STATUS_FALLBACK_PENDING,
     GENERATION_STATUS_MANUAL_REVIEW,
@@ -316,6 +320,9 @@ def test_generation_schema_is_declared_for_mysql_and_sqlite_upgrade(tmp_path: Pa
     assert expected <= set(EXPECTED_COLUMNS["aics_runs"])
     assert EXPECTED_INDEXES["aics_runs"]["uq_aics_runs_generation_key"] == ("generation_key",)
     assert EXPECTED_INDEXES["aics_runs"]["uq_aics_runs_response_id"] == ("response_id",)
+    assert "uq_aics_runs_generation_key" in EXPECTED_UNIQUE_INDEXES["aics_runs"]
+    assert "uq_aics_runs_response_id" in EXPECTED_UNIQUE_INDEXES["aics_runs"]
+    assert "idx_aics_runs_generation_recovery" not in EXPECTED_UNIQUE_INDEXES["aics_runs"]
     with repository.store.connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
         indexes = {row["name"] for row in conn.execute("PRAGMA index_list(runs)").fetchall()}
