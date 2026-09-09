@@ -387,6 +387,59 @@ def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_quaran
     }
 
 
+def test_deterministic_recovery_reenters_customer_batch_without_legacy_model_path() -> None:
+    service, repository, platform, system, _events = _service()
+    repository.local["send_payload"] = {"processing_mode": "deterministic_customer_gate"}
+
+    async def forbidden_legacy_path(*_args: Any, **_values: Any) -> dict[str, Any]:
+        raise AssertionError("deterministic recovery must not enter the legacy model path")
+
+    service._process_locked = forbidden_legacy_path  # type: ignore[method-assign]
+
+    result = asyncio.run(service.process_task(_task(), recovery_status="platform_processing_retry"))
+
+    assert result["status"] == "sent"
+    assert len(system.send_calls) == 1
+    assert platform.consume_calls[-1]["messages"] == [{"msgId": "701", "status": 30, "remark": ""}]
+
+
+def test_empty_pending_page_is_a_noop_without_failure_alert() -> None:
+    class _EmptyPlatform:
+        async def pending(self, **_values: Any) -> dict[str, Any]:
+            return {"items": [], "total": 0, "complete": True}
+
+    class _Alerts:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def notify_system_failure(self, **values: Any) -> None:
+            self.calls.append(values)
+
+    alerts = _Alerts()
+    service = SopPlatformTaskService(
+        settings=SimpleNamespace(
+            sop_platform_queue_size=10,
+            sop_platform_batch_size=10,
+            sop_platform_priority_wechats="",
+            sop_platform_task_concurrency=1,
+        ),
+        repository=SimpleNamespace(),
+        platform_client=_EmptyPlatform(),
+        system_client=SimpleNamespace(),
+        model_client=_NoModel(),
+        customer_context_service=SimpleNamespace(),
+        failure_alert_service=alerts,
+    )
+    service._restore_reserved_prefix_ids = lambda: None
+
+    result = asyncio.run(service.poll_once())
+
+    assert result["pending_count"] == 0
+    assert result["enqueued_count"] == 0
+    assert result["error_count"] == 0
+    assert alerts.calls == []
+
+
 def test_manual_resend_is_disabled_to_prevent_implicit_message_consumption() -> None:
     service, _repository, _platform, _system, _events = _service()
 
