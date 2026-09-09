@@ -141,7 +141,16 @@ class SopFailureAlertService:
                 "phase": clean_phase,
                 "reason": clean_reason,
                 "customer_id": _first(task, "customerId", "customer_id", "platformCustomerId"),
-                "wechat": _first(task, "wechat", "weChat", "userId", "user_id"),
+                "wechat": _first(
+                    task,
+                    "wechat",
+                    "weChat",
+                    "user_wechat_id",
+                    "user_wechat",
+                    "wecom_account",
+                    "userId",
+                    "user_id",
+                ),
                 "scheduled_at": _first(
                     task,
                     "scheduledAt",
@@ -337,6 +346,8 @@ def _alert_event_id(task_id: str, *, phase: str) -> str:
 
 def _failure_type(reason: str) -> tuple[str, str]:
     normalized = str(reason or "").strip().lower()
+    if normalized.startswith(("wecom_aggregate_send_failed", "wecom_send_rejected")):
+        return "aggregate_platform_send_failure", "消息发送未成功"
     if "timeout" in normalized or "timed out" in normalized:
         return "interface_timeout", "接口超时"
     if normalized.startswith(("missing_identity", "missing_event_log_id")):
@@ -384,7 +395,9 @@ def _failure_responsibility(*, task_id: str, reason: str, phase: str) -> tuple[s
         )
     ):
         return "aics_customer_state_interface", "我方客户状态/会话接口"
-    if normalized_reason.startswith(("send_interface_", "send_failed", "wecom_")):
+    if normalized_reason.startswith(("wecom_aggregate_send_failed", "wecom_send_rejected")):
+        return "wecom_aggregate_platform_send", "企微聚合平台消息发送"
+    if normalized_reason.startswith(("send_interface_", "send_failed")):
         return "aics_proactive_send_interface", "我方主动发送链路"
     if normalized_phase.startswith(("persist_", "queue_process_exception", "recovery_iteration")):
         return "aics_runtime", "我方任务运行服务"
@@ -419,7 +432,7 @@ def _render_markdown(alert: dict[str, Any]) -> str:
             f"- 失败类型：{_clean_value(alert.get('failure_type_label'), fallback='任务处理失败')}",
             f"- 责任方向：{_clean_value(alert.get('responsibility_label'), fallback='待确认')}",
             f"- 失败阶段：{_clean_value(alert.get('phase'), fallback='unknown')}",
-            f"- 失败原因：{_clean_value(alert.get('reason'), fallback='unknown', limit=500)}",
+            f"- 失败原因：{_failure_reason_text(alert.get('reason'))}",
             f"- 客户 ID：{_clean_value(alert.get('customer_id'), fallback='未提供')}",
             f"- 接待企微：{_clean_value(alert.get('wechat'), fallback='未提供')}",
             f"- 计划时间：{_clean_value(alert.get('scheduled_at'), fallback='未提供')}",
@@ -429,3 +442,24 @@ def _render_markdown(alert: dict[str, Any]) -> str:
             "- 处理原则：业务已承接状态不告警；本告警任务保持未消费并继续恢复，后续任务不得越过。",
         ]
     )
+
+
+def _failure_reason_text(reason: Any) -> str:
+    clean_reason = _clean_value(reason, fallback="unknown", limit=500)
+    normalized = clean_reason.lower()
+    if not normalized.startswith(("wecom_aggregate_send_failed", "wecom_send_rejected")):
+        return clean_reason
+    reason_code = normalized.partition(":")[2].strip()
+    reason_labels = {
+        "account_unassigned": "企微账号未绑定客服用户或超级客服 AI 映射",
+        "missing_platform_customer_id": "缺少聚合平台客户 ID",
+        "customer_remark_unverified": "客户备注未通过聚合平台发送校验",
+        "ai_automation_disabled": "聚合平台 AI 自动化总开关未启用",
+    }
+    if reason_code in reason_labels:
+        return f"消息发送未成功，原因：{reason_labels[reason_code]}（{reason_code}）"
+    if reason_code.startswith("http_"):
+        return f"消息发送未成功，原因：企微聚合平台返回 HTTP {reason_code.removeprefix('http_')}"
+    if reason_code:
+        return f"消息发送未成功，原因：企微聚合平台拒绝发送（{reason_code}）"
+    return "消息发送未成功，原因：企微聚合平台返回发送失败"
