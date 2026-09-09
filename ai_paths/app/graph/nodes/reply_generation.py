@@ -1364,6 +1364,12 @@ def _sentence_promises_case_media(text: str) -> bool:
         "可以发",
         "可以提供",
         "能提供",
+        "给您参考",
+        "给你参考",
+        "给您看",
+        "给你看",
+        "可以先看看",
+        "可以看看",
         "先发一些",
         "先发一张",
         "先发一组",
@@ -1378,6 +1384,12 @@ def _sentence_promises_case_media(text: str) -> bool:
         "参考图",
         "同类淡斑",
         "同类改善参考",
+        "真实反馈",
+        "顾客反馈",
+        "客户反馈",
+        "改善实拍",
+        "顾客实拍",
+        "客户实拍",
     )
     return any(term in text for term in delivery_terms) and any(term in text for term in media_terms)
 

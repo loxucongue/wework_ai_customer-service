@@ -38,7 +38,7 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "有活动卡点时" in prompt
     assert "cardpoint 为 active/repeated 时 closing 必须 pause" in prompt
     assert "门店查询只证明位置需求和本轮返回的公开门店事实" in prompt
-    assert "首次询价直接回答权威活动价" in prompt
+    assert "首次泛问价格只报活动价和包含价值" in prompt
     assert "不设默认消息条数" in prompt
     assert "每条 text 目标约20–60个汉字" in prompt
     assert "整轮严格遵守输入中的“本轮客户可见输出上限”" in prompt
@@ -46,7 +46,7 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "禁止客服菜单" in prompt
     assert "不要从混乱、过期或测试记录恢复旧话题" in prompt
     assert "权威事实、本轮确认、经核验" in prompt
-    assert "首次询价" in prompt and "绝不发送 `payment_collection`" in prompt
+    assert "首次泛问价格" in prompt and "绝不发 `payment_collection`" in prompt
     assert "先写非空 `reply_messages`" in prompt
     assert "不等于永久停止" in prompt
     assert "门店卡、姓名、电话和时间意向都不等于预约完成" in prompt
@@ -64,6 +64,10 @@ def test_reply_does_not_ask_model_for_code_derived_observation_fields() -> None:
 def test_realtime_prompt_budgets_prevent_rule_bloat_regression() -> None:
     assert len(V3_CHECKPOINT_ROUTER_SYSTEM_PROMPT) <= 6_500
     assert len(PARALLEL_REPLY_SYSTEM_PROMPT) <= 7_000
+
+
+def test_generic_price_question_does_not_volunteer_scope_jargon() -> None:
+    assert "首次泛问价格只报活动价和包含价值，不主动说“单部位体验”" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_reply_uses_positive_evidence_before_effect_boundaries() -> None:

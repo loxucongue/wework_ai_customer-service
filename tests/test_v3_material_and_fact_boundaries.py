@@ -546,6 +546,29 @@ def test_case_availability_promise_requires_same_turn_media_structure() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "我这边有顾客做过的真实反馈，可以给您参考一下。",
+        "这种情况您可以先看看客户改善实拍。",
+    ],
+)
+def test_indirect_case_offer_also_requires_same_turn_media_structure(reply: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match="case_image_structure_required_when_reply_promises_delivery",
+    ):
+        _validate_parallel_reply_consistency(
+            [{"type": "text", "content": reply}],
+            {
+                "evidence_join": {
+                    "schema_version": "reply_chain_evidence_join_v1",
+                    "structured_facts": {},
+                }
+            },
+        )
+
+
 def test_failed_repair_salvage_removes_distance_restatement_but_keeps_value() -> None:
     payload = {
         "reply_messages": [
