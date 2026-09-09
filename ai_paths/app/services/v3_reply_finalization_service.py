@@ -52,6 +52,7 @@ class V3ReplyFinalizationService:
         jobs = self.repository.claim_v3_reply_finalizations(limit=self.batch_size)
         completed = 0
         failed = 0
+        finish_results: list[dict[str, str]] = []
         for job in jobs:
             request_id = str(job.get("request_id") or "")
             started = time.perf_counter()
@@ -59,6 +60,22 @@ class V3ReplyFinalizationService:
                 state = job.get("final_state")
                 if not isinstance(state, dict):
                     raise ValueError("invalid deferred final_state")
+                if bool(state.get("deferred_identity_observation")):
+                    state["customer_identity_observation"] = (
+                        self.repository.observe_customer_identity(
+                            corp_id=str(state.get("corp_id") or ""),
+                            wechat=str(state.get("wechat") or ""),
+                            external_userid=str(state.get("external_userid") or ""),
+                            customer_id=str(
+                                state.get("platform_customer_id")
+                                or state.get("customer_id")
+                                or ""
+                            ),
+                            user_id=str(state.get("user_id") or ""),
+                            customer_add_wechat_id=str(state.get("customer_add_wechat_id") or ""),
+                            source="v3_request_finalization",
+                        )
+                    )
                 record_reply_memory(
                     self.memory_store,
                     final_state=state,
@@ -68,7 +85,12 @@ class V3ReplyFinalizationService:
                 )
                 if self.service_rule_data_service is not None:
                     state["strategy_data_callback"] = (
-                        self.service_rule_data_service.enqueue_customer_open(state)
+                        self.service_rule_data_service.enqueue_customer_open(
+                            state,
+                            allow_empty_reply=bool(
+                                state.get("service_rule_data_allow_empty_reply")
+                            ),
+                        )
                     )
                 if self.outreach_service is not None:
                     state["closing_sequence_shadow"] = (
@@ -87,22 +109,13 @@ class V3ReplyFinalizationService:
                     conversation_id=str(job.get("conversation_id") or ""),
                     final_state=state,
                 )
-                self.repository.finish_v3_reply_finalization(request_id=request_id)
+                finish_results.append({"request_id": request_id, "error": ""})
                 completed += 1
             except Exception as exc:
                 failed += 1
                 error = f"{type(exc).__name__}: {exc}"[:1000]
                 logger.exception("V3 reply finalization failed for request_id=%s", request_id)
-                try:
-                    self.repository.finish_v3_reply_finalization(
-                        request_id=request_id,
-                        error=error,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to persist V3 reply finalization failure for request_id=%s",
-                        request_id,
-                    )
+                finish_results.append({"request_id": request_id, "error": error})
             finally:
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
                 logger.info(
@@ -110,4 +123,20 @@ class V3ReplyFinalizationService:
                     request_id,
                     elapsed_ms,
                 )
+        if finish_results:
+            try:
+                self.repository.finish_v3_reply_finalizations(finish_results)
+            except Exception:
+                logger.exception("Failed to persist V3 reply finalization batch results")
+                for result in finish_results:
+                    try:
+                        self.repository.finish_v3_reply_finalization(
+                            request_id=result["request_id"],
+                            error=result["error"],
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist V3 reply finalization result for request_id=%s",
+                            result["request_id"],
+                        )
         return {"claimed": len(jobs), "completed": completed, "failed": failed}

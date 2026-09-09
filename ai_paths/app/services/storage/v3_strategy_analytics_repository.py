@@ -71,7 +71,18 @@ class V3StrategyAnalyticsRepositoryMixin:
             now=utc_now_iso(),
         )
         with self.store.connect() as conn:
-            dispatch = conn.execute(
+            return self._record_v3_strategy_usage_in_connection(conn, event=event)
+
+    def _record_v3_strategy_usage_in_connection(
+        self,
+        conn: Any,
+        *,
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a prepared usage event using a caller-owned transaction."""
+
+        request_id = _text(event.get("request_id"))
+        dispatch = conn.execute(
                 """
                 SELECT id, status, confirmed_at, accepted_at, error_message, error_code
                 FROM message_dispatches
@@ -80,28 +91,28 @@ class V3StrategyAnalyticsRepositoryMixin:
                 """,
                 (request_id,),
             ).fetchone()
-            if dispatch is not None and not event["dispatch_id"]:
-                event["dispatch_id"] = _text(dispatch["id"])
-                event["delivery_status"] = _text(dispatch["status"])
-                event["delivered_at"] = _text(dispatch["confirmed_at"] or dispatch["accepted_at"])
-                event["failed_reason"] = _text(dispatch["error_message"] or dispatch["error_code"])
-            previous = _previous_usage_for_event(conn, event)
-            conn.execute(
-                f"INSERT INTO v3_strategy_usage_events ({', '.join(_USAGE_COLUMNS)}) "
-                f"VALUES ({', '.join('?' for _ in _USAGE_COLUMNS)}) "
-                "ON CONFLICT(request_id) DO NOTHING",
-                _usage_insert_values(event),
-            )
-            stored = conn.execute(
-                "SELECT id FROM v3_strategy_usage_events WHERE request_id=?",
-                (request_id,),
-            ).fetchone()
-            if stored is None:
-                raise RuntimeError("V3 strategy usage idempotent insert did not produce a row")
-            event_id = _text(stored["id"])
-            created = event_id == event["id"]
-            if created and event["customer_turn_eligible"] and previous is not None:
-                _link_previous_usage(conn, previous=previous, current=event)
+        if dispatch is not None and not event["dispatch_id"]:
+            event["dispatch_id"] = _text(dispatch["id"])
+            event["delivery_status"] = _text(dispatch["status"])
+            event["delivered_at"] = _text(dispatch["confirmed_at"] or dispatch["accepted_at"])
+            event["failed_reason"] = _text(dispatch["error_message"] or dispatch["error_code"])
+        previous = _previous_usage_for_event(conn, event)
+        conn.execute(
+            f"INSERT INTO v3_strategy_usage_events ({', '.join(_USAGE_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in _USAGE_COLUMNS)}) "
+            "ON CONFLICT(request_id) DO NOTHING",
+            _usage_insert_values(event),
+        )
+        stored = conn.execute(
+            "SELECT id FROM v3_strategy_usage_events WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if stored is None:
+            raise RuntimeError("V3 strategy usage idempotent insert did not produce a row")
+        event_id = _text(stored["id"])
+        created = event_id == event["id"]
+        if created and event["customer_turn_eligible"] and previous is not None:
+            _link_previous_usage(conn, previous=previous, current=event)
         return {"status": "recorded", "id": event_id, "created": created}
 
     def latest_v3_strategy_state(

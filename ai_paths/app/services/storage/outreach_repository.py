@@ -3130,15 +3130,44 @@ class OutreachRepositoryMixin:
         if not scope.persistence_allowed:
             return {"cancelled_plans": 0, "skipped_tasks": 0}
 
+        with self.store.connect() as conn:
+            return self._cancel_outreach_for_customer_reply_in_connection(
+                conn,
+                customer_id=customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                request_id=request_id,
+                sales_contact_key=scope.sales_contact_key,
+            )
+
+    def _cancel_outreach_for_customer_reply_in_connection(
+        self,
+        conn: Any,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+        request_id: str = "",
+        sales_contact_key: str = "",
+    ) -> dict[str, Any]:
+        """Cancel one customer's unsent outreach in a caller-owned transaction."""
+
+        scope = build_customer_scope(
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
+        if not scope.persistence_allowed:
+            return {"cancelled_plans": 0, "skipped_tasks": 0}
         now = utc_now_iso()
-        plan_ids: list[str] = []
-        skipped_tasks = 0
         identity_sql, identity_params = _strict_identity_match(
             external_userid=external_userid,
             customer_id=customer_id,
         )
-        with self.store.connect() as conn:
-            rows = conn.execute(
+        rows = conn.execute(
                 f"""
                 SELECT id
                 FROM outreach_plans
@@ -3149,9 +3178,10 @@ class OutreachRepositoryMixin:
                 """,
                 (corp_id, wechat, *identity_params),
             ).fetchall()
-            plan_ids = [_string(row["id"]) for row in rows if _string(row["id"])]
-            for plan_id in plan_ids:
-                cursor = conn.execute(
+        plan_ids = [_string(row["id"]) for row in rows if _string(row["id"])]
+        skipped_tasks = 0
+        for plan_id in plan_ids:
+            cursor = conn.execute(
                     """
                     UPDATE outreach_tasks
                     SET status='skipped', error_message='customer_replied', updated_at=?
@@ -3159,8 +3189,8 @@ class OutreachRepositoryMixin:
                     """,
                     (now, plan_id),
                 )
-                skipped_tasks += int(cursor.rowcount or 0)
-                conn.execute(
+            skipped_tasks += int(cursor.rowcount or 0)
+            conn.execute(
                     """
                     UPDATE outreach_plans
                     SET status='cancelled', cancelled_at=?, updated_at=?
@@ -3168,18 +3198,7 @@ class OutreachRepositoryMixin:
                     """,
                     (now, now, plan_id),
                 )
-
-        for plan_id in plan_ids:
-            self.add_outreach_event(
-                plan_id=plan_id,
-                task_id="",
-                customer_id=customer_id,
-                event_type="plan_cancelled_customer_replied",
-                event_summary="Customer replied; remaining personalized outreach was cancelled",
-                payload={"request_id": request_id, "skipped_tasks": skipped_tasks},
-            )
-            with self.store.connect() as conn:
-                run_row = conn.execute(
+            run_row = conn.execute(
                     """
                     SELECT workflow_run_id, started_at FROM first_day_outreach_runs
                     WHERE plan_id=? AND status IN ('running','created')
@@ -3187,12 +3206,12 @@ class OutreachRepositoryMixin:
                     """,
                     (plan_id,),
                 ).fetchone()
-                started_at = _parse_iso(_string(run_row["started_at"])) if run_row else None
-                duration_ms = max(
-                    0,
-                    round((datetime.now(timezone.utc) - started_at).total_seconds() * 1000),
-                ) if started_at else 0
-                conn.execute(
+            started_at = _parse_iso(_string(run_row["started_at"])) if run_row else None
+            duration_ms = max(
+                0,
+                round((datetime.now(timezone.utc) - started_at).total_seconds() * 1000),
+            ) if started_at else 0
+            conn.execute(
                     """
                     UPDATE first_day_outreach_runs
                     SET status='cancelled', reason_code='customer_replied',
@@ -3201,11 +3220,41 @@ class OutreachRepositoryMixin:
                     """,
                     (duration_ms, now, now, plan_id),
                 )
+            event_payload = {"request_id": request_id, "skipped_tasks": skipped_tasks}
+            if run_row and _string(run_row["workflow_run_id"]):
+                event_payload["workflow_run_id"] = _string(run_row["workflow_run_id"])
+            conn.execute(
+                """
+                INSERT INTO outreach_events
+                    (id, plan_id, task_id, customer_id, event_type, event_summary, payload_json, created_at)
+                VALUES (?, ?, '', ?, 'plan_cancelled_customer_replied', ?, ?, ?)
+                """,
+                (
+                    str(uuid4()),
+                    plan_id,
+                    customer_id,
+                    "Customer replied; remaining personalized outreach was cancelled",
+                    dumps(redact_first_day_log_value(event_payload) if run_row else event_payload),
+                    now,
+                ),
+            )
         if plan_ids:
-            self.update_customer_outreach_state(
-                scope.sales_contact_key,
-                outreach_status="cancelled",
-                outreach_plan_id="",
+            memory_key = sales_contact_key or scope.sales_contact_key
+            conn.execute(
+                """
+                INSERT INTO customer_memory (customer_id, portrait, basic_info, lifecycle_stage, updated_at)
+                VALUES (?, '{}', '{}', '', ?)
+                ON CONFLICT(customer_id) DO NOTHING
+                """,
+                (memory_key, now),
+            )
+            conn.execute(
+                """
+                UPDATE customer_memory
+                SET outreach_status='cancelled', outreach_plan_id='', updated_at=?
+                WHERE customer_id=?
+                """,
+                (now, memory_key),
             )
         return {"cancelled_plans": len(plan_ids), "skipped_tasks": skipped_tasks}
 
