@@ -462,6 +462,35 @@ def test_msg_id_binding_conflict_closes_task_without_consuming_another_message()
     assert repository.local["send_payload"]["terminal_failure"]["unconsumed_message_ids"] == ["701"]
 
 
+def test_live_pending_legacy_task_is_consumed_without_replaying_or_consuming_content() -> None:
+    service, repository, platform, system, events = _service()
+    repository.local.update(
+        {
+            "status": "platform_queued",
+            "send_payload": {
+                "processing_mode": "customer_batch_sequence",
+                "content_message_results": [{"msgId": "701", "status": 30, "remark": ""}],
+                "consume_results": [],
+            },
+        }
+    )
+    service._ensure_local_task = lambda _task, **_kwargs: (
+        {"status": "platform_legacy_quarantined"},
+        dict(repository.local),
+    )
+
+    result = _run(service)
+
+    assert result["status"] == "failed_consumed"
+    assert result["reason"] == "legacy_execution_disabled"
+    assert system.send_calls == []
+    assert "send" not in events
+    assert "sop_messages" not in events
+    assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
+    assert repository.local["send_payload"]["terminal_failure"]["message_ids_consumed"] == []
+    assert repository.local["send_payload"]["terminal_failure"]["unconsumed_message_ids"] == ["701"]
+
+
 def test_single_task_entry_uses_deterministic_flow_and_legacy_recovery_is_quarantined() -> None:
     service, _repository, platform, system, _events = _service()
 

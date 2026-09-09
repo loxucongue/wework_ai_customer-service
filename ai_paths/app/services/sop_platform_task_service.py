@@ -84,6 +84,7 @@ SOP_CONSUMED_FAILURE_REASON_PREFIXES = (
     "invalid_sop_message_group",
     "missing_sop_message_id",
     "sop_message_binding_conflict",
+    "legacy_execution_disabled",
     "wecom_aggregate_send_failed",
     "wecom_send_rejected",
 )
@@ -1126,6 +1127,22 @@ class SopPlatformTaskService:
                 "reason": "already_terminal_after_concurrent_processing",
             }
         current_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+        if current_event_status == "platform_legacy_quarantined":
+            # Only a task returned by the current upstream pending feed can
+            # enter this ordinary processing path. Close that still-live
+            # legacy task without replaying its old execution or touching a
+            # message id; historical records absent from pending remain audit
+            # only and are never bulk-recovered.
+            return await self._consume_batch_without_send(
+                [task],
+                reason="legacy_execution_disabled",
+                batch_key=str(current_audit.get("batch_key") or batch_key),
+                biz_type=str(current_audit.get("biz_type") or biz_type),
+                batch_run_id=str(current_audit.get("batch_run_id") or batch_run_id),
+                decision=current_audit.get("decision") if isinstance(current_audit.get("decision"), dict) else None,
+                audit_context=current_audit.get("context") if isinstance(current_audit.get("context"), dict) else None,
+                terminal_failure=True,
+            )
         persisted_failure_reason = str(current_audit.get("reason") or local_task.get("error") or "").strip()
         if current_task_status in {"processing_retry", "failure_consume_pending"} and _is_consumed_terminal_failure(
             persisted_failure_reason
@@ -2753,7 +2770,6 @@ class SopPlatformTaskService:
             "platform_sequence_blocked",
             "platform_failure_rule_data_pending",
             "platform_failed",
-            "platform_legacy_quarantined",
         }
         # The joined repository view restores the same durable event/task
         # evidence in one query. The old event-list + per-task lookup made a

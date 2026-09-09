@@ -402,6 +402,8 @@ def _failure_responsibility(*, task_id: str, reason: str, phase: str) -> tuple[s
         return "wecom_aggregate_platform_send", "企微聚合平台消息发送"
     if normalized_reason.startswith(("send_interface_", "send_failed")):
         return "aics_proactive_send_interface", "我方主动发送链路"
+    if normalized_reason.startswith("legacy_execution_disabled"):
+        return "aics_runtime", "我方任务运行服务"
     if normalized_phase.startswith(("persist_", "queue_process_exception", "recovery_iteration")):
         return "aics_runtime", "我方任务运行服务"
     if task_id.startswith("system-"):
