@@ -30,13 +30,15 @@
 
 1. 读取本文件。
 2. 读取 `docs/INDEX.md`。
-3. 读取相关合同/架构文档。
-4. 读取 `docs/tasks/active/INDEX.md`，再读取自己的 `docs/tasks/active/<task-id>.md`。
+3. 读取 `docs/current/MASTER_CONTEXT.md`；执行窗口再读取相关合同/架构文档。
+4. 读取 `docs/tasks/active/INDEX.md`，执行窗口再读取自己的 `docs/tasks/active/<task-id>.md`。
 5. 核验当前分支、HEAD、dirty 状态；涉及线上时核验实际 release 和服务。
+
+项目可以保留一个长期“母窗口”，它的唯一任务是产品讨论、优先级、方案审核、子任务拆分和结果验收，不直接承载多个实现。每个开发、诊断、评测、合并或发布工作仍必须进入独立子窗口和独立 task；完整合同见 `docs/tasks/PARENT_CHILD_WORKFLOW.md`。
 
 推荐的新窗口指令：
 
-> 读取 AGENTS.md、docs/INDEX.md、docs/tasks/active/INDEX.md 和 docs/tasks/active/<task-id>.md；先核实 main、dirty 状态和生产 release，再继续。
+> 读取 AGENTS.md、docs/INDEX.md、docs/current/MASTER_CONTEXT.md、docs/tasks/active/INDEX.md 和 docs/tasks/active/<task-id>.md；先核实 main、dirty 状态和生产 release，再继续。
 
 每个活跃任务独占一个 `docs/tasks/active/<task-id>.md`，并登记在 `INDEX.md`。活动任务必须记录：目标、非目标、base SHA、生产基线、涉及模块、不可破坏合同、完成/待办、测试证据、发布和回滚点。完成后把长期结论写入合同或 ADR、在 `docs/tasks/history/INDEX.md` 记录一行可追溯摘要，然后删除活动任务文件；Git 历史仍是完整任务档案。
 

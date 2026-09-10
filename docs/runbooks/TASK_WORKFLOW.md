@@ -1,17 +1,19 @@
 # 一任务一窗口工作流
 
+母窗口、执行子窗口和集成窗口的职责、任务包和回报格式见 [母窗口与子窗口协作规范](../tasks/PARENT_CHILD_WORKFLOW.md)。本页只描述单个执行任务从开始到关闭的工程流程。
+
 ## 开始
 
 1. 先同步并核验最新 `origin/main`，检查目标工作区、其他 worktree 和所有 dirty 文件；用户已有改动不得擅自清理或覆盖。
 2. 例行、低风险工作可直接基于最新干净 `main`；用户明确要求、并行开发、高风险变更或需要隔离验证时，创建 `codex/<task-id>` 分支和独立 worktree。不得从 detached HEAD、旧功能分支或 dirty 工作区开始。
 3. 复制 `docs/tasks/TEMPLATE.md` 为 `docs/tasks/active/<task-id>.md`，并由主 Agent 登记到 `docs/tasks/active/INDEX.md`。登记实际 branch/worktree；直接基于 main 时也要明确写出。
 4. 写明 change contract、base SHA、线上基线、范围、独占文件和不可破坏合同。
-5. 新窗口只需指定该任务文件，不复制历史聊天。
+5. 新窗口读取母窗口上下文和该任务文件，不复制历史聊天。
 
 ## 执行
 
 - 每次重要结论立即写入任务文件的“证据/决策”，不要依赖聊天记忆。
-- 需要并行时，主 Agent 分配互斥文件或目录；子 Agent 不提交、不部署，主 Agent 是唯一集成人。
+- 需要并行时，母窗口或任务主 Agent 分配互斥文件或目录；任务内子 Agent 不提交、不部署，指定集成窗口是该批次唯一集成人。
 - 动态事实现场核验；历史文档只能作为线索。
 - 运行产物写 `artifacts/<task-id>/`，不进 Git。
 

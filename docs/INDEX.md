@@ -5,15 +5,16 @@
 ## 新任务阅读顺序
 
 1. [项目宪法](../AGENTS.md)
-2. [产品背景与统一目标](background/PRODUCT_CONTEXT.md)
-3. [当前开发进度](current/DEVELOPMENT_STATUS.md)
-4. [系统结构](architecture/SYSTEM.md)
-5. [运行版本边界](contracts/RUNTIME_BOUNDARIES.md)
-6. 与任务相关的合同和[接口文档](interfaces/INDEX.md)
-7. 涉及线上时读取并重新核验[生产状态](current/PRODUCTION_STATE.md)
-8. [已知问题](current/KNOWN_ISSUES.md)
-9. [活跃任务清单](tasks/active/INDEX.md)及本窗口唯一任务文档
-10. 需要服务器入口时读取[访问提示](current/ACCESS_HINTS.md)
+2. [项目母窗口上下文](current/MASTER_CONTEXT.md)
+3. [产品背景与统一目标](background/PRODUCT_CONTEXT.md)
+4. [当前开发进度](current/DEVELOPMENT_STATUS.md)
+5. [系统结构](architecture/SYSTEM.md)
+6. [运行版本边界](contracts/RUNTIME_BOUNDARIES.md)
+7. 与任务相关的合同和[接口文档](interfaces/INDEX.md)
+8. 涉及线上时读取并重新核验[生产状态](current/PRODUCTION_STATE.md)
+9. [已知问题](current/KNOWN_ISSUES.md)
+10. [活跃任务清单](tasks/active/INDEX.md)及本窗口唯一任务文档
+11. 需要服务器入口时读取[访问提示](current/ACCESS_HINTS.md)
 
 ## 产品、架构与决策
 
@@ -42,6 +43,7 @@
 
 ## 当前状态
 
+- [项目母窗口上下文](current/MASTER_CONTEXT.md)：已确认产品决策、当前优先级、外部依赖和母窗口启动指令
 - [当前开发进度](current/DEVELOPMENT_STATUS.md)
 - [当前生产状态](current/PRODUCTION_STATE.md)
 - [当前已知问题](current/KNOWN_ISSUES.md)
@@ -60,6 +62,7 @@
 ## 任务协作
 
 - [任务规则](tasks/README.md)
+- [母窗口与子窗口协作规范](tasks/PARENT_CHILD_WORKFLOW.md)
 - [活跃任务清单](tasks/active/INDEX.md)
 - [任务模板](tasks/TEMPLATE.md)
 - [历史任务索引](tasks/history/INDEX.md)
