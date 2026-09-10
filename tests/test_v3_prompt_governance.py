@@ -85,7 +85,7 @@ def test_reply_uses_positive_evidence_before_effect_boundaries() -> None:
     assert '"knowledge_use":{"sequence_id":"","step_id":"","script_id":"","reason":""}' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "话术可独立于序列选择" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "首次无因软拒绝" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "没有新的业务请求或继续了解信号时只短承接并 `keep_open`" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "没有新价值或明确先这样时才 `keep_open`" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "临时不可交流" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "放弃式收口代替实际销售动作" in PARALLEL_REPLY_SYSTEM_PROMPT
 
@@ -184,9 +184,7 @@ def test_reply_treats_mainline_as_an_opportunity_not_a_per_turn_obligation() -> 
 
     assert "next_missing_stage" in prompt
     assert "不是每轮必做任务" in prompt
-    assert "必须落实一个相邻动作" not in prompt
-    assert "先判断本轮是否适合推进" in prompt
-    assert "只有真实业务继续信号时才最多推进一个相邻动作" in prompt
+    assert "必须落实一个相邻动作" in prompt
     assert "有继续信号时不能用 `keep_open`" in prompt
 
 

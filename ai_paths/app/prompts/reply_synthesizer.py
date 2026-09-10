@@ -113,13 +113,6 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         for item in semantic_route.get("relevant_fact_topic_ids") or []
         if str(item or "").strip()
     ]
-    # Supply facts for the adjacent opportunity without changing Router's
-    # retrieval topics, media priority, permissions, or the model's action.
-    available_fact_topic_ids = list(relevant_fact_topic_ids)
-    mainline = payload.get("mainline_delivery_state")
-    if isinstance(mainline, dict) and mainline.get("next_missing_stage") == "activity_offer":
-        if "activity_offer" not in available_fact_topic_ids:
-            available_fact_topic_ids.append("activity_offer")
     current_time = shared.get("current_time") if isinstance(shared.get("current_time"), dict) else {}
     time_text = "；".join(
         item
@@ -194,7 +187,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
             _section("必须遵守", _render_must_follow(rules)),
             _section(
                 "本轮相关权威事实：最终口径",
-                _render_authoritative_facts(rules, topic_ids=available_fact_topic_ids),
+                _render_authoritative_facts(rules, topic_ids=relevant_fact_topic_ids),
             ),
             _section(
                 "可直接交付的真实素材",
@@ -292,7 +285,7 @@ def _render_mainline_execution_contract(value: Any) -> str:
     next_stage = str(state.get("next_missing_stage") or "").strip()
     lines = [
         _render_compact_status(state),
-        "next_missing_stage 只提供相邻销售方向和越级上限，不是每轮任务，也不要求本轮介绍已提供的活动事实。先判断是否适合推进：纯关系回应、临时暂停、重复暂缓、不耐烦不额外推销；只有真实业务继续信号时才最多推进一个相邻动作。",
+        "next_missing_stage 是相邻销售方向和越级上限，不是每轮任务；客户提交需求/位置、认可价值、积极承接或卡点化解时，必须落实相邻动作。",
         "next_sales_action.type 仍须逐字选择 allowed_next_sales_action_types 中的一个值，记录本轮实际落实的动作；自然承接可以选择 keep_open。",
     ]
     if "invite_booking" not in allowed:
@@ -1030,7 +1023,7 @@ def _render_knowledge_evidence(value: Any) -> str:
     if not isinstance(value, dict) or not value:
         return "本轮没有匹配到跟进序列或参考话术；Reply 仍按完整聊天和权威事实回答。"
     lines: list[str] = [
-        "以下内容只提供销售逻辑、事实线索和论据，不作为语气、句式、称呼或话术模板，也不能替 Reply 解释客户原话。数量、价格、效果、免费、人员、距离、名额和完成状态必须对照本轮权威事实；冲突部分不采用。保留有效论据与完整活动信息，自行组织表达，不模仿口语风格、表达方式或固定结构。"
+        "以下内容只提供销售思路和口语风格，也不能替 Reply 解释客户原话。其中数量、价格、效果、免费、人员、距离、名额和完成状态必须重新对照【权威业务事实】。候选原文与本轮硬事实口径不同时，只取其销售逻辑和表达方式，不复述冲突文本。"
     ]
     support_level = str(value.get("support_level") or "").strip()
     support_labels = {
