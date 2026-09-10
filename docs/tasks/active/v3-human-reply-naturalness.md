@@ -1,6 +1,17 @@
 # V3 真人回复自然度治理
 
 - status: active
+
+## 2026-09-10 本次发布例外（优先于下方历史限制）
+
+- 用户在获知“活动完整性 8/10、无关插入 3/22、完整 L3 未通过”后明确授权：“本次可以部署上线再测试一下”。本次允许集成干净 main 并发布，不将已失败的质量门槛改记为通过。
+- change contract：仅发布现有 V3 Reply 自然度候选 5323c65a1fea792e6c6d277f340713150d8b226d；不追加业务代码修改、数据库迁移、模型温度或配置开关变更。
+- 集成位置：独立干净副本 E:/ai_code/vscode_codex/worktrees/v3-naturalness-release；不触碰其他工作区的未提交文件。
+- 现场生产基线及回滚目标：/opt/ai-paths/releases/ai-paths-unified-20260910-sop-race-1f9fc745，commit 1f9fc745c04932f9ca512464b36d3c6424fbdcfb；原 previous 为 sop-terminal-9ae26dcd。
+- 验证：main 确定性回归、发布清单和包校验、三后端角色与管理页/回调/退役路由检查、服务器隔离模型复测。正式接口会重置 test_isolated，禁止用虚构客户直接请求正式回复产生生产数据。
+- 风险：活动内容遗漏、不必要营销插入、模型图超时/降级及未完成业务盲审仍然存在；本次属于用户授权的风险例外上线，不代表完整质量验收通过。
+- 回滚：服务启动或基础合同检查失败时，将两套 current 恢复上述现场基线并重启三个后端；保持原环境文件、数据库、前端版本及后台业务开关不变。
+- 当前进度：准备集成与发布；实际 release、部署后检查结果随后补充。
 - owner: Codex
 - base_branch: `origin/main`
 - base_sha: `6f5a23ce7cd0cd2bb91a1717434d8f3589c3b375`
