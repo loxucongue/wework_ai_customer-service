@@ -128,16 +128,11 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         semantic_route=semantic_route,
         relevant_fact_topic_ids=relevant_fact_topic_ids,
     )
+    # Customer words come before planning metadata. Facts and permissions then
+    # establish what is possible before the model sees the adjacent mainline
+    # opportunity or retrieval language.
     sections = [
         _section("当前时间", time_text or "未提供"),
-        _section(
-            "本轮客户可见输出上限",
-            _render_compact_status(payload.get("presentation_limits") or {}),
-        ),
-        _section(
-            "本轮销售动作硬合同（客户可见文字也必须遵守）",
-            _render_mainline_execution_contract(payload.get("mainline_delivery_state") or {}),
-        ),
         _section("完整聊天", _render_conversation(shared, reference_aliases=reference_aliases)),
         _section(
             "当前结构事实与不能越过的边界",
@@ -151,41 +146,12 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         _section("本轮真实执行能力", _render_execution_capabilities()),
     ]
     policy = payload.get("ai_sales_policy") if isinstance(payload.get("ai_sales_policy"), dict) else {}
-    if str(policy.get("runtime_mode") or "off") != "off":
-        sections.append(
-            _section(
-                "已发布 AI 销售策略（只提供可选 key 与节奏，不覆盖事实边界）",
-                json_dumps(
-                    {
-                        "policy_version": policy.get("policy_version"),
-                        "routing": policy.get("routing") or {},
-                        "intent": policy.get("intent") or {},
-                        "emotion": policy.get("emotion") or {},
-                        "closing": policy.get("closing") or {},
-                    }
-                ),
-            )
-        )
-        previous_policy_state = _compact_previous_policy_state(payload.get("previous_policy_state"))
-        if previous_policy_state:
-            sections.append(
-                _section(
-                    "上一轮策略状态（仅参考，必须按当前客户新消息重新判断）",
-                    json_dumps(previous_policy_state),
-                )
-            )
-        closing_catalog = (
-            payload.get("closing_catalog_evidence")
-            if isinstance(payload.get("closing_catalog_evidence"), dict)
-            else {}
-        )
-        if closing_catalog:
-            sections.append(
-                _section(
-                    "本轮租户逼单规则与策略候选（只可从中选择，不要求采用）",
-                    json_dumps(closing_catalog),
-                )
-            )
+    previous_policy_state = _compact_previous_policy_state(payload.get("previous_policy_state"))
+    closing_catalog = (
+        payload.get("closing_catalog_evidence")
+        if isinstance(payload.get("closing_catalog_evidence"), dict)
+        else {}
+    )
     protocol_events = (
         shared.get("current_message", {}).get("protocol_events")
         if isinstance(shared.get("current_message"), dict)
@@ -209,54 +175,101 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         sections.append(_section("已付登记", _render_registration_fact_status(registration_status)))
     sections.extend(
         [
-        _section(
-            "当前工具权威事实：不得虚构或违背",
-            _render_tool_facts(
-                evidence,
-                json_dumps=json_dumps,
-                reference_aliases=reference_aliases,
-                authoritative_paid=bool(registration_status.get("authoritative_paid")),
+            _section(
+                "当前工具权威事实：不得虚构或违背",
+                _render_tool_facts(
+                    evidence,
+                    json_dumps=json_dumps,
+                    reference_aliases=reference_aliases,
+                    authoritative_paid=bool(registration_status.get("authoritative_paid")),
+                ),
             ),
-        ),
-        _section("必须遵守", _render_must_follow(rules)),
-        _section(
-            "Router 辅助检索判断：可被 Reply 覆盖",
-            _render_semantic_route(semantic_route, reference_aliases=reference_aliases),
-        ),
-        _section("跟进序列与优秀话术参考", _render_knowledge_evidence(knowledge)),
-        _section("本轮相关权威事实：最终口径", _render_authoritative_facts(rules, topic_ids=relevant_fact_topic_ids)),
-        _section(
-            "可直接交付的真实素材",
-            _render_delivery_assets(
-                evidence.get("content_candidates") or [],
-                json_dumps=json_dumps,
-                relevant_fact_topic_ids=relevant_fact_topic_ids,
+            _section("必须遵守", _render_must_follow(rules)),
+            _section(
+                "本轮相关权威事实：最终口径",
+                _render_authoritative_facts(rules, topic_ids=relevant_fact_topic_ids),
             ),
-        ),
-        _section(
-            "可原样交付的结构消息",
-            _render_structured_options(
-                _structured_options_for_topics(
-                    payload.get("structured_delivery_options") or {},
+            _section(
+                "可直接交付的真实素材",
+                _render_delivery_assets(
+                    evidence.get("content_candidates") or [],
+                    json_dumps=json_dumps,
                     relevant_fact_topic_ids=relevant_fact_topic_ids,
                 ),
-                json_dumps=json_dumps,
             ),
-        ),
-        _section(
-            "本轮缺失权限（逐条禁止自行补全）",
-            _render_missing_authority_guard(payload, facts=facts, rules=rules, evidence=evidence),
-        ),
-        _section(
-            "输出引用与结构边界",
-            _render_reference_contract(
-                payload,
-                json_dumps=json_dumps,
-                reference_aliases=reference_aliases,
-                include_store_context=include_store_context,
+            _section(
+                "可原样交付的结构消息",
+                _render_structured_options(
+                    _structured_options_for_topics(
+                        payload.get("structured_delivery_options") or {},
+                        relevant_fact_topic_ids=relevant_fact_topic_ids,
+                    ),
+                    json_dumps=json_dumps,
+                ),
             ),
-        ),
-        "请只返回符合系统输出合同的严格 json。",
+            _section(
+                "本轮缺失权限（逐条禁止自行补全）",
+                _render_missing_authority_guard(payload, facts=facts, rules=rules, evidence=evidence),
+            ),
+            _section(
+                "销售主线机会与本轮动作边界（不是每轮流程任务）",
+                _render_mainline_execution_contract(payload.get("mainline_delivery_state") or {}),
+            ),
+        ]
+    )
+    if str(policy.get("runtime_mode") or "off") != "off":
+        sections.append(
+            _section(
+                "已发布 AI 销售策略（只提供可选 key 与节奏，不覆盖事实边界）",
+                json_dumps(
+                    {
+                        "policy_version": policy.get("policy_version"),
+                        "routing": policy.get("routing") or {},
+                        "intent": policy.get("intent") or {},
+                        "emotion": policy.get("emotion") or {},
+                        "closing": policy.get("closing") or {},
+                    }
+                ),
+            )
+        )
+        if previous_policy_state:
+            sections.append(
+                _section(
+                    "上一轮策略状态（仅参考，必须按当前客户新消息重新判断）",
+                    json_dumps(previous_policy_state),
+                )
+            )
+        if closing_catalog:
+            sections.append(
+                _section(
+                    "本轮租户逼单规则与策略候选（只可从中选择，不要求采用）",
+                    json_dumps(closing_catalog),
+                )
+            )
+    sections.extend(
+        [
+            _section(
+                "Router 辅助检索判断：只作内部证据，不得复述给客户",
+                _render_semantic_route(semantic_route, reference_aliases=reference_aliases),
+            ),
+            _section(
+                "跟进序列与话术素材（取其意思，不模仿句式）",
+                _render_knowledge_evidence(knowledge),
+            ),
+            _section(
+                "输出引用与结构边界",
+                _render_reference_contract(
+                    payload,
+                    json_dumps=json_dumps,
+                    reference_aliases=reference_aliases,
+                    include_store_context=include_store_context,
+                ),
+            ),
+            _section(
+                "本轮客户可见输出上限（只有上限，没有最低长度）",
+                _render_compact_status(payload.get("presentation_limits") or {}),
+            ),
+            "请只返回符合系统输出合同的严格 json。",
         ]
     )
     return "\n\n".join(item for item in sections if item)
@@ -272,7 +285,8 @@ def _render_mainline_execution_contract(value: Any) -> str:
     next_stage = str(state.get("next_missing_stage") or "").strip()
     lines = [
         _render_compact_status(state),
-        "next_sales_action.type 只能逐字选择 allowed_next_sales_action_types 中的一个值，客户可见文字必须实际落实同一个动作。",
+        "next_missing_stage 只是下一项相邻销售机会和越级上限，不要求本轮立即执行。",
+        "next_sales_action.type 仍须逐字选择 allowed_next_sales_action_types 中的一个值，记录本轮实际落实的动作；自然承接可以选择 keep_open。",
     ]
     if "invite_booking" not in allowed:
         lines.append(
@@ -280,14 +294,14 @@ def _render_mainline_execution_contract(value: Any) -> str:
         )
     stage_requirements = {
         "effect_evidence": (
-            "答完当前问题后，应交付真实效果说明或本轮可用效果素材；"
+            "只有决定在本轮衔接效果机会时，才交付真实效果说明或本轮可用效果素材；"
             "‘到店看效果/方案、先留名额、要不要看案例、我先把效果说明发您’都不是效果交付；"
-            "有可用案例时直接发送，否则同轮说出具体权威效果事实，不能只预告以后再讲。"
+            "选择该动作且有可用案例时直接发送，否则同轮说出具体权威效果事实，不能只预告以后再讲。"
         ),
         "activity_offer": (
-            "答完当前问题后，应说明权威活动价格或包含价值；本轮不得改问到店时间。"
+            "只有决定在本轮衔接活动机会时，才说明权威活动价格或包含价值；不得改问到店时间。"
         ),
-        "store": "答完当前问题后，应询问缺失地区或交付本轮允许的真实门店信息。",
+        "store": "客户当前明确索要地址，或决定在本轮衔接门店机会时，才询问缺失地区或交付本轮允许的真实门店信息。",
         "appointment": "项目、活动和门店均已交付，可自然说明预约目的并询问一个日期或时段。",
         "appointment_deposit": "仅在真实行动信号和付款结构均满足时解释或交付预约金入口。",
         "complete": "按权威交易状态提供相邻服务，不重复营销。",

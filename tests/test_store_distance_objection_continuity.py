@@ -228,7 +228,7 @@ def test_explicit_new_destination_is_not_suppressed() -> None:
 def test_distance_prompt_reframes_without_repeating_negative_objection() -> None:
     assert "回复不得再用“距离、远、路程、折腾、麻烦、不方便”复述顾虑" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "即使候选原文有也不得照搬" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "轻承接后马上转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "轻承接后可在有新价值时转到技术、效果、案例和是否值得" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "正向社会证明可说“专程过来/花一两个小时过来”" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "无真实登记、订单或付款事实，不得说“我已留名额”" in PARALLEL_REPLY_SYSTEM_PROMPT
 

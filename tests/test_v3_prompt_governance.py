@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from ai_paths.app.prompts.reply_synthesizer import (
     PARALLEL_REPLY_SYSTEM_PROMPT,
+    build_parallel_reply_messages,
     _render_authoritative_facts,
     _render_delivery_assets,
     _render_knowledge_evidence,
@@ -39,16 +42,17 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "cardpoint 为 active/repeated 时 closing 必须 pause" in prompt
     assert "门店查询只证明位置需求和本轮返回的公开门店事实" in prompt
     assert "首次泛问价格只报活动价和包含价值" in prompt
-    assert "不设默认消息条数" in prompt
-    assert "每条 text 目标约20–60个汉字" in prompt
-    assert "整轮严格遵守输入中的“本轮客户可见输出上限”" in prompt
-    assert "不得同义重复或把完整句子硬切开" in prompt
+    assert "不设最低长度" in prompt
+    assert "短承接可以只有几个字" in prompt
+    assert "每条 text 目标约20–60个汉字" not in prompt
+    assert "整轮严格遵守“本轮客户可见输出上限”" in prompt
+    assert "不同义重复，不硬切句" in prompt
     assert "禁止客服菜单" in prompt
     assert "不要从混乱、过期或测试记录恢复旧话题" in prompt
-    assert "权威事实、本轮确认、经核验" in prompt
+    assert "权威事实、本轮确认、匹配门店、当前卡点" in prompt
     assert "首次泛问价格" in prompt and "绝不发 `payment_collection`" in prompt
     assert "先写非空 `reply_messages`" in prompt
-    assert "不等于永久停止" in prompt
+    assert "只有明确停止联系才持久记录退订" in prompt
     assert "门店卡、姓名、电话和时间意向都不等于预约完成" in prompt
     assert prompt.index('"reply_messages"') < prompt.index('"sales_judgment"')
 
@@ -79,16 +83,17 @@ def test_reply_uses_positive_evidence_before_effect_boundaries() -> None:
     assert '`knowledge_use` 是每轮固定输出的来源记录' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert '"knowledge_use":{"sequence_id":"","step_id":"","script_id":"","reason":""}' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "也可以只选话术" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不等于停止销售" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "必须继续给一个无需当场决定的真实价值" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不得只说“您先忙、有空再联系”就结束" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "首次无因软拒绝" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "重复暂缓优先" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "临时不可交流" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "软拒绝不能退化" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_reply_requires_safe_directly_relevant_script_for_active_blocker() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "必须选一个最相关序列和最多一个主话术" in prompt
-    assert "长话术允许只取语义完整且安全的一两句" in prompt
+    assert "长话术只取语义完整且安全的一两句" in prompt
     assert "所有候选都无关或冲突时允许 script_id 留空" in prompt
     assert "即使只改写文字、不发送配套媒体" in prompt
     contract = _render_reference_contract(
@@ -102,20 +107,17 @@ def test_reply_directly_delivers_available_value_without_permission_gate() -> No
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "已经具备且可在本轮直接交付的明确价值，不再向客户索取许可" in prompt
-    assert "要不要我发活动价" in prompt
-    assert "要不要看效果图" in prompt
-    assert "必须同轮交付" in prompt
-    assert "先用一条短文字给信心和观看理由，再让素材紧跟在话术下面" in prompt
+    assert "不要问“要不要看”" in prompt
+    assert "必须同轮短文字引出并交付" in prompt
+    assert "同轮短文字引出并交付一个 `selected_content_ids`" in prompt
     assert "不能只写“我可以发给您”" in prompt
 
 
 def test_reply_connects_store_detail_to_the_true_mainline_stage() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "门店详情不能只回答" in prompt
-    assert "最后一句必须是" in prompt
-    assert "您大概工作日还是周末方便？我帮您做预约登记" in prompt
-    assert "否则补最缺的效果或活动" in prompt
+    assert "详情问答不重复地址卡，先完整回答" in prompt
+    assert "只有语境自然且主线允许时才衔接下一机会" in prompt
     assert "行动意愿才可优先于 next_missing_stage" in prompt
     assert "单独“发位置、可以、有时间”" in prompt
     assert "发位置/地址”本身不等于要预约" in prompt
@@ -137,7 +139,8 @@ def test_dynamic_mainline_contract_blocks_customer_visible_booking_shortcut() ->
     assert "询问工作日/周末或到店时间" in rendered
     assert "最早缺失主线=activity_offer" in rendered
     assert "权威活动价格或包含价值" in rendered
-    assert "本轮不得改问到店时间" in rendered
+    assert "只有决定在本轮衔接活动机会时" in rendered
+    assert "不要求本轮立即执行" in rendered
 
     effect = _render_mainline_execution_contract(
         {
@@ -146,7 +149,7 @@ def test_dynamic_mainline_contract_blocks_customer_visible_booking_shortcut() ->
         }
     )
     assert "到店看效果/方案、先留名额、要不要看案例、我先把效果说明发您" in effect
-    assert "有可用案例时直接发送" in effect
+    assert "选择该动作且有可用案例时直接发送" in effect
     assert "不能只预告以后再讲" in effect
 
 
@@ -171,8 +174,74 @@ def test_reply_does_not_promise_unavailable_body_part_material() -> None:
 def test_reply_keeps_pure_life_sharing_natural() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "纯祝福、鸡汤、表情或生活分享" in prompt
-    assert "不硬塞价格、活动或预约" in prompt
+    assert "纯确认、感谢、玩笑、夸赞、祝福、表情或生活分享" in prompt
+    assert "可只回应并 `keep_open`" in prompt
+
+
+def test_reply_treats_mainline_as_an_opportunity_not_a_per_turn_obligation() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "next_missing_stage" in prompt
+    assert "不是本轮必须执行的任务" in prompt
+    assert "只有当前问题处理后、客户仍适合交流且衔接自然时" in prompt
+    assert "直接回答或自然承接可用 `keep_open`" in prompt
+
+
+def test_reply_separates_temporary_unavailability_from_soft_refusal() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "pause_current_turn + keep_open" in prompt
+    assert "只短承接，不补销售价值、不追问时间" in prompt
+    assert "首次无因软拒绝（如“我考虑一下”）且历史未问过，必须问真实顾虑" in prompt
+    assert "首次无因软拒绝且历史未问过只能 ask_missing_fact" in prompt
+    assert "不得再问或塞同一价值" in prompt
+
+
+def test_reply_isolates_internal_router_and_training_language() -> None:
+    prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+
+    assert "回复不是决策报告" in prompt
+    assert "不复述 Router 字段" in prompt
+    assert "匹配门店、当前卡点、主要担心的是" in prompt
+    assert "禁止客服菜单、培训稿" in prompt
+    assert "审计腔" in prompt
+    assert "客户只说“说人话/别总结”且无业务请求时，只短答“好，你说”并 `keep_open`" in prompt
+
+
+def test_reply_context_prioritizes_chat_and_facts_before_mainline_and_router() -> None:
+    messages = build_parallel_reply_messages(
+        {
+            "presentation_limits": {"max_messages": 8, "max_text_chars": 300},
+            "mainline_delivery_state": {
+                "next_missing_stage": "effect_evidence",
+                "allowed_next_sales_action_types": ["deliver_value", "keep_open"],
+            },
+            "evidence": {
+                "shared_context": {
+                    "current_time": {"iso": "2026-09-10T12:00:00+08:00", "timezone": "Asia/Shanghai"},
+                    "current_message": {"content": "好", "message_ref": "current_message"},
+                    "conversation": [
+                        {"role": "customer", "content": "好", "message_ref": "current_message"}
+                    ],
+                },
+                "semantic_route": {},
+            },
+        },
+        json_dumps=lambda value: json.dumps(value, ensure_ascii=False),
+    )
+    content = messages[1]["content"]
+
+    assert content.index("【当前时间】") < content.index("【完整聊天】")
+    assert content.index("【完整聊天】") < content.index("【当前结构事实与不能越过的边界】")
+    assert content.index("【当前结构事实与不能越过的边界】") < content.index(
+        "【销售主线机会与本轮动作边界（不是每轮流程任务）】"
+    )
+    assert content.index("【销售主线机会与本轮动作边界（不是每轮流程任务）】") < content.index(
+        "【Router 辅助检索判断：只作内部证据，不得复述给客户】"
+    )
+    assert content.index("【Router 辅助检索判断：只作内部证据，不得复述给客户】") < content.index(
+        "【本轮客户可见输出上限（只有上限，没有最低长度）】"
+    )
 
 
 def test_follow_script_media_is_rendered_as_directly_deliverable_asset() -> None:

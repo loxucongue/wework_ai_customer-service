@@ -82,8 +82,8 @@ def test_store_selection_continuation_is_visible_to_reply() -> None:
     assert "information_submission" in rendered
     assert "transaction_progress" in rendered
     assert "仅作证据，不授权动作" in rendered
-    assert "先答其问题，再补最缺价值" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "三项均有可靠交付后才邀请预约" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "当前问题必须先答；是否衔接 `next_missing_stage` 由当前语境决定" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "只有项目/效果、活动/价格和门店均已可靠交付" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "正常轮（continue_sales/pause_current_turn）必须输出非空 `next_sales_action`" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
