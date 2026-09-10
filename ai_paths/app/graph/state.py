@@ -20,6 +20,9 @@ class TraceEntry(TypedDict, total=False):
 
 
 class AgentState(TypedDict, total=False):
+    material_identity_bindings: dict[str, Any]
+    material_identity_audit: dict[str, Any]
+    material_identity_governed: bool
     request_id: str
     customer_id: str
     platform_customer_id: str

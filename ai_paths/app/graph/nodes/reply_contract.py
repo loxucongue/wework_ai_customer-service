@@ -25,6 +25,7 @@ from app.graph.nodes.store_scope_summary import build_store_scope_summary
 from app.graph.nodes.derived_observations import build_derived_observations
 
 from app.graph.state import AgentState
+from app.services.content_capabilities import content_only_candidate
 
 from app.policies.business_rules import parallel_reply_business_rules_for_model
 
@@ -1009,7 +1010,7 @@ def _v3_available_assets_for_turn(
     for raw in approved_assets:
         if not isinstance(raw, dict):
             continue
-        item = copy.deepcopy(raw)
+        item = content_only_candidate(raw)
         role = str(item.get("asset_role") or "").strip()
         if role == "deposit_close" and not _v3_payment_asset_available(
             state,
@@ -1019,24 +1020,6 @@ def _v3_available_assets_for_turn(
             continue
         messages = _dict_list(item.get("messages"))
         media = _dict_list(item.get("media"))
-        if role == "deposit_close":
-            # A configured deposit asset can contain the historical one-person
-            # card template. V3 treats its text/media as reference content and
-            # exposes 10/20/30/40 platform cards separately as exact structural
-            # options. Otherwise selecting the asset would force a 10-yuan card
-            # even when Reply cites two or more participants.
-            messages = [
-                message
-                for message in messages
-                if str(message.get("type") or "").strip() != "payment_collection"
-            ]
-            media = [
-                message
-                for message in media
-                if str(message.get("type") or "").strip() != "payment_collection"
-            ]
-            item["messages"] = messages
-            item["media"] = media
         if role == "effect_evidence":
             messages = [message for message in messages if not _sent_effect_message(message, sent_effect_urls)]
             media = [message for message in media if not _sent_effect_message(message, sent_effect_urls)]
@@ -1165,7 +1148,7 @@ def _dedupe_content_candidates(items: list[dict[str, Any]]) -> list[dict[str, An
         content_id = str(raw.get("content_id") or raw.get("id") or "").strip()
         if not content_id or content_id in seen:
             continue
-        item = copy.deepcopy(raw)
+        item = content_only_candidate(raw)
         item["content_id"] = content_id
         output.append(item)
         seen.add(content_id)

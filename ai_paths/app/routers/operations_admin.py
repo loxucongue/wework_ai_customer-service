@@ -13,6 +13,7 @@ from app.services.run_observability_summary import (
     build_run_observability,
     sanitize_debug_payload,
 )
+from app.services.trace_logger import audit_snapshot
 
 from .security import api_key_dependency
 
@@ -493,7 +494,7 @@ def create_operations_admin_router(settings: Settings, services: ControlServices
         else:
             detail["run"] = compact_admin_run_detail(detail["run"])
             detail["node_traces"] = []
-        return detail
+        return audit_snapshot(detail)
 
     @router.get("/admin/runs", dependencies=[Depends(require_api_key)])
     async def runs(

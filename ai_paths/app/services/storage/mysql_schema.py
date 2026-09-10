@@ -760,6 +760,20 @@ v3_strategy_outcome_events = Table(
 )
 
 
+material_identities = Table(
+    f"{TABLE_PREFIX}material_identities", metadata,
+    _id("alias_key", primary_key=True), _id("canonical_id"), _short("media_type"),
+    _json("fingerprint_json", "{}"), _json("provenance_json", "{}"), _long("override_reason"),
+    Index("idx_aics_material_identity_canonical", "canonical_id"),
+)
+material_claims = Table(
+    f"{TABLE_PREFIX}material_claims", metadata,
+    _id("contact_key", primary_key=True), _id("canonical_id", primary_key=True),
+    _id("request_id"), _id("client_message_id"), _id("alias_key"), _short("asset_role"),
+    _short("status"), _time("created_at"),
+    Index("idx_aics_material_claim_alias", "alias_key"),
+)
+
 EXPECTED_TABLES = tuple(sorted(table.name for table in metadata.tables.values()))
 EXPECTED_ALL_TABLES = tuple(sorted((*EXPECTED_TABLES, VERSION_TABLE)))
 EXPECTED_COLUMNS = {

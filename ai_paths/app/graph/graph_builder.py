@@ -195,7 +195,9 @@ def _build_nodes(
         semantic_router_service=semantic_router_service,
         sales_strategy_service=sales_strategy_service,
     )
-    evidence_join = create_evidence_join_node(trace_logger=trace_logger)
+    evidence_join = create_evidence_join_node(
+        trace_logger=trace_logger, repository=getattr(memory_store, "repository", None),
+    )
 
     synthesize_reply = create_synthesize_reply_node(
         trace_logger=trace_logger,

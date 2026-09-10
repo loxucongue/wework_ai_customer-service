@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 from typing import Any, Callable
 
 from app.graph.state import AgentState
 from app.services.trace_logger import TraceLogger
+from app.services.content_capabilities import content_only_candidates
+from app.services.material_identity import govern_candidates
 from app.graph.nodes.reply_contract import (
     _authority_conflicts,
     _current_turn_structural_constraints,
@@ -18,17 +21,30 @@ from app.graph.nodes.reply_contract import (
 )
 
 
-def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentState], Any]:
+def create_evidence_join_node(*, trace_logger: TraceLogger, repository: Any = None) -> Callable[[AgentState], Any]:
     async def evidence_join(state: AgentState) -> dict[str, Any]:
         with trace_logger.node(state, "deterministic_evidence_join", {}) as span:
             gate = copy.deepcopy(state.get("content_gate_result") or {})
             tool_plan = copy.deepcopy(state.get("tool_plan") or {})
             tool_results = copy.deepcopy(state.get("tool_results") or {})
             fact_envelope = _normalized_tool_fact_envelope(state.get("fact_envelope"))
+            candidates = list(gate.get("content_candidates") or [])
+            for index, fact in enumerate((fact_envelope.get("structured_facts") or {}).get("case_facts") or []):
+                if not isinstance(fact, dict):
+                    continue
+                media = [{"type": kind, "content": fact[key]} for kind, key in
+                         (("image", "image_url"), ("video", "video_url")) if fact.get(key)]
+                if media:
+                    candidates.append({"content_id": f"tool_case:{fact.get('document_id') or index}",
+                                       "asset_role": "effect_evidence", "messages": media})
+            governed = await asyncio.to_thread(
+                govern_candidates, candidates, repository=repository, state=state,
+            )
             joined = {
                 "schema_version": "reply_chain_evidence_join_v1",
                 "shared_context": copy.deepcopy(state.get("shared_context") or {}),
-                "content_candidates": copy.deepcopy(gate.get("content_candidates") or []),
+                "content_candidates": governed["candidates"],
+                "material_identity_audit": governed["audit"],
                 "sales_recall": copy.deepcopy(state.get("sales_recall") or {}),
                 "semantic_route": copy.deepcopy(state.get("semantic_route") or {}),
                 "knowledge_evidence": copy.deepcopy(state.get("knowledge_evidence") or {}),
@@ -56,6 +72,9 @@ def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentSt
                 "join_policy": "evidence_only_no_customer_copy_no_sales_decision",
             }
             output = {
+                "material_identity_bindings": governed["bindings"],
+                "material_identity_governed": True,
+                "material_identity_audit": governed["audit"],
                 "evidence_join": joined,
                 "reply_mode": "parallel_evidence_reply",
                 "trace": state.get("trace", []),
@@ -75,6 +94,7 @@ def create_evidence_join_node(*, trace_logger: TraceLogger) -> Callable[[AgentSt
 
 def parallel_reply_payload(state: AgentState) -> dict[str, Any]:
     joined = copy.deepcopy(state.get("evidence_join") or {})
+    joined["content_candidates"] = content_only_candidates(joined.get("content_candidates"))
     shared = joined.get("shared_context") if isinstance(joined.get("shared_context"), dict) else {}
     valid_customer_message_refs = ["current_message"]
     valid_message_refs = ["current_message"]
