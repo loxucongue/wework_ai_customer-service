@@ -6,6 +6,8 @@ from pathlib import Path
 
 from ai_paths.app.prompts.reply_sales_prompt_v4 import PARALLEL_REPLY_SYSTEM_PROMPT
 from ai_paths.scripts.v3_reply_naturalness_cases import CASES
+from scripts.v3_reply_sales_opportunity_cases import OPPORTUNITY_CASES
+from scripts.evaluate_v3_reply_naturalness import score_result, _representative_probes
 
 
 def test_naturalness_evaluation_matrix_has_required_coverage() -> None:
@@ -59,3 +61,43 @@ def test_policy_normal_conversation_covers_keep_open_without_changing_schema() -
     assert "重复暂缓" in normal["goal"]
     assert "keep_open" in normal["goal"]
     assert policy["decision_schema_version"] == "v3_policy_decision_v3"
+
+
+def test_opportunity_matrix_covers_six_groups_and_requires_visible_delivery() -> None:
+    assert Counter(case["opportunity_group"] for case in OPPORTUNITY_CASES) == {
+        "opening": 5, "information": 5, "effect": 5, "price": 5, "resolved": 5, "booking": 5,
+    }
+    assert all("keep_open" not in case["expected_actions"] for case in OPPORTUNITY_CASES)
+    assert all(case["required_text_groups"] for case in OPPORTUNITY_CASES)
+
+
+def test_activity_action_label_does_not_mask_missing_offer_contents() -> None:
+    case = next(case for case in OPPORTUNITY_CASES if case["activity_integrity"])
+    value = {
+        "reply_messages": [{"type": "text", "content": "活动268元，有需要随时找我"}],
+        "sales_judgment": {"next_sales_action": {"type": "explain_activity"}},
+        "policy_decision": {"closing_decision": {"customer_state": "continue_sales"}},
+    }
+    score = score_result(case, value)
+    assert not score["passed"]
+    assert not score["activity_integrity_pass"]
+    assert score["passive_close_hits"]
+    value["reply_messages"][0]["content"] = "新客268元，含肤况评估、一次面部护理和护理后注意事项指导，需提前预约。"
+    assert score_result(case, value)["passed"]
+
+
+def test_repeat_probes_include_all_six_opportunity_groups() -> None:
+    probes = _representative_probes([*CASES, *OPPORTUNITY_CASES])
+    assert len(probes) == 20
+    assert len({case["id"] for case in probes}) == 20
+    assert {case["opportunity_group"] for case in probes if case.get("opportunity_group")} == {
+        "opening", "information", "effect", "price", "resolved", "booking",
+    }
+
+
+def test_short_relation_sales_question_is_not_missed_without_activity_keyword() -> None:
+    case = CASES[5]
+    value = {"reply_messages": [{"type": "text", "content": "哈哈，您脸上的斑是什么情况？"}],
+             "sales_judgment": {"next_sales_action": {"type": "ask_missing_fact"}},
+             "policy_decision": {"closing_decision": {"customer_state": "continue_sales"}}}
+    assert score_result(case, value)["irrelevant_sales_insert"]

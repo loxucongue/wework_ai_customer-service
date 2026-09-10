@@ -48,7 +48,7 @@
       {"key": "resolve_blocker", "name": "处理当前卡点", "goal": "识别并处理仍然活跃的核心顾虑。"},
       {"key": "transaction_progression", "name": "执行成交动作", "goal": "在事实和工具允许时完成一个门店、订单、付款或预约动作。"},
       {"key": "closing_progression", "name": "推进逼单策略", "goal": "依据外部规则和策略候选执行一个合法节点目标。"},
-      {"key": "normal_conversation", "name": "普通交流", "goal": "自然承接确认、感谢、玩笑、短回应、临时不可交流或重复暂缓；当前不适合转销售时可用 keep_open，不机械重开旧问题。"}
+      {"key": "normal_conversation", "name": "普通交流", "goal": "自然承接无销售待办的感谢、玩笑、短回应、临时不可交流或无新价值的重复暂缓，可用 keep_open；结合上下文识别积极承接，不能代替应交付价值、完整活动介绍或成熟预约推进，不用放弃式收口。"}
     ]
   },
   "intent": {

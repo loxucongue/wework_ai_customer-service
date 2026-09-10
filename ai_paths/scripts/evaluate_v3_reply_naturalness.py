@@ -21,6 +21,7 @@ from app.config import Settings
 from app.prompts.reply_sales_prompt_v4 import PARALLEL_REPLY_SYSTEM_PROMPT
 from app.services.model_client import ModelClient
 from scripts.v3_reply_naturalness_cases import CASES
+from scripts.v3_reply_sales_opportunity_cases import OPPORTUNITY_CASES
 
 
 BASE_REF = "6f5a23ce7cd0cd2bb91a1717434d8f3589c3b375"
@@ -38,7 +39,7 @@ INTERNAL_LEAK_MARKERS = (
     "本轮确认",
     "流程节点",
 )
-SALES_MARKERS = ("268", "活动", "效果", "案例", "门店", "地址", "预约", "付款", "名额")
+SALES_MARKERS = ("268", "活动", "效果", "案例", "门店", "地址", "预约", "付款", "名额", "价格", "斑", "护理")
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,8 +49,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-ref", default=BASE_REF)
     parser.add_argument("--phase", choices=("prompt", "order", "repeat", "temperature", "all"), default="all")
     parser.add_argument("--concurrency", type=int, default=4)
-    parser.add_argument("--limit", type=int, default=60)
+    parser.add_argument("--limit", type=int, default=90)
     parser.add_argument("--case-ids", default="", help="Comma-separated synthetic case IDs")
+    parser.add_argument("--rescore-input", type=Path, help="Re-score saved raw rows without new model calls")
     return parser.parse_args()
 
 
@@ -99,7 +101,9 @@ def _facts_text(case: dict[str, Any]) -> str:
         "效果事实：可改善常见面部斑点和色沉；个体结果有差异，不保证一次根除。",
         "预约金事实：每人10元，可按规则抵扣；只有明确付款行动且结构齐全时才发卡。",
     ]
-    if case["id"] in {"action-04", "action-05", "action-09", "action-10", "pollution-08"}:
+    if case.get("extra_facts"):
+        facts.append(str(case["extra_facts"]))
+    if case.get("store_available") or case["id"] in {"action-04", "action-05", "action-09", "action-10", "pollution-08"}:
         facts.extend(
             [
                 "门店工具唯一结果：demo-store-001，云州海棠示例店，云州市海棠区示例路1号。",
@@ -259,6 +263,12 @@ def score_result(case: dict[str, Any], value: dict[str, Any] | None, error: str 
         failures.append(f"unexpected_action:{action}")
     if customer_state not in case["expected_states"]:
         failures.append(f"unexpected_customer_state:{customer_state}")
+    missing_content = [group for group in case.get("required_text_groups", []) if not any(word in text for word in group)]
+    if missing_content:
+        failures.append("missing_required_content:" + str(missing_content))
+    passive_hits = [word for word in ("有需要随时", "有需要再", "算了", "不做也行", "随时找我", "随时联系", "想约的时候", "想约再", "不清楚的随时问", "您方便来的时候") if word in text]
+    if case["category"] == "sales_opportunity" and passive_hits:
+        failures.append("passive_close:" + ",".join(passive_hits))
     message_types = [str(item.get("type") or "") for item in messages]
     for expected in case.get("required_message_types") or []:
         if expected not in message_types:
@@ -275,7 +285,7 @@ def score_result(case: dict[str, Any], value: dict[str, Any] | None, error: str 
         failures.append(f"short_reply_expanded:{visible_chars}")
     irrelevant_sales = (
         case["category"] in {"short_relation", "temporary_unavailable"}
-        and any(marker in text for marker in SALES_MARKERS)
+        and (any(marker in text for marker in SALES_MARKERS) or action != "keep_open")
     )
     return {
         "parseable": True,
@@ -288,9 +298,10 @@ def score_result(case: dict[str, Any], value: dict[str, Any] | None, error: str 
         "expanded_short": expanded_short,
         "irrelevant_sales_insert": irrelevant_sales,
         "hard_safety_pass": not case.get("hard_safety") or not failures,
-        "direct_delivery_pass": not case.get("required_message_types") or not any(
-            item.startswith("missing_message_type:") for item in failures
-        ),
+        "direct_delivery_pass": not failures,
+        "activity_integrity_pass": not missing_content,
+        "activity_integrity_case": bool(case.get("activity_integrity")),
+        "passive_close_hits": passive_hits,
         "passed": not failures,
         "failures": failures,
     }
@@ -388,8 +399,10 @@ def _representative_probes(cases: list[dict[str, Any]], limit: int = 20) -> list
     )
     eligible = [case for case in cases if case.get("repeat_probe")]
     selected: list[dict[str, Any]] = []
+    opportunities = [case for case in eligible if case["category"] == "sales_opportunity"]
+    selected.extend(opportunities)
     for category in categories:
-        selected.extend([case for case in eligible if case["category"] == category][:3])
+        selected.extend([case for case in eligible if case["category"] == category][:(2 if opportunities else 3)])
     selected_ids = {case["id"] for case in selected}
     selected.extend(case for case in eligible if case["id"] not in selected_ids)
     return selected[:limit]
@@ -427,6 +440,19 @@ def variant_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "failure_reasons": dict(
             Counter(reason.split(":", 1)[0] for row in primary for reason in row["score"].get("failures") or [])
         ),
+    }
+
+
+def opportunity_metrics(rows: list[dict[str, Any]]) -> dict[str, int]:
+    probes = [row for row in rows if row["case_id"].startswith("advance-") and row["rep"] == 0]
+    return {
+        "count": len(probes),
+        "passed": sum(bool(row["score"].get("passed")) for row in probes),
+        "keep_open_misuse": sum(row["score"].get("action") == "keep_open" for row in probes),
+        "passive_closes": sum(bool(row["score"].get("passive_close_hits")) for row in probes),
+        "required_content_failures": sum(not row["score"].get("activity_integrity_pass", False) for row in probes),
+        "activity_integrity_cases": sum(bool(row["score"].get("activity_integrity_case")) for row in probes),
+        "activity_integrity_failures": sum(bool(row["score"].get("activity_integrity_case")) and not row["score"].get("activity_integrity_pass", False) for row in probes),
     }
 
 
@@ -495,7 +521,7 @@ async def run(args: argparse.Namespace) -> int:
     if not settings.deepseek_api_key:
         raise RuntimeError("DeepSeek API key is not configured")
     requested_ids = {item.strip() for item in str(args.case_ids or "").split(",") if item.strip()}
-    selected = [case for case in CASES if not requested_ids or case["id"] in requested_ids]
+    selected = [case for case in [*CASES, *OPPORTUNITY_CASES] if not requested_ids or case["id"] in requested_ids]
     if requested_ids - {case["id"] for case in selected}:
         raise ValueError("unknown case IDs: " + ",".join(sorted(requested_ids - {case["id"] for case in selected})))
     cases = selected[: max(1, min(len(selected), args.limit))]
@@ -508,6 +534,8 @@ async def run(args: argparse.Namespace) -> int:
     if args.phase in {"order", "all"}:
         jobs += _jobs_for(cases, variant="candidate_prompt_candidate_order", prompt=candidate_prompt, order="candidate", temperature=0.15)
     probes = _representative_probes(cases)
+    if args.phase == "repeat":
+        jobs += _jobs_for(probes, variant="candidate_prompt_candidate_order", prompt=candidate_prompt, order="candidate", temperature=0.15)
     if args.phase in {"repeat", "all"}:
         for rep in (1, 2):
             jobs += _jobs_for(
@@ -527,7 +555,13 @@ async def run(args: argparse.Namespace) -> int:
                 order="candidate",
                 temperature=temperature,
             )
-    rows = await run_jobs(jobs, settings=settings, concurrency=args.concurrency)
+    if args.rescore_input:
+        rows = [json.loads(line) for line in args.rescore_input.read_text(encoding="utf-8").splitlines() if line.strip()]
+        case_by_id = {case["id"]: case for case in cases}
+        for row in rows:
+            row["score"] = score_result(case_by_id[row["case_id"]], row.get("reply"), row.get("error", ""))
+    else:
+        rows = await run_jobs(jobs, settings=settings, concurrency=args.concurrency)
     _write_rows(args.output / "raw_results.jsonl", rows)
     by_variant: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -535,6 +569,8 @@ async def run(args: argparse.Namespace) -> int:
     variants = {name: variant_metrics(group) for name, group in by_variant.items()}
     metrics: dict[str, Any] = {
         "base_ref": args.base_ref,
+        "new_model_calls": 0 if args.rescore_input else len(rows),
+        "rescore_source": str(args.rescore_input) if args.rescore_input else "",
         "model": settings.model_reply,
         "fallbacks": [],
         "case_count": len(cases),
@@ -545,6 +581,10 @@ async def run(args: argparse.Namespace) -> int:
             "candidate_sha256": hashlib.sha256(candidate_prompt.encode()).hexdigest(),
         },
         "variants": variants,
+        "opportunity": {
+            variant: opportunity_metrics(group)
+            for variant, group in by_variant.items()
+        },
         "model_audit": {
             "started_models": sorted(
                 {
@@ -578,10 +618,11 @@ async def run(args: argparse.Namespace) -> int:
         )
     if args.phase in {"repeat", "all"}:
         repeat_rows = [row for row in rows if row["variant"] == "candidate_repeat_t015"]
+        repeated_ids = {row["case_id"] for row in repeat_rows}
         base_rows = [
             row
             for row in rows
-            if row["variant"] == "candidate_prompt_candidate_order" and row["case_id"] in {case["id"] for case in probes}
+            if row["variant"] == "candidate_prompt_candidate_order" and row["case_id"] in repeated_ids
         ]
         metrics["repeat"] = repeat_metrics(base_rows + repeat_rows)
     args.output.joinpath("metrics.json").write_text(

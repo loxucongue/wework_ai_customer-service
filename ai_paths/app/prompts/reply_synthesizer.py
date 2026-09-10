@@ -285,7 +285,7 @@ def _render_mainline_execution_contract(value: Any) -> str:
     next_stage = str(state.get("next_missing_stage") or "").strip()
     lines = [
         _render_compact_status(state),
-        "next_missing_stage 只是下一项相邻销售机会和越级上限，不要求本轮立即执行。",
+        "next_missing_stage 是相邻销售方向和越级上限，不是每轮任务；客户提交需求/位置、认可价值、积极承接或卡点化解时，必须落实相邻动作。",
         "next_sales_action.type 仍须逐字选择 allowed_next_sales_action_types 中的一个值，记录本轮实际落实的动作；自然承接可以选择 keep_open。",
     ]
     if "invite_booking" not in allowed:
@@ -299,10 +299,10 @@ def _render_mainline_execution_contract(value: Any) -> str:
             "选择该动作且有可用案例时直接发送，否则同轮说出具体权威效果事实，不能只预告以后再讲。"
         ),
         "activity_offer": (
-            "只有决定在本轮衔接活动机会时，才说明权威活动价格或包含价值；不得改问到店时间。"
+            "本轮衔接活动时，完整说明权威价格、包含价值和相关条件权益；不能为简短只报价格，不得改问到店时间。"
         ),
         "store": "客户当前明确索要地址，或决定在本轮衔接门店机会时，才询问缺失地区或交付本轮允许的真实门店信息。",
-        "appointment": "项目、活动和门店均已交付，可自然说明预约目的并询问一个日期或时段。",
+        "appointment": "项目、活动和门店均已交付且客户积极承接时，应说明预约目的并询问一个日期或时段。",
         "appointment_deposit": "仅在真实行动信号和付款结构均满足时解释或交付预约金入口。",
         "complete": "按权威交易状态提供相邻服务，不重复营销。",
     }

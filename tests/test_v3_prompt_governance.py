@@ -45,10 +45,11 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "不设最低长度" in prompt
     assert "短承接可以只有几个字" in prompt
     assert "每条 text 目标约20–60个汉字" not in prompt
-    assert "整轮严格遵守“本轮客户可见输出上限”" in prompt
-    assert "不同义重复，不硬切句" in prompt
+    assert "遵守本轮输出上限" in prompt
+    assert "仅删套话与重复" in prompt
+    assert "不硬切句" in prompt
     assert "禁止客服菜单" in prompt
-    assert "不要从混乱、过期或测试记录恢复旧话题" in prompt
+    assert "不从混乱、过期或测试记录恢复旧话题" in prompt
     assert "权威事实、本轮确认、匹配门店、当前卡点" in prompt
     assert "首次泛问价格" in prompt and "绝不发 `payment_collection`" in prompt
     assert "先写非空 `reply_messages`" in prompt
@@ -78,24 +79,24 @@ def test_reply_uses_positive_evidence_before_effect_boundaries() -> None:
     assert "效果或信任顾虑要先建立信心，再管理个体差异" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不要先用“很难、不能、不一定”" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "不得把“很多、不少、满意度较高”自行升级" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "不能仅因话术 action 与序列节点不同就全部不用" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert '`knowledge_use` 的唯一格式' in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert '`knowledge_use` 是每轮固定输出的来源记录' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "不能仅因 action 与序列节点不同就全不用" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '`knowledge_use` 固定输出 sequence_id/step_id/script_id/reason' in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert '复制实际采用的真实ID及采用点，未采用全为空' in PARALLEL_REPLY_SYSTEM_PROMPT
     assert '"knowledge_use":{"sequence_id":"","step_id":"","script_id":"","reason":""}' in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "也可以只选话术" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "话术可独立于序列选择" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "首次无因软拒绝" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "重复暂缓优先" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "没有新价值或明确先这样时才 `keep_open`" in PARALLEL_REPLY_SYSTEM_PROMPT
     assert "临时不可交流" in PARALLEL_REPLY_SYSTEM_PROMPT
-    assert "软拒绝不能退化" in PARALLEL_REPLY_SYSTEM_PROMPT
+    assert "放弃式收口代替实际销售动作" in PARALLEL_REPLY_SYSTEM_PROMPT
 
 
 def test_reply_requires_safe_directly_relevant_script_for_active_blocker() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "必须选一个最相关序列和最多一个主话术" in prompt
-    assert "长话术只取语义完整且安全的一两句" in prompt
-    assert "所有候选都无关或冲突时允许 script_id 留空" in prompt
-    assert "即使只改写文字、不发送配套媒体" in prompt
+    assert "保留解卡论据及应介绍的完整活动信息，不限一两句" in prompt
+    assert "全无关或冲突才留空，不虚报采用" in prompt
+    assert "实际采用思路、论据或社会证明即复制真实 ID" in prompt
     contract = _render_reference_contract(
         {"follow_script_reference_options": [{"content_id": "follow_script:225:p1"}]},
         json_dumps=lambda value: str(value),
@@ -138,9 +139,9 @@ def test_dynamic_mainline_contract_blocks_customer_visible_booking_shortcut() ->
     assert "本轮禁止邀请预约" in rendered
     assert "询问工作日/周末或到店时间" in rendered
     assert "最早缺失主线=activity_offer" in rendered
-    assert "权威活动价格或包含价值" in rendered
-    assert "只有决定在本轮衔接活动机会时" in rendered
-    assert "不要求本轮立即执行" in rendered
+    assert "完整说明权威价格、包含价值和相关条件权益" in rendered
+    assert "本轮衔接活动时" in rendered
+    assert "不是每轮任务" in rendered
 
     effect = _render_mainline_execution_contract(
         {
@@ -174,17 +175,17 @@ def test_reply_does_not_promise_unavailable_body_part_material() -> None:
 def test_reply_keeps_pure_life_sharing_natural() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
-    assert "纯确认、感谢、玩笑、夸赞、祝福、表情或生活分享" in prompt
-    assert "可只回应并 `keep_open`" in prompt
+    assert "无销售承接的感谢、玩笑、祝福" in prompt
+    assert "只短回应并 `keep_open`" in prompt
 
 
 def test_reply_treats_mainline_as_an_opportunity_not_a_per_turn_obligation() -> None:
     prompt = PARALLEL_REPLY_SYSTEM_PROMPT
 
     assert "next_missing_stage" in prompt
-    assert "不是本轮必须执行的任务" in prompt
-    assert "只有当前问题处理后、客户仍适合交流且衔接自然时" in prompt
-    assert "直接回答或自然承接可用 `keep_open`" in prompt
+    assert "不是每轮必做任务" in prompt
+    assert "必须落实一个相邻动作" in prompt
+    assert "有继续信号时不能用 `keep_open`" in prompt
 
 
 def test_reply_separates_temporary_unavailability_from_soft_refusal() -> None:
