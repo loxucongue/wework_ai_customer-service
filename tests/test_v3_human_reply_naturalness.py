@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 from collections import Counter
 from pathlib import Path
 
@@ -8,6 +9,91 @@ from ai_paths.app.prompts.reply_sales_prompt_v4 import PARALLEL_REPLY_SYSTEM_PRO
 from ai_paths.scripts.v3_reply_naturalness_cases import CASES
 from scripts.v3_reply_sales_opportunity_cases import OPPORTUNITY_CASES
 from scripts.evaluate_v3_reply_naturalness import score_result, _representative_probes
+from app.prompts.reply_synthesizer import _render_v3_reply_context, _render_knowledge_evidence
+
+
+def test_activity_opportunity_supplies_facts_without_router_selection_or_mutation() -> None:
+    offer = {"new_customer_price": 268, "includes": ["肤况评估", "一次面部护理", "护理后指导"],
+             "body_scope": "面部斑点", "offer_structure": "新客需提前预约", "quota": "以实际余量为准"}
+    payload = {"evidence": {"shared_context": {"rules": {"AUTHORITATIVE FACTS": {"offer": offer}}},
+                            "semantic_route": {"relevant_fact_topic_ids": ["effect_evidence"]}},
+               "mainline_delivery_state": {"next_missing_stage": "activity_offer",
+                                           "allowed_next_sales_action_types": ["keep_open", "explain_activity"]}}
+    original = copy.deepcopy(payload)
+    rendered = _render_v3_reply_context(payload, json_dumps=json.dumps)
+    for value in [*offer["includes"], offer["body_scope"], offer["offer_structure"], offer["quota"]]:
+        assert value in rendered
+    assert "不要求本轮介绍已提供的活动事实" in rendered
+    assert "必须落实相邻动作" not in rendered
+    assert payload == original
+    payload["mainline_delivery_state"]["next_missing_stage"] = "effect_evidence"
+    without_opportunity = _render_v3_reply_context(payload, json_dumps=json.dumps)
+    assert "新客需提前预约" not in without_opportunity
+    payload["evidence"]["semantic_route"]["relevant_fact_topic_ids"].append("activity_offer")
+    assert "新客需提前预约" in _render_v3_reply_context(payload, json_dumps=json.dumps)
+
+
+def test_activity_opportunity_with_missing_facts_does_not_invent_offer() -> None:
+    rendered = _render_v3_reply_context({"mainline_delivery_state": {"next_missing_stage": "activity_offer"}},
+                                      json_dumps=json.dumps)
+    assert "268" not in rendered
+    assert "活动包含：" not in rendered
+
+
+def test_script_reference_cannot_authorize_style_imitation() -> None:
+    rendered = _render_knowledge_evidence({"support_level": "sequence_only"})
+    assert "只提供销售逻辑、事实线索和论据" in rendered
+    assert "不作为语气、句式、称呼或话术模板" in rendered
+    assert "销售思路和口语风格" not in rendered
+    assert "只取其销售逻辑和表达方式" not in rendered
+
+
+def test_full_graph_http_harness_runs_route_replay_and_finalization(tmp_path) -> None:
+    """L1 harness regression only; the actual L3 evaluator uses the real graph."""
+    import asyncio
+    from app.chat_runtime import ChatRuntime
+    from app.config import Settings
+    from app.services.memory_store import CustomerMemoryStore
+    from app.services.storage import AppRepository, SQLiteStore
+    from app.services.trace_logger import TraceLogger
+    from scripts.evaluate_v3_naturalness_full_graph import run_http_lifecycle, SyntheticStatus
+
+    class CountingGraph:
+        calls = 0
+
+        async def ainvoke(self, state):
+            self.calls += 1
+            state.update(reply_messages=[{"type": "text", "content": "好的", "order": 1}],
+                         reply_source="main_model", decision_status="ok")
+            return state
+
+    settings = Settings(_env_file=None, AI_PATHS_SERVICE_ROLE="reply", SOP_PLATFORM_PULL_ENABLED=False,
+                        AI_PATHS_BACKGROUND_WORKERS_ENABLED=False).model_copy(update={
+                            "db_path": tmp_path / "state.db", "memory_dir": tmp_path / "memory",
+                            "trace_log_dir": tmp_path / "trace", "aics_storage_backend": "sqlite"})
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    graph = CountingGraph()
+    runtime = ChatRuntime(full_graph=graph, commit_graph=None, repository=repository,
+                          trace_logger=TraceLogger(settings), memory_store=CustomerMemoryStore(settings, repository),
+                          outreach_system_client=SyntheticStatus(), settings=settings)
+    try:
+        first, replay, snapshot = asyncio.run(run_http_lifecycle(
+            {"runtime": runtime, "settings": settings, "repository": repository},
+            {"content": "谢谢", "customer_id": "900001", "corp_id": "synthetic-corp",
+             "wechat": "synthetic-wechat", "external_userid": "synthetic-http-regression",
+             "customer_add_wechat_id": "900002", "request_context": {"msgid": "synthetic-http-once"}},
+        ))
+        assert graph.calls == 1
+        assert first["execute_id"] == replay["execute_id"]
+        assert first["data"]["reply_messages"] == replay["data"]["reply_messages"]
+        assert snapshot["post_reply_finalization"]["status"] == "completed"
+        with store.connect() as connection:
+            for table in ("message_dispatches", "strategy_data_outbox"):
+                assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    finally:
+        store.close()
 
 
 def test_naturalness_evaluation_matrix_has_required_coverage() -> None:

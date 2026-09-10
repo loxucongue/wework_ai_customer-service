@@ -2,6 +2,17 @@
 
 - status: active
 
+## Review 修订轮（优先于下方历史授权与进度）
+
+- 本轮用户明确禁止合并和部署；此前上线授权不适用于本候选。只提交推送 `codex/v3-human-reply-naturalness`，保留 active，等待母窗口验收。
+- 本轮 base SHA：`afb261c0480811c89fd58f98c3c778169303f287`；已将干净旧候选快进到最新 main，未修改 main。任务 ownership 已在 main 登记，本窗口不编辑 active INDEX。
+- change contract：修复静态及动态推进指令冲突；仅为 activity_offer 主线机会补齐事实可见性；统一话术只提供论据而非表达模板。范围仅 Prompt、Reply 上下文、直接测试/评测、销售合同、架构快照和本任务文档；不改素材身份、Router、admission、模型参数或数据库。
+- 风险：推进过于保守、事实齐全但模型仍遗漏条件、隔离事实与真实目录差异；无不可逆数据变更，回退本轮候选提交即可。
+- 新回归覆盖：Router 未选活动时完整事实仍可见、无主线机会时不额外扩展、Router 显式选择保留、输入不变、缺事实不编造、话术风格隔离及推进前置门。
+- L1：`PYTHONPATH=<worktree>/ai_paths python -m pytest tests -q`，868 passed，9 个既有弃用警告。
+- 评测：保留原 90 场景、评分口径、DeepSeek 和 temperature 0.15；原始数据只进入 ignored `artifacts/v3-human-reply-naturalness/review-fix-*`。完整图脚本接入生产 ASGI route/middleware、临时库、幂等重放和 finalization，不注入预生成 Reply；不是线上 TCP/第三方链路验证。
+- 门槛仍为活动 10/10、无关插入 0/22、主动至少 28/30、明确动作 12/12、安全 6/6、内部泄漏 0、完整隔离图通过；业务 50 条盲审待人工，开发不代评分。结果和候选提交随后记录。
+
 ## 2026-09-10 本次发布例外（优先于下方历史限制）
 
 - 用户在获知“活动完整性 8/10、无关插入 3/22、完整 L3 未通过”后明确授权：“本次可以部署上线再测试一下”。本次允许集成干净 main 并发布，不将已失败的质量门槛改记为通过。
