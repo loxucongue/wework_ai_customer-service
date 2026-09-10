@@ -10,6 +10,58 @@ from scripts.v3_reply_sales_opportunity_cases import OPPORTUNITY_CASES
 from scripts.evaluate_v3_reply_naturalness import score_result, _representative_probes
 
 
+def test_ablation_resolves_baseline_once_and_builds_all_variants_from_it(monkeypatch) -> None:
+    from scripts import evaluate_v3_reply_naturalness_ablation as ablation
+
+    full_sha = "a" * 40
+    baseline_prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+    calls: list[tuple[str, ...]] = []
+
+    class Result:
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def fake_run(command, **_kwargs):
+        calls.append(tuple(command))
+        if command[1] == "rev-parse":
+            return Result(full_sha + "\n")
+        if command[1] == "show":
+            return Result(f"PARALLEL_REPLY_SYSTEM_PROMPT = {baseline_prompt!r}\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ablation.subprocess, "run", fake_run)
+    resolved_sha, prompt = ablation._resolve_baseline("refs/remotes/origin/main")
+    jobs = ablation._jobs([], repetitions=3, baseline_prompt=prompt)
+
+    assert resolved_sha == full_sha
+    assert prompt == baseline_prompt
+    assert jobs == []
+    assert calls == [
+        ("git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
+        ("git", "show", f"{full_sha}:{ablation.PROMPT_PATH}"),
+    ]
+    report = ablation._base_report(
+        type("Args", (), {"phase": "screen", "repetitions": 3, "baseline_ref": "origin/main"})(),
+        case_count=24,
+        baseline_sha=resolved_sha,
+    )
+    assert report["baseline_ref"] == "origin/main"
+    assert report["baseline_sha"] == full_sha
+
+
+def test_ablation_requires_explicit_baseline_ref() -> None:
+    import pytest
+    from scripts import evaluate_v3_reply_naturalness_ablation as ablation
+
+    with pytest.raises(SystemExit):
+        ablation.build_parser().parse_args(["--env-file", "local.env", "--output", "artifacts/test"])
+
+    args = ablation.build_parser().parse_args(
+        ["--env-file", "local.env", "--output", "artifacts/test", "--baseline-ref", "abc123"]
+    )
+    assert args.baseline_ref == "abc123"
+
+
 def test_full_graph_http_harness_runs_route_replay_and_finalization(tmp_path) -> None:
     """L1 harness regression only; the actual L3 evaluator uses the real graph."""
     import asyncio

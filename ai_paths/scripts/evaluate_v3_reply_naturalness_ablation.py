@@ -15,7 +15,6 @@ from scripts.evaluate_v3_reply_naturalness import (
 from scripts.v3_reply_naturalness_cases import CASES
 from scripts.v3_reply_sales_opportunity_cases import OPPORTUNITY_CASES
 
-V0_REF = "origin/main"
 FOCUS_IDS = (
     "action-07", "advance-booking-03", "advance-effect-02", "advance-effect-03",
     "advance-opening-02", "advance-price-01", "advance-price-03", "advance-resolved-01",
@@ -34,6 +33,19 @@ def _git_prompt(ref: str) -> str:
     namespace: dict[str, Any] = {}
     exec(compile(source, f"{ref}:{PROMPT_PATH}", "exec"), namespace)
     return namespace["PARALLEL_REPLY_SYSTEM_PROMPT"]
+
+
+def _resolve_baseline(ref: str) -> tuple[str, str]:
+    sha = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    if len(sha) != 40:
+        raise ValueError(f"baseline ref did not resolve to a full commit SHA: {ref!r}")
+    return sha, _git_prompt(sha)
 
 
 def _v3_prompt(v0: str) -> str:
@@ -59,8 +71,10 @@ def _messages(prompt: str, case: dict[str, Any], *, isolate_script: bool) -> lis
     return [{"role": "system", "content": prompt}, {"role": "user", "content": context}]
 
 
-def _jobs(cases: list[dict[str, Any]], *, repetitions: int) -> list[dict[str, Any]]:
-    v0 = _git_prompt(V0_REF)
+def _jobs(
+    cases: list[dict[str, Any]], *, repetitions: int, baseline_prompt: str
+) -> list[dict[str, Any]]:
+    v0 = baseline_prompt
     variants = {"v0_main": (v0, False), "v1_activity_facts": (v0, False),
                 "v2_script_isolation": (v0, True), "v3_context_rules": (_v3_prompt(v0), True)}
     jobs = []
@@ -76,19 +90,35 @@ def _completed_state_claim(text: str) -> bool:
     return any(term in text for term in ("已预约成功", "已登记完成", "名额已锁定", "档期已确认", "已排客", "预约金已到账"))
 
 
+def _base_report(args: argparse.Namespace, *, case_count: int, baseline_sha: str) -> dict[str, Any]:
+    return {
+        "phase": args.phase,
+        "case_count": case_count,
+        "repetitions": args.repetitions,
+        "temperature": 0.15,
+        "baseline_ref": args.baseline_ref,
+        "baseline_sha": baseline_sha,
+        "variants": {},
+    }
+
+
 async def main(args: argparse.Namespace) -> int:
+    baseline_sha, baseline_prompt = _resolve_baseline(args.baseline_ref)
     all_cases = [*CASES, *OPPORTUNITY_CASES]
     selected_ids = set(FOCUS_IDS + PAIR_IDS) if args.phase == "screen" else {case["id"] for case in all_cases}
     cases = [case for case in all_cases if case["id"] in selected_ids]
     settings = Settings(_env_file=args.env_file).model_copy(update={"model_reply": "deepseek-chat",
         "model_reply_fallbacks": "", "model_emergency_fallbacks": "", "model_hedge_max_parallel": 1})
-    rows = await run_jobs(_jobs(cases, repetitions=args.repetitions), settings=settings, concurrency=args.concurrency)
+    rows = await run_jobs(
+        _jobs(cases, repetitions=args.repetitions, baseline_prompt=baseline_prompt),
+        settings=settings,
+        concurrency=args.concurrency,
+    )
     args.output.mkdir(parents=True, exist_ok=True)
     with (args.output / "raw_results.jsonl").open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
-    report: dict[str, Any] = {"phase": args.phase, "case_count": len(cases), "repetitions": args.repetitions,
-                              "temperature": 0.15, "variants": {}}
+    report = _base_report(args, case_count=len(cases), baseline_sha=baseline_sha)
     for variant in ("v0_main", "v1_activity_facts", "v2_script_isolation", "v3_context_rules"):
         group = [row for row in rows if row["variant"] == variant]
         primary = [row for row in group if row["rep"] == 0]
@@ -108,11 +138,16 @@ async def main(args: argparse.Namespace) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--baseline-ref", required=True)
     parser.add_argument("--phase", choices=("screen", "full"), default="screen")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--concurrency", type=int, default=2)
-    raise SystemExit(asyncio.run(main(parser.parse_args())))
+    return parser
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main(build_parser().parse_args())))

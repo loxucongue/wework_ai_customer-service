@@ -1,6 +1,6 @@
 # V3 真人回复自然度治理
 
-- status: active
+- status: ready_for_closeout_no_winner
 
 ## Review 修订轮（优先于下方历史授权与进度）
 
@@ -12,7 +12,7 @@
 - V0 为最新 origin/main；V1 只增加 activity_offer 主线机会事实可见性；V2 再隔离话术语气/句式；V3 再使用母窗口给定的紧凑上下文对照规则。“真实业务继续信号”不再作为未定义条件。
 - 实验限制：现有 90 条 L2 的 `_facts_text` 已直接向所有相关活动场景提供完整活动事实，所以 V1 在该矩阵中的模型输入与 V0 可能等价。V1 是否修复实际渲染缺口另由不改场景/评分的确定性上下文测试证明；不得把 L2 无差异误报为事实补齐无效或有效。
 - 产品口径修正：“活动给你留着/安排上/以后帮您安排/保留活动价”是允许的销售性软承接，不要求登记、订单、付款或档期事实；从上一轮失败判定中删除。只有“已预约成功、已登记完成、名额已锁定、档期已确认、已排客、预约金已到账”等真实完成态需要权威事实。不得为软承接新增代码拦截。
-- 独立 P1 blocker 仅记录、不在本任务修复：admission 对真实交易/履约完成态的事实校验缺口；`s10_activity_intro` 混入 `payment_collection` 的结构副作用。允许销售软承接不放宽付款卡授权。
+- 唯一已证实的独立 P1 blocker：`s10_activity_intro` 混入 `payment_collection`，活动素材选择可能获得交易副作用。允许销售软承接不放宽付款卡授权。本轮四组真实完成态误报均为 0，没有具体 admission 漏拦截证据，因此不保留或创建“真实完成态 admission 缺口”任务。
 - 受控预筛已完成：24 个场景（12 个旧失败 + 12 个正反配对）× 4 变体 × 3 次，共 288 次 DeepSeek 调用，temperature=0.15；原始输出和指标位于 ignored `artifacts/v3-human-reply-naturalness/ablation-screen-v0-v3/`。
 - 三次聚合门槛结果：V0 无关插入 4/72、业务认可推进 33/33、首次软拒绝询问顾虑 3/3、明确请求 9/9；V1 分别为 3/72、33/33、3/3、9/9；V2 为 5/72、33/33、3/3、8/9；V3 为 1/72、25/33、3/3、9/9。四组真实完成态误报均为 0。
 - 没有组合达到“无关插入 0”前置门槛；V3 还把业务认可推进从 V0 的 33/33 降至 25/33。V1 与 V0 在冻结 L2 中模型输入完全相同，观测差异属于温度下的采样波动，不能证明事实补齐有效或无回退。因此按约定不运行完整 90 条、不启动盲审，事实补齐、话术隔离和新推进规则均不进入正式候选。
@@ -30,13 +30,23 @@
 - 代码候选 commit：`a924b0980453bd8a9c12f5e247265b22a6088ad9`；Prompt 7,000 字符、73 行，SHA-256 `da1c05f4ca8da7e8d24282561cb7844208834b5da52c45d80ff70c5bfc389582`，架构快照逐字一致。最终交付 commit 另包含本轮证据摘要，以该分支 HEAD 为准。
 - L2 首轮命令：`python ai_paths/scripts/evaluate_v3_reply_naturalness.py --env-file <本地已有隔离凭据文件> --phase all --concurrency 2 --output artifacts/v3-human-reply-naturalness/review-fix-l2`。350 次调用含冻结旧基线、顺序对照、重复及探索温度；全部 DeepSeek，无请求错误和 fallback。首轮候选活动 7/10、主动 21/30、无关插入 1/22，不能因插入减少就接受销售退化。
 - 据此保留推进前置门，把正向业务承接后的实际交付要求写清，再以同一 90 场景、相同评分和 0.15 复测：`python ai_paths/scripts/evaluate_v3_reply_naturalness.py --env-file <同上> --phase order --concurrency 2 --output artifacts/v3-human-reply-naturalness/review-fix-final-l2`。最终 90/90 可解析、78/90 综合、活动 6/10、主动 22/30、keep_open 误用 3/30、明确动作 11/12、无关插入 2/22、硬安全样本 6/6、内部泄漏 0；90 次 DeepSeek，零请求错误和 fallback。P50/P95 1956/2599ms 仅为单节点调用，不是接口耗时。
-- 最终具体遗留：业务认可被当作关系承接、活动字段遗漏、首次付款请求改问人数而未发结构、普通关系回应仍夹带销售菜单。另有价格认可场景出现无证据保留/安排表述和门店未交付时询问日期，属于必须单独审核的事实/越级风险；六个硬安全样本通过不等于全部事实安全。禁止以该候选替换已发布版或宣称达到本轮门槛。
+- 最终具体遗留：业务认可被当作关系承接、活动字段遗漏、首次付款请求改问人数而未发结构、普通关系回应仍夹带销售菜单。历史中把价格认可场景的“活动给你留着/安排上”列为无依据事实风险的判断，已被后续产品决策明确撤销，不再作为失败或 blocker；门店未交付时询问日期仍属于越级风险。六个硬安全样本通过不等于全部事实安全。禁止以该候选替换已发布版或宣称达到本轮门槛。
 - 事实补齐回归解决真实渲染缺口，但原 L2 本已提供完整活动事实，因此不能将旧 L2 遗漏直接归因于 Router 丢主题。本轮未修改原 90 场景与评分来提高分数。
 - 新盲审包：`artifacts/v3-human-reply-naturalness/review-fix-final-blind-review/blind_review_50.csv`，50 对完整文字/结构回复，含 30 个主动机会；沿用冻结旧基线与最新候选生成，映射独立存于 `blind_review_key.json`，人工评分全部留空。生成命令：`python artifacts/v3-human-reply-naturalness/review_bundle.py`（仅 ignored 辅助脚本）。
 - L3 最终命令：`python ai_paths/scripts/evaluate_v3_naturalness_full_graph.py --env-file <同上> --output artifacts/v3-human-reply-naturalness/review-fix-final-l3 --concurrency 1`。完整生产 ASGI 处理链而非真实 TCP 监听；模型、事实动作、admission、临时持久化、HTTP 响应、重放与 finalization 均实际执行。已发门店场景补入虚构结构历史，未注入预生成 Reply；中间缺历史版本只保留作诊断。
 - 最终 L3 结果：19/28 业务合同通过；21 主模型、5 定向修复、2 失败兜底；HTTP/持久重放/收尾 28/28，69 次模型调用仅 DeepSeek，无 GPT fallback，零消息派发和策略外发。完整 L3 明确失败；不能拿底层生命周期通过覆盖九个业务合同失败。
 - 已发现的 L3 范围外阻碍：版本化本地 `s10_activity_intro` 混入 payment_collection，首次询价选择该素材会与“必须有之前活动证据才能发付款卡”冲突；本任务不修改素材配置、付款门或第三方目录来使评测转绿。其余结构交付/状态失败以最终报告为准；本地目录行为不能直接推断线上外部目录行为。
-- 结论：三项 Review 的代码修订与评测设施已提交，但质量目标未达成；保留 active、不得合并或发布。原始产物保持 ignored，不写 current、不编辑母窗口索引、不触碰图片身份/防重任务。
+- 结论：消融完成，无可接受 Prompt 候选，正式 Reply 行为保持 `origin/main@afb261c0480811c89fd58f98c3c778169303f287`。状态为 `ready_for_closeout_no_winner`，不得合并整条分支历史或发布；失败 Prompt 提交不得作为产品改动进入 main。原始产物保持 ignored，不写 current、不编辑母窗口索引、不触碰图片身份/防重任务。
+
+### 独立集成窗口选择性带入建议
+
+- 只选择性带入完整图 HTTP/幂等重放/finalization 评测增强：`ai_paths/scripts/evaluate_v3_naturalness_full_graph.py`。
+- 同步带入对应确定性测试：`tests/test_v3_human_reply_naturalness.py` 中 `test_full_graph_http_harness_runs_route_replay_and_finalization`。
+- 选择性带入消融工具：`ai_paths/scripts/evaluate_v3_reply_naturalness_ablation.py` 及其 baseline ref/SHA 确定性测试；新运行必须显式传 `--baseline-ref`，报告同时保存输入 ref 和运行开始时解析的完整 commit SHA。本轮历史消融基线为 `afb261c0480811c89fd58f98c3c778169303f287`，不依赖未来移动的 `origin/main`。
+- 选择性带入 `docs/contracts/sales-strategy.md` 中销售性软承接与真实交易完成态的边界。
+- 集成验收后在 `docs/tasks/history/INDEX.md` 只留一行摘要：`v3-human-reply-naturalness` 完成受控消融但无胜出 Prompt，正式 Reply 保持 main；选择性沉淀评测基础设施与销售性软承接合同。
+- 禁止直接合并 `codex/v3-human-reply-naturalness` 整条历史；`a924b098`、`d145fbe4` 等失败 Prompt 提交只作为实验取证，不得成为 main 的产品行为。由独立集成窗口从最终收尾提交及必要基础设施提交中按文件/补丁选择，不得恢复候选 Prompt、动态推进规则、事实补齐或话术隔离改动。
+- 关闭准备验证：消融脚本及测试 Ruff 通过，相关确定性测试 11 passed，全量确定性测试 868 passed、9 个既有弃用警告，`git diff --check` 通过；正式 Reply Prompt、动态上下文、架构 Prompt 快照和治理测试继续与 `origin/main` 无差异。未调用模型、未启动盲审、未合并、未部署。
 
 ## 2026-09-10 本次发布例外（优先于下方历史限制）
 
