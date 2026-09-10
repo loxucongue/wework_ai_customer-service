@@ -657,24 +657,38 @@ class SopPlatformTaskService:
                 break
             for task in eligible:
                 task["_aics_pulled_at"] = pulled_at
+                # Reserve before the first persistence await. Otherwise the
+                # recovery loop can observe ``platform_queued`` in storage
+                # while this task is not yet present in either in-memory set,
+                # and incorrectly classify a brand-new deterministic task as
+                # legacy recovery work.
+                self._queued_ids.add(_task_id(task))
             persistence_results = await asyncio.gather(
                 *(persist_task(task, status="platform_queued") for task in eligible)
             )
             persisted = [task for task in persistence_results if task is not None]
+            persisted_ids = {_task_id(task) for task in persisted}
+            for task in eligible:
+                task_id = _task_id(task)
+                if task_id not in persisted_ids:
+                    self._queued_ids.discard(task_id)
             if not persisted:
                 continue
             trigger_tasks: list[dict[str, Any]] = []
-            for task in persisted:
-                self._queued_ids.add(_task_id(task))
-            self._queue.put_nowait(
-                {
-                    "_aics_customer_batch": True,
-                    "batch_key": batch_key,
-                    "biz_type": "online_service",
-                    "tasks": persisted,
-                    "compat_trigger_tasks": trigger_tasks,
-                }
-            )
+            try:
+                self._queue.put_nowait(
+                    {
+                        "_aics_customer_batch": True,
+                        "batch_key": batch_key,
+                        "biz_type": "online_service",
+                        "tasks": persisted,
+                        "compat_trigger_tasks": trigger_tasks,
+                    }
+                )
+            except Exception:
+                for task_id in persisted_ids:
+                    self._queued_ids.discard(task_id)
+                raise
             enqueued += len(persisted)
         self._counters["fetched"] += len(tasks)
         self._counters["enqueued"] += enqueued
@@ -3545,8 +3559,6 @@ class SopPlatformTaskService:
             }
         )
         current_status = str(event.get("status") or "")
-        if event.get("created") or current_status in {"", "accepted", "platform_received", "platform_queued"}:
-            event = self.repository.update_sop_event_status(event_id, status=status)
         identity = _task_identity(platform_task)
         local_task = self.repository.create_sop_send_task(
             event_id=event_id,
@@ -3564,6 +3576,34 @@ class SopPlatformTaskService:
             reply_messages=_platform_messages(platform_task),
             status=status,
         )
+        local_task_id = str(local_task.get("id") or "").strip()
+        if not local_task_id:
+            raise RuntimeError(f"platform_sop_local_task_persistence_failed:{task_id}")
+        # Publish a recoverable event status only after the durable execution
+        # mode exists. This ordering makes a process crash safe: a recovery
+        # scan can never see a newly-created ``platform_queued`` event without
+        # enough evidence to route it back into the deterministic state
+        # machine. Existing legacy records are intentionally left untouched.
+        if event.get("created") or (
+            bool(local_task.get("created"))
+            and current_status in {"", "accepted", "platform_received", "platform_queued"}
+        ):
+            existing_audit = (
+                local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            )
+            if not str(existing_audit.get("processing_mode") or "").strip():
+                local_task = self.repository.update_sop_send_task(
+                    local_task_id,
+                    status=str(local_task.get("status") or status),
+                    send_payload={
+                        **existing_audit,
+                        "audit_schema_version": 4,
+                        "processing_mode": "deterministic_customer_gate",
+                    },
+                    error=str(local_task.get("error") or ""),
+                )
+        if event.get("created") or current_status in {"", "accepted", "platform_received", "platform_queued"}:
+            event = self.repository.update_sop_event_status(event_id, status=status)
         return event, local_task
 
     async def _process_locked(

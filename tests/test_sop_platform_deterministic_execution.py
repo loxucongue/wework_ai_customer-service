@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections import Counter, deque
 from types import SimpleNamespace
 from typing import Any
@@ -297,6 +298,95 @@ def test_polling_does_not_load_sop_messages_before_customer_gates() -> None:
 
     assert result["enqueued_count"] == 1
     assert events == []
+
+
+def test_poll_reserves_new_task_before_persistence_can_be_seen_by_recovery() -> None:
+    persistence_started = threading.Event()
+    release_persistence = threading.Event()
+
+    class _PollPlatform:
+        async def pending(self, **_values: Any) -> dict[str, Any]:
+            return {"items": [_task()], "total": 1}
+
+    settings = SimpleNamespace(
+        sop_platform_queue_size=10,
+        sop_platform_batch_size=10,
+        sop_platform_priority_wechats="",
+        sop_platform_task_concurrency=1,
+    )
+    service = SopPlatformTaskService(
+        settings=settings,
+        repository=SimpleNamespace(),
+        platform_client=_PollPlatform(),
+        system_client=SimpleNamespace(),
+        model_client=_NoModel(),
+        customer_context_service=SimpleNamespace(),
+    )
+    service._restore_reserved_prefix_ids = lambda: None
+
+    def persist(task: dict[str, Any], **_values: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        persistence_started.set()
+        assert release_persistence.wait(timeout=2)
+        return {}, {"id": f"local-{task['taskId']}"}
+
+    service._ensure_local_task = persist
+
+    async def run_poll() -> dict[str, Any]:
+        poll = asyncio.create_task(service.poll_once())
+        assert await asyncio.to_thread(persistence_started.wait, 2)
+        assert "101" in service._queued_ids
+        release_persistence.set()
+        return await poll
+
+    result = asyncio.run(run_poll())
+
+    assert result["enqueued_count"] == 1
+    assert "101" in service._queued_ids
+
+
+def test_new_task_persists_deterministic_marker_before_recoverable_event_status() -> None:
+    operations: list[tuple[str, str]] = []
+    local = {
+        "id": "local-101",
+        "status": "platform_queued",
+        "error": "",
+        "send_payload": {},
+        "created": True,
+    }
+
+    class _PersistenceRepository:
+        def create_sop_event(self, _payload: dict[str, Any]) -> dict[str, Any]:
+            operations.append(("event_create", "accepted"))
+            return {"created": True, "status": "accepted"}
+
+        def create_sop_send_task(self, **_values: Any) -> dict[str, Any]:
+            operations.append(("task_create", "platform_queued"))
+            return dict(local)
+
+        def update_sop_send_task(self, _task_id: str, **values: Any) -> dict[str, Any]:
+            processing_mode = str(values["send_payload"].get("processing_mode") or "")
+            operations.append(("task_marker", processing_mode))
+            local.update(values)
+            return dict(local)
+
+        def update_sop_event_status(self, _event_id: str, *, status: str, **_values: Any) -> dict[str, Any]:
+            operations.append(("event_status", status))
+            assert local["send_payload"]["processing_mode"] == "deterministic_customer_gate"
+            return {"created": True, "status": status}
+
+    service = SopPlatformTaskService.__new__(SopPlatformTaskService)
+    service.repository = _PersistenceRepository()
+
+    event, persisted = service._ensure_local_task(_task(), status="platform_queued")
+
+    assert event["status"] == "platform_queued"
+    assert persisted["send_payload"]["processing_mode"] == "deterministic_customer_gate"
+    assert operations == [
+        ("event_create", "accepted"),
+        ("task_create", "platform_queued"),
+        ("task_marker", "deterministic_customer_gate"),
+        ("event_status", "platform_queued"),
+    ]
 
 
 def test_consume_retry_reuses_exact_msg_id_without_resending_customer_message() -> None:
