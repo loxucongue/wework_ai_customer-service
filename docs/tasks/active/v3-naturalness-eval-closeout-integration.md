@@ -5,7 +5,7 @@
 - base_branch: `origin/main`
 - base_sha: `afb261c0480811c89fd58f98c3c778169303f287`
 - branch: `codex/v3-naturalness-eval-closeout-integration`
-- worktree: 由执行窗口创建后登记
+- worktree: `E:\ai_code\vscode_codex\worktrees\v3-naturalness-eval-closeout-integration`
 - source_evidence: `codex/v3-human-reply-naturalness@ecb2f149f9cd30e46c5091e5d1ffac0828af62e5`
 - production_verified_at: 不适用；本任务不判断或修改线上状态
 
@@ -54,3 +54,13 @@
 ## 回滚
 
 本任务不含运行时行为和数据迁移。若选择性提取不干净或测试失败，放弃集成候选即可，`main` 保持不变。
+
+## 执行窗口只读取证与 change contract
+
+- 现场基线：`origin/main@aeec0653a3a0a46e92f54dc92ed4cb20389679c2`，独立分支和 worktree 初始均 clean；来源只读提交 `ecb2f149f9cd30e46c5091e5d1ffac0828af62e5` 可达且不合并、不 rebase、不 cherry-pick。
+- 类型：无产品行为变化的评测基础设施选择性集成与任务关闭。
+- 最小文件集：`ai_paths/scripts/evaluate_v3_naturalness_full_graph.py`、`ai_paths/scripts/evaluate_v3_reply_naturalness_ablation.py`、`tests/test_v3_human_reply_naturalness.py` 中 3 个直接测试、`docs/contracts/sales-strategy.md` 中 2 条软承接边界、`docs/tasks/active/INDEX.md`、`docs/tasks/history/INDEX.md`，以及删除原任务和本集成任务的 active 文档。
+- 冲突检查：active INDEX 中原自然度任务已冻结为只读取证，本集成任务独占上述评测/合同/关闭范围；没有其他 active ownership。禁止路径 `ai_paths/app/prompts/`、`ai_paths/app/graph/`、`ai_paths/app/services/`、`ai_paths/app/policies/`、生产配置、迁移和部署文件均不修改。
+- 风险：来源分支包含失败 Prompt 历史，不能按提交整合；只按最终树逐文件/逐段提取，并以 `git diff --name-only` 和正式 Reply 文件零差异证明隔离。评测脚本会导入生产组件但只供显式隔离运行，不改变运行入口或线上副作用。
+- 验证：相关 Ruff/pytest、全量确定性测试、`git diff --check`；确认消融 CLI 强制 `--baseline-ref` 且报告含完整 `baseline_sha`；确认最终 diff 无正式 Reply、Router、配置、数据库或部署文件。
+- 回滚：候选不合入 main 即可完整回滚；没有数据库、配置或生产状态变更。

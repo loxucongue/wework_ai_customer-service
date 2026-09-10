@@ -14,6 +14,14 @@ import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
+
+import httpx
+from fastapi import FastAPI
+from app.routers.reply import create_reply_router
+from app.services.v3_request_timing import V3RequestTimingMiddleware, _BACKGROUND_FINALIZERS
+from app.services.v3_reply_finalization_service import V3ReplyFinalizationService
+from app.services.trace_logger import TraceLogger
 
 from app.config import Settings
 from app.services.ai_sales_policy_service import AiSalesPolicyService
@@ -23,8 +31,7 @@ from app.services.model_client import ModelClient
 from app.services.sales_strategy_service import SalesStrategyService
 from app.services.store_service import StoreService
 from app.services.v3_semantic_router_service import V3SemanticRouterService
-from app.services.workflow_compat import workflow_response_from_chat
-from scripts.evaluate_v3_full_chain_deepseek import build_case_runtime, build_request, ephemeral_counts
+from scripts.evaluate_v3_full_chain_deepseek import build_case_runtime, ephemeral_counts
 from scripts.evaluate_v3_reply_naturalness import _baseline_prompt
 from scripts.v3_reply_naturalness_cases import CASES
 
@@ -107,6 +114,48 @@ class AuditedSemantic(DeepSeekSemanticClient):
                                "usage": copy.deepcopy(self.last_usage)})
 
 
+async def run_http_lifecycle(runtime: dict[str, Any], sample: dict[str, Any]) -> tuple[dict, dict, dict]:
+    """Exercise the production route/middleware with temporary persistence only."""
+    class TextOnlyCoordinator:
+        async def prepare(self, request: Any, client: Any) -> Any:
+            assert not request.file_image
+            return request
+
+    app = FastAPI()
+    app.add_middleware(V3RequestTimingMiddleware, repository=runtime["repository"])
+    isolated_settings = runtime["settings"].model_copy(update={
+        "ai_paths_api_key": "synthetic-evaluation-token", "ai_external_api_key": "",
+    })
+    app.include_router(create_reply_router(isolated_settings, SimpleNamespace(
+        chat_runtime=runtime["runtime"], platform_voice_batch_coordinator=TextOnlyCoordinator(),
+        voice_transcription_client=None,
+    )))
+    payload = {**sample, "platform_customer_id": "900001", "platform_user_id": "900005"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://isolated",
+                                headers={"Authorization": "Bearer synthetic-evaluation-token"}) as client:
+        http_started = time.perf_counter()
+        first = await client.post("/reply/workflow-compatible-v3", json=payload)
+        first_http_ms = int((time.perf_counter() - http_started) * 1000)
+        first.raise_for_status()
+        body = first.json()
+        replay = await client.post("/reply/workflow-compatible-v3", json=payload)
+        replay.raise_for_status()
+        replay_body = replay.json()
+    pending = list(_BACKGROUND_FINALIZERS)
+    if pending:
+        await asyncio.gather(*pending)
+    finalizer = V3ReplyFinalizationService(
+        repository=runtime["repository"], trace_logger=TraceLogger(runtime["settings"]),
+        service_rule_data_service=None, outreach_service=None, batch_size=5,
+    )
+    finalization_started = time.perf_counter()
+    finalizer.process_batch()
+    finalization_ms = int((time.perf_counter() - finalization_started) * 1000)
+    snapshot = (runtime["repository"].get_run(body["execute_id"]).get("run") or {}).get("output_snapshot") or {}
+    snapshot["evaluation_timings"] = {"first_asgi_http_ms": first_http_ms, "finalization_ms": finalization_ms}
+    return body, replay_body, snapshot
+
+
 async def run(args: argparse.Namespace) -> None:
     args.output = args.output.resolve()
     # Credentials are read only for DeepSeek. No production SDK is constructed.
@@ -165,25 +214,36 @@ async def run(args: argparse.Namespace) -> None:
             "conversation_history": [("客户：" if item["role"] == "customer" else "客服：") + substitute(item["content"]) for item in case["history"]],
             "request_context": {"msgid": "full-graph-" + case["id"]},
         }
+        # Explicit fixture state, not customer-intent logic: these cases say a
+        # store card was already delivered. Text alone is not a delivery event.
+        if case["id"] in {"short-03", "soft-06", "action-05", "action-09", "action-10", "safety-05"}:
+            sample.update(confirmed_store_id="900004", confirmed_store_name="杭州青禾护理中心")
+            sample["prior_deliveries"] = [{
+                "request_id": "synthetic-prior-" + case["id"],
+                "occurred_at": "2026-09-10T08:00:00+08:00",
+                "reply_messages": [{"type": "store_address", "content": {"store_id": "900004"}}],
+            }]
         runtime = build_case_runtime(settings=settings, shared=shared, sample=sample,
                                      case_dir=args.output / case["id"])
         row: dict[str, Any] = {"case_id": case["id"], "external_fact_mode": "synthetic"}
         try:
-            response = await runtime["runtime"].run_platform_reply(build_request(sample))
-            body = workflow_response_from_chat(response)
-            final = runtime["graph"].final_by_request.get(response.request_id, {})
+            body, replay_body, snapshot = await run_http_lifecycle(runtime, sample)
+            request_id = body["execute_id"]
+            final = runtime["graph"].final_by_request.get(request_id, {})
             (args.output / case["id"] / "full_state.json").write_text(
                 json.dumps(final, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-            row.update(request_id=response.request_id, response=body,
+            row.update(request_id=request_id, response=body,
                        reply_source=final.get("reply_source"), decision_status=final.get("decision_status"),
                        errors=final.get("errors"), reply_error=final.get("reply_error"),
                        node_timings=[{"node": entry.get("node"), "duration_ms": entry.get("duration_ms")}
                                      for entry in final.get("trace", [])],
                        model_names=sorted(set(_model_names(final))),
                        counts=ephemeral_counts(runtime["store"]))
-            replay = await runtime["runtime"].run_platform_reply(build_request(sample))
-            row["replay_same_request_id"] = replay.request_id == response.request_id
-            row["replay_same_messages"] = replay.reply_messages == response.reply_messages
+            row["replay_same_request_id"] = replay_body["execute_id"] == request_id
+            row["replay_same_messages"] = replay_body["data"]["reply_messages"] == body["data"]["reply_messages"]
+            row["http_transport_verified"] = True
+            row["finalization_verified"] = (snapshot.get("post_reply_finalization") or {}).get("status") == "completed"
+            row["http_and_finalization_timings"] = snapshot["evaluation_timings"]
             row["response_types"] = [item.get("type") for item in (body.get("data") or {}).get("reply_messages", [])]
             row["required_structures_present"] = all(kind in row["response_types"] for kind in case["required_message_types"])
         except Exception as exc:
@@ -230,6 +290,10 @@ def summarize(output: Path) -> dict[str, Any]:
             failures.append("unexpected_customer_state")
         if not row.get("replay_same_messages") or not row.get("replay_same_request_id"):
             failures.append("unstable_durable_replay")
+        if not row.get("http_transport_verified") or not row.get("finalization_verified"):
+            failures.append("incomplete_http_or_finalization")
+        if any((row.get("counts") or {}).get(key, 0) for key in ("message_dispatches", "strategy_data_outbox")):
+            failures.append("unexpected_external_side_effect")
         repair_ms = 0
         for entry in state.get("trace", []):
             if entry.get("node") != "synthesize_reply":
@@ -239,7 +303,8 @@ def summarize(output: Path) -> dict[str, Any]:
                 if isinstance(retry, dict):
                     repair_ms += int((retry.get("usage") or {}).get("overall_duration_ms") or 0)
         details.append({"case_id": row["case_id"], "passed": not failures, "failures": failures,
-                        "runtime_response_and_replay_ms": row.get("http_lifecycle_ms"),
+                        "runtime_http_replay_and_finalization_ms": row.get("http_lifecycle_ms"),
+                        "http_and_finalization_timings": row.get("http_and_finalization_timings"),
                         "repair_reported_usage_ms": repair_ms, "node_timings": row.get("node_timings")})
     usage = [call.get("usage") or {} for row in rows for call in
              [*row.get("reply_and_tool_model_calls", []), *row.get("router_and_retrieval_model_calls", [])]]
@@ -253,9 +318,16 @@ def summarize(output: Path) -> dict[str, Any]:
         "fallback_used": any(item.get("fallback_used") or int(item.get("fallback_index") or 0) > 0 for item in usage),
         "message_dispatches": sum((row.get("counts") or {}).get("message_dispatches", 0) for row in rows),
         "strategy_data_outbox": sum((row.get("counts") or {}).get("strategy_data_outbox", 0) for row in rows),
-        "http_transport_verified": False, "finalization_verified": False,
-        "complete_l3_passed": False,
-        "scope_note": "Real model graph plus runtime persistence and response serialization; external facts are synthetic. HTTP transport and finalization are not exercised by this harness.",
+        "http_transport_verified": bool(rows) and all(row.get("http_transport_verified") for row in rows),
+        "finalization_verified": bool(rows) and all(row.get("finalization_verified") for row in rows),
+        "complete_l3_passed": (
+            {row["case_id"] for row in rows} == {case["id"] for case in CASES if case["l3"]}
+            and all(row["passed"] for row in details)
+            and bool(usage)
+            and all(str(item.get("model") or item.get("winner_model") or "") == "deepseek-chat"
+                    and not item.get("fallback_used") and not item.get("fallback_index") for item in usage)
+        ),
+        "scope_note": "Production ASGI route/middleware, real graph, temporary SQLite, HTTP replay and finalization; synthetic external adapters. No live TCP listener or production integration is exercised.",
         "details": details,
     }
     (output / "metrics.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

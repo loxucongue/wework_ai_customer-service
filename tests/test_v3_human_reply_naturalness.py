@@ -10,6 +10,106 @@ from scripts.v3_reply_sales_opportunity_cases import OPPORTUNITY_CASES
 from scripts.evaluate_v3_reply_naturalness import score_result, _representative_probes
 
 
+def test_ablation_resolves_baseline_once_and_builds_all_variants_from_it(monkeypatch) -> None:
+    from scripts import evaluate_v3_reply_naturalness_ablation as ablation
+
+    full_sha = "a" * 40
+    baseline_prompt = PARALLEL_REPLY_SYSTEM_PROMPT
+    calls: list[tuple[str, ...]] = []
+
+    class Result:
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def fake_run(command, **_kwargs):
+        calls.append(tuple(command))
+        if command[1] == "rev-parse":
+            return Result(full_sha + "\n")
+        if command[1] == "show":
+            return Result(f"PARALLEL_REPLY_SYSTEM_PROMPT = {baseline_prompt!r}\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ablation.subprocess, "run", fake_run)
+    resolved_sha, prompt = ablation._resolve_baseline("refs/remotes/origin/main")
+    jobs = ablation._jobs([], repetitions=3, baseline_prompt=prompt)
+
+    assert resolved_sha == full_sha
+    assert prompt == baseline_prompt
+    assert jobs == []
+    assert calls == [
+        ("git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
+        ("git", "show", f"{full_sha}:{ablation.PROMPT_PATH}"),
+    ]
+    report = ablation._base_report(
+        type("Args", (), {"phase": "screen", "repetitions": 3, "baseline_ref": "origin/main"})(),
+        case_count=24,
+        baseline_sha=resolved_sha,
+    )
+    assert report["baseline_ref"] == "origin/main"
+    assert report["baseline_sha"] == full_sha
+
+
+def test_ablation_requires_explicit_baseline_ref() -> None:
+    import pytest
+    from scripts import evaluate_v3_reply_naturalness_ablation as ablation
+
+    with pytest.raises(SystemExit):
+        ablation.build_parser().parse_args(["--env-file", "local.env", "--output", "artifacts/test"])
+
+    args = ablation.build_parser().parse_args(
+        ["--env-file", "local.env", "--output", "artifacts/test", "--baseline-ref", "abc123"]
+    )
+    assert args.baseline_ref == "abc123"
+
+
+def test_full_graph_http_harness_runs_route_replay_and_finalization(tmp_path) -> None:
+    """L1 harness regression only; the actual L3 evaluator uses the real graph."""
+    import asyncio
+    from app.chat_runtime import ChatRuntime
+    from app.config import Settings
+    from app.services.memory_store import CustomerMemoryStore
+    from app.services.storage import AppRepository, SQLiteStore
+    from app.services.trace_logger import TraceLogger
+    from scripts.evaluate_v3_naturalness_full_graph import run_http_lifecycle, SyntheticStatus
+
+    class CountingGraph:
+        calls = 0
+
+        async def ainvoke(self, state):
+            self.calls += 1
+            state.update(reply_messages=[{"type": "text", "content": "好的", "order": 1}],
+                         reply_source="main_model", decision_status="ok")
+            return state
+
+    settings = Settings(_env_file=None, AI_PATHS_SERVICE_ROLE="reply", SOP_PLATFORM_PULL_ENABLED=False,
+                        AI_PATHS_BACKGROUND_WORKERS_ENABLED=False).model_copy(update={
+                            "db_path": tmp_path / "state.db", "memory_dir": tmp_path / "memory",
+                            "trace_log_dir": tmp_path / "trace", "aics_storage_backend": "sqlite"})
+    store = SQLiteStore(settings)
+    store.initialize()
+    repository = AppRepository(store)
+    graph = CountingGraph()
+    runtime = ChatRuntime(full_graph=graph, commit_graph=None, repository=repository,
+                          trace_logger=TraceLogger(settings), memory_store=CustomerMemoryStore(settings, repository),
+                          outreach_system_client=SyntheticStatus(), settings=settings)
+    try:
+        first, replay, snapshot = asyncio.run(run_http_lifecycle(
+            {"runtime": runtime, "settings": settings, "repository": repository},
+            {"content": "谢谢", "customer_id": "900001", "corp_id": "synthetic-corp",
+             "wechat": "synthetic-wechat", "external_userid": "synthetic-http-regression",
+             "customer_add_wechat_id": "900002", "request_context": {"msgid": "synthetic-http-once"}},
+        ))
+        assert graph.calls == 1
+        assert first["execute_id"] == replay["execute_id"]
+        assert first["data"]["reply_messages"] == replay["data"]["reply_messages"]
+        assert snapshot["post_reply_finalization"]["status"] == "completed"
+        with store.connect() as connection:
+            for table in ("message_dispatches", "strategy_data_outbox"):
+                assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    finally:
+        store.close()
+
+
 def test_naturalness_evaluation_matrix_has_required_coverage() -> None:
     counts = Counter(str(case["category"]) for case in CASES)
 
