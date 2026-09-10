@@ -152,7 +152,20 @@ Router、序列、话术、B 单目录和门店工具都只是 Reply 的证据�
 
 销售接触状态严格按 `corp_id + wechat + external_userid` 隔离。`platform_customer_id`（旧字段名可能是 `customer_id`）只是独立的平台客户记录 ID，不能替代 `external_userid`；客户加微关系 ID、接待人员 ID 和企微号同样不可互相补位。详见 [客户身份合同](../contracts/customer-identity.md)。
 
-## 10. 文档与动态事实
+## 10. V3 素材身份、同步与响应占用
+
+- `material_identity.py` 在最终 Evidence Join 合并媒体；内容能力收敛于 `content_capabilities.py`。工具效果图同样必须经过身份检查，不能由原始事实 URL 绕过。文字参考保留，Reply 销售 Prompt 与模型节点数不变。
+- `material_identities` 保存 URL/file-ID 哈希别名、canonical ID、版本化指纹、来源和 override 原因；`material_claims` 保存接触档案哈希与 canonical ID 的唯一占用、稳定消息 ID 和单一候选角色。账本没有 TTL，不依赖历史消息窗口或进程缓存；不得为清理体积删除占用。
+- `save_v3_reply_core` 在同一事务内写入稳定响应、恢复收尾任务和 `response_committed` 占用。并发唯一键冲突或目录身份变化使本次提交回滚；旧占用不因重试覆盖。占用不是 sent/delivered，素材异步收尾不据此写旧的“已发”记忆。
+- 可信 `follow_knowledge` 正整数 file ID 可直接登记；已知 URL 仅解析登记别名。未知素材不做运行时网络下载。目录/账本不可用时关闭附件但保留文字，并区分 `identity_registry_unavailable`、`delivery_ledger_unavailable`、`identity_unknown`、`contact_identity_missing`；已占用记录为 `delivery_already_reserved`。
+- 每轮至多处理 128 个候选及 128 个唯一媒体，目录至多 10,000 个别名，每份字节至多 6 MiB、图片至多 2,000 万像素。账本随真实接触增长，但热查询仅按接触与至多 128 个 identity 索引查找。目录超限失败关闭并审计；这些是工程预算，不能当销售节奏规则。
+- 指纹版本 `media-v1-rgb32-dhash4`：精确 SHA-256；图片先按 EXIF 定向、透明区合成白底。解码像素完全相同可合并；否则同时要求宽高比差 ≤0.005、64 位 dHash 距离 ≤4、双方 dHash 置位数 8–56、32×32 RGB 最大通道差 ≤16 且平均差 ≤1.5。近似判断不是数学上的同物证明；低纹理、裁剪、重度压缩等不自动保证合并。视频只支持字节/可信文件 ID/人工登记身份，不以图片感知算法推断视频转码。
+- 本地工具 `ai_paths/scripts/sync_material_identities.py` 接收 JSON manifest（`type/url/path` 或可信 `file_id/file_namespace`，可附 `canonical_id/override_reason`）。默认 dry-run 只读显式 SQLite；`--apply --undo` 先落盘并同步 undo 再原子应用，重复回填幂等；`--rollback` 检查并发变化，可重入。产物放 ignored `artifacts/`。工具不加载环境文件、不连接第三方，生产目录同步接入及执行归独立发布任务。
+- 单次回填有界，失败分为身份未知、字节不可取、下载超时、格式不支持、指纹失败和目录冲突；不写发送记忆，下一次显式同步可重试。工具本身只读取本地字节，`download_timeout` 是输入读取层超时的审计分类，不声称有生产下载器。
+- 人工纠错必须带 `override_reason`；未占用的误合并别名可拆为独立 identity，即便同组其他别名已占用。已占用别名不能靠 override/rollback 释放；其纠错需保留发送来源的独立审计迁移。undo 遇新占用或并发变化拒绝覆盖。原目录备份和合成 dry-run 是应用前提。
+- 增量迁移 `20260910_01` 只加表；空表可 downgrade，非空拒绝删除。代码回退保留身份及占用表，再依据审计 undo 回退尚未产生占用的回填。本任务未执行生产迁移。
+
+## 11. 文档与动态事实
 
 - 架构和合同只写稳定机制；开关、release、队列、水位和回滚点只写在 `docs/current/` 并标核验时间。
 - 客户原文、模型输出、截图和评测明细只进入 ignored `artifacts/`。

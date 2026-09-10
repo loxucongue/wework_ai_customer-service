@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.content_capabilities import content_only_candidates
+
 import html
 import re
 from typing import Any
@@ -393,6 +395,16 @@ def _validate_parallel_media_facts(messages: list[dict[str, Any]], state: dict[s
     if not emitted:
         return
 
+    if state.get("material_identity_governed"):
+        bindings = state.get("material_identity_bindings") or {}
+        if emitted - set(bindings):
+            raise ValueError("unsupported_parallel_media_fact:material_identity_unavailable")
+        identities = [bindings[_parallel_structured_message_key(item)]["canonical_id"] for item in messages
+                      if isinstance(item, dict) and item.get("type") in {"image", "video"}]
+        if len(identities) != len(set(identities)):
+            raise ValueError("duplicate_material_in_response")
+        return
+
     allowed: set[str] = set()
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
     for candidate in joined.get("content_candidates") or []:
@@ -442,7 +454,7 @@ def _validate_parallel_selected_content_delivery(
     if not adopted_ids:
         return
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
-    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
+    candidates = content_only_candidates(joined.get("content_candidates"))
     emitted = {
         _parallel_structured_message_key(item)
         for item in messages
@@ -494,7 +506,7 @@ def completed_parallel_selected_content_ids(
     """
 
     joined = state.get("evidence_join") if isinstance(state.get("evidence_join"), dict) else {}
-    candidates = joined.get("content_candidates") if isinstance(joined.get("content_candidates"), list) else []
+    candidates = content_only_candidates(joined.get("content_candidates"))
     emitted = {_parallel_structured_message_key(item) for item in messages if isinstance(item, dict)}
     requested = [str(item or "").strip() for item in selected_ids if str(item or "").strip()]
     # selected_content_ids is optional audit metadata. When Reply actually
@@ -562,7 +574,7 @@ def completed_parallel_selected_content_ids(
             if isinstance(item, dict) and str(item.get("type") or "") != "text"
         }
         required.discard("")
-        if required.issubset(emitted):
+        if required and required.issubset(emitted):
             complete.append(content_id)
     return complete
 
@@ -735,6 +747,12 @@ def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state
     """A customer-visible promise to send media must include an authorized structure."""
 
     text = re.sub(r"\s+", "", _combined_text(messages))
+    if state.get("material_identity_governed") and not any(
+        item.get("type") in {"image", "video"} for item in messages if isinstance(item, dict)
+    ) and re.search(r"(?:图片|视频|效果图|案例图)(?:已经|已)(?:发给|发送|发出)", text) and not (
+        _references_recently_delivered_case_image(text) and _has_recent_case_image_evidence(state)
+    ):
+        raise ValueError("case_image_structure_required_when_reply_promises_delivery")
     promises_case_image = any(
         term in text
         for term in (

@@ -580,3 +580,24 @@ CREATE INDEX IF NOT EXISTS idx_internal_work_items_store_detail
 ON internal_work_items(store_id, detail_kind, status);
 CREATE INDEX IF NOT EXISTS idx_internal_work_items_contact
 ON internal_work_items(corp_id, wechat, external_userid, customer_id, last_seen_at);
+CREATE TABLE IF NOT EXISTS material_identities (
+    alias_key TEXT PRIMARY KEY,
+    canonical_id TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    fingerprint_json TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    override_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_material_identity_canonical ON material_identities(canonical_id);
+CREATE TABLE IF NOT EXISTS material_claims (
+    contact_key TEXT NOT NULL,
+    canonical_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    client_message_id TEXT NOT NULL,
+    alias_key TEXT NOT NULL,
+    asset_role TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(contact_key, canonical_id)
+);
+CREATE INDEX IF NOT EXISTS idx_material_claim_alias ON material_claims(alias_key);

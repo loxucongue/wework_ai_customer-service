@@ -2973,6 +2973,8 @@ def script_content_candidates(
                         filtered_sent_image_count += 1
                         continue
                     structured = {"type": message_type, "content": url}
+                    if int(message.get("file_id") or 0) > 0:
+                        structured.update(file_id=int(message["file_id"]), file_namespace="follow_knowledge")
                     structured_media.append(structured)
                     ordered_reference_messages.append(
                         {

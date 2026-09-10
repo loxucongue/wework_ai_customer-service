@@ -293,6 +293,12 @@ Authorization: Bearer <AI_PATHS_API_KEY>
 
 ## 6. 聚合平台交付清单
 
+正常 V3 返回的 `response_id/client_message_id` 尚不能自动映射为本合同的 `dispatch_id`。素材账本的 `response_committed` 只表示 AI 侧已在同一事务提交稳定结构响应并占用 canonical identity，不能作为回调成功证据。
+
+日志、管理页和文档必须区分：候选、已选、响应已提交、平台发送成功、实际送达。同步返回只能显示“响应已提交；平台发送与实际送达未确认”，不能显示“已发送/已送达”。没有权威失败事件不自动释放素材占用；允许平台实际失败后暂时不自动补发，避免重试重复。事务整体回滚不保留占用。
+
+未来须另立接口/集成任务，建立可验证的 `client_message_id/response_id ↔ dispatch_id` 映射及发送/失败回调后，才可推进素材状态或按明确策略解除占用；不得在当前实现中猜测映射或复用 SOP 策略消费回传充当送达回执。当前验收仅为 AI 生成侧去重，客户侧发送闭环仍是第三方依赖。
+
 - [ ] 解析并持久化 `dispatch_id`。
 - [ ] 原样保留每条 `client_message_id`。
 - [ ] 发送接口返回 `platform_request_id`。

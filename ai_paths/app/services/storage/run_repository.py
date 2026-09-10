@@ -19,6 +19,7 @@ from app.services.storage.serialization import (
     utc_now_iso,
 )
 from app.services.trace_logger import compact
+from app.services.material_identity import contact_key
 from app.services.run_observability import (
     build_v3_run_observability,
     enrich_v3_run_observability,
@@ -576,6 +577,11 @@ class RunRepositoryMixin:
                         dumps(final_state.get("errors") or []) if final_state.get("errors") else "",
                         started_at,
                     ),
+                )
+            if final_state.get("material_identity_governed"):
+                self.claim_materials_in_connection(
+                    conn, scope=contact_key(final_state), request_id=request_id,
+                    messages=reply_messages, bindings=final_state.get("material_identity_bindings") or {},
                 )
             if reply_messages:
                 content = "\n".join(

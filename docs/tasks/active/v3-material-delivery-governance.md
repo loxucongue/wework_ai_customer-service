@@ -1,10 +1,10 @@
 # V3 素材交付治理
 
 - task_id: `v3-material-delivery-governance`
-- status: active
+- status: candidate_ready（待母窗口验收，未合并/部署）
 - owner: 独立执行窗口
 - branch: `codex/v3-material-delivery-governance`
-- base_sha: `c6df823047738bcef5e5a0646ca87c6242826dae`
+- base_sha: `dafbeee8494c7f5f7de53a6e969f79329968b8d6`
 - production_baseline: 本任务不部署；若取证涉及线上事实，执行窗口必须现场只读核验并记录，不得引用旧聊天或快照代替
 - task_type: 代码 + 配置/业务素材目录治理；是否需要可逆数据迁移，由执行窗口取证后决定
 
@@ -107,7 +107,37 @@
 
 ## 当前状态
 
-- 已完成：母窗口确认任务使命、技术方向、能力边界和验收标准。
-- 待完成：执行窗口只读取证、补充 change contract/精确文件集、实现、确定性验证并提交候选。
+### 执行取证与 change contract（2026-09-10）
+
+- 已 fetch 核验最新 origin/main=上述 base，包含登记提交 dafbeee8；启动 dirty=false。
+- 独占 worktree：`C:/Users/24159/.codex/worktrees/444a/coze_cli_project`；已从该 base 建立任务分支。当前 main 活动索引仅登记本任务，无模块 ownership 冲突。
+- 生产基线：未访问生产，本任务不对文档中的旧 release 作现场确认或上线声明。
+- 取证：material_fingerprint 的指纹为进程缓存，450ms 预算失败退回 URL；Follow Knowledge file_id 可缺失为 0，效果配置允许仅 URL；case_image_sent 历史仅保留 100 个事件，document ID 仅保留 200 项；异步收尾不是并发素材预占锁。
+- 取证：_v3_available_assets_for_turn 仅对 deposit_close 去付款卡，其他内容角色可携带交易结构；selected-content 完整交付校验将所有非文本结构视作必需项，可能通过修复间接要求补交易卡。
+- 类型/范围：先独立收紧内容候选的结构能力（仅 text/image/video），保留 Reply 的独立付款/门店/写入事实选项及现有语义判断。
+- 本阶段精确文件集：`ai_paths/app/services/content_capabilities.py`（新）；`ai_paths/app/graph/nodes/reply_contract.py`；`ai_paths/app/graph/nodes/material_selection.py`；`ai_paths/app/graph/nodes/reply_validation.py`；`tests/test_v3_content_capabilities.py`（新）；`docs/contracts/sales-strategy.md`；`docs/architecture/SYSTEM.md`；本任务文件。未登记文件不写入；后续身份与账本方案确认后另补精确集。
+- 风险：未知 URL 且无可靠 ID/字节时不能区分新图与已发图；此失败语义已报母窗口，相关交付行为暂不修改。不得把近似哈希视为物理同一性的绝对证明。
+- 验证：本地合成字节与候选、零网络 fetcher、L1 内容能力及合法独立交易回归；不调用真实模型/生产接口。
+- 回滚：候选提交不集成即可；本阶段无迁移、无生产写入。
+- 母窗口已确认：未知身份附件失败关闭、文字链路继续；不得声称发图，暂时失败不计已发送，目录同步确认后可恢复。已知身份热路径零下载，失败原因区分身份未知/超时/格式不支持/指纹失败。
+- 母窗口另确认：`response_committed` 仅为稳定响应与素材占用同事务提交，不等于 sent/send_succeeded/delivered。事务回滚不留占用；没有权威失败事件不自动解除。正常 V3 实际发送/送达与 dispatch 映射仍为第三方独立接口任务，本任务不扩大公共协议，接受平台失败后可能不自动补发。验收只称 AI 生成侧去重。
+- 为落实上述日志口径，补充独占 `projects/src/components/logs/run-log-viewer.tsx`（仅同步响应显示用语）和 `docs/contracts/message-delivery-callback.md`（仅说明现有协议边界）。不改变外部字段/schema。
+- 扩展精确文件集（统一身份和持久去重）：`ai_paths/app/services/material_identity.py`（新）、`ai_paths/app/services/storage/material_repository.py`（新）、`ai_paths/app/services/storage/schema.sql`、`ai_paths/app/services/storage/mysql_schema.py`、`ai_paths/app/services/storage/store_base.py`、`ai_paths/app/services/storage/repositories.py`、`ai_paths/app/services/storage/run_repository.py`、`ai_paths/app/graph/graph_builder.py`、`ai_paths/app/graph/state.py`、`ai_paths/app/graph/nodes/semantic_evidence.py`、`ai_paths/app/services/v3_semantic_router_service.py`、`ai_paths/app/graph/nodes/reply_nodes.py`、`ai_paths/app/chat_runtime.py`、`ai_paths/scripts/sync_material_identities.py`（新）、`ai_paths/migrations/versions/20260910_01_add_material_identity.py`（新）、`tests/test_v3_material_identity.py`（新）。回填只运行本地合成数据；生产应用迁移和目录回填留给独立发布任务。原登记模块边界内，无其他 active ownership。
+
+- 已完成：只读取证、合同确认、统一身份/响应占用/内容隔离实现、可逆本地同步工具、长期文档和确定性回归。
+- 待完成：母窗口对候选 review/验收；集成与发布另立任务。本文件保留 active 供母窗口验收后归档。
 - 发布：未授权。
 - 回滚点：仅任务分支候选，不改变 main 运行行为；如实现失败直接不集成。
+
+### 候选验收证据（2026-09-10）
+
+- 最终重新 fetch：`origin/main=dafbeee8494c7f5f7de53a6e969f79329968b8d6`，登记提交仍为基线；没有其他 active 模块 ownership 冲突。独占 worktree/分支不变。精确改动为上述登记集合中的 25 个文件；`reply_nodes.py` 经取证已有仅图片/视频物化约束，无需修改。
+- L1 全量：`PYTHONPATH=ai_paths python -m pytest tests -q --disable-warnings --tb=short` → **920 passed, 9 warnings，56.78 秒**。原始报告仅在 ignored `artifacts/material-governance/pytest-all-final.txt`。本任务新增身份 26 项、能力隔离 26 项，共 52 项。
+- 证据组一（不重复）：`test_cross_source_reencode_restart_and_contact_isolation`、`test_stable_file_id_signature_change_needs_no_network`、`test_real_process_restart_keeps_claim`、`test_failed_transaction_replay_and_concurrency`、`test_core_response_and_claim_commit_or_rollback_together`。覆盖效果/跟进来源、换域名/签名、常见 JPEG/缩放、SQLite 重开及真正的新 Python 进程、并发唯一占用、同响应重放和事务尾部失败回滚。验收结论只为 AI 生成侧跨轮次/跨进程去重。
+- 证据组二（不误杀正常新素材）：`test_near_images_and_video_do_not_merge`、`test_distinct_new_material_remains_available_after_nearby_material_claim`；近似但修改局部的真实合成图不合并，上一素材占用后新素材仍可交付。三个接触档案字段分别隔离；未知身份同步后恢复，暂时失败不产生占用；可信 file ID 零下载直接可用。9 组 JPEG 质量/尺寸参数验证常见转码样本。
+- 证据组三（内容不能获权、权威动作正常）：`test_v3_content_capabilities.py` 对 6 角色 × 4 动作类型验证所有内容列表过滤收款、门店、预约完成和写动作，同时保留文字/图片与软承接；action-only 不能算已采用/完成。全量同时通过 `test_v3_quality_gate_whitelist.py` 的合法收款金额、预约完成权威事实/无事实拒绝测试，及 `test_v3_mainline_action_admission.py` 的真实付款卡与明确预约入口测试；未修改这些既有事实/动作规则。
+- 恢复/审计：dry-run 不创建数据库；重复 apply 幂等；中断前或已回滚的 undo 可重入；目录变化拒绝过期候选；未占用别名可显式拆分、其他别名占用保留。身份未知、读取超时、字节不可取、格式不支持、指纹失败和目录/账本异常分别审计。
+- 检查：全部变更 Python 文件 Ruff check 通过；7 个新增 Python 文件格式检查通过；`git diff --check` 通过。管理页单行显示变更通过 TypeScript TSX 语法转译；当前 worktree 无前端依赖，未运行完整前端构建或浏览器验收。
+- 权限审计：全部媒体、身份和数据库均为本地合成值；零真实模型、零客户发送、零第三方生产写、零部署。未运行 L2/L3/L4，未连接 MySQL 实例验证迁移或并发锁；SQLite 确定性证据不能冒称生产端到端证据。
+- 明确限制：感知匹配是保守近似，不能绝对证明物理同一性，不能保证裁剪/重度压缩自动匹配；视频换编码依赖可靠 ID 或人工登记；错误别名一旦已占用不自动释放，只能独立审计迁移纠正；`response_committed` 不代表发送或送达，平台实际失败后可能不自动补发。历史已被截断/缺少身份的旧发送记录不能凭空恢复，生产启用前需单独审计历史与目录回填范围。
+- 发布前提：另立任务执行可恢复目录同步/迁移、MySQL 验证和必要 L2–L4；目录未确认附件保持失败关闭。实际 `response_id/client_message_id ↔ dispatch_id` 发送映射及权威失败回调仍为独立第三方集成任务。

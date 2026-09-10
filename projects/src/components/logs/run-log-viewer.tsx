@@ -598,7 +598,7 @@ function StrategySection({ knowledge, checkpoint, deliveryStatus }: {
           <FlowArrow />
           <FlowCard title="4. 最终采用" value={knowledge?.adopted?.sequence_name || knowledge?.adopted?.sequence_id || "未采用序列"} detail={knowledge?.adopted?.script_ids?.length ? `采用 ${knowledge.adopted.script_ids.length} 条话术` : "未采用话术"} tone={knowledge?.adopted?.sequence_id || knowledge?.adopted?.script_ids?.length ? "green" : "neutral"} />
           <FlowArrow />
-          <FlowCard title="5. 实际发送" value={deliveryText(deliveryStatus)} detail={knowledge?.delivered_content_ids?.length ? `${knowledge.delivered_content_ids.length} 个知识内容已交付` : "没有已交付知识 ID 或未记录"} tone={deliveryStatus === "delivered" || deliveryStatus === "send_succeeded" ? "green" : "neutral"} />
+          <FlowCard title={deliveryStatus === "direct_response_returned" ? "5. 响应已提交" : "5. 实际发送"} value={deliveryText(deliveryStatus)} detail={deliveryStatus === "direct_response_returned" ? "结构消息已包含在响应中；平台发送与实际送达未确认" : knowledge?.delivered_content_ids?.length ? `${knowledge.delivered_content_ids.length} 个知识内容已交付` : "没有已交付知识 ID 或未记录"} tone={deliveryStatus === "delivered" || deliveryStatus === "send_succeeded" ? "green" : "neutral"} />
         </div>
 
         {!availability ? (
