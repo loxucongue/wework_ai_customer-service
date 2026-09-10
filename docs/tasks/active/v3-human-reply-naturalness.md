@@ -9,9 +9,19 @@
 - change contract：修复静态及动态推进指令冲突；仅为 activity_offer 主线机会补齐事实可见性；统一话术只提供论据而非表达模板。范围仅 Prompt、Reply 上下文、直接测试/评测、销售合同、架构快照和本任务文档；不改素材身份、Router、admission、模型参数或数据库。
 - 风险：推进过于保守、事实齐全但模型仍遗漏条件、隔离事实与真实目录差异；无不可逆数据变更，回退本轮候选提交即可。
 - 新回归覆盖：Router 未选活动时完整事实仍可见、无主线机会时不额外扩展、Router 显式选择保留、输入不变、缺事实不编造、话术风格隔离及推进前置门。
-- L1：`PYTHONPATH=<worktree>/ai_paths python -m pytest tests -q`，868 passed，9 个既有弃用警告。
+- L1：`PYTHONPATH=<worktree>/ai_paths python -m pytest tests -q`，最终 869 passed，9 个既有弃用警告；增加生产路由、幂等重放及收尾的确定性测试。改动文件 Ruff 与 git diff --check 通过。中间候选曾触发 7,000 字符预算和旧断言失败，最终保留预算且全量通过。
 - 评测：保留原 90 场景、评分口径、DeepSeek 和 temperature 0.15；原始数据只进入 ignored `artifacts/v3-human-reply-naturalness/review-fix-*`。完整图脚本接入生产 ASGI route/middleware、临时库、幂等重放和 finalization，不注入预生成 Reply；不是线上 TCP/第三方链路验证。
-- 门槛仍为活动 10/10、无关插入 0/22、主动至少 28/30、明确动作 12/12、安全 6/6、内部泄漏 0、完整隔离图通过；业务 50 条盲审待人工，开发不代评分。结果和候选提交随后记录。
+- 门槛仍为活动 10/10、无关插入 0/22、主动至少 28/30、明确动作 12/12、安全 6/6、内部泄漏 0、完整隔离图通过；业务 50 条盲审待人工，开发不代评分。
+- 代码候选 commit：`a924b0980453bd8a9c12f5e247265b22a6088ad9`；Prompt 7,000 字符、73 行，SHA-256 `da1c05f4ca8da7e8d24282561cb7844208834b5da52c45d80ff70c5bfc389582`，架构快照逐字一致。最终交付 commit 另包含本轮证据摘要，以该分支 HEAD 为准。
+- L2 首轮命令：`python ai_paths/scripts/evaluate_v3_reply_naturalness.py --env-file <本地已有隔离凭据文件> --phase all --concurrency 2 --output artifacts/v3-human-reply-naturalness/review-fix-l2`。350 次调用含冻结旧基线、顺序对照、重复及探索温度；全部 DeepSeek，无请求错误和 fallback。首轮候选活动 7/10、主动 21/30、无关插入 1/22，不能因插入减少就接受销售退化。
+- 据此保留推进前置门，把正向业务承接后的实际交付要求写清，再以同一 90 场景、相同评分和 0.15 复测：`python ai_paths/scripts/evaluate_v3_reply_naturalness.py --env-file <同上> --phase order --concurrency 2 --output artifacts/v3-human-reply-naturalness/review-fix-final-l2`。最终 90/90 可解析、78/90 综合、活动 6/10、主动 22/30、keep_open 误用 3/30、明确动作 11/12、无关插入 2/22、硬安全样本 6/6、内部泄漏 0；90 次 DeepSeek，零请求错误和 fallback。P50/P95 1956/2599ms 仅为单节点调用，不是接口耗时。
+- 最终具体遗留：业务认可被当作关系承接、活动字段遗漏、首次付款请求改问人数而未发结构、普通关系回应仍夹带销售菜单。另有价格认可场景出现无证据保留/安排表述和门店未交付时询问日期，属于必须单独审核的事实/越级风险；六个硬安全样本通过不等于全部事实安全。禁止以该候选替换已发布版或宣称达到本轮门槛。
+- 事实补齐回归解决真实渲染缺口，但原 L2 本已提供完整活动事实，因此不能将旧 L2 遗漏直接归因于 Router 丢主题。本轮未修改原 90 场景与评分来提高分数。
+- 新盲审包：`artifacts/v3-human-reply-naturalness/review-fix-final-blind-review/blind_review_50.csv`，50 对完整文字/结构回复，含 30 个主动机会；沿用冻结旧基线与最新候选生成，映射独立存于 `blind_review_key.json`，人工评分全部留空。生成命令：`python artifacts/v3-human-reply-naturalness/review_bundle.py`（仅 ignored 辅助脚本）。
+- L3 最终命令：`python ai_paths/scripts/evaluate_v3_naturalness_full_graph.py --env-file <同上> --output artifacts/v3-human-reply-naturalness/review-fix-final-l3 --concurrency 1`。完整生产 ASGI 处理链而非真实 TCP 监听；模型、事实动作、admission、临时持久化、HTTP 响应、重放与 finalization 均实际执行。已发门店场景补入虚构结构历史，未注入预生成 Reply；中间缺历史版本只保留作诊断。
+- 最终 L3 结果：19/28 业务合同通过；21 主模型、5 定向修复、2 失败兜底；HTTP/持久重放/收尾 28/28，69 次模型调用仅 DeepSeek，无 GPT fallback，零消息派发和策略外发。完整 L3 明确失败；不能拿底层生命周期通过覆盖九个业务合同失败。
+- 已发现的 L3 范围外阻碍：版本化本地 `s10_activity_intro` 混入 payment_collection，首次询价选择该素材会与“必须有之前活动证据才能发付款卡”冲突；本任务不修改素材配置、付款门或第三方目录来使评测转绿。其余结构交付/状态失败以最终报告为准；本地目录行为不能直接推断线上外部目录行为。
+- 结论：三项 Review 的代码修订与评测设施已提交，但质量目标未达成；保留 active、不得合并或发布。原始产物保持 ignored，不写 current、不编辑母窗口索引、不触碰图片身份/防重任务。
 
 ## 2026-09-10 本次发布例外（优先于下方历史限制）
 
