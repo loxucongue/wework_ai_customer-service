@@ -2,13 +2,13 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-10T00:19:00+08:00`
+- verified_at: `2026-09-10T09:21:27+08:00`
 - source_of_truth: 服务器现场核验；本页只在上述时刻有效
 
 ## 当前后端 release
 
-- release: `ai-paths-unified-20260910-sop-terminal-9ae26dcd`
-- git commit: `9ae26dcd830c8a8ba6ca9f79d90b257451115e7b`
+- release: `ai-paths-unified-20260910-sop-race-1f9fc745`
+- git commit: `1f9fc745c04932f9ca512464b36d3c6424fbdcfb`
 - branch contract: `main`
 - dirty: `false`
 - config revision: `642e600e85f9ecb0ac931706ffbe83ec338c899c5cd9b0d6fc4453e5a5ed8f6d`
@@ -21,7 +21,7 @@
 | worker | `ai-paths-workers.service` | active/running | `/health` 返回 `service_role=worker`，后台 worker 已启用 |
 | 管理前端 | `ai-paths-frontend.service` | active/running | `frontend-20260909-v3-supervisor-3192f19a`；内部日志页 200，Nginx 未鉴权为 401 |
 
-三个后端角色与管理前端均来自同一 clean `main@3192f19a`。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空、`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`、`V3_REPLY_TEMPERATURE=0.15`；客户可见自动补答明确保持 `V3_REPLY_RECOVERY_ENABLED=false`。沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
+三个后端角色均来自同一 clean `main@1f9fc745`；管理前端仍为 `frontend-20260909-v3-supervisor-3192f19a`。V3 Reply 进程的有效覆盖配置为 `MODEL_REPLY=deepseek-chat`、Reply fallback 为空、`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`、`V3_REPLY_TEMPERATURE=0.15`；客户可见自动补答明确保持 `V3_REPLY_RECOVERY_ENABLED=false`。沉默唤醒由独立 `OUTREACH_DECISION_MODEL=deepseek-chat` 配置控制且 fallback 为空，不再继承 worker 的通用 GPT tier。共享基础环境仍保留其他角色的全局模型默认值，实际模型应以每次 run trace 为准。
 
 ## 已核验开关
 
@@ -41,7 +41,7 @@
 ## Worker 与 outbox
 
 - 第三方 SOP worker 正常运行；现场 `pending_total=0`、`queue_depth=0`、`in_flight_count=0`、最近轮询错误为空。任务按“未开口、未删除、AI 托管”三个确定性门槛执行，只有三项均满足才读取第一组未消费内容并原样发送。客户已开口、客户关系已删除和人工接管消费任务 `70` 且不消费 `msgId`、不预警；内容缺失、聚合平台明确拒绝、消息绑定冲突及仍在第三方 pending 的旧执行链任务均以失败口径消费任务 `70`、不消费任何 `msgId`并预警。已记录明确拒绝或发送调用的恢复任务禁止再次调用主动发送。
-- 正常拉取与恢复任务共用客户锁和 `customer_batch_sequence` 确定性状态机；恢复入口不再进入旧单任务模型路径。第三方 `/pending` 未返回任务时只做空轮询，不生成任务、不消费、不告警；平台已返回任务但 `/sop-messages` 缺内容仍按第三方内容故障处理。
+- 正常拉取与恢复任务共用客户锁和确定性状态机；新任务在持久化前先取得本实例入队占用，且只有确定性执行模式落库后才发布恢复状态，恢复线程不再把入队中的新任务误判为旧执行链。恢复入口不进入旧单任务模型路径。第三方 `/pending` 未返回任务时只做空轮询，不生成任务、不消费、不告警；平台已返回任务但 `/sop-messages` 缺内容仍按第三方内容故障处理。
 - V3 回复异步收尾任务 `v3_reply_finalization` 已启动且无启动错误；截至本次核验，发布后 2 条固定协议消息均为 1ms、零模型、零客户回复，首条普通自然 V3 请求已生成客户回复且可靠收尾完成、无运行错误。该普通请求总耗时 34.02s，其中 AI/人工状态 804ms、入口事务 2.21s、上一轮状态 1.19s、模型图 29.71s、核心持久化 479ms；本次数据库收敛已生效，但单样本因完整 Reply 重试产生的模型长尾不属于本次审计优化范围，仍不能据此声明生产 P95。
 - Reply 健康信息显示策略数据 outbox：`sent=1994`、`pending=58`、`dead=16`。
 - 策略数据外发当前 `delivery_enabled=false`；恢复前必须对 dead/pending 做专项审计，不能直接批量重放。
@@ -56,6 +56,7 @@
 
 ## 本次发布观察
 
+- 2026-09-10 09:21 发布并核验第三方 SOP 新任务/恢复竞态修复：control/reply/worker 统一运行 clean `main@1f9fc745c04932f9ca512464b36d3c6424fbdcfb`，release 为 `ai-paths-unified-20260910-sop-race-1f9fc745`，三个 unit active/running、`NRestarts=0`，V3 未鉴权 401、V2 404、Nginx 检查通过。发布后首个自然任务 `84254` 在执行期间被恢复扫描遇到 5 次并均因本实例占用而跳过，没有进入 `legacy_execution_disabled`；任务最终因人工接管正常消费 70，不发送、不告警。现场 `pending_total=0`、队列 0、执行中 0、最近轮询错误为空，发布后失败告警 0。全仓复跑 853 项、SOP 专项 102 项和 Ruff 通过；统一回滚点为 `ai-paths-unified-20260910-sop-terminal-9ae26dcd`。
 - 2026-09-10 00:19 发布并核验第三方 SOP 终态消费与防重收口：control/reply/worker 统一运行 clean `main@9ae26dcd830c8a8ba6ca9f79d90b257451115e7b`，release 为 `ai-paths-unified-20260910-sop-terminal-9ae26dcd`，三个 unit active/running、`NRestarts=0`，V3 未鉴权 401、Nginx 检查通过。修复 `platform_sequence_waiting` 未进入恢复器、历史聚合平台明确拒绝被再次发送、超时任务精确 `msgId` 已绑定其他任务后持续重试，以及当前 pending 中旧执行链任务长期隔离四个问题。自然恢复将待处理从 30 降至 0；任务 83045 因第三方返回“队列消息已绑定其它任务”最终任务 70、`msgId=38789` 保持未消费；账号未绑定/AI 映射任务与 6 条旧隔离 pending 均任务 70、未消费任何 `msgId`。最终版本启动后 `send.count=0`，证明收口过程未再次主动发送。全仓 851 条测试、变更范围 Ruff 与 diff check 通过；统一回滚点为 `ai-paths-unified-20260909-sop-no-replay-66595533`。
 
 - 2026-09-09 18:36 发布后复核销售主管反馈闭环版本：control/reply/worker 和管理前端统一来自 clean `main@3192f19ae31900015b48ccb94516aaee03517d12`；后端 release 为 `ai-paths-unified-20260909-v3-supervisor-3192f19a`，前端 release 为 `frontend-20260909-v3-supervisor-3192f19a`。数据库由 `20260908_01` 升至唯一 head `20260909_02` 并通过运行时 schema 指纹检查；四个 unit 均 active、`NRestarts=0`，三角色 `/health` 的 SHA、角色和 `dirty=false` 一致，V3 直连接口未鉴权返回 401、退役 V2 公网返回 410、管理接口未鉴权返回 401、Nginx 配置通过。版本增加跨进程持久生成幂等、过期同步租约接管、稳定消息 ID、多条真人短消息、软拒绝继续给价值、最早缺失主线恢复、素材/话术去重、效果素材与唯一门店卡强交付，以及价格/门店/付款后指引事实校验；自动补答保持关闭，数据库中 `fallback_pending/recovery_claimed` 和 `v3_reply_recovery` dispatch 均为 0。全仓 846 条后端测试、扩大回归 160 条、前端测试/类型/Lint/37 路由生产构建通过；80+120 条广覆盖 DeepSeek 结果属于前序候选 AI 初评，当前代码另以真实素材快照定点重放通过，不作为业务金标。发布后尚无自然 V3 新 run，不能宣称生产回复质量或 P95 已达标；本次未发送测试客户消息。18:36 只读现场另见第三方 SOP `pending_total=28`、`in_flight=1`，策略 outbox `dead=16/pending=58` 且 delivery 关闭，均无本轮询错误，属于既有独立积压而非本发布新增故障。
