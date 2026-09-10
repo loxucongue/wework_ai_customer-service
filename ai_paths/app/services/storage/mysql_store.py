@@ -88,6 +88,10 @@ def _sql_without_literals_or_comments(sql: str) -> str:
         char = sql[index]
         next_char = sql[index + 1] if index + 1 < len(sql) else ""
         if quote:
+            # SQL-mode-dependent backslash escaping is deliberately unsupported
+            # in SQL text. Values belong in bound parameters.
+            if char == "\\":
+                raise RuntimeError("Ambiguous SQL literal escaping is forbidden")
             if char == quote:
                 if next_char == quote:
                     output.extend((" ", " "))
@@ -102,7 +106,14 @@ def _sql_without_literals_or_comments(sql: str) -> str:
             output.append(" ")
             index += 1
             continue
-        if char == "-" and next_char == "-":
+        if char == "`":
+            end = sql.find("`", index + 1)
+            if end < 0 or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", sql[index + 1 : end]):
+                raise RuntimeError("Unverifiable quoted SQL identifier")
+            output.append(sql[index : end + 1])
+            index = end + 1
+            continue
+        if char == "#" or (char == "-" and next_char == "-" and (index + 2 == len(sql) or sql[index + 2].isspace())):
             newline = sql.find("\n", index + 2)
             if newline < 0:
                 output.extend(" " * (len(sql) - index))
@@ -111,20 +122,27 @@ def _sql_without_literals_or_comments(sql: str) -> str:
             index = newline
             continue
         if char == "/" and next_char == "*":
+            if sql[index + 2 : index + 3] in {"!", "+"}:
+                raise RuntimeError("Executable SQL comments and hints are forbidden")
             end = sql.find("*/", index + 2)
             if end < 0:
-                output.extend(" " * (len(sql) - index))
-                break
+                raise RuntimeError("Unterminated SQL comment")
             output.extend(" " * (end + 2 - index))
             index = end + 2
             continue
         output.append(char)
         index += 1
+    if quote:
+        raise RuntimeError("Unterminated SQL literal")
     return "".join(output)
 
 
 def _runtime_sql_guard(sql: str, *, prefix: str) -> None:
-    normalized = _sql_without_literals_or_comments(sql)
+    normalized = _sql_without_literals_or_comments(sql).strip()
+    # Permit one optional terminator, never a second statement (including reads).
+    normalized = normalized.removesuffix(";").rstrip()
+    if not normalized or ";" in normalized:
+        raise RuntimeError("Runtime SQL must contain exactly one statement")
     ddl_match = re.search(
         rf"\b({'|'.join(sorted(_DDL))})\b",
         normalized,
@@ -132,29 +150,65 @@ def _runtime_sql_guard(sql: str, *, prefix: str) -> None:
     )
     if ddl_match:
         raise RuntimeError(f"Runtime DDL is forbidden: {ddl_match.group(1).upper()}")
-    if not re.search(
-        rf"\b({'|'.join(sorted(_MUTATING))})\b",
-        normalized,
+    statement = re.match(r"[A-Za-z]+\b", normalized)
+    kind = statement.group().upper() if statement else ""
+    if kind in {"SELECT", "WITH", "SHOW", "EXPLAIN"}:
+        # Locking SELECTs are reads. Only recognize the terminal lock clause;
+        # never remove arbitrary UPDATE tokens or skip validation of the rest.
+        read_sql = re.sub(
+            r"\s+FOR\s+(?:UPDATE|SHARE)(?:\s+(?:NOWAIT|SKIP\s+LOCKED))?\s*$",
+            "",
+            normalized,
+            flags=re.I,
+        )
+        if re.search(r"\b(?:INSERT|UPDATE|DELETE|REPLACE|INTO)\b|:=", read_sql, flags=re.I):
+            raise RuntimeError("Runtime read contains an unverified write operation")
+        return
+    if kind not in _MUTATING:
+        raise RuntimeError("Unverified runtime SQL statement")
+    identifier = r"(?:`[A-Za-z_][A-Za-z0-9_]*`|[A-Za-z_][A-Za-z0-9_]*)"
+    patterns = {
+        "INSERT": rf"INSERT\s+(?:IGNORE\s+)?INTO\s+({identifier})(?=\s|\()",
+        "REPLACE": rf"REPLACE\s+INTO\s+({identifier})(?=\s|\()",
+        "UPDATE": rf"UPDATE\s+({identifier})\s+SET\b",
+        "DELETE": rf"DELETE\s+FROM\s+({identifier})(?=\s|$)",
+    }
+    target = re.match(patterns[kind], normalized, flags=re.I)
+    if not target:
+        raise RuntimeError("Runtime write target could not be verified")
+    table = target.group(1).strip("`")
+    if not table.startswith(prefix):
+        raise RuntimeError(f"Runtime write to non-AICS table is forbidden: {table}")
+    remainder = normalized[target.end() :]
+    if (
+        kind == "DELETE"
+        and remainder.strip()
+        and not re.match(
+            r"\s+(?:WHERE|ORDER\s+BY|LIMIT)\b",
+            remainder,
+            flags=re.I,
+        )
+    ):
+        raise RuntimeError("Multi-target or qualified DELETE is forbidden")
+    if kind in {"INSERT", "REPLACE"} and not re.match(
+        r"\s*(?:\(|VALUES\b|VALUE\b|SET\b|SELECT\b)",
+        remainder,
         flags=re.I,
     ):
-        return
-    target_sql = re.sub(
-        r"\bON\s+DUPLICATE\s+KEY\s+UPDATE\b",
-        "ON DUPLICATE KEY SET",
-        normalized,
-        flags=re.I,
+        raise RuntimeError("Runtime write shape could not be verified")
+    remainder = (
+        re.sub(
+            r"\bON\s+DUPLICATE\s+KEY\s+UPDATE\b",
+            "ON DUPLICATE KEY SET",
+            remainder,
+            flags=re.I,
+            count=1 if kind == "INSERT" else 0,
+        )
+        if kind == "INSERT"
+        else remainder
     )
-    table_matches = re.findall(
-        r"\b(?:INSERT\s+(?:IGNORE\s+)?INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+`?([A-Za-z0-9_]+)`?",
-        target_sql,
-        flags=re.I,
-    )
-    if not table_matches:
-        raise RuntimeError("Runtime write target could not be verified")
-    invalid = [table for table in table_matches if not table.startswith(prefix)]
-    if invalid:
-        table = invalid[0]
-        raise RuntimeError(f"Runtime write to non-AICS table is forbidden: {table}")
+    if re.search(rf"\b({'|'.join(sorted(_MUTATING))})\b", remainder, flags=re.I):
+        raise RuntimeError("Additional runtime write operation could not be verified")
 
 
 class MySQLCursor:
@@ -335,9 +389,7 @@ class MySQLStore:
                 if expected_unique != actual_unique:
                     missing_indexes.append(f"{table}.{name}:uniqueness")
         if missing_indexes:
-            raise RuntimeError(
-                f"AICS MySQL index fingerprint mismatch: {', '.join(missing_indexes)}"
-            )
+            raise RuntimeError(f"AICS MySQL index fingerprint mismatch: {', '.join(missing_indexes)}")
 
     @contextmanager
     def connect(self) -> Iterator[MySQLConnection]:

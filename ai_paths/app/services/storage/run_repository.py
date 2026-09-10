@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timedelta, timezone
 import time
+from types import SimpleNamespace
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 import zlib
@@ -18,7 +19,8 @@ from app.services.storage.serialization import (
     tags_from_state,
     utc_now_iso,
 )
-from app.services.trace_logger import compact
+from app.services.trace_logger import audit_snapshot, compact
+from app.services.material_identity import contact_key
 from app.services.run_observability import (
     build_v3_run_observability,
     enrich_v3_run_observability,
@@ -460,7 +462,10 @@ class RunRepositoryMixin:
                         else {},
                         "database": {
                             "connection_count": 1,
-                            "statement_count": 2 + (1 if reply_messages else 0),
+                            "statement_count": 2 + (1 if reply_messages else 0) + (
+                                4 * sum(item.get("type") in {"image", "video"} for item in reply_messages)
+                                if final_state.get("material_identity_governed") else 0
+                            ),
                             "elapsed_before_final_write_ms": max(
                                 0,
                                 int((time.perf_counter() - operation_started) * 1000),
@@ -576,6 +581,11 @@ class RunRepositoryMixin:
                         dumps(final_state.get("errors") or []) if final_state.get("errors") else "",
                         started_at,
                     ),
+                )
+            if final_state.get("material_identity_governed"):
+                self.claim_materials_in_connection(
+                    SimpleNamespace(execute=execute), scope=contact_key(final_state), request_id=request_id,
+                    messages=reply_messages, bindings=final_state.get("material_identity_bindings") or {},
                 )
             if reply_messages:
                 content = "\n".join(
@@ -1500,8 +1510,8 @@ class RunRepositoryMixin:
         }
         decoded_run["business_summary"] = _business_summary_for_run(summary_source)
         return {
-            "run": decoded_run,
-            "node_traces": [decode_trace(dict(row)) for row in traces],
+            "run": audit_snapshot(decoded_run),
+            "node_traces": [audit_snapshot(decode_trace(dict(row))) for row in traces],
             "strategy_usage_event": usage_event,
         }
 
@@ -1511,7 +1521,7 @@ class RunRepositoryMixin:
                 "SELECT * FROM node_traces WHERE request_id=? AND id=? LIMIT 1",
                 (request_id, node_id),
             ).fetchone()
-        return decode_trace(dict(row)) if row else {}
+        return audit_snapshot(decode_trace(dict(row))) if row else {}
 
     def prune_runtime_history(self, *, trace_days: int, run_days: int) -> dict[str, int]:
         now = datetime.now(timezone.utc)
@@ -1686,7 +1696,7 @@ def _run_list_view(run: dict[str, Any]) -> dict[str, Any]:
     for key in list(run):
         if key.startswith("usage_") or key == "contact_wechat":
             run.pop(key, None)
-    return run
+    return audit_snapshot(run)
 
 
 def _business_summary_for_run(run: dict[str, Any]) -> dict[str, Any]:

@@ -1,16 +1,28 @@
 # V3 素材交付治理独立验收
 
 - task_id: `v3-material-delivery-governance-review`
-- status: active
+- status: review_passed_revised_candidate
 - owner: 独立验收窗口
 - branch: `codex/v3-material-delivery-governance-review`
-- base_sha: `dafbeee8494c7f5f7de53a6e969f79329968b8d6`
+- base_sha: `83895fe548415afce9167f83617f4ee63a3bc1dd`
 - candidate_branch: `origin/codex/v3-material-delivery-governance`
 - candidate_sha: `8d0e39f24d0e8a8d6d593d793858f6b7ed31e34a`
 - production_baseline: 不部署、不依赖旧生产快照；如需生产事实必须现场只读核验
 - task_type: 独立代码审查 + 集成验证；允许形成修订候选，不允许推送 main 或部署
 
 ## 任务使命
+
+### 验收 change contract（2026-09-10）
+
+- 已 fetch 核验 origin/main 与启动 HEAD 均为上述 base，包含验收登记，dirty=false；独立 worktree 为 `C:/Users/24159/.codex/worktrees/5bfe/coze_cli_project`，仅使用指定验收分支。
+- 类型：冻结候选独立审查和隔离验证。精确带入范围为候选 8d0e39f2 相对 main 的 24 个代码、迁移、脚本、测试和长期合同文件，排除原实现任务文件；原实现窗口保持冻结。本任务只更新自己的任务文档及必要历史登记。
+- 可能补充的测试文件：`tests/test_v3_material_governance_review.py`；隔离 MySQL 验证脚本和所有运行报告保存在 ignored `artifacts/material-governance-review/`。
+- 风险：物理身份误合并、目录和占用并发一致性、响应提交与发送口径混淆。验证覆盖冻结候选完整差异、L1 全量回归、合成目录、独立本地 MySQL 迁移及事务、静态检查和正式前端构建。
+- 回滚：不集成验收分支；无生产写、无部署，不改 main。出现任务约定的 P0/P1 或数据风险即停止集成建议并回母窗口。
+- 生产基线：未访问生产，未对任何旧 release 作现场确认；隔离 MySQL 使用本机独立数据目录与端口，不复用已有数据库。
+- 母窗口追加授权：本窗口继续修复合法锁定读被 SQL guard 拒绝和 REPEATABLE-READ 下并发败方读取旧快照的问题，不关闭 guard、不放宽源表写权限、不改公共协议。新增精确 ownership：`ai_paths/app/services/storage/mysql_store.py`；已有 `material_repository.py` 和独立验收测试覆盖并发、回滚及安全分类。修复后必须使用全新独立 MySQL 8.4 数据目录重跑全部数据库证据。原失败输出保留 artifacts，不能作为通过证据。
+- 独立审查补充工程修订：同址不同字节必须拒绝静默合并；无字节增量不得清空已有指纹/人工纠错；迁移中断后补齐缺失索引；同步素材 trace/tool 名称不得写成发送。审计脱敏补充 `ai_paths/app/services/trace_logger.py`（仅日志副本）及既有 `run_repository.py` 管理读取副本；稳定响应/重放原件不脱敏、不改变公开回复字段。素材 URL 的 query/fragment 仅在日志副本中隐藏，避免签名凭据泄露。
+- 同一审计脱敏还覆盖 `ai_paths/app/routers/operations_admin.py` 的运行详情返回副本，避免附加 dispatch 调试对象绕过脱敏；业务发送/回调协议不变。
 
 独立判断素材治理候选是否真正满足产品目标、数据库安全和运行边界，不能把原执行窗口的测试摘要直接当作验收结论。验收窗口应自主审阅完整差异、重跑证据并补齐原候选明确缺失的生产同类数据库与前端验证。
 
@@ -77,6 +89,23 @@
 未达到门槛时应给出最小修订方案和证据缺口；达到门槛时形成干净的验收候选并回报母窗口，仍不得自行推送 main 或部署。
 
 ## 完成回报
+
+### 独立验收结论（2026-09-10）
+
+- **可建议集成修订候选，不是上线批准。** 原候选不能直接集成；MySQL 锁定读被错误拒绝的既有工程 P1，以及 RR 跨别名并发败方 TypeError 均已修复并取得实测证据。没有改 Reply 销售语义、公共回复/发送协议、接触隔离或真实发送边界。
+- 修订：SQL guard 验证单语句及确定的 AICS 写目标；准确识别合法锁定读，拒绝源表写、多语句、多目标/无法验证的写、可执行注释、DDL 和歧义转义。素材目录/回滚与抢占使用当前锁定读，阻断旧快照绕过占用保护；按 canonical 顺序抢占，败方明确冲突，同响应幂等保留。
+- 追加审查修订：同址不同图片字节拒绝静默合并，无字节增量保留指纹及人工纠错；人工 canonical ID 使用小写 ASCII 规范避免跨数据库大小写等价差异；迁移中断补索引且拒绝不兼容结构；响应占用语句纳入核心 SQL 计数；素材日志/管理副本不称已发送并隐藏签名 query/fragment，稳定响应及重放原件不被改写。
+- 代码链审查：Follow Knowledge 正整数 file ID 在候选构造保留；最终 Evidence Join 统一处理内容候选与工具效果图，原始工具 URL 不能绕过最终 bindings 验证；媒体与文字参考独立，所有内容角色结构能力仅 text/image/video；现有独立付款、预约、门店事实校验保持。canonical 实体保留来源/角色，持久占用唯一键是接触哈希与 canonical；未把 `platform_customer_id` 当接触身份。
+- **全量后端最终实测：990 passed，9 warnings，91.62s**；命令为设置 `PYTHONPATH=ai_paths`、`AI_PATHS_REVIEW_MYSQL_PORT=13388` 后执行 `python -m pytest tests -q --disable-warnings --tb=short`。其中 MySQL 显式专项 10 项；默认不提供该专用端口时跳过这些测试，绝不读取生产配置。原始冻结候选全量另有 920 passed 的独立重跑证据。没有真实模型或真实客户数据。
+- **MySQL：8.4.7 / InnoDB / REPEATABLE-READ / 独立本机端口13388**，全新 `mysql-revised-data` 目录，和初始失败实例13387分开。Alembic 升级基线→head、重复升级、空表降级→重升级通过；模拟索引DDL后中断，重新 stamp 基线并 upgrade 成功补齐索引；非空降级明确拒绝且行数、版本与旧数据哨兵不变。
+- **事务与并发：10 项真实 MySQL 专项通过。** 两个独立 CONNECTION_ID、两种提交顺序、一方回滚/另一方成功、同响应同时重放、跨接触隔离和新 Python 进程读取占用通过。真实 MySQL trigger 在消息写入处注入尾部失败，run/消息/素材占用均回滚；成功后稳定消息ID、响应快照和收尾 pending 同事务保存，重放仍为单行。目录事务先建旧快照、另一个连接提交占用后，重新分配与 rollback 均拒绝绕过保护。
+- **合成回填：** SQLite CLI dry-run 不创建数据库，apply/重复apply、undo先落盘及可重入rollback由冻结专项独立重跑通过；MySQL repository apply/重复apply、过期 expected_before 拒绝、中断前undo重入、已有占用保护通过。生产同步适配和真正目录/历史回填未执行，CLI 仍只支持显式本地 SQLite。
+- **规模/性能：** 10,000 别名（完整3072通道指纹）及20,016占用记录，本机30次采样：1/8/128素材 P50=2.41/5.83/53.83ms，P95=3.39/8.30/81.94ms，最大=3.48/8.57/82.88ms；已知素材热路径固定2条SQL，占用查询 EXPLAIN 使用 PRIMARY range / Using index。仅代表本机隔离组件，不代表生产负载、网络或HTTP总耗时；测试填充数据已按精确清单清理。
+- **前端：** 项目锁定 pnpm9 依赖安装通过（隔离上层workspace干扰，lockfile未改变）；正式 `next build` 和 `tsup src/server.ts --format cjs --platform node --target node20 --outDir dist --no-splitting --no-minify` 两阶段通过；修改的 TSX 单文件 ESLint 通过。全部变更Python Ruff及 `git diff --check` 通过。
+- 原失败、迁移、事务、回填、性能及构建输出全部保留 ignored `artifacts/material-governance-review/`，不把原始报告写入Git。原实现分支仍冻结；本分支来自 `83895fe548415afce9167f83617f4ee63a3bc1dd`，最终再次fetch时 origin/main 未变化。
+- **仍未覆盖：L2、L3、L4，业务金标及真实目录适用性、生产RDS负载/网络、生产迁移/历史回填。** 感知指纹为近似；裁剪/重度压缩不保证自动识别，视频转码依赖可靠file ID或人工登记。错误别名已有占用后仍须独立审计迁移；未知附件保守关闭但文字继续。
+- **第三方依赖：** `response_committed` 仅为AI稳定响应提交，不能证明实际发送或送达；仍缺少 `response_id/client_message_id ↔ dispatch_id` 权威映射与失败回调闭环。平台失败可能不自动补图；未扩大本次公共协议解决它。
+- 发布与回滚：零部署、零客户发送、零第三方生产写、未推送main。母窗口可按上述证据集成修订分支；生产发布另立任务，先审计目录/历史并准备可恢复版本。回退代码保留新增表和已占用记忆，不通过降级删非空表。
 
 只向母窗口提供 `结论 / 改动 / 证据 / 风险 / 下一步`，其中必须明确：
 

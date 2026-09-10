@@ -40,7 +40,7 @@ from app.services.v3_sop_execution_service import SopExecutionService, is_platfo
 from app.services.service_rule_data_service import ServiceRuleDataService
 from app.services.storage import AppRepository
 from app.services.store_fact_integrity import store_fact_is_valid
-from app.services.trace_logger import TraceLogger, compact, utc_now_iso
+from app.services.trace_logger import TraceLogger, audit_snapshot, compact, utc_now_iso
 from app.services.v3_reply_recovery import (
     GENERATION_STATUS_FALLBACK_PENDING,
     GENERATION_STATUS_GENERATING,
@@ -1463,7 +1463,7 @@ class ChatRuntime:
                     # durable idempotent result.  Otherwise a platform retry
                     # can run the same message again while this untracked reply
                     # has already reached the customer.
-                    if str(final_state.get("generation_key") or "").strip():
+                    if str(final_state.get("generation_key") or "").strip() or final_state.get("material_identity_governed"):
                         return self._response_after_generation_owner_loss(
                             request_id=request_id,
                             response_id=response_id,
@@ -2326,6 +2326,12 @@ def _record_sent_case_images(
     reply_messages: list[dict[str, Any]],
 ) -> None:
     record = _case_image_send_record(state, reply_messages)
+    if state.get("material_identity_governed"):
+        record["status"] = "response_committed" if record.get("image_urls") else "skipped"
+        record["reason"] = "platform_send_and_delivery_unconfirmed"
+        state["case_image_send_record"] = record
+        _append_case_image_trace(state, record)
+        return
     if not memory_store:
         record["status"] = "skipped"
         record["reason"] = "memory_store_unavailable"
@@ -2532,7 +2538,7 @@ def _normalize_url(value: str) -> str:
 def _append_case_image_trace(state: AgentState, result: dict[str, Any]) -> None:
     started = time.perf_counter()
     entry = {
-        "node": "case_image_send_record",
+        "node": "case_image_response_commit" if state.get("material_identity_governed") else "case_image_send_record",
         "started_at": utc_now_iso(),
         "input_snapshot": compact(
             {
@@ -2540,13 +2546,14 @@ def _append_case_image_trace(state: AgentState, result: dict[str, Any]) -> None:
                 "candidate_document_ids": result.get("candidate_document_ids", []),
             }
         ),
-        "tool_calls": [{"name": "record_case_images_sent", "output": compact(result)}],
+        "tool_calls": [{"name": "record_material_response_commit" if state.get("material_identity_governed")
+                        else "record_case_images_sent", "output": compact(result)}],
         "error": result.get("error"),
         "output_snapshot": compact(result),
     }
     entry["finished_at"] = utc_now_iso()
     entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
-    state.setdefault("trace", []).append(entry)
+    state.setdefault("trace", []).append(audit_snapshot(entry))
 
 
 def _record_activity_intro_image(
@@ -2558,6 +2565,12 @@ def _record_activity_intro_image(
     send_mode: str,
 ) -> None:
     record = _activity_intro_image_record_plan(state, reply_messages, send_mode=send_mode)
+    if state.get("material_identity_governed"):
+        record["status"] = "response_committed" if record.get("image_url") else "skipped"
+        record["reason"] = "platform_send_and_delivery_unconfirmed"
+        state["activity_intro_image_send_record"] = record
+        _append_activity_intro_image_trace(state, record)
+        return
     if not memory_store:
         record["status"] = "skipped"
         record["reason"] = "memory_store_unavailable"
@@ -2722,6 +2735,11 @@ def _activity_intro_image_record_plan(
     image_urls = [url for url in image_urls if url]
     matched = ""
     target = _normalize_url(target_url)
+    if state.get("material_identity_governed"):
+        # URL/catalog overlap is not evidence of activity-role delivery.
+        bindings = state.get("material_identity_bindings") or {}
+        image_urls = [url for url in image_urls if
+                      (bindings.get(f"image:{_normalize_url(url)}") or {}).get("asset_role") == "activity_offer"]
     if target:
         for image_url in image_urls:
             if _normalize_url(image_url) == target:
@@ -2738,7 +2756,7 @@ def _activity_intro_image_record_plan(
 def _append_activity_intro_image_trace(state: AgentState, result: dict[str, Any]) -> None:
     started = time.perf_counter()
     entry = {
-        "node": "activity_intro_image_send_record",
+        "node": "activity_image_response_commit" if state.get("material_identity_governed") else "activity_intro_image_send_record",
         "started_at": utc_now_iso(),
         "input_snapshot": compact(
             {
@@ -2746,13 +2764,14 @@ def _append_activity_intro_image_trace(state: AgentState, result: dict[str, Any]
                 "send_mode": result.get("send_mode", ""),
             }
         ),
-        "tool_calls": [{"name": "record_activity_intro_image_sent", "output": compact(result)}],
+        "tool_calls": [{"name": "record_material_response_commit" if state.get("material_identity_governed")
+                        else "record_activity_intro_image_sent", "output": compact(result)}],
         "error": result.get("error"),
         "output_snapshot": compact(result),
     }
     entry["finished_at"] = utc_now_iso()
     entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
-    state.setdefault("trace", []).append(entry)
+    state.setdefault("trace", []).append(audit_snapshot(entry))
 
 
 def _record_visible_store_facts(

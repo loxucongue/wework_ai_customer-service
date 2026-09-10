@@ -6,6 +6,8 @@ from typing import Any, Protocol
 
 
 LOGICAL_TABLES = (
+    "material_identities",
+    "material_claims",
     "conversations",
     "customer_identity_links",
     "messages",

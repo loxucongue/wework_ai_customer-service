@@ -4,6 +4,7 @@ from app.services.storage.conversation_repository import ConversationRepositoryM
 from app.services.storage.customer_record_admin_repository import CustomerRecordAdminRepositoryMixin
 from app.services.storage.customer_identity_repository import CustomerIdentityRepositoryMixin
 from app.services.storage.memory_repository import MemoryRepositoryMixin
+from app.services.storage.material_repository import MaterialRepositoryMixin
 from app.services.storage.message_delivery_repository import MessageDeliveryRepositoryMixin
 from app.services.storage.internal_work_item_repository import InternalWorkItemRepositoryMixin
 from app.services.storage.outreach_dashboard_repository import OutreachDashboardRepositoryMixin
@@ -18,6 +19,7 @@ from app.services.storage.v3_reply_recovery_repository import V3ReplyRecoveryRep
 
 
 class AppRepository(
+    MaterialRepositoryMixin,
     ConversationRepositoryMixin,
     CustomerIdentityRepositoryMixin,
     CustomerRecordAdminRepositoryMixin,

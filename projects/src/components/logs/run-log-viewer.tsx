@@ -598,7 +598,7 @@ function StrategySection({ knowledge, checkpoint, deliveryStatus }: {
           <FlowArrow />
           <FlowCard title="4. 最终采用" value={knowledge?.adopted?.sequence_name || knowledge?.adopted?.sequence_id || "未采用序列"} detail={knowledge?.adopted?.script_ids?.length ? `采用 ${knowledge.adopted.script_ids.length} 条话术` : "未采用话术"} tone={knowledge?.adopted?.sequence_id || knowledge?.adopted?.script_ids?.length ? "green" : "neutral"} />
           <FlowArrow />
-          <FlowCard title="5. 实际发送" value={deliveryText(deliveryStatus)} detail={knowledge?.delivered_content_ids?.length ? `${knowledge.delivered_content_ids.length} 个知识内容已交付` : "没有已交付知识 ID 或未记录"} tone={deliveryStatus === "delivered" || deliveryStatus === "send_succeeded" ? "green" : "neutral"} />
+          <FlowCard title={deliveryStatus === "direct_response_returned" ? "5. 响应已提交" : "5. 实际发送"} value={deliveryText(deliveryStatus)} detail={deliveryStatus === "direct_response_returned" ? "结构消息已包含在响应中；平台发送与实际送达未确认" : knowledge?.delivered_content_ids?.length ? `${knowledge.delivered_content_ids.length} 个知识内容已交付` : "没有已交付知识 ID 或未记录"} tone={deliveryStatus === "delivered" || deliveryStatus === "send_succeeded" ? "green" : "neutral"} />
         </div>
 
         {!availability ? (
@@ -627,7 +627,7 @@ function StrategySection({ knowledge, checkpoint, deliveryStatus }: {
                   <div key={`${script.script_id}-${index}`} className={`rounded-lg border p-3 ${script.adopted ? "border-emerald-300 bg-emerald-50/60" : "border-zinc-200"}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div><div className="text-sm font-medium">{script.script_name || script.script_code || `候选话术 ${index + 1}`}</div><div className="mt-0.5 text-xs text-zinc-500">{[script.checkpoint_type_name, script.checkpoint_tag_name, script.action_name || script.action_code].filter(Boolean).join(" · ") || "标签未记录"}</div></div>
-                      <div className="flex gap-1">{script.adopted ? <AdoptedBadge /> : null}{script.delivered ? <SmallTag tone="blue">已发送</SmallTag> : null}</div>
+                      <div className="flex gap-1">{script.adopted ? <AdoptedBadge /> : null}{script.delivered ? <SmallTag tone="blue">{deliveryStatus === "delivered" || deliveryStatus === "send_succeeded" ? "已发送" : "已包含响应"}</SmallTag> : null}</div>
                     </div>
                     <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-zinc-600">{script.text_preview || "历史记录未保存正文预览"}</p>
                   </div>

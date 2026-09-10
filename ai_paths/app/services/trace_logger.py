@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -29,6 +30,44 @@ RUN_TERMINAL_KEYS = (
     "errors",
     "warnings",
 )
+
+
+def audit_snapshot(value: Any) -> Any:
+    """Copy diagnostic data without signed URL credentials or replay blobs.
+
+    Only audit/storage views call this. The stable response and its durable
+    recovery payload must retain their original URLs for delivery and replay.
+    """
+    if isinstance(value, str):
+        if value.startswith("data:") and ";base64," in value:
+            return "[media bytes omitted]"
+        return re.sub(
+            r"https?://[^\s<>\"']+",
+            lambda match: (
+                re.split(r"[?#]", match.group(), maxsplit=1)[0] + "?[redacted]"
+                if "?" in match.group() or "#" in match.group()
+                else match.group()
+            ),
+            value,
+        )
+    if isinstance(value, bytes):
+        return "[media bytes omitted]"
+    if isinstance(value, list):
+        return [audit_snapshot(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            audit_snapshot(key): "[replay payload omitted]"
+            if key
+            in {
+                "post_reply_payload",
+                "v3_recovery_payload",
+                "v3_response_snapshot",
+                "v3_recovery_response_snapshot",
+            }
+            else audit_snapshot(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 def utc_now_iso() -> str:
@@ -83,6 +122,7 @@ class TraceLogger:
             entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
             if "output_snapshot" in result:
                 entry["output_snapshot"] = compact(result["output_snapshot"])
+            entry.update(audit_snapshot(entry))
             state.setdefault("trace", []).append(entry)
 
     def write_run(self, state: AgentState) -> Path:
@@ -95,7 +135,7 @@ class TraceLogger:
             for key in (*RUN_OBSERVABILITY_KEYS, *RUN_TERMINAL_KEYS):
                 if key in state:
                     serializable[key] = compact(state.get(key), max_chars=20000)
-        path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(audit_snapshot(serializable), ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
     def read_run(self, request_id: str) -> dict[str, Any]:
@@ -106,7 +146,7 @@ class TraceLogger:
             return {}
         try:
             parsed = json.loads(path.read_text(encoding="utf-8"))
-            return parsed if isinstance(parsed, dict) else {}
+            return audit_snapshot(parsed) if isinstance(parsed, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
 
@@ -119,7 +159,7 @@ def _trace_entry_for_storage(entry: Any) -> Any:
         return stored
     tool_calls = entry.get("tool_calls") if isinstance(entry.get("tool_calls"), list) else []
     stored["tool_calls"] = [_tool_call_for_storage(call) for call in tool_calls]
-    return stored
+    return audit_snapshot(stored)
 
 
 def _tool_call_for_storage(call: Any) -> Any:
@@ -148,10 +188,7 @@ def _tool_call_for_storage(call: Any) -> Any:
 def _model_message_for_storage(message: Any) -> Any:
     if not isinstance(message, dict):
         return compact(message, max_chars=50000)
-    return {
-        key: compact(value, max_chars=50000)
-        for key, value in message.items()
-    }
+    return {key: compact(value, max_chars=50000) for key, value in message.items()}
 
 
 def _looks_like_model_call(value: dict[str, Any]) -> bool:

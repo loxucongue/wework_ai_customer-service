@@ -7,7 +7,6 @@ from typing import Any, Callable
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
-from app.services.material_fingerprint import diversify_material_candidates
 from app.services.sales_strategy_service import SalesStrategyService
 from app.services.store_fact_followup import build_store_fact_followup
 from app.services.trace_logger import TraceLogger
@@ -91,14 +90,10 @@ async def _diverse_content_candidates(
     state: AgentState,
     candidates: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    recent_material_ids, recent_texts = _recent_material_context(state)
-    result = await diversify_material_candidates(
-        _dedupe_content_candidates(candidates),
-        sent_image_urls=_sent_case_image_urls(state),
-        recent_material_ids=recent_material_ids,
-        recent_assistant_texts=recent_texts,
-    )
-    return _dict_list(result.get("candidates")), copy.deepcopy(result.get("audit") or {})
+    # Physical identity is resolved at the final evidence join. Do not remove
+    # aliases here or download media on the request path: both lose provenance.
+    prepared = _dedupe_content_candidates(candidates)
+    return prepared, {"identity_resolution": "final_evidence_join", "network_downloads": 0}
 
 
 def create_post_fact_semantic_evidence_node(
