@@ -1,19 +1,28 @@
 # 聚合平台消息发送结果回调接入说明
 
+- status: current
+- owner: platform integration
+- code_verified: 2026-09-10 Asia/Shanghai, `main@0e7f76e5`
+- source_of_truth: 当前发送请求、回调路由与消息送达状态机
+
+本文只记录稳定协议。生产域名、来源 IP 白名单、Token 和强制回执开关属于运行环境事实，不写入本合同。
+
 ## 1. 改造目标
 
-AI 系统目前通过两个业务入口触发消息发送：
+AI 系统自身通过以下业务入口调用主动发送接口：
 
-1. AI 实时回复完成后的异步发送。
-2. 主动触达、SOP 任务使用的主动发送。
+1. 主动触达和 SOP 任务。
+2. 启用后由失败补答 Worker 发送的最终答案。
 
-两条链路最终都调用聚合平台现有接口：
+这些异步链路最终都调用聚合平台现有接口：
 
 ```text
 POST /api/v1/platform-agent/ai-outreach/send
 ```
 
 HTTP `2xx` 或请求读取超时，只能说明聚合平台已经接收或可能接收请求，不能证明消息已经成功发到客户会话。此次改造增加独立发送批次 ID、逐条消息 ID 和发送结果回调，以实际发送结果作为最终状态。
+
+正常 V3 实时回复由 `POST /api/ai/reply/workflow-compatible-v3` 直接返回 `reply_messages`，再由聚合平台消费；AI Paths 不会在同一正常请求里另调上述主动发送接口。聚合平台如果要对这类消息提供最终送达证据，必须保留并回传稳定的 `client_message_id`，不能把 HTTP 回复成功当成客户已收到。
 
 ## 2. 聚合平台需要修改的内容
 
@@ -31,25 +40,25 @@ HTTP `2xx` 或请求读取超时，只能说明聚合平台已经接收或可能
 
 ```json
 {
-  "corp_id": "ww943af61cd5d2afe4",
-  "customer_id": "22099221",
-  "external_userid": "wmanzqsqaatm5tcgp35grtrye55g8i5g",
-  "user_id": "7294",
-  "wechat": "DY258",
+  "corp_id": "ww_demo_corp",
+  "customer_id": "customer-demo-001",
+  "external_userid": "wm_demo_external",
+  "user_id": "user-demo-001",
+  "wechat": "SLDEMO",
   "plan_id": "",
   "task_id": "task-20260822-0001",
-  "dispatch_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25",
-  "callback_url": "http://47.252.81.104/api/ai/callbacks/v1/message-delivery",
+  "dispatch_id": "00000000-0000-4000-8000-000000000001",
+  "callback_url": "https://<public-domain>/api/ai/callbacks/v1/message-delivery",
   "reply_messages": [
     {
       "type": "text",
       "content": "客户可见文字",
-      "client_message_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25:1"
+      "client_message_id": "00000000-0000-4000-8000-000000000001:1"
     },
     {
       "type": "image",
-      "content": "https://example.com/image.jpg",
-      "client_message_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25:2"
+      "content": "https://example.invalid/image.jpg",
+      "client_message_id": "00000000-0000-4000-8000-000000000001:2"
     }
   ]
 }
@@ -79,19 +88,19 @@ HTTP `2xx` 或请求读取超时，只能说明聚合平台已经接收或可能
 回调接口：
 
 ```text
-POST http://47.252.81.104/api/ai/callbacks/v1/message-delivery
+POST https://<public-domain>/api/ai/callbacks/v1/message-delivery
 Content-Type: application/json; charset=utf-8
 X-Callback-Token: <双方约定的回调 Token>
 ```
 
-当前回调入口仅允许聚合平台现有出口 IP `120.26.43.96`、`121.199.0.182` 访问；如回调任务使用其他出口 IP，聚合平台需提前提供。当前服务器只开放 HTTP，正式开启强制回执前应补 HTTPS；联调阶段仍需同时使用来源 IP 白名单和 Token。
+正式生产目标要求回调使用 HTTPS，并同时使用双方约定的 Token 和运行环境配置的来源 IP 白名单。HTTPS 由公网入口和基础设施保证；当前应用层只校验回调地址/鉴权，不应把它描述成代码已拒绝所有 HTTP URL。聚合平台变更出口 IP 时需先完成配置核对；具体域名、IP 和 Token 只在部署环境管理。
 
 批次全部成功：
 
 ```json
 {
   "event_id": "delivery-event-20260822-0001",
-  "dispatch_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25",
+  "dispatch_id": "00000000-0000-4000-8000-000000000001",
   "task_id": "task-20260822-0001",
   "status": "send_succeeded",
   "occurred_at": "2026-08-22T15:30:12+08:00",
@@ -99,13 +108,13 @@ X-Callback-Token: <双方约定的回调 Token>
   "system_msgid": "system-message-batch-id",
   "items": [
     {
-      "client_message_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25:1",
+      "client_message_id": "00000000-0000-4000-8000-000000000001:1",
       "platform_message_id": "platform-message-1",
       "status": "send_succeeded",
       "sent_at": "2026-08-22T15:30:11+08:00"
     },
     {
-      "client_message_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25:2",
+      "client_message_id": "00000000-0000-4000-8000-000000000001:2",
       "platform_message_id": "platform-message-2",
       "status": "send_succeeded",
       "sent_at": "2026-08-22T15:30:12+08:00"
@@ -119,7 +128,7 @@ X-Callback-Token: <双方约定的回调 Token>
 ```json
 {
   "event_id": "delivery-event-20260822-0002",
-  "dispatch_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25",
+  "dispatch_id": "00000000-0000-4000-8000-000000000001",
   "task_id": "task-20260822-0001",
   "status": "send_failed",
   "occurred_at": "2026-08-22T15:30:12+08:00",
@@ -134,19 +143,19 @@ X-Callback-Token: <双方约定的回调 Token>
 ```json
 {
   "event_id": "delivery-event-20260822-0003",
-  "dispatch_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25",
+  "dispatch_id": "00000000-0000-4000-8000-000000000001",
   "task_id": "task-20260822-0001",
   "status": "partial_failed",
   "occurred_at": "2026-08-22T15:30:12+08:00",
   "items": [
     {
-      "client_message_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25:1",
+      "client_message_id": "00000000-0000-4000-8000-000000000001:1",
       "platform_message_id": "platform-message-1",
       "status": "send_succeeded",
       "sent_at": "2026-08-22T15:30:11+08:00"
     },
     {
-      "client_message_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25:2",
+      "client_message_id": "00000000-0000-4000-8000-000000000001:2",
       "status": "send_failed",
       "error_code": "MEDIA_DOWNLOAD_FAILED",
       "error_message": "image download failed"
@@ -160,7 +169,7 @@ X-Callback-Token: <双方约定的回调 Token>
 ```json
 {
   "event_id": "delivery-event-20260822-0004",
-  "dispatch_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25",
+  "dispatch_id": "00000000-0000-4000-8000-000000000001",
   "task_id": "task-20260822-0001",
   "status": "sending",
   "occurred_at": "2026-08-22T15:30:10+08:00"
@@ -195,7 +204,7 @@ X-Callback-Token: <双方约定的回调 Token>
   "msg": "ok",
   "data": {
     "event_id": "delivery-event-20260822-0001",
-    "dispatch_id": "8f5b48c4-ef47-49df-b40b-7a91afc27b25",
+    "dispatch_id": "00000000-0000-4000-8000-000000000001",
     "duplicate": false,
     "status": "send_succeeded",
     "finalized": true
@@ -276,7 +285,7 @@ Authorization: Bearer <AI_PATHS_API_KEY>
 
    ```env
    MESSAGE_DELIVERY_CALLBACK_REQUIRED=true
-   MESSAGE_DELIVERY_CALLBACK_PUBLIC_URL=http://47.252.81.104/api/ai/callbacks/v1/message-delivery
+   MESSAGE_DELIVERY_CALLBACK_PUBLIC_URL=https://<public-domain>/api/ai/callbacks/v1/message-delivery
    MESSAGE_DELIVERY_CALLBACK_TOKEN=<双方约定的高强度随机 Token>
    ```
 

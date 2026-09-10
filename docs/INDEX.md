@@ -1,70 +1,73 @@
 # 文档索引
 
-本页是工程知识的唯一入口。新任务不从旧聊天、旧 handoff、分支名称或文件日期推断当前行为。
+本页是工程共享知识的唯一入口。代码是运行事实，`current/` 是带核验时间的现场快照，Git 是历史；不要从旧聊天、分支名或文件日期推断当前行为。
 
-## 新任务必读
+## 新任务阅读顺序
 
 1. [项目宪法](../AGENTS.md)
 2. [产品背景与统一目标](background/PRODUCT_CONTEXT.md)
 3. [当前开发进度](current/DEVELOPMENT_STATUS.md)
 4. [系统结构](architecture/SYSTEM.md)
-5. [运行边界](contracts/RUNTIME_BOUNDARIES.md)
-6. 与本任务相关的合同和[接口文档](interfaces/INDEX.md)
-7. [当前生产状态](current/PRODUCTION_STATE.md)
+5. [运行版本边界](contracts/RUNTIME_BOUNDARIES.md)
+6. 与任务相关的合同和[接口文档](interfaces/INDEX.md)
+7. 涉及线上时读取并重新核验[生产状态](current/PRODUCTION_STATE.md)
 8. [已知问题](current/KNOWN_ISSUES.md)
-9. [活跃任务清单](tasks/active/INDEX.md)及自己的任务文档
-10. [访问提示](current/ACCESS_HINTS.md)
+9. [活跃任务清单](tasks/active/INDEX.md)及本窗口唯一任务文档
+10. 需要服务器入口时读取[访问提示](current/ACCESS_HINTS.md)
 
-## 文档类别
+## 产品、架构与决策
 
-- `background/`：产品背景、业务目标和统一术语；帮助不了解项目的人先理解“为什么做”。
-- `architecture/`：组件、数据流和运行机制；说明“系统如何连接”。
-- `contracts/`：不可被实现随意破坏的产品、数据和安全边界。
-- `standards/`：开发、评测和验收口径；说明“怎样才算完成”。
-- `interfaces/`：外部依赖接口和项目对外接口，不保存凭证。
-- `current/`：当前进度、生产现场事实和已知问题；动态内容必须注明核验时间。
-- `tasks/active/`：当前窗口任务、分支、文件所有权、证据和待办。
-- `tasks/history/`：已完成任务的一行索引，详细过程回查 Git。
-- `runbooks/`：部署、验证、回滚和事故操作流程。
+- [产品背景与统一目标](background/PRODUCT_CONTEXT.md)
+- [系统结构](architecture/SYSTEM.md)
+- [V3 大模型节点与 Prompt 全景](architecture/V3_MODEL_NODES_AND_PROMPTS.md)：当前全部在线模型、逐字 Prompt、动态上下文、重试/修复和完整虚构例子
+- [ADR-0001：V3-only 与单一 main](adr/0001-v3-only-single-main.md)
 
-## 共享任务区
+## 稳定合同
 
-`docs/` 是所有窗口共享的项目记忆，不记录聊天、原始日志、模型输出或测试报告。
+- [运行版本边界](contracts/RUNTIME_BOUNDARIES.md)
+- [V3 Reply 运行时质量门](contracts/v3-reply-admission.md)
+- [AI 销售策略：意图、情绪、卡点、跟进与 B 单](contracts/sales-strategy.md)
+- [客户身份](contracts/customer-identity.md)
+- [消息送达回调](contracts/message-delivery-callback.md)
+- [第三方 SOP V3](contracts/third-party-sop-v3.md)
+- [主动唤醒 BI 观测](contracts/outreach-analytics.md)
 
-- [任务规则](tasks/README.md)
-- [活跃任务清单](tasks/active/INDEX.md)
-- [历史任务索引](tasks/history/INDEX.md)
-- [任务模板](tasks/TEMPLATE.md)
+## 接口
+
 - [接口文档索引](interfaces/INDEX.md)
-- [外部依赖接口](interfaces/external.md)
-- [对外暴露接口](interfaces/public.md)
+- [AI Paths 调用的外部依赖](interfaces/external.md)
+- [外部系统和管理端调用 AI Paths](interfaces/public.md)
 
-新开发按“一项任务一个新窗口、从最新 `origin/main` 建立临时 `codex/*` 分支、验证后立即合回并删除”的方式执行。
+接口文档不保存 token、生产白名单或动态目录内容；精确 schema 以当前代码和专项合同为准。
 
-## 专项文档
+## 当前状态
+
+- [当前开发进度](current/DEVELOPMENT_STATUS.md)
+- [当前生产状态](current/PRODUCTION_STATE.md)
+- [当前已知问题](current/KNOWN_ISSUES.md)
+- [访问提示](current/ACCESS_HINTS.md)
+
+`current/` 只保留最新事实，不堆发布流水。任何现场值超过核验时间后都必须重新检查。
+
+## 标准与运行手册
 
 - [V3 Reply 质量与全链路评测规范](standards/V3_REPLY_EVALUATION.md)
-- [V3 Reply 运行时质量门合同](contracts/v3-reply-admission.md)
-- [AI 销售策略运行合同](contracts/sales-strategy.md)
-- [V3 意图、情绪与路由合同](contracts/v3-intent-emotion-routing.md)
-- [消息送达回调](contracts/message-delivery-callback.md)
-- [客户身份合同](contracts/customer-identity.md)
-- [第三方 SOP V3 合同](contracts/third-party-sop-v3.md)
-- [第三方 SOP 单任务执行与失败预警](runbooks/THIRD_PARTY_SOP_SINGLE_TASK_EXECUTION.md)
-- [主动唤醒 BI 观测合同](contracts/outreach-analytics.md)
 - [任务工作流](runbooks/TASK_WORKFLOW.md)
 - [生产发布前检查清单](runbooks/PRE_RELEASE_CHECKLIST.md)
 
-## 目录规则
+第三方 SOP 的状态机与运维核验已统一到其合同，不再维护第二份单任务手册。
 
-- `architecture/`：稳定组件关系，不记录临时进度。
-- `background/`：稳定业务背景和产品目标，不记录上线快照。
-- `contracts/`：不得被实现随意破坏的协议和业务边界。
-- `standards/`：开发与验收的统一定义，不保存一次性测试结果。
-- `interfaces/`：外部依赖接口和项目对外暴露接口的稳定索引，不保存 token、原始日志或动态生产状态。
-- `current/`：现场核验后的动态事实；过期时必须明确标记。
-- `tasks/active/`：每个窗口独占一个活跃任务文件，任务、分支和文件所有权必须先登记。
-- `tasks/history/`：只保存已完成任务的简短索引，不保存聊天、报告或重复设计文档。
-- `runbooks/`：可执行的验证、部署、回滚和事故流程。
-- 运行报告、截图、调试 JSON、构建产物和模型输出不得提交到 `docs/`。
-- 历史设计、已退役 V1/V2 测试与重复知识文件不留在当前树；需要追溯时使用 Git 历史。
+## 任务协作
+
+- [任务规则](tasks/README.md)
+- [活跃任务清单](tasks/active/INDEX.md)
+- [任务模板](tasks/TEMPLATE.md)
+- [历史任务索引](tasks/history/INDEX.md)
+
+`docs/` 是所有窗口共享的项目记忆，不是运行产物目录：
+
+- 产品背景、架构、合同、接口和标准只写稳定结论。
+- 生产 release、开关、队列和回滚点只写最新核验快照。
+- 活跃任务先登记目标、base、分支/worktree 和文件所有权，完成后删除任务文档并留一行历史摘要。
+- 客户原文、原始日志、截图、模型输出、调试 JSON、测试报告和构建产物只进入 ignored `artifacts/`。
+- 已退役设计和重复文档从当前树删除；需要追溯时使用 Git。

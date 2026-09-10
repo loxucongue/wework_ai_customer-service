@@ -4,8 +4,12 @@
 - owner: <owner>
 - base_branch: main
 - base_sha: <full sha>
+- branch: <main 或 codex/task-id>
+- worktree: <absolute path>
+- exclusive_scope: <独占文件或目录>
 - production_verified_at: <timestamp/timezone>
 - production_releases: <service=release@sha>
+- data_model_send_authority: <默认本地/只读/零发送；例外及批准>
 
 ## 目标
 
@@ -32,5 +36,8 @@
 ## 测试结果
 
 ## 发布与回滚
+
+- final_main_commit:
+- deployed: no / yes，release=<release>
 
 ## 待沉淀的长期结论

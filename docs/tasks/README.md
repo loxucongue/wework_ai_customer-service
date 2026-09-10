@@ -14,8 +14,9 @@ docs/tasks/
 
 规则：
 
-1. 一个开发窗口对应一个 `<task-id>.md` 和一个 `codex/<task-id>` 分支。
-2. 开始前由主 Agent 在 `active/INDEX.md` 登记任务、负责人、分支和独占目录；并行任务不得编辑同一业务文件。
+1. 一个开发窗口对应一个 `<task-id>.md`。例行低风险任务可直接基于最新干净 `main`；用户明确要求、并行或高风险任务使用 `codex/<task-id>` 独立分支和 worktree。
+2. 开始前由主 Agent 在 `active/INDEX.md` 登记任务、负责人、实际分支/worktree 和独占文件范围；并行任务不得编辑同一业务文件。
 3. 任务文档只记录目标、边界、决定、验证和待办。动态线上事实仍需在发布前现场核验。
-4. 合并后，把长期规则写进 `contracts/` 或 ADR；在 `history/INDEX.md` 留一行任务和提交，然后删除对应活跃任务文件。
-5. 历史索引不是第二套 Git：需要代码差异、完整过程或旧实现时，直接查 Git 提交。
+4. 临时分支只作为隔离载体，完成后由主 Agent 审核并合入 `main`；禁止从临时分支、detached HEAD 或 dirty worktree 直接部署。
+5. 合并后，把长期规则写进 `contracts/` 或 ADR；在 `history/INDEX.md` 留一行任务和提交，然后删除对应活跃任务文件。
+6. 历史索引不是第二套 Git：需要代码差异、完整过程或旧实现时，直接查 Git 提交。
