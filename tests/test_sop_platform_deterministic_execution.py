@@ -719,6 +719,32 @@ def test_deterministic_recovery_reenters_customer_batch_without_legacy_model_pat
     assert platform.consume_calls[-1]["messages"] == [{"msgId": "701", "status": 30, "remark": ""}]
 
 
+def test_terminal_failure_recovery_finishes_task_without_sending_or_consuming_content() -> None:
+    service, repository, platform, system, events = _service()
+    repository.local.update(
+        {
+            "status": "failure_consume_pending",
+            "error": "customer_gate_query_failed:RuntimeError",
+            "send_payload": {
+                "processing_mode": "deterministic_task_failure",
+                "reason": "customer_gate_query_failed:RuntimeError",
+                "content_message_results": [],
+                "consume_results": [],
+            },
+        }
+    )
+
+    result = asyncio.run(service.process_task(_task(), recovery_status="platform_complete_pending"))
+
+    assert result["status"] == "failed_consumed"
+    assert result["reason"] == "customer_gate_query_failed:RuntimeError"
+    assert system.send_calls == []
+    assert "send" not in events
+    assert "sop_messages" not in events
+    assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
+    assert repository.local["status"] == "failed_consumed"
+
+
 def test_empty_pending_page_is_a_noop_without_failure_alert() -> None:
     class _EmptyPlatform:
         async def pending(self, **_values: Any) -> dict[str, Any]:

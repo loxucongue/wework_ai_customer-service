@@ -831,7 +831,11 @@ class SopPlatformTaskService:
             local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
             local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             processing_mode = str(local_audit.get("processing_mode") or "")
-            if processing_mode not in {"deterministic_customer_gate", "deterministic_task_no_send"}:
+            if processing_mode not in {
+                "deterministic_customer_gate",
+                "deterministic_task_no_send",
+                "deterministic_task_failure",
+            }:
                 # Tasks persisted by the removed execution path must never be
                 # replayed through the new direct-send contract. Keep them
                 # reserved for audit/manual reconciliation without sending or
@@ -1026,7 +1030,11 @@ class SopPlatformTaskService:
             local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
             local_audit = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
             processing_mode = str(local_audit.get("processing_mode") or "")
-            if processing_mode not in {"deterministic_customer_gate", "deterministic_task_no_send"}:
+            if processing_mode not in {
+                "deterministic_customer_gate",
+                "deterministic_task_no_send",
+                "deterministic_task_failure",
+            }:
                 await asyncio.to_thread(
                     self._quarantine_legacy_recovery,
                     task_id=task_id,
@@ -1164,8 +1172,9 @@ class SopPlatformTaskService:
                 terminal_failure=True,
             )
         persisted_failure_reason = str(current_audit.get("reason") or local_task.get("error") or "").strip()
-        if current_task_status in {"processing_retry", "failure_consume_pending"} and _is_consumed_terminal_failure(
-            persisted_failure_reason
+        if current_task_status in {"processing_retry", "failure_consume_pending"} and (
+            str(current_audit.get("processing_mode") or "") == "deterministic_task_failure"
+            or _is_consumed_terminal_failure(persisted_failure_reason)
         ):
             # An explicit platform rejection is already a terminal observation.
             # Recovery may finish the task/rule-data transaction, but it must
