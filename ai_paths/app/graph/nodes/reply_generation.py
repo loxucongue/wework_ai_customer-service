@@ -1029,6 +1029,13 @@ def _validated_parallel_reply_payload(
     presentation_limits: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     restore_reply_output_references(payload, parallel_reply_payload(state))
+    if _normalize_hard_stop_sales_action(payload):
+        warnings.append(
+            {
+                "node": "synthesize_reply",
+                "message": "hard_stop_sales_action_normalized",
+            }
+        )
     if _normalize_post_payment_service_action(payload, state):
         warnings.append(
             {
@@ -1067,6 +1074,35 @@ def _validated_parallel_reply_payload(
     messages = _prepare_structural_messages(messages, validation_state, warnings)
     validate_model_led_reply_admission(messages, validation_state)
     return messages
+
+
+def _normalize_hard_stop_sales_action(payload: dict[str, Any]) -> bool:
+    """Align the administrative action enum with Reply's own hard-stop decision.
+
+    Complaint/refund handling and explicit stop-contact are selected by Reply,
+    not inferred here. Once Reply has already chosen ``hard_stop_marketing``, a
+    stray mainline action such as ``keep_open`` must not reject an otherwise
+    valid customer-visible answer and force the generic failure fallback.
+    """
+
+    policy = payload.get("policy_decision") if isinstance(payload.get("policy_decision"), dict) else {}
+    closing = policy.get("closing_decision") if isinstance(policy.get("closing_decision"), dict) else {}
+    if str(closing.get("customer_state") or "").strip() != "hard_stop_marketing":
+        return False
+    sales = payload.get("sales_judgment") if isinstance(payload.get("sales_judgment"), dict) else {}
+    next_action = sales.get("next_sales_action") if isinstance(sales.get("next_sales_action"), dict) else {}
+    action_type = str(next_action.get("type") or "").strip()
+    if not action_type or action_type == "stop":
+        return False
+    payload["sales_judgment"] = {
+        **sales,
+        "next_sales_action": {
+            **next_action,
+            "type": "stop",
+            "target_stage": "hard_stop_marketing",
+        },
+    }
+    return True
 
 
 def _normalize_post_payment_service_action(

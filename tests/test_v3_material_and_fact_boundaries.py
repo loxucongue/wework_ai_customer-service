@@ -7,6 +7,7 @@ import pytest
 
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission
 from app.graph.nodes.reply_generation import (
+    _normalize_hard_stop_sales_action,
     _normalize_post_payment_service_action,
     _salvage_repair_payload,
 )
@@ -102,6 +103,64 @@ def test_valid_post_payment_action_is_not_rewritten() -> None:
 
     assert _normalize_post_payment_service_action(payload, {}) is False
     assert payload["sales_judgment"]["next_sales_action"]["type"] == "keep_open"
+
+
+def test_hard_stop_normalizes_only_internal_action_and_preserves_refund_reply() -> None:
+    reply_messages = [
+        {
+            "type": "text",
+            "content": "我先帮您核实付款记录，麻烦把付款成功截图发我一下。",
+        }
+    ]
+    payload = {
+        "reply_messages": reply_messages.copy(),
+        "sales_judgment": {
+            "posture": "pause",
+            "next_sales_action": {
+                "type": "keep_open",
+                "target_stage": "effect_evidence",
+                "reason": "先处理退款核实",
+            },
+        },
+        "policy_decision": {
+            "closing_decision": {"customer_state": "hard_stop_marketing"}
+        },
+    }
+
+    assert _normalize_hard_stop_sales_action(payload) is True
+    assert payload["reply_messages"] == reply_messages
+    assert payload["sales_judgment"]["posture"] == "pause"
+    assert payload["sales_judgment"]["next_sales_action"] == {
+        "type": "stop",
+        "target_stage": "hard_stop_marketing",
+        "reason": "先处理退款核实",
+    }
+
+
+@pytest.mark.parametrize("customer_state", ["continue_sales", "pause_current_turn"])
+def test_normal_sales_state_does_not_normalize_action_to_stop(customer_state: str) -> None:
+    payload = {
+        "sales_judgment": {"next_sales_action": {"type": "deliver_value"}},
+        "policy_decision": {
+            "closing_decision": {"customer_state": customer_state}
+        },
+    }
+
+    assert _normalize_hard_stop_sales_action(payload) is False
+    assert payload["sales_judgment"]["next_sales_action"]["type"] == "deliver_value"
+
+
+def test_valid_or_empty_hard_stop_action_is_not_rewritten() -> None:
+    for next_action in ({"type": "stop"}, {}):
+        payload = {
+            "sales_judgment": {"next_sales_action": next_action.copy()},
+            "policy_decision": {
+                "closing_decision": {"customer_state": "hard_stop_marketing"}
+            },
+        }
+
+        assert _normalize_hard_stop_sales_action(payload) is False
+        assert payload["sales_judgment"]["next_sales_action"] == next_action
 
 
 def test_unsupported_post_payment_label_does_not_create_paid_service_state() -> None:
