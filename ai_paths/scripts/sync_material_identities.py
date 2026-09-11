@@ -202,7 +202,13 @@ def _retry(operation, retries: int):
             time.sleep(min(0.1 * (2**attempt), 2.0))
 
 
-def apply_frozen_plan(repository: AppRepository, plan: dict, progress_path: Path, retries: int = 3) -> dict:
+def apply_frozen_plan(
+    repository: AppRepository,
+    plan: dict,
+    progress_path: Path,
+    retries: int = 3,
+    max_batches: int = 0,
+) -> dict:
     if plan.get("version") != PLAN_VERSION or plan.get("target") != _target(repository):
         raise ValueError("plan_target_mismatch")
     if plan.get("schema_head") != _schema_head(repository):
@@ -249,6 +255,7 @@ def apply_frozen_plan(repository: AppRepository, plan: dict, progress_path: Path
             progress["undo"].append({"before": batch["before"], "after": batch["rows"]})
         if inferred:
             _write_atomic(progress_path, progress)
+    applied_now = 0
     for index, batch in enumerate(plan.get("batches") or []):
         if index in set(progress["completed_batches"]):
             continue
@@ -267,6 +274,9 @@ def apply_frozen_plan(repository: AppRepository, plan: dict, progress_path: Path
         progress["undo"].append(undo)
         progress["completed_batches"].append(index)
         _write_atomic(progress_path, progress)
+        applied_now += 1
+        if max_batches and applied_now >= max_batches:
+            return progress
     for index, claims in enumerate(plan.get("claim_batches") or []):
         if index in set(progress.get("completed_claim_batches") or []):
             continue
@@ -299,6 +309,9 @@ def apply_frozen_plan(repository: AppRepository, plan: dict, progress_path: Path
         _retry(apply_claim_batch, retries)
         progress.setdefault("completed_claim_batches", []).append(index)
         _write_atomic(progress_path, progress)
+        applied_now += 1
+        if max_batches and applied_now >= max_batches:
+            return progress
     return progress
 
 
@@ -351,6 +364,7 @@ def main() -> int:
     parser.add_argument("--snapshot-report", type=Path, help="Ignored verified/pending catalog classification")
     parser.add_argument("--batch-size", type=int, default=250)
     parser.add_argument("--retries", type=int, default=3)
+    parser.add_argument("--max-batches", type=int, default=0, help="Apply at most N new batches, then exit cleanly")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--rollback-plan", action="store_true")
     parser.add_argument("--confirm-target")
@@ -362,6 +376,8 @@ def main() -> int:
         parser.error("choose exactly one database target")
     if not 1 <= args.batch_size <= 1000:
         parser.error("--batch-size must be between 1 and 1000")
+    if args.max_batches < 0:
+        parser.error("--max-batches cannot be negative")
     if args.database and not args.apply and not args.rollback and not args.rollback_plan and not args.plan:
         if not args.manifest:
             parser.error("--manifest is required")
@@ -429,13 +445,24 @@ def main() -> int:
             result = (
                 rollback_frozen_plan(repository, plan, args.progress, args.retries)
                 if args.rollback_plan
-                else apply_frozen_plan(repository, plan, args.progress, args.retries)
+                else apply_frozen_plan(
+                    repository,
+                    plan,
+                    args.progress,
+                    args.retries,
+                    max_batches=args.max_batches,
+                )
             )
             print(
                 json.dumps(
                     {
                         "status": "rolled_back" if args.rollback_plan else "applied",
                         "completed_batches": len(result["completed_batches"]),
+                        "completed_claim_batches": len(result.get("completed_claim_batches") or []),
+                        "complete": (
+                            len(result["completed_batches"]) == len(plan.get("batches") or [])
+                            and len(result.get("completed_claim_batches") or []) == len(plan.get("claim_batches") or [])
+                        ),
                     }
                 )
             )

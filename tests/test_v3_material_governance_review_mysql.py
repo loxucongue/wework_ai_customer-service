@@ -308,6 +308,8 @@ def test_frozen_catalog_tool_recovers_unjournaled_commit_and_rejects_drift(mysql
     plan = make_frozen_plan(records, mysql.material_catalog(), mysql, 1, source_checksum=tag)
     mysql.apply_material_catalog(plan["batches"][0]["rows"], expected_before=plan["batches"][0]["before"])
     progress_path = tmp_path / "mysql-progress.json"
+    progress = apply_frozen_plan(mysql, plan, progress_path, max_batches=1)
+    assert progress["completed_batches"] == [0, 1]
     progress = apply_frozen_plan(mysql, plan, progress_path)
     assert progress["completed_batches"] == list(range(len(plan["batches"])))
     assert apply_frozen_plan(mysql, plan, progress_path) == progress

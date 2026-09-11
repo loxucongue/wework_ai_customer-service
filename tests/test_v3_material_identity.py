@@ -443,6 +443,8 @@ def test_frozen_sync_plan_rejects_drift_resumes_and_protected_rollback(tmp_path)
     ]
     plan = make_frozen_plan(records, repository.material_catalog(), repository, batch_size=1)
     progress = tmp_path / "progress.json"
+    partial = apply_frozen_plan(repository, plan, progress, max_batches=1)
+    assert partial["completed_batches"] == [0]
     applied = apply_frozen_plan(repository, plan, progress)
     assert applied["completed_batches"] == [0, 1, 2]
     assert apply_frozen_plan(repository, plan, progress) == applied
