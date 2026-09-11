@@ -515,3 +515,36 @@ def test_frozen_sync_applies_exact_evidence_claim_and_never_auto_releases_it(tmp
     assert claim["asset_role"] == "historical_exact_output"
     with pytest.raises(ValueError, match="catalog_rollback_has_delivery_claims"):
         rollback_frozen_plan(repository, plan, progress_path)
+
+
+def test_frozen_sync_snapshot_classification_is_bound_and_requires_role_coverage(tmp_path):
+    from scripts.sync_material_identities import make_frozen_plan
+
+    repository = repo(tmp_path / "classification.sqlite")
+    records = [{"type": "image", "file_id": 1, "file_namespace": "follow_knowledge"}]
+    report = {
+        "directory_checksum": "catalog-v1",
+        "media_references": 2,
+        "verified_references": 1,
+        "pending_references": 1,
+        "roles": {"effect": 1, "activity": 1},
+        "verified_roles": {"effect": 1, "activity": 1},
+    }
+    plan = make_frozen_plan(
+        records,
+        [],
+        repository,
+        10,
+        source_checksum="catalog-v1",
+        snapshot_report=report,
+    )
+    assert plan["summary"]["pending"] == 1
+    with pytest.raises(ValueError, match="snapshot_role_without_verified_material"):
+        make_frozen_plan(
+            records,
+            [],
+            repository,
+            10,
+            source_checksum="catalog-v1",
+            snapshot_report={**report, "verified_roles": {"effect": 1}},
+        )

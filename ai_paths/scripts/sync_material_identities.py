@@ -86,9 +86,7 @@ def build_plan(records: list[dict], existing: list[dict]) -> tuple[list[dict], l
                 "canonical_type_conflict",
                 "catalog_limit_exceeded",
             }
-            failures.append(
-                {"index": index, "reason": str(exc) if str(exc) in known_reasons else "fingerprint_failed"}
-            )
+            failures.append({"index": index, "reason": str(exc) if str(exc) in known_reasons else "fingerprint_failed"})
     return plan, failures
 
 
@@ -111,6 +109,20 @@ def _target(repository: AppRepository) -> str:
     return f"mysql:{settings.aics_mysql_host}:{settings.aics_mysql_port}/{settings.aics_mysql_database}"
 
 
+def _validate_snapshot_report(report: dict[str, Any], records: list[dict], source_checksum: str) -> None:
+    if report.get("directory_checksum") != source_checksum:
+        raise ValueError("snapshot_source_checksum_mismatch")
+    verified = int(report.get("verified_references") or 0)
+    pending = int(report.get("pending_references") or 0)
+    total = int(report.get("media_references") or 0)
+    if verified != len(records) or verified + pending != total:
+        raise ValueError("snapshot_classification_count_mismatch")
+    roles = report.get("roles") if isinstance(report.get("roles"), dict) else {}
+    verified_roles = report.get("verified_roles") if isinstance(report.get("verified_roles"), dict) else {}
+    if any(int(count or 0) > 0 and int(verified_roles.get(role) or 0) <= 0 for role, count in roles.items()):
+        raise ValueError("snapshot_role_without_verified_material")
+
+
 def make_frozen_plan(
     records: list[dict],
     existing: list[dict],
@@ -118,7 +130,10 @@ def make_frozen_plan(
     batch_size: int,
     source_checksum: str = "",
     claims: list[dict] | None = None,
+    snapshot_report: dict[str, Any] | None = None,
 ) -> dict:
+    if snapshot_report is not None:
+        _validate_snapshot_report(snapshot_report, records, source_checksum)
     rows, failures = build_plan(records, existing)
     before = {row["alias_key"]: row for row in existing}
     batches = []
@@ -161,6 +176,7 @@ def make_frozen_plan(
         "manifest_checksum": _checksum(records),
         "source_checksum": source_checksum or _checksum(records),
         "claims_checksum": _checksum(normalized_claims),
+        "snapshot_report_checksum": _checksum(snapshot_report or {}),
         "catalog_checksum": _catalog_checksum(existing),
         "batches": batches,
         "claim_batches": claim_batches,
@@ -170,6 +186,7 @@ def make_frozen_plan(
             "batches": len(batches),
             "claims": len(normalized_claims),
             "claim_batches": len(claim_batches),
+            "pending": int((snapshot_report or {}).get("pending_references") or 0),
             "failures": failures,
         },
     }
@@ -190,6 +207,8 @@ def apply_frozen_plan(repository: AppRepository, plan: dict, progress_path: Path
         raise ValueError("plan_target_mismatch")
     if plan.get("schema_head") != _schema_head(repository):
         raise ValueError("schema_changed_since_plan")
+    if (plan.get("summary") or {}).get("failures"):
+        raise ValueError("plan_has_identity_failures")
     progress = {
         "version": PLAN_VERSION,
         "plan_checksum": _checksum(plan),
@@ -329,6 +348,7 @@ def main() -> int:
     parser.add_argument("--progress", type=Path)
     parser.add_argument("--source-checksum", help="Catalog checksum emitted by the read-only snapshot")
     parser.add_argument("--claims", type=Path, help="Ignored exact-evidence historical claim manifest")
+    parser.add_argument("--snapshot-report", type=Path, help="Ignored verified/pending catalog classification")
     parser.add_argument("--batch-size", type=int, default=250)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--apply", action="store_true")
@@ -385,8 +405,8 @@ def main() -> int:
     repository, mysql = _repository(args)
     try:
         if args.apply or args.rollback_plan:
-            if not mysql or not args.plan or not args.progress or not args.manifest:
-                parser.error("MySQL apply/rollback requires --manifest, --plan and --progress")
+            if not mysql or not args.plan or not args.progress or not args.manifest or not args.snapshot_report:
+                parser.error("MySQL apply/rollback requires --manifest, --snapshot-report, --plan and --progress")
             expected = ROLLBACK_CONFIRMATION if args.rollback_plan else APPLY_CONFIRMATION
             if args.confirm_target != _target(repository) or args.confirm_action != expected:
                 parser.error("target and action confirmation do not match")
@@ -398,6 +418,14 @@ def main() -> int:
             claims = json.loads(args.claims.read_text(encoding="utf-8")) if args.claims else []
             if _checksum(claims) != plan.get("claims_checksum"):
                 raise ValueError("claims_changed_since_plan")
+            snapshot_report = json.loads(args.snapshot_report.read_text(encoding="utf-8"))
+            if _checksum(snapshot_report) != plan.get("snapshot_report_checksum"):
+                raise ValueError("snapshot_report_changed_since_plan")
+            _validate_snapshot_report(
+                snapshot_report,
+                json.loads(args.manifest.read_text(encoding="utf-8")),
+                args.source_checksum,
+            )
             result = (
                 rollback_frozen_plan(repository, plan, args.progress, args.retries)
                 if args.rollback_plan
@@ -416,8 +444,11 @@ def main() -> int:
             parser.error("--manifest is required for dry-run")
         if mysql and not args.source_checksum:
             parser.error("MySQL dry-run requires --source-checksum")
+        if mysql and not args.snapshot_report:
+            parser.error("MySQL dry-run requires --snapshot-report")
         records = json.loads(args.manifest.read_text(encoding="utf-8"))
         claims = json.loads(args.claims.read_text(encoding="utf-8")) if args.claims else []
+        snapshot_report = json.loads(args.snapshot_report.read_text(encoding="utf-8")) if args.snapshot_report else None
         frozen = make_frozen_plan(
             records,
             repository.material_catalog(),
@@ -425,6 +456,7 @@ def main() -> int:
             args.batch_size,
             source_checksum=args.source_checksum or "",
             claims=claims,
+            snapshot_report=snapshot_report,
         )
         if args.plan:
             _write_new(args.plan, frozen)
