@@ -10,6 +10,17 @@
 
 ## 背景
 
+## 本窗口 change contract（2026-09-11）
+
+- 实际开发基线：`origin/main@6b4c6844086bf0c4e6baac540c3cd28582b9235f`；独立 worktree 与登记分支均已核验干净。
+- 类型：生产只读审计、素材身份目录同步工具增强、隔离 MySQL/L2/L3 验证和文档收尾；不改变产品销售语义。
+- 最小候选文件：`ai_paths/scripts/sync_material_identities.py`、该工具的直接测试、素材治理相关 current/architecture/contract 证据和本任务文档。若取证证明不需要某类文档变化，则不为凑文件而修改。
+- 风险：误连或误写生产、计划生成后目录/数据库漂移、批次中断、死锁、回滚误删已占用别名、审计产物泄露 URL/客户数据。
+- 控制：默认 dry-run；MySQL apply/rollback 需要冻结计划、明确目标和二次确认；计划绑定 schema/catalog/manifest checksum；有界批次、重试、可重入进度、受保护 rollback；生产本轮只读。
+- 验证：生产现场聚合只读查询；全新 MySQL 8/InnoDB/REPEATABLE-READ 迁移和故障演练；全量确定性测试；虚构身份、隔离数据库、硬阻断发送的 L2/L3。未改前端时不运行无关前端构建。
+- 回滚：代码候选仅提交独立分支；工具写入由逐批 undo 逆序回滚，已被 `response_committed` 占用或已漂移的别名拒绝自动回滚。
+- ownership：启动时 active INDEX 仅登记本任务，未发现交叉 ownership；禁止触碰 Reply Prompt、主线、B 单、SOP 规则、生产配置、部署和任何生产写入。
+
 统一素材身份、跨来源去重、内容/动作隔离和 `response_committed` 占用已经合入 main。最新生产快照显示，该代码和加法迁移随后随第三方 SOP 修复一起发布，但生产目录/历史是否完成身份同步没有闭环证据；现有同步 CLI 在独立验收时仅明确支持本地 SQLite。
 
 未知身份附件采用失败关闭：无法确认物理身份时图片/视频不发送，文字链路继续。因此当前最大风险不再是代码能否迁移，而是生产素材目录中有多少资产仍无法确认身份、是否已经造成素材交付下降，以及如何在不猜测历史事实的前提下安全完成 MySQL 目录同步和必要回填。

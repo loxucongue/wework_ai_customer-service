@@ -431,3 +431,87 @@ def test_sync_audit_distinguishes_pending_reasons(tmp_path, monkeypatch):
         "bytes_unavailable",
         "unsupported_format",
     ]
+
+
+def test_frozen_sync_plan_rejects_drift_resumes_and_protected_rollback(tmp_path):
+    from scripts.sync_material_identities import apply_frozen_plan, make_frozen_plan, rollback_frozen_plan
+
+    repository = repo(tmp_path / "frozen.sqlite")
+    records = [
+        {"type": "image", "file_id": index, "file_namespace": "follow_knowledge", "source": "synthetic"}
+        for index in range(1, 4)
+    ]
+    plan = make_frozen_plan(records, repository.material_catalog(), repository, batch_size=1)
+    progress = tmp_path / "progress.json"
+    applied = apply_frozen_plan(repository, plan, progress)
+    assert applied["completed_batches"] == [0, 1, 2]
+    assert apply_frozen_plan(repository, plan, progress) == applied
+    assert len(repository.material_catalog()) == 3
+
+    # A catalog change outside the frozen plan prevents a fresh apply.
+    other = repo(tmp_path / "drift.sqlite")
+    other.apply_material_catalog(
+        prepare_catalog([{"type": "video", "url": "https://example.invalid/drift", "bytes": b"synthetic-video"}])
+    )
+    with pytest.raises(ValueError, match="catalog_changed_since_plan"):
+        apply_frozen_plan(
+            other, dict(plan, target=f"sqlite:{other.store.db_path.resolve()}"), tmp_path / "drift-progress.json"
+        )
+
+    rollback_frozen_plan(repository, plan, progress)
+    assert repository.material_catalog() == []
+    assert rollback_frozen_plan(repository, plan, progress)["completed_batches"] == []
+
+
+def test_frozen_sync_rollback_refuses_response_committed_claim(tmp_path):
+    from scripts.sync_material_identities import apply_frozen_plan, make_frozen_plan, rollback_frozen_plan
+
+    repository = repo(tmp_path / "claimed.sqlite")
+    records = [{"type": "image", "file_id": 99, "file_namespace": "follow_knowledge"}]
+    plan = make_frozen_plan(records, [], repository, batch_size=10)
+    progress = tmp_path / "claimed-progress.json"
+    apply_frozen_plan(repository, plan, progress)
+    row = repository.material_catalog()[0]
+    with repository.store.connect() as conn:
+        conn.execute(
+            "INSERT INTO material_claims VALUES (?, ?, ?, ?, ?, ?, 'response_committed', ?)",
+            ("contact", row["canonical_id"], "request", "message", row["alias_key"], "effect_evidence", "now"),
+        )
+    with pytest.raises(ValueError, match="catalog_rollback_has_delivery_claims"):
+        rollback_frozen_plan(repository, plan, progress)
+
+
+def test_frozen_sync_applies_exact_evidence_claim_and_never_auto_releases_it(tmp_path):
+    from scripts.sync_material_identities import apply_frozen_plan, make_frozen_plan, rollback_frozen_plan
+
+    repository = repo(tmp_path / "historical.sqlite")
+    records = [
+        {
+            "type": "image",
+            "url": "https://example.invalid/historical",
+            "file_id": 100,
+            "file_namespace": "follow_knowledge",
+        }
+    ]
+    identity_plan = make_frozen_plan(records, [], repository, batch_size=10)
+    identity = identity_plan["batches"][0]["rows"][0]
+    claims = [
+        {
+            "contact_key": "synthetic-contact",
+            "canonical_id": identity["canonical_id"],
+            "request_id": "historical-request",
+            "client_message_id": "historical-evidence-id",
+            "alias_key": identity["alias_key"],
+            "asset_role": "historical_exact_output",
+        }
+    ]
+    plan = make_frozen_plan(records, [], repository, batch_size=10, claims=claims)
+    progress_path = tmp_path / "historical-progress.json"
+    applied = apply_frozen_plan(repository, plan, progress_path)
+    assert applied["completed_claim_batches"] == [0]
+    with repository.store.connect() as conn:
+        claim = conn.execute("SELECT * FROM material_claims").fetchone()
+    assert claim["status"] == "response_committed"
+    assert claim["asset_role"] == "historical_exact_output"
+    with pytest.raises(ValueError, match="catalog_rollback_has_delivery_claims"):
+        rollback_frozen_plan(repository, plan, progress_path)

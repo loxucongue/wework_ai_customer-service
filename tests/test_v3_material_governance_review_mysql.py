@@ -290,3 +290,72 @@ def test_restarted_process_and_contact_isolation(mysql):
         check=True,
         timeout=20,
     )
+
+
+def test_frozen_catalog_tool_recovers_unjournaled_commit_and_rejects_drift(mysql, tmp_path):
+    from scripts.sync_material_identities import apply_frozen_plan, make_frozen_plan, rollback_frozen_plan
+
+    tag = uuid4().hex
+    records = [
+        {
+            "type": "image",
+            "url": f"https://example.invalid/{tag}/{index}",
+            "file_id": int(tag, 16) + index,
+            "file_namespace": "follow_knowledge",
+        }
+        for index in range(3)
+    ]
+    plan = make_frozen_plan(records, mysql.material_catalog(), mysql, 1, source_checksum=tag)
+    mysql.apply_material_catalog(plan["batches"][0]["rows"], expected_before=plan["batches"][0]["before"])
+    progress_path = tmp_path / "mysql-progress.json"
+    progress = apply_frozen_plan(mysql, plan, progress_path)
+    assert progress["completed_batches"] == list(range(len(plan["batches"])))
+    assert apply_frozen_plan(mysql, plan, progress_path) == progress
+    rollback_frozen_plan(mysql, plan, progress_path)
+
+    drift_plan = make_frozen_plan(records, mysql.material_catalog(), mysql, 1, source_checksum=tag)
+    mysql.apply_material_catalog(
+        prepare_catalog(
+            [
+                {
+                    "type": "video",
+                    "url": f"https://example.invalid/{tag}/drift",
+                    "bytes": tag.encode(),
+                }
+            ],
+            mysql.material_catalog(),
+        )
+    )
+    with pytest.raises(ValueError, match="catalog_changed_since_plan"):
+        apply_frozen_plan(mysql, drift_plan, tmp_path / "drift-progress.json")
+
+
+def test_frozen_catalog_tool_applies_historical_claim_and_protects_rollback(mysql, tmp_path):
+    from scripts.sync_material_identities import apply_frozen_plan, make_frozen_plan, rollback_frozen_plan
+
+    tag = uuid4().hex
+    records = [
+        {
+            "type": "image",
+            "url": f"https://example.invalid/{tag}",
+            "file_id": int(tag, 16),
+            "file_namespace": "follow_knowledge",
+        }
+    ]
+    identity_plan = make_frozen_plan(records, mysql.material_catalog(), mysql, 10)
+    identity = identity_plan["batches"][0]["rows"][0]
+    claim = {
+        "contact_key": uuid4().hex,
+        "canonical_id": identity["canonical_id"],
+        "request_id": uuid4().hex,
+        "client_message_id": uuid4().hex,
+        "alias_key": identity["alias_key"],
+        "asset_role": "historical_exact_output",
+    }
+    plan = make_frozen_plan(records, mysql.material_catalog(), mysql, 10, claims=[claim])
+    progress_path = tmp_path / "claim-progress.json"
+    progress = apply_frozen_plan(mysql, plan, progress_path)
+    assert progress["completed_claim_batches"] == [0]
+    assert mysql.material_claimed_ids(claim["contact_key"], [claim["canonical_id"]]) == {claim["canonical_id"]}
+    with pytest.raises(ValueError, match="catalog_rollback_has_delivery_claims"):
+        rollback_frozen_plan(mysql, plan, progress_path)

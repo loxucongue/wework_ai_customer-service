@@ -160,8 +160,10 @@ Router、序列、话术、B 单目录和门店工具都只是 Reply 的证据�
 - 可信 `follow_knowledge` 正整数 file ID 可直接登记；已知 URL 仅解析登记别名。未知素材不做运行时网络下载。目录/账本不可用时关闭附件但保留文字，并区分 `identity_registry_unavailable`、`delivery_ledger_unavailable`、`identity_unknown`、`contact_identity_missing`；已占用记录为 `delivery_already_reserved`。
 - 每轮至多处理 128 个候选及 128 个唯一媒体，目录至多 10,000 个别名，每份字节至多 6 MiB、图片至多 2,000 万像素。账本随真实接触增长，但热查询仅按接触与至多 128 个 identity 索引查找。目录超限失败关闭并审计；这些是工程预算，不能当销售节奏规则。
 - 指纹版本 `media-v1-rgb32-dhash4`：精确 SHA-256；图片先按 EXIF 定向、透明区合成白底。解码像素完全相同可合并；否则同时要求宽高比差 ≤0.005、64 位 dHash 距离 ≤4、双方 dHash 置位数 8–56、32×32 RGB 最大通道差 ≤16 且平均差 ≤1.5。近似判断不是数学上的同物证明；低纹理、裁剪、重度压缩等不自动保证合并。视频只支持字节/可信文件 ID/人工登记身份，不以图片感知算法推断视频转码。
-- 本地工具 `ai_paths/scripts/sync_material_identities.py` 接收 JSON manifest（`type/url/path` 或可信 `file_id/file_namespace`，可附 `canonical_id/override_reason`）。默认 dry-run 只读显式 SQLite；`--apply --undo` 先落盘并同步 undo 再原子应用，重复回填幂等；`--rollback` 检查并发变化，可重入。产物放 ignored `artifacts/`。工具不加载环境文件、不连接第三方，生产目录同步接入及执行归独立发布任务。
-- 单次回填有界，失败分为身份未知、字节不可取、下载超时、格式不支持、指纹失败和目录冲突；不写发送记忆，下一次显式同步可重试。工具本身只读取本地字节，`download_timeout` 是输入读取层超时的审计分类，不声称有生产下载器。
+- `snapshot_follow_knowledge_materials.py` 只读获取目录，并在逐跳校验公网地址、媒体类型、超时和 6 MiB 上限后把 URL 与字节写入 ignored artifacts；输出到终端的摘要不含 URL。下载成功仍必须完成精确 SHA-256 和版本化图片指纹才标记 verified，超限、不可取或无法解码的条目显式保留为 pending，不能用 URL 冒充身份。
+- `sync_material_identities.py` 接收上述 manifest 或人工审核 manifest。SQLite 保留原显式路径 dry-run/apply/undo 接口；MySQL 默认 dry-run，写入必须同时提供冻结计划、原 manifest、目录 checksum、目标库和动作确认。计划绑定 schema、目录、manifest、既有目录及历史证据 checksum，以不超过 1,000 行的批次写入；批次提交后进度落盘前中断可从数据库连续前缀恢复，计划外漂移拒绝继续，死锁和锁等待仅做有界重试。
+- 可证明的历史响应占用可以随冻结计划写入 `response_committed`，其含义仍不是发送或送达；证据不足的历史不生成 claim。包含历史 claim 的计划禁止自动 rollback，普通目录 rollback 也会在别名产生任何占用后拒绝释放。所有计划、进度、备份和原始目录仅放 ignored artifacts。
+- 单次回填有界，失败分为身份未知、字节不可取、下载超时、格式不支持、指纹失败和目录冲突；不写旧发送记忆，下一次显式同步可重试。已知身份的回复热路径只查目录和账本，不联网下载。
 - 人工纠错必须带 `override_reason`；未占用的误合并别名可拆为独立 identity，即便同组其他别名已占用。已占用别名不能靠 override/rollback 释放；其纠错需保留发送来源的独立审计迁移。undo 遇新占用或并发变化拒绝覆盖。原目录备份和合成 dry-run 是应用前提。
 - 增量迁移 `20260910_01` 只加表；空表可 downgrade，非空拒绝删除。代码回退保留身份及占用表，再依据审计 undo 回退尚未产生占用的回填。本任务未执行生产迁移。
 - MySQL `REPEATABLE-READ` 下，目录变更/回滚保护和抢占结果均使用锁定的当前读，不能靠事务旧快照判断没有占用。多素材按 canonical 顺序抢占；败方返回明确冲突，事务回滚。核心耗时与 SQL 计数包含素材占用语句。迁移重入检查列、主键和索引，补齐中断时未建成的索引；不兼容结构拒绝继续。
