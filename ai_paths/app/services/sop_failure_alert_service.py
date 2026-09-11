@@ -375,6 +375,12 @@ def _failure_type(reason: str) -> tuple[str, str]:
 def _failure_responsibility(*, task_id: str, reason: str, phase: str) -> tuple[str, str]:
     normalized_reason = str(reason or "").strip().lower()
     normalized_phase = str(phase or "").strip().lower()
+    if task_id.startswith("system-") and normalized_reason in {
+        "interfaceerror",
+        "operationalerror",
+        "databaseerror",
+    }:
+        return "aics_runtime", "我方任务运行服务"
     if normalized_reason.startswith(
         (
             "missing_identity",

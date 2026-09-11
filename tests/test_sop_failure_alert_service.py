@@ -6,7 +6,17 @@ from typing import Any
 
 import pytest
 
-from app.services.sop_failure_alert_service import SopFailureAlertService
+from app.services.sop_failure_alert_service import SopFailureAlertService, _failure_responsibility
+
+
+def test_system_database_interface_error_is_attributed_to_aics_runtime() -> None:
+    responsibility, _label = _failure_responsibility(
+        task_id="system-2026091012",
+        reason="InterfaceError",
+        phase="poll_pending_and_content",
+    )
+
+    assert responsibility == "aics_runtime"
 
 
 class _Repository:

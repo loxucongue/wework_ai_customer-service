@@ -97,16 +97,20 @@ class _System:
         deleted: bool = False,
         ai_auto_reply: bool = True,
         send_error: Exception | None = None,
+        gate_error: Exception | None = None,
     ) -> None:
         self.events = events
         self.opened = opened
         self.deleted = deleted
         self.ai_auto_reply = ai_auto_reply
         self.send_error = send_error
+        self.gate_error = gate_error
         self.send_calls: list[dict[str, Any]] = []
 
     async def conversation_status(self, **_values: Any) -> dict[str, Any]:
         self.events.append("conversation_status")
+        if self.gate_error is not None:
+            raise self.gate_error
         return {"data": {"takeover": {"ai_auto_reply": self.ai_auto_reply}}}
 
     async def conversation(self, **_values: Any) -> dict[str, Any]:
@@ -142,6 +146,7 @@ def _service(
     ai_auto_reply: bool = True,
     empty_content: bool = False,
     send_error: Exception | None = None,
+    gate_error: Exception | None = None,
 ) -> tuple[SopPlatformTaskService, _Repository, _Platform, _System, list[str]]:
     events: list[str] = []
     task = _task()
@@ -153,6 +158,7 @@ def _service(
         deleted=deleted,
         ai_auto_reply=ai_auto_reply,
         send_error=send_error,
+        gate_error=gate_error,
     )
     service = SopPlatformTaskService.__new__(SopPlatformTaskService)
     service.settings = SimpleNamespace(sop_platform_batch_size=50, sop_platform_shadow_mode=False)
@@ -247,6 +253,95 @@ def test_content_failure_consumes_task_70_without_consuming_msg_id() -> None:
     assert len(empty_platform.rule_calls) == 1
     assert repository.local["status"] == "failed_consumed"
     assert repository.local["send_payload"]["terminal_failure"]["task_consumed"] is True
+    assert repository.local["send_payload"]["terminal_failure"]["message_ids_consumed"] == []
+
+
+def test_pre_send_gate_failure_retries_twice_then_consumes_task_without_msg_id() -> None:
+    service, repository, platform, system, events = _service(gate_error=TimeoutError("gate timeout"))
+    retry_count = 0
+
+    def ensure_local(_task: dict[str, Any], **_values: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        return {"retry_count": retry_count}, dict(repository.local)
+
+    service._ensure_local_task = ensure_local
+
+    first = _run(service)
+    assert first["status"] == "send_failed"
+    assert first["retry_scheduled"] is True
+    assert platform.consume_calls == []
+
+    retry_count = 1
+    second = _run(service)
+    assert second["status"] == "send_failed"
+    assert second["retry_scheduled"] is True
+    assert platform.consume_calls == []
+
+    retry_count = 2
+    third = _run(service)
+    assert third["status"] == "failed_consumed"
+    assert third["reason"] == "customer_gate_query_failed:TimeoutError"
+    assert system.send_calls == []
+    assert "sop_messages" not in events
+    assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
+    assert len(platform.rule_calls) == 1
+    assert repository.local["send_payload"]["decision"]["pre_send_retry"] == {
+        "attempt_count": 3,
+        "max_attempts": 3,
+        "exhausted": True,
+    }
+    assert repository.local["send_payload"]["terminal_failure"]["message_ids_consumed"] == []
+
+
+def test_existing_pre_send_failure_beyond_retry_cap_is_closed_immediately() -> None:
+    service, repository, platform, system, _events = _service(gate_error=RuntimeError("gate unavailable"))
+    service._ensure_local_task = lambda _task, **_values: (
+        {"retry_count": 326},
+        dict(repository.local),
+    )
+
+    result = _run(service)
+
+    assert result["status"] == "failed_consumed"
+    assert result["reason"] == "customer_gate_query_failed:RuntimeError"
+    assert system.send_calls == []
+    assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
+    assert repository.local["status"] == "failed_consumed"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "missing_identity:corp_id",
+        "missing_event_log_id",
+        "invalid_conversation_status",
+        "missing_ai_auto_reply",
+        "invalid_conversation",
+        "missing_customer_relation",
+        "missing_conversation_messages",
+        "sop_messages_failed:ConnectTimeout",
+    ],
+)
+def test_all_pre_send_failures_close_after_retry_cap(reason: str) -> None:
+    service, repository, platform, system, _events = _service()
+    service._ensure_local_task = lambda _task, **_values: (
+        {"retry_count": 2},
+        dict(repository.local),
+    )
+
+    result = asyncio.run(
+        service._defer_batch_failure(
+            [_task()],
+            reason=reason,
+            batch_key="online_service|corp|staff|external",
+            biz_type="online_service",
+            batch_run_id="online_service:101",
+        )
+    )
+
+    assert result["status"] == "failed_consumed"
+    assert result["reason"] == reason
+    assert system.send_calls == []
+    assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
     assert repository.local["send_payload"]["terminal_failure"]["message_ids_consumed"] == []
 
 

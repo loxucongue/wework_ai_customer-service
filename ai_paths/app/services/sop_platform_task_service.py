@@ -90,6 +90,12 @@ SOP_CONSUMED_FAILURE_REASON_PREFIXES = (
 )
 
 
+# Failures before the proactive-send boundary are safe to retry briefly, but
+# they must not reserve the upstream task forever.  The third observed failure
+# closes the task as status 70 without consuming a content msgId.
+SOP_PRE_SEND_FAILURE_MAX_ATTEMPTS = 3
+
+
 SOP_PLATFORM_TASK_SYSTEM_PROMPT = (
     """
 # 1. 角色与任务
@@ -1791,6 +1797,25 @@ class SopPlatformTaskService:
             task,
             status="platform_processing_retry",
         )
+        prior_retry_count = max(0, int(event.get("retry_count") or 0))
+        attempt_count = prior_retry_count + 1
+        if attempt_count >= SOP_PRE_SEND_FAILURE_MAX_ATTEMPTS:
+            terminal_decision = dict(decision or {"selected_task_id": "", "evaluations": []})
+            terminal_decision["pre_send_retry"] = {
+                "attempt_count": attempt_count,
+                "max_attempts": SOP_PRE_SEND_FAILURE_MAX_ATTEMPTS,
+                "exhausted": True,
+            }
+            return await self._consume_batch_without_send(
+                tasks,
+                reason=reason,
+                batch_key=batch_key,
+                biz_type=biz_type,
+                batch_run_id=batch_run_id,
+                decision=terminal_decision,
+                audit_context=audit_context,
+                terminal_failure=True,
+            )
         local_task_id = str(local_task.get("id") or "")
         existing = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
         attempts = existing.get("failure_attempts") if isinstance(existing.get("failure_attempts"), list) else []
@@ -1829,7 +1854,7 @@ class SopPlatformTaskService:
             f"platform_sop_task:{task_id}",
             status="platform_processing_retry",
             error=reason,
-            retry_count=int(event.get("retry_count") or 0),
+            retry_count=prior_retry_count,
         )
         self._counters["recoverable_failure"] += 1
         return {
