@@ -34,6 +34,11 @@ class SopPlatformClient:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._client: httpx.AsyncClient | None = None
+        self._read_retry_counters = {
+            "transient_timeout": 0,
+            "timeout_recovered": 0,
+            "timeout_exhausted": 0,
+        }
 
     @property
     def available(self) -> bool:
@@ -91,7 +96,11 @@ class SopPlatformClient:
             payload["eventLogId"] = int(clean_event_log_id)
         except ValueError:
             payload["eventLogId"] = clean_event_log_id
-        response = await self._request("POST", "/event/trigger/sop-messages", json_body=payload)
+        response = await self._read_request_with_connect_retry(
+            "POST",
+            "/event/trigger/sop-messages",
+            json_body=payload,
+        )
         data = response.get("data")
         items: list[dict[str, Any]] = []
         total = 0
@@ -145,7 +154,7 @@ class SopPlatformClient:
             "wechat": str(wechat or "").strip(),
             "limit": max(1, min(int(limit or self.settings.sop_platform_batch_size), 500)),
         }
-        response = await self._request("POST", path, json_body=payload)
+        response = await self._read_request_with_connect_retry("POST", path, json_body=payload)
         data = response.get("data")
         items: list[dict[str, Any]] = []
         total = 0
@@ -297,6 +306,7 @@ class SopPlatformClient:
         path: str,
         *,
         json_body: dict[str, Any] | None = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("SOP_PLATFORM_TOKEN is not configured")
@@ -321,7 +331,7 @@ class SopPlatformClient:
         if json_body is not None:
             kwargs["content"] = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
         try:
-            response = await self._http_client().request(method, url, **kwargs)
+            response = await (http_client or self._http_client()).request(method, url, **kwargs)
         except Exception as exc:
             logger.warning(
                 "sop_platform_http %s",
@@ -402,10 +412,85 @@ class SopPlatformClient:
             raise RuntimeError(f"sop_platform_error: {payload}")
         return payload
 
+    async def _read_request_with_connect_retry(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Retry one logical read once on an isolated connection timeout.
+
+        The shared client is left untouched because other SOP workers may still
+        be using it. The retry client has a fresh connection pool and is always
+        closed after this single attempt.
+        """
+
+        try:
+            return await self._request(method, path, json_body=json_body)
+        except httpx.ConnectTimeout:
+            self._read_retry_counters["transient_timeout"] += 1
+            logger.warning(
+                "sop_platform_read_retry %s",
+                json.dumps(
+                    {
+                        "path": path,
+                        "result": "transient_timeout",
+                        "attempt": 1,
+                    },
+                    ensure_ascii=True,
+                ),
+            )
+
+        retry_client = self._new_http_client()
+        try:
+            response = await self._request(
+                method,
+                path,
+                json_body=json_body,
+                http_client=retry_client,
+            )
+        except httpx.ConnectTimeout:
+            self._read_retry_counters["timeout_exhausted"] += 1
+            logger.warning(
+                "sop_platform_read_retry %s",
+                json.dumps(
+                    {
+                        "path": path,
+                        "result": "timeout_exhausted",
+                        "attempt": 2,
+                    },
+                    ensure_ascii=True,
+                ),
+            )
+            raise
+        else:
+            self._read_retry_counters["timeout_recovered"] += 1
+            logger.info(
+                "sop_platform_read_retry %s",
+                json.dumps(
+                    {
+                        "path": path,
+                        "result": "timeout_recovered",
+                        "attempt": 2,
+                    },
+                    ensure_ascii=True,
+                ),
+            )
+            return response
+        finally:
+            await retry_client.aclose()
+
+    def read_retry_status(self) -> dict[str, int]:
+        return dict(self._read_retry_counters)
+
+    def _new_http_client(self) -> httpx.AsyncClient:
+        timeout = max(1.0, float(self.settings.sop_platform_timeout_seconds))
+        return httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+
     def _http_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            timeout = max(1.0, float(self.settings.sop_platform_timeout_seconds))
-            self._client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+            self._client = self._new_http_client()
         return self._client
 
     async def aclose(self) -> None:

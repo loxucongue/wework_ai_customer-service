@@ -92,6 +92,7 @@ def _service() -> tuple[SopFailureAlertService, _Repository, _Client]:
         {"status": "completed_without_send", "reason": "customer_already_opened"},
         {"status": "platform_completed"},
         {"status": "send_failed", "reason": "customer_already_opened"},
+        {"status": "send_failed", "reason": "customer_gate_query_failed:ConnectTimeout", "retry_scheduled": True},
         {"status": "recovery_waiting", "reason": "delivery_not_confirmed"},
     ],
 )

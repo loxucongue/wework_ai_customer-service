@@ -94,6 +94,8 @@ SOP_CONSUMED_FAILURE_REASON_PREFIXES = (
 # they must not reserve the upstream task forever.  The third observed failure
 # closes the task as status 70 without consuming a content msgId.
 SOP_PRE_SEND_FAILURE_MAX_ATTEMPTS = 3
+SOP_PLATFORM_TASK_CONCURRENCY_LIMIT = 4
+SOP_PENDING_TIMEOUT_ALERT_THRESHOLD = 3
 
 
 SOP_PLATFORM_TASK_SYSTEM_PROMPT = (
@@ -376,6 +378,14 @@ class SopPlatformTaskService:
         self._failure_alert_retry_worker: asyncio.Task[None] | None = None
         self._event_loop_watchdog_worker: asyncio.Task[None] | None = None
         self._running = False
+        configured_concurrency = max(
+            1,
+            int(getattr(settings, "sop_platform_task_concurrency", SOP_PLATFORM_TASK_CONCURRENCY_LIMIT) or 1),
+        )
+        self._configured_task_concurrency = configured_concurrency
+        self._task_concurrency = min(SOP_PLATFORM_TASK_CONCURRENCY_LIMIT, configured_concurrency)
+        self._consecutive_poll_timeouts = 0
+        self._poll_timeout_alerted = False
         self._counters: Counter[str] = Counter()
         self._timings: dict[str, deque[float]] = {
             name: deque(maxlen=500)
@@ -400,7 +410,7 @@ class SopPlatformTaskService:
         if self._running:
             raise RuntimeError("third-party SOP worker is already running")
         self._running = True
-        concurrency = max(1, int(getattr(self.settings, "sop_platform_task_concurrency", 6) or 6))
+        concurrency = self._task_concurrency
         self._workers = [
             asyncio.create_task(self._queue_worker(index), name=f"sop-platform-worker-{index}")
             for index in range(concurrency)
@@ -422,15 +432,13 @@ class SopPlatformTaskService:
             while True:
                 try:
                     result = await self.poll_once()
+                    self._record_poll_success()
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     self._counters["poll_loop_error"] += 1
                     logger.exception("Third-party SOP polling iteration failed; worker will continue")
-                    await self._alert_system_failure(
-                        phase="poll_pending_and_content",
-                        reason=_alert_exception_reason(exc),
-                    )
+                    await self._handle_poll_failure(exc)
                     result = {
                         "pending_count": self._pending_total,
                         "enqueued_count": 0,
@@ -458,6 +466,52 @@ class SopPlatformTaskService:
             self._recovery_worker = None
             self._failure_alert_retry_worker = None
             self._event_loop_watchdog_worker = None
+
+    async def _handle_poll_failure(self, exc: Exception) -> None:
+        if _is_transient_timeout_exception(exc):
+            self._consecutive_poll_timeouts += 1
+            self._counters["poll_transient_timeout"] += 1
+            logger.warning(
+                "sop_pending_transient_timeout %s",
+                json.dumps(
+                    {
+                        "consecutive_failures": self._consecutive_poll_timeouts,
+                        "alert_threshold": SOP_PENDING_TIMEOUT_ALERT_THRESHOLD,
+                        "exception_type": type(exc).__name__,
+                    },
+                    ensure_ascii=True,
+                ),
+            )
+            if (
+                self._consecutive_poll_timeouts >= SOP_PENDING_TIMEOUT_ALERT_THRESHOLD
+                and not self._poll_timeout_alerted
+            ):
+                await self._alert_system_failure(
+                    phase="poll_pending_and_content",
+                    reason=_alert_exception_reason(exc),
+                )
+                self._poll_timeout_alerted = True
+                self._counters["poll_timeout_alerted"] += 1
+            return
+        self._consecutive_poll_timeouts = 0
+        self._poll_timeout_alerted = False
+        await self._alert_system_failure(
+            phase="poll_pending_and_content",
+            reason=_alert_exception_reason(exc),
+        )
+
+    def _record_poll_success(self) -> None:
+        if self._consecutive_poll_timeouts:
+            self._counters["poll_timeout_recovered"] += 1
+            logger.info(
+                "sop_pending_timeout_recovered %s",
+                json.dumps(
+                    {"previous_consecutive_failures": self._consecutive_poll_timeouts},
+                    ensure_ascii=True,
+                ),
+            )
+        self._consecutive_poll_timeouts = 0
+        self._poll_timeout_alerted = False
 
     async def _event_loop_watchdog(self) -> None:
         interval_seconds = 0.5
@@ -623,7 +677,7 @@ class SopPlatformTaskService:
         pulled_at = utc_now_iso()
         persistence_limit = max(
             1,
-            min(8, int(getattr(self.settings, "sop_platform_task_concurrency", 1) or 1)),
+            min(SOP_PLATFORM_TASK_CONCURRENCY_LIMIT, self._configured_task_concurrency),
         )
         persistence_semaphore = asyncio.Semaphore(persistence_limit)
 
@@ -1260,12 +1314,18 @@ class SopPlatformTaskService:
 
         async def load_status() -> tuple[dict[str, Any], float]:
             started = time.perf_counter()
-            result = await self.system_client.conversation_status(**_outreach_system_identity(identity))
+            try:
+                result = await self.system_client.conversation_status(**_outreach_system_identity(identity))
+            except Exception as exc:
+                raise RuntimeError(_customer_gate_query_failure("conversation_status", exc)) from exc
             return result, started
 
         async def load_conversation() -> tuple[dict[str, Any], float]:
             started = time.perf_counter()
-            result = await self.system_client.conversation(**_outreach_system_identity(identity), limit=50)
+            try:
+                result = await self.system_client.conversation(**_outreach_system_identity(identity), limit=50)
+            except Exception as exc:
+                raise RuntimeError(_customer_gate_query_failure("conversation", exc)) from exc
             return result, started
 
         try:
@@ -1274,9 +1334,12 @@ class SopPlatformTaskService:
                 load_conversation(),
             )
         except Exception as exc:
+            reason = str(exc).strip()
+            if not reason.startswith("customer_gate_query_failed:"):
+                reason = _customer_gate_query_failure("unknown", exc)
             return await self._finish_batch_without_send(
                 [task],
-                reason=f"customer_gate_query_failed:{type(exc).__name__}",
+                reason=reason,
                 batch_key=batch_key,
                 biz_type=biz_type,
                 batch_run_id=batch_run_id,
@@ -3061,8 +3124,11 @@ class SopPlatformTaskService:
             self.repository.update_sop_send_task(local_task_id, status=status, send_payload=send_payload)
 
     def runtime_status(self) -> dict[str, Any]:
+        read_retry_status = getattr(self.platform_client, "read_retry_status", None)
         return {
             "running": self._running,
+            "task_concurrency": self._task_concurrency,
+            "configured_task_concurrency": self._configured_task_concurrency,
             "queue_depth": self._queue.qsize(),
             "queue_capacity": self._queue.maxsize,
             "queued_count": len(self._queued_ids),
@@ -3073,6 +3139,8 @@ class SopPlatformTaskService:
             "oldest_due_lag_seconds": round(self._oldest_due_lag_seconds, 3),
             "last_poll_at": self._last_poll_at,
             "last_poll_error": self._last_poll_error,
+            "consecutive_poll_timeouts": self._consecutive_poll_timeouts,
+            "platform_read_retries": read_retry_status() if callable(read_retry_status) else {},
             "quiet_hours": {
                 "enabled": bool(getattr(self.settings, "sop_platform_quiet_hours_enabled", True)),
                 "timezone": "Asia/Shanghai",
@@ -6167,6 +6235,40 @@ def _dedupe_identifier_items(items: list[dict[str, Any]]) -> list[dict[str, str]
         seen.add(marker)
         output.append({"key": key, "value": value, "source": source})
     return output
+
+
+def _is_transient_timeout_exception(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or type(exc).__name__ in {
+        "ConnectTimeout",
+        "PoolTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+    }
+
+
+def _customer_gate_query_failure(interface: str, exc: BaseException) -> str:
+    exception_type = type(exc).__name__
+    phase = "timeout" if _is_transient_timeout_exception(exc) else "request"
+    if exception_type == "ConnectTimeout":
+        phase = "connect"
+    elif exception_type == "PoolTimeout":
+        phase = "pool"
+    elif exception_type == "ReadTimeout":
+        phase = "read"
+    elif exception_type == "WriteTimeout":
+        phase = "write"
+    safe_message = str(exc or "")
+    status_match = re.search(r"(?:outreach_system_)?http[_: -]?(\d{3})", safe_message, re.IGNORECASE)
+    http_status = status_match.group(1) if status_match else "none"
+    if status_match:
+        phase = "http_response"
+    elif safe_message.startswith("outreach_system_error:"):
+        phase = "business_response"
+    safe_interface = interface if interface in {"conversation", "conversation_status"} else "unknown"
+    return (
+        "customer_gate_query_failed:"
+        f"interface={safe_interface};phase={phase};http_status={http_status};error={exception_type}"
+    )
 
 
 def _alert_exception_reason(exc: Exception) -> str:

@@ -279,7 +279,10 @@ def test_pre_send_gate_failure_retries_twice_then_consumes_task_without_msg_id()
     retry_count = 2
     third = _run(service)
     assert third["status"] == "failed_consumed"
-    assert third["reason"] == "customer_gate_query_failed:TimeoutError"
+    assert third["reason"] == (
+        "customer_gate_query_failed:"
+        "interface=conversation_status;phase=timeout;http_status=none;error=TimeoutError"
+    )
     assert system.send_calls == []
     assert "sop_messages" not in events
     assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
@@ -302,7 +305,10 @@ def test_existing_pre_send_failure_beyond_retry_cap_is_closed_immediately() -> N
     result = _run(service)
 
     assert result["status"] == "failed_consumed"
-    assert result["reason"] == "customer_gate_query_failed:RuntimeError"
+    assert result["reason"] == (
+        "customer_gate_query_failed:"
+        "interface=conversation_status;phase=request;http_status=none;error=RuntimeError"
+    )
     assert system.send_calls == []
     assert [(call["status"], call.get("messages")) for call in platform.consume_calls] == [(70, None)]
     assert repository.local["status"] == "failed_consumed"
@@ -359,6 +365,78 @@ def test_send_call_exception_is_terminal_and_consumes_exact_msg_id_once() -> Non
     assert failed_repository.local["status"] == "sent_recovered"
     assert failed_repository.local["send_response"]["data"]["delivery_status"] == "submission_unconfirmed"
     assert failed_repository.event_updates[-1]["status"] == "platform_completed"
+
+
+def test_customer_gate_failure_records_interface_http_status_and_phase_without_body() -> None:
+    secret_body = "private-upstream-response"
+    service, _repository, _platform, _system, _events = _service(
+        gate_error=RuntimeError(f"outreach_system_http_503: {secret_body}")
+    )
+
+    result = _run(service)
+
+    assert result["reason"] == (
+        "customer_gate_query_failed:"
+        "interface=conversation_status;phase=http_response;http_status=503;error=RuntimeError"
+    )
+    assert secret_body not in result["reason"]
+
+
+def test_task_concurrency_is_capped_at_four_even_when_configured_higher() -> None:
+    service = SopPlatformTaskService(
+        settings=SimpleNamespace(
+            sop_platform_queue_size=10,
+            sop_platform_task_concurrency=8,
+        ),
+        repository=SimpleNamespace(),
+        platform_client=SimpleNamespace(),
+        system_client=SimpleNamespace(),
+        model_client=_NoModel(),
+        customer_context_service=SimpleNamespace(),
+    )
+
+    assert service._configured_task_concurrency == 8
+    assert service._task_concurrency == 4
+
+
+def test_pending_timeout_alerts_only_on_third_consecutive_failed_poll_and_resets_after_recovery() -> None:
+    class _Alerts:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def notify_system_failure(self, **values: Any) -> None:
+            self.calls.append(values)
+
+    alerts = _Alerts()
+    service = SopPlatformTaskService(
+        settings=SimpleNamespace(
+            sop_platform_queue_size=10,
+            sop_platform_task_concurrency=4,
+        ),
+        repository=SimpleNamespace(),
+        platform_client=SimpleNamespace(),
+        system_client=SimpleNamespace(),
+        model_client=_NoModel(),
+        customer_context_service=SimpleNamespace(),
+        failure_alert_service=alerts,
+    )
+
+    async def exercise() -> None:
+        await service._handle_poll_failure(TimeoutError("first"))
+        await service._handle_poll_failure(TimeoutError("second"))
+        assert alerts.calls == []
+        await service._handle_poll_failure(TimeoutError("third"))
+        await service._handle_poll_failure(TimeoutError("fourth"))
+        assert len(alerts.calls) == 1
+        service._record_poll_success()
+        await service._handle_poll_failure(TimeoutError("new-first"))
+
+    asyncio.run(exercise())
+
+    assert len(alerts.calls) == 1
+    assert service._consecutive_poll_timeouts == 1
+    assert service._counters["poll_timeout_alerted"] == 1
+    assert service._counters["poll_timeout_recovered"] == 1
 
 
 def test_polling_does_not_load_sop_messages_before_customer_gates() -> None:

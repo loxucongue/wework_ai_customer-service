@@ -189,3 +189,81 @@ def test_consume_rejects_implicit_or_non_sent_message_consumption(
             await client.aclose()
 
     asyncio.run(exercise())
+
+
+def test_pending_connect_timeout_retries_once_with_fresh_client_and_recovers(caplog) -> None:
+    calls: list[str] = []
+
+    def timeout_handler(request: httpx.Request) -> httpx.Response:
+        calls.append("shared")
+        raise httpx.ConnectTimeout("connect timeout", request=request)
+
+    def recovered_handler(_request: httpx.Request) -> httpx.Response:
+        calls.append("fresh")
+        return httpx.Response(200, json={"code": 200, "data": {"list": [], "total": 0}})
+
+    settings = SimpleNamespace(
+        sop_platform_token="secret-token",
+        sop_platform_base_url="https://platform.example",
+        sop_platform_timeout_seconds=5,
+        sop_platform_batch_size=100,
+    )
+    client = SopPlatformClient(settings)
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(timeout_handler))
+    retry_client = httpx.AsyncClient(transport=httpx.MockTransport(recovered_handler))
+    client._new_http_client = lambda: retry_client  # type: ignore[method-assign]
+
+    async def exercise() -> dict[str, object]:
+        try:
+            return await client.pending(limit=10)
+        finally:
+            await client.aclose()
+
+    with caplog.at_level(logging.INFO, logger="app.services.sop_platform_client"):
+        page = asyncio.run(exercise())
+
+    assert page["total"] == 0
+    assert calls == ["shared", "fresh"]
+    assert retry_client.is_closed is True
+    assert client.read_retry_status() == {
+        "transient_timeout": 1,
+        "timeout_recovered": 1,
+        "timeout_exhausted": 0,
+    }
+    assert any('"result": "transient_timeout"' in record.message for record in caplog.records)
+    assert any('"result": "timeout_recovered"' in record.message for record in caplog.records)
+
+
+def test_sop_messages_connect_timeout_stops_after_one_fresh_connection_retry() -> None:
+    calls: list[str] = []
+
+    def timeout_handler(request: httpx.Request) -> httpx.Response:
+        calls.append("timeout")
+        raise httpx.ConnectTimeout("connect timeout", request=request)
+
+    settings = SimpleNamespace(
+        sop_platform_token="secret-token",
+        sop_platform_base_url="https://platform.example",
+        sop_platform_timeout_seconds=5,
+        sop_platform_batch_size=100,
+    )
+    client = SopPlatformClient(settings)
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(timeout_handler))
+    retry_client = httpx.AsyncClient(transport=httpx.MockTransport(timeout_handler))
+    client._new_http_client = lambda: retry_client  # type: ignore[method-assign]
+
+    async def exercise() -> None:
+        try:
+            with pytest.raises(httpx.ConnectTimeout):
+                await client.sop_messages(event_log_id=9)
+        finally:
+            await client.aclose()
+
+    asyncio.run(exercise())
+
+    assert calls == ["timeout", "timeout"]
+    assert client.read_retry_status() == {
+        "transient_timeout": 1,
+        "timeout_recovered": 0,
+        "timeout_exhausted": 1,
+    }

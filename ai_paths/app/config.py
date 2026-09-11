@@ -147,7 +147,7 @@ class Settings(BaseSettings):
     sop_platform_lookback_seconds: int = Field(default=604800, alias="SOP_PLATFORM_LOOKBACK_SECONDS")
     sop_platform_window_seconds: int = Field(default=60, alias="SOP_PLATFORM_WINDOW_SECONDS")
     sop_platform_batch_size: int = Field(default=50, alias="SOP_PLATFORM_BATCH_SIZE")
-    sop_platform_task_concurrency: int = Field(default=6, alias="SOP_PLATFORM_TASK_CONCURRENCY")
+    sop_platform_task_concurrency: int = Field(default=4, alias="SOP_PLATFORM_TASK_CONCURRENCY")
     sop_platform_queue_size: int = Field(default=24, alias="SOP_PLATFORM_QUEUE_SIZE")
     sop_platform_recovery_concurrency: int = Field(default=2, alias="SOP_PLATFORM_RECOVERY_CONCURRENCY")
     sop_platform_timeout_seconds: float = Field(default=12.0, alias="SOP_PLATFORM_TIMEOUT_SECONDS")

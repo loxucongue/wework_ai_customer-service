@@ -60,6 +60,7 @@ class SopFailureAlertService:
         reason = _result_reason(result)
         if (
             not self.available
+            or bool(result.get("retry_scheduled"))
             or self._result_has_send_evidence(result)
             or self._is_non_alert_outcome(status=status, reason=reason)
         ):
