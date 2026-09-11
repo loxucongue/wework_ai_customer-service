@@ -10,8 +10,17 @@
 - 最小文件集：`ai_paths/app/graph/nodes/reply_generation.py`、直接确定性测试、本任务文档与 active INDEX。
 - 风险：不得把普通咨询或软拒绝归为停止；以非 hard-stop 负例及可见回复不变断言覆盖。修复不持久化 stop-contact，退款与明确退订边界维持现有合同。
 - 验证：直接单元测试、V3 Reply 相关确定性测试、全量确定性测试；使用同一虚构退款场景做隔离全图复测，硬阻断发送。
-- 发布：只提交候选，不合并 main、不部署。
+- 发布：产品负责人于 `2026-09-11` 明确授权候选合入 `main`、部署后端并继续 V3 全场景隔离评测；不授权客户测试发送、生产数据库写入、配置/开关调整或前端改动。
 - 回滚：撤销本任务候选提交即可；无数据迁移或外部副作用。
+
+## 发布与部署后验收
+
+- 合入前要求：`origin/main` 仍为基线，候选可 fast-forward；main 树干净，完整 SHA 写入 release manifest。
+- 部署范围：三个后端角色使用同一 clean main SHA；无迁移、配置、模型参数或前端变化。
+- 回滚点：部署前现场 current release；切换前验证 previous 指针，并保存本次发布清单。
+- 部署后检查：control/reply/worker 的 release、role、V3 health、Nginx、回调/管理页可用性、重启次数和错误日志。
+- 全场景评测：使用虚构身份、隔离 SQLite、合成外部事实、真实 DeepSeek；HTTP 重放和 finalization 进入完整 L3，发送及策略外发必须为零。产品效果按现行主动销售口径人工解释，不把正常价值推进误报为缺陷。
+- 停止/回滚阈值：发布身份不一致、健康失败、迁移变化、持续 5xx、真实发送/生产写风险或退款场景再次落 failure fallback。
 
 ## 完成证据
 
