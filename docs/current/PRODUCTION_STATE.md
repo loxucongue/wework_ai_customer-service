@@ -2,7 +2,7 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-11T09:43:17+08:00`
+- verified_at: `2026-09-11T13:27:16+08:00`
 - source_of_truth: 服务器 release 指针、进程环境、systemd 与健康检查；本页只对上述时刻负责
 
 ## 当前部署
@@ -15,6 +15,8 @@
 | 管理前端 | `ai-paths-frontend.service` | `frontend-20260909-v3-supervisor-3192f19a` | active，`NRestarts=0` |
 
 三个后端角色均来自 clean `main`，`dirty=false`，产品接口版本为 V3；已核验进程实际工作目录与发布清单一致。管理前端保持原版。本次发布第三方 SOP 发送前失败三次终态消费及其幂等恢复，并应用素材治理的加法迁移；无业务开关或模型配置变更。
+
+2026-09-11 素材 P1 恢复没有部署代码或重启服务：生产 release 仍为上述 `25e1ed66`，已从受测 clean `main@5fd237cc` 使用冻结工具向现有表回填 231 个已验证别名，对应 217 个 canonical 素材身份，并按精确证据恢复 22 条历史 `response_committed` 占用。回填前后四个 unit 均 active、`NRestarts=0`，三个后端健康检查为 200，近 40 分钟未发现 5xx、Traceback 或 CRITICAL 标记。
 
 本次为用户知悉风险后的例外上线，并非完整质量验收通过。确定性回归 865 项通过；部署后 14 项接口/访问保护检查通过；服务器隔离完整模型图抽样 6/6（价格、案例、地址、活动、退订、已付服务），零消息派发和策略外发。正式公网回复与回调维持来源 IP 白名单，非白名单请求返回 403；未模拟受信平台真实送达。
 
@@ -49,7 +51,7 @@ Reply 有效配置：`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`�
 
 ## 数据、队列与已知现场量
 
-- 数据库后端为 MySQL，现场 schema head 为 `20260910_01`；本次应用素材身份与占用表的加法迁移。不要使用其他系统的 `alembic_version` 表推断本产品 schema。
+- 数据库后端为 MySQL，现场 schema head 为 `20260910_01`；素材身份目录现有 231 个 verified 别名、217 个 canonical 身份（193 个图片别名、38 个视频别名），22 条占用均为 `response_committed`。Follow Knowledge 当前 299 个媒体引用中 293 个已验证，6 个因超过 6 MiB 安全上限保持 pending/disabled；13 个业务角色均至少有一个 verified 素材。不要使用其他系统的 `alembic_version` 表推断本产品 schema。
 - 第三方 SOP 核验时 `pending_total=0`、`queue_depth=0`、`in_flight_count=0`，最近轮询错误为空。
 - V3 `v3_reply_finalization` 可靠收尾 Worker 已启用；非关键 memory、trace、BI、Shadow 与 outbox 由持久状态幂等补齐。
 - 策略数据 outbox 最近已知为 `sent=1994`、`pending=58`、`dead=16`，且 `delivery_enabled=false`。恢复外发前必须专项审计，禁止直接批量重放。
@@ -61,6 +63,7 @@ Reply 有效配置：`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`�
 - 本次首次切换因健康检查仍读旧发布身份触发回滚；同步四项发布身份后重新部署成功。服务器受限目录 `/opt/ai-paths/artifacts/naturalness-release-dff19510/` 保存回滚指针、环境备份与验证产物；密钥文件不下载、不入 Git。
 - 前端 previous：`frontend-20260908-v3-proactive-05723ce3`。
 - 数据库迁移前备份已存在；新增结构兼容旧代码，代码回滚不要求破坏性降级。
+- 素材回填冻结计划 canonical checksum 为 `ff705fc9d69d34773a815bb49e2a2bddcb31cb772d90135b081581fabafff909`；回填前空表备份 checksum 为 `e8e1bf9b5d01f8ae9ba28d1063a1e3fb9283c0a33f614b9a91f08646286c7099`，受限恢复产物保存在服务器 `/opt/ai-paths/artifacts/material-governance-production-audit-4e299c1a/`。已有占用时自动 rollback 会拒绝删除，恢复必须按该备份和冻结进度做独立人工审计，不能释放真实新占用。
 
 任何发布前都必须重新核验 current/previous 指针、完整 SHA、`dirty=false`、四个 unit、数据库
 head、队列和 Nginx；本页不是永久配置清单。历史发布经过由 Git 与
