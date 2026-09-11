@@ -4,6 +4,7 @@
 
 | 完成日期 | Task ID | Main commit | 长期结论 |
 | --- | --- | --- | --- |
+| 2026-09-11 | `sop-gate-terminal-retry` | `b11f309d`, `25e1ed66` | 第三方 SOP 发送前技术或资格判断失败最多尝试 3 次，随后以失败口径消费任务 70、不消费内容 msgId、完成策略回传和单次告警；失败终态的消费回传异常可幂等恢复，禁止重新拉内容或主动发送。全仓 992 项通过、10 项跳过；生产统一发布 `ai-paths-unified-20260911-sop-gate-recovery-25e1ed66`，任务 35058 已幂等收敛为 `platform_completed/failed_consumed`，平台任务 70、内容 msgId 零消费。 |
 | 2026-09-10 | `v3-material-delivery-governance`（含 `-review`、`-integration`） | `c41ea7e32c475b8a15df715e411b6d63f3fe9f70` | 仅集成独立验收修订 `17b5670d`（冻结验收 `a83a647f`），完成统一素材身份、跨来源去重、内容/动作隔离、稳定响应同事务占用及准确审计口径；集成重验 L1 全量 990 项、隔离 MySQL 8.4 的迁移/中断恢复/非空降级保护/真实并发/回滚/重放/尾部失败、schema 一致性、静态检查与锁定依赖正式前端构建通过。三项任务统一关闭；完整验收与集成证据摘要见此提交中的 active 任务文件。未部署、未生产迁移/回填、未做 L2–L4；`response_committed` 仅为 AI 生成侧占用，第三方实际发送/送达及失败补图仍依赖独立权威映射与回调验收。长期边界见素材架构、销售策略和送达回调合同；发布须另行授权并准备生产目录/历史审计、可逆迁移回填、同 SHA 三角色与耦合前端及回滚点。 |
 | 2026-09-10 | `v3-human-reply-naturalness` | `8fa39f33`（集成候选） | 完成受控消融但无胜出 Prompt，正式 Reply 保持 main；选择性沉淀评测基础设施与销售性软承接合同。 |
 | 2026-09-10 | `v3-naturalness-eval-closeout-integration` | `8fa39f33` | 从冻结来源提交逐文件提取完整图 HTTP/重放/finalization、消融工具、直接测试和软承接合同；未带入失败 Prompt 或正式 Reply 行为变化。 |

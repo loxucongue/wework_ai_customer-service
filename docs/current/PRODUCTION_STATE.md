@@ -2,19 +2,19 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-10T16:04:39+08:00`
+- verified_at: `2026-09-11T09:43:17+08:00`
 - source_of_truth: 服务器 release 指针、进程环境、systemd 与健康检查；本页只对上述时刻负责
 
 ## 当前部署
 
 | 角色 | Unit | Release / commit | 状态 |
 | --- | --- | --- | --- |
-| control | `ai-paths.service` | `ai-paths-unified-20260910-naturalness-dff19510` / `dff19510b97d8725e5aa6197e3328425590f6867` | active，`NRestarts=0` |
+| control | `ai-paths.service` | `ai-paths-unified-20260911-sop-gate-recovery-25e1ed66` / `25e1ed664b99b9d7ffad99e8aa0103181f3fa7c0` | active，`NRestarts=0` |
 | reply | `ai-paths-v3.service` | 同上 | active，`NRestarts=0` |
 | worker | `ai-paths-workers.service` | 同上 | active，`NRestarts=0` |
 | 管理前端 | `ai-paths-frontend.service` | `frontend-20260909-v3-supervisor-3192f19a` | active，`NRestarts=0` |
 
-三个后端角色均来自 clean `main`，`dirty=false`，产品接口版本为 V3；已核验进程实际工作目录与发布清单一致。管理前端保持原版。本次只发布 V3 Reply 自然度候选，无迁移、无业务开关或温度变更；仅同步四项发布身份环境字段。
+三个后端角色均来自 clean `main`，`dirty=false`，产品接口版本为 V3；已核验进程实际工作目录与发布清单一致。管理前端保持原版。本次发布第三方 SOP 发送前失败三次终态消费及其幂等恢复，并应用素材治理的加法迁移；无业务开关或模型配置变更。
 
 本次为用户知悉风险后的例外上线，并非完整质量验收通过。确定性回归 865 项通过；部署后 14 项接口/访问保护检查通过；服务器隔离完整模型图抽样 6/6（价格、案例、地址、活动、退订、已付服务），零消息派发和策略外发。正式公网回复与回调维持来源 IP 白名单，非白名单请求返回 403；未模拟受信平台真实送达。
 
@@ -49,7 +49,7 @@ Reply 有效配置：`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`�
 
 ## 数据、队列与已知现场量
 
-- 数据库后端为 MySQL，现场只读查询 `aics_schema_version` 的 head 为 `20260909_02`；本次没有迁移。不要使用其他系统的 `alembic_version` 表推断本产品 schema。
+- 数据库后端为 MySQL，现场 schema head 为 `20260910_01`；本次应用素材身份与占用表的加法迁移。不要使用其他系统的 `alembic_version` 表推断本产品 schema。
 - 第三方 SOP 核验时 `pending_total=0`、`queue_depth=0`、`in_flight_count=0`，最近轮询错误为空。
 - V3 `v3_reply_finalization` 可靠收尾 Worker 已启用；非关键 memory、trace、BI、Shadow 与 outbox 由持久状态幂等补齐。
 - 策略数据 outbox 最近已知为 `sent=1994`、`pending=58`、`dead=16`，且 `delivery_enabled=false`。恢复外发前必须专项审计，禁止直接批量重放。
@@ -57,7 +57,7 @@ Reply 有效配置：`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`�
 
 ## 回滚点
 
-- 后端与 Reply previous：`ai-paths-unified-20260910-sop-race-1f9fc745`，完整 SHA `1f9fc745c04932f9ca512464b36d3c6424fbdcfb`。
+- 后端与 Reply previous：`ai-paths-unified-20260911-sop-gate-b11f309d`，完整 SHA `b11f309d588cd8002d71f0d8cab6a9402dd7bd8f`。
 - 本次首次切换因健康检查仍读旧发布身份触发回滚；同步四项发布身份后重新部署成功。服务器受限目录 `/opt/ai-paths/artifacts/naturalness-release-dff19510/` 保存回滚指针、环境备份与验证产物；密钥文件不下载、不入 Git。
 - 前端 previous：`frontend-20260908-v3-proactive-05723ce3`。
 - 数据库迁移前备份已存在；新增结构兼容旧代码，代码回滚不要求破坏性降级。
