@@ -7,7 +7,24 @@ from pathlib import Path
 from ai_paths.app.prompts.reply_sales_prompt_v4 import PARALLEL_REPLY_SYSTEM_PROMPT
 from ai_paths.scripts.v3_reply_naturalness_cases import CASES
 from scripts.v3_reply_sales_opportunity_cases import OPPORTUNITY_CASES
-from scripts.evaluate_v3_reply_naturalness import score_result, _representative_probes
+from scripts.evaluate_v3_reply_naturalness import (
+    _mainline_text,
+    _representative_probes,
+    score_result,
+)
+from scripts.evaluate_v3_reply_naturalness import render_context
+
+
+def test_l2_activity_contract_matches_production_explicit_request_trigger() -> None:
+    rendered = _mainline_text(
+        {
+            "next_stage": "activity_offer",
+            "allowed_actions": ["explain_activity", "keep_open"],
+        }
+    )
+
+    assert "明确询问活动/价格" in rendered
+    assert "必须 explain_activity 并在本轮完整交付活动" in rendered
 
 
 def test_ablation_resolves_baseline_once_and_builds_all_variants_from_it(monkeypatch) -> None:
@@ -110,6 +127,110 @@ def test_full_graph_http_harness_runs_route_replay_and_finalization(tmp_path) ->
         store.close()
 
 
+def test_full_graph_payment_cases_seed_structured_prerequisites_only() -> None:
+    from scripts.evaluate_v3_naturalness_full_graph import (
+        apply_explicit_payment_prerequisite_fixture,
+    )
+
+    sample: dict = {}
+    apply_explicit_payment_prerequisite_fixture("action-07", sample)
+
+    assert sample["confirmed_store_id"] == "900004"
+    assert sample["prior_deliveries"][0]["reply_messages"][0]["type"] == "store_address"
+    assert {item["event_type"] for item in sample["source_history_events"]} == {
+        "case_image_sent",
+        "activity_intro_image_sent",
+    }
+    untouched: dict = {}
+    apply_explicit_payment_prerequisite_fixture("action-01", untouched)
+    assert untouched == {}
+
+
+def test_full_graph_mainline_fixture_uses_structured_delivery_events() -> None:
+    from scripts.evaluate_v3_naturalness_full_graph import (
+        apply_mainline_prerequisite_fixture,
+    )
+
+    activity_case = {"id": "activity-case", "next_stage": "activity_offer"}
+    activity_sample: dict = {}
+    apply_mainline_prerequisite_fixture(activity_case, activity_sample)
+    assert [item["event_type"] for item in activity_sample["source_history_events"]] == [
+        "case_image_sent"
+    ]
+    assert "prior_deliveries" not in activity_sample
+
+    appointment_case = {"id": "appointment-case", "next_stage": "appointment"}
+    appointment_sample: dict = {}
+    apply_mainline_prerequisite_fixture(appointment_case, appointment_sample)
+    assert {item["event_type"] for item in appointment_sample["source_history_events"]} == {
+        "case_image_sent",
+        "activity_intro_image_sent",
+    }
+    assert appointment_sample["prior_deliveries"][0]["reply_messages"][0]["type"] == "store_address"
+
+
+def test_full_graph_history_uses_production_role_prefixes() -> None:
+    from scripts.evaluate_v3_naturalness_full_graph import (
+        render_synthetic_conversation_history,
+    )
+
+    rendered = render_synthetic_conversation_history(
+        [
+            {"role": "customer", "content": "我在云州市"},
+            {"role": "assistant", "content": "地址发您了"},
+        ],
+        substitute=lambda value: value.replace("云州", "杭州"),
+    )
+
+    assert rendered == ["客户:我在杭州市", "小贝:地址发您了"]
+
+
+def test_full_graph_keeps_semantic_labels_observational_after_l2_gate(tmp_path) -> None:
+    from scripts.evaluate_v3_naturalness_full_graph import summarize
+
+    case = next(item for item in CASES if item["l3"])
+    case_dir = tmp_path / case["id"]
+    case_dir.mkdir(parents=True)
+    (case_dir / "full_state.json").write_text(
+        json.dumps(
+            {
+                "reply_sales_judgment": {
+                    "next_sales_action": {"type": "deliberately_observational"}
+                },
+                "policy_decision": {
+                    "closing_decision": {"customer_state": "deliberately_observational"}
+                },
+                "trace": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    row = {
+        "case_id": case["id"],
+        "reply_source": "main_model",
+        "required_structures_present": True,
+        "response_types": list(case["required_message_types"]),
+        "replay_same_messages": True,
+        "replay_same_request_id": True,
+        "http_transport_verified": True,
+        "finalization_verified": True,
+        "counts": {"message_dispatches": 0, "strategy_data_outbox": 0},
+        "reply_and_tool_model_calls": [],
+        "router_and_retrieval_model_calls": [],
+    }
+    (tmp_path / "results.json").write_text(json.dumps([row]), encoding="utf-8")
+
+    summary = summarize(tmp_path)
+
+    assert summary["contract_passed"] == 1
+    assert summary["semantic_observation_passed"] == 0
+    assert summary["details"][0]["failures"] == []
+    assert summary["details"][0]["semantic_observation_failures"] == [
+        "unexpected_action",
+        "unexpected_customer_state",
+    ]
+
+
 def test_naturalness_evaluation_matrix_has_required_coverage() -> None:
     counts = Counter(str(case["category"]) for case in CASES)
 
@@ -184,6 +305,19 @@ def test_activity_action_label_does_not_mask_missing_offer_contents() -> None:
     assert score["passive_close_hits"]
     value["reply_messages"][0]["content"] = "新客268元，含肤况评估、一次面部护理和护理后注意事项指导，需提前预约。"
     assert score_result(case, value)["passed"]
+
+
+def test_l2_activity_case_mirrors_dynamic_complete_offer_context() -> None:
+    case = next(case for case in OPPORTUNITY_CASES if case["activity_integrity"])
+    rendered = render_context(case, order="baseline")
+
+    assert "【活动完整交付清单】" in rendered
+    assert "选择 explain_activity 就表示本轮已经完成活动介绍" in rendered
+    assert "预告代替交付" in rendered
+    assert "认可具体效果/方案或明确说顾虑已解除" in rendered
+    assert "肤况评估" in rendered
+    assert "仅限新客" in rendered
+    assert "不得自动附带付款卡" in rendered
 
 
 def test_repeat_probes_include_all_six_opportunity_groups() -> None:

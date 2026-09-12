@@ -500,6 +500,31 @@ def test_generic_repair_forbids_permission_seeking_instead_of_media_delivery() -
     assert "本轮没有可交付的真实效果素材" in repair_prompt
 
 
+def test_store_before_booking_repair_is_pinned_to_store_delivery() -> None:
+    messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "客户明确索要当前城市地址"}],
+        ValueError(
+            "reply_admission_violations::"
+            "next_sales_action_exceeds_delivered_mainline:visible_invite_booking:store"
+        ),
+        previous_payload={
+            "reply_messages": [{"type": "text", "content": "地址发您，周末来吗？"}],
+            "sales_judgment": {"next_sales_action": {"type": "invite_booking"}},
+        },
+        validation_context={
+            "allowed_selected_content_ids": [],
+            "mainline_delivery_state": {
+                "next_missing_stage": "store",
+                "allowed_next_sales_action_types": ["send_store", "ask_missing_fact"],
+            },
+        },
+    )
+
+    repair_prompt = str(messages[-1].get("content") or "")
+    assert '"allowed_next_sales_action_types":["send_store"]' in repair_prompt
+    assert "删除全部预约、到店日期、工作日/周末和时间追问" in repair_prompt
+
+
 def test_failed_repair_salvage_only_removes_unsupported_media_promise() -> None:
     payload = {
         "reply_messages": [

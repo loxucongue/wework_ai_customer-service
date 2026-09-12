@@ -184,6 +184,26 @@ def test_explicit_booking_can_send_payment_before_appointment_record_exists() ->
     _validate_mainline_sales_action(_state(mainline, action="send_payment"))
 
 
+def test_declared_send_payment_requires_payment_collection_structure() -> None:
+    mainline = _mainline(
+        roles=("effect_evidence", "activity_offer", "address_evidence"),
+        appointment_active=True,
+        payment_card_available=True,
+    )
+    state = _state(mainline, action="send_payment")
+
+    with pytest.raises(ValueError, match="payment_action_requires_payment_collection"):
+        _validate_mainline_sales_action(
+            state,
+            messages=[{"type": "text", "content": "预约金入口发您。"}],
+        )
+
+    _validate_mainline_sales_action(
+        state,
+        messages=[{"type": "payment_collection", "content": {"amount": 10}}],
+    )
+
+
 def test_hard_stop_allows_repair_to_omit_sales_action() -> None:
     _validate_mainline_sales_action(
         _state(_mainline(), action="", customer_state="hard_stop_marketing")

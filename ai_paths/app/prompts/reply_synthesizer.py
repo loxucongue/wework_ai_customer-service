@@ -113,6 +113,21 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         for item in semantic_route.get("relevant_fact_topic_ids") or []
         if str(item or "").strip()
     ]
+    mainline_delivery_state = (
+        payload.get("mainline_delivery_state")
+        if isinstance(payload.get("mainline_delivery_state"), dict)
+        else {}
+    )
+    effective_fact_topic_ids = list(relevant_fact_topic_ids)
+    if (
+        str(mainline_delivery_state.get("next_missing_stage") or "").strip()
+        == "activity_offer"
+        and "activity_offer" not in effective_fact_topic_ids
+    ):
+        # Supply the complete offer facts when activity is the adjacent
+        # opportunity. Reply still decides from the conversation whether this
+        # turn should advance; the renderer never creates a sales action.
+        effective_fact_topic_ids.append("activity_offer")
     current_time = shared.get("current_time") if isinstance(shared.get("current_time"), dict) else {}
     time_text = "；".join(
         item
@@ -159,7 +174,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
     )
     if protocol_events:
         sections.append(_section("本轮平台结构事件", _render_protocol_events(protocol_events)))
-    if "payment" in relevant_fact_topic_ids:
+    if "payment" in effective_fact_topic_ids:
         sections.append(
             _section(
                 "付款渠道可用性",
@@ -171,7 +186,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
         if isinstance(payload.get("registration_fact_status"), dict)
         else {}
     )
-    if "registration" in relevant_fact_topic_ids or bool(registration_status.get("authoritative_paid")):
+    if "registration" in effective_fact_topic_ids or bool(registration_status.get("authoritative_paid")):
         sections.append(_section("已付登记", _render_registration_fact_status(registration_status)))
     sections.extend(
         [
@@ -187,14 +202,21 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
             _section("必须遵守", _render_must_follow(rules)),
             _section(
                 "本轮相关权威事实：最终口径",
-                _render_authoritative_facts(rules, topic_ids=relevant_fact_topic_ids),
+                _render_authoritative_facts(rules, topic_ids=effective_fact_topic_ids),
+            ),
+            _section(
+                "活动完整交付清单（仅在本轮决定介绍活动时逐项落实）",
+                _render_activity_delivery_checklist(
+                    rules,
+                    mainline_delivery_state=mainline_delivery_state,
+                ),
             ),
             _section(
                 "可直接交付的真实素材",
                 _render_delivery_assets(
                     evidence.get("content_candidates") or [],
                     json_dumps=json_dumps,
-                    relevant_fact_topic_ids=relevant_fact_topic_ids,
+                    relevant_fact_topic_ids=effective_fact_topic_ids,
                 ),
             ),
             _section(
@@ -202,7 +224,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
                 _render_structured_options(
                     _structured_options_for_topics(
                         payload.get("structured_delivery_options") or {},
-                        relevant_fact_topic_ids=relevant_fact_topic_ids,
+                        relevant_fact_topic_ids=effective_fact_topic_ids,
                     ),
                     json_dumps=json_dumps,
                 ),
@@ -213,7 +235,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
             ),
             _section(
                 "销售主线机会与本轮动作边界（不是每轮流程任务）",
-                _render_mainline_execution_contract(payload.get("mainline_delivery_state") or {}),
+                _render_mainline_execution_contract(mainline_delivery_state),
             ),
         ]
     )
@@ -294,15 +316,20 @@ def _render_mainline_execution_contract(value: Any) -> str:
         )
     stage_requirements = {
         "effect_evidence": (
-            "只有决定在本轮衔接效果机会时，才交付真实效果说明或本轮可用效果素材；"
+            "客户本轮主动提交肤质或部位时，先交付具体权威改善价值，不得只追问；其他场景只有决定衔接效果机会时才交付；"
             "‘到店看效果/方案、先留名额、要不要看案例、我先把效果说明发您’都不是效果交付；"
             "选择该动作且有可用案例时直接发送，否则同轮说出具体权威效果事实，不能只预告以后再讲。"
         ),
         "activity_offer": (
-            "本轮衔接活动时，完整说明权威价格、包含价值和相关条件权益；不能为简短只报价格，不得改问到店时间。"
+            "客户明确询问活动/价格、认可具体效果/方案，或明确说顾虑已解除时，必须 explain_activity；"
+            "本轮直接完整说明权威价格、包含价值和相关条件权益，不能只报价格、先询问或预告以后介绍，不得改问到店时间。"
         ),
-        "store": "客户当前明确索要地址，或决定在本轮衔接门店机会时，才询问缺失地区或交付本轮允许的真实门店信息。",
-        "appointment": "项目、活动和门店均已交付且客户积极承接时，应说明预约目的并询问一个日期或时段。",
+        "store": "客户明确索要地址时交付真实门店；客户认可价格且缺城市时必须直接问城市，不得再问是否想了解或预约。",
+        "appointment": (
+            "项目、活动和门店均已交付后：客户当前明确索要付款入口且 payment_card_available=true 时，"
+            "必须直接 send_payment；人数未知按单人10元交付，不再追问人数。"
+            "其他积极承接才说明预约目的并询问一个日期或时段。"
+        ),
         "appointment_deposit": "仅在真实行动信号和付款结构均满足时解释或交付预约金入口。",
         "complete": "按权威交易状态提供相邻服务，不重复营销。",
     }
@@ -846,6 +873,52 @@ def _deposit_fact_line(offer: dict[str, Any]) -> str:
         parts.append(str(offer.get("refund_rule")))
     parts.append("订单不是发卡前置")
     return "；".join(parts)
+
+
+def _render_activity_delivery_checklist(
+    rules: dict[str, Any],
+    *,
+    mainline_delivery_state: dict[str, Any],
+) -> str:
+    """Render current non-empty offer facts without deciding to sell."""
+
+    if str(mainline_delivery_state.get("next_missing_stage") or "").strip() != "activity_offer":
+        return "本轮主线不要求介绍活动；如客户明确询问活动，仍以权威事实回答。"
+    facts = rules.get("AUTHORITATIVE FACTS") if isinstance(rules.get("AUTHORITATIVE FACTS"), dict) else {}
+    offer = facts.get("offer") if isinstance(facts.get("offer"), dict) else {}
+    items: list[str] = []
+
+    def append(label: str, value: Any) -> None:
+        if isinstance(value, list):
+            rendered = "、".join(str(item) for item in value if str(item or "").strip())
+        elif isinstance(value, dict):
+            rendered = "；".join(
+                f"{key}={item}"
+                for key, item in value.items()
+                if str(item or "").strip()
+            )
+        else:
+            rendered = str(value or "").strip()
+        if rendered:
+            items.append(f"{label}={rendered}")
+
+    append("活动名称", offer.get("public_names"))
+    append("活动价格", offer.get("new_customer_price"))
+    append("包含项目", offer.get("includes"))
+    append("适用范围", offer.get("body_scope"))
+    append("活动结构", offer.get("offer_structure"))
+    append("资格/预约条件", offer.get("registration_skin_test"))
+    append("活动权益", offer.get("registration_gift"))
+    append("名额口径", offer.get("quota"))
+    append("原价口径", offer.get("original_price_visibility"))
+    if not items:
+        return "无可用活动事实；不得自行补写活动内容。"
+    return (
+        "硬输出合同：选择 explain_activity 就表示本轮已经完成活动介绍；先承接，再在本轮自然表达以下每一项，"
+        "缺一项即无效。禁止用‘想了解我再说/可以给你介绍’等预告代替交付，不得先问客户是否想了解，"
+        "也不得因此自动生成付款卡：\n- "
+        + "\n- ".join(items)
+    )
 
 
 def _render_sales_principles(rules: dict[str, Any]) -> str:

@@ -2,7 +2,7 @@
 
 - status: current
 - owner: reply-runtime / product
-- code_verified: 2026-09-10 Asia/Shanghai, `main@0e7f76e5`
+- code_verified: 2026-09-11 Asia/Shanghai, `codex/v3-payment-activity-latency-repair`
 - source_of_truth: `ai_paths/app/graph/nodes/reply_admission.py` 及其直接调用的事实校验器
 
 ## 1. 适用范围
@@ -25,7 +25,7 @@ Prompt 中的销售原则、离线业务评测、展示长度/表情限制和 BI
 | 门店/预约事实 | 无权威预约事实却声称已约好；无营业时间事实却给具体营业时段；无可接待事实却声称有空位、可直接到店或已安排 | `appointment_confirmation_fact_required`、`business_hours_fact_required`、`store_availability_fact_required` | `reply_validation.py` |
 | 客户身份 | 客户可见文字谎称“我是真人/不是机器人/人工客服” | `customer_visible_false_human_identity_claim` | `sales_fact_validation.py` |
 | 价格事实 | 把 268 说成无差别全脸；左右脸颊拆成两价；脸和手共用一个 268 或表达含糊；二次价格擅自沿用 268 | `offer_268_full_face_claim_conflict`、`offer_bilateral_cheek_split_price_conflict`、`offer_face_hand_total_268_conflict`、`offer_face_hand_price_scope_ambiguous`、`offer_repeat_visit_268_unverified` | `sales_fact_validation.py` |
-| 主线结构动作 | 正常轮没有 `next_sales_action`；暂停轮推进预约/付款；硬停止没有 stop；已付后仍走销售；动作不在本轮 `allowed_next_sales_action_types` | `next_sales_action_required`、`paused_turn_cannot_advance_transaction`、`hard_stop_requires_stop_action`、`post_payment_requires_service_action`、`next_sales_action_exceeds_delivered_mainline:*` | `reply_admission.py` |
+| 主线结构动作 | 正常轮没有 `next_sales_action`；声明 `send_payment` 却没有付款卡；暂停轮推进预约/付款；硬停止没有 stop；已付后仍走销售；动作不在本轮 `allowed_next_sales_action_types` | `next_sales_action_required`、`payment_action_requires_payment_collection`、`paused_turn_cannot_advance_transaction`、`hard_stop_requires_stop_action`、`post_payment_requires_service_action`、`next_sales_action_exceeds_delivered_mainline:*` | `reply_admission.py` |
 | 客户可见提前邀约 | `invite_booking` 尚未开放，却在文字中询问工作日/周末、到店日期或声称帮客户预约 | `next_sales_action_exceeds_delivered_mainline:visible_invite_booking:*` | `reply_admission.py` |
 | 门店跨轮连续性 | 当前轮无门店需求却带回旧门店；完整无候选后继续追问同区域细地址；同城推荐终态后的距离卡点继续追问/发店或重复强化负面顾虑 | `stale_historical_store_topic_leak`、`store_scope_confirmed_same_region_requery`、`terminal_store_distance_objection_same_city_requery`、`terminal_store_distance_objection_restates_negative` | `reply_admission.py` |
 
@@ -38,6 +38,9 @@ Prompt 中的销售原则、离线业务评测、展示长度/表情限制和 BI
 - 一轮有几个自然问题、是否以问号结尾、语气是否足够像真人，属于 Prompt 和业务评测；展示层仍有 8 条/300 字及表情上限，但不属于本函数。
 - 已确认门店后是否应继续推进预约，先由主线事实计算出允许动作，再由 Reply 选择；代码不凭客户关键词自行选择推进动作。
 - 知识候选、B 单目录和情绪标签不能授权价格、门店、预约、营业时间、支付或交易完成事实。
+- 结构化 `sent_messages:activity_intro`、`sent_messages:activity_offer` 和已完成活动内容包可作为更早活动交付来源；效果图、门店交付、任意伪造前缀不能冒充活动证据。引用只证明来源存在，Reply 仍须根据当前聊天决定是否付款。
+- 同轮已存在 `payment_collection` 时，旧兼容字段 `action=none` 归一为 `payment`；这是按客观结构消除 schema 矛盾，不是代码判断付款意图。
+- 模型已生成但误放入相邻 `sales_judgment` 或 `policy_decision` 的付款审计字段，可以无损提升为顶层同级字段；只能移动原值，不能生成证据、人数、金额或交易动作。
 
 ## 4. 独立硬停止保护
 
@@ -56,7 +59,7 @@ Prompt 中的销售原则、离线业务评测、展示长度/表情限制和 BI
 ## 6. 修复与失败
 
 - 没有任何可校验 JSON 时，允许在剩余预算内完整重跑 Reply 一次。
-- 已有 JSON 时，只把全部 reason code、合法 ID、结构选项和权威事实交给 targeted repair；修复器不是第二销售大脑。
+- 已有 JSON 时，只把全部 reason code、合法 ID、结构选项和权威事实交给 targeted repair；活动证据缺失、多人数量引用缺失、金额不一致和 `send_payment` 缺卡分别给出定向结构提示，修复器不是第二销售大脑。
 - 修复仍失败时，不再进行第三次销售模型调用；只能做确定性局部清理和复验，最终不可用时返回“您稍等一下”。
 - BI 观测字段缺失不得单独让客户请求失败；运行必需字段、事实和结构字段除外。
 

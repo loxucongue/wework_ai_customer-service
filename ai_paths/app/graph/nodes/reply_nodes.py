@@ -21,6 +21,7 @@ from app.graph.nodes.reply_presentation import (
 )
 
 from app.graph.nodes.reply_validation import (
+    activity_delivery_contract_for_state,
     _paid_deposit_context,
     _parallel_paid_deposit_context,
     _parallel_shared_context,
@@ -376,6 +377,25 @@ def _validate_parallel_raw_reply_schema(
         ):
             if field not in payload and field in sales_judgment:
                 payload[field] = sales_judgment.pop(field)
+
+    policy_decision = payload.get("policy_decision")
+    if isinstance(policy_decision, dict):
+        # The same provider-side nesting drift can put payment audit siblings
+        # inside policy_decision. Move only fields already emitted by Reply;
+        # never synthesize evidence, party size or a transaction action here.
+        for field in (
+            "used_fact_refs",
+            "selected_content_ids",
+            "content_decisions",
+            "knowledge_use",
+            "payment_assessment",
+            "deposit_evidence",
+            "safety_assessment",
+            "party_size_assessment",
+            "commit_actions",
+        ):
+            if field not in payload and field in policy_decision:
+                payload[field] = policy_decision.pop(field)
 
     payload["action"] = _reply_action_from_payload(payload)
 
@@ -921,9 +941,6 @@ def _reply_action_from_payload(payload: dict[str, Any]) -> str:
     schema compatibility only and never changes the visible reply.
     """
 
-    raw_action = str(payload.get("action") or "").strip()
-    if raw_action:
-        return _normalized_reply_action(raw_action)
     messages = payload.get("reply_messages")
     if isinstance(messages, list) and any(
         isinstance(item, dict)
@@ -931,6 +948,9 @@ def _reply_action_from_payload(payload: dict[str, Any]) -> str:
         for item in messages
     ):
         return "payment"
+    raw_action = str(payload.get("action") or "").strip()
+    if raw_action:
+        return _normalized_reply_action(raw_action)
     commit_actions = payload.get("commit_actions")
     if isinstance(commit_actions, list) and any(isinstance(item, dict) for item in commit_actions):
         return "registration"
@@ -2364,11 +2384,20 @@ def _reply_full_task_retry_messages(
 ) -> list[dict[str, Any]]:
     """Retry the original Reply task when no candidate JSON was produced."""
 
+    timeout_contract = ""
+    if isinstance(exc, TimeoutError):
+        timeout_contract = (
+            "这是超时后的唯一完整重试，不能用占位回复规避原任务。提交前逐项核对原上下文中的动态合同："
+            "选择 explain_activity 时完整表达活动清单全部非空事实；"
+            "选择真实内容候选时实际输出候选要求的图片、视频或卡片，不能只承诺稍后发送；"
+            "明确索要付款且付款结构可用时实际输出 payment_collection，人数未知按单人10元，不能反问人数。"
+        )
     retry_instruction = (
         "上一次调用没有返回任何可校验的 json 对象，"
         f"失败类型为 {type(exc).__name__}。"
         "请基于以上完整聊天、权威事实、工具事实和内容候选，重新执行原始 Reply 任务。"
         "这不是对某个旧答案的局部结构修复：请重新完成完整业务判断，并严格遵守原输出合同。"
+        f"{timeout_contract}"
         "不要降级成占位回复，不要凭空补事实，也不要输出 markdown 或解释错误；"
         "只输出一个完整、合法的严格 json 对象。"
     )
@@ -2554,6 +2583,12 @@ def _parallel_generic_reply_repair_messages(
     mainline_violation = any(
         "next_sales_action_exceeds_delivered_mainline" in item for item in violations
     )
+    store_before_booking_violation = any(
+        "next_sales_action_exceeds_delivered_mainline:visible_invite_booking:store" in item
+        for item in violations
+    )
+    if store_before_booking_violation:
+        allowed_next_action_types = ["send_store"]
     visible_rewrite_markers = (
         "customer_visible_placeholder_fact",
         "customer_visible_false_human_identity_claim",
@@ -2571,12 +2606,36 @@ def _parallel_generic_reply_repair_messages(
         "offer_268_full_face_claim_conflict",
         "offer_bilateral_cheek_split_price_conflict",
         "offer_repeat_visit_268_unverified",
+        "activity_delivery_incomplete:",
     )
     visible_rewrite_required = any(
         marker in violation
         for violation in violations
         for marker in visible_rewrite_markers
     )
+    activity_delivery_violation = any(
+        "activity_delivery_incomplete:" in item for item in violations
+    )
+    payment_action_missing_card = any(
+        "payment_action_requires_payment_collection" in item for item in violations
+    )
+    payment_structure_violation = any(
+        marker in item
+        for item in violations
+        for marker in (
+            "payment_action_requires_payment_collection",
+            "multi_person_payment_requires_known_party_size_assessment",
+            "payment_collection_amount_conflicts_with_party_size_assessment",
+            "payment_collection_requires_prior_activity_evidence",
+        )
+    )
+    activity_delivery_contract = (
+        validation_context.get("activity_delivery_contract")
+        if isinstance(validation_context.get("activity_delivery_contract"), dict)
+        else {}
+    )
+    if activity_delivery_violation:
+        allowed_next_action_types = ["explain_activity"]
     stage_delivery_requirements = {
         "effect_evidence": (
             "回答当前消息后，交付真实效果说明或本轮允许的真实效果素材；不能邀约到店、询问时间、"
@@ -2606,6 +2665,77 @@ def _parallel_generic_reply_repair_messages(
             },
         },
     }
+    if activity_delivery_violation:
+        required_output_contract["reply_messages"] = [
+            {
+                "type": "text",
+                "content": (
+                    "本轮直接、自然地完整表达 activity_delivery_contract.offer_facts；"
+                    "不得先询问客户是否想了解，不得只预告稍后介绍"
+                ),
+            }
+        ]
+    if payment_structure_violation:
+        required_output_contract["reply_messages"] = [
+            {
+                "type": "text",
+                "content": "保留原来不冲突的付款说明；人数未知时不得继续询问，按单人10元交付",
+            },
+            {
+                "type": "payment_collection",
+                "content": (
+                    "必须逐字复制 exact_payment_delivery_contract.message_payloads 中与 party_size_assessment 一致的唯一一项；"
+                    "不得省略、改写成文字入口或预告稍后发送"
+                ),
+            },
+        ]
+        required_output_contract["sales_judgment"]["next_sales_action"]["type"] = (
+            "send_payment；原 Reply 已选择付款时必须保留并真正交付卡片"
+        )
+        required_output_contract["deposit_evidence"] = {
+            "offer_prior_turn_refs": (
+                validation_context.get("structured_prior_activity_refs")
+                or validation_context.get("prior_assistant_message_refs")
+                or []
+            ),
+            "supporting_key": "",
+            "supporting_refs": [],
+            "current_intent_refs": ["current_message"],
+            "instruction": "逐字复制允许引用；不得省略整个 deposit_evidence 对象",
+        }
+        required_output_contract["party_size_assessment"] = {
+            "status": "当前消息明确1..4人时为 known，否则为 unknown",
+            "party_size": "known 时填写准确1..4整数；unknown 时省略",
+            "evidence_refs": "known 时只写 current_message；unknown 时空数组",
+        }
+    if any("payment_collection_requires_prior_activity_evidence" in item for item in violations):
+        required_output_contract["deposit_evidence"] = {
+            "offer_prior_turn_refs": (
+                validation_context.get("structured_prior_activity_refs")
+                or validation_context.get("prior_assistant_message_refs")
+                or []
+            ),
+            "supporting_key": "",
+            "supporting_refs": [],
+            "current_intent_refs": [],
+            "instruction": (
+                "若保留付款动作，offer_prior_turn_refs 必须逐字复制上述允许列表中的真实活动交付引用；"
+                "不得继续复制已被拒绝的旧引用"
+            ),
+        }
+    if any(
+        marker in item
+        for item in violations
+        for marker in (
+            "multi_person_payment_requires_known_party_size_assessment",
+            "payment_collection_amount_conflicts_with_party_size_assessment",
+        )
+    ):
+        required_output_contract["party_size_assessment"] = {
+            "status": "known（当前消息明确2/3/4人）或 unknown（没有明确人数）",
+            "party_size": "status=known 时填写与当前消息一致的1..4整数，否则省略",
+            "evidence_refs": "status=known 时只复制 valid_customer_message_refs 中的当前消息 ref，否则空数组",
+        }
     if bool(validation_context.get("policy_required")):
         required_output_contract["policy_decision"] = {
             "primary_task": {
@@ -2636,7 +2766,10 @@ def _parallel_generic_reply_repair_messages(
         "failure_class": _parallel_repair_failure_class(violations),
         "violations": violations,
         "required_change": (
-            "只修复列出的结构、引用或确定性事实冲突。若原动作的副作用条件无法证明，"
+            "原 Reply 已选择 send_payment，且本轮提供了精确付款结构和既往活动引用；保留销售决定，"
+            "一次补齐付款卡、deposit_evidence 和人数结构，不得降级成询问、预告或纯文字。"
+            if payment_action_missing_card
+            else "只修复列出的结构、引用或确定性事实冲突。若原动作的副作用条件无法证明，"
             "降级 action，并删除对应结构消息、资产选择、content_asset 引用和副作用声明；"
             "保留未冲突的事实解释、客户可见内容和销售判断。"
         ),
@@ -2646,9 +2779,13 @@ def _parallel_generic_reply_repair_messages(
         "mandatory_mainline_correction": (
             {
                 "next_missing_stage": next_missing_stage,
-                "customer_visible_requirement": stage_delivery_requirements.get(
-                    next_missing_stage,
-                    "回答当前消息后只落实允许动作，不恢复被拦截的预约或付款推进",
+                "customer_visible_requirement": (
+                    "本轮只回答并交付已请求的真实门店卡；删除全部预约、到店日期、工作日/周末和时间追问"
+                    if store_before_booking_violation
+                    else stage_delivery_requirements.get(
+                        next_missing_stage,
+                        "回答当前消息后只落实允许动作，不恢复被拦截的预约或付款推进",
+                    )
                 ),
                 "forbidden_shortcut": "不能只改动作标签；reply_messages、目标、姿态和理由必须同步改成该阶段",
             }
@@ -2667,6 +2804,7 @@ def _parallel_generic_reply_repair_messages(
                 else "本轮没有可交付的真实效果素材；禁止承诺、预告或询问是否发送效果图/案例，直接用文字完成答复。"
             ),
         },
+        "activity_delivery_contract": activity_delivery_contract,
         "rules": [
             "targeted_repair_instructions 是本次最高优先级；previous_reply 中被移除的无效字段不得照抄或重建。",
             "不得重新判断客户心理、成交阶段或销售节奏，不得按错误码生成新销售话术。",
@@ -2742,6 +2880,22 @@ def _parallel_generic_reply_repair_messages(
     ]
     repair_previous_payload = copy.deepcopy(previous_payload) if isinstance(previous_payload, dict) else None
     removed_invalid_fields: list[str] = []
+    if isinstance(repair_previous_payload, dict):
+        if any("payment_collection_requires_prior_activity_evidence" in item for item in violations):
+            if "deposit_evidence" in repair_previous_payload:
+                repair_previous_payload.pop("deposit_evidence", None)
+                removed_invalid_fields.append("deposit_evidence")
+        if any(
+            marker in item
+            for item in violations
+            for marker in (
+                "multi_person_payment_requires_known_party_size_assessment",
+                "payment_collection_amount_conflicts_with_party_size_assessment",
+            )
+        ):
+            if "party_size_assessment" in repair_previous_payload:
+                repair_previous_payload.pop("party_size_assessment", None)
+                removed_invalid_fields.append("party_size_assessment")
     if isinstance(repair_previous_payload, dict) and visible_rewrite_required:
         if "reply_messages" in repair_previous_payload:
             repair_previous_payload.pop("reply_messages", None)
@@ -3021,6 +3175,17 @@ def _reply_payment_repair_guard(previous_payload: dict[str, Any] | None) -> str:
         "unverified_oral_paid_claim": "unverified_paid_claim",
     }.get(status, status)
     channel = str(assessment.get("payment_channel") or "").strip()
+    sales = (
+        previous_payload.get("sales_judgment")
+        if isinstance(previous_payload.get("sales_judgment"), dict)
+        else {}
+    )
+    next_action = (
+        sales.get("next_sales_action")
+        if isinstance(sales.get("next_sales_action"), dict)
+        else {}
+    )
+    declared_action = str(next_action.get("type") or "").strip()
     if status in {"manual_transfer", "unverified_paid_claim"}:
         channel_rule = (
             f"payment_channel 必须继续保持 {channel}；"
@@ -3046,6 +3211,12 @@ def _reply_payment_repair_guard(previous_payload: dict[str, Any] | None) -> str:
             "action 改为 none/ask；selected_content_ids=[]；deposit_evidence 四个字段全部清空；删除候选图片和"
             "payment_collection；manual_transfer 保留客户明确选择的 transfer 或 red_packet，unverified_paid_claim 使用 none。"
             "不得只改 payment_assessment 枚举却保留发卡结构，也不得把红包静默改成转账。"
+        )
+    if declared_action == "send_payment":
+        return (
+            "上一版 Reply 已明确选择 send_payment。本次仅修结构：必须保留 send_payment，"
+            "在 reply_messages 中实际输出 exact_payment_delivery_contract 的一张 payment_collection，"
+            "同时补齐 deposit_evidence；人数未知按单人10元，不得反问人数或改成稍后再发。"
         )
     return ""
 
@@ -3409,6 +3580,7 @@ def _parallel_reply_repair_context(state: AgentState) -> dict[str, Any]:
         "content_candidate_delivery_requirements": candidate_requirements,
         "authoritative_paid": bool(_parallel_paid_deposit_context(state)),
         "mainline_delivery_state": payload.get("mainline_delivery_state") or {},
+        "activity_delivery_contract": activity_delivery_contract_for_state(state),
         "presentation_limits": payload.get("presentation_limits") or {},
     }
 
@@ -3797,6 +3969,14 @@ def _reply_repair_hint(error: str) -> str:
             "and do not newly select a content asset, add deposit_evidence, add a payment/registration action, or introduce a new sales step. "
             "Unless the original output already validly used them, keep selected_content_ids and deposit_evidence empty."
         )
+    if "multi_person_payment_requires_known_party_size_assessment" in error:
+        return (
+            "上一版付款卡金额高于单人10元，但 party_size_assessment 没有给出可核对的明确同行人数。"
+            "重新读取 validation_context.current_message：如果客户本轮明确说了2、3或4人，保留付款动作，"
+            "填写 status=known、准确 party_size，并在 evidence_refs 中只引用 current_message；卡片金额必须等于每人10元。"
+            "如果本轮没有明确人数，就不得猜测多人，改为单人10元卡并使用 status=unknown、空 evidence_refs。"
+            "不要把身体部位数量当作同行人数，也不要删除原本成立的付款动作来逃避结构修复。"
+        )
     if (
         "payment_assessment_requires_customer_message_evidence" in error
         or "payment_assessment_has_invalid_evidence_ref" in error
@@ -3840,6 +4020,13 @@ def _reply_repair_hint(error: str) -> str:
             " prior_assistant_message_refs 中的更早客服原文，或 structured_prior_activity_refs 中的结构化活动交付引用。"
             "这些列表只证明来源和时间；你必须重新阅读原文，确认它确实讲清活动，不能把案例、门店或普通寒暄误当活动介绍。"
             "如果不存在，就取消本轮 payment_collection 和 action=payment，只先讲活动。"
+        )
+    if "activity_delivery_incomplete:" in error:
+        return (
+            "你已经选择 explain_activity，但客户可见文字没有真正完整介绍活动。"
+            "保留 explain_activity，不得改成 keep_open、不得先问客户是否想了解，也不得只预告稍后再说；"
+            "本轮必须直接自然表达 activity_delivery_contract.offer_facts 中全部非空活动内容，"
+            "并逐项满足 required_groups。不要因此附带 payment_collection。"
         )
     if "deposit_evidence_requires_payment_action" in error:
         return (
@@ -3914,17 +4101,11 @@ def _reply_repair_hint(error: str) -> str:
         return "客户还没有看到完整活动报价/预约金规则时，不要输出 payment_collection，也不要说入口或卡片已发，不要写“付好截图发我”。先用自然话术补活动价268、每位10元预约金到店抵扣、未做或不满意可退，再用“您确认按这个活动参加的话，我马上给您发小程序收款卡”这类封闭式动作承接。"
     if "payment_action_requires_payment_collection" in error:
         return (
-            "你已结构声明 action=payment，但本轮没有同时输出 payment_collection。先核验该 payment 是否真的成立："
-            "offer_prior_turn_refs 必须来自 validation_context.structured_prior_activity_refs，或来自"
-            " validation_context.prior_message_options 中当前消息之前且确实讲清活动与268元的客服原文；"
-            "当前轮的 content_asset:<id> 不能冒充更早活动证据。另一把钥匙还必须有 prior_assistant_message_refs 中的更早客服消息，"
-            "或 structured_prior_supporting_refs 中的结构化已完成资产作为真实交付引用。"
-            "如果这些引用齐全且没有任何硬禁区，说明销售决定本身有效："
-            "repair 必须保留 payment 并补齐卡片，不能改成 none/ask/offer 来逃避结构错误，也不能再问客户是否需要入口。"
-            "如果 selected_content_ids 中采用了候选，还要一次输出 validation_context.content_candidate_delivery_requirements"
-            " 中该候选要求的全部真实 image/video/store_address/payment_collection，并保持合法 deposit_evidence。"
-            "若更早活动引用无效、另一把钥匙没有更早真实交付或命中硬禁区，就撤销 payment，删除卡片和发卡承诺，"
-            "清空 deposit_evidence，并按当前真实上下文选择合法 action；不能为了补结构而制造提前发卡。"
+            "上一版已选择 send_payment，但漏了 payment_collection。若 exact_payment_delivery_contract 和"
+            " structured_prior_activity_refs 均非空，本次只做结构修复：保留 send_payment，"
+            "从 message_payloads 逐字复制一张卡，并把 structured_prior_activity_refs 写入 deposit_evidence.offer_prior_turn_refs。"
+            "人数明确时按 party_size_assessment 选择10/20/30/40元；人数未知时用 unknown、空 evidence_refs 和10元，"
+            "不得继续问人数、不得改成预告入口或纯文字。若这些权威结构或活动引用实际为空，才撤销付款动作。"
         )
     if "registration_action_requires_paid_context" in error:
         return (

@@ -9,6 +9,7 @@ from app.graph.nodes.reply_validation import (
     _validate_parallel_claimed_deposit_evidence,
     _validate_parallel_appointment_confirmation_facts,
     _validate_parallel_business_hours_facts,
+    _validate_parallel_activity_delivery_completeness,
     _validate_parallel_media_facts,
     _validate_parallel_payment_boundaries,
     _validate_parallel_selected_content_delivery,
@@ -60,7 +61,8 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         lambda: _validate_parallel_business_hours_facts(messages, state),
         lambda: validate_customer_visible_identity_boundaries(messages),
         lambda: validate_sales_price_fact_boundaries(messages),
-        lambda: _validate_mainline_sales_action(state),
+        lambda: _validate_parallel_activity_delivery_completeness(messages, state),
+        lambda: _validate_mainline_sales_action(state, messages=messages),
         lambda: _validate_customer_visible_mainline_boundary(messages, state),
         lambda: _validate_unrelated_historical_store_claim(messages, state),
         lambda: _validate_completed_store_scope_requery(messages, state),
@@ -78,7 +80,11 @@ def validate_model_led_reply_admission(messages: list[dict[str, Any]], state: di
         raise ValueError("reply_admission_violations::" + ";;".join(violations))
 
 
-def _validate_mainline_sales_action(state: dict[str, Any]) -> None:
+def _validate_mainline_sales_action(
+    state: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]] | None = None,
+) -> None:
     """Keep the model's declared next action inside delivered-stage bounds.
 
     This validates an explicit enum against deterministic delivery facts.  It
@@ -99,8 +105,6 @@ def _validate_mainline_sales_action(state: dict[str, Any]) -> None:
         for item in mainline.get("allowed_next_sales_action_types") or []
         if str(item or "").strip()
     }
-    if not allowed:
-        return
     sales = (
         state.get("reply_sales_judgment")
         if isinstance(state.get("reply_sales_judgment"), dict)
@@ -112,6 +116,15 @@ def _validate_mainline_sales_action(state: dict[str, Any]) -> None:
         else {}
     )
     action_type = str(next_action.get("type") or "").strip()
+    has_payment_collection = any(
+        isinstance(item, dict)
+        and str(item.get("type") or "").strip() == "payment_collection"
+        for item in messages or []
+    )
+    if messages is not None and action_type == "send_payment" and not has_payment_collection:
+        raise ValueError("payment_action_requires_payment_collection")
+    if not allowed:
+        return
     policy = (
         state.get("reply_policy_decision")
         if isinstance(state.get("reply_policy_decision"), dict)

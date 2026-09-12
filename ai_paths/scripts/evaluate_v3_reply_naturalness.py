@@ -139,12 +139,34 @@ def _structured_text(case: dict[str, Any]) -> str:
 
 
 def _mainline_text(case: dict[str, Any]) -> str:
-    return "\n".join(
-        [
-            f"next_missing_stage={case['next_stage']}，仅表示相邻机会与越级上限，不要求本轮执行。",
-            "allowed_next_sales_action_types=" + json.dumps(case["allowed_actions"], ensure_ascii=False),
-            "next_sales_action 必填且记录本轮实际落实动作；关系承接可用 keep_open。",
-        ]
+    stage = str(case["next_stage"])
+    lines = [
+        f"next_missing_stage={stage}，仅表示相邻机会与越级上限，不要求本轮执行。",
+        "allowed_next_sales_action_types=" + json.dumps(case["allowed_actions"], ensure_ascii=False),
+        "next_sales_action 必填且记录本轮实际落实动作；关系承接可用 keep_open。",
+    ]
+    if stage == "effect_evidence":
+        lines.append("客户主动提交肤质或部位时，必须先交付具体改善价值，不得只追问。")
+    elif stage == "activity_offer":
+        lines.append(
+            "客户明确询问活动/价格、认可具体效果/方案或明确说顾虑已解除时，"
+            "必须 explain_activity 并在本轮完整交付活动。"
+        )
+    elif stage == "store":
+        lines.append("客户认可价格且缺城市时，必须直接问城市，不得再问是否想了解或预约。")
+    return "\n".join(lines)
+
+
+def _activity_checklist_text(case: dict[str, Any]) -> str:
+    if str(case.get("next_stage") or "") != "activity_offer":
+        return "本轮主线不要求介绍活动。"
+    facts = str(case.get("extra_facts") or "").strip()
+    if not facts:
+        return "没有额外活动清单；只能使用本轮权威事实。"
+    return (
+        "硬输出合同：选择 explain_activity 就表示本轮已经完成活动介绍；先承接，再在本轮直接写出以下事实中每一项，"
+        "缺一项即无效。禁止用‘想了解我再说/可以给你介绍’等预告代替交付，不得先问是否想了解，"
+        "也不得自动附带付款卡：" + facts
     )
 
 
@@ -184,6 +206,7 @@ def render_context(case: dict[str, Any], *, order: str) -> str:
         "state": ("当前结构事实与不能越过的边界", _state_text(case)),
         "capability": ("本轮真实执行能力", "可回答文本并交付下方真实结构；禁止生产写入和客户发送。"),
         "facts": ("本轮相关权威事实", _facts_text(case)),
+        "activity_checklist": ("活动完整交付清单", _activity_checklist_text(case)),
         "structured": ("可原样交付的结构消息", _structured_text(case)),
         "missing": ("本轮缺失权限", "未列出的门店、订单、付款、预约、医疗和效果事实均不得补全。"),
         "policy": ("AI 销售策略", _policy_text()),
@@ -203,6 +226,7 @@ def render_context(case: dict[str, Any], *, order: str) -> str:
             "router",
             "script",
             "facts",
+            "activity_checklist",
             "structured",
             "missing",
             "refs",
@@ -214,6 +238,7 @@ def render_context(case: dict[str, Any], *, order: str) -> str:
             "state",
             "capability",
             "facts",
+            "activity_checklist",
             "structured",
             "missing",
             "mainline",

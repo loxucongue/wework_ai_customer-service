@@ -360,7 +360,7 @@ Prompt SHA-256：`c906b8e82b992312f5892a418d6d619354acd1d0e5f4025235faa640b0904d
 - 下游：代码校验并把真实 ID 转换为文本、图片、视频、门店卡、收款卡等结构消息；仅合法动作进入提交图。
 - 例外：纯空白/纯符号且无有效历史、图片和定位时可由代码直接给低信息回应；协议消息、人工接管、撤回和被挤占请求更早结束。
 
-静态 Prompt（2026-09-10 用户授权风险例外上线，非完整质量验收通过）：6,995 字符、73 行；SHA-256：`fa3885a8c0aea01bebbf4eac7e91a61c5193850c4a5336ca213e015a5705475b`。
+静态 Prompt（2026-09-12 付款结构与动态活动完整性候选）：6,968 字符、73 行；SHA-256：`44e89831daa4e51b4b8dabe52e0b4ee11a2eeb84f86bf4013514ecff1f0dc827`。
 
 ### 8.2 完整 system Prompt（逐字）
 
@@ -427,17 +427,18 @@ Prompt SHA-256：`c906b8e82b992312f5892a418d6d619354acd1d0e5f4025235faa640b0904d
 - 已经具备且可在本轮直接交付的明确价值，不再向客户索取许可。连续消息后句催促或问机器人不撤销前句未完成的发图、发地址或答题请求；明确再次索要地址允许重发。
 
 # 6. 严格 JSON
-动作校对：新客问候须问淡斑需求；认可效果或卡点化解且下一步活动必须 explain_activity；价值齐全后“嗯行”必须 invite_booking 并问日期；明确问付款且获授权直接 send_payment，不再确认。已问顾虑后重复暂缓禁 ask_missing_fact。纯夸赞只短接，不恢复旧咨询。
-只输出一个合法 JSON 对象，不输出 markdown、解释或思考。先写非空 `reply_messages`，再写判断字段：
+动作校对：问候问需求；提交肤质/部位先讲改善；问效果有事实直接回答/发素材；认可效果或卡点已解且下一阶段活动，必须 explain_activity，当轮逐项写全【活动完整交付清单】，不先问、不带付款卡；认可价格问城市；价值齐全“嗯行”问日期；明确索款且授权必须 send_payment；重复暂缓不追问；夸赞短接。
+只输出合法 JSON，不输出 markdown/解释/思考。以下四项必须是顶层同级字段，禁止嵌套：
 {"reply_messages":[{"type":"text","content":"客户可见消息"}],"sales_judgment":{"customer_friction_observation":"","primary_objective":"本轮主目标","posture":"answer|advance|switch|pause|close","next_sales_action":{"type":"keep_open|ask_missing_fact|deliver_value|send_effect_material|send_store|explain_activity|invite_booking|send_payment|post_payment_service|stop","target_stage":"主线阶段或current_problem","reason":""}},"knowledge_use":{"sequence_id":"","step_id":"","script_id":"","reason":""},"policy_decision":{"primary_task":{"type":"","goal":""},"realtime_intent":{"type":"","confidence":"high|medium|low"},"emotion_decision":{"label":"","confidence":"high|medium|low","pressure":"normal|low|none"},"closing_decision":{"action":"none|enter|advance|pause|fallback|complete","rule_ids":[],"sequence_key":"none","node_key":"","trigger":"none|business_rule","customer_state":"continue_sales|pause_current_turn|hard_stop_marketing|post_payment_service","pressure":"normal|low|none","satisfied_prerequisite_ids":[],"blocking_taboo_ids":[],"evidence_refs":[]}}}
 
 - 正常轮（continue_sales/pause_current_turn）必须输出非空 `next_sales_action`，不能为 stop；keep_open 仅用于无待交付销售动作的承接或本轮暂停；首次无因软拒绝且历史未问过只能 ask_missing_fact。明确退订、医疗高风险或具体严重客诉/退款纠纷用 stop，权威已付服务用 post_payment_service。
 - `primary_task.type` 只能从输入目录选择；`policy_decision` 的 primary_task、realtime_intent.type、emotion_decision.label/pressure、closing_decision.action/customer_state/pressure 这些是运行必需字段，不是 BI 可选项。confidence、secondary_types、basis、evidence_refs 是观测字段；缺失不得改变客户回复或触发第二次业务判断。secondary_tasks 最多 3 个真实目录对象且不重复主任务。flow_action、策略/规则/节点名称和 decision_status 由代码派生，不要生成。
 - 有卡点时在 `policy_decision` 内输出 cardpoint_decision：category_key 复制 Router code，state 只能 active|resolved|repeated|none；未 resolved 时 closing=pause。enter/advance/fallback 只能复制本轮真实 rule/sequence/node key，补齐 rule_ids、前置项与客户证据；否则 sequence_key=none、node_key=""、rule_ids=[]、satisfied_prerequisite_ids=[]、evidence_refs=[]。blocking_taboo_ids 始终输出。
 - `knowledge_use` 固定输出 sequence_id/step_id/script_id/reason，复制实际采用的真实ID及采用点，未采用全为空；话术可独立于序列选择，不伪造关联。
-- reply_messages 支持 text/image/video/store_address/payment_collection/human_handoff_notice。store_address 原样复制 {"store_id":"..."} 并配说明文字；payment_collection 原样复制完整对象。文字说已发送结构内容时，同轮必须真的输出。
+- reply_messages 支持 text/image/video/store_address/payment_collection/human_handoff_notice。store_address、payment_collection 均原样复制。承诺已发须同轮交付；`send_payment` 必须带付款卡，禁说确认后再发。
 - 实际采用素材才写 selected_content_ids；付款上下文才写 payment_assessment；发卡才写 `deposit_evidence={"offer_prior_turn_refs":[],"supporting_key":"","supporting_refs":[],"current_intent_refs":[]}`，其中 offer_prior_turn_refs 必须引用更早已讲活动与价格的真实客服消息，其余 deposit_evidence 字段可留空。客户已付或声称已付时不发卡；金额按每人10元且只允许10/20/30/40元。权威已付且存在完整写入事实时才写允许的 commit_actions。
 - 明确退订必须 intent=explicit_exit、primary_task=hard_stop、closing=complete、customer_state=hard_stop_marketing、pressure=none，不发送素材、卡片或写动作。
+
 ```
 
 ### 8.3 动态 user Prompt：完整区块顺序
@@ -473,7 +474,10 @@ Prompt SHA-256：`c906b8e82b992312f5892a418d6d619354acd1d0e5f4025235faa640b0904d
 {本轮命中的 hard_law、business_fact、sales_principle}
 
 【本轮相关权威事实：最终口径】
-{只渲染 relevant_fact_topic_ids 对应事实}
+{只渲染 relevant_fact_topic_ids 对应事实；主线下一阶段为活动时额外提供完整活动事实，但不强制本轮销售}
+
+【活动完整交付清单（仅在本轮决定介绍活动时逐项落实）】
+{从权威活动事实动态生成价格、包含项目、适用范围、活动结构、资格/预约条件、权益、名额和原价口径；不存在的字段不虚构}
 
 【可直接交付的真实素材】
 {未重复、相关、可发送的 content_id 与 image/video 消息；URL 只在模型运行时存在}
@@ -521,6 +525,7 @@ Prompt SHA-256：`c906b8e82b992312f5892a418d6d619354acd1d0e5f4025235faa640b0904d
 - 金额、活动范围、已付、预约完成、营业时间和到店指引有权威事实。
 - `next_sales_action` 没有越过当前主线，客户可见文字真的落实所声明动作。
 - 文字声称发图、发地址或发付款卡时，同轮存在对应真实结构消息。
+- 模型已输出但误嵌入 `sales_judgment` 或 `policy_decision` 的付款审计字段，只做原值的顶层提升；不生成证据、人数、金额或交易动作。
 - 明确退订、医疗高风险、具体严重客诉、人工接管和交易终态没有被模型覆盖。
 - 最终采用、发送和送达是三个独立状态，不能互相推断。
 
@@ -535,6 +540,8 @@ Prompt SHA-256：`c906b8e82b992312f5892a418d6d619354acd1d0e5f4025235faa640b0904d
 ```text
 上一次调用没有返回任何可校验的 json 对象，失败类型为 {EXCEPTION_TYPE}。请基于以上完整聊天、权威事实、工具事实和内容候选，重新执行原始 Reply 任务。这不是对某个旧答案的局部结构修复：请重新完成完整业务判断，并严格遵守原输出合同。不要降级成占位回复，不要凭空补事实，也不要输出 markdown 或解释错误；只输出一个完整、合法的严格 json 对象。
 ```
+
+失败类型为 `TimeoutError` 时，在“严格遵守原输出合同”后追加一次性约束：不得用占位回复规避；选择活动、真实素材或付款动作时，分别完整落实动态活动清单、候选结构或 `payment_collection`，未知人数按单人 10 元，不再反问人数。该约束只重申当前动态合同，不创建销售意图或事实。
 
 该分支没有可保留的旧判断，因此允许重新做完整销售判断。
 
@@ -590,6 +597,10 @@ user:
     "available": false,
     "exact_options": [],
     "instruction": "有真实素材才能声称发送"
+  },
+  "activity_delivery_contract": {
+    "offer_facts": {},
+    "required_groups": []
   },
   "rules": [
     "不重判客户心理、成交阶段或销售节奏",

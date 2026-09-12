@@ -6,6 +6,7 @@ from ai_paths.app.prompts.reply_synthesizer import (
     PARALLEL_REPLY_SYSTEM_PROMPT,
     build_parallel_reply_messages,
     _render_authoritative_facts,
+    _render_activity_delivery_checklist,
     _render_delivery_assets,
     _render_knowledge_evidence,
     _render_mainline_execution_contract,
@@ -52,7 +53,8 @@ def test_reply_remains_the_only_sales_decision_and_keeps_safety_boundaries() -> 
     assert "不从混乱、过期或测试记录恢复旧话题" in prompt
     assert "权威事实、本轮确认、匹配门店、当前卡点" in prompt
     assert "首次泛问价格" in prompt and "绝不发 `payment_collection`" in prompt
-    assert "先写非空 `reply_messages`" in prompt
+    assert "以下四项必须是顶层同级字段，禁止嵌套" in prompt
+    assert "`send_payment` 必须带付款卡，禁说确认后再发" in prompt
     assert "只有明确停止联系才持久记录退订" in prompt
     assert "门店卡、姓名、电话和时间意向都不等于预约完成" in prompt
     assert prompt.index('"reply_messages"') < prompt.index('"sales_judgment"')
@@ -140,7 +142,8 @@ def test_dynamic_mainline_contract_blocks_customer_visible_booking_shortcut() ->
     assert "询问工作日/周末或到店时间" in rendered
     assert "最早缺失主线=activity_offer" in rendered
     assert "完整说明权威价格、包含价值和相关条件权益" in rendered
-    assert "本轮衔接活动时" in rendered
+    assert "认可具体效果/方案" in rendered
+    assert "明确说顾虑已解除" in rendered
     assert "不是每轮任务" in rendered
 
     effect = _render_mainline_execution_contract(
@@ -152,6 +155,24 @@ def test_dynamic_mainline_contract_blocks_customer_visible_booking_shortcut() ->
     assert "到店看效果/方案、先留名额、要不要看案例、我先把效果说明发您" in effect
     assert "选择该动作且有可用案例时直接发送" in effect
     assert "不能只预告以后再讲" in effect
+    assert "主动提交肤质或部位" in effect
+
+    store = _render_mainline_execution_contract(
+        {
+            "next_missing_stage": "store",
+            "allowed_next_sales_action_types": ["ask_missing_fact", "send_store"],
+        }
+    )
+    assert "认可价格且缺城市时必须直接问城市" in store
+
+    payment = _render_mainline_execution_contract(
+        {
+            "next_missing_stage": "appointment",
+            "allowed_next_sales_action_types": ["invite_booking", "send_payment"],
+        }
+    )
+    assert "明确索要付款入口且 payment_card_available=true" in payment
+    assert "人数未知按单人10元交付，不再追问人数" in payment
 
 
 def test_router_treats_explicit_location_delivery_as_store_detail_not_booking() -> None:
@@ -342,6 +363,63 @@ def test_generic_price_context_does_not_volunteer_single_area_wording() -> None:
 
     assert "普通询价不主动补‘单部位体验’" in rendered
     assert "客户明确问单/多部位范围时再按事实解释" in rendered
+
+
+def test_activity_stage_receives_dynamic_complete_offer_without_payment_card() -> None:
+    rules = {
+        "AUTHORITATIVE FACTS": {
+            "offer": {
+                "public_names": ["测试活动"],
+                "new_customer_price": 321,
+                "includes": ["项目甲", "权益乙"],
+                "body_scope": "测试范围",
+                "offer_structure": "测试活动结构",
+                "registration_skin_test": "先完成测试资格登记",
+                "registration_gift": {"gift": "权益礼"},
+                "quota": "测试名额规则",
+            }
+        }
+    }
+    rendered = _render_activity_delivery_checklist(
+        rules,
+        mainline_delivery_state={"next_missing_stage": "activity_offer"},
+    )
+
+    for expected in (
+        "活动价格=321",
+        "包含项目=项目甲、权益乙",
+        "适用范围=测试范围",
+        "资格/预约条件=先完成测试资格登记",
+        "活动权益=gift=权益礼",
+        "名额口径=测试名额规则",
+    ):
+        assert expected in rendered
+
+    context = build_parallel_reply_messages(
+        {
+            "mainline_delivery_state": {
+                "next_missing_stage": "activity_offer",
+                "allowed_next_sales_action_types": ["explain_activity", "keep_open"],
+            },
+            "structured_delivery_options": {
+                "payment_collection": {"amount": 10, "remark": "不应出现"}
+            },
+            "evidence": {
+                "semantic_route": {"relevant_fact_topic_ids": ["effect_evidence"]},
+                "shared_context": {
+                    "rules": rules,
+                    "authoritative_facts": {},
+                    "conversation": [],
+                    "current_message": {"content": "这个效果可以"},
+                },
+            },
+        },
+        json_dumps=json.dumps,
+    )[1]["content"]
+
+    assert "活动价=321元" in context
+    assert "包含项目=项目甲、权益乙" in context
+    assert "payment_collection｜原样使用" not in context
 
 
 def test_reply_prompt_handles_generic_store_distrust_before_store_lookup() -> None:

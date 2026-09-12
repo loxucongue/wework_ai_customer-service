@@ -10,7 +10,67 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ai_paths"))
 
 from app.graph.nodes.reply_admission import validate_model_led_reply_admission  # noqa: E402
-from app.graph.nodes.reply_nodes import _validate_parallel_raw_reply_schema  # noqa: E402
+from app.graph.nodes.reply_nodes import (  # noqa: E402
+    _parallel_generic_reply_repair_messages,
+    _parallel_reply_repair_context,
+    _reply_action_from_payload,
+    _reply_full_task_retry_messages,
+    _reply_payment_repair_guard,
+    _reply_repair_hint,
+    _validate_parallel_raw_reply_schema,
+)
+from app.graph.nodes.reply_validation import (  # noqa: E402
+    _validate_parallel_activity_delivery_completeness,
+    activity_delivery_contract_for_state,
+)
+
+
+def test_timeout_full_task_retry_reasserts_structured_delivery_contracts() -> None:
+    messages = _reply_full_task_retry_messages(
+        [{"role": "system", "content": "原始合同"}],
+        TimeoutError("reply deadline exceeded"),
+    )
+
+    retry = messages[-1]["content"]
+    assert "活动清单全部非空事实" in retry
+    assert "实际输出候选要求的图片、视频或卡片" in retry
+    assert "实际输出 payment_collection" in retry
+    assert "人数未知按单人10元" in retry
+    assert "不能用占位回复" in retry
+
+
+def test_raw_schema_lifts_payment_audit_siblings_from_policy_decision() -> None:
+    payload = {
+        "reply_messages": [
+            {"type": "text", "content": "付款入口发您。"},
+            {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+        ],
+        "sales_judgment": {
+            "next_sales_action": {"type": "send_payment", "target_stage": "appointment"}
+        },
+        "policy_decision": {
+            "deposit_evidence": {
+                "offer_prior_turn_refs": ["sent_messages:activity_intro"],
+                "supporting_key": "",
+                "supporting_refs": [],
+                "current_intent_refs": ["now"],
+            },
+            "party_size_assessment": {"status": "unknown", "evidence_refs": []},
+        },
+    }
+
+    _validate_parallel_raw_reply_schema(payload)
+
+    assert payload["action"] == "payment"
+    assert payload["deposit_evidence"]["offer_prior_turn_refs"] == [
+        "sent_messages:activity_intro"
+    ]
+    assert payload["party_size_assessment"] == {
+        "status": "unknown",
+        "evidence_refs": [],
+    }
+    assert "deposit_evidence" not in payload["policy_decision"]
+    assert "party_size_assessment" not in payload["policy_decision"]
 
 
 def _payment_state(
@@ -148,6 +208,168 @@ def test_payment_gate_requires_prior_activity_and_price_reference() -> None:
 
 def test_payment_gate_does_not_require_old_supporting_or_current_action_fields() -> None:
     validate_model_led_reply_admission(_payment_messages(10), _payment_state())
+
+
+def test_payment_gate_accepts_exact_structured_activity_delivery_reference() -> None:
+    state = _payment_state(offer_refs=["sent_messages:activity_intro"])
+    shared = state["evidence_join"]["shared_context"]
+    shared["conversation"] = []
+    shared["authoritative_facts"]["sent_messages"] = {
+        "activity_intro_image_sent": True,
+    }
+
+    validate_model_led_reply_admission(_payment_messages(10), state)
+
+
+def test_payment_gate_rejects_non_activity_structured_delivery_reference() -> None:
+    state = _payment_state(offer_refs=["sent_messages:case_image"])
+    shared = state["evidence_join"]["shared_context"]
+    shared["conversation"] = []
+    shared["authoritative_facts"]["sent_messages"] = {"case_image_sent": True}
+
+    with pytest.raises(ValueError, match="payment_collection_requires_prior_activity_evidence"):
+        validate_model_led_reply_admission(_payment_messages(10), state)
+
+
+def test_payment_card_normalizes_legacy_none_action_to_payment() -> None:
+    assert _reply_action_from_payload(
+        {
+            "action": "none",
+            "reply_messages": _payment_messages(10),
+        }
+    ) == "payment"
+
+
+def test_multi_person_payment_repair_hint_is_targeted() -> None:
+    hint = _reply_repair_hint("multi_person_payment_requires_known_party_size_assessment")
+
+    assert "validation_context.current_message" in hint
+    assert "status=known" in hint
+    assert "每人10元" in hint
+
+
+def test_missing_payment_card_repair_is_pinned_to_exact_structure() -> None:
+    previous = {
+        "reply_messages": [{"type": "text", "content": "我把付款入口发您。"}],
+        "sales_judgment": {
+            "next_sales_action": {"type": "send_payment", "target_stage": "appointment"}
+        },
+    }
+    validation_context = {
+        "schema_version": "parallel_reply_repair_context_v2",
+        "structured_delivery_options": {
+            "payment_collection": {
+                "message_payloads": [
+                    {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+                    {"type": "payment_collection", "content": {"amount": 20, "remark": ""}},
+                ]
+            }
+        },
+        "structured_prior_activity_refs": ["sent_messages:activity_intro"],
+        "prior_assistant_message_refs": ["history_001"],
+        "valid_customer_message_refs": ["current_message"],
+        "current_message": {"content": "怎么付款报名？"},
+        "mainline_delivery_state": {
+            "next_missing_stage": "appointment",
+            "allowed_next_sales_action_types": ["send_payment", "invite_booking"],
+        },
+    }
+
+    repair_messages = _parallel_generic_reply_repair_messages(
+        [{"role": "user", "content": "原始完整上下文"}],
+        ValueError("reply_admission_violations::payment_action_requires_payment_collection"),
+        previous_payload=previous,
+        validation_context=validation_context,
+    )
+    rendered = "\n".join(str(item.get("content") or "") for item in repair_messages)
+
+    assert "逐字复制 exact_payment_delivery_contract.message_payloads" in rendered
+    assert "不得省略整个 deposit_evidence 对象" in rendered
+    assert '"offer_prior_turn_refs":["sent_messages:activity_intro"]' in rendered
+    assert "人数未知时不得继续询问，按单人10元交付" in rendered
+
+
+def test_payment_repair_guard_reads_declared_next_action() -> None:
+    guard = _reply_payment_repair_guard(
+        {
+            "sales_judgment": {
+                "next_sales_action": {"type": "send_payment"}
+            }
+        }
+    )
+
+    assert "实际输出 exact_payment_delivery_contract" in guard
+    assert "不得反问人数" in guard
+
+
+def _activity_state() -> dict[str, Any]:
+    offer = {
+        "public_names": ["测试焕肤活动", "焕肤活动"],
+        "new_customer_price": 321,
+        "includes": ["肤况分析", "基础清洁"],
+        "body_scope": "单部位体验",
+        "offer_structure": "321元对应当前测试活动，不是多个套餐。",
+        "registration_skin_test": "完成线上登记后，可免费做肤况检测。",
+        "registration_gift": {"name": "保湿管理", "stated_value": 88},
+        "quota": "限17名；名额满恢复原价",
+        "original_price_visibility": "名额满恢复原价，不主动报原价金额。",
+    }
+    return {
+        "evidence_join": {
+            "shared_context": {
+                "conversation": [],
+                "rules": {"AUTHORITATIVE FACTS": {"offer": offer}},
+            },
+            "content_candidates": [],
+        },
+        "reply_sales_judgment": {
+            "next_sales_action": {"type": "explain_activity"}
+        },
+    }
+
+
+def test_activity_delivery_contract_is_dynamic_and_conditional() -> None:
+    state = _activity_state()
+    contract = activity_delivery_contract_for_state(state)
+
+    assert contract["offer_facts"]["new_customer_price"] == 321
+    assert any(group.get("all_of") == ["17", "名额", "恢复原价"] for group in contract["required_groups"])
+
+    with pytest.raises(ValueError, match="activity_delivery_incomplete"):
+        _validate_parallel_activity_delivery_completeness(
+            [{"type": "text", "content": "活动挺划算，您要不要了解？"}],
+            state,
+        )
+
+    complete = (
+        "测试焕肤活动新客321元，含肤况分析和基础清洁，按单部位做。"
+        "线上登记后可免费做肤况检测，还送价值88元的保湿管理。"
+        "限17个名额，名额满恢复原价。"
+    )
+    _validate_parallel_activity_delivery_completeness(
+        [{"type": "text", "content": complete}],
+        state,
+    )
+
+    state["reply_sales_judgment"]["next_sales_action"]["type"] = "keep_open"
+    _validate_parallel_activity_delivery_completeness(
+        [{"type": "text", "content": "收到。"}],
+        state,
+    )
+
+
+def test_activity_repair_receives_exact_dynamic_offer_facts() -> None:
+    state = _activity_state()
+    context = _parallel_reply_repair_context(state)
+    hint = _reply_repair_hint("activity_delivery_incomplete:活动价格")
+
+    assert context["activity_delivery_contract"]["offer_facts"]["new_customer_price"] == 321
+    assert context["activity_delivery_contract"]["offer_facts"]["includes"] == [
+        "肤况分析",
+        "基础清洁",
+    ]
+    assert "保留 explain_activity" in hint
+    assert "不得改成 keep_open" in hint
 
 
 def test_structure_gate_rejects_duplicate_payment_cards_before_normalization() -> None:

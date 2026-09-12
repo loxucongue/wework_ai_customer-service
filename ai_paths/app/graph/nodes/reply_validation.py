@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from app.graph.nodes.common import renumber_messages
+from app.graph.nodes.material_selection import parallel_reply_payload
 from app.graph.nodes.sales_fact_validation import validate_sales_price_fact_boundaries
 from app.graph.nodes.store_scope_summary import (
     build_store_scope_summary,
@@ -687,7 +688,13 @@ def _validate_parallel_deposit_evidence(state: dict[str, Any]) -> None:
         for item in progress.get("completed_pack_ids") or []
         if str(item).strip() in activity_offer_ids
     }
-    valid_offer_refs = prior_assistant_refs | completed_refs
+    payload = parallel_reply_payload(state)
+    structured_activity_refs = {
+        str(item).strip()
+        for item in payload.get("structured_prior_activity_refs") or []
+        if str(item).strip()
+    }
+    valid_offer_refs = prior_assistant_refs | completed_refs | structured_activity_refs
     if (
         not offer_refs
         or not offer_refs.issubset(valid_offer_refs)
@@ -701,6 +708,150 @@ def _parallel_shared_context(state: dict[str, Any]) -> dict[str, Any]:
     if shared:
         return shared
     return state.get("shared_context") if isinstance(state.get("shared_context"), dict) else {}
+
+
+def activity_delivery_contract_for_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Build a fact-derived activity completeness contract for Reply output.
+
+    The contract is conditional: it never decides that the activity should be
+    introduced.  It only describes what must be present after Reply itself has
+    selected ``explain_activity``.  Values come from the authoritative offer;
+    prices and activity copy are never embedded in Python.
+    """
+
+    shared = _parallel_shared_context(state)
+    rules = shared.get("rules") if isinstance(shared.get("rules"), dict) else {}
+    facts = (
+        rules.get("AUTHORITATIVE FACTS")
+        if isinstance(rules.get("AUTHORITATIVE FACTS"), dict)
+        else {}
+    )
+    offer = facts.get("offer") if isinstance(facts.get("offer"), dict) else {}
+    if not offer:
+        return {}
+
+    groups: list[dict[str, Any]] = []
+
+    def add_any(label: str, values: Any) -> None:
+        raw_values = values if isinstance(values, list) else [values]
+        alternatives = [
+            re.sub(r"\s+", "", str(value or ""))
+            for value in raw_values
+            if str(value or "").strip()
+        ]
+        if alternatives:
+            groups.append({"label": label, "any_of": list(dict.fromkeys(alternatives))})
+
+    def add_all(label: str, values: Any) -> None:
+        raw_values = values if isinstance(values, list) else [values]
+        required = [
+            re.sub(r"\s+", "", str(value or ""))
+            for value in raw_values
+            if str(value or "").strip()
+        ]
+        if required:
+            groups.append({"label": label, "all_of": list(dict.fromkeys(required))})
+
+    add_any("活动名称", offer.get("public_names"))
+    if offer.get("new_customer_price") is not None:
+        add_all("活动价格", str(offer.get("new_customer_price")))
+    for index, item in enumerate(offer.get("includes") or [], start=1):
+        compact_item = re.sub(r"\s+", "", str(item or ""))
+        alternatives = [compact_item]
+        if len(compact_item) == 4:
+            alternatives.append(compact_item[2:] + compact_item[:2])
+        add_any(f"包含项目{index}", alternatives)
+
+    body_scope = str(offer.get("body_scope") or "").strip()
+    if body_scope:
+        # "体验" is presentation wording rather than the scope identity.  The
+        # shorter source-derived fragment permits natural paraphrases such as
+        # "一个部位" while retaining the configured scope boundary.
+        scope_marker = body_scope[:-2] if body_scope.endswith("体验") else body_scope
+        add_all("适用范围", scope_marker or body_scope)
+
+    registration = str(offer.get("registration_skin_test") or "").strip()
+    if registration:
+        registration_markers = [
+            marker
+            for marker in ("登记", "免费", "检测")
+            if marker in registration
+        ]
+        add_all("资格/预约条件", registration_markers or registration)
+
+    gift = offer.get("registration_gift")
+    if isinstance(gift, dict):
+        gift_markers = [gift.get("name")]
+        if gift.get("stated_value") is not None:
+            gift_markers.append(str(gift.get("stated_value")))
+        add_all("活动权益", gift_markers)
+    elif gift:
+        add_all("活动权益", gift)
+
+    quota = str(offer.get("quota") or "").strip()
+    if quota:
+        quota_markers = re.findall(r"\d+(?:\.\d+)?", quota)
+        quota_markers.extend(
+            marker for marker in ("名额", "恢复原价") if marker in quota
+        )
+        add_all("名额口径", quota_markers or quota)
+
+    return {
+        "schema_version": "activity_delivery_contract_v1",
+        "offer_facts": {
+            key: offer.get(key)
+            for key in (
+                "public_names",
+                "new_customer_price",
+                "includes",
+                "body_scope",
+                "offer_structure",
+                "registration_skin_test",
+                "registration_gift",
+                "quota",
+                "original_price_visibility",
+            )
+            if offer.get(key) not in (None, "", [], {})
+        },
+        "required_groups": groups,
+    }
+
+
+def _validate_parallel_activity_delivery_completeness(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    """Require complete facts only after Reply selects explain_activity."""
+
+    sales = (
+        state.get("reply_sales_judgment")
+        if isinstance(state.get("reply_sales_judgment"), dict)
+        else {}
+    )
+    action = (
+        sales.get("next_sales_action")
+        if isinstance(sales.get("next_sales_action"), dict)
+        else {}
+    )
+    if str(action.get("type") or "").strip() != "explain_activity":
+        return
+    contract = activity_delivery_contract_for_state(state)
+    groups = contract.get("required_groups") if isinstance(contract, dict) else []
+    if not groups:
+        return
+    text = re.sub(r"\s+", "", _combined_text(messages))
+    missing: list[str] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        all_of = [str(item) for item in group.get("all_of") or [] if str(item)]
+        any_of = [str(item) for item in group.get("any_of") or [] if str(item)]
+        if all_of and not all(item in text for item in all_of):
+            missing.append(str(group.get("label") or "unknown"))
+        elif any_of and not any(item in text for item in any_of):
+            missing.append(str(group.get("label") or "unknown"))
+    if missing:
+        raise ValueError("activity_delivery_incomplete:" + ",".join(missing))
 
 
 def _validate_handoff_notice_text(messages: list[dict[str, Any]]) -> None:

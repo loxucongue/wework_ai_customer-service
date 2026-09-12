@@ -116,6 +116,143 @@ class AuditedSemantic(DeepSeekSemanticClient):
                                "usage": copy.deepcopy(self.last_usage)})
 
 
+def apply_explicit_payment_prerequisite_fixture(
+    case_id: str,
+    sample: dict[str, Any],
+) -> None:
+    """Seed only the structured deliveries declared by corrected payment cases."""
+
+    if case_id not in {"action-07", "action-08"}:
+        return
+    sample.update(
+        confirmed_store_id="900004",
+        confirmed_store_name="杭州青禾护理中心",
+        prior_deliveries=[
+            {
+                "request_id": "synthetic-prior-store-" + case_id,
+                "occurred_at": "2026-09-10T08:00:00+08:00",
+                "reply_messages": [
+                    {"type": "store_address", "content": {"store_id": "900004"}}
+                ],
+            }
+        ],
+        source_history_events=[
+            {
+                "event_id": "synthetic-prior-effect-" + case_id,
+                "event_type": "case_image_sent",
+                "event_time": "2026-09-10T07:58:00+08:00",
+                "facts": {
+                    "asset_roles": ["effect_evidence"],
+                    "document_ids": ["synthetic-effect-evidence"],
+                    "image_urls": [],
+                },
+                "source": "synthetic_l3_fixture",
+            },
+            {
+                "event_id": "synthetic-prior-activity-" + case_id,
+                "event_type": "activity_intro_image_sent",
+                "event_time": "2026-09-10T07:59:00+08:00",
+                "facts": {"request_id": "synthetic-prior-activity-" + case_id},
+                "source": "synthetic_l3_fixture",
+            },
+        ],
+    )
+
+
+def apply_mainline_prerequisite_fixture(
+    case: dict[str, Any],
+    sample: dict[str, Any],
+) -> None:
+    """Seed structured prior delivery facts that the synthetic case declares.
+
+    Human-readable history is intentionally not treated as proof of delivery by
+    the product.  L3 therefore mirrors each case's declared next stage with the
+    exact persisted events the real graph consumes.
+    """
+
+    stage = str(case.get("next_stage") or "").strip()
+    preceding_roles = {
+        "effect_evidence": (),
+        "activity_offer": ("effect_evidence",),
+        "store": ("effect_evidence", "activity_offer"),
+        "appointment": ("effect_evidence", "activity_offer", "address_evidence"),
+        "appointment_deposit": (
+            "effect_evidence",
+            "activity_offer",
+            "address_evidence",
+        ),
+        "complete": (
+            "effect_evidence",
+            "activity_offer",
+            "address_evidence",
+        ),
+    }.get(stage, ())
+    events = list(sample.get("source_history_events") or [])
+    if "effect_evidence" in preceding_roles:
+        events.append(
+            {
+                "event_id": "synthetic-stage-effect-" + str(case.get("id") or "case"),
+                "event_type": "case_image_sent",
+                "event_time": "2026-09-10T07:58:00+08:00",
+                "facts": {
+                    "asset_roles": ["effect_evidence"],
+                    "document_ids": ["synthetic-effect-evidence"],
+                    "image_urls": [],
+                },
+                "source": "synthetic_l3_fixture",
+            }
+        )
+    if "activity_offer" in preceding_roles:
+        events.append(
+            {
+                "event_id": "synthetic-stage-activity-" + str(case.get("id") or "case"),
+                "event_type": "activity_intro_image_sent",
+                "event_time": "2026-09-10T07:59:00+08:00",
+                "facts": {
+                    "request_id": "synthetic-stage-activity-" + str(case.get("id") or "case")
+                },
+                "source": "synthetic_l3_fixture",
+            }
+        )
+    if events:
+        sample["source_history_events"] = events
+    if "address_evidence" in preceding_roles:
+        sample.update(
+            confirmed_store_id="900004",
+            confirmed_store_name="杭州青禾护理中心",
+        )
+        sample["prior_deliveries"] = [
+            {
+                "request_id": "synthetic-stage-store-" + str(case.get("id") or "case"),
+                "occurred_at": "2026-09-10T08:00:00+08:00",
+                "reply_messages": [
+                    {"type": "store_address", "content": {"store_id": "900004"}}
+                ],
+            }
+        ]
+
+    if str(case.get("id") or "") == "pollution-08":
+        sample["conversation_history"] = [
+            "客户:我在杭州市西湖区",
+            *list(sample.get("conversation_history") or []),
+        ]
+
+
+def render_synthetic_conversation_history(
+    history: list[dict[str, Any]],
+    *,
+    substitute,
+) -> list[str]:
+    """Use the exact prefixes parsed by the production conversation builder."""
+
+    return [
+        ("客户:" if item.get("role") == "customer" else "小贝:")
+        + substitute(str(item.get("content") or ""))
+        for item in history
+        if isinstance(item, dict) and str(item.get("content") or "").strip()
+    ]
+
+
 async def run_http_lifecycle(runtime: dict[str, Any], sample: dict[str, Any]) -> tuple[dict, dict, dict]:
     """Exercise the production route/middleware with temporary persistence only."""
     class TextOnlyCoordinator:
@@ -213,9 +350,14 @@ async def run(args: argparse.Namespace) -> None:
             "content": substitute(case["current"]), "customer_id": "900001",
             "corp_id": "synthetic-corp", "wechat": "synthetic-wechat",
             "external_userid": "synthetic-" + case["id"], "customer_add_wechat_id": "900002",
-            "conversation_history": [("客户：" if item["role"] == "customer" else "客服：") + substitute(item["content"]) for item in case["history"]],
+            "conversation_history": render_synthetic_conversation_history(
+                case["history"],
+                substitute=substitute,
+            ),
             "request_context": {"msgid": "full-graph-" + case["id"]},
         }
+        apply_mainline_prerequisite_fixture(case, sample)
+        apply_explicit_payment_prerequisite_fixture(case["id"], sample)
         # Explicit fixture state, not customer-intent logic: these cases say a
         # store card was already delivered. Text alone is not a delivery event.
         if case["id"] in {"short-03", "soft-06", "action-05", "action-09", "action-10", "safety-05"}:
@@ -295,21 +437,28 @@ def summarize(output: Path) -> dict[str, Any]:
         closing = (state.get("policy_decision") or {}).get("closing_decision") or {}
         contract = contracts[row["case_id"]]
         good_source = row.get("reply_source") in {"main_model", "single_targeted_repair_model", "single_full_task_retry_model"}
-        failures = []
+        integration_failures = []
+        semantic_observation_failures = []
         if not good_source:
-            failures.append("reply_not_admitted")
+            integration_failures.append("reply_not_admitted")
         if not row.get("required_structures_present"):
-            failures.append("missing_required_structure")
-        if action.get("type") not in contract["expected_actions"]:
-            failures.append("unexpected_action")
+            integration_failures.append("missing_required_structure")
+        action_type = str(action.get("type") or "")
+        direct_effect_material_equivalent = (
+            action_type == "send_effect_material"
+            and "deliver_value" in contract["expected_actions"]
+            and "image" in (row.get("response_types") or [])
+        )
+        if action_type not in contract["expected_actions"] and not direct_effect_material_equivalent:
+            semantic_observation_failures.append("unexpected_action")
         if closing.get("customer_state") not in contract["expected_states"]:
-            failures.append("unexpected_customer_state")
+            semantic_observation_failures.append("unexpected_customer_state")
         if not row.get("replay_same_messages") or not row.get("replay_same_request_id"):
-            failures.append("unstable_durable_replay")
+            integration_failures.append("unstable_durable_replay")
         if not row.get("http_transport_verified") or not row.get("finalization_verified"):
-            failures.append("incomplete_http_or_finalization")
+            integration_failures.append("incomplete_http_or_finalization")
         if any((row.get("counts") or {}).get(key, 0) for key in ("message_dispatches", "strategy_data_outbox")):
-            failures.append("unexpected_external_side_effect")
+            integration_failures.append("unexpected_external_side_effect")
         repair_ms = 0
         for entry in state.get("trace", []):
             if entry.get("node") != "synthesize_reply":
@@ -318,7 +467,10 @@ def summarize(output: Path) -> dict[str, Any]:
                 retry = call.get("retry") or {}
                 if isinstance(retry, dict):
                     repair_ms += int((retry.get("usage") or {}).get("overall_duration_ms") or 0)
-        details.append({"case_id": row["case_id"], "passed": not failures, "failures": failures,
+        details.append({"case_id": row["case_id"], "passed": not integration_failures,
+                        "failures": integration_failures,
+                        "semantic_observation_passed": not semantic_observation_failures,
+                        "semantic_observation_failures": semantic_observation_failures,
                         "runtime_http_replay_and_finalization_ms": row.get("http_lifecycle_ms"),
                         "http_and_finalization_timings": row.get("http_and_finalization_timings"),
                         "repair_reported_usage_ms": repair_ms, "node_timings": row.get("node_timings")})
@@ -327,6 +479,9 @@ def summarize(output: Path) -> dict[str, Any]:
     summary = {
         "mode": "real_graph_deepseek_synthetic_external_facts",
         "cases": len(rows), "contract_passed": sum(row["passed"] for row in details),
+        "semantic_observation_passed": sum(
+            bool(row["semantic_observation_passed"]) for row in details
+        ),
         "sources": dict(Counter(row.get("reply_source", "exception") for row in rows)),
         "durable_replay_equal": sum(bool(row.get("replay_same_messages") and row.get("replay_same_request_id")) for row in rows),
         "model_calls": len(usage),

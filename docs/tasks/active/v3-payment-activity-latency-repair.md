@@ -20,7 +20,11 @@
 
 - 独占模块：`reply_validation.py`、`reply_admission.py`、`reply_nodes.py` 的付款一致性与定向修复；Reply 活动事实渲染和销售 Prompt；Reply 背景只读快照、MySQL 连接耗时和直接测试/评测工具。
 - 不触碰：`v3-refund-fallback-repair` 独占的 `reply_generation.py`；第三方 SOP task/service/client/alert 文件；MytRpc 平台派发与设备映射；生产发送配置。
-- 初始最小文件集在只读取证后补充；若发现必须修改其他 active ownership、公共接口或 schema，停止该部分而不越权扩展。
+- 只读取证后的最小文件集：
+  - 第一版：`ai_paths/app/graph/nodes/reply_validation.py`、`reply_admission.py`、`reply_nodes.py`、`ai_paths/app/prompts/reply_synthesizer.py`、`reply_sales_prompt_v4.py`，以及 admission、Prompt 和全图评测的直接测试/合同文档。
+  - 第二版：`ai_paths/app/graph/nodes/layer_nodes.py`、现有存储 repository 的只读快照/连接领取耗时实现、对应性能合同测试与脱敏观测文档；是否需要其他文件以最终取证为准。
+  - 发布记录：只更新本任务、动态生产状态和历史索引，不携带原始输出或真实素材。
+- 冲突检查：当前唯一相邻 active ownership 是 `v3-refund-fallback-repair` 的 `reply_generation.py`，本任务不修改该文件；未发现第一版最小文件集与其他 active task 重叠。若后续发现必须修改其他 active ownership、公共接口或 schema，停止该部分而不越权扩展。
 
 ## 验收与发布
 
@@ -31,6 +35,13 @@
 
 ## 当前进度
 
-- 已完成：产品目标、两批发布顺序、性能门槛、内网 RDS 条件切换授权和非目标确认。
-- 待完成：只读取证、补充精确文件集、实现、全量验证、两批集成发布与生产观测。
+- 状态：`stage1_ready_for_commit_release_prerequisite_pending`。
+- 已完成：第一版付款证据、付款卡动作一致性、动态活动完整交付、定向修复、超时完整重试约束、相邻容器付款审计字段无损提升，以及 L2/L3 评测设施修正；未修改 `reply_generation.py`、MytRpc、SOP、数据库 schema、外部协议或发送配置。
+- 已确认根因：结构化活动交付引用由 `material_selection` 产生但付款校验未接纳；旧顶层 `action=none` 会压过实际付款卡；主线指向活动但 Router 未选中活动主题时 Reply 缺少完整活动事实；模型偶发把已生成的 `deposit_evidence` 放入 `policy_decision`，旧归一只处理 `sales_judgment`，导致证据被忽略并触发兜底。
+- 第一版确定性证据：修改文件 `ruff`、`git diff --check`、Prompt 逐字快照校验通过；全仓 `1027 passed, 12 skipped`，跳过项为既有环境条件测试。
+- 第一版 L2：固定基线 `183da8883ca207719463f03884786a1169bc6860`，DeepSeek、temperature `0.15`、候选 Prompt SHA `44e89831daa4e51b4b8dabe52e0b4ee11a2eeb84f86bf4013514ecff1f0dc827`；解析 `90/90`、活动完整 `10/10`、主动推进 `29/30`、明确动作 `12/12`、硬安全 `6/6`、内部语言泄漏 `0`，P50 `1932 ms`、P95 `2628 ms`。无关插入 `6/22` 按产品决策只观察。
+- 第一版付款 L3：两个修正场景从零连续三轮，付款卡 `6/6`、fallback `0/6`；每轮 HTTP、幂等重放和 finalization 通过。
+- 第一版完整 L3：`28/28` HTTP/结构/重放/finalization 合同通过，fallback `0`，真实发送 `0`，策略 outbox `0`；语义预设观察为 `24/28`，差异包括软拒绝继续解卡、重发地址后邀约及健康风险内部动作标签，不作为替代上述 L2 业务门槛的分母。
+- 发布前置：`v3-refund-fallback-repair` 代码已是当前生产 `e2bd8ccf` 的祖先，但其 active task 仍登记为未关闭；按本任务发布合同，在该独立任务正式关闭并重新现场核验生产基线前，不执行第一版发布。
+- 待完成：提交第一版候选；确认退款任务关闭后集成 clean main、现场核验并发布；随后开展第二版只读快照/耗时优化、至少 50 条隔离对照及生产自然流量验收。
 - 原始模型输出、日志和性能明细只写 ignored `artifacts/v3-payment-activity-latency-repair/`。
