@@ -2,25 +2,23 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-11T16:59:51+08:00`
+- verified_at: `2026-09-12T13:45:03+08:00`
 - source_of_truth: 服务器 release 指针、进程环境、systemd 与健康检查；本页只对上述时刻负责
 
 ## 当前部署
 
 | 角色 | Unit | Release / commit | 状态 |
 | --- | --- | --- | --- |
-| control | `ai-paths.service` | `ai-paths-unified-20260911-sop-timeout-e2bd8ccf` / `e2bd8ccf1851cee869324a461512e0379fb0f1de` | active，`NRestarts=0` |
+| control | `ai-paths.service` | `ai-paths-unified-20260912-db-batch-e01db696` / `e01db6965d91e4b1875c8d2524649537f4d96953` | active，`NRestarts=0` |
 | reply | `ai-paths-v3.service` | 同上 | active，`NRestarts=0` |
 | worker | `ai-paths-workers.service` | 同上 | active，`NRestarts=0` |
 | 管理前端 | `ai-paths-frontend.service` | `frontend-20260909-v3-supervisor-3192f19a` | active，`NRestarts=0` |
 
-三个后端角色均来自 clean `main`，`dirty=false`，产品接口版本为 V3；已核验进程实际工作目录、两份发布身份环境与发布清单一致。管理前端保持原版。本次发布将第三方 SOP 任务并发硬上限降为 4，为 `/pending`、`/sop-messages` 增加一次独立新连接恢复，任务前两次可恢复失败不告警，连续第三次失败才终态消费并告警；全局拉取连续三轮超时才发一次系统告警，成功后清零。无 schema、业务门槛、消费协议或模型配置变更。
+三个后端角色均来自 clean `main`，`dirty=false`，产品接口版本为 V3；已核验进程实际工作目录、两份发布身份环境与发布清单一致。管理前端保持原版。2026-09-12 分两次发布 V3 付款/活动修复和数据库只读快照优化：合法付款请求必须生成付款卡，活动阶段完整交付权威活动事实；同一接触边界的记忆与 SOP 已交付记录由三次独立数据库读取合并为一次快照。客户身份、订单/付款和接管状态仍逐轮新鲜读取。未切换内网 RDS，生产数据库地址、凭证、端口、schema、业务开关和发送配置均未变。
 
 2026-09-11 素材 P1 恢复时没有部署代码或重启服务：当时生产 release 为 `25e1ed66`，已从受测 clean `main@5fd237cc` 使用冻结工具向现有表回填 231 个已验证别名，对应 217 个 canonical 素材身份，并按精确证据恢复 22 条历史 `response_committed` 占用。回填前后四个 unit 均 active、`NRestarts=0`，三个后端健康检查为 200，近 40 分钟未发现 5xx、Traceback 或 CRITICAL 标记。
 
-本次为用户知悉风险后的例外上线，并非完整质量验收通过。确定性回归 865 项通过；部署后 14 项接口/访问保护检查通过；服务器隔离完整模型图抽样 6/6（价格、案例、地址、活动、退订、已付服务），零消息派发和策略外发。正式公网回复与回调维持来源 IP 白名单，非白名单请求返回 403；未模拟受信平台真实送达。
-
-部署后 90 个虚构 Reply 场景：解析 90/90、综合 79/90、硬安全 6/6、明确动作 11/12、主动推进 27/30、活动完整性 7/10、无关插入 3/22，零模型请求错误和 GPT 回退。明确动作未达标项为效果回答的动作标签不符合预设，并非完全没有回答效果。活动遗漏和不必要推进仍需修正，完整 L3 与业务盲审仍未完成；抽样通过不可替代全部验收。
+本次发布前全仓 `1033 passed, 12 skipped`；90 条固定 L2 为活动完整性 `10/10`、主动推进 `29/30`、明确动作 `12/12`、硬安全 `6/6`、内部语言泄漏 `0`。发布后以生产已安装代码、真实 DeepSeek 和隔离 SQLite 运行 28 条完整 HTTP L3：合同 `28/28`、幂等重放 `28/28`、finalization `28/28`、fallback `0`、真实消息派发 `0`、策略 outbox `0`，端到端 P50 `5250 ms`、P95 `9693 ms`。三个后端健康检查 200，Nginx active，三个 unit `NRestarts=0`，发布后 warning 级日志为空。自然流量速度门槛仍需累计至少 30 条实际进入 AI 图的新请求后验收，不能用隔离 L3 替代。
 
 ## 当前模型事实
 
@@ -59,8 +57,8 @@ Reply 有效配置：`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`�
 
 ## 回滚点
 
-- 后端与 Reply previous：`ai-paths-unified-20260911-refund-fallback-31882257`，完整 SHA `31882257f955dcf2c2c366755ebd18534ee9d0a5`。
-- 本次发布前两次切换因发布脚本只切代码、未同步两份发布身份，健康检查按设计回滚；同时发现旧错误处理会在回滚后错误打印成功。修正为代码、并发和两份发布身份一体切换/回滚，三个角色统一验活后重新部署成功。发布包 SHA256 为 `a3beb499df68a67e915054a1f6d9f4398a87f52bc911d391afd5816e0f991ec9`；服务器受限目录 `/opt/ai-paths/artifacts/` 保存环境备份和发布脚本，密钥文件不下载、不入 Git。
+- 后端与 Reply previous：`ai-paths-unified-20260912-payment-activity-086b83e2`，完整 SHA `086b83e222eb962affcaa3745ea2b651ae4a86fd`。
+- 第二版发布包 SHA256 为 `1a869b3c99d902a4876b772a9ce5e28987fddaf3d9bcb259f5e88adfd67bf7be`；第一版发布包 SHA256 为 `59294a6b348273085b7f5d87c26755624f7a333a48c6d037fe7dfb631a05f6c3`。服务器受限目录 `/opt/ai-paths/artifacts/` 保存两次切换前的环境备份和发布脚本；回滚必须同步恢复 control/reply 指针及两份发布身份环境，再统一重启三个后端角色。密钥文件不下载、不入 Git。
 - 前端 previous：`frontend-20260908-v3-proactive-05723ce3`。
 - 数据库迁移前备份已存在；新增结构兼容旧代码，代码回滚不要求破坏性降级。
 - 素材回填冻结计划 canonical checksum 为 `ff705fc9d69d34773a815bb49e2a2bddcb31cb772d90135b081581fabafff909`；回填前空表备份 checksum 为 `e8e1bf9b5d01f8ae9ba28d1063a1e3fb9283c0a33f614b9a91f08646286c7099`，受限恢复产物保存在服务器 `/opt/ai-paths/artifacts/material-governance-production-audit-4e299c1a/`。已有占用时自动 rollback 会拒绝删除，恢复必须按该备份和冻结进度做独立人工审计，不能释放真实新占用。

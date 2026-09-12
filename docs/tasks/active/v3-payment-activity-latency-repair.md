@@ -35,7 +35,7 @@
 
 ## 当前进度
 
-- 状态：`stage2_candidate_validated_release_prerequisites_pending`。
+- 状态：`stage2_deployed_natural_traffic_monitoring`。
 - 已完成：第一版付款证据、付款卡动作一致性、动态活动完整交付、定向修复、超时完整重试约束、相邻容器付款审计字段无损提升，以及 L2/L3 评测设施修正；未修改 `reply_generation.py`、MytRpc、SOP、数据库 schema、外部协议或发送配置。
 - 已确认根因：结构化活动交付引用由 `material_selection` 产生但付款校验未接纳；旧顶层 `action=none` 会压过实际付款卡；主线指向活动但 Router 未选中活动主题时 Reply 缺少完整活动事实；模型偶发把已生成的 `deposit_evidence` 放入 `policy_decision`，旧归一只处理 `sales_judgment`，导致证据被忽略并触发兜底。
 - 第一版候选：提交 `086b83e222eb962affcaa3745ea2b651ae4a86fd` 已推送，保持为可独立发布的第一版边界。
@@ -47,8 +47,11 @@
 - 第二版实现：同一销售接触边界的记忆与 SOP 已交付记录合并为一次只读数据库快照，旧接口仍保留；客户身份、订单/付款、接管状态继续每轮新鲜读取。新增入口连接领取、预检总耗时、快照连接/查询和 Reply 核心持久化的脱敏指标；新增只读聚合审计工具，不输出客户原文、身份、数据库地址或凭证。
 - 第二版一致性与性能证据：快照输出与原三次独立读取逐字段一致，连接领取从 `3` 次降为 `1` 次；延迟注入测试证明移除两次远程连接等待；不同接待 WeChat/外部联系人不共享 SOP 状态。本次完整全仓为 `1033 passed, 12 skipped`；修改文件 `ruff`、`compileall`、`git diff --check` 通过。全仓 `ruff` 仍有 `45` 个基线未用导入/变量问题，均不在本任务文件中，未越权清理。未改前端，因此无需前端构建。
 - 第二版隔离全链路：评测工具增加显式全矩阵 HTTP L3 模式；在临时 SQLite、虚构身份、虚构已验证素材且硬阻断发送下，生产对照并发 `2` 的 `60` 个不同场景为 `60/60` HTTP/结构/重放/finalization 合同通过，fallback `0`、真实发送 `0`、策略 outbox `0`。此前默认 L3 子集连续两轮另有 `56/56` 通过。一次未登记虚构素材的 `action-03` 缺图被证明为素材身份门禁正确阻断，登记隔离素材后通过。压力观察中并发 `3` 为 `58/60`，两条分别因模型格式错误和总预算超时进入恢复/兜底；改为单并发后连续 `6/6` 通过，因此不判定为本次只读快照回退，但保留为上线后负载时段兜底监控风险。
-- 发布前置：`v3-refund-fallback-repair` 代码已是当前生产 `e2bd8ccf` 的祖先，但其 active task 仍登记为未关闭；按本任务发布合同，在该独立任务正式关闭并重新现场核验生产基线前，不执行第一版发布。
+- 发布前置复核：生产基线已包含并验收 `sop-timeout-recovery`；相邻 `v3-refund-fallback-repair` 代码已在生产祖先中，本任务未修改其独占 `reply_generation.py`。产品负责人随后明确授权本任务继续分两版发布。
 - 第二版内网 RDS 前置：仓库和生产 Reply 环境目前没有提供可核验的同 VPC 内网 endpoint；因此不得猜测或切换 `AICS_MYSQL_HOST`。取得运维提供的候选地址后，仍必须验证 `server_uuid`、数据库名、TLS、schema/索引指纹和只读样本一致，并先备份 Reply 专用 `v3.env`。
-- 第二版候选：提交 `87b48076` 已推送；分支头同时包含第一版独立提交 `086b83e2`，工作区干净。
-- 待完成：由 `v3-refund-fallback-repair` 所有者正式关闭其 active task 后，集成 clean main、重新现场核验并发布第一版；第一版稳定后再发布第二版代码。第二版上线后累计至少 `30` 条进入 AI 图的自然请求，达到 P50 `<=15s`、P95 `<=25s` 且 fallback 不升、5xx/重启为 `0` 才算通过；内网 RDS 地址未提供前，不执行主机切换。
+- 第二版候选：实现提交 `87b48076` 与证据提交 `e01db6965d91e4b1875c8d2524649537f4d96953` 已推送；分支头同时包含第一版独立提交 `086b83e2`。
+- 生产发布：第一版 `086b83e222eb962affcaa3745ea2b651ae4a86fd` 先 fast-forward 进入 main 并发布为 `ai-paths-unified-20260912-payment-activity-086b83e2`；健康与路由检查通过后，第二版 `e01db6965d91e4b1875c8d2524649537f4d96953` fast-forward 进入 main 并发布为 `ai-paths-unified-20260912-db-batch-e01db696`。control、reply、worker 当前使用同一完整 SHA，`dirty=false`、健康检查 200、Nginx active、`NRestarts=0`，warning 级日志为空。第二版 previous 为第一版，可直接回滚。两次发布均未执行数据库迁移、真实客户测试发送、第三方写入或前端发布。
+- 发布后隔离 L3：使用生产已安装 `e01db696` 代码、真实 DeepSeek、虚构身份、隔离 SQLite 和硬阻断发送完成默认完整图 `28/28`；幂等重放 `28/28`、finalization `28/28`、fallback `0`、真实发送 `0`、策略 outbox `0`，端到端 P50 `5250 ms`、P95 `9693 ms`、最大 `9984 ms`。语义预设观察 `25/28`，不替代既有 90 条业务门槛。
+- 数据库配置复核：`AICS_MYSQL_HOST` 在发布前后逐字一致，未猜测或切换内网 RDS；两份环境文件仅更新 release 身份字段并各自保留受限备份。
+- 待完成：第二版上线后累计至少 `30` 条进入 AI 图的自然请求，达到 P50 `<=15s`、P95 `<=25s` 且 fallback 不升、5xx/重启为 `0` 才算最终性能验收通过。发布后初次审计的最新持久化自然样本早于本次上线，不能冒充新版本数据；任务保持 active 监控。内网 RDS 权限未提供前，不执行主机切换。
 - 原始模型输出、日志和性能明细只写 ignored `artifacts/v3-payment-activity-latency-repair/`。
