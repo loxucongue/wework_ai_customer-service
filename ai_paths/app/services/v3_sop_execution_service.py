@@ -140,6 +140,51 @@ class SopExecutionService(SopExecutionCore):
             "unfinished_sops": [_sop_progress_summary(pack) for pack in unfinished],
         }
 
+    def reply_chain_customer_snapshot(
+        self,
+        request: ChatRequest,
+        *,
+        request_context: dict[str, Any],
+        sales_contact_key: str,
+    ) -> dict[str, Any]:
+        """Load memory and SOP delivery facts in one scoped repository visit."""
+
+        loader = getattr(self.repository, "load_reply_customer_snapshot", None)
+        if not callable(loader):
+            return {}
+        identity = _chat_identity(request, request_context)
+        snapshot = loader(
+            sales_contact_key=str(sales_contact_key or "").strip(),
+            customer_id=identity["customer_id"],
+            external_userid=identity["external_userid"],
+            corp_id=identity.get("corp_id", ""),
+            wechat=identity.get("wechat", ""),
+        )
+        enabled_packs = _enabled_chat_packs(self.sop_reply_pack_service.load())
+        completed_ids = set(snapshot.get("completed_pack_ids") or [])
+        completed_categories = set(snapshot.get("completed_categories") or [])
+        unfinished = _unfinished_reply_packs(
+            enabled_packs,
+            completed_ids,
+            completed_categories,
+        )
+        status = "available" if _string(identity.get("wechat")) else "scope_unavailable"
+        return {
+            "memory": snapshot.get("memory"),
+            "sop_progress": {
+                "status": status,
+                "source": "scoped_sop_send_records",
+                "reason": "" if status == "available" else "wechat_required_for_sop_scope",
+                "enabled_pack_count": len(enabled_packs),
+                "completed_pack_ids": sorted(completed_ids),
+                "completed_categories": sorted(completed_categories),
+                "unfinished_sops": [_sop_progress_summary(pack) for pack in unfinished]
+                if status == "available"
+                else [],
+            },
+            "storage_timing": dict(snapshot.get("storage_timing") or {}),
+        }
+
     def _reply_chain_sop_progress_parts(
         self,
         identity: dict[str, str],
@@ -154,20 +199,11 @@ class SopExecutionService(SopExecutionCore):
             )
         )
         completed_categories = set(_sent_categories(self.repository, identity))
-        completed_mainline_stages = _completed_mainline_stages(
+        unfinished = _unfinished_reply_packs(
+            enabled_packs,
             completed_ids,
             completed_categories,
         )
-        unfinished = [
-            pack
-            for pack in enabled_packs
-            if _string(pack.get("id")) not in completed_ids
-            and _pack_category(pack) not in completed_categories
-            and not (
-                mainline_stage_for_event_pack(pack) == "activity_and_price"
-                and "activity_and_price" in completed_mainline_stages
-            )
-        ]
         return enabled_packs, completed_ids, completed_categories, unfinished
 
     async def evaluate_chat_gate(
@@ -2565,6 +2601,27 @@ def _pack_has_scope(pack: dict[str, Any], scope: str) -> bool:
 
 def _pack_category(pack: dict[str, Any]) -> str:
     return _string(pack.get("sop_category")) or _string(pack.get("id"))
+
+
+def _unfinished_reply_packs(
+    enabled_packs: list[dict[str, Any]],
+    completed_ids: set[str],
+    completed_categories: set[str],
+) -> list[dict[str, Any]]:
+    completed_mainline_stages = _completed_mainline_stages(
+        completed_ids,
+        completed_categories,
+    )
+    return [
+        pack
+        for pack in enabled_packs
+        if _string(pack.get("id")) not in completed_ids
+        and _pack_category(pack) not in completed_categories
+        and not (
+            mainline_stage_for_event_pack(pack) == "activity_and_price"
+            and "activity_and_price" in completed_mainline_stages
+        )
+    ]
 
 
 def _send_once_key(identity: dict[str, str], sop_pack_id: str) -> str:

@@ -224,7 +224,12 @@ class ConversationRepositoryMixin:
 
         operation_started = time.perf_counter()
         statement_count = 0
+        connection_started = time.perf_counter()
         with self.store.connect() as raw_conn:
+            connection_acquire_ms = max(
+                0,
+                int((time.perf_counter() - connection_started) * 1000),
+            )
             class _CountedConnection:
                 def execute(self, *args: Any, **kwargs: Any) -> Any:
                     nonlocal statement_count
@@ -288,6 +293,7 @@ class ConversationRepositoryMixin:
         return {
             **prepared,
             "duration_ms": max(0, int((time.perf_counter() - operation_started) * 1000)),
+            "connection_acquire_ms": connection_acquire_ms,
             "connection_count": 1,
             "statement_count": statement_count,
             "outreach_cancel": cancellation,

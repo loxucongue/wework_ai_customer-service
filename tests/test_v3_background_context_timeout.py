@@ -121,3 +121,78 @@ def test_sop_progress_loads_in_parallel_and_is_reused(tmp_path: Path) -> None:
         shared["shared_context"]["authoritative_facts"]["sop_progress"]["completed_pack_ids"]
         == ["pack-1"]
     )
+
+
+def test_customer_snapshot_replaces_duplicate_memory_and_sop_reads(tmp_path: Path) -> None:
+    settings = Settings().model_copy(update={"trace_log_dir": tmp_path / "trace"})
+    calls: list[str] = []
+
+    class _MemoryFromSnapshot:
+        def load(self, _customer_id: str):
+            raise AssertionError("independent memory read must not run")
+
+        def load_preloaded(self, customer_id: str, memory):
+            calls.append(f"memory:{customer_id}")
+            return {**memory, "sales_contact_key": customer_id}
+
+    def load_sop(_state):
+        raise AssertionError("independent SOP read must not run")
+
+    def load_snapshot(_state):
+        calls.append("snapshot")
+        return {
+            "memory": {
+                "portrait": {"skin": "dry"},
+                "basic_info": {"city": "杭州"},
+                "history_events": [],
+                "lifecycle_stage": "interested",
+            },
+            "sop_progress": {
+                "status": "available",
+                "source": "scoped_sop_send_records",
+                "completed_pack_ids": ["pack-1"],
+                "completed_categories": ["effect"],
+                "unfinished_sops": [],
+            },
+            "storage_timing": {
+                "connection_acquire_ms": 4,
+                "memory_query_ms": 5,
+                "sop_query_ms": 6,
+                "connection_count": 1,
+                "statement_count": 3,
+            },
+        }
+
+    background = layer_nodes.create_background_context_layer(
+        trace_logger=TraceLogger(settings),
+        memory_store=_MemoryFromSnapshot(),  # type: ignore[arg-type]
+        customer_context_service=None,
+        customer_store_knowledge_service=None,
+        sop_progress_loader=load_sop,
+        customer_snapshot_loader=load_snapshot,
+    )
+    state = {
+        "request_id": "request-1",
+        "customer_id": "customer-1",
+        "platform_customer_id": "customer-1",
+        "corp_id": "corp-1",
+        "external_userid": "external-1",
+        "user_id": 88,
+        "wechat": "SL8003",
+        "sales_contact_key": "corp-1|SL8003|external-1",
+        "request_context": {},
+        "trace": [],
+    }
+
+    result = asyncio.run(background(state))  # type: ignore[arg-type]
+
+    assert calls == ["snapshot", "memory:corp-1|SL8003|external-1"]
+    assert result["customer_profile"] == {"skin": "dry"}
+    assert result["preloaded_sop_progress"]["completed_pack_ids"] == ["pack-1"]
+    snapshot_step = next(
+        item for item in result["background_substeps"] if item["name"] == "customer_read_snapshot"
+    )
+    assert snapshot_step["connection_acquire_ms"] == 4
+    assert snapshot_step["memory_query_ms"] == 5
+    assert snapshot_step["sop_query_ms"] == 6
+    assert snapshot_step["connection_count"] == 1

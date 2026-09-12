@@ -359,7 +359,12 @@ class RunRepositoryMixin:
         operation_started = time.perf_counter()
         now = utc_now_iso()
         statement_count = 0
+        connection_started = time.perf_counter()
         with self.store.connect() as conn:
+            connection_acquire_ms = max(
+                0,
+                int((time.perf_counter() - connection_started) * 1000),
+            )
             def execute(*args: Any, **kwargs: Any) -> Any:
                 nonlocal statement_count
                 statement_count += 1
@@ -413,6 +418,7 @@ class RunRepositoryMixin:
                     "duration_ms": max(
                         0, int((time.perf_counter() - operation_started) * 1000)
                     ),
+                    "connection_acquire_ms": connection_acquire_ms,
                     "connection_count": 1,
                     "statement_count": statement_count,
                     "generation_key": generation_key,
@@ -533,6 +539,7 @@ class RunRepositoryMixin:
                         "duration_ms": max(
                             0, int((time.perf_counter() - operation_started) * 1000)
                         ),
+                        "connection_acquire_ms": connection_acquire_ms,
                         "connection_count": 1,
                         "statement_count": statement_count,
                         "generation_key": generation_key,
@@ -610,6 +617,7 @@ class RunRepositoryMixin:
                 )
         return {
             "duration_ms": max(0, int((time.perf_counter() - operation_started) * 1000)),
+            "connection_acquire_ms": connection_acquire_ms,
             "connection_count": 1,
             "statement_count": statement_count,
             "generation_key": generation_key,
@@ -1259,6 +1267,37 @@ class RunRepositoryMixin:
             if processing_finished_at:
                 output_snapshot["runtime_processing_finished_at"] = processing_finished_at
             effective_duration_ms = max(int(row["duration_ms"] or 0), max(0, int(duration_ms or 0)))
+            performance = (
+                dict(output_snapshot.get("performance") or {})
+                if isinstance(output_snapshot.get("performance"), dict)
+                else {}
+            )
+            response_meta = (
+                response_body.get("meta")
+                if isinstance(response_body, dict)
+                and isinstance(response_body.get("meta"), dict)
+                else {}
+            )
+            persistence_metrics = (
+                response_meta.get("persistence_metrics")
+                if isinstance(response_meta.get("persistence_metrics"), dict)
+                else {}
+            )
+            reply_core = (
+                persistence_metrics.get("reply_core")
+                if isinstance(persistence_metrics.get("reply_core"), dict)
+                else {}
+            )
+            if reply_core:
+                performance["reply_core_persistence"] = {
+                    key: max(0, int(reply_core.get(key) or 0))
+                    for key in (
+                        "duration_ms",
+                        "connection_acquire_ms",
+                        "connection_count",
+                        "statement_count",
+                    )
+                }
             output_snapshot.update(
                 {
                     "http_request_started_at": str(started_at or output_snapshot.get("http_request_started_at") or ""),
@@ -1266,6 +1305,7 @@ class RunRepositoryMixin:
                     "http_duration_ms": effective_duration_ms,
                     "runtime_finished_at": str(finished_at or processing_finished_at),
                     "runtime_updated_at": str(finished_at or output_snapshot.get("runtime_updated_at") or ""),
+                    "performance": performance,
                 }
             )
             if isinstance(response_body, dict):

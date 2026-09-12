@@ -323,7 +323,11 @@ async def run(args: argparse.Namespace) -> None:
     fact_actions._snapshot_store_values = lambda: copy.deepcopy(SyntheticStores().load()["stores"])
     if args.baseline_ref:
         reply_prompts.PARALLEL_REPLY_SYSTEM_PROMPT = _baseline_prompt(args.baseline_ref)
-    cases = [copy.deepcopy(case) for case in CASES if case["l3"]]
+    cases = [
+        copy.deepcopy(case)
+        for case in CASES
+        if args.all_cases or case["l3"]
+    ]
     if args.case_ids:
         cases = [case for case in cases if case["id"] in args.case_ids.split(",")]
     args.output.mkdir(parents=True, exist_ok=True)
@@ -426,7 +430,11 @@ async def run(args: argparse.Namespace) -> None:
     await asyncio.gather(*(guarded(case) for case in cases))
 
 
-def summarize(output: Path) -> dict[str, Any]:
+def summarize(
+    output: Path,
+    *,
+    expected_case_ids: set[str] | None = None,
+) -> dict[str, Any]:
     rows = json.loads((output / "results.json").read_text(encoding="utf-8"))
     contracts = {case["id"]: case for case in CASES}
     details = []
@@ -492,7 +500,12 @@ def summarize(output: Path) -> dict[str, Any]:
         "http_transport_verified": bool(rows) and all(row.get("http_transport_verified") for row in rows),
         "finalization_verified": bool(rows) and all(row.get("finalization_verified") for row in rows),
         "complete_l3_passed": (
-            {row["case_id"] for row in rows} == {case["id"] for case in CASES if case["l3"]}
+            {row["case_id"] for row in rows}
+            == (
+                expected_case_ids
+                if expected_case_ids is not None
+                else {case["id"] for case in CASES if case["l3"]}
+            )
             and all(row["passed"] for row in details)
             and bool(usage)
             and all(str(item.get("model") or item.get("winner_model") or "") == "deepseek-chat"
@@ -527,10 +540,21 @@ if __name__ == "__main__":
     parser.add_argument("--baseline-ref", default="")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--register-synthetic-media", action="store_true")
+    parser.add_argument(
+        "--all-cases",
+        action="store_true",
+        help="Run every selected synthetic case through HTTP L3, not only the default L3 subset.",
+    )
     parser.add_argument("--summarize-only", action="store_true")
     args = parser.parse_args()
     if not args.summarize_only:
         asyncio.run(run(args))
-    summary = summarize(args.output)
+    selected_ids = {
+        str(case["id"])
+        for case in CASES
+        if (args.all_cases or case["l3"])
+        and (not args.case_ids or str(case["id"]) in args.case_ids.split(","))
+    }
+    summary = summarize(args.output, expected_case_ids=selected_ids)
     print(json.dumps({key: value for key, value in summary.items() if key != "details"}, ensure_ascii=False))
     raise SystemExit(0 if summary["complete_l3_passed"] else 1)

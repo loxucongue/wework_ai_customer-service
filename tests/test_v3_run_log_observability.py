@@ -272,12 +272,31 @@ def test_http_lifecycle_timing_uses_ingress_identity_and_full_duration(tmp_path:
         started_at="2026-09-07T08:00:00+00:00",
         finished_at="2026-09-07T08:00:02.250000+00:00",
         duration_ms=2250,
+        response_body={
+            "meta": {
+                "persistence_metrics": {
+                    "reply_core": {
+                        "duration_ms": 321,
+                        "connection_acquire_ms": 120,
+                        "connection_count": 1,
+                        "statement_count": 7,
+                        "ignored_detail": "must-not-be-persisted",
+                    }
+                }
+            }
+        },
     ) is True
     run = repository.get_run("run-timing", include_debug=False)["run"]
     assert run["duration_ms"] == 2250
     assert run["started_at"] == "2026-09-07T08:00:00+00:00"
     assert run["finished_at"] == "2026-09-07T08:00:02.250000+00:00"
     assert run["output_snapshot"]["http_duration_ms"] == 2250
+    assert run["output_snapshot"]["performance"]["reply_core_persistence"] == {
+        "duration_ms": 321,
+        "connection_acquire_ms": 120,
+        "connection_count": 1,
+        "statement_count": 7,
+    }
 
 
 def test_save_run_preserves_http_ingress_timing_and_batches_traces(tmp_path: Path) -> None:

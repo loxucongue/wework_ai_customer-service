@@ -85,6 +85,17 @@ class CustomerMemoryStore:
             memory = self.repository.load_memory(customer_id)
             if memory:
                 return self._with_scope_key(memory, customer_id)
+        return self.load_preloaded(customer_id, None)
+
+    def load_preloaded(
+        self,
+        customer_id: str,
+        memory: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Normalize a repository snapshot or use the existing local fallback."""
+
+        if isinstance(memory, dict) and memory:
+            return self._with_scope_key(memory, customer_id)
         path = self._path(customer_id)
         if not path.exists():
             return self._empty(customer_id)

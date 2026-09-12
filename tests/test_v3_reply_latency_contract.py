@@ -57,6 +57,7 @@ def test_prepare_v3_request_persists_ingress_in_one_repository_operation(tmp_pat
 
     assert result["conversation_id"] == "conversation-1"
     assert result["connection_count"] == 1
+    assert result["connection_acquire_ms"] >= 0
     run = repository.get_run("request-1")["run"]
     assert run["output_snapshot"]["runtime_phase"] == "request_received"
     assert run["output_snapshot"]["http_request_ingress_id"] == "ingress-1"

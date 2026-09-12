@@ -275,6 +275,7 @@ def create_background_context_layer(
     follow_taxonomy_fetcher: Callable[[], Any] | None = None,
     closing_catalog_fetcher: Callable[[], Any] | None = None,
     sop_progress_loader: Callable[[AgentState], Any] | None = None,
+    customer_snapshot_loader: Callable[[AgentState], Any] | None = None,
 ) -> Callable[[AgentState], Any]:
     async def background_context_layer(state: AgentState) -> dict[str, Any]:
         request_context = request_context_from_state(state)
@@ -321,9 +322,6 @@ def create_background_context_layer(
                     },
                 )
             )
-            memory_task = asyncio.create_task(
-                asyncio.to_thread(_timed_call, "memory_load", _load_memory, memory_store, state)
-            )
             identity_task = asyncio.create_task(
                 asyncio.to_thread(
                     _timed_call,
@@ -334,62 +332,99 @@ def create_background_context_layer(
                     request_context,
                 )
             )
-            sop_progress_task = asyncio.create_task(
-                asyncio.to_thread(
-                    _timed_call,
-                    "sop_progress",
-                    sop_progress_loader or _disabled_sop_progress,
-                    state,
+            identity_wait = _await_timed_background_task(
+                identity_task,
+                name="get_customer_info",
+                timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                timeout_result={
+                    "request_context": {},
+                    "identity_context": {},
+                    "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                },
+            )
+            if customer_snapshot_loader is not None and not state.get("test_isolated"):
+                snapshot_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        _timed_call,
+                        "customer_read_snapshot",
+                        customer_snapshot_loader,
+                        state,
+                    )
                 )
-            )
-            memory_result, identity_result, sop_progress_result = await asyncio.gather(
-                _await_timed_background_task(
-                    memory_task,
-                    name="memory_load",
-                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
-                    timeout_result={
-                        "customer_profile": {},
-                        "customer_basic_info": {},
-                        "history_events": [],
-                        "lifecycle_stage": "",
-                        "saved_memory": {},
-                        "memory_scope_status": "timeout",
-                        "memory_error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
-                    },
-                ),
-                _await_timed_background_task(
-                    identity_task,
-                    name="get_customer_info",
-                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
-                    timeout_result={
-                        "request_context": {},
-                        "identity_context": {},
-                        "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
-                    },
-                ),
-                _await_timed_background_task(
-                    sop_progress_task,
-                    name="sop_progress",
-                    timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
-                    timeout_result={
-                        "status": "error",
-                        "source": "scoped_sop_send_records",
-                        "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
-                        "completed_pack_ids": [],
-                        "completed_categories": [],
-                        "unfinished_sops": [],
-                    },
-                ),
-            )
+                snapshot_result, identity_result = await asyncio.gather(
+                    _await_timed_background_task(
+                        snapshot_task,
+                        name="customer_read_snapshot",
+                        timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                        timeout_result={
+                            "memory": None,
+                            "sop_progress": _timeout_sop_progress(),
+                            "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                        },
+                    ),
+                    identity_wait,
+                )
+                snapshot = snapshot_result.get("result") if isinstance(snapshot_result.get("result"), dict) else {}
+                memory_result = {
+                    "name": "memory_load",
+                    "duration_ms": snapshot_result.get("duration_ms", 0),
+                    "result": _memory_from_customer_snapshot(memory_store, state, snapshot.get("memory")),
+                    "cache_hit": False,
+                    "error": snapshot_result.get("error", ""),
+                }
+                sop_progress_result = {
+                    "name": "sop_progress",
+                    "duration_ms": snapshot_result.get("duration_ms", 0),
+                    "result": snapshot.get("sop_progress") or _timeout_sop_progress(),
+                    "cache_hit": False,
+                    "error": snapshot_result.get("error", ""),
+                }
+                substeps.append(_without_result(snapshot_result))
+            else:
+                memory_task = asyncio.create_task(
+                    asyncio.to_thread(_timed_call, "memory_load", _load_memory, memory_store, state)
+                )
+                sop_progress_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        _timed_call,
+                        "sop_progress",
+                        sop_progress_loader or _disabled_sop_progress,
+                        state,
+                    )
+                )
+                memory_result, identity_result, sop_progress_result = await asyncio.gather(
+                    _await_timed_background_task(
+                        memory_task,
+                        name="memory_load",
+                        timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                        timeout_result={
+                            "customer_profile": {},
+                            "customer_basic_info": {},
+                            "history_events": [],
+                            "lifecycle_stage": "",
+                            "saved_memory": {},
+                            "memory_scope_status": "timeout",
+                            "memory_error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+                        },
+                    ),
+                    identity_wait,
+                    _await_timed_background_task(
+                        sop_progress_task,
+                        name="sop_progress",
+                        timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
+                        timeout_result=_timeout_sop_progress(),
+                    ),
+                )
             memory = memory_result["result"]
             identity = identity_result["result"]
-            substeps.extend(
-                [
-                    _without_result(memory_result),
-                    _without_result(identity_result),
-                    _without_result(sop_progress_result),
-                ]
-            )
+            if customer_snapshot_loader is None or state.get("test_isolated"):
+                substeps.extend(
+                    [
+                        _without_result(memory_result),
+                        _without_result(sop_progress_result),
+                    ]
+                )
+            substeps.append(_without_result(identity_result))
 
             identity_context = identity.get("request_context") if isinstance(identity, dict) else {}
             scoped_request_context = {**request_context, **identity_context} if isinstance(identity_context, dict) else request_context
@@ -555,6 +590,17 @@ def _disabled_sop_progress(_state: AgentState) -> dict[str, Any]:
     }
 
 
+def _timeout_sop_progress() -> dict[str, Any]:
+    return {
+        "status": "error",
+        "source": "scoped_sop_send_records",
+        "error": f"timeout_after_{BACKGROUND_EXTERNAL_TIMEOUT_SECONDS:g}s",
+        "completed_pack_ids": [],
+        "completed_categories": [],
+        "unfinished_sops": [],
+    }
+
+
 def _background_fact_views(
     *,
     identity: Any,
@@ -678,12 +724,36 @@ def _without_result(item: dict[str, Any]) -> dict[str, Any]:
     summary = item.get("summary")
     if isinstance(summary, dict):
         output.update(summary)
+    result = item.get("result")
+    storage_timing = result.get("storage_timing") if isinstance(result, dict) else None
+    if isinstance(storage_timing, dict):
+        for key in (
+            "connection_acquire_ms",
+            "memory_query_ms",
+            "sop_query_ms",
+            "connection_count",
+            "statement_count",
+        ):
+            if key in storage_timing:
+                output[key] = max(0, int(storage_timing.get(key) or 0))
     return output
 
 
 def _substep_tool_output(item: dict[str, Any]) -> dict[str, Any]:
     output = {"duration_ms": item.get("duration_ms", 0)}
-    for key in ("status", "reason", "missing", "message_count", "used_message_count", "limit"):
+    for key in (
+        "status",
+        "reason",
+        "missing",
+        "message_count",
+        "used_message_count",
+        "limit",
+        "connection_acquire_ms",
+        "memory_query_ms",
+        "sop_query_ms",
+        "connection_count",
+        "statement_count",
+    ):
         if key in item:
             output[key] = item.get(key)
     return output
@@ -785,6 +855,34 @@ def _load_memory(memory_store: CustomerMemoryStore | None, state: AgentState) ->
         "history_events": memory.get("history_events", []) if isinstance(memory, dict) else [],
         "lifecycle_stage": memory.get("lifecycle_stage", "") if isinstance(memory, dict) else "",
         "saved_memory": memory if isinstance(memory, dict) else {},
+        "memory_scope_status": "scoped" if sales_contact_key else "skipped_missing_wechat_scope",
+    }
+
+
+def _memory_from_customer_snapshot(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    snapshot_memory: Any,
+) -> dict[str, Any]:
+    sales_contact_key = str(state.get("sales_contact_key") or "").strip()
+    if memory_store is None or not sales_contact_key:
+        memory: dict[str, Any] = {}
+    else:
+        load_preloaded = getattr(memory_store, "load_preloaded", None)
+        memory = (
+            load_preloaded(
+                sales_contact_key,
+                snapshot_memory if isinstance(snapshot_memory, dict) else None,
+            )
+            if callable(load_preloaded)
+            else (snapshot_memory if isinstance(snapshot_memory, dict) else {})
+        )
+    return {
+        "customer_profile": memory.get("portrait", {}),
+        "customer_basic_info": memory.get("basic_info", {}),
+        "history_events": memory.get("history_events", []),
+        "lifecycle_stage": memory.get("lifecycle_stage", ""),
+        "saved_memory": memory,
         "memory_scope_status": "scoped" if sales_contact_key else "skipped_missing_wechat_scope",
     }
 

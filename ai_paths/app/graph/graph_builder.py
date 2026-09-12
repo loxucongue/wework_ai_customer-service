@@ -164,6 +164,24 @@ def _build_nodes(
             if sop_execution_service is not None
             else None
         ),
+        customer_snapshot_loader=(
+            (
+                lambda state: sop_execution_service.reply_chain_customer_snapshot(
+                    _request_from_state(state),
+                    request_context=dict(state.get("request_context") or {}),
+                    sales_contact_key=str(state.get("sales_contact_key") or ""),
+                )
+            )
+            if (
+                sop_execution_service is not None
+                and memory_store is not None
+                and memory_store.repository is sop_execution_service.repository
+                and callable(
+                    getattr(sop_execution_service, "reply_chain_customer_snapshot", None)
+                )
+            )
+            else None
+        ),
     )
     shared_context = create_shared_context_node(
         trace_logger=trace_logger,

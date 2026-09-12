@@ -452,6 +452,9 @@ class ChatRuntime:
             ingress_started,
             metadata={
                 "repository_ms": int(ingress_result.get("duration_ms") or 0),
+                "connection_acquire_ms": int(
+                    ingress_result.get("connection_acquire_ms") or 0
+                ),
                 "connection_count": int(ingress_result.get("connection_count") or 0),
                 "statement_count": int(ingress_result.get("statement_count") or 0),
                 "outreach_cancel": ingress_result.get("outreach_cancel", {}),
@@ -508,6 +511,7 @@ class ChatRuntime:
                 }
             )
         initial_state = self._initial_state(effective_request, request_id, effective_context)
+        _record_v3_phase(effective_context, "preflight_total", ingress_started)
         _copy_generation_context_to_state(initial_state, effective_context)
         if decision and self._platform_reply_coordinator:
             initial_state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
