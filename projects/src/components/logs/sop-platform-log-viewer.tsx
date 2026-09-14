@@ -513,11 +513,25 @@ function RunDetail({ run }: { run: RunItem }) {
         <h3 className="text-sm font-semibold">完整原始数据</h3>
         <RawJsonDetails title="第三方原始任务" value={run.raw_data?.platform_tasks || []} />
         <RawJsonDetails title="本地处理审计" value={run.raw_data?.local_audit || run.raw_debug || {}} />
+        <RawJsonDetails title="主动发送接口请求原始数据" value={outreachRequestEvidence(run)} />
         <RawJsonDetails title="消息发送原始数据" value={run.raw_data?.message_delivery || run.delivery?.response || {}} />
         <RawJsonDetails title="SOP 消费回传原始数据" value={run.raw_data?.consume_attempts || run.consume?.results || []} />
       </section>
     </div>
   );
+}
+
+function outreachRequestEvidence(run: RunItem): JsonRecord {
+  const payload = run.raw_data?.message_delivery?.send_payload as JsonRecord | undefined;
+  const httpRequest = payload?.http_request as JsonRecord | undefined;
+  if (httpRequest?.body) return httpRequest;
+  if (payload?.request) {
+    return {
+      note: "历史记录仅保存客户端调用参数，未保存最终 HTTP 请求体；以下为当时的原始调用参数。",
+      client_request: payload.request,
+    };
+  }
+  return { note: "未记录主动发送请求；业务过滤未发送的任务不会产生发送请求。" };
 }
 
 function TaskSequenceRow({ task }: { task: RunTask }) {

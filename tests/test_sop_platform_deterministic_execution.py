@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from app.services.sop_platform_task_service import SopPlatformTaskService
+from app.services.sop_platform_task_service import SopPlatformTaskService, _is_first_sop_message_group
 
 
 def _task() -> dict[str, Any]:
@@ -51,9 +51,10 @@ class _Repository:
 
 
 class _Platform:
-    def __init__(self, events: list[str], *, empty: bool = False) -> None:
+    def __init__(self, events: list[str], *, empty: bool = False, first_group: bool = False) -> None:
         self.events = events
         self.empty = empty
+        self.first_group = first_group
         self.consume_calls: list[dict[str, Any]] = []
         self.rule_calls: list[dict[str, Any]] = []
         self.fail_consume_once = False
@@ -64,17 +65,15 @@ class _Platform:
             return {"items": [], "next_item": None, "total": 0}
         group = {
             "id": 701,
+            "sortOrder": 1 if self.first_group else 2,
             "message_content": [
                 {"type": "text", "content": "第一组文本"},
                 {"type": "image", "content": "https://example.com/a.png"},
             ],
         }
-        already_consumed = {
-            "id": 700,
-            "status": 30,
-            "message_content": [{"type": "text", "content": "已发生内容不得重发"}],
-        }
-        return {"items": [already_consumed, group], "next_item": group, "total": 2}
+        # The platform returns only unconsumed groups. List position and
+        # `complete` therefore cannot prove whether this is the first SOP group.
+        return {"items": [group], "next_item": group, "total": 1, "complete": False}
 
     async def consume(self, **values: Any) -> dict[str, Any]:
         self.consume_calls.append(values)
@@ -147,11 +146,12 @@ def _service(
     empty_content: bool = False,
     send_error: Exception | None = None,
     gate_error: Exception | None = None,
+    first_group: bool = False,
 ) -> tuple[SopPlatformTaskService, _Repository, _Platform, _System, list[str]]:
     events: list[str] = []
     task = _task()
     repository = _Repository(task)
-    platform = _Platform(events, empty=empty_content)
+    platform = _Platform(events, empty=empty_content, first_group=first_group)
     system = _System(
         events,
         opened=opened,
@@ -203,6 +203,7 @@ def test_three_gates_pass_sends_first_group_without_model_and_consumes_exact_msg
         {"type": "image", "order": 2, "content": {"url": "https://example.com/a.png"}},
     ]
     assert system.send_calls[0]["delivery_idempotency_key"] == "sop_platform_message:701"
+    assert "priority" not in system.send_calls[0]
     assert len(platform.consume_calls) == 1
     assert platform.consume_calls[0]["task_id"] == "101"
     assert platform.consume_calls[0]["status"] == 30
@@ -211,6 +212,24 @@ def test_three_gates_pass_sends_first_group_without_model_and_consumes_exact_msg
     assert repository.local["status"] == "sent"
     assert repository.event_updates[-1]["status"] == "platform_completed"
     assert len(platform.rule_calls) == 1
+
+
+@pytest.mark.parametrize("sort_order,expected", [(1, True), ("1", True), (2, False), (18, False), (None, False), (True, False), (1.5, False), ("invalid", False)])
+def test_first_group_uses_selected_content_absolute_order(sort_order: Any, expected: bool) -> None:
+    assert _is_first_sop_message_group(
+        {"complete": True, "items": [{"id": 701, "sortOrder": 1}]},
+        {"id": 701, "sortOrder": sort_order},
+    ) is expected
+
+
+def test_first_sop_message_group_is_sent_with_high_priority() -> None:
+    service, repository, _platform, system, _events = _service(first_group=True)
+
+    result = _run(service)
+
+    assert result["status"] == "sent"
+    assert system.send_calls[0]["priority"] == "high"
+    assert repository.local["send_payload"]["request"]["priority"] == "high"
 
 
 @pytest.mark.parametrize(

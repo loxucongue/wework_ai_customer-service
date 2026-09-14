@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import time
+from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -105,12 +107,14 @@ class OutreachSystemClient:
         sort_order: str | int | None = None,
         schedule_text: str | None = None,
         scheduled_at: str | int | None = None,
+        priority: str | None = None,
         source_channel: str = "proactive_message",
         source_kind: str = "proactive_message",
         source_request_id: str = "",
         source_task_id: str = "",
         source_context: dict[str, Any] | None = None,
         delivery_idempotency_key: str = "",
+        request_audit: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._delivery_service:
             self._delivery_service.assert_proactive_send_allowed(
@@ -147,6 +151,8 @@ class OutreachSystemClient:
             body["scheduleText"] = schedule_text
         if scheduled_at is not None:
             body["scheduledAt"] = scheduled_at
+        if priority is not None:
+            body["priority"] = priority
         if self.settings.outreach_system_send_conversation_id_enabled and conversation_id:
             body["conversation_id"] = conversation_id
         dispatch_id = ""
@@ -205,6 +211,13 @@ class OutreachSystemClient:
                         "system_msgid": str(dispatch.get("system_msgid") or ""),
                     },
                 }
+        if request_audit is not None:
+            request_audit.update({
+                "method": "POST",
+                "path": "/api/v1/platform-agent/ai-outreach/send",
+                "prepared_at": datetime.now(timezone.utc).isoformat(),
+                "body": deepcopy(body),
+            })
         try:
             phase_started = time.perf_counter()
             result = await self._request(

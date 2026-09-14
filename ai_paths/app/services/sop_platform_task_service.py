@@ -1494,6 +1494,7 @@ class SopPlatformTaskService:
             "event_log_id": event_log_id,
             "selected_msg_id": msg_id,
             "remaining_group_count": int(content_page.get("total") or 0),
+            "first_sop_message_group": _is_first_sop_message_group(content_page, next_group),
         }
         decision = {
             "evaluations": [{"task_id": _task_id(task), "decision": "send", "reason": "deterministic_gate_passed"}],
@@ -2192,6 +2193,8 @@ class SopPlatformTaskService:
             **_platform_send_trace_fields(selected_task),
             "reply_messages": final_messages,
         }
+        if context.get("first_sop_message_group") is True:
+            send_payload["priority"] = "high"
         audit["request"] = send_payload
         delivery_idempotency_key = f"sop_platform_message:{msg_id}"
         audit["delivery_idempotency_key"] = delivery_idempotency_key
@@ -2236,6 +2239,7 @@ class SopPlatformTaskService:
                     "biz_type": biz_type,
                 },
                 delivery_idempotency_key=delivery_idempotency_key,
+                request_audit=audit.setdefault("http_request", {}),
             )
             self._log_task_phase(
                 task_id=selected_id,
@@ -5284,6 +5288,7 @@ def _outreach_send_request(payload: dict[str, Any]) -> dict[str, Any]:
         "sort_order",
         "schedule_text",
         "scheduled_at",
+        "priority",
     }
     return {key: value for key, value in payload.items() if key in allowed}
 
@@ -6630,6 +6635,18 @@ def _merge_sop_message_group(
         group.get("messageGroupId") or group.get("message_group_id") or group.get("groupId") or ""
     )
     return merged
+
+
+def _is_first_sop_message_group(_content_page: Any, selected_group: Any) -> bool:
+    """Use the selected message group's absolute customer SOP order."""
+
+    if not isinstance(selected_group, dict):
+        return False
+    raw_sort_order = selected_group.get("sortOrder", selected_group.get("sort_order"))
+    try:
+        return int(str(raw_sort_order).strip()) == 1
+    except (TypeError, ValueError):
+        return False
 
 
 def _resolve_compatible_pending_tasks(
