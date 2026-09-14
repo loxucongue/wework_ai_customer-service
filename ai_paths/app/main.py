@@ -11,6 +11,7 @@ from app.routers.customer_admin import create_customer_admin_router
 from app.routers.operations_admin import create_operations_admin_router
 from app.routers.outreach_admin import create_outreach_admin_router
 from app.routers.reply import create_reply_router
+from app.routers.reception_state import create_reception_state_router
 from app.routers.sop_admin import create_sop_admin_router
 from app.runtime_roles import RuntimeRole
 from app.runtime_services import (
@@ -65,6 +66,7 @@ if runtime_role is RuntimeRole.REPLY:
 elif runtime_role is RuntimeRole.CONTROL:
     assert isinstance(services, ControlServices)
     app.include_router(create_callbacks_router(settings, services))
+    app.include_router(create_reception_state_router(settings, services))
     app.include_router(create_sop_admin_router(settings, services))
     app.include_router(create_customer_admin_router(settings, services))
     app.include_router(create_operations_admin_router(settings, services))

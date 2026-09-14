@@ -601,3 +601,24 @@ CREATE TABLE IF NOT EXISTS material_claims (
     PRIMARY KEY(contact_key, canonical_id)
 );
 CREATE INDEX IF NOT EXISTS idx_material_claim_alias ON material_claims(alias_key);
+CREATE TABLE IF NOT EXISTS reception_states (
+    contact_key TEXT PRIMARY KEY,
+    version INTEGER NOT NULL DEFAULT 0,
+    snapshot_hash TEXT NOT NULL DEFAULT '',
+    snapshot_json TEXT NOT NULL DEFAULT '{}',
+    invalidated_through_version INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reception_events (
+    event_key TEXT PRIMARY KEY,
+    contact_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    processed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reception_relations (
+    contact_key TEXT NOT NULL,
+    relation_id TEXT NOT NULL,
+    PRIMARY KEY(contact_key, relation_id)
+);

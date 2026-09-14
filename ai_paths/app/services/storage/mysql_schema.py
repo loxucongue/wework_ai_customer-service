@@ -774,6 +774,28 @@ material_claims = Table(
     Index("idx_aics_material_claim_alias", "alias_key"),
 )
 
+reception_states = Table(
+    f"{TABLE_PREFIX}reception_states", metadata,
+    _id("contact_key", primary_key=True),
+    Column("version", BigInteger, nullable=False, server_default="0"),
+    _id("snapshot_hash"), _json("snapshot_json", "{}"),
+    Column("invalidated_through_version", BigInteger, nullable=False, server_default="0"),
+    _time("updated_at"),
+    mysql_engine="InnoDB",
+)
+reception_events = Table(
+    f"{TABLE_PREFIX}reception_events", metadata,
+    _id("event_key", primary_key=True), _id("contact_key"), _id("request_hash"),
+    _json("payload_json", "{}"),
+    Column("processed", Integer, nullable=False, server_default="0"), _time("created_at"),
+    mysql_engine="InnoDB",
+)
+reception_relations = Table(
+    f"{TABLE_PREFIX}reception_relations", metadata,
+    _id("contact_key", primary_key=True), _id("relation_id", primary_key=True),
+    mysql_engine="InnoDB",
+)
+
 EXPECTED_TABLES = tuple(sorted(table.name for table in metadata.tables.values()))
 EXPECTED_ALL_TABLES = tuple(sorted((*EXPECTED_TABLES, VERSION_TABLE)))
 EXPECTED_COLUMNS = {
