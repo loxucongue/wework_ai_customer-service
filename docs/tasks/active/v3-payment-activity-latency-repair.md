@@ -36,6 +36,7 @@
 ## 当前进度
 
 - 状态：`stage2_deployed_natural_traffic_monitoring`。
+- 2026-09-14 12:35（Asia/Shanghai）只读复核：生产仍为 `e01db6965d91e4b1875c8d2524649537f4d96953`，三个后端 active、`NRestarts=0`，Reply health 正常。审计最近 1000 条有耗时记录中上线后的 V3 样本为 91 条，其中人工接管 38 条、平台自动消息过滤 53 条，进入 `synthesize_reply` 的样本为 0；本次样本 fallback/error 为 0。零 AI 样本不能报告生产 P50/P95 为零或宣称速度验收通过，仍待至少 30 条有效自然 AI 回复。此轮只更新任务证据，不部署、不修改接管状态。
 - 已完成：第一版付款证据、付款卡动作一致性、动态活动完整交付、定向修复、超时完整重试约束、相邻容器付款审计字段无损提升，以及 L2/L3 评测设施修正；未修改 `reply_generation.py`、MytRpc、SOP、数据库 schema、外部协议或发送配置。
 - 已确认根因：结构化活动交付引用由 `material_selection` 产生但付款校验未接纳；旧顶层 `action=none` 会压过实际付款卡；主线指向活动但 Router 未选中活动主题时 Reply 缺少完整活动事实；模型偶发把已生成的 `deposit_evidence` 放入 `policy_decision`，旧归一只处理 `sales_judgment`，导致证据被忽略并触发兜底。
 - 第一版候选：提交 `086b83e222eb962affcaa3745ea2b651ae4a86fd` 已推送，保持为可独立发布的第一版边界。
