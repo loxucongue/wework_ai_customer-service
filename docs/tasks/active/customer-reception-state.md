@@ -1,10 +1,11 @@
 # 客户接待状态同步接口
 
-- 状态：interface_candidate_ready_for_review
+- 状态：release_authorized_pending_identity_configuration
+- 发布前最终复测：全量确定性测试含隔离 MySQL 专项 `1076 passed, 12 skipped`（126.07 秒）；变更模块 Ruff、完整候选 diff --check 通过。证据 `artifacts/release-final-pytest.txt`（ignored）。隔离 MySQL 已正常关闭。生产三个服务仍 active，原 release `ff158e47` 未变；缺少授权企业及权威成员映射，生产迁移、重启和配置写入暂未执行。
 - 分支：`codex/customer-reception-state`
 - base：`e2faaccdc4565973932884c04a004df0d9ac9173`
 - 目标：实现 `POST /api/ai/customer/reception-state`，严格协议、企业授权、权威身份绑定、事务持久化及事件幂等/版本/关系生命周期检查。
-- 当前授权：开发接口、隔离测试、提交候选；没有生产迁移、部署、存量回填或状态来源切换授权。
+- 当前授权：用户已授权测试通过后提交 main 并部署接口（含所需增量迁移）；不包含存量回填或状态来源切换。生产尚缺专用凭证、授权企业范围和权威成员映射，不得推测身份配置或宣称接口已经可用。
 - Change contract：新增控制面路由、接待状态服务/模型、独立存储表及增量迁移、直接回归测试和接口文档。风险集中在并发和身份映射；通过唯一约束、事务锁和失败关闭验证。应用回滚保留已收事件，非空表禁止降级删除。
 - ownership：新增 reception_state 模块；`config.py` 的专用凭证配置；`main.py` 控制面路由注册；存储 schema 和新增迁移；直接测试。既有付款/性能和退款的运行链文件保持原状；SOP 优先级已进入 base。
 - 非目标：本轮不让状态快照接管 Reply/SOP/主动跟进，不取消远程查询、不调整模型、发送或接待开关。完整执行链切换需单独验收。

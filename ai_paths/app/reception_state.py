@@ -44,4 +44,3 @@ class ReceptionNotification(BaseModel):
 
 class ReceptionConflict(Exception):
     """Only stable reason codes, never customer payloads."""
-
