@@ -2,17 +2,19 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-12T13:45:03+08:00`
+- verified_at: `2026-09-14T14:29:00+08:00`
 - source_of_truth: 服务器 release 指针、进程环境、systemd 与健康检查；本页只对上述时刻负责
 
 ## 当前部署
 
 | 角色 | Unit | Release / commit | 状态 |
 | --- | --- | --- | --- |
-| control | `ai-paths.service` | `ai-paths-unified-20260912-db-batch-e01db696` / `e01db6965d91e4b1875c8d2524649537f4d96953` | active，`NRestarts=0` |
+| control | `ai-paths.service` | `ai-paths-unified-20260914-sop-priority-ff158e47` / `ff158e477b1b06ac2332770d51c78cf83ca6a68a` | active，`NRestarts=0` |
 | reply | `ai-paths-v3.service` | 同上 | active，`NRestarts=0` |
 | worker | `ai-paths-workers.service` | 同上 | active，`NRestarts=0` |
-| 管理前端 | `ai-paths-frontend.service` | `frontend-20260909-v3-supervisor-3192f19a` | active，`NRestarts=0` |
+| 管理前端 | `ai-paths-frontend.service` | 同上 | active，`NRestarts=0` |
+
+2026-09-14 本次发布：所选消息组 `sortOrder=1` 时标记高优先级，SOP 日志页增加主动发送最终请求体展示。91 项相关回归、完整前端类型检查、页面 ESLint、Ruff、生产构建及虚构数据浏览器验收通过；构建来自 clean main。现场四角色进程目录和发布环境均对应同 SHA，后端健康与管理页面/API 为 200，worker 队列 0、拉取错误为空。以下 9月12日模型、数据与业务量记录为上一轮快照，不作为本次重新统计结果。
 
 三个后端角色均来自 clean `main`，`dirty=false`，产品接口版本为 V3；已核验进程实际工作目录、两份发布身份环境与发布清单一致。管理前端保持原版。2026-09-12 分两次发布 V3 付款/活动修复和数据库只读快照优化：合法付款请求必须生成付款卡，活动阶段完整交付权威活动事实；同一接触边界的记忆与 SOP 已交付记录由三次独立数据库读取合并为一次快照。客户身份、订单/付款和接管状态仍逐轮新鲜读取。未切换内网 RDS，生产数据库地址、凭证、端口、schema、业务开关和发送配置均未变。
 
@@ -56,6 +58,8 @@ Reply 有效配置：`V3_REPLY_MAX_MESSAGES=8`、`V3_REPLY_MAX_TEXT_CHARS=300`�
 - 平台订单异步归因开关在本次核验中没有取得明确启用事实，保持 unknown，不能写成已启用或未成交。
 
 ## 回滚点
+
+- 2026-09-14 本次发布的回滚目标：后端 `ai-paths-unified-20260912-db-batch-e01db696`，前端 `frontend-20260909-v3-supervisor-3192f19a`。三个 previous 指针已保存；服务器 `/opt/ai-paths/artifacts/sop-priority-ff158e47/` 保留两份后端环境备份、前端发布覆盖配置及目标清单。需同步恢复三个后端和前端指针及配置，再重启四角色；本次无数据库迁移。下列更早回滚点为历史记录。
 
 - 后端与 Reply previous：`ai-paths-unified-20260912-payment-activity-086b83e2`，完整 SHA `086b83e222eb962affcaa3745ea2b651ae4a86fd`。
 - 第二版发布包 SHA256 为 `1a869b3c99d902a4876b772a9ce5e28987fddaf3d9bcb259f5e88adfd67bf7be`；第一版发布包 SHA256 为 `59294a6b348273085b7f5d87c26755624f7a333a48c6d037fe7dfb631a05f6c3`。服务器受限目录 `/opt/ai-paths/artifacts/` 保存两次切换前的环境备份和发布脚本；回滚必须同步恢复 control/reply 指针及两份发布身份环境，再统一重启三个后端角色。密钥文件不下载、不入 Git。
