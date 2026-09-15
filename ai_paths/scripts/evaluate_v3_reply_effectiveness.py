@@ -102,6 +102,9 @@ def _percentile(values: list[int], p: float) -> int:
 
 async def main(args: argparse.Namespace) -> int:
     cases=json.loads(args.dataset.read_text(encoding="utf-8"))
+    if args.case_ids:
+        selected = {item.strip() for item in args.case_ids.split(",") if item.strip()}
+        cases = [case for case in cases if case.get("case_id") in selected]
     if args.limit:
         cases = cases[: args.limit]
     baseline=_prompt_from_module(args.baseline_prompt)
@@ -199,6 +202,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--concurrency",type=int,default=2)
     value.add_argument("--limit",type=int,default=0)
     value.add_argument("--variants",default="baseline,input,prompt_only,combined")
+    value.add_argument("--case-ids",default="")
     return value
 
 
