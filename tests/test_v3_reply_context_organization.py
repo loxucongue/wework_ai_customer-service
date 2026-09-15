@@ -1,4 +1,4 @@
-from ai_paths.app.prompts.reply_context_organization import organize_reply_context
+from ai_paths.app.prompts.reply_context_organization import organize_rendered_reply_context, organize_reply_context
 from ai_paths.app.prompts.reply_synthesizer import _select_diverse_argument_candidates
 
 
@@ -13,6 +13,13 @@ def test_context_groups_each_source_block_exactly_once():
     assert [rendered.count(word) for word in ('now','chat','state','delivered','facts','next','argument','refs')] == [1] * 8
     assert rendered.index('【当前对话】') < rendered.index('【已知客户情况】') < rendered.index('【已交付内容】')
     assert rendered.index('【已交付内容】') < rendered.index('【相关事实与执行边界】') < rendered.index('【候选论据与销售方向】')
+
+
+def test_persisted_context_keeps_blank_paragraphs_inside_source_section():
+    source = "【完整聊天】\n客户第一句\n\n客户第二句\n\n【本轮相关权威事实】\n事实一\n\n事实二\n\n请只返回 json。"
+    rendered = organize_rendered_reply_context(source)
+    for value in ("客户第一句", "客户第二句", "事实一", "事实二", "请只返回 json"):
+        assert rendered.count(value) == 1
 
 
 def test_candidate_selection_caps_and_diversifies_arguments():

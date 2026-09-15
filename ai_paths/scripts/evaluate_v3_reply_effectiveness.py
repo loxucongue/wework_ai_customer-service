@@ -18,8 +18,9 @@ from app.services.model_client import ModelClient
 JUDGE_PROMPT = """你只评审淡斑销售微信回复，不续写对话。对照完整上下文和可用事实，比较三个匿名候选。
 分别按0-2评分：当前请求是否直接完整处理、论据是否真正相关、表达是否自然、多轮是否不重复不追问已知信息、下一步是否适合且保持积极销售。
 正常价值、效果、活动、预约推进不是缺陷；不能因营销本身扣分。强加无关内容、机械问句、遗漏明确请求、虚构事实、完成态无依据、该交付结构却缺失才扣分。
-明确退订、人工接管、医疗高风险、严重投诉退款和权威已付边界优先。若存在任一硬错误写 hard_failure=true。
-输出严格JSON：{"scores":{"A":{"request":0,"argument":0,"natural":0,"continuity":0,"next_step":0,"hard_failure":false},"B":{},"C":{}},"winner":"A|B|C|tie","reason_codes":[]}
+明确退订、人工接管、医疗高风险、严重投诉退款和权威已付边界优先。“给你留着、到时候帮你安排、保留活动价”是允许的销售性软承接，不等于交易完成，不能据此判硬错误。
+只有明确虚构已预约/已登记/名额已锁定/档期已确认/已排客/预约金已到账，越过硬停止，或输出上下文白名单之外的结构ID时才写 hard_failure=true，并给 hard_failure_code；不确定时为false。
+输出严格JSON：{"scores":{"A":{"request":0,"argument":0,"natural":0,"continuity":0,"next_step":0,"hard_failure":false,"hard_failure_code":""},"B":{},"C":{}},"winner":"A|B|C|tie","reason_codes":[]}
 不输出客户原文或候选原句。"""
 
 
@@ -41,7 +42,7 @@ def _organizer_from_module(path: Path):
         raise RuntimeError(f"cannot load organizer: {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.organize_reply_context
+    return module.organize_rendered_reply_context
 
 
 def _visible(reply: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -115,7 +116,7 @@ async def main(args: argparse.Namespace) -> int:
         for case in cases:
             for variant in _ordered_variants(case["case_id"],rep):
                 prompt, organized=variants[variant]
-                context=organize_reply_context(case["context"].split("\n\n")) if organized else case["context"]
+                context=organize_reply_context(case["context"]) if organized else case["context"]
                 jobs.append({"case_id":case["case_id"],"rep":rep,"variant":variant,
                              "messages":[{"role":"system","content":prompt},{"role":"user","content":context}]})
     queue: asyncio.Queue=asyncio.Queue()

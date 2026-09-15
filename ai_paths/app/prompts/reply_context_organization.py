@@ -43,3 +43,18 @@ def organize_reply_context(blocks: Iterable[str]) -> str:
         body = "\n\n".join((f"[{title}]\n" if title else "") + value for title, value in items)
         rendered.append(f"【{group}】\n{body}")
     return "\n\n".join(rendered)
+
+
+def organize_rendered_reply_context(rendered: str) -> str:
+    """Organize a persisted renderer result without splitting paragraphs in a section."""
+    starts = list(re.finditer(r"(?m)^【[^】]+】\n", str(rendered or "")))
+    if not starts:
+        return str(rendered or "").strip()
+    blocks: list[str] = []
+    prefix = rendered[: starts[0].start()].strip()
+    if prefix:
+        blocks.append(prefix)
+    for index, start in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(rendered)
+        blocks.append(rendered[start.start() : end].strip())
+    return organize_reply_context(blocks)
