@@ -107,15 +107,19 @@ async def main(args: argparse.Namespace) -> int:
     baseline=_prompt_from_module(args.baseline_prompt)
     candidate=_prompt_from_module(args.candidate_prompt)
     organize_reply_context = _organizer_from_module(args.organizer_module)
-    variants={"baseline":(baseline,False),"input":(baseline,True),
-              "prompt_only":(candidate,False),"combined":(candidate,True)}
+    all_variants={"baseline":(baseline,False),"input":(baseline,True),
+                  "prompt_only":(candidate,False),"combined":(candidate,True)}
+    requested = [item.strip() for item in args.variants.split(",") if item.strip()]
+    if not requested or any(item not in all_variants for item in requested):
+        raise ValueError("variants must be a non-empty comma-separated subset of baseline,input,prompt_only,combined")
+    variants = {name: all_variants[name] for name in requested}
     settings=Settings(_env_file=args.env_file, AI_PATHS_SERVICE_ROLE="control",
                       SOP_PLATFORM_PULL_ENABLED=False, AI_PATHS_BACKGROUND_WORKERS_ENABLED=False,
                       MODEL_REPLY="deepseek-chat", MODEL_REPLY_FALLBACKS="", MODEL_EMERGENCY_FALLBACKS="")
     jobs=[]
     for rep in range(args.repetitions):
         for case in cases:
-            for variant in _ordered_variants(case["case_id"],rep):
+            for variant in (name for name in _ordered_variants(case["case_id"],rep) if name in variants):
                 prompt, organized=variants[variant]
                 context=organize_reply_context(case["context"]) if organized else case["context"]
                 jobs.append({"case_id":case["case_id"],"rep":rep,"variant":variant,
@@ -131,12 +135,14 @@ async def main(args: argparse.Namespace) -> int:
     await asyncio.gather(*workers)
     by_key={(r["case_id"],r["rep"],r["variant"]):r for r in rows}
     judge_jobs=[]
-    aliases={"baseline":"A","input":"B","prompt_only":"C","combined":"D"}
+    aliases = {name: chr(ord("A") + index) for index, name in enumerate(variants)}
     for rep in range(args.repetitions):
         for case in cases:
             candidates={aliases[v]:_visible(by_key[(case["case_id"],rep,v)]["reply"]) for v in variants}
+            judge_messages = _judge_messages(case, candidates)
+            judge_messages[1]["content"] += "\n候选标签=" + ",".join(candidates) + "；winner只能从这些标签或tie选择。"
             judge_jobs.append({"case_id":case["case_id"],"rep":rep,"variant":"judge",
-                               "messages":_judge_messages(case,candidates)})
+                               "messages":judge_messages})
     queue=asyncio.Queue()
     for job in judge_jobs:
         queue.put_nowait(job)
@@ -192,6 +198,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--repetitions",type=int,default=3)
     value.add_argument("--concurrency",type=int,default=2)
     value.add_argument("--limit",type=int,default=0)
+    value.add_argument("--variants",default="baseline,input,prompt_only,combined")
     return value
 
 
