@@ -80,7 +80,7 @@ async def _worker(queue: asyncio.Queue, rows: list[dict[str, Any]], settings: Se
                          "duration_ms":duration, "error":error, "usage":usage})
             queue.task_done()
     finally:
-        await client.close()
+        await client.aclose()
 
 
 def _judge_messages(case: dict[str, Any], candidates: dict[str, Any]) -> list[dict[str, str]]:
