@@ -20,7 +20,7 @@ JUDGE_PROMPT = """你只评审淡斑销售微信回复，不续写对话。对�
 正常价值、效果、活动、预约推进不是缺陷；不能因营销本身扣分。强加无关内容、机械问句、遗漏明确请求、虚构事实、完成态无依据、该交付结构却缺失才扣分。
 明确退订、人工接管、医疗高风险、严重投诉退款和权威已付边界优先。“给你留着、到时候帮你安排、保留活动价”是允许的销售性软承接，不等于交易完成，不能据此判硬错误。
 只有明确虚构已预约/已登记/名额已锁定/档期已确认/已排客/预约金已到账，越过硬停止，或输出上下文白名单之外的结构ID时才写 hard_failure=true，并给 hard_failure_code；不确定时为false。
-输出严格JSON：{"scores":{"A":{"request":0,"argument":0,"natural":0,"continuity":0,"next_step":0,"hard_failure":false,"hard_failure_code":""},"B":{},"C":{}},"winner":"A|B|C|tie","reason_codes":[]}
+输出严格JSON：{"scores":{"A":{"request":0,"argument":0,"natural":0,"continuity":0,"next_step":0,"hard_failure":false,"hard_failure_code":""},"B":{},"C":{},"D":{}},"winner":"A|B|C|D|tie","reason_codes":[]}
 不输出客户原文或候选原句。"""
 
 
@@ -50,7 +50,7 @@ def _visible(reply: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def _ordered_variants(case_id: str, rep: int) -> list[str]:
-    values = ["baseline", "input", "prompt"]
+    values = ["baseline", "input", "prompt_only", "combined"]
     random.Random(f"20260914:{case_id}:{rep}").shuffle(values)
     return values
 
@@ -107,7 +107,8 @@ async def main(args: argparse.Namespace) -> int:
     baseline=_prompt_from_module(args.baseline_prompt)
     candidate=_prompt_from_module(args.candidate_prompt)
     organize_reply_context = _organizer_from_module(args.organizer_module)
-    variants={"baseline":(baseline,False),"input":(baseline,True),"prompt":(candidate,True)}
+    variants={"baseline":(baseline,False),"input":(baseline,True),
+              "prompt_only":(candidate,False),"combined":(candidate,True)}
     settings=Settings(_env_file=args.env_file, AI_PATHS_SERVICE_ROLE="control",
                       SOP_PLATFORM_PULL_ENABLED=False, AI_PATHS_BACKGROUND_WORKERS_ENABLED=False,
                       MODEL_REPLY="deepseek-chat", MODEL_REPLY_FALLBACKS="", MODEL_EMERGENCY_FALLBACKS="")
@@ -130,7 +131,7 @@ async def main(args: argparse.Namespace) -> int:
     await asyncio.gather(*workers)
     by_key={(r["case_id"],r["rep"],r["variant"]):r for r in rows}
     judge_jobs=[]
-    aliases={"baseline":"A","input":"B","prompt":"C"}
+    aliases={"baseline":"A","input":"B","prompt_only":"C","combined":"D"}
     for rep in range(args.repetitions):
         for case in cases:
             candidates={aliases[v]:_visible(by_key[(case["case_id"],rep,v)]["reply"]) for v in variants}

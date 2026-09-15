@@ -47,6 +47,7 @@ def organize_reply_context(blocks: Iterable[str]) -> str:
 
 def organize_rendered_reply_context(rendered: str) -> str:
     """Organize a persisted renderer result without splitting paragraphs in a section."""
+    rendered = _compact_persisted_knowledge_candidates(str(rendered or ""))
     starts = list(re.finditer(r"(?m)^【[^】]+】\n", str(rendered or "")))
     if not starts:
         return str(rendered or "").strip()
@@ -58,3 +59,31 @@ def organize_rendered_reply_context(rendered: str) -> str:
         end = starts[index + 1].start() if index + 1 < len(starts) else len(rendered)
         blocks.append(rendered[start.start() : end].strip())
     return organize_reply_context(blocks)
+
+
+def _compact_persisted_knowledge_candidates(rendered: str, *, limit: int = 3) -> str:
+    """Make historical renderer input match the current three-angle candidate budget."""
+    lines = rendered.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.startswith("话术ID=")]
+    if len(starts) <= limit:
+        return rendered
+    chosen: set[int] = set()
+    seen: set[tuple[str, str]] = set()
+    for index in starts:
+        line = lines[index]
+        checkpoint = re.search(r"｜卡点=([^｜]*)", line)
+        action = re.search(r"｜动作=([^｜]*)", line)
+        angle = (checkpoint.group(1) if checkpoint else "", action.group(1) if action else "")
+        if angle in seen:
+            continue
+        seen.add(angle)
+        chosen.add(index)
+        if len(chosen) >= limit:
+            break
+    remove: set[int] = set()
+    for position, start in enumerate(starts):
+        if start in chosen:
+            continue
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        remove.update(range(start, end))
+    return "\n".join(line for index, line in enumerate(lines) if index not in remove)

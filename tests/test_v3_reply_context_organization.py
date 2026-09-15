@@ -22,6 +22,13 @@ def test_persisted_context_keeps_blank_paragraphs_inside_source_section():
         assert rendered.count(value) == 1
 
 
+def test_persisted_context_uses_same_three_angle_budget():
+    scripts = "\n".join(f"话术ID={i}｜卡点=c{i}｜动作=a{i}\n  参考表达：value{i}" for i in range(5))
+    rendered = organize_rendered_reply_context(f"【完整聊天】\nchat\n\n【跟进序列与话术素材（取其意思，不模仿句式）】\n{scripts}")
+    assert rendered.count("话术ID=") == 3
+    assert "value0" in rendered and "value2" in rendered and "value4" not in rendered
+
+
 def test_candidate_selection_caps_and_diversifies_arguments():
     def candidate(identifier, checkpoint, action):
         return {'id': identifier, 'checkpoint_code': checkpoint, 'action_code': action}
