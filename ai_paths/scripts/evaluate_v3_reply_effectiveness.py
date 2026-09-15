@@ -101,6 +101,8 @@ def _percentile(values: list[int], p: float) -> int:
 
 async def main(args: argparse.Namespace) -> int:
     cases=json.loads(args.dataset.read_text(encoding="utf-8"))
+    if args.limit:
+        cases = cases[: args.limit]
     baseline=_prompt_from_module(args.baseline_prompt)
     candidate=_prompt_from_module(args.candidate_prompt)
     organize_reply_context = _organizer_from_module(args.organizer_module)
@@ -187,6 +189,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--output",type=Path,required=True)
     value.add_argument("--repetitions",type=int,default=3)
     value.add_argument("--concurrency",type=int,default=2)
+    value.add_argument("--limit",type=int,default=0)
     return value
 
 
