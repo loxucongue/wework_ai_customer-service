@@ -1,5 +1,4 @@
-from ai_paths.app.prompts.reply_context_organization import organize_rendered_reply_context, organize_reply_context
-from ai_paths.app.prompts.reply_synthesizer import _select_diverse_argument_candidates
+from ai_paths.scripts.reply_context_organization import organize_rendered_reply_context, organize_reply_context
 
 
 def test_context_groups_each_source_block_exactly_once():
@@ -27,15 +26,3 @@ def test_persisted_context_uses_same_three_angle_budget():
     rendered = organize_rendered_reply_context(f"【完整聊天】\nchat\n\n【跟进序列与话术素材（取其意思，不模仿句式）】\n{scripts}")
     assert rendered.count("话术ID=") == 3
     assert "value0" in rendered and "value2" in rendered and "value4" not in rendered
-
-
-def test_candidate_selection_caps_and_diversifies_arguments():
-    def candidate(identifier, checkpoint, action):
-        return {'id': identifier, 'checkpoint_code': checkpoint, 'action_code': action}
-    value = {'sequence_candidates': [{'id':'s1'}, {'id':'s2'}], 'candidates': [
-        candidate('a','price','explain'), candidate('duplicate','price','explain'),
-        candidate('b','price','proof'), candidate('c','trust','proof'), candidate('d','distance','switch'),
-    ]}
-    selected = _select_diverse_argument_candidates(value)
-    assert [item['id'] for item in selected['candidates']] == ['a','b','c']
-    assert [item['id'] for item in selected['sequence_candidates']] == ['s1']

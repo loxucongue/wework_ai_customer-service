@@ -8,12 +8,15 @@ import importlib.util
 import json
 import random
 import statistics
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings
 from app.services.model_client import ModelClient
+
+PROMPT_PATH = "ai_paths/app/prompts/reply_sales_prompt_v4.py"
 
 JUDGE_PROMPT = """你只评审淡斑销售微信回复，不续写对话。对照完整上下文和可用事实，比较三个匿名候选。
 分别按0-2评分：当前请求是否直接完整处理、论据是否真正相关、表达是否自然、多轮是否不重复不追问已知信息、下一步是否适合且保持积极销售。
@@ -34,6 +37,31 @@ def _prompt_from_module(path: Path) -> str:
     if not isinstance(value, str) or not value:
         raise RuntimeError("prompt constant missing")
     return value
+
+
+def _resolve_baseline(ref: str) -> tuple[str, str]:
+    sha = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    if len(sha) != 40:
+        raise ValueError(f"baseline ref did not resolve to a full commit SHA: {ref!r}")
+    source = subprocess.run(
+        ["git", "show", f"{sha}:{PROMPT_PATH}"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+    namespace: dict[str, Any] = {}
+    exec(compile(source, f"{sha}:{PROMPT_PATH}", "exec"), namespace)
+    prompt = namespace.get("PARALLEL_REPLY_SYSTEM_PROMPT")
+    if not isinstance(prompt, str) or not prompt:
+        raise RuntimeError("baseline prompt constant missing")
+    return sha, prompt
 
 
 def _organizer_from_module(path: Path):
@@ -102,9 +130,12 @@ def _percentile(values: list[int], p: float) -> int:
 
 async def main(args: argparse.Namespace) -> int:
     cases=json.loads(args.dataset.read_text(encoding="utf-8"))
+    if args.case_ids:
+        selected = {item.strip() for item in args.case_ids.split(",") if item.strip()}
+        cases = [case for case in cases if case.get("case_id") in selected]
     if args.limit:
         cases = cases[: args.limit]
-    baseline=_prompt_from_module(args.baseline_prompt)
+    baseline_sha, baseline = _resolve_baseline(args.baseline_ref)
     candidate=_prompt_from_module(args.candidate_prompt)
     organize_reply_context = _organizer_from_module(args.organizer_module)
     all_variants={"baseline":(baseline,False),"input":(baseline,True),
@@ -168,7 +199,8 @@ async def main(args: argparse.Namespace) -> int:
                 if isinstance(data.get(key),(int,float)):
                     scores[variant][key].append(float(data[key]))
             hard[variant]+=bool(data.get("hard_failure"))
-    report={"schema":"v3_reply_effectiveness_ablation_v1","baseline_sha":args.baseline_sha,
+    report={"schema":"v3_reply_effectiveness_ablation_v1","baseline_ref":args.baseline_ref,
+            "baseline_sha":baseline_sha,
             "dataset_sha":hashlib.sha256(args.dataset.read_bytes()).hexdigest(),"case_count":len(cases),
             "repetitions":args.repetitions,"temperature":0.15,"model":settings.model_reply,
             "generation_count":len(rows),"judge_count":len(judgments),"wins":wins,"variants":{}}
@@ -189,16 +221,16 @@ async def main(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     value=argparse.ArgumentParser()
     value.add_argument("--dataset",type=Path,required=True)
-    value.add_argument("--baseline-prompt",type=Path,required=True)
+    value.add_argument("--baseline-ref",required=True)
     value.add_argument("--candidate-prompt",type=Path,required=True)
     value.add_argument("--organizer-module",type=Path,required=True)
-    value.add_argument("--baseline-sha",required=True)
     value.add_argument("--env-file",type=Path,required=True)
     value.add_argument("--output",type=Path,required=True)
     value.add_argument("--repetitions",type=int,default=3)
     value.add_argument("--concurrency",type=int,default=2)
     value.add_argument("--limit",type=int,default=0)
     value.add_argument("--variants",default="baseline,input,prompt_only,combined")
+    value.add_argument("--case-ids",default="")
     return value
 
 

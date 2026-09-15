@@ -1,15 +1,13 @@
-"""Present Reply evidence in a sales-readable order without changing authority."""
+"""Evaluation-only Reply evidence organization; no production renderer imports it."""
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable
 
-
 _SECTION = re.compile(r"^【([^】]+)】\n([\s\S]*)$")
 
 
 def organize_reply_context(blocks: Iterable[str]) -> str:
-    """Group existing evidence; every source block is retained exactly once."""
     groups: dict[str, list[tuple[str, str]]] = {
         "当前对话": [], "已知客户情况": [], "已交付内容": [],
         "相关事实与执行边界": [], "候选论据与销售方向": [], "输出要求": [],
@@ -46,7 +44,6 @@ def organize_reply_context(blocks: Iterable[str]) -> str:
 
 
 def organize_rendered_reply_context(rendered: str) -> str:
-    """Organize a persisted renderer result without splitting paragraphs in a section."""
     rendered = _compact_persisted_knowledge_candidates(str(rendered or ""))
     starts = list(re.finditer(r"(?m)^【[^】]+】\n", str(rendered or "")))
     if not starts:
@@ -62,7 +59,6 @@ def organize_rendered_reply_context(rendered: str) -> str:
 
 
 def _compact_persisted_knowledge_candidates(rendered: str, *, limit: int = 3) -> str:
-    """Make historical renderer input match the current three-angle candidate budget."""
     lines = rendered.splitlines()
     starts = [index for index, line in enumerate(lines) if line.startswith("话术ID=")]
     if len(starts) <= limit:

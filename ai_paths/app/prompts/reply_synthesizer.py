@@ -5,7 +5,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.prompts.reply_sales_prompt_v4 import PARALLEL_REPLY_SYSTEM_PROMPT
-from app.prompts.reply_context_organization import organize_reply_context
 from app.services.customer_payment_state import is_completed_order, is_inactive_order
 from app.services.store_fact_followup import unique_delivery_store_id
 
@@ -192,10 +191,6 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
     sections.extend(
         [
             _section(
-                "已交付内容",
-                _render_delivered_content(payload, facts=facts),
-            ),
-            _section(
                 "当前工具权威事实：不得虚构或违背",
                 _render_tool_facts(
                     evidence,
@@ -299,23 +294,7 @@ def _render_v3_reply_context(payload: dict[str, Any], *, json_dumps) -> str:
             "请只返回符合系统输出合同的严格 json。",
         ]
     )
-    return organize_reply_context(sections)
-
-
-def _render_delivered_content(payload: dict[str, Any], *, facts: dict[str, Any]) -> str:
-    mainline = payload.get("mainline_delivery_state") if isinstance(payload.get("mainline_delivery_state"), dict) else {}
-    structured = payload.get("structured_delivered_assets") if isinstance(payload.get("structured_delivered_assets"), list) else []
-    sent = facts.get("sent_messages") if isinstance(facts.get("sent_messages"), dict) else {}
-    return _render_compact_status(
-        {
-            "效果/项目": bool(mainline.get("effect_evidence_delivered")),
-            "活动/价格": bool(mainline.get("activity_offer_delivered")),
-            "门店地址": bool(mainline.get("store_address_delivered")),
-            "预约进行中": bool(mainline.get("appointment_active")),
-            "已送达结构消息": structured,
-            "历史发送摘要": sent,
-        }
-    )
+    return "\n\n".join(item for item in sections if item)
 
 
 def _render_mainline_execution_contract(value: Any) -> str:
@@ -1116,10 +1095,8 @@ def _render_semantic_route(
 def _render_knowledge_evidence(value: Any) -> str:
     if not isinstance(value, dict) or not value:
         return "本轮没有匹配到跟进序列或参考话术；Reply 仍按完整聊天和权威事实回答。"
-    value = _select_diverse_argument_candidates(value)
     lines: list[str] = [
-        "以下最多三个不同角度的候选只提供销售逻辑、适用背景、论据和承接目的，不替 Reply 解释客户原话，也不要求采用或模仿句式。"
-        "数量、价格、效果、免费、人员、距离、名额和完成状态必须重新对照【相关事实与执行边界】；候选与硬事实冲突时只取不冲突的论据。"
+        "以下内容只提供销售思路和口语风格，也不能替 Reply 解释客户原话。其中数量、价格、效果、免费、人员、距离、名额和完成状态必须重新对照【权威业务事实】。候选原文与本轮硬事实口径不同时，只取其销售逻辑和表达方式，不复述冲突文本。"
     ]
     support_level = str(value.get("support_level") or "").strip()
     support_labels = {
@@ -1148,6 +1125,9 @@ def _render_knowledge_evidence(value: Any) -> str:
         name = raw.get("sequence_name") or raw.get("name") or ""
         checkpoint = raw.get("checkpoint_name") or raw.get("checkpoint_code") or ""
         description = raw.get("description") or raw.get("reason") or ""
+        distance_objection = _is_distance_objection_reference(raw)
+        if distance_objection:
+            description = "保留该序列的价值转换节奏；不复述原节点中远、路程、折腾、麻烦、不方便等顾虑描述"
         lines.append(f"序列 {sequence_id}｜{name}｜卡点={checkpoint}｜思路={description}")
         steps = raw.get("steps") or raw.get("relevant_steps") or []
         for step in steps:
@@ -1159,7 +1139,11 @@ def _render_knowledge_evidence(value: Any) -> str:
                 + "｜动作="
                 + str(step.get("action_name") or step.get("action_code") or "")
                 + "｜说明="
-                + str(step.get("objective") or step.get("remark") or step.get("reason") or "")
+                + (
+                    "轻承接后直接转技术、效果、案例和是否值得；原节点负面前置句不进入客户回复"
+                    if distance_objection
+                    else str(step.get("objective") or step.get("remark") or step.get("reason") or "")
+                )
             )
     for raw in value.get("candidates") or []:
         if not isinstance(raw, dict):
@@ -1169,6 +1153,7 @@ def _render_knowledge_evidence(value: Any) -> str:
         text = _dedupe_reference_text(raw.get("reference_text") or raw.get("body_text") or raw.get("text") or "")
         checkpoint_type = raw.get("checkpoint_type") if isinstance(raw.get("checkpoint_type"), dict) else {}
         checkpoint_tag = raw.get("checkpoint_tag") if isinstance(raw.get("checkpoint_tag"), dict) else {}
+        distance_objection = _is_distance_objection_reference(raw)
         query_sources = {
             str(item.get("query_source") or "").strip()
             for item in raw.get("sequence_links") or []
@@ -1211,7 +1196,12 @@ def _render_knowledge_evidence(value: Any) -> str:
                     if not isinstance(message, dict):
                         continue
                     if message.get("type") == "text" and message.get("content"):
-                        lines.append("    文字：" + _dedupe_reference_text(message.get("content")))
+                        lines.append(
+                            "    文字改写要求：只取客户会专程到店、看重技术与效果、值得了解的正向逻辑；"
+                            "原文中复述距离、远、路程、折腾、麻烦或不方便的句子不进入客户回复"
+                            if distance_objection
+                            else "    文字：" + _dedupe_reference_text(message.get("content"))
+                        )
                     elif message.get("type") in {"image", "video"} and message.get("url"):
                         media_type = str(message.get("type") or "")
                         media_counts[media_type] = media_counts.get(media_type, 0) + 1
@@ -1226,7 +1216,12 @@ def _render_knowledge_evidence(value: Any) -> str:
                     )
         else:
             if text:
-                lines.append("  参考表达：" + text)
+                lines.append(
+                    "  参考表达改写要求：只取客户会专程到店、看重技术与效果、值得了解的正向逻辑；"
+                    "原文中复述距离、远、路程、折腾、麻烦或不方便的句子不进入客户回复"
+                    if distance_objection
+                    else "  参考表达：" + text
+                )
             media = raw.get("media") if isinstance(raw.get("media"), dict) else {}
             if media.get("url"):
                 lines.append(f"  配套素材：{media.get('url')}")
@@ -1252,31 +1247,23 @@ def _render_knowledge_evidence(value: Any) -> str:
     return "\n".join(lines) or "无"
 
 
-def _select_diverse_argument_candidates(value: dict[str, Any], *, limit: int = 3) -> dict[str, Any]:
-    """Keep retrieval order while avoiding several near-identical sales arguments."""
-    selected: list[dict[str, Any]] = []
-    seen_angles: set[tuple[str, str]] = set()
-    for raw in value.get("candidates") or []:
-        if not isinstance(raw, dict):
-            continue
-        checkpoint = raw.get("checkpoint_type") if isinstance(raw.get("checkpoint_type"), dict) else {}
-        angle = (
-            str(checkpoint.get("name") or raw.get("checkpoint_name") or raw.get("checkpoint_code") or "").strip(),
-            str(raw.get("action_name") or raw.get("action_code") or raw.get("purpose") or "").strip(),
+def _is_distance_objection_reference(value: Any) -> bool:
+    """Identify tenant-configured distance references without reading customer prose."""
+
+    if not isinstance(value, dict):
+        return False
+    checkpoint_type = value.get("checkpoint_type") if isinstance(value.get("checkpoint_type"), dict) else {}
+    checkpoint_tag = value.get("checkpoint_tag") if isinstance(value.get("checkpoint_tag"), dict) else {}
+    catalog_text = " ".join(
+        str(item or "")
+        for item in (
+            value.get("checkpoint_name"),
+            value.get("sequence_name"),
+            checkpoint_type.get("name"),
+            checkpoint_tag.get("name"),
         )
-        if angle in seen_angles:
-            continue
-        selected.append(raw)
-        seen_angles.add(angle)
-        if len(selected) >= limit:
-            break
-    output = dict(value)
-    output["candidates"] = selected
-    # A sequence is pacing context, not a fourth argument. Keep at most the best match.
-    output["sequence_candidates"] = [
-        item for item in value.get("sequence_candidates") or [] if isinstance(item, dict)
-    ][:1]
-    return output
+    )
+    return any(marker in catalog_text for marker in ("店太远", "距离远", "路程远"))
 
 
 def _render_delivery_assets(

@@ -71,3 +71,82 @@ def split_cases(rows: list[dict[str, Any]], *, seed: int = 20260914,
                          'development_count': len(development), 'holdout_count': len(holdout),
                          'development_checksum': checksum(development), 'holdout_checksum': checksum(holdout),
                          'manual_privacy_review_required': True, 'business_gold': False}}
+
+
+def stratified_split_cases(
+    rows: list[dict[str, Any]],
+    annotations: list[dict[str, Any]],
+    *,
+    development_quotas: dict[str, int],
+    holdout_quotas: dict[str, int],
+    seed: int = 20260914,
+) -> dict[str, Any]:
+    """Freeze category-balanced, conversation-disjoint real-dialogue samples."""
+    annotation_map = {str(item.get("case_id")): item for item in annotations}
+    if set(development_quotas) != set(holdout_quotas):
+        raise ValueError("quota categories must match")
+    enriched = [dict(row, _annotation=annotation_map.get(str(row.get("case_id")))) for row in rows]
+    if any(not row["_annotation"] for row in enriched):
+        raise ValueError("every case requires an annotation")
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in enriched:
+        groups.setdefault(str(row["group_id"]), []).append(row)
+    group_ids = sorted(groups)
+    rng = random.Random(seed)
+    winner: set[str] | None = None
+    best_score: tuple[int, int] | None = None
+    for _ in range(50_000):
+        shuffled = list(group_ids)
+        rng.shuffle(shuffled)
+        holdout_groups = set(shuffled[: round(len(shuffled) * 0.4)])
+        capacities = {"development": {key: 0 for key in development_quotas},
+                      "holdout": {key: 0 for key in holdout_quotas}}
+        for group_id, items in groups.items():
+            partition = "holdout" if group_id in holdout_groups else "development"
+            for row in items:
+                category = str(row["_annotation"].get("category") or "")
+                if category in capacities[partition]:
+                    capacities[partition][category] += 1
+        if any(capacities["development"][key] < count for key, count in development_quotas.items()):
+            continue
+        if any(capacities["holdout"][key] < count for key, count in holdout_quotas.items()):
+            continue
+        score = (
+            sum(capacities["development"][key] - count for key, count in development_quotas.items())
+            + sum(capacities["holdout"][key] - count for key, count in holdout_quotas.items()),
+            abs(len(holdout_groups) * 10 - len(group_ids) * 4),
+        )
+        if best_score is None or score < best_score:
+            winner, best_score = holdout_groups, score
+    if winner is None:
+        raise ValueError("cannot satisfy category quotas without splitting a conversation")
+
+    def choose(partition: str, quotas: dict[str, int]) -> list[dict[str, Any]]:
+        result = []
+        for category, count in quotas.items():
+            pool = [
+                row for group_id, items in groups.items()
+                if (group_id in winner) == (partition == "holdout")
+                for row in items
+                if row["_annotation"].get("category") == category
+            ]
+            pool.sort(key=lambda row: hashlib.sha256(f"{seed}:{partition}:{row['case_id']}".encode()).hexdigest())
+            good = [row for row in pool if row["_annotation"].get("observed_quality") == "good"]
+            selected = good[:1]
+            selected.extend(row for row in pool if row not in selected)
+            for row in selected[:count]:
+                clean = {key: value for key, value in row.items() if key != "_annotation"}
+                clean["review_brief"] = row["_annotation"]
+                result.append(clean)
+        return sorted(result, key=lambda row: row["case_id"])
+
+    development = choose("development", development_quotas)
+    holdout = choose("holdout", holdout_quotas)
+    if len(development) != sum(development_quotas.values()) or len(holdout) != sum(holdout_quotas.values()):
+        raise ValueError("quota selection incomplete")
+    return {"development": development, "holdout": holdout,
+            "manifest": {"baseline_sha": BASELINE_SHA, "seed": seed,
+                         "development_count": len(development), "holdout_count": len(holdout),
+                         "development_quotas": development_quotas, "holdout_quotas": holdout_quotas,
+                         "development_checksum": checksum(development), "holdout_checksum": checksum(holdout),
+                         "business_gold": False, "manual_privacy_review_required": True}}
