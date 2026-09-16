@@ -28,9 +28,6 @@ class Settings(BaseSettings):
     ai_external_api_key: str = Field(default="", repr=False)
     allow_missing_external_api_key: bool = False
     reception_state_api_key: str = Field(default="", repr=False)
-    reception_state_allowed_corps: list[str] = Field(default_factory=list)
-    # Provisioned from an authoritative member directory, never inferred from UserID.
-    reception_state_member_bindings: list[dict[str, str]] = Field(default_factory=list)
     coze_api_base: str = "https://api.coze.cn"
     coze_oauth_client_id: str = Field(default="", repr=False)
     coze_oauth_public_key_id: str = Field(default="", repr=False)

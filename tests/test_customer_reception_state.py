@@ -16,7 +16,7 @@ from app.config import Settings
 from app.reception_state import ReceptionConflict, ReceptionNotification
 from app.routers.reception_state import create_reception_state_router
 from app.services.reception_state_service import ReceptionStateService, digest
-from app.services.storage import AppRepository, SQLiteStore
+from app.services.storage import SQLiteStore
 
 PAYLOAD = {
     "event_id": "event-1", "customer_id": 10001, "customer_add_wechat_id": 90001,
@@ -25,31 +25,16 @@ PAYLOAD = {
     "occurred_at": 1788919200,
     "data": {"service_mode": 1, "is_deleted": False, "ai_version": "v3"},
 }
-BINDINGS = [{"corp_id": "corp-test", "employee_wechat_id": "employee-test", "wechat": "account-test"}]
-
-
-def bind(store, relation=90001, external="external-test", wechat="account-test", customer=10001):
-    AppRepository(store).observe_customer_identity(
-        corp_id="corp-test", wechat=wechat, external_userid=external,
-        customer_id=str(customer), customer_add_wechat_id=str(relation),
-        source="synthetic_verified_directory", verified=True,
-    )
-
-
 @pytest.fixture
 def store(tmp_path):
     result = SQLiteStore(Settings(_env_file=None).model_copy(update={"db_path": tmp_path / "state.db"}))
     result.initialize()
-    bind(result)
     return result
 
 
 @pytest.fixture
 def client(store):
-    settings = Settings(_env_file=None).model_copy(update={
-        "reception_state_api_key": "test-token", "reception_state_allowed_corps": ["corp-test"],
-        "reception_state_member_bindings": BINDINGS,
-    })
+    settings = Settings(_env_file=None).model_copy(update={"reception_state_api_key": "test-token"})
     app = FastAPI()
     app.include_router(create_reception_state_router(settings, SimpleNamespace(storage_store=store)))
     with TestClient(app, headers={"Authorization": "Bearer test-token"}) as result:
@@ -103,17 +88,16 @@ def test_version_record_only(client, version):
     assert data["version_switch_enabled"] is False
 
 
-def test_auth_unknown_identity_and_oversize(client):
+def test_auth_accepts_any_reported_identity_and_rejects_oversize(client):
     assert client.post("/api/ai/customer/reception-state", json=PAYLOAD,
                        headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert send(client, {**PAYLOAD, "wecom_corp_id": "other"}).status_code == 403
-    assert send(client, {**PAYLOAD, "employee_wechat_id": "account-test"}).status_code == 409
-    assert send(client, {**PAYLOAD, "customer_id": 111}).status_code == 409
+    other = {**PAYLOAD, "event_id": "other", "wecom_corp_id": "other"}
+    assert send(client, other).status_code == 200
     assert client.post("/api/ai/customer/reception-state", content=b"x" * 17000).status_code == 400
 
 
 def test_delete_readd_retired_and_invalidation(store):
-    service = ReceptionStateService(store, BINDINGS)
+    service = ReceptionStateService(store)
     payload = copy.deepcopy(PAYLOAD)
     service.apply(ReceptionNotification.model_validate(payload))
     payload.update(event_id="deleted", state_version=2)
@@ -123,10 +107,9 @@ def test_delete_readd_retired_and_invalidation(store):
     payload["data"]["is_deleted"] = False
     with pytest.raises(ReceptionConflict, match="cannot_revive"):
         service.apply(ReceptionNotification.model_validate(payload))
-    bind(store, relation=12)  # Lower numeric ID can still be the new authoritative relation.
+    # A lower numeric ID can still be the newer reporter-authoritative relation.
     payload.update(event_id="readd", customer_add_wechat_id=12)
     assert service.apply(ReceptionNotification.model_validate(payload))["result"] == "applied"
-    bind(store, relation=90001)
     payload.update(event_id="old-relation", state_version=4, customer_add_wechat_id=90001)
     with pytest.raises(ReceptionConflict, match="retired_relationship"):
         service.apply(ReceptionNotification.model_validate(payload))
@@ -137,12 +120,12 @@ def test_delete_readd_retired_and_invalidation(store):
 
 
 def test_concurrent_retries_and_restart(store):
-    service = ReceptionStateService(store, BINDINGS)
+    service = ReceptionStateService(store)
     event = ReceptionNotification.model_validate(PAYLOAD)
     with ThreadPoolExecutor(max_workers=6) as pool:
         results = list(pool.map(lambda _: service.apply(event), range(12)))
     assert sum(item["result"] == "applied" for item in results) == 1
-    restarted = ReceptionStateService(store, BINDINGS)
+    restarted = ReceptionStateService(store)
     assert restarted.apply(event)["result"] == "duplicate"
     versions = [9, 2, 7, 4, 10, 3, 5]
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -152,14 +135,16 @@ def test_concurrent_retries_and_restart(store):
 
 
 def test_case_sensitive_event_id_and_identity_isolation(store):
-    service = ReceptionStateService(store, BINDINGS)
+    service = ReceptionStateService(store)
     service.apply(ReceptionNotification.model_validate(PAYLOAD))
-    bind(store, external="external-other", relation=90002)
     other = {**PAYLOAD, "event_id": "EVENT-1", "customer_external_user_id": "external-other",
              "customer_add_wechat_id": 90002}
     assert service.apply(ReceptionNotification.model_validate(other))["result"] == "applied"
+    other_employee = {**PAYLOAD, "event_id": "employee-event", "employee_wechat_id": "employee-other",
+                      "customer_add_wechat_id": 90003}
+    assert service.apply(ReceptionNotification.model_validate(other_employee))["result"] == "applied"
     with store.connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM reception_states").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM reception_states").fetchone()[0] == 3
     assert digest("event-1") != digest("EVENT-1")
 
 
@@ -183,10 +168,7 @@ def test_commit_failure_returns_503_and_rolls_back(store):
                 yield conn
                 raise RuntimeError("synthetic commit failure with sensitive detail")
 
-    settings = Settings(_env_file=None).model_copy(update={
-        "reception_state_api_key": "test-token", "reception_state_allowed_corps": ["corp-test"],
-        "reception_state_member_bindings": BINDINGS,
-    })
+    settings = Settings(_env_file=None).model_copy(update={"reception_state_api_key": "test-token"})
     app = FastAPI()
     app.include_router(create_reception_state_router(settings, SimpleNamespace(storage_store=FailCommit())))
     with TestClient(app, headers={"Authorization": "Bearer test-token"}) as client:
@@ -196,7 +178,7 @@ def test_commit_failure_returns_503_and_rolls_back(store):
     with store.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM reception_states").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM reception_events").fetchone()[0] == 0
-    assert ReceptionStateService(store, BINDINGS).apply(ReceptionNotification.model_validate(PAYLOAD))["result"] == "applied"
+    assert ReceptionStateService(store).apply(ReceptionNotification.model_validate(PAYLOAD))["result"] == "applied"
 
 
 def test_notification_has_no_business_side_effects(store, client):

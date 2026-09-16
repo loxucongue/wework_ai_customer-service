@@ -2,7 +2,7 @@
 
 本页定义稳定接口合同；部署、配置和接管状态以 `docs/current/PRODUCTION_STATE.md` 为准。当前阶段仅接收和持久化，不改变现有消费者的资格来源。
 
-`POST /api/ai/customer/reception-state`，控制面承载。请求头 `Authorization: Bearer <专用凭证>`，内容类型 `application/json`。凭证必须配置企业授权范围；缺配置返回 503，错误凭证 401，越权企业 403。禁止使用 Reply 接口提交状态。
+`POST /api/ai/customer/reception-state`，控制面承载。请求头 `Authorization: Bearer <专用凭证>`，内容类型 `application/json`。缺少服务端专用凭证配置时返回 503，错误凭证返回 401。接口不维护企业、成员或来源 IP 白名单；持有凭证的调用方是上报身份事实的权威来源。禁止使用 Reply 接口提交状态。
 
 | 字段 | 类型和约束 | 含义 |
 | --- | --- | --- |
@@ -10,7 +10,7 @@
 | customer_id | 正整数 | 微动客户ID |
 | customer_add_wechat_id | 正整数 | 本次加微关系ID |
 | wecom_corp_id | 非空字符串，最多64字符 | 企业CorpID |
-| employee_wechat_id | 非空字符串，最多64字符 | 企微成员UserID，并非聚合客服号 |
+| employee_wechat_id | 非空字符串，最多64字符 | 企微成员UserID，直接作为接待账号隔离维度 |
 | customer_external_user_id | 非空字符串，最多128字符 | 客户ExternalUserID |
 | state_version | 正整数 | 企业＋成员＋外部联系人范围内递增，重加不能归零 |
 | occurred_at | 正整数 | Unix秒，仅审计，不排序 |
@@ -36,15 +36,14 @@
 | 200 | duplicate | 相同通知或同版本同快照，不重复处理；返回当前快照版本 |
 | 200 | stale_ignored | 旧版本忽略，不倒退版本 |
 | 400 | invalid_payload | 修正字段，不无限原样重试 |
-| 401/403 | invalid_token / corp_not_authorized | 修正授权 |
+| 401 | invalid_token | 修正专用凭证 |
 | 409 | event_id_conflict / state_version_conflict | 同事件异内容、同版本异快照，核对来源 |
-| 409 | identity_mapping_conflict / relationship_binding_conflict | 未知、歧义、非权威或不匹配的身份绑定 |
 | 409 | deleted_relationship_cannot_revive / retired_relationship_conflict | 已删除关系复活或已退役关系替换当前关系 |
 | 503 | reception_state_not_configured / state_storage_unavailable | 修正配置或同event_id、同请求退避重试 |
 
 错误格式 `{"code":409,"message":"state_version_conflict","data":null}`。网关限流时按429/Retry-After重试。本阶段应用未新增限流器。
 
-配置：`RECEPTION_STATE_API_KEY`、`RECEPTION_STATE_ALLOWED_CORPS`（JSON字符串数组）、`RECEPTION_STATE_MEMBER_BINDINGS`（JSON对象数组，每项含corp_id、employee_wechat_id、wechat）。只由经审核的权威成员目录提供映射；服务不会直接用UserID替代wechat，也不会收到通知就远程查询。配置实际值、凭证和真实身份不进入Git。还须存在对应的verified customer_identity_links，且平台客户及本次关系ID一致。
+唯一专用配置是 `RECEPTION_STATE_API_KEY`。凭证实际值不进入 Git、文档或日志。服务以 `wecom_corp_id + employee_wechat_id + customer_external_user_id` 建立接触边界；不查询本地成员目录或 `customer_identity_links`，因此调用方必须保证企业、成员、客户及加微关系字段真实一致。不同成员的状态严格隔离，不共享版本或关系历史。
 
 聚合应可靠保存事件、失败补投；切人工或删除时立即拦截旧AI消息，即使通知失败也不得放行。切回AI不补旧消息。本地状态接管之前，接口200仅证明状态已提交；尚不能证明实时回复/SOP/唤醒已按本地状态取消，也不证明客户消息已送达。
 

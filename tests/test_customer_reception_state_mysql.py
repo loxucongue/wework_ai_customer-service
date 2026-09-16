@@ -17,7 +17,6 @@ from app.config import Settings
 from app.reception_state import ReceptionConflict, ReceptionNotification
 from app.routers.reception_state import create_reception_state_router
 from app.services.reception_state_service import ReceptionStateService
-from app.services.storage import AppRepository
 from app.services.storage.mysql_store import MySQLStore
 
 
@@ -38,9 +37,7 @@ def mysql():
 
 def test_mysql_concurrent_versions_conflicts_and_reconnect(mysql):
     tag = uuid4().hex
-    AppRepository(mysql).observe_customer_identity(corp_id=tag, wechat="account", external_userid=tag,
-        customer_id="100", customer_add_wechat_id="200", source="synthetic", verified=True)
-    service = ReceptionStateService(mysql, [{"corp_id": tag, "employee_wechat_id": "member", "wechat": "account"}])
+    service = ReceptionStateService(mysql)
     payload = dict(event_id=tag, customer_id=100, customer_add_wechat_id=200, wecom_corp_id=tag,
         employee_wechat_id="member", customer_external_user_id=tag, state_version=1,
         occurred_at=100, data={"service_mode": 1, "is_deleted": False})
@@ -79,12 +76,7 @@ def test_mysql_migration_reentry_and_protected_rollback(mysql):
 
 def test_mysql_http_committed_snapshot_and_replay(mysql):
     tag = uuid4().hex
-    AppRepository(mysql).observe_customer_identity(corp_id=tag, wechat="account", external_userid=tag,
-        customer_id="100", customer_add_wechat_id="200", source="synthetic", verified=True)
-    settings = Settings(_env_file=None).model_copy(update={
-        "reception_state_api_key": "synthetic-token", "reception_state_allowed_corps": [tag],
-        "reception_state_member_bindings": [{"corp_id": tag, "wechat": "account", "employee_wechat_id": "member"}],
-    })
+    settings = Settings(_env_file=None).model_copy(update={"reception_state_api_key": "synthetic-token"})
     app = FastAPI()
     app.include_router(create_reception_state_router(settings, SimpleNamespace(storage_store=mysql)))
     payload = dict(event_id=tag, customer_id=100, customer_add_wechat_id=200, wecom_corp_id=tag,

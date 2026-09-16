@@ -1,7 +1,7 @@
 # 接待状态持久化合同
 
 - 接口契约见 [接待状态接口](../interfaces/customer-reception-state.md)。本期只实现接口持久化，旧远程资格来源继续生效。
-- 接触身份为corp_id＋权威映射后的wechat＋external_userid，哈希编码使用规范JSON，wechat按现有合同忽略大小写。employee UserID必须先经静态权威映射；platform_user_id不能冒充UserID。每个企业内成员与wechat必须一对一，关系绑定还须匹配verified customer_identity_links。
+- 接触身份为 `corp_id + employee_wechat_id + external_userid`，哈希编码使用规范 JSON，三个标识均按上报原值区分。接口不维护企业、成员或来源 IP 白名单，也不查询 `customer_identity_links`；持有专用凭证的调用方对上报身份负责。不同企业、成员或外部联系人不得共享版本、关系历史或当前状态。
 - event_id全局唯一且区分大小写，以SHA256键规避MySQL默认大小写不敏感排序。完整规范请求哈希绑定event_id；原始通知字段仅入数据库payload_json供审计，不写日志。
 - 事务内先锁通知，再锁接触快照，再验证身份。新版本获胜，同版本同快照为duplicate，同版本异快照为409；occurred_at仅审计。锁等待/死锁/数据库失败返回503，由原事件重试，不伪造200。
 - 删除后的同一关系不允许转回未删除；新关系必须更高版本且权威绑定匹配，不能按关系ID大小推断。退役关系记忆持久化，不允许再次替换当前关系。低版本晚到始终不覆盖新关系。

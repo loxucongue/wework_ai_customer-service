@@ -1,15 +1,16 @@
 # 客户接待状态同步接口
 
-- 状态：deployed_pending_identity_configuration
+- 状态：removing_optional_whitelists_and_issuing_token
+- 白名单移除候选验证：接口专项 `27 passed, 3 skipped`，全量确定性测试 `1073 passed, 15 skipped`，Ruff 与 `git diff --check` 通过；跳过项为未提供一次性 MySQL 的显式 opt-in 测试，事务/迁移代码未改变，原隔离 MySQL 并发、重连和 HTTP 重放证据继续有效。
 - 发布结果：2026-09-16 已从 clean `main@93a99f5c50608e1513bd09272dcc3ac7600a20d5` 统一发布三个后端角色，release `ai-paths-unified-20260916-reception-93a99f5c`；生产迁移从 `20260910_01` 升至 `20260914_01`，三张接待状态表均为 0 行。Nginx 精确路由已部署并限定现有平台来源 IP；control/reply/worker/nginx active、`NRestarts=0`，V2 退役入口 410、控制面健康及管理页 200。缺少专用凭证、授权企业及权威成员映射，接口当前安全返回 `503 reception_state_not_configured`，尚未接收业务上报，也未接管任何消费者。
 - 分支：`codex/customer-reception-state`
 - base：`e2faaccdc4565973932884c04a004df0d9ac9173`
-- 目标：实现 `POST /api/ai/customer/reception-state`，严格协议、企业授权、权威身份绑定、事务持久化及事件幂等/版本/关系生命周期检查。
-- 当前授权：代码、迁移与精确路由已发布；不包含存量回填或状态来源切换。生产尚缺专用凭证、授权企业范围和权威成员映射，不得推测身份配置或宣称接口已经可接收业务上报。
+- 目标：实现 `POST /api/ai/customer/reception-state`，严格协议、专用 Token、接触边界隔离、事务持久化及事件幂等/版本/关系生命周期检查。
+- 当前授权：用户明确取消企业、员工映射和调用方出口 IP 白名单，要求配置生产 Token 并发布；不包含存量回填或状态来源切换。调用方成为上报身份的权威来源。
 - Change contract：新增控制面路由、接待状态服务/模型、独立存储表及增量迁移、直接回归测试和接口文档。风险集中在并发和身份映射；通过唯一约束、事务锁和失败关闭验证。应用回滚保留已收事件，非空表禁止降级删除。
 - ownership：新增 reception_state 模块；`config.py` 的专用凭证配置；`main.py` 控制面路由注册；存储 schema 和新增迁移；直接测试。既有付款/性能和退款的运行链文件保持原状；SOP 优先级已进入 base。
 - 非目标：本轮不让状态快照接管 Reply/SOP/主动跟进，不取消远程查询、不调整模型、发送或接待开关。完整执行链切换需单独验收。
-- 身份取证：现有 customer_identity_links 的 platform_user_id 是平台人员 ID，不能证明企微成员 UserID；需要独立的权威成员/关系绑定，未知映射拒绝，不能直接把 UserID 当 wechat。
+- 身份边界：直接以 `corp_id + employee_wechat_id + external_userid` 隔离状态；不再映射内部 wechat，也不读取 `customer_identity_links`。这意味着服务只验证协议、幂等和生命周期，企业、成员、客户与关系真实性由持有 Token 的调用方负责。
 - 验证：严格字段、凭证/企业、重复/乱序/冲突、删除/重加、事务并发、重启、迁移与受保护回滚；全量确定性测试。MySQL 专项须真实隔离实例，缺少时明确未验收。
 - 发布两道门：接口可用候选与本地状态接管分开；未完成聚合存量同步和发送端拦截联调前不得宣布远程查询移除。
 - 回滚：应用回滚保留加法状态表，禁止重放历史发送；不删除已有事件。

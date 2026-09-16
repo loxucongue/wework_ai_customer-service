@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def create_reception_state_router(settings, services) -> APIRouter:
     router = APIRouter()
-    service = ReceptionStateService(services.storage_store, settings.reception_state_member_bindings)
+    service = ReceptionStateService(services.storage_store)
 
     def error(code: int, reason: str) -> JSONResponse:
         return JSONResponse(status_code=code, content={"code": code, "message": reason, "data": None})
@@ -26,7 +26,7 @@ def create_reception_state_router(settings, services) -> APIRouter:
     async def reception_state(request: Request):
         started = time.perf_counter()
         expected = settings.reception_state_api_key
-        if not expected or not settings.reception_state_allowed_corps:
+        if not expected:
             return error(503, "reception_state_not_configured")
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme.lower() != "bearer" or not secrets.compare_digest(token.encode(), expected.encode()):
@@ -40,8 +40,6 @@ def create_reception_state_router(settings, services) -> APIRouter:
             event = ReceptionNotification.model_validate_json(bytes(body))
         except ValidationError:
             return error(400, "invalid_payload")
-        if event.wecom_corp_id not in settings.reception_state_allowed_corps:
-            return error(403, "corp_not_authorized")
         try:
             result = await run_in_threadpool(service.apply, event)
         except ReceptionConflict as exc:

@@ -13,29 +13,17 @@ def digest(value: object) -> str:
 
 
 class ReceptionStateService:
-    def __init__(self, store, bindings: list[dict[str, str]]):
+    def __init__(self, store):
         self.store = store
-        self.bindings = bindings
-
-    def _wechat(self, event: ReceptionNotification) -> str:
-        matches = [item for item in self.bindings
-                   if item.get("corp_id") == event.wecom_corp_id
-                   and item.get("employee_wechat_id") == event.employee_wechat_id]
-        if len(matches) != 1:
-            raise ReceptionConflict("identity_mapping_conflict")
-        wechat = matches[0].get("wechat", "")
-        if not wechat or wechat != wechat.strip():
-            raise ReceptionConflict("identity_mapping_conflict")
-        reverse = [item for item in self.bindings
-                   if item.get("corp_id") == event.wecom_corp_id
-                   and item.get("wechat", "").casefold() == wechat.casefold()]
-        if len(reverse) != 1:
-            raise ReceptionConflict("identity_mapping_conflict")
-        return wechat
 
     def apply(self, event: ReceptionNotification) -> dict:
-        wechat = self._wechat(event)
-        contact_key = digest([event.wecom_corp_id, wechat.casefold(), event.customer_external_user_id])
+        # The authenticated reporter is authoritative for the three-part
+        # boundary.  Keep each employee isolated without a local directory.
+        contact_key = digest([
+            event.wecom_corp_id,
+            event.employee_wechat_id,
+            event.customer_external_user_id,
+        ])
         event_key = digest(event.event_id)  # Global, case-sensitive event identity.
         request_hash = digest(event.model_dump())
         # occurred_at/event_id audit the notification, not the versioned business snapshot.
@@ -78,22 +66,6 @@ class ReceptionStateService:
                     raise ReceptionConflict("state_version_conflict")
                 result = "duplicate"
             else:
-                # Only an existing authoritative customer/relationship mapping can bind state.
-                links = conn.execute(
-                    "SELECT * FROM customer_identity_links WHERE corp_id=? "
-                    "AND LOWER(wechat)=LOWER(?) AND external_userid=?" + lock,
-                    (event.wecom_corp_id, wechat, event.customer_external_user_id),
-                ).fetchall()
-                if len(links) != 1:
-                    raise ReceptionConflict("identity_mapping_conflict")
-                link = dict(links[0])
-                if (link["verification_status"] != "verified"
-                        or link["corp_id"] != event.wecom_corp_id
-                        or str(link["wechat"]).casefold() != wechat.casefold()
-                        or link["external_userid"] != event.customer_external_user_id
-                        or str(link["platform_customer_id"]) != str(event.customer_id)
-                        or str(link["customer_add_wechat_id"]) != str(event.customer_add_wechat_id)):
-                    raise ReceptionConflict("relationship_binding_conflict")
                 relation = str(event.customer_add_wechat_id)
                 old_relation = str(current.get("customer_add_wechat_id", ""))
                 if old_relation == relation and current.get("data", {}).get("is_deleted") and not event.data.is_deleted:
