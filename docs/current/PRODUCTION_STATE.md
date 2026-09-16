@@ -9,12 +9,12 @@
 
 | 角色 | Unit | Release / commit | 状态 |
 | --- | --- | --- | --- |
-| control | `ai-paths.service` | `ai-paths-unified-20260916-reception-93a99f5c` / `93a99f5c50608e1513bd09272dcc3ac7600a20d5` | active，`NRestarts=0` |
+| control | `ai-paths.service` | `ai-paths-unified-20260916-reception-token-99038cbc` / `99038cbc74116b3093d35689a89fbb06ab0dbcee` | active，`NRestarts=0` |
 | reply | `ai-paths-v3.service` | 同上 | active，`NRestarts=0` |
 | worker | `ai-paths-workers.service` | 同上 | active，`NRestarts=0` |
 | 管理前端 | `ai-paths-frontend.service` | 保持原前端版本 | active，`NRestarts=0` |
 
-2026-09-16 发布客户接待状态持久化接口：生产 schema 从 `20260910_01` 升至 `20260914_01`，新增 `aics_reception_states`、`aics_reception_events`、`aics_reception_relations` 三张空表；公网精确路由已加入并限制现有平台来源 IP。专用 Token、企业白名单和权威成员映射尚未配置，因此接口当前返回 `503 reception_state_not_configured`，尚无业务上报入库，也没有让 Reply、SOP 或主动唤醒改用本地状态。回滚点为 `ai-paths-unified-20260914-sop-priority-ff158e47`；迁移是加法，应用回滚保留新表。
+2026-09-16 发布客户接待状态持久化接口：生产 schema 从 `20260910_01` 升至 `20260914_01`，新增 `aics_reception_states`、`aics_reception_events`、`aics_reception_relations` 三张空表。随后按产品决策移除企业、员工映射和来源 IP 白名单，配置独立生产 Token；公网无 Token 返回 401，正确 Token 加无效请求返回 400，三张表仍为 0 行。接口以 `corp_id + employee_wechat_id + external_userid` 隔离状态，持有 Token 的调用方对身份真实性负责；尚未让 Reply、SOP 或主动唤醒改用本地状态。回滚点为 `ai-paths-unified-20260916-reception-93a99f5c`；迁移是加法，应用回滚保留新表。公网当前仅 HTTP，应尽快增加 HTTPS 或可信专网，避免 Bearer Token 明文传输。
 
 2026-09-14 本次发布：所选消息组 `sortOrder=1` 时标记高优先级，SOP 日志页增加主动发送最终请求体展示。91 项相关回归、完整前端类型检查、页面 ESLint、Ruff、生产构建及虚构数据浏览器验收通过；构建来自 clean main。现场四角色进程目录和发布环境均对应同 SHA，后端健康与管理页面/API 为 200，worker 队列 0、拉取错误为空。以下 9月12日模型、数据与业务量记录为上一轮快照，不作为本次重新统计结果。
 
