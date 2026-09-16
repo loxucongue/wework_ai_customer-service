@@ -1,6 +1,6 @@
 # 客户接待状态同步接口
 
-状态：开发候选，尚未部署。当前阶段仅接收和持久化，不改变现有消费者的资格来源。
+本页定义稳定接口合同；部署、配置和接管状态以 `docs/current/PRODUCTION_STATE.md` 为准。当前阶段仅接收和持久化，不改变现有消费者的资格来源。
 
 `POST /api/ai/customer/reception-state`，控制面承载。请求头 `Authorization: Bearer <专用凭证>`，内容类型 `application/json`。凭证必须配置企业授权范围；缺配置返回 503，错误凭证 401，越权企业 403。禁止使用 Reply 接口提交状态。
 
