@@ -2,14 +2,16 @@
 
 - status: verified-snapshot
 - owner: operations
-- verified_at: `2026-09-16T17:46:24+08:00`
+- verified_at: `2026-09-23T10:44:37+08:00`
 - source_of_truth: 服务器 release 指针、进程环境、systemd 与健康检查；本页只对上述时刻负责
 
 ## 当前部署
 
+2026-09-23 发布 SOP pending 内容分流：有内容直接发送，成功消费省略 messages；无内容保持原 msgId 路径。101 项相关回归及静态检查通过，干净 main 打包，三个后端同 SHA、dirty=false，健康/管理接口200、V3与回调路由正确、worker轮询无错。无数据库迁移，前端不变。回滚目标为 `ai-paths-unified-20260916-reception-token-99038cbc`，previous指针及环境备份保存于服务器 `artifacts/sop-pending-1e772399/`。核验时暂无新任务内容样本；真实客户端模拟HTTP已验证不传messages。以下历史评测保留原日期口径。
+
 | 角色 | Unit | Release / commit | 状态 |
 | --- | --- | --- | --- |
-| control | `ai-paths.service` | `ai-paths-unified-20260916-reception-token-99038cbc` / `99038cbc74116b3093d35689a89fbb06ab0dbcee` | active，`NRestarts=0` |
+| control | `ai-paths.service` | `ai-paths-unified-20260923-sop-pending-1e772399` / `1e772399f8b7b52d4e4f3a15e34f4f95cc87dcc6` | active，健康200 |
 | reply | `ai-paths-v3.service` | 同上 | active，`NRestarts=0` |
 | worker | `ai-paths-workers.service` | 同上 | active，`NRestarts=0` |
 | 管理前端 | `ai-paths-frontend.service` | 保持原前端版本 | active，`NRestarts=0` |
