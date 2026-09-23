@@ -1441,8 +1441,10 @@ class SopPlatformTaskService:
                 batch_run_id=batch_run_id,
                 audit_context=base_audit_context,
             )
+        pending_content = task.get("message_content")
+        uses_pending_content = bool(pending_content)
         event_log_id = _task_event_log_id(task)
-        if not event_log_id:
+        if not event_log_id and not uses_pending_content:
             return await self._finish_batch_without_send(
                 [task],
                 reason="missing_event_log_id",
@@ -1452,7 +1454,7 @@ class SopPlatformTaskService:
                 audit_context=base_audit_context,
             )
         try:
-            content_page = await self.platform_client.sop_messages(
+            content_page = {"next_item": task, "total": 1} if uses_pending_content else await self.platform_client.sop_messages(
                 event_log_id=event_log_id,
                 limit=max(1, min(int(getattr(self.settings, "sop_platform_batch_size", 50) or 50), 500)),
                 corp_id=identity["corp_id"],
@@ -1478,8 +1480,17 @@ class SopPlatformTaskService:
                 audit_context=base_audit_context,
             )
         selected_task = _merge_sop_message_group(task, next_group, event_log_id=event_log_id)
+        if uses_pending_content:
+            selected_task = dict(task)
+            selected_task["_aics_content_source"] = "pending_message_content"
+            selected_task["_aics_sop_message_wait_msg_id"] = ""
         msg_id = str(selected_task.get("_aics_sop_message_wait_msg_id") or "").strip()
-        if not msg_id or msg_id == "0" or not _platform_messages(selected_task):
+        if (
+            (not uses_pending_content and (not msg_id or msg_id == "0"))
+            or (uses_pending_content and not isinstance(pending_content, list))
+            or (uses_pending_content and len(_platform_messages(selected_task)) != len(pending_content))
+            or not _platform_messages(selected_task)
+        ):
             return await self._finish_batch_without_send(
                 [task],
                 reason="invalid_sop_message_group",
@@ -2118,7 +2129,8 @@ class SopPlatformTaskService:
             )
         final_messages = list(original_messages)
         msg_id = str(selected_task.get("_aics_sop_message_wait_msg_id") or "").strip()
-        if not msg_id:
+        uses_pending_content = selected_task.get("_aics_content_source") == "pending_message_content"
+        if not msg_id and not uses_pending_content:
             return await self._finish_batch_without_send(
                 [selected_task],
                 reason="missing_sop_message_id",
@@ -2144,7 +2156,8 @@ class SopPlatformTaskService:
             "skipped_prefix_task_ids": skipped_ids,
             "compat_trigger_task_ids": trigger_ids,
             "terminal_task_status": 30,
-            "content_message_results": [{"msgId": msg_id, "status": 30, "remark": ""}],
+            "content_source": "pending_message_content" if uses_pending_content else "sop_messages",
+            "content_message_results": [] if uses_pending_content else [{"msgId": msg_id, "status": 30, "remark": ""}],
             "consume_results": [],
         }
         previous_local = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{selected_id}")
@@ -2196,7 +2209,9 @@ class SopPlatformTaskService:
         if context.get("first_sop_message_group") is True:
             send_payload["priority"] = "high"
         audit["request"] = send_payload
-        delivery_idempotency_key = f"sop_platform_message:{msg_id}"
+        delivery_idempotency_key = (
+            f"sop_platform_task_content:{selected_id}" if uses_pending_content else f"sop_platform_message:{msg_id}"
+        )
         audit["delivery_idempotency_key"] = delivery_idempotency_key
         phase_started = time.perf_counter()
         local_task = await asyncio.to_thread(
@@ -3016,6 +3031,7 @@ class SopPlatformTaskService:
                 remark=remark,
                 messages=messages,
                 content_exhausted=content_exhausted,
+                **({"pending_task_content": True} if audit.get("content_source") == "pending_message_content" else {}),
             )
         except Exception as exc:
             attempt["completed_at"] = utc_now_iso()
@@ -3068,7 +3084,10 @@ class SopPlatformTaskService:
             if isinstance(audit, dict) and isinstance(audit.get("content_message_results"), list)
             else []
         )
-        if (
+        uses_pending_content = isinstance(audit, dict) and audit.get("content_source") == "pending_message_content"
+        if uses_pending_content and message_results:
+            raise RuntimeError("Pending task content must not consume an explicit msgId")
+        if not uses_pending_content and (
             len(message_results) != 1
             or not isinstance(message_results[0], dict)
             or int(message_results[0].get("status") or 0) != 30
@@ -6621,9 +6640,8 @@ def _merge_sop_message_group(
     messages = group.get("message_content") if isinstance(group.get("message_content"), list) else None
     if messages is None and isinstance(group.get("messageContent"), list):
         messages = group.get("messageContent")
-    if messages is not None:
-        merged["message_content"] = messages
-        merged["messageContent"] = messages
+    merged["message_content"] = messages if messages is not None else []
+    merged["messageContent"] = messages if messages is not None else []
     task_id = _task_id(trigger)
     if task_id:
         merged["task_id"] = task_id

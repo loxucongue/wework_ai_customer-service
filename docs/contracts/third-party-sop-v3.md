@@ -1,5 +1,13 @@
 # 第三方 SOP V3 合同
 
+## 2026-09-23 内容来源合同（优先于下文旧单路径说明）
+
+- `/pending.message_content` 非空时：三项资格门禁通过后原样发送该任务的合法内容，不查询 `/sop-messages`，不要求 eventLogId；非空但格式非法不得回退到其他内容。
+- 此路径以 taskId 为发送幂等边界，成功或调用后结果不确定时消费 `taskId + status=30`，省略 `messages`；明确失败/业务过滤仍按原规则任务70。省略字段遵循第三方自动绑定协议，不宣称平台绝不影响内容队列。
+- 任务自带内容为空时：沿用 `/sop-messages` 选第一组未消费内容、按 msgId 去重并只回传唯一 msgId；组缺失内容不能继承 pending 内容。
+- 审计保存 `content_source`、原发送请求和消费参数；恢复只完成原路径消费，不重新选择来源或重发。历史审计没有来源标记时仍要求唯一 msgId，不推断为任务自带内容。
+- 自带内容路径优先级以任务 sortOrder=1 判断，消息组路径以所选组 sortOrder=1 判断。
+
 - status: current
 - owner: SOP/platform integration
 - code_verified: 2026-09-10 Asia/Shanghai, `main@0e7f76e5`

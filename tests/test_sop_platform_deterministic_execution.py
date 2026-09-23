@@ -613,6 +613,86 @@ def test_consume_retry_reuses_exact_msg_id_without_resending_customer_message() 
     ]
 
 
+@pytest.mark.parametrize("consume_timeout", [False, True])
+def test_pending_content_sends_without_content_lookup_or_msg_id(monkeypatch, consume_timeout) -> None:
+    task = {**_task(), "message_content": [{"type": "text", "content": "pending content"}], "sortOrder": 1}
+    task.pop("eventLogId")
+    monkeypatch.setattr(__import__(__name__, fromlist=["_task"]), "_task", lambda: task)
+    service, repository, platform, system, events = _service()
+    platform.fail_consume_once = consume_timeout
+    if consume_timeout:
+        with pytest.raises(TimeoutError):
+            _run(service)
+        asyncio.run(service._finalize_batch_prefix(selected_task_id="101", skipped_prefix_task_ids=[], audit=repository.local["send_payload"]))
+    else:
+        assert _run(service)["status"] == "sent"
+    assert "sop_messages" not in events
+    assert len(system.send_calls) == 1
+    assert system.send_calls[0]["reply_messages"][0]["content"]["text"] == "pending content"
+    assert system.send_calls[0]["priority"] == "high"
+    assert system.send_calls[0]["delivery_idempotency_key"] == "sop_platform_task_content:101"
+    assert all(call["status"] == 30 and call.get("messages") is None for call in platform.consume_calls)
+    assert repository.local["send_payload"]["content_source"] == "pending_message_content"
+
+
+@pytest.mark.parametrize("content", ["invalid", {"text": "invalid"}, [{"type": "unknown", "content": "invalid"}]])
+def test_invalid_nonempty_pending_content_does_not_fall_back(monkeypatch, content) -> None:
+    task = {**_task(), "message_content": content}
+    monkeypatch.setattr(__import__(__name__, fromlist=["_task"]), "_task", lambda: task)
+    service, _, platform, system, events = _service()
+    _run(service)
+    assert not system.send_calls
+    assert "sop_messages" not in events
+    assert platform.consume_calls[-1]["status"] == 70
+
+
+def test_missing_group_content_cannot_inherit_pending_content() -> None:
+    from app.services.sop_platform_task_service import _merge_sop_message_group, _platform_messages
+    merged = _merge_sop_message_group(
+        {**_task(), "message_content": [{"type": "text", "content": "old"}]},
+        {"id": 701}, event_log_id="9001",
+    )
+    assert _platform_messages(merged) == []
+
+
+@pytest.mark.parametrize("gate", [{"opened": True}, {"deleted": True}, {"ai_auto_reply": False}])
+def test_pending_content_still_obeys_customer_gates(monkeypatch, gate) -> None:
+    task = {**_task(), "message_content": [{"type": "text", "content": "pending"}]}
+    monkeypatch.setattr(__import__(__name__, fromlist=["_task"]), "_task", lambda: task)
+    service, _, platform, system, events = _service(**gate)
+    _run(service)
+    assert not system.send_calls
+    assert "sop_messages" not in events
+    assert platform.consume_calls[-1]["status"] == 70
+    assert platform.consume_calls[-1].get("messages") is None
+
+
+def test_pending_content_real_consume_client_omits_messages_on_wire(monkeypatch) -> None:
+    import json
+    import httpx
+    from app.services.sop_platform_client import SopPlatformClient
+    task = {**_task(), "message_content": [{"type": "text", "content": "pending"}]}
+    monkeypatch.setattr(__import__(__name__, fromlist=["_task"]), "_task", lambda: task)
+    service, _, platform, _, _ = _service()
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"code": 200, "data": {"status": 30}})
+
+    client = SopPlatformClient(SimpleNamespace(sop_platform_token="synthetic", sop_platform_base_url="https://example.test", sop_platform_timeout_seconds=5))
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    platform.consume = client.consume
+    try:
+        assert _run(service)["status"] == "sent"
+    finally:
+        asyncio.run(client.aclose())
+    assert len(bodies) == 1
+    assert bodies[0]["status"] == 30
+    assert "messages" not in bodies[0]
+    assert "pending_task_content" not in bodies[0]
+
+
 def test_concurrent_recovery_observes_completed_send_without_replaying_task() -> None:
     service, repository, platform, system, events = _service()
     repository.local.update(

@@ -189,6 +189,7 @@ class SopPlatformClient:
         remark: str = "",
         messages: list[dict[str, Any]] | None = None,
         content_exhausted: bool | None = None,
+        pending_task_content: bool = False,
     ) -> dict[str, Any]:
         if status not in {20, 30, 70}:
             raise ValueError("platform SOP status must be 20, 30, or 70")
@@ -218,7 +219,10 @@ class SopPlatformClient:
                         "remark": str(raw.get("remark") or "")[:500],
                     }
                 )
-        if status == 30:
+        if pending_task_content:
+            if messages is not None:
+                raise ValueError("pending task content consumption must omit messages")
+        elif status == 30:
             if normalized_messages is None or len(normalized_messages) != 1:
                 raise ValueError("successful platform SOP consumption requires exactly one explicit msgId")
             if normalized_messages[0]["status"] != 30:
